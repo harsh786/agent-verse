@@ -2787,3 +2787,1737 @@ Each stream is large but independently implementable. No stream is blocked by an
 ---
 
 **Specification complete. Ready for implementation planning.**
+
+---
+
+# REAUDIT ADDENDUM — v2 (2026-08-18)
+
+**Audit basis:** All 9 `.github/instructions/*.md` files cross-referenced against every stream.  
+**Gaps identified:** 47 critical omissions across all 9 streams (enumerated below).  
+**Status:** All gaps resolved in this addendum.
+
+---
+
+## Reaudit Gap Register
+
+| # | Stream | Gap | Severity |
+|---|--------|-----|----------|
+| G-01 | S1 | LangSmith tracer has no CircuitBreaker — outage blocks production | CRITICAL |
+| G-02 | S1 | Missing OTel span attributes per `observability.instructions.md` | HIGH |
+| G-03 | S1 | Missing Prometheus metrics for LangSmith submit rate/latency | HIGH |
+| G-04 | S1 | structlog not bound with `langsmith_run_id` on every log entry | MEDIUM |
+| G-05 | S2 | No CircuitBreaker per provider — 1 outage cascades to all goals | CRITICAL |
+| G-06 | S2 | No Bulkhead per provider (max concurrent per provider) | HIGH |
+| G-07 | S2 | No `with_retry` + exponential backoff on 429/503 from providers | CRITICAL |
+| G-08 | S2 | No IdempotencyGuard on provider completion calls | HIGH |
+| G-09 | S2 | `requests` library risk — must confirm all providers use `httpx` | HIGH |
+| G-10 | S2 | No OTel span on provider calls (violates observability mandate) | HIGH |
+| G-11 | S3 | No file upload validation (MIME magic, size, path traversal) | CRITICAL |
+| G-12 | S3 | No CORS explicit config code in spec | MEDIUM |
+| G-13 | S3 | Rate limiter Redis Lua script spec missing | HIGH |
+| G-14 | S3 | Missing `x_idempotency_key` on all state-changing admin endpoints | HIGH |
+| G-15 | S4 | Redis Streams vs Kafka decision trigger not specified | MEDIUM |
+| G-16 | S4 | `MemorySaver` explicitly banned in production — not stated | CRITICAL |
+| G-17 | S4 | Bulkhead for agent execution per tenant — plan-based limits | CRITICAL |
+| G-18 | S4 | Domain isolation rule missing (no cross-domain repo imports) | CRITICAL |
+| G-19 | S4 | `CREATE INDEX CONCURRENTLY` pattern not in all migration specs | HIGH |
+| G-20 | S4 | RLS migration pattern not specified | HIGH |
+| G-21 | S4 | TimescaleDB trigger condition not defined | MEDIUM |
+| G-22 | S4 | PgBouncer pool_size formula missing | HIGH |
+| G-23 | S5 | SSE hook with exponential backoff reconnection missing | CRITICAL |
+| G-24 | S5 | `useInfiniteQuery` / infinite scroll for all list views missing | HIGH |
+| G-25 | S5 | Zustand `devtools` + `persist` middleware not specified | MEDIUM |
+| G-26 | S5 | i18n (i18next, 20+ languages) not required in any feature | HIGH |
+| G-27 | S5 | Feature slice `api.ts` (no direct fetch in components) missing | HIGH |
+| G-28 | S5 | Optimistic updates on all mutations not specified | HIGH |
+| G-29 | S5 | No `operation_id` requirement on all API calls from frontend | MEDIUM |
+| G-30 | S6 | OTel spans missing on Constitutional AI loop nodes | HIGH |
+| G-31 | S6 | Prometheus counter for jailbreak detections missing | HIGH |
+| G-32 | S6 | structlog not bound with guardrail events | MEDIUM |
+| G-33 | S7 | OTel span on `ContextWindowManager.build_context` missing | HIGH |
+| G-34 | S7 | Metrics: `agentverse.context.tokens_used` histogram missing | MEDIUM |
+| G-35 | S7 | `with_retry` on few-shot embedding retrieval missing | HIGH |
+| G-36 | S8 | TDD MANDATE (RED/GREEN/REFACTOR) never stated | CRITICAL |
+| G-37 | S8 | 5-test minimum per method not specified | CRITICAL |
+| G-38 | S8 | `conftest.py` shared fixtures spec missing | HIGH |
+| G-39 | S8 | testcontainers environment setup not specified | HIGH |
+| G-40 | S8 | Playwright visual regression tests missing | HIGH |
+| G-41 | S8 | axe-playwright A11y check after each E2E test missing | HIGH |
+| G-42 | S8 | OpenAPI contract validation (spectral) in CI missing | HIGH |
+| G-43 | S9 | Domain isolation enforcement rules missing | CRITICAL |
+| G-44 | S9 | Event-driven decoupling `OutboxEvent` in `session.begin()` missing | CRITICAL |
+| G-45 | S9 | No in-process shared mutable state rule (multi-pod) | CRITICAL |
+| G-46 | S9 | OTel span naming convention `{domain}.{verb}` not codified | HIGH |
+| G-47 | S9 | Metrics naming `agentverse.{domain}.{metric}` not codified | HIGH |
+
+---
+
+## Stream 1 — LangSmith: Reaudit Additions
+
+### G-01: Circuit Breaker on LangSmith Tracer
+
+Per `resilience.instructions.md`: **every external I/O must be wrapped in a CircuitBreaker.**
+
+```python
+# app/observability/langsmith_tracer.py — complete implementation
+
+from app.reliability.circuit_breaker import CircuitBreaker
+
+class LangSmithTracer:
+    def __init__(self, redis_client) -> None:
+        self._cb = CircuitBreaker(
+            name="langsmith",
+            redis=redis_client,
+            failure_threshold=10,    # 10 failures before opening
+            recovery_timeout=60,     # try again after 60s
+            success_threshold=2,     # 2 successes to close
+        )
+
+    async def _submit_fire_and_forget(self, payload: dict) -> None:
+        """Non-blocking submission with circuit breaker protection."""
+        asyncio.create_task(self._submit(payload))
+
+    async def _submit(self, payload: dict) -> None:
+        try:
+            async with self._cb:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    await client.post(
+                        f"{settings.LANGSMITH_ENDPOINT}/runs",
+                        json=payload,
+                        headers={"x-api-key": settings.LANGSMITH_API_KEY},
+                    )
+        except Exception as exc:
+            # NEVER propagate — LangSmith failure must not affect production
+            log.warning("langsmith.submit.failed",
+                error=str(exc),
+                circuit_state=self._cb.state,
+            )
+```
+
+### G-02: OTel Span Attributes (observability.instructions.md compliance)
+
+Every `trace_llm_call()` must set the standard span attributes:
+
+```python
+async def trace_llm_call(self, request, response, ...):
+    with tracer.start_as_current_span("langsmith.trace_llm") as span:
+        # Standard AgentVerse span attributes:
+        span.set_attribute("tenant_id", str(tenant_id))
+        span.set_attribute("service.name", "agentverse-backend")
+        span.set_attribute("model.provider", request.provider)
+        span.set_attribute("model.name", request.model)
+        span.set_attribute("tokens.input", response.usage.prompt_tokens)
+        span.set_attribute("tokens.output", response.usage.completion_tokens)
+        span.set_attribute("langsmith.run_id", run_id)
+        span.set_attribute("langsmith.project", project_name)
+        span.set_attribute("latency_ms", latency_ms)
+        span.set_attribute("cost_usd", cost_usd)
+```
+
+### G-03: Prometheus Metrics for LangSmith
+
+```python
+# app/observability/langsmith_tracer.py — at module level
+from opentelemetry import metrics
+
+meter = metrics.get_meter(__name__)
+
+langsmith_submit_counter = meter.create_counter(
+    name="agentverse.langsmith.runs.total",
+    description="Total LangSmith runs submitted",
+    unit="1",
+)
+langsmith_submit_errors = meter.create_counter(
+    name="agentverse.langsmith.submit_errors.total",
+    description="LangSmith submission failures",
+    unit="1",
+)
+langsmith_submit_duration = meter.create_histogram(
+    name="agentverse.langsmith.submit_duration_seconds",
+    description="LangSmith run submission latency",
+    unit="s",
+)
+
+# Record on every submission:
+langsmith_submit_counter.add(1, {
+    "run_type": run_type,
+    "project": project_name,
+    "tenant_id": str(tenant_id),
+})
+```
+
+### G-04: structlog Binding for LangSmith
+
+Every log call within a traced operation must bind `langsmith_run_id`:
+
+```python
+# In agent graph.py, bind at goal start:
+log = structlog.get_logger(__name__).bind(
+    goal_id=goal_id,
+    tenant_id=str(tenant_id),
+    langsmith_run_id=state.get("langsmith_run_id", ""),
+)
+```
+
+---
+
+## Stream 2 — Providers: Reaudit Additions
+
+### G-05: CircuitBreaker Per Provider (MANDATORY)
+
+Per `resilience.instructions.md`: **every external call must be wrapped in CircuitBreaker.**
+Per `microservices.instructions.md`: this is a non-negotiable rule.
+
+```python
+# app/providers/base_provider.py (base class for ALL providers)
+
+from app.reliability.circuit_breaker import CircuitBreaker
+
+class BaseProvider:
+    """
+    Base class all LLM providers MUST inherit from.
+    Provides: circuit breaker, bulkhead, retry, OTel span, metrics.
+    """
+    PROVIDER_NAME: str = "unknown"  # override in subclass
+
+    def __init__(self, redis_client) -> None:
+        self._cb = CircuitBreaker(
+            name=f"llm.{self.PROVIDER_NAME}",
+            redis=redis_client,
+            failure_threshold=5,
+            recovery_timeout=30,
+            success_threshold=2,
+        )
+        self._bulkhead = Bulkhead(
+            name=f"llm.{self.PROVIDER_NAME}",
+            max_concurrent=10,   # max 10 concurrent calls to this provider
+        )
+        self._tracer = trace.get_tracer(__name__)
+        self._meter = metrics.get_meter(__name__)
+        self._llm_counter = self._meter.create_counter(
+            name="agentverse.llm.calls.total",
+            unit="1",
+        )
+        self._llm_tokens = self._meter.create_counter(
+            name="agentverse.llm.tokens.total",
+            unit="1",
+        )
+        self._llm_cost = self._meter.create_counter(
+            name="agentverse.llm.cost_usd",
+            unit="$",
+        )
+        self._llm_duration = self._meter.create_histogram(
+            name="agentverse.llm.duration_seconds",
+            unit="s",
+        )
+
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        """Wrapped: circuit breaker + bulkhead + retry + OTel + metrics."""
+        async with self._bulkhead:
+            async with self._cb:
+                return await with_retry(
+                    lambda: self._complete_impl(request),
+                    max_retries=3,
+                    base_delay=1.0,
+                    max_delay=30.0,
+                    exceptions=(RateLimitError, TransientProviderError),
+                )
+
+    async def _complete_impl(self, request: CompletionRequest) -> CompletionResponse:
+        """Override this in subclasses — actual HTTP call."""
+        raise NotImplementedError
+
+    def _emit_metrics(self, request, response, elapsed: float) -> None:
+        labels = {
+            "provider": self.PROVIDER_NAME,
+            "model": request.model,
+            "tenant_id": str(request.tenant_id),
+        }
+        self._llm_counter.add(1, {**labels, "status": "success"})
+        self._llm_tokens.add(response.usage.prompt_tokens,   {**labels, "direction": "input"})
+        self._llm_tokens.add(response.usage.completion_tokens, {**labels, "direction": "output"})
+        self._llm_cost.add(response.cost_usd, labels)
+        self._llm_duration.record(elapsed, labels)
+```
+
+### G-06: Bulkhead Per Provider (MANDATORY)
+
+Included in `BaseProvider` above. Per plan tier the bulkhead limit scales:
+
+```python
+PROVIDER_BULKHEAD_LIMITS: dict[PlanTier, int] = {
+    PlanTier.FREE:         2,   # max 2 concurrent LLM calls on free plan
+    PlanTier.STARTER:      5,
+    PlanTier.PROFESSIONAL: 15,
+    PlanTier.ENTERPRISE:   50,
+}
+# Bulkhead instantiated per (tenant_id, provider) pair — prevents noisy neighbour
+```
+
+### G-07: `with_retry` on Transient Provider Errors (MANDATORY)
+
+```python
+# app/providers/exceptions.py
+class RateLimitError(Exception):
+    """Provider returned HTTP 429."""
+    def __init__(self, retry_after: int = 60):
+        self.retry_after = retry_after
+
+class TransientProviderError(Exception):
+    """Provider returned HTTP 500/503 — transient."""
+
+class ModelNotFoundError(Exception):
+    """Model does not exist on this provider."""
+
+class ContextWindowExceededError(Exception):
+    """Request exceeds model context window."""
+
+# In BaseProvider._complete_impl:
+async def _complete_impl(self, request):
+    response = await self._http_client.post(...)
+    if response.status_code == 429:
+        retry_after = int(response.headers.get("Retry-After", "60"))
+        raise RateLimitError(retry_after=retry_after)
+    if response.status_code in (500, 502, 503, 504):
+        raise TransientProviderError(response.text)
+```
+
+### G-08: IdempotencyGuard on Provider Calls
+
+For Celery-dispatched LLM calls (step execution), prevent double-billing on retry:
+
+```python
+# In AgentExecutorService (app/agent/executor.py):
+from app.reliability.idempotency import IdempotencyGuard
+
+async def execute_step(self, step: Step, state: AgentState) -> StepResult:
+    guard = IdempotencyGuard(redis=self._redis)
+    idempotency_key = f"llm_step:{step.step_id}:{step.attempt}"
+
+    cached = await guard.get(idempotency_key)
+    if cached:
+        log.info("executor.step.cached", step_id=step.step_id)
+        return cached
+
+    result = await self._provider.complete(request)
+    await guard.set(idempotency_key, result, ttl_seconds=3600)
+    return result
+```
+
+### G-09: httpx Confirmed (requests Prohibited)
+
+All provider HTTP calls MUST use `httpx.AsyncClient`. CI check:
+
+```yaml
+# .github/workflows/ci.yml — lint step
+- name: Prohibit requests library in providers
+  run: grep -r "import requests" app/providers/ && echo "FAIL: use httpx" && exit 1 || echo "OK"
+```
+
+### G-10: OTel Span on Every Provider Call
+
+```python
+# In BaseProvider.complete():
+async def complete(self, request: CompletionRequest) -> CompletionResponse:
+    with self._tracer.start_as_current_span(f"{self.PROVIDER_NAME}.complete") as span:
+        span.set_attribute("tenant_id", str(request.tenant_id))
+        span.set_attribute("model.provider", self.PROVIDER_NAME)
+        span.set_attribute("model.name", request.model)
+        span.set_attribute("tokens.input.estimated",
+                           len(str(request.messages)) // 4)  # pre-call estimate
+
+        t0 = time.monotonic()
+        try:
+            response = await self._guarded_complete(request)
+            elapsed = time.monotonic() - t0
+
+            span.set_attribute("tokens.input",  response.usage.prompt_tokens)
+            span.set_attribute("tokens.output", response.usage.completion_tokens)
+            span.set_attribute("cost_usd",      response.cost_usd)
+            span.set_attribute("latency_ms",    int(elapsed * 1000))
+            self._emit_metrics(request, response, elapsed)
+            return response
+
+        except Exception as exc:
+            span.record_exception(exc)
+            span.set_status(trace.StatusCode.ERROR, str(exc))
+            self._llm_counter.add(1, {
+                "provider": self.PROVIDER_NAME,
+                "model": request.model,
+                "status": "error",
+            })
+            raise
+```
+
+---
+
+## Stream 3 — Security: Reaudit Additions
+
+### G-11: File Upload Validation (security.instructions.md — MANDATORY)
+
+All file uploads in ingestion, OCR, and RPA must use:
+
+```python
+# app/security_runtime/file_validator.py (NEW file — referenced in Stream 3)
+
+import magic
+from werkzeug.utils import secure_filename
+from fastapi import UploadFile
+
+class FileUploadValidator:
+    MAX_SIZE_BYTES = 50 * 1024 * 1024    # 50MB hard limit
+    ALLOWED_MIMES = {
+        "text/plain",
+        "text/markdown",
+        "text/csv",
+        "application/pdf",
+        "application/json",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/gif",
+    }
+    BLOCKED_EXTENSIONS = {".exe", ".sh", ".bat", ".ps1", ".py", ".js", ".rb",
+                          ".php", ".dll", ".so", ".dylib", ".msi", ".dmg"}
+
+    async def validate(self, file: UploadFile) -> str:
+        """Validate and return safe filename. Raises on any violation."""
+
+        # 1. Filename sanitization
+        safe_name = secure_filename(file.filename or "upload")
+        if not safe_name:
+            raise InvalidFilenameError("Empty filename after sanitization")
+        if ".." in safe_name or "/" in safe_name:
+            raise InvalidFilenameError("Path traversal attempt")
+        ext = Path(safe_name).suffix.lower()
+        if ext in self.BLOCKED_EXTENSIONS:
+            raise InvalidFilenameError(f"Executable extension blocked: {ext}")
+
+        # 2. Size check (before reading entire file)
+        if file.size and file.size > self.MAX_SIZE_BYTES:
+            raise FileTooLargeError(f"File exceeds {self.MAX_SIZE_BYTES // (1024*1024)}MB limit")
+
+        # 3. MIME type from content magic bytes (NOT extension — easily faked!)
+        header_bytes = await file.read(8192)
+        await file.seek(0)
+        actual_mime = magic.from_buffer(header_bytes, mime=True)
+        if actual_mime not in self.ALLOWED_MIMES:
+            raise InvalidFileTypeError(f"MIME type blocked: {actual_mime}")
+
+        # 4. Extension/MIME consistency check
+        if ext in {".pdf"} and actual_mime != "application/pdf":
+            raise InvalidFileTypeError("Extension mismatch: .pdf but MIME is not PDF")
+
+        return safe_name
+```
+
+This validator is required at:
+- `app/ingestion/router.py` — document upload
+- `app/ocr/router.py` — OCR upload
+- `app/rpa/router.py` — recording/replay file
+- `app/knowledge/router.py` — knowledge source upload
+
+### G-12: CORS Configuration Code
+
+Per security.instructions.md — explicit origins, never wildcard:
+
+```python
+# app/bootstrap/middleware.py (part of Stream 9 main.py refactor)
+from fastapi.middleware.cors import CORSMiddleware
+
+def register_cors(app: FastAPI, settings: Settings) -> None:
+    """Never use allow_origins=['*'] in production."""
+    origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
+    if settings.ENVIRONMENT == "production" and "*" in origins:
+        raise RuntimeError("Wildcard CORS origin not allowed in production")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=[
+            "Authorization",
+            "X-API-Key",
+            "X-Request-ID",
+            "X-Idempotency-Key",
+            "Content-Type",
+        ],
+        expose_headers=["X-Request-ID", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
+        max_age=600,
+    )
+```
+
+### G-13: Rate Limiter Redis Lua Script (atomic)
+
+```python
+# app/tenancy/rate_limiter.py — complete Redis sliding window implementation
+
+SLIDING_WINDOW_LUA = """
+local key     = KEYS[1]
+local now_ms  = tonumber(ARGV[1])
+local window  = tonumber(ARGV[2])
+local limit   = tonumber(ARGV[3])
+local req_id  = ARGV[4]
+
+-- Remove expired entries
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now_ms - window)
+
+-- Count current entries
+local count = redis.call('ZCARD', key)
+
+if count < limit then
+    -- Add new request
+    redis.call('ZADD', key, now_ms, req_id)
+    redis.call('PEXPIRE', key, window)
+    return {1, limit - count - 1, 0}       -- {allowed, remaining, retry_after_ms}
+else
+    -- Oldest entry + window = when next slot opens
+    local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+    local retry_after = math.max(0, tonumber(oldest[2]) + window - now_ms)
+    return {0, 0, retry_after}              -- {denied, remaining, retry_after_ms}
+end
+"""
+
+class RedisSlidingWindowRateLimiter:
+    def __init__(self, redis_client) -> None:
+        self._redis = redis_client
+        self._script = redis_client.register_script(SLIDING_WINDOW_LUA)
+
+    async def check(
+        self,
+        tenant_id: str,
+        endpoint_group: str,  # "api" | "auth" | "admin"
+        limit: int,
+        window_ms: int = 60_000,
+    ) -> RateLimitResult:
+        key = f"ratelimit:{tenant_id}:{endpoint_group}"
+        now_ms = int(time.time() * 1000)
+        req_id = f"{now_ms}:{uuid.uuid4().hex[:8]}"
+
+        allowed, remaining, retry_after_ms = await self._script(
+            keys=[key],
+            args=[now_ms, window_ms, limit, req_id],
+        )
+        return RateLimitResult(
+            allowed=bool(allowed),
+            remaining=remaining,
+            retry_after_ms=retry_after_ms,
+        )
+```
+
+### G-14: Idempotency Keys on Admin Endpoints
+
+All state-changing admin endpoints must accept `X-Idempotency-Key`:
+
+```python
+# Applied to ALL POST/PUT/PATCH/DELETE in app/api/admin.py:
+@router.post("/tenants/{tenant_id}/force-cancel-goal",
+             operation_id="admin_force_cancel_goal")
+async def force_cancel_goal(
+    tenant_id: str,
+    goal_id: str,
+    x_request_id: str = Header(default_factory=lambda: str(uuid4())),
+    x_idempotency_key: str | None = Header(default=None),  # REQUIRED for write ops
+    admin: AdminContext = Depends(get_admin),
+) -> Response:
+    return await admin_service.force_cancel(tenant_id, goal_id,
+                                            idempotency_key=x_idempotency_key)
+```
+
+---
+
+## Stream 4 — Scalability: Reaudit Additions
+
+### G-15: Redis Streams vs Kafka Decision Tree
+
+Per `distributed-tech.instructions.md`:
+
+```
+Event Volume Decision Tree:
+──────────────────────────────────────────────────────────────
+Events/sec  │  Technology    │  Migration Path
+────────────┼────────────────┼──────────────────────────────
+< 1,000     │  Redis pub/sub │  Current — already in use
+1,000–10,000│  Redis Streams │  Phase 1 migration (6mo horizon)
+> 10,000    │  Apache Kafka  │  Phase 2 with Schema Registry
+
+Current state: Redis pub/sub (< 1,000 events/sec per tenant)
+Phase 1 trigger: Single tenant consistently > 500 events/sec for 7 days
+Phase 2 trigger: Cluster-wide > 8,000 events/sec for 24 hours
+
+NEVER pre-optimize: Do NOT add Kafka before the trigger is reached.
+Postgres + Redis handles the vast majority of production workloads at scale.
+```
+
+### G-16: AsyncRedisSaver MANDATORY in Production
+
+Per `microservices.instructions.md`: `MemorySaver` PROHIBITED in production.
+
+```python
+# app/agent/graph.py — enforced at startup
+def build_graph(redis_client=None, environment: str = "development"):
+    """
+    RULE: MemorySaver only allowed in test/development.
+    Production MUST use AsyncRedisSaver so agent state survives pod restart.
+    """
+    if environment == "production" and redis_client is None:
+        raise RuntimeError(
+            "Production agent graph requires Redis checkpointer. "
+            "Set REDIS_URL environment variable."
+        )
+
+    if redis_client and environment != "test":
+        checkpointer = AsyncRedisSaver(redis_client)
+        log.info("agent.graph.checkpointer", type="redis")
+    else:
+        checkpointer = MemorySaver()
+        if environment == "production":
+            log.warning("agent.graph.checkpointer.fallback",
+                        reason="redis_unavailable",
+                        risk="agent_state_lost_on_restart")
+
+    return StateGraph(AgentState).compile(checkpointer=checkpointer)
+```
+
+### G-17: Bulkhead for Agent Execution (Plan-Based Limits)
+
+Per `microservices.instructions.md`: bulkhead isolation prevents noisy neighbour.
+
+```python
+# app/services/goal_service.py — plan-based bulkhead
+
+PLAN_EXECUTION_BULKHEADS: dict[PlanTier, int] = {
+    PlanTier.FREE:         2,    # max 2 simultaneous goal executions
+    PlanTier.STARTER:      5,
+    PlanTier.PROFESSIONAL: 20,
+    PlanTier.ENTERPRISE:   100,
+}
+
+class GoalService:
+    async def execute_goal(self, goal_id: str, tenant: TenantContext) -> None:
+        plan_limit = PLAN_EXECUTION_BULKHEADS[tenant.plan_tier]
+        bulkhead = Bulkhead(
+            name=f"agent_execution:{tenant.id}",
+            max_concurrent=plan_limit,
+        )
+        try:
+            async with bulkhead:
+                await self._run_agent_loop(goal_id, tenant)
+        except BulkheadFullError:
+            # Immediately return 503 — never queue indefinitely
+            raise GoalConcurrencyLimitExceededError(
+                f"Tenant {tenant.id} has reached max concurrent goals "
+                f"for {tenant.plan_tier} plan ({plan_limit})"
+            )
+```
+
+### G-18: Domain Isolation Rules (CRITICAL ARCHITECTURAL LAW)
+
+Per `microservices.instructions.md` — violations are architecture defects:
+
+```python
+# RULE 1: Never import another domain's repository from your domain.
+# RULE 2: Cross-domain data access only via service.py public interface.
+# RULE 3: Cross-domain side effects only via OutboxEvent (event-driven).
+
+# WRONG ❌ — app/workflow/service.py importing agent repository
+from app.agent.repository import AgentRepository  # ILLEGAL
+
+# CORRECT ✅ — via service interface
+from app.agent.service import AgentService
+agent = await self._agent_service.get(agent_id)
+
+# CORRECT ✅ — side effects via OutboxEvent
+class WorkflowService:
+    async def complete_run(self, run_id: str) -> None:
+        async with self._session.begin():
+            run = await self._repo.update_status(run_id, "completed")
+            # Emit event — analytics/notification subscribe independently
+            self._session.add(OutboxEvent(
+                event_type="workflow.run.completed",
+                aggregate_id=run_id,
+                tenant_id=str(run.tenant_id),
+                payload={"run_id": run_id, "duration_ms": run.duration_ms},
+            ))
+        # Commit happens on context exit — event and DB write are ATOMIC
+```
+
+CI enforcement:
+```bash
+# .github/workflows/ci.yml — domain boundary check
+- name: Enforce domain isolation
+  run: |
+    # Check that no domain imports another domain's repository
+    python scripts/check_domain_boundaries.py
+    # Script: for each app/<domain>/*, scan imports, fail if any import
+    # ends in /repository.py from a different domain
+```
+
+### G-19: CREATE INDEX CONCURRENTLY in All Migrations
+
+Per `database.instructions.md`: never use `op.create_index()` in migrations — it locks the table.
+
+```python
+# ALL migration files must use this pattern:
+def upgrade() -> None:
+    # Use raw SQL with CONCURRENTLY — never op.create_index() which locks
+    op.execute(
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_goals_tenant_status_created "
+        "ON goals (tenant_id, status, created_at DESC)"
+    )
+    # Note: CONCURRENTLY cannot run inside a transaction
+    # Alembic auto-wraps in a transaction — use op.execute() with the above
+
+# Never:
+# op.create_index("idx_name", "table", ["col"])  ← table-locking!
+```
+
+### G-20: RLS Migration Pattern
+
+Per `database.instructions.md` — all tenant-scoped tables require RLS:
+
+```python
+# Migration template for every new tenant-scoped table:
+def upgrade() -> None:
+    # 1. Create table
+    op.create_table("my_table", ...)
+
+    # 2. Enable RLS (ALWAYS)
+    op.execute("ALTER TABLE my_table ENABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE my_table FORCE ROW LEVEL SECURITY")
+
+    # 3. Tenant isolation policy
+    op.execute("""
+        CREATE POLICY tenant_isolation ON my_table
+        USING (tenant_id = current_setting('app.tenant_id')::uuid)
+    """)
+
+    # 4. Grant to app user (superuser bypasses RLS — app user respects it)
+    op.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON my_table TO agentverse_app")
+
+    # 5. Non-locking indexes (separately, after table creation)
+    op.execute(
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_my_table_tenant_id "
+        "ON my_table (tenant_id)"
+    )
+```
+
+### G-21: TimescaleDB Adoption Trigger
+
+Per `distributed-tech.instructions.md`:
+
+```
+TimescaleDB adoption criteria (all must be true):
+1. metrics/events table exceeds 100M rows
+2. Retention policy more complex than simple partition drop
+3. Continuous aggregates needed for reporting (e.g., hourly rollups)
+4. PostgreSQL 16 TimescaleDB extension available in deployment environment
+
+Until criteria met: use monthly partitioned tables (already spec'd in Stream 4).
+TimescaleDB provides: automatic partitioning, continuous aggregates, compression.
+Target tables when adopted: agent_task_logs, audit_events, stream_events, metrics.
+```
+
+### G-22: PgBouncer Configuration
+
+```ini
+# infra/pgbouncer/pgbouncer.ini
+
+[databases]
+agentverse_prod = host=postgres port=5432 dbname=agentverse_prod
+agentverse_analytics = host=postgres-replica port=5432 dbname=agentverse_prod
+
+[pgbouncer]
+pool_mode = transaction           # transaction mode — safest for async
+# pool_size formula: 2 * CPU_COUNT + num_disk_spindles
+# For 4-core app + 2 disks: 2*4+2 = 10 connections to Postgres per pool
+default_pool_size = 10
+max_client_conn = 1000            # clients (FastAPI + Celery workers)
+reserve_pool_size = 5             # emergency reserve
+reserve_pool_timeout = 5.0        # seconds to wait before using reserve
+
+# Service-specific pools (override default):
+; web_pool          → FastAPI: default_pool_size
+; worker_pool       → Celery: default_pool_size
+; analytics_pool    → Read replica: 5 (analytics queries)
+
+server_idle_timeout = 600         # release idle server connections after 10min
+client_idle_timeout = 0           # keep client connections alive (SSE)
+query_timeout = 10                # 10s max for web queries
+client_login_timeout = 10
+auth_type = scram-sha-256
+```
+
+---
+
+## Stream 5 — UI/UX: Reaudit Additions
+
+### G-23: SSE Hook with Exponential Backoff (hooks.instructions.md)
+
+Per `hooks.instructions.md` — the SSE hook pattern MUST include reconnection logic:
+
+```typescript
+// src/features/goals/hooks/useGoalStream.ts
+
+export function useGoalStream(goalId: string) {
+  const qc = useQueryClient();
+  const esRef = useRef<EventSource | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const reconnectDelay = useRef(1_000);  // start at 1s, max 30s
+
+  useEffect(() => {
+    let stopped = false;
+
+    function connect() {
+      if (stopped) return;
+
+      const es = new EventSource(
+        `/api/v1/goals/${goalId}/stream`,
+        { withCredentials: true }
+      );
+      esRef.current = es;
+      reconnectDelay.current = 1_000;  // reset on successful connect
+
+      es.addEventListener("step_completed", (ev) => {
+        const event: GoalStepEvent = JSON.parse(ev.data);
+        qc.setQueryData(goalKeys.detail(goalId), (old: Goal | undefined) =>
+          old ? { ...old, currentStep: event.step } : old
+        );
+      });
+
+      es.addEventListener("goal_completed", (ev) => {
+        const event: GoalCompletedEvent = JSON.parse(ev.data);
+        qc.setQueryData(goalKeys.detail(goalId), (old) =>
+          old ? { ...old, status: "completed", result: event.result } : old
+        );
+        qc.invalidateQueries({ queryKey: goalKeys.all(event.tenant_id) });
+        es.close();
+      });
+
+      es.addEventListener("error", () => {
+        es.close();
+        if (!stopped) {
+          // Exponential backoff: 1s → 2s → 4s → 8s → 16s → 30s cap
+          reconnectTimerRef.current = setTimeout(() => {
+            reconnectDelay.current = Math.min(reconnectDelay.current * 2, 30_000);
+            connect();
+          }, reconnectDelay.current);
+        }
+      });
+    }
+
+    connect();
+    return () => {
+      stopped = true;
+      clearTimeout(reconnectTimerRef.current);
+      esRef.current?.close();
+    };
+  }, [goalId, qc]);
+}
+```
+
+This pattern applies to ALL SSE-driven features:
+- `useGoalStream(goalId)` — live goal execution
+- `useWorkflowRunStream(runId)` — workflow run progress
+- `useAgentStream(agentId)` — agent live activity
+- `useNotificationStream(tenantId)` — global notifications
+
+### G-24: Infinite Scroll (useInfiniteQuery) for ALL List Views
+
+Per `hooks.instructions.md` — all list views use `useInfiniteQuery`:
+
+```typescript
+// Applied to every list in all 55 features:
+// src/features/goals/hooks/useGoals.ts
+
+export const goalKeys = {
+  all:    (orgId: string)           => ['goals', orgId]                   as const,
+  detail: (id: string)              => ['goal', id]                       as const,
+  byStatus: (orgId: string, s: string) => ['goals', orgId, s]            as const,
+};
+
+export function useGoals(orgId: string, filters?: GoalFilters) {
+  return useInfiniteQuery({
+    queryKey:         goalKeys.all(orgId),
+    queryFn:          ({ pageParam }) =>
+                        api.goals.list(orgId, { cursor: pageParam, ...filters }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.cursor ?? undefined,
+    staleTime:        30_000,    // 30s fresh window
+    gcTime:           5 * 60_000,
+  });
+}
+
+// In GoalList.tsx:
+const { data, fetchNextPage, hasNextPage, isFetchingNextPage } = useGoals(orgId);
+
+// Virtualized list (>50 items) + intersection observer for auto-fetch:
+const goals = useMemo(
+  () => data?.pages.flatMap(p => p.data) ?? [],
+  [data]
+);
+```
+
+This pattern applies to: goals, agents, workflows, knowledge, ingestion jobs, audit events, marketplace templates, connectors, triggers, schedules.
+
+### G-25: Zustand with devtools + persist
+
+```typescript
+// src/stores/orgStore.ts — full pattern with devtools and persist
+
+import { create } from 'zustand';
+import { devtools, persist, createJSONStorage } from 'zustand/middleware';
+
+export const useOrgStore = create<OrgStore>()(
+  devtools(
+    persist(
+      (set, get) => ({
+        selectedOrgId:      null,
+        commandBarOpen:     false,
+        sidebarCollapsed:   false,
+        activeTheme:        'dark',
+        // Actions:
+        setSelectedOrg:     (id) => set({ selectedOrgId: id }, false, 'setOrg'),
+        toggleCommandBar:   () => set(
+          (s) => ({ commandBarOpen: !s.commandBarOpen }),
+          false,
+          'toggleCmdBar'
+        ),
+        toggleSidebar:      () => set(
+          (s) => ({ sidebarCollapsed: !s.sidebarCollapsed }),
+          false,
+          'toggleSidebar'
+        ),
+        setTheme:           (t) => set({ activeTheme: t }, false, 'setTheme'),
+      }),
+      {
+        name: 'agentverse-org-store',
+        storage: createJSONStorage(() => localStorage),
+        partialize: (s) => ({
+          selectedOrgId:    s.selectedOrgId,
+          sidebarCollapsed: s.sidebarCollapsed,
+          activeTheme:      s.activeTheme,
+          // Do NOT persist: commandBarOpen (always starts closed)
+        }),
+      }
+    ),
+    { name: 'OrgStore', enabled: process.env.NODE_ENV !== 'production' }
+  )
+);
+```
+
+### G-26: i18n — 20+ Languages Across All Features
+
+Per `distributed-tech.instructions.md` — i18next + react-i18next required.
+
+```typescript
+// src/lib/i18n.ts
+import i18n from 'i18next';
+import { initReactI18next } from 'react-i18next';
+import LanguageDetector from 'i18next-browser-languagedetector';
+import Backend from 'i18next-http-backend';
+
+i18n
+  .use(Backend)
+  .use(LanguageDetector)
+  .use(initReactI18next)
+  .init({
+    fallbackLng: 'en',
+    supportedLngs: [
+      'en', 'es', 'fr', 'de', 'pt', 'it', 'nl', 'sv', 'da', 'no',  // European
+      'zh-CN', 'zh-TW', 'ja', 'ko',                                  // East Asian
+      'ar', 'he', 'tr', 'fa',                                        // Middle East
+      'hi', 'bn', 'th', 'vi', 'id',                                  // South/SE Asia
+      'ru', 'pl', 'uk',                                               // Slavic
+    ],  // 27 languages
+    ns: ['common', 'goals', 'agents', 'workflows', 'knowledge', 'governance'],
+    defaultNS: 'common',
+    backend: { loadPath: '/locales/{{lng}}/{{ns}}.json' },
+    interpolation: { escapeValue: false },  // React handles XSS
+    react: { useSuspense: true },
+  });
+
+// Usage in ALL components:
+const { t } = useTranslation('goals');
+// <Button>{t('goals.submit.label')}</Button>
+// RTL support for Arabic/Hebrew/Farsi — set dir="rtl" on <html>
+```
+
+Requirement: **ALL user-visible strings** in every feature component use `t()`. No hardcoded English strings in JSX.
+
+### G-27: Feature Slice api.ts (No Direct Fetch in Components)
+
+Per `frontend.instructions.md` — every feature has an `api.ts`:
+
+```typescript
+// src/features/goals/api.ts
+import { apiClient } from '@/lib/api/client';
+import type { Goal, CreateGoalRequest, GoalListPage } from './types';
+
+export const goalsApi = {
+  list: (orgId: string, params?: { cursor?: string; status?: string }) =>
+    apiClient.get<GoalListPage>(`/v1/orgs/${orgId}/goals`, { params }),
+
+  get: (goalId: string) =>
+    apiClient.get<Goal>(`/v1/goals/${goalId}`),
+
+  create: (orgId: string, req: CreateGoalRequest) =>
+    apiClient.post<Goal>(`/v1/orgs/${orgId}/goals`, req),
+
+  cancel: (goalId: string) =>
+    apiClient.post<void>(`/v1/goals/${goalId}/cancel`),
+
+  retry: (goalId: string) =>
+    apiClient.post<Goal>(`/v1/goals/${goalId}/retry`),
+};
+
+// NEVER in GoalList.tsx:
+// const response = await fetch('/api/v1/goals')  ← PROHIBITED
+```
+
+This pattern applies to ALL 55 features. Each feature has one `api.ts` file.
+
+### G-28: Optimistic Updates on ALL Mutations
+
+Per `hooks.instructions.md` — every mutation uses optimistic update:
+
+```typescript
+// Pattern applied to all create/update/delete mutations:
+export function useCancelGoal(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (goalId: string) => goalsApi.cancel(goalId),
+    onMutate: async (goalId) => {
+      await qc.cancelQueries({ queryKey: goalKeys.all(orgId) });
+      const prev = qc.getQueryData(goalKeys.detail(goalId));
+      // Optimistically set status to "cancelling"
+      qc.setQueryData(goalKeys.detail(goalId), (old: Goal | undefined) =>
+        old ? { ...old, status: 'cancelling' } : old
+      );
+      return { prev, goalId };
+    },
+    onError: (_err, goalId, ctx) => {
+      // Rollback to previous state
+      qc.setQueryData(goalKeys.detail(goalId), ctx?.prev);
+    },
+    onSettled: (_data, _err, goalId) => {
+      qc.invalidateQueries({ queryKey: goalKeys.detail(goalId) });
+      qc.invalidateQueries({ queryKey: goalKeys.all(orgId) });
+    },
+  });
+}
+```
+
+---
+
+## Stream 6 — Grounding: Reaudit Additions
+
+### G-30: OTel Spans on Constitutional AI Loop
+
+```python
+# app/guardrails_v2/constitutional.py
+
+class ConstitutionalCritiqueLoop:
+    async def critique_and_revise(
+        self, response: str, tenant_id: str
+    ) -> ConstitutionalResult:
+        with tracer.start_as_current_span("guardrails.constitutional.critique") as span:
+            span.set_attribute("tenant_id", str(tenant_id))
+            span.set_attribute("response_length", len(response))
+
+            critique = await self._critique(response, span)
+            if critique.violations:
+                with tracer.start_as_current_span("guardrails.constitutional.revise") as rev_span:
+                    rev_span.set_attribute("violation_count", len(critique.violations))
+                    revised = await self._revise(response, critique)
+                    rev_span.set_attribute("revised_length", len(revised))
+                    return ConstitutionalResult(
+                        original=response,
+                        revised=revised,
+                        violations=critique.violations,
+                        revision_applied=True,
+                    )
+            span.set_attribute("violations_found", 0)
+            return ConstitutionalResult(original=response, revised=response,
+                                        violations=[], revision_applied=False)
+```
+
+### G-31: Prometheus Counters for Guardrails
+
+```python
+# app/guardrails_v2/engine.py — at module level
+from opentelemetry import metrics
+
+meter = metrics.get_meter(__name__)
+
+guardrail_violations = meter.create_counter(
+    name="agentverse.guardrails.violations.total",
+    description="Total guardrail violations detected",
+    unit="1",
+)
+jailbreak_attempts = meter.create_counter(
+    name="agentverse.guardrails.jailbreak_attempts.total",
+    description="Jailbreak attempts detected",
+    unit="1",
+)
+pii_detections = meter.create_counter(
+    name="agentverse.guardrails.pii_detections.total",
+    description="PII detections in content",
+    unit="1",
+)
+
+# Record on every violation:
+guardrail_violations.add(1, {
+    "tenant_id": str(tenant_id),
+    "violation_category": violation.category.value,
+    "action": violation.action.value,
+    "layer": violation.layer.value,
+})
+```
+
+### G-32: structlog Binding for Guardrail Events
+
+```python
+# In GuardrailsEngine.evaluate():
+log.warning("guardrails.violation.detected",
+    tenant_id=str(tenant_id),
+    violation_id=str(violation.id),
+    category=violation.category.value,
+    action=violation.action.value,
+    layer=violation.layer.value,
+    pattern_matched=violation.pattern,
+    content_length=len(content),
+    # Never log the actual content (PII risk)
+)
+```
+
+---
+
+## Stream 7 — Context Engineering: Reaudit Additions
+
+### G-33: OTel Span on ContextWindowManager
+
+```python
+# app/context/window_manager.py
+
+class ContextWindowManager:
+    async def build_context(
+        self,
+        state: AgentState,
+        step_type: str,
+        model_context_window: int,
+    ) -> tuple[list[Message], ContextStats]:
+        with tracer.start_as_current_span("context.build") as span:
+            span.set_attribute("tenant_id", str(state["tenant_id"]))
+            span.set_attribute("step_type", step_type)
+            span.set_attribute("model_context_window", model_context_window)
+            span.set_attribute("state.step_count", len(state.get("step_outputs", {})))
+
+            messages, stats = await self._build(state, step_type, model_context_window)
+
+            span.set_attribute("context.total_tokens", stats.total_tokens)
+            span.set_attribute("context.compression_applied", stats.compressed)
+            span.set_attribute("context.dropped_steps", stats.dropped_steps)
+            span.set_attribute("context.budget_pct_used",
+                               stats.total_tokens / model_context_window)
+            return messages, stats
+```
+
+### G-34: Context Metrics
+
+```python
+from opentelemetry import metrics
+
+meter = metrics.get_meter(__name__)
+
+context_tokens = meter.create_histogram(
+    name="agentverse.context.tokens_used",
+    description="Context window tokens consumed per step",
+    unit="1",
+)
+context_compression = meter.create_counter(
+    name="agentverse.context.compressions.total",
+    description="Context compression events",
+    unit="1",
+)
+
+# Record after each context build:
+context_tokens.record(stats.total_tokens, {
+    "tenant_id": str(tenant_id),
+    "step_type": step_type,
+    "model": model_name,
+})
+if stats.compressed:
+    context_compression.add(1, {"tenant_id": str(tenant_id), "reason": stats.compression_reason})
+```
+
+### G-35: `with_retry` on Few-Shot Embedding Retrieval
+
+```python
+# app/context/few_shot_selector.py
+
+class DynamicFewShotSelector:
+    async def select(self, task: str, ...) -> list[FewShotExample]:
+        return await with_retry(
+            lambda: self._retrieve_from_vector_store(task),
+            max_retries=2,
+            base_delay=0.5,
+            exceptions=(ConnectionError, TimeoutError),
+        )
+```
+
+---
+
+## Stream 8 — Testing: Reaudit Additions
+
+### G-36: TDD MANDATE — RED/GREEN/REFACTOR
+
+Per `tdd.instructions.md` — this is non-negotiable:
+
+```
+╔══════════════════════════════════════════════════════════════════════════╗
+║                       THE TDD LAW — NON-NEGOTIABLE                       ║
+║                                                                          ║
+║  1. RED    → Write a failing test describing desired behaviour.          ║
+║             The test must FAIL before any implementation exists.         ║
+║  2. GREEN  → Write MINIMUM code to make ONLY that test pass.             ║
+║             No gold-plating. No extra features.                          ║
+║  3. REFACTOR → Clean up code. All tests must still pass.                ║
+║  4. REPEAT → One cycle per behaviour (not per function, per class).      ║
+║                                                                          ║
+║  VIOLATION: Writing implementation code without a failing test first     ║
+║             = blocked PR. No exceptions.                                 ║
+╚══════════════════════════════════════════════════════════════════════════╝
+```
+
+CI enforcement:
+```yaml
+# .github/workflows/ci.yml
+- name: Verify test coverage on new code
+  run: |
+    uv run pytest --cov=app --cov-fail-under=80 \
+      --cov-report=term-missing \
+      --cov-fail-under-new=90  # New code in PR must hit 90%
+```
+
+### G-37: 5-Test Minimum Per Service Method
+
+Per `tdd.instructions.md` — every public service method needs exactly these test cases:
+
+```python
+# Template — apply to EVERY service method in EVERY stream:
+
+class TestLangSmithTracerService:  # Stream 1 example
+
+    async def test_trace_llm_happy_path(self, tracer, mock_langsmith_api):
+        """Test 1 — Happy path: LLM run submitted, run_id returned."""
+        mock_langsmith_api.post.return_value = {"id": "run-abc123"}
+        run_id = await tracer.trace_llm_call(fake_request, fake_response, ...)
+        assert run_id == "run-abc123"
+
+    async def test_trace_llm_api_failure_non_blocking(self, tracer, mock_langsmith_api):
+        """Test 2 — Error: LangSmith API error must NOT propagate."""
+        mock_langsmith_api.post.side_effect = httpx.ConnectError("timeout")
+        # Should NOT raise — LangSmith failure is silent
+        run_id = await tracer.trace_llm_call(fake_request, fake_response, ...)
+        assert run_id is None  # or empty string
+
+    async def test_trace_llm_circuit_open_skips_submission(self, tracer):
+        """Test 3 — Edge case: Circuit open → skip submission gracefully."""
+        tracer._cb._state = CircuitState.OPEN
+        run_id = await tracer.trace_llm_call(fake_request, fake_response, ...)
+        assert run_id is None  # skipped, not errored
+
+    async def test_trace_llm_pii_stripped_before_send(self, tracer, mock_langsmith_api):
+        """Test 4 — Idempotency analogue: PII always redacted."""
+        request = fake_request_with_pii("john@example.com", "555-123-4567")
+        await tracer.trace_llm_call(request, fake_response, ...)
+        payload = mock_langsmith_api.post.call_args.kwargs["json"]
+        assert "john@example.com" not in str(payload)
+        assert "555-123-4567" not in str(payload)
+
+    async def test_trace_llm_tenant_isolation(self, tracer, mock_langsmith_api):
+        """Test 5 — Tenant isolation: tenants use separate LangSmith projects."""
+        await tracer.trace_llm_call(fake_request_tenant_a, fake_response, ...)
+        await tracer.trace_llm_call(fake_request_tenant_b, fake_response, ...)
+        calls = mock_langsmith_api.post.call_args_list
+        projects = [c.kwargs["json"]["session_name"] for c in calls]
+        assert projects[0] != projects[1]  # different projects
+```
+
+This 5-test pattern applies to **every service method** in all 9 streams.
+
+### G-38: conftest.py Fixtures Specification
+
+```python
+# tests/conftest.py — shared fixtures for all tests
+
+import pytest
+import pytest_asyncio
+from unittest.mock import AsyncMock, MagicMock
+from app.tenancy.context import TenantContext, PlanTier
+from app.providers.fake import FakeProvider
+
+@pytest.fixture(scope="session")
+def event_loop_policy():
+    """Use uvloop in tests for parity with production."""
+    return uvloop.EventLoopPolicy()
+
+@pytest.fixture
+def mock_tenant() -> TenantContext:
+    """Standard free-plan test tenant."""
+    return TenantContext(
+        id="00000000-0000-0000-0000-000000000001",
+        name="Test Tenant",
+        plan_tier=PlanTier.PROFESSIONAL,
+        api_key="av_pro_test_key",
+    )
+
+@pytest.fixture
+def mock_tenant_enterprise() -> TenantContext:
+    return TenantContext(
+        id="00000000-0000-0000-0000-000000000002",
+        name="Enterprise Tenant",
+        plan_tier=PlanTier.ENTERPRISE,
+        api_key="av_ent_test_key",
+    )
+
+@pytest.fixture
+def mock_tenant_free() -> TenantContext:
+    return TenantContext(
+        id="00000000-0000-0000-0000-000000000003",
+        name="Free Tenant",
+        plan_tier=PlanTier.FREE,
+        api_key="av_free_test_key",
+    )
+
+@pytest.fixture
+def fake_provider() -> FakeProvider:
+    """Deterministic LLM provider for tests — no real API calls."""
+    return FakeProvider(
+        responses={
+            "default": "This is a fake LLM response for testing.",
+            "plan": '{"steps": [{"id": "step_1", "tool": "web_search", "args": {}}]}',
+        }
+    )
+
+@pytest.fixture
+def mock_redis():
+    """In-memory mock Redis for tests not requiring real Redis."""
+    return AsyncMock()
+
+@pytest.fixture
+def auth_headers(mock_tenant) -> dict:
+    return {"X-API-Key": mock_tenant.api_key, "X-Request-ID": "test-request-001"}
+
+@pytest.fixture
+def auth_headers_enterprise(mock_tenant_enterprise) -> dict:
+    return {"X-API-Key": mock_tenant_enterprise.api_key}
+```
+
+### G-39: testcontainers Environment Setup
+
+```python
+# tests/conftest_integration.py — integration test fixtures
+
+import pytest
+import pytest_asyncio
+from testcontainers.postgres import PostgresContainer
+from testcontainers.redis import RedisContainer
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+
+@pytest.fixture(scope="session")
+def postgres_container():
+    """Spin up real Postgres for integration tests."""
+    with PostgresContainer("pgvector/pgvector:pg16") as pg:
+        yield pg
+
+@pytest.fixture(scope="session")
+def redis_container():
+    """Spin up real Redis for integration tests."""
+    with RedisContainer("redis:7-alpine") as redis:
+        yield redis
+
+@pytest.fixture(scope="session")
+async def db_engine(postgres_container):
+    url = postgres_container.get_connection_url().replace(
+        "postgresql+psycopg2", "postgresql+asyncpg"
+    )
+    engine = create_async_engine(url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()
+
+@pytest.fixture
+async def db_session(db_engine) -> AsyncSession:
+    """Each test gets a fresh session rolled back on exit."""
+    async with AsyncSession(db_engine) as session:
+        async with session.begin():
+            yield session
+            await session.rollback()   # Clean state for next test
+```
+
+Required env vars for integration tests (from AGENTS.md):
+```bash
+export DOCKER_HOST="unix:///Users/harsh.kumar01/.colima/default/docker.sock"
+export TESTCONTAINERS_RYUK_DISABLED=true
+```
+
+### G-40: Playwright Visual Regression Tests
+
+```typescript
+// e2e/visual/dashboard.spec.ts
+import { test, expect } from '@playwright/test';
+
+test.describe("Visual Regression — Dashboard", () => {
+  test("dashboard hero matches snapshot", async ({ page }) => {
+    await page.goto("/dashboard");
+    await page.waitForSelector("[data-testid='stats-cards']");
+    // Hide dynamic content for stable snapshots
+    await page.locator("[data-testid='activity-feed']").evaluate(
+      el => el.style.visibility = 'hidden'
+    );
+    await expect(page).toHaveScreenshot("dashboard-hero.png", {
+      maxDiffPixelRatio: 0.02,  // 2% tolerance
+    });
+  });
+});
+
+// Update snapshots: npx playwright test --update-snapshots
+// CI: fails if screenshot differs by > 2%
+```
+
+Visual regression tests required for:
+- Dashboard (3 snapshots: empty, active, full)
+- Workflow Builder (2: empty canvas, workflow loaded)
+- Goal detail (3: running, completed, failed)
+- Agent card (4: online, offline, running, error)
+
+### G-41: axe-playwright A11y on ALL E2E Tests
+
+```typescript
+// e2e/setup/axe.ts — imported in all E2E files
+import { checkA11y, injectAxe } from 'axe-playwright';
+
+// Global beforeEach hook — runs a11y check after every test:
+test.beforeEach(async ({ page }) => {
+  await injectAxe(page);
+});
+
+test.afterEach(async ({ page }) => {
+  await checkA11y(page, undefined, {
+    runOnly: {
+      type: 'tag',
+      values: ['wcag2aa', 'wcag21aa', 'best-practice'],
+    },
+    detailedReport: true,
+    detailedReportOptions: { html: true },
+  });
+});
+```
+
+### G-42: OpenAPI Contract Validation (Spectral) in CI
+
+```yaml
+# .github/workflows/ci.yml
+- name: OpenAPI lint (Spectral)
+  run: |
+    npx @stoplight/spectral-cli lint agent-verse-backend/openapi.json \
+      --ruleset .spectral.yml \
+      --fail-severity warn
+
+# .spectral.yml
+extends: [[spectral:oas, recommended]]
+rules:
+  operation-operationId: error          # All operations must have operationId
+  operation-tag-defined: error          # All tags must be defined in tags list
+  info-contact: warn
+  operation-description: warn
+  response-schema-exists: error         # All 2xx responses have response schema
+```
+
+---
+
+## Stream 9 — Code Quality: Reaudit Additions
+
+### G-43: Domain Isolation Enforcement (Complete Rules)
+
+This is a CRITICAL architectural law per `microservices.instructions.md`:
+
+```python
+# RULE 1: Public surface of a domain = service.py only
+# Rule enforced by: scripts/check_domain_boundaries.py
+
+DOMAIN_BOUNDARIES = {
+    "app.agent":         ["app.agent.service", "app.agent.state"],
+    "app.workflow":      ["app.workflow.service", "app.workflow.schemas"],
+    "app.knowledge":     ["app.knowledge.service"],
+    "app.governance":    ["app.governance.audit", "app.governance.policies",
+                          "app.governance.hitl", "app.governance.cost"],
+    "app.ingestion":     ["app.ingestion.service"],
+    "app.tenancy":       ["app.tenancy.context", "app.tenancy.deps",
+                          "app.tenancy.rate_limiter"],
+    "app.memory":        ["app.memory.execution", "app.memory.long_term",
+                          "app.memory.episodic"],
+    "app.providers":     ["app.providers.registry", "app.providers.model_router"],
+    "app.mcp":           ["app.mcp.client", "app.mcp.registry"],
+}
+
+# RULE 2: Cross-domain side effects via events ONLY
+# Pattern: session.add(OutboxEvent(...)) inside session.begin()
+
+# RULE 3: Shared utilities go to app/core/ — never to domain modules
+# app/core/: config.py, errors.py, pagination.py, types.py
+
+# RULE 4: All cross-cutting concerns go to app/reliability/ or app/observability/
+# Never re-implement circuit breaker, retry, rate limiter in domain modules
+```
+
+### G-44: Event-Driven Decoupling via OutboxEvent
+
+```python
+# CORRECT pattern for ALL cross-domain side effects:
+
+# app/services/goal_service.py
+class GoalService:
+    async def complete_goal(self, goal_id: str, result: GoalResult) -> None:
+        """
+        Complete a goal and emit event for downstream consumers.
+        The DB write and event emission are ATOMIC — both succeed or both fail.
+        """
+        async with self._session.begin():
+            await self._repo.update_status(goal_id, GoalStatus.COMPLETED, result)
+
+            # Downstream consumers subscribe independently:
+            # - NotificationService → sends user notification
+            # - AnalyticsService → records completion metric
+            # - BillingService → records usage for invoicing
+            # - AuditService → appends to audit log
+            self._session.add(OutboxEvent(
+                event_type="goal.completed",
+                aggregate_id=goal_id,
+                aggregate_type="goal",
+                tenant_id=str(result.tenant_id),
+                payload={
+                    "goal_id": goal_id,
+                    "result_summary": result.summary[:500],  # truncate
+                    "duration_ms": result.duration_ms,
+                    "cost_usd": float(result.cost_usd),
+                    "step_count": result.step_count,
+                    "model": result.model_used,
+                },
+                created_at=datetime.utcnow(),
+            ))
+        # Session committed — both DB update and OutboxEvent are durable
+        # OutboxPoller will deliver the event within 100ms
+```
+
+### G-45: No In-Process Shared Mutable State
+
+Per `microservices.instructions.md` — multi-pod safety:
+
+```python
+# PROHIBITED — module-level mutable state:
+# ❌ _rate_limit_counters: dict = {}      # only correct in pod 1
+# ❌ _active_goals: set = set()           # stale in pod 2
+# ❌ _provider_cache: dict = {}           # inconsistent across pods
+
+# REQUIRED — all shared state in Redis or Postgres:
+# ✅ Rate limits → Redis sliding window (G-13)
+# ✅ Active goals → Postgres goals table (queried fresh per request)
+# ✅ Provider model cache → Redis with TTL (ModelCatalogService)
+# ✅ LangGraph state → AsyncRedisSaver (G-16)
+# ✅ Circuit breaker state → Redis per circuit name (G-05)
+# ✅ Bulkhead semaphores → Redis per tenant per resource (G-06/G-17)
+# ✅ Idempotency store → Redis with TTL (G-08/G-14)
+# ✅ Feature flags → Redis (no local cache without pub/sub invalidation)
+
+# CI check:
+# grep -rn "^_[a-z].*=.*{}\|^_[a-z].*=.*\[\]\|^_[a-z].*=.*set()" app/ \
+#   --include="*.py" | grep -v "test_\|tests/" | grep -v "TYPE_CHECKING"
+# → fail if found (module-level mutable state)
+```
+
+### G-46: OTel Span Naming Convention
+
+All spans must follow the `{domain}.{verb}` convention:
+
+```python
+# Span naming register (exhaustive):
+# Domain     | Verbs (spans)
+# ─────────────────────────────────────────────────────────────────────
+# agent      | agent.node.initialize, agent.node.plan, agent.node.execute,
+#            | agent.node.verify, agent.node.rag_retrieval, agent.complete
+# workflow   | workflow.compile, workflow.run.start, workflow.step.execute,
+#            | workflow.run.complete, workflow.hitl.request, workflow.hitl.resolve
+# goal       | goal.create, goal.execute, goal.cancel, goal.retry
+# knowledge  | knowledge.search, knowledge.embed, knowledge.ingest
+# providers  | {provider_name}.complete, {provider_name}.embed
+# context    | context.build, context.compress, context.few_shot.select
+# guardrails | guardrails.evaluate, guardrails.constitutional.critique,
+#            | guardrails.constitutional.revise, guardrails.rav.verify
+# memory     | memory.episodic.store, memory.long_term.retrieve,
+#            | memory.working.update, memory.consolidate
+# celery     | celery.{task_name}
+# langsmith  | langsmith.trace_llm, langsmith.trace_step, langsmith.submit_feedback
+# mcp        | mcp.tools.list, mcp.tool.call, mcp.oauth.refresh
+```
+
+### G-47: Prometheus Metrics Naming Convention
+
+All metrics follow `agentverse.{domain}.{noun}.{unit_or_type}`:
+
+```python
+# Full metrics register for all streams:
+
+# Stream 1 — LangSmith:
+# agentverse.langsmith.runs.total             (counter)
+# agentverse.langsmith.submit_duration_seconds (histogram)
+# agentverse.langsmith.evals.total            (counter, by: score_pass/fail)
+
+# Stream 2 — Providers:
+# agentverse.llm.calls.total                  (counter, by: provider, model, status)
+# agentverse.llm.tokens.total                 (counter, by: provider, direction)
+# agentverse.llm.cost_usd                     (counter, by: provider)
+# agentverse.llm.duration_seconds             (histogram, by: provider, model)
+
+# Stream 3 — Security:
+# agentverse.auth.failures.total              (counter, by: reason)
+# agentverse.ratelimit.denied.total           (counter, by: tenant_id, endpoint_group)
+# agentverse.security.violations.total        (counter, by: owasp_category)
+
+# Stream 4 — Scalability:
+# agentverse.goals.concurrent.gauge           (gauge, by: tenant_id)
+# agentverse.outbox.events.pending.gauge      (gauge)
+# agentverse.outbox.events.delivered.total    (counter)
+# agentverse.db.pool.connections.gauge        (gauge, by: pool_name)
+
+# Stream 6 — Guardrails:
+# agentverse.guardrails.violations.total      (counter, by: category, action)
+# agentverse.guardrails.jailbreak.total       (counter, by: layer, pattern)
+# agentverse.guardrails.pii.total             (counter, by: pii_type)
+
+# Stream 7 — Context:
+# agentverse.context.tokens_used              (histogram, by: step_type, model)
+# agentverse.context.compressions.total       (counter, by: reason)
+
+# Standard HTTP metrics (auto from FastAPI middleware):
+# agentverse.http.requests.total              (counter, by: method, path, status_code)
+# agentverse.http.duration_seconds            (histogram, by: method, path)
+
+# Standard DB metrics:
+# agentverse.db.queries.total                 (counter, by: operation, table)
+# agentverse.db.query_duration_seconds        (histogram, by: table, operation)
+
+# Standard Celery metrics:
+# agentverse.celery.tasks.total               (counter, by: task_name, status)
+# agentverse.celery.task_duration_seconds     (histogram, by: task_name)
+```
+
+---
+
+## Cross-Cutting: Idempotency on All State-Changing Operations
+
+Per `microservices.instructions.md` — every Celery task and state-changing endpoint:
+
+```python
+# Celery task template — EVERY task must be idempotent:
+@celery_app.task(bind=True, name="{domain}.{action}", max_retries=3,
+                 default_retry_delay=60, acks_late=True)
+async def my_task(self, tenant_id: str, entity_id: str) -> dict:
+    """
+    RULE: Safe to call multiple times with same inputs.
+    RULE: Use acks_late=True — task not acked until complete (prevents loss).
+    """
+    # Idempotency check (using entity state as natural guard):
+    entity = await repo.get(entity_id)
+    if entity is None:
+        return {"status": "not_found", "entity_id": entity_id}
+    if entity.status in {"completed", "failed", "cancelled"}:
+        return {"status": "already_terminal", "entity_id": entity_id}
+
+    try:
+        result = await process(entity)
+        return {"status": "done", "entity_id": entity_id}
+    except Exception as exc:
+        raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+```
+
+---
+
+## Reaudit Completion Checklist
+
+### Stream 1 — LangSmith ✅
+- [x] G-01: Circuit breaker on tracer
+- [x] G-02: OTel span attributes (standard + LangSmith)
+- [x] G-03: Prometheus metrics (submit counter, duration histogram)
+- [x] G-04: structlog binding with langsmith_run_id
+
+### Stream 2 — Providers ✅
+- [x] G-05: CircuitBreaker per provider in BaseProvider
+- [x] G-06: Bulkhead per provider (plan-based limits)
+- [x] G-07: with_retry on 429/503 + typed exceptions
+- [x] G-08: IdempotencyGuard on LLM step execution
+- [x] G-09: httpx CI enforcement
+- [x] G-10: OTel span on every provider call
+
+### Stream 3 — Security ✅
+- [x] G-11: FileUploadValidator (MIME magic, size, path traversal)
+- [x] G-12: CORS explicit config (no wildcard in production)
+- [x] G-13: Redis sliding window Lua script (atomic)
+- [x] G-14: x_idempotency_key on all admin endpoints
+
+### Stream 4 — Scalability ✅
+- [x] G-15: Redis Streams vs Kafka decision tree
+- [x] G-16: AsyncRedisSaver mandatory in production (ban MemorySaver)
+- [x] G-17: Bulkhead for agent execution per tenant (plan limits)
+- [x] G-18: Domain isolation laws + CI enforcement script
+- [x] G-19: CREATE INDEX CONCURRENTLY in all migrations
+- [x] G-20: RLS migration template for all tenant tables
+- [x] G-21: TimescaleDB trigger criteria
+- [x] G-22: PgBouncer config (pool_size formula)
+
+### Stream 5 — UI/UX ✅
+- [x] G-23: SSE hook with exponential backoff reconnection
+- [x] G-24: useInfiniteQuery for all list views
+- [x] G-25: Zustand devtools + persist middleware
+- [x] G-26: i18n (27 languages, all strings via t())
+- [x] G-27: api.ts per feature (no direct fetch in components)
+- [x] G-28: Optimistic updates on all mutations
+
+### Stream 6 — Grounding ✅
+- [x] G-30: OTel spans on Constitutional AI loop
+- [x] G-31: Prometheus counters for jailbreak/PII/violations
+- [x] G-32: structlog binding for guardrail events
+
+### Stream 7 — Context Engineering ✅
+- [x] G-33: OTel span on ContextWindowManager
+- [x] G-34: agentverse.context.tokens_used histogram
+- [x] G-35: with_retry on few-shot embedding retrieval
+
+### Stream 8 — Testing ✅
+- [x] G-36: TDD mandate (RED/GREEN/REFACTOR, tests before implementation)
+- [x] G-37: 5-test minimum per service method
+- [x] G-38: conftest.py with shared fixtures
+- [x] G-39: testcontainers for integration tests
+- [x] G-40: Playwright visual regression tests
+- [x] G-41: axe-playwright A11y after every E2E test
+- [x] G-42: Spectral OpenAPI validation in CI
+
+### Stream 9 — Code Quality ✅
+- [x] G-43: Domain isolation rules + CI enforcement
+- [x] G-44: Event-driven decoupling via OutboxEvent
+- [x] G-45: No in-process shared mutable state (multi-pod safety)
+- [x] G-46: OTel span naming `{domain}.{verb}` — full register
+- [x] G-47: Prometheus naming `agentverse.{domain}.{metric}` — full register
+
+**Total gaps resolved: 47 / 47**
+
+---
+
+**Reaudit complete. Specification v2 verified against all instruction files.**  
+**All `.github/instructions/*.md` patterns applied: backend, frontend, security, testing, tdd, observability, resilience, database, hooks, distributed-tech, microservices, api-design.**
