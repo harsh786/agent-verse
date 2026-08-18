@@ -206,6 +206,17 @@ grep -q "org_list_roles\|org_create_role\|org_delete_role" "$BACKEND/org/router.
 # AB2 — SBOM + Supply chain
 [ -f "$REPO_ROOT/.github/workflows/supply-chain.yml" ] && pass "SBOM + supply chain workflow exists (AB2)" || gap "Supply chain workflow MISSING (AB2)"
 
+# ── Deep Spec: N11/N12/N21 Org Intelligence UI ───────────────────────────────
+section "DEEP SPEC: Org Intelligence UI (N11/N12/N21/Q10-Q12/QA10)"
+
+[ -f "$FRONTEND/features/org/components/MorningBrief.tsx" ]    && pass "MorningBrief component (N11)"       || gap "MorningBrief MISSING (N11)"
+[ -f "$FRONTEND/features/org/components/NowNextWhy.tsx" ]      && pass "NowNextWhy component (N12)"        || gap "NowNextWhy MISSING (N12)"
+grep -q "WhyCard" "$FRONTEND/features/org/components/MorningBrief.tsx" 2>/dev/null && pass "WhyCard component (N21)"               || gap "WhyCard MISSING (N21)"
+[ -f "$FRONTEND/features/gateway/GatewaySettingsPage.tsx" ]    && pass "GatewaySettingsPage (Q10/Q12)"     || gap "GatewaySettingsPage MISSING (Q10/Q12)"
+grep -q "EmergencyStopBanner\|emergency.stop" "$FRONTEND/features/gateway/GatewaySettingsPage.tsx" 2>/dev/null && pass "EmergencyStop UI (QA10)" || gap "EmergencyStop UI MISSING (QA10)"
+grep -q "org_emergency_stop\|emergency.stop\|emergency-stop" "$BACKEND/org/router.py" 2>/dev/null && pass "Emergency Stop endpoint (QA10 backend)" || gap "Emergency Stop endpoint MISSING (QA10)"
+grep -q "org_morning_brief\|morning_brief\|brief/morning" "$BACKEND/org/router.py" 2>/dev/null && pass "Morning Brief endpoint (N11 backend)"  || gap "Morning Brief endpoint MISSING (N11)"
+
 # ─── TEST COVERAGE ────────────────────────────────────────────────────────────
 section "TEST COVERAGE"
 

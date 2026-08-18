@@ -2,6 +2,7 @@
 export { OrgPage }               from './OrgPage';
 export { OrgListPage }           from './OrgListPage';
 export { CommandCenter }         from './CommandCenter';
+export { ScheduledMissions }     from './ScheduledMissions';
 export { MissionCard }           from './components/MissionCard';
 export { MissionsList }          from './components/MissionsList';
 export { MissionDetail }         from './components/MissionDetail';
@@ -13,6 +14,9 @@ export { GraphifyProgress }      from './components/GraphifyProgress';
 export { VoiceModal }            from './components/VoiceModal';
 export { CursorPresence }        from './components/CursorPresence';
 export { ConnectorMarketplace }  from './components/ConnectorMarketplace';
+export { MorningBrief, MorningBriefBadge, WhyCard } from './components/MorningBrief';
+export { NowNextWhy }            from './components/NowNextWhy';
 export * from './hooks/useOrg';
 export * from './types';
 export * from './api';
+
