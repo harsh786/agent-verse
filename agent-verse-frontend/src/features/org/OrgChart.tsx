@@ -10,26 +10,25 @@
  *  - Zoom: org level → dept → agent
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import ReactFlow, {
+import {
+  ReactFlow,
   Background,
   Controls,
-  Edge,
   Handle,
   MiniMap,
-  Node,
   Position,
   useEdgesState,
   useNodesState,
-} from 'reactflow';
-import 'reactflow/dist/style.css';
-import { motion, AnimatePresence } from 'framer-motion';
+  type Node,
+  type Edge,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import { Input } from '@/components/ui/input';
 import {
   Building2, Users, User, ChevronRight, Search, X,
   Activity, Clock, AlertTriangle, CheckCircle2,
 } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { useOrganization, useOrgDepartments } from './hooks/useOrg';
+import { useOrganization, useDepartments } from './hooks/useOrg';
 import type { OrgDepartment } from './types';
 
 // ── Agent status colours ───────────────────────────────────────────────────
@@ -164,11 +163,11 @@ interface OrgChartProps {
 
 export function OrgChart({ orgId, onAgentClick }: OrgChartProps) {
   const { data: org } = useOrganization(orgId);
-  const { data: depts } = useOrgDepartments(orgId);
+  const { data: depts } = useDepartments(orgId);
   const [expandedDepts, setExpandedDepts] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
   const toggleDept = useCallback((deptId: string) => {
     setExpandedDepts(prev => {
@@ -277,7 +276,7 @@ export function OrgChart({ orgId, onAgentClick }: OrgChartProps) {
           <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-[var(--text-muted)]" aria-hidden="true" />
           <Input
             value={search}
-            onChange={e => setSearch(e.target.value)}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)}
             placeholder="Search org…"
             className="pl-8 h-8 text-xs bg-[var(--bg-card)] border-[var(--border)]"
             aria-label="Search organisation chart"
