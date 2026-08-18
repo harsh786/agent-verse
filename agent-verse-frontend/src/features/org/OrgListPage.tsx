@@ -9,11 +9,9 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Building2, Plus, ChevronRight, Activity } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 import { useOrganizations, useCreateOrganization } from './hooks/useOrg';
 import type { Organization } from './types';
-
-const PAGE_SPRING = { type: 'spring', stiffness: 220, damping: 26 } as const;
-const CARD_SPRING = { type: 'spring', stiffness: 400, damping: 30 } as const;
 
 const STATUS_DOT: Record<string, string> = {
   active:   'bg-emerald-400',
@@ -42,12 +40,7 @@ export function OrgListPage() {
   }, [newName, createOrg, navigate]);
 
   return (
-    <motion.div
-      initial={reduce ? { opacity: 0 } : { opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={reduce ? { duration: 0.15 } : PAGE_SPRING}
-      className="max-w-3xl mx-auto px-6 py-8"
-    >
+    <JARVISPageShell className="max-w-3xl mx-auto px-6 py-8">
       {/* Header */}
       <div className="flex items-start justify-between mb-8">
         <div>
@@ -136,20 +129,15 @@ export function OrgListPage() {
       ) : orgList.length === 0 ? (
         <EmptyState onCreate={() => setShowCreate(true)} />
       ) : (
-        <ul className="space-y-3" aria-label="Organizations">
-          {orgList.map((org: Organization, i: number) => (
-            <motion.li
-              key={org.id}
-              initial={reduce ? { opacity: 0 } : { opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ ...CARD_SPRING, delay: reduce ? 0 : i * 0.05 }}
-            >
+        <JARVISStagger className="space-y-3" staggerMs={60}>
+          {orgList.map((org: Organization) => (
+            <JARVISStaggerItem key={org.id}>
               <OrgCard org={org} onClick={() => navigate(`/org/${org.id}`)} />
-            </motion.li>
+            </JARVISStaggerItem>
           ))}
-        </ul>
+        </JARVISStagger>
       )}
-    </motion.div>
+    </JARVISPageShell>
   );
 }
 

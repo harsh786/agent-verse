@@ -13,6 +13,7 @@
  */
 import { motion, useReducedMotion } from 'framer-motion';
 import { Sparkles, TrendingUp, AlertTriangle, Lightbulb, CheckCircle2, RefreshCw, Calendar } from 'lucide-react';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/api/client';
 
@@ -124,12 +125,7 @@ export function StrategicAdvisorPage({ orgId, orgName }: StrategicAdvisorPagePro
     : 'text-amber-400';
 
   return (
-    <motion.div
-      initial={reduce ? { opacity: 0 } : { opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={SPRING_PANEL}
-      className="max-w-3xl mx-auto px-6 py-8 space-y-6"
-    >
+    <JARVISPageShell className="max-w-3xl mx-auto px-6 py-8 space-y-6">
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
@@ -193,28 +189,36 @@ export function StrategicAdvisorPage({ orgId, orgName }: StrategicAdvisorPagePro
           </div>
 
           {/* Sections */}
-          <div className="grid gap-3 sm:grid-cols-2">
-            <BriefSection
-              icon={CheckCircle2}  title="Accomplishments"
-              items={brief.accomplishments}
-              iconColor="text-emerald-400" bgColor="bg-emerald-500/10" delay={0.05}
-            />
-            <BriefSection
-              icon={AlertTriangle} title="Risks"
-              items={brief.risks}
-              iconColor="text-red-400" bgColor="bg-red-500/10" delay={0.1}
-            />
-            <BriefSection
-              icon={TrendingUp}    title="Opportunities"
-              items={brief.opportunities}
-              iconColor="text-blue-400" bgColor="bg-blue-500/10" delay={0.15}
-            />
-            <BriefSection
-              icon={Lightbulb}    title="Recommendations"
-              items={brief.recommendations}
-              iconColor="text-amber-400" bgColor="bg-amber-500/10" delay={0.2}
-            />
-          </div>
+          <JARVISStagger className="grid gap-3 sm:grid-cols-2" staggerMs={80}>
+            <JARVISStaggerItem>
+              <BriefSection
+                icon={CheckCircle2}  title="Accomplishments"
+                items={brief.accomplishments}
+                iconColor="text-emerald-400" bgColor="bg-emerald-500/10" delay={0.05}
+              />
+            </JARVISStaggerItem>
+            <JARVISStaggerItem>
+              <BriefSection
+                icon={AlertTriangle} title="Risks"
+                items={brief.risks}
+                iconColor="text-red-400" bgColor="bg-red-500/10" delay={0.1}
+              />
+            </JARVISStaggerItem>
+            <JARVISStaggerItem>
+              <BriefSection
+                icon={TrendingUp}    title="Opportunities"
+                items={brief.opportunities}
+                iconColor="text-blue-400" bgColor="bg-blue-500/10" delay={0.15}
+              />
+            </JARVISStaggerItem>
+            <JARVISStaggerItem>
+              <BriefSection
+                icon={Lightbulb}    title="Recommendations"
+                items={brief.recommendations}
+                iconColor="text-amber-400" bgColor="bg-amber-500/10" delay={0.2}
+              />
+            </JARVISStaggerItem>
+          </JARVISStagger>
         </>
       ) : (
         <div className="text-center py-12 text-[#475569] text-[13px]">
@@ -227,7 +231,7 @@ export function StrategicAdvisorPage({ orgId, orgName }: StrategicAdvisorPagePro
         {refresh.isSuccess && 'Strategic brief regenerated.'}
         {isLoading && 'Generating strategic brief…'}
       </div>
-    </motion.div>
+    </JARVISPageShell>
   );
 }
 
