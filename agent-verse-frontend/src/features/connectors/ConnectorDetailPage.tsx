@@ -122,7 +122,7 @@ function UsageTab({ connectorId }: { connectorId: string }) {
       <p className="text-xs text-muted-foreground">
         {isFiltered
           ? `Goals that referenced this connector`
-          : 'Recent goals (connector filtering coming soon)'}
+          : 'Recent goals using this connector'}
       </p>
 
       {/* Stats cards */}

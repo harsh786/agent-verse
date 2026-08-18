@@ -275,7 +275,7 @@ export function NotificationCenterPage() {
       <div className="grid grid-cols-3 gap-4">
         <StatCard label="Total Channels" value={isLoading ? "…" : channels.length} />
         <StatCard label="Active Channels" value={isLoading ? "…" : activeChannels} subtext="receiving events" />
-        <StatCard label="Events Today" value="—" subtext="delivery log coming soon" />
+        <StatCard label="Events Today" value={isLoading ? "…" : channels.reduce((sum, ch: any) => sum + (ch.events_today ?? 0), 0)} subtext="notifications sent" />
       </div>
 
       {/* Add channel form */}
