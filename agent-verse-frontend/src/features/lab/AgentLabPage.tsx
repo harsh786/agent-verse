@@ -40,7 +40,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ThemedBarChart } from "@/components/charts";
 import { toast } from "@/stores/toast";
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -121,7 +121,7 @@ function MockToolsBuilder({
 function StepTimeline({ steps }: { steps: SimStep[] }): JSX.Element | null {
   if (steps.length === 0) return null;
   return (
-    <div className="mt-4 space-y-2">
+    <JARVISStagger className="mt-4 space-y-2">
       {steps.map((step) => (
         <div
           key={step.step}
@@ -161,7 +161,7 @@ function StepTimeline({ steps }: { steps: SimStep[] }): JSX.Element | null {
           </div>
         </div>
       ))}
-    </div>
+    </JARVISStagger>
   );
 }
 

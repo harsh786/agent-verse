@@ -25,7 +25,7 @@ import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -124,11 +124,13 @@ function RoleNode({ role, depth = 0 }: { role: Role; depth?: number }): JSX.Elem
         </span>
       </button>
       {open && children.length > 0 && (
-        <div className="mt-0.5 mb-1">
+        <JARVISStagger className="mt-0.5 mb-1">
           {children.map((c) => (
-            <RoleNode key={c} role={c} depth={depth + 1} />
+            <JARVISStaggerItem key={c}>
+              <RoleNode role={c} depth={depth + 1} />
+            </JARVISStaggerItem>
           ))}
-        </div>
+        </JARVISStagger>
       )}
     </div>
   );
@@ -565,9 +567,7 @@ export function RbacPage(): JSX.Element {
                     return (
                       <tr
                         key={r.id}
-                        className={`group transition-colors hover:bg-muted/30 ${
-                          checked ? "bg-primary/5 dark:bg-primary/10" : ""
-                        }`}
+                        className={`group transition-colors hover:bg-muted/30 ${checked ? 'bg-primary/5 dark:bg-primary/10' : ''}`}
                       >
                         <td className="px-3 py-3">
                           <input

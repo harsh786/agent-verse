@@ -440,7 +440,7 @@ export function AuditExplorerPage() {
                 ))}
               </tr>
             </thead>
-            <tbody>
+              <tbody>
               {filtered.map((e) => (
                 <Fragment key={e.event_id}>
                   <tr
