@@ -80,7 +80,7 @@ export function CommandCenter({ orgId }: CommandCenterProps) {
       variants={pageVariants}
       initial="hidden"
       animate="visible"
-      transition={{ duration: 0.2 }}
+      transition={{ type: 'spring', stiffness: 280, damping: 26 }}
       className="min-h-screen bg-[var(--bg-base)] text-[var(--text-primary)]"
       data-testid="command-center-loaded"
     >

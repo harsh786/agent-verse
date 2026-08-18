@@ -331,6 +331,7 @@ export function WhyCard({
                 <div className="flex gap-2 pt-1">
                   {onAccept && (
                     <motion.button
+                      aria-label="Accept this outcome"
                       whileTap={reduce ? {} : { scale: 0.97 }}
                       transition={SPRING_FAST}
                       onClick={onAccept}
@@ -342,6 +343,7 @@ export function WhyCard({
                   )}
                   {onReject && (
                     <motion.button
+                      aria-label="Reject and discuss this decision"
                       whileTap={reduce ? {} : { scale: 0.97 }}
                       transition={SPRING_FAST}
                       onClick={onReject}

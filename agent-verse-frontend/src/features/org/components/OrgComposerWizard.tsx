@@ -401,6 +401,7 @@ export function OrgComposerWizard({ onComplete, onClose }: OrgComposerWizardProp
         <div className="px-6 py-4 border-t border-[#1E2535] flex gap-3">
           {step > 1 && step < 3 && !compose.isPending && (
             <motion.button
+              aria-label="Go back to previous step"
               whileTap={reduce ? {} : { scale: 0.97 }} transition={SPRING_FAST}
               onClick={() => setStep(s => s - 1 as 1 | 2)}
               style={{ touchAction: 'manipulation' }}
@@ -411,6 +412,7 @@ export function OrgComposerWizard({ onComplete, onClose }: OrgComposerWizardProp
           )}
 
           <motion.button
+            aria-label={step === 1 ? 'Compose organisation with AI' : step === 2 ? 'Continue to confirm' : 'Launch organisation'}
             whileTap={reduce ? {} : { scale: 0.97 }} transition={SPRING_FAST}
             onClick={step === 1 ? handleCompose : step === 2 ? () => setStep(3) : handleLaunch}
             disabled={

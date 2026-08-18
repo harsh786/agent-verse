@@ -151,6 +151,7 @@ function SimulatorForm({ orgId }: { orgId: string }) {
             {['low','medium','high','critical'].map(p => <option key={p} value={p}>{p}</option>)}
           </select>
           <motion.button
+            aria-label="Run simulation for this mission"
             whileTap={reduce ? {} : { scale: 0.97 }} transition={SPRING_FAST}
             onClick={handleRun}
             disabled={!title.trim() || simulate.isPending}

@@ -230,6 +230,7 @@ export function CreateMissionDrawer({ orgId, open, onClose }: CreateMissionDrawe
               {/* Submit (web-guidelines: stays enabled until request starts) */}
               <button
                 type="submit"
+                aria-label={isSubmitting ? 'Creating mission…' : 'Create mission'}
                 disabled={isSubmitting}
                 style={{ touchAction: 'manipulation' }}
                 className={cn(
@@ -240,7 +241,6 @@ export function CreateMissionDrawer({ orgId, open, onClose }: CreateMissionDrawe
                   // emil-design-eng: press state
                   'active:scale-[0.98] transition-[background-color,transform] duration-150',
                 )}
-                aria-label={isSubmitting ? 'Creating mission…' : 'Create mission'}
               >
                 {/* web-guidelines: loading state ends with … */}
                 {isSubmitting ? 'Creating…' : 'Create Mission'}

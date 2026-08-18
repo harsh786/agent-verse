@@ -269,6 +269,7 @@ export function GraphifyProgress({ orgId, onClose, onComplete }: GraphifyProgres
         {/* Actions */}
         {phase === 'idle' && (
           <button
+            aria-label="Start building knowledge graph"
             onClick={start}
             style={{ touchAction: 'manipulation' }}
             className={cn(
@@ -278,7 +279,6 @@ export function GraphifyProgress({ orgId, onClose, onComplete }: GraphifyProgres
               'active:scale-[0.98] transition-[transform,filter] duration-150',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
             )}
-            aria-label="Start building knowledge graph"
           >
             Build Knowledge Graph
           </button>
@@ -290,6 +290,7 @@ export function GraphifyProgress({ orgId, onClose, onComplete }: GraphifyProgres
               {error ?? 'Failed to build graph'}
             </p>
             <button
+              aria-label="Retry knowledge graph build"
               onClick={start}
               style={{ touchAction: 'manipulation' }}
               className="w-full py-2 rounded-lg text-[13px] font-medium text-rose-400 bg-rose-500/10 hover:bg-rose-500/20 transition-colors"
