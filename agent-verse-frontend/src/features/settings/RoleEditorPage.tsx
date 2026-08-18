@@ -13,6 +13,7 @@ import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Shield, Plus, Trash2, Pencil, Lock, Check, X, ChevronDown } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/api/client';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 
 const apiClient = {
   get: <T,>(path: string) => apiRequest<T>('GET', path),
@@ -367,12 +368,7 @@ export function RoleEditorPage({ orgId }: RoleEditorPageProps) {
   const allRoles = [...BUILT_IN_ROLES, ...customRoles];
 
   return (
-    <motion.div
-      initial={reduce ? { opacity: 0 } : { opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={SPRING_MODAL}
-      className="max-w-3xl mx-auto px-6 py-8"
-    >
+    <JARVISPageShell className="max-w-3xl mx-auto px-6 py-8">
       {/* Header */}
       <div className="flex items-start justify-between mb-8">
         <div>
@@ -397,11 +393,13 @@ export function RoleEditorPage({ orgId }: RoleEditorPageProps) {
       {/* Built-in section */}
       <section aria-label="Built-in roles" className="mb-8">
         <h2 className="text-[12px] font-semibold text-[#64748B] uppercase tracking-wider mb-3">Built-in Roles</h2>
-        <div className="space-y-2">
+        <JARVISStagger className="space-y-2" staggerMs={50}>
           {BUILT_IN_ROLES.map((r, i) => (
-            <RoleRow key={r.id} role={r} index={i} onEdit={() => {}} onDelete={() => {}} />
+            <JARVISStaggerItem key={r.id}>
+              <RoleRow role={r} index={i} onEdit={() => {}} onDelete={() => {}} />
+            </JARVISStaggerItem>
           ))}
-        </div>
+        </JARVISStagger>
       </section>
 
       {/* Custom section */}
@@ -416,17 +414,18 @@ export function RoleEditorPage({ orgId }: RoleEditorPageProps) {
               No custom roles yet. Create one to define granular permissions.
             </motion.div>
           ) : (
-            <div className="space-y-2">
+            <JARVISStagger className="space-y-2" staggerMs={50}>
               {customRoles.map((r, i) => (
-                <RoleRow
-                  key={r.id}
-                  role={r}
-                  index={BUILT_IN_ROLES.length + i}
-                  onEdit={setModal}
-                  onDelete={(id) => deleteRole.mutate(id)}
-                />
+                <JARVISStaggerItem key={r.id}>
+                  <RoleRow
+                    role={r}
+                    index={BUILT_IN_ROLES.length + i}
+                    onEdit={setModal}
+                    onDelete={(id) => deleteRole.mutate(id)}
+                  />
+                </JARVISStaggerItem>
               ))}
-            </div>
+            </JARVISStagger>
           )}
         </AnimatePresence>
       </section>
@@ -446,7 +445,7 @@ export function RoleEditorPage({ orgId }: RoleEditorPageProps) {
           />
         )}
       </AnimatePresence>
-    </motion.div>
+    </JARVISPageShell>
   );
 }
 

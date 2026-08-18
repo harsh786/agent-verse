@@ -16,7 +16,8 @@
  */
 import { useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal, BookOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { OrgHealthWidget }      from './components/OrgHealthWidget';
@@ -38,11 +39,8 @@ import { ObsidianVaultExplorer } from './components/ObsidianVaultExplorer';
 import { useOrganization, useOrgHealth, useMissions } from './hooks/useOrg';
 import type { OrgMission }       from './types';
 
-const PAGE_SPRING = { type: 'spring', stiffness: 200, damping: 24 } as const;
-
 export function OrgPage() {
   const { orgId } = useParams<{ orgId: string }>();
-  const reduce = useReducedMotion();
 
   const [selectedMission, setSelectedMission] = useState<string | null>(null);
   const [showCreate, setShowCreate]           = useState(false);
@@ -84,13 +82,8 @@ export function OrgPage() {
         Skip to main content
       </a>
 
-      <motion.div
-        initial={reduce ? { opacity: 0 } : { opacity: 0, y: 8, filter: 'blur(4px)' }}
-        animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-        transition={reduce ? { duration: 0.2 } : PAGE_SPRING}
-        className="flex flex-col h-full bg-[#0A0D14] overflow-hidden"
-        id="main-content"
-      >
+      <JARVISPageShell className="flex flex-col h-full bg-[#0A0D14] overflow-hidden">
+        <div id="main-content" className="contents">
         {/* ── Top bar ────────────────────────────────────────────────────── */}
         <header className="flex items-center justify-between px-6 py-4 border-b border-[#1E2535] shrink-0">
           <div className="flex items-center gap-3 min-w-0">
@@ -439,7 +432,8 @@ export function OrgPage() {
             </section>
           </aside>
         </div>
-      </motion.div>
+        </div>
+      </JARVISPageShell>
 
       {/* ── Mission detail panel ────────────────────────────────────────── */}
       <AnimatePresence>

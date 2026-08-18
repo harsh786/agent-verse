@@ -68,7 +68,7 @@ export function AppLayout() {
         />
       )}
 
-      <Sidebar id="sidebar-nav" />
+      <Sidebar />
 
       <div
         className={clsx(

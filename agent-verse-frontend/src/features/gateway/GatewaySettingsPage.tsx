@@ -14,6 +14,7 @@
  */
 import { useState, useCallback, useId } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 import {
   Link2, MessageCircle, Hash, Phone, Cpu, Mail, Webhook,
   Plus, Settings, Loader2, ExternalLink,
@@ -326,7 +327,6 @@ interface GatewaySettingsPageProps {
 }
 
 export function GatewaySettingsPage({ orgId }: GatewaySettingsPageProps) {
-  const reduce = useReducedMotion();
   const { data: config } = useGatewayConfig();
   const channels = config?.channels ?? STATIC_CHANNELS;
   const [connectingId, setConnectingId] = useState<string | null>(null);
@@ -339,12 +339,7 @@ export function GatewaySettingsPage({ orgId }: GatewaySettingsPageProps) {
   }, [channels]);
 
   return (
-    <motion.div
-      initial={reduce ? { opacity: 0 } : { opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={SPRING_MODAL}
-      className="max-w-3xl mx-auto px-6 py-8"
-    >
+    <JARVISPageShell className="max-w-3xl mx-auto px-6 py-8">
       <div className="mb-8">
         <h1 className="text-[24px] font-bold text-[#F1F5F9] [text-wrap:balance]">Command Gateway</h1>
         <p className="text-[14px] text-[#64748B] mt-1 tabular-nums">
@@ -362,11 +357,13 @@ export function GatewaySettingsPage({ orgId }: GatewaySettingsPageProps) {
       {/* Active channels */}
       <section aria-label="Communication channels" className="mb-8">
         <h2 className="text-[12px] font-semibold text-[#64748B] uppercase tracking-wider mb-4">Channels</h2>
-        <div className="space-y-2">
+        <JARVISStagger className="space-y-2" staggerMs={50}>
           {channels.map((ch, i) => (
-            <ChannelCard key={ch.id} channel={ch} index={i} onConnect={handleConnect} />
+            <JARVISStaggerItem key={ch.id}>
+              <ChannelCard channel={ch} index={i} onConnect={handleConnect} />
+            </JARVISStaggerItem>
           ))}
-        </div>
+        </JARVISStagger>
       </section>
 
       {/* Gateway settings */}
@@ -409,7 +406,7 @@ export function GatewaySettingsPage({ orgId }: GatewaySettingsPageProps) {
           <ConnectModal channelId={connectingId} onClose={() => setConnectingId(null)} />
         )}
       </AnimatePresence>
-    </motion.div>
+    </JARVISPageShell>
   );
 }
 

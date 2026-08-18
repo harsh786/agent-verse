@@ -21,6 +21,7 @@ import { civilizationApi } from '../../lib/api/civilizationApi';
 import { apiFetch } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { useCivilizationStream } from '../../lib/sse/useCivilizationStream';
+import { StatusOrb } from '@/components/ui/StatusOrb';
 import { CivilizationMap } from './CivilizationMap';
 import { CivilizationMetrics } from './CivilizationMetrics';
 import { BlackboardFeed } from './BlackboardFeed';
@@ -33,6 +34,7 @@ import { SpawnLineageTimeline } from './SpawnLineageTimeline';
 import { MembersPanel } from './MembersPanel';
 import type { CivilizationEvent, Civilization } from '../../lib/api/civilizationApi';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 type Panel = 'overview' | 'members' | 'blackboard' | 'learnings' | 'spawns' | 'debates' | 'constitution' | 'replay';
 
@@ -710,11 +712,11 @@ function ReplayPanel({ events }: { events: CivilizationEvent[] }) {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-1.5">
+    <JARVISStagger className="space-y-1.5">
       <div className="flex items-center justify-between text-[10px] text-slate-500 mb-2">
         <span>{events.length} event{events.length !== 1 ? 's' : ''}</span>
         <span className="flex items-center gap-1 text-green-400">
-          <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+          <StatusOrb status="completed" size={6} />
           Live
         </span>
       </div>
@@ -730,7 +732,7 @@ function ReplayPanel({ events }: { events: CivilizationEvent[] }) {
           <EventTypeBadge type={e.type} />
         </div>
       ))}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

@@ -12,12 +12,14 @@ import {
 import { selfImprovementApi } from "@/lib/api/client";
 import type { Experiment, Suggestion, BenchmarkMetrics } from "@/lib/api/client";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { StatusOrb } from '@/components/ui/StatusOrb';
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ThemedBarChart } from "@/components/charts";
 import { CHART_COLORS, CHART_AXIS_COLOR, CHART_TOOLTIP_STYLE } from "@/components/charts";
 import { toast } from "@/stores/toast";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -322,7 +324,7 @@ export function SelfImprovementPage(): JSX.Element {
 
   return (
     <JARVISPageShell>
-    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
+    <JARVISStagger className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Self-Improvement</h1>
         <p className="text-sm text-muted-foreground mt-1">
@@ -359,7 +361,7 @@ export function SelfImprovementPage(): JSX.Element {
           {allExperiments.length > 0 && (
             <div className="flex items-center gap-4 flex-wrap text-sm">
               <span className="flex items-center gap-1.5 text-blue-600 dark:text-blue-400">
-                <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                <StatusOrb status="running" size={8} />
                 {runningCount} running
               </span>
               <span className="text-muted-foreground">{concludedCount} concluded</span>
@@ -589,7 +591,7 @@ export function SelfImprovementPage(): JSX.Element {
           )}
         </div>
       )}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }
