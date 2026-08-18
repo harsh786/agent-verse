@@ -5,7 +5,7 @@ import { useAuthStore } from '@/stores/auth';
 import { Eye, EyeOff, Plus, Trash2, ExternalLink, CheckCircle2, XCircle, Loader2, Info } from 'lucide-react';
 import { connectorsApi, type ConnectorResponse, type CatalogAuthField } from '@/lib/api/client';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Auth-type field definitions ─────────────────────────────────────────────
 
@@ -717,7 +717,6 @@ export function ConnectorsRegisteredPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -955,12 +954,10 @@ export function ConnectorsRegisteredPage() {
               {authFieldOverrides.length > 0 ? (
                 <div className="space-y-3">
                   <label className="block text-sm font-semibold">Credentials</label>
-                  <JARVISStagger>
                   {authFieldOverrides.map((field) => {
                     const inputId = `prefill-field-${field.key}`;
                     return (
-                    <JARVISStaggerItem key={field.key}>
-                      <div>
+                      <div key={field.key}>
                         <label htmlFor={inputId} className="block text-xs font-medium text-muted-foreground mb-1">
                           {field.label}
                           {field.required && <span className="text-red-500 ml-0.5">*</span>}
@@ -978,10 +975,8 @@ export function ConnectorsRegisteredPage() {
                           <p className="mt-1 text-xs text-muted-foreground">{field.hint}</p>
                         )}
                       </div>
-                      </JARVISStaggerItem>
                     );
                   })}
-                  </JARVISStagger>
                 </div>
               ) : (
                 /* Generic Smart Auth Fields */

@@ -24,7 +24,7 @@ import { simulationApi, type SimulationSummary } from "@/lib/api/client";
 import { useAuthStore } from "@/stores/auth";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8000";
 
@@ -194,12 +194,10 @@ function MockToolBuilder({
           {isLoading && <Skeleton className="h-20" />}
           {!isLoading && filteredTools.length > 0 && (
             <div className="space-y-2 max-h-48 overflow-y-auto">
-              <JARVISStagger>
               {filteredTools.map((t) => {
                 const isMocked = mockTools[t.name] !== undefined;
                 return (
-                <JARVISStaggerItem key={t.name}>
-                  <div className="space-y-1.5">
+                  <div key={t.name} className="space-y-1.5">
                     <div className="flex items-center gap-2">
                       <input
                         type="checkbox"
@@ -224,10 +222,8 @@ function MockToolBuilder({
                       />
                     )}
                   </div>
-                  </JARVISStaggerItem>
                 );
               })}
-              </JARVISStagger>
             </div>
           )}
           {!isLoading && tools.length === 0 && (
@@ -460,7 +456,6 @@ export function SimulationPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6 max-w-6xl">
       {/* Header */}
       <div>

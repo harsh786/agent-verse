@@ -8,7 +8,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Utilities
@@ -528,13 +528,9 @@ function StatsSection() {
           <p className="text-slate-400">Not a demo. Not a prototype. Every number comes from shipped code.</p>
         </div>
         <div className="relative grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-8">
-          <JARVISStagger>
           {STATS.map((s, i) => (
-            <JARVISStaggerItem key={i}>
-            <StatCard stat={s} on={on} />
-            </JARVISStaggerItem>
+            <StatCard key={i} stat={s} on={on} />
           ))}
-          </JARVISStagger>
         </div>
       </div>
     </div>
@@ -928,7 +924,6 @@ export function LandingPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="min-h-screen bg-[#06060e] text-white overflow-x-hidden">
 
       {/* Background atmosphere */}

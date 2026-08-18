@@ -4,7 +4,7 @@
 
 import { useCallback, useEffect, useState, type JSX } from 'react';
 import { Brain, Trash2, Edit2, Plus, Check, X } from 'lucide-react';
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 interface Memory {
   id: string;
@@ -81,7 +81,6 @@ export default function AgentMemoryPage(): JSX.Element {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="max-w-2xl mx-auto px-4 py-8">
       <div className="flex items-center gap-3 mb-6">
         <Brain className="w-6 h-6 text-indigo-600" />
@@ -122,10 +121,9 @@ export default function AgentMemoryPage(): JSX.Element {
       {loading && <p className="text-sm text-gray-400">Loading…</p>}
 
       <div className="space-y-2" role="list" aria-label="Agent memories">
-        <JARVISStagger>
         {memories.map((m) => (
-          <JARVISStaggerItem key={m.id}>
           <div
+            key={m.id}
             className="flex items-start gap-3 p-3 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl group"
             role="listitem"
           >
@@ -166,9 +164,7 @@ export default function AgentMemoryPage(): JSX.Element {
               </button>
             </div>
           </div>
-          </JARVISStaggerItem>
         ))}
-        </JARVISStagger>
 
         {!loading && memories.length === 0 && (
           <p className="text-sm text-gray-400 text-center py-8">

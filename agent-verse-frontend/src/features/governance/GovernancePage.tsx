@@ -55,7 +55,7 @@ import { useEmergencyStore } from '@/stores/emergency';
 import { toast } from '@/stores/toast';
 import { useEventStream } from '@/lib/sse/useEventStream';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -359,10 +359,8 @@ function VersionHistoryModal({
           {!isLoading && versions.length === 0 && (
             <p className="text-sm text-muted-foreground text-center py-6">No version history available (requires database).</p>
           )}
-          <JARVISStagger>
           {versions.map((v) => (
-            <JARVISStaggerItem key={v.id}>
-            <div className={`border rounded-lg p-3 ${v.is_active ? 'border-primary bg-primary/5' : 'border-border'}`}>
+            <div key={v.id} className={`border rounded-lg p-3 ${v.is_active ? 'border-primary bg-primary/5' : 'border-border'}`}>
               <div className="flex items-center justify-between mb-1">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium">v{v.version_number}</span>
@@ -389,9 +387,7 @@ function VersionHistoryModal({
                 </button>
               )}
             </div>
-            </JARVISStaggerItem>
           ))}
-          </JARVISStagger>
         </div>
       </div>
     </div>
@@ -1635,7 +1631,6 @@ export function GovernancePage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-5">
       {/* Header */}
       <div>

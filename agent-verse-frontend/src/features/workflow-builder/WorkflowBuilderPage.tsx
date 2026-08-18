@@ -18,7 +18,7 @@ import { useAuthStore } from '../../stores/auth';
 import { toast } from '../../stores/toast';
 import { workflowsApi, apiFetch } from '../../lib/api/client';
 import { MissionControlLayout } from '@/components/ui/MissionControlLayout';
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ─── Node Types ──────────────────────────────────────────────────────────────
 
@@ -1085,19 +1085,16 @@ function WorkflowBuilderInner() {
             >{generating ? '…' : '✨ Generate'}</button>
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
-            <JARVISStagger>
             {PALETTE_NODES.map((n) => (
-              <JARVISStaggerItem key={n.type}>
               <button
+                key={n.type}
                 draggable={true}
                 onDragStart={(e) => onDragStart(e, n.type, n.label)}
                 onClick={() => addNode(n.type, n.label)}
                 aria-label={`Add ${n.label} node`}
                 className={`w-full text-left text-xs p-2 rounded border-2 ${NODE_COLORS[n.type] ?? ''} hover:opacity-90 transition-opacity cursor-grab active:cursor-grabbing`}
               >{NODE_ICONS[n.type]} {n.label}</button>
-              </JARVISStaggerItem>
             ))}
-            </JARVISStagger>
           </div>
         </div>
 
@@ -1314,7 +1311,6 @@ function WorkflowBuilderInner() {
 export function WorkflowBuilderPage() {
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <MissionControlLayout showOperationalBar={false}>
       <ReactFlowProvider>
         <WorkflowBuilderInner />

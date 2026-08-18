@@ -24,7 +24,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Pagination } from "@/components/ui/Pagination";
 import { toast } from "@/stores/toast";
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -478,7 +478,6 @@ export function ArtifactsBrowserPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6 max-w-6xl">
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
@@ -597,13 +596,9 @@ export function ArtifactsBrowserPage() {
                   <span className="font-normal">({goalArtifacts.length})</span>
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  <JARVISStagger>
                   {goalArtifacts.map((a) => (
-                    <JARVISStaggerItem key={a.id}>
-                    <ArtifactCard artifact={a} onOpen={() => setSelected(a)} />
-                    </JARVISStaggerItem>
+                    <ArtifactCard key={a.id} artifact={a} onOpen={() => setSelected(a)} />
                   ))}
-                  </JARVISStagger>
                 </div>
               </div>
             ))}

@@ -816,7 +816,6 @@ export function GoalDetailPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-5 w-full">
       {/* ── Header ── */}
       <div>

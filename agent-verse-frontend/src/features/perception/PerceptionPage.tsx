@@ -31,7 +31,7 @@ import { useNavigate } from 'react-router-dom';
 import { perceptionApi } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { StatusBadge } from '@/components/ui/StatusBadge';
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -580,10 +580,9 @@ function BatchTab({ disabled }: { disabled: boolean }) {
               <Trash2 className="h-3.5 w-3.5" /> Clear
             </button>
           </div>
-          <JARVISStagger>
           {results.map((r) => (
-            <JARVISStaggerItem key={r.url}>
             <div
+              key={r.url}
               className={`border rounded-xl overflow-hidden ${r.success ? 'border-border' : 'border-destructive/40'}`}
             >
               <div className="flex items-center gap-2 px-4 py-2 bg-muted/40 border-b border-border">
@@ -621,9 +620,7 @@ function BatchTab({ disabled }: { disabled: boolean }) {
                 </div>
               </div>
             </div>
-            </JARVISStaggerItem>
           ))}
-          </JARVISStagger>
         </div>
       )}
     </div>
@@ -747,7 +744,6 @@ export function PerceptionPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-5">
       {/* Header */}
       <div>

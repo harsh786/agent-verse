@@ -62,7 +62,6 @@ export default function OAuthCallbackPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="min-h-screen bg-background flex items-center justify-center p-8">
       <div className="text-center max-w-sm space-y-4">
         {status === 'processing' && (

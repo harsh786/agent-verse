@@ -11,7 +11,7 @@ import type { AnalyticsGoalMetrics, CostMetrics, EvalMetrics, AnalyticsToolMetri
 import { ThemedBarChart, ThemedLineChart } from '@/components/charts';
 import { CHART_COLORS, CHART_AXIS_COLOR, CHART_TOOLTIP_STYLE } from '@/components/charts';
 
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 const PERIODS = [7, 30, 90] as const;
@@ -284,7 +284,6 @@ export function AnalyticsDashboardPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6 pb-8">
       {/* ── Header ── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -442,18 +441,14 @@ export function AnalyticsDashboardPage() {
               <div className="h-32 flex items-center justify-center text-xs text-muted-foreground">No agent data</div>
             ) : (
               <div className="space-y-1.5 overflow-auto max-h-40">
-                <JARVISStagger>
                 {agentCostData.map((a, i) => (
-                  <JARVISStaggerItem key={a.agent}>
-                  <div className="flex items-center gap-2 text-xs">
+                  <div key={a.agent} className="flex items-center gap-2 text-xs">
                     <span className="w-4 text-muted-foreground">{i + 1}.</span>
                     <span className="font-mono flex-1 truncate">{a.agent}</span>
                     <span className="text-muted-foreground">{usd(a.cost_usd)}</span>
                     <span className={`${a.success_rate >= 0.8 ? 'text-emerald-500' : 'text-amber-500'}`}>{pct(a.success_rate)}</span>
                   </div>
-                  </JARVISStaggerItem>
                 ))}
-                </JARVISStagger>
               </div>
             )}
           </div>

@@ -940,7 +940,6 @@ export function SettingsPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="max-w-4xl">
       <div className="mb-6">
         <h1 className="text-2xl font-bold">{t('settings.title')}</h1>

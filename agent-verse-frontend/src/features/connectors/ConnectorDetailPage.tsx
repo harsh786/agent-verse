@@ -11,7 +11,7 @@ import { DetailLayout } from '@/components/detail/DetailLayout';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { toast } from '@/stores/toast';
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 const TABS = [
   { key: 'overview', label: 'Overview' },
@@ -242,7 +242,6 @@ export function ConnectorDetailPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-0">
       <div className="px-6 py-3">
         <button
@@ -336,10 +335,9 @@ export function ConnectorDetailPage() {
                 />
               ) : (
                 <ul className="space-y-1">
-                  <JARVISStagger>
                   {tools.map((t, i) => (
-                    <JARVISStaggerItem key={i}>
                     <li
+                      key={i}
                       className="flex items-start gap-2 text-sm py-1 border-b last:border-0"
                     >
                       <span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">
@@ -347,9 +345,7 @@ export function ConnectorDetailPage() {
                       </span>
                       <span className="text-muted-foreground text-xs">{t.description ?? ''}</span>
                     </li>
-                    </JARVISStaggerItem>
                   ))}
-                  </JARVISStagger>
                 </ul>
               )}
             </div>

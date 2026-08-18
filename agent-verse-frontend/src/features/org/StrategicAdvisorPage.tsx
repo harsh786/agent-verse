@@ -132,7 +132,6 @@ export function StrategicAdvisorPage({ orgId, orgName }: StrategicAdvisorPagePro
     >
       {/* Header */}
       <div className="flex items-start justify-between">
-        {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
         <div>
           <div className="flex items-center gap-2.5 mb-1">
             <div className="w-9 h-9 rounded-xl bg-purple-500/10 flex items-center justify-center">

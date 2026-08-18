@@ -506,7 +506,6 @@ export default function WorkflowBuilderPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="flex flex-col h-screen bg-slate-950 text-white">
       {/* Top bar */}
       <header className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-white/10
