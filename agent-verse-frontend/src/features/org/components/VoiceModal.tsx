@@ -199,13 +199,13 @@ export function VoiceModal({ open, onClose, onTranscript, placeholder }: VoiceMo
               {/* Mic button — JARVIS hold-to-speak */}
               <div className="flex justify-center mb-5">
                 <motion.button
+                  aria-label={state === 'listening' ? 'Release to stop recording' : 'Hold to speak'}
                   onPointerDown={state === 'idle' || state === 'done' ? startListening : undefined}
                   onPointerUp={state === 'listening' ? stopListening : undefined}
                   onPointerLeave={state === 'listening' ? stopListening : undefined}
                   whileTap={reduce ? {} : { scale: 0.92 }}
                   transition={BAR_SPRING}
                   style={{ touchAction: 'manipulation' }}
-                  aria-label={state === 'listening' ? 'Release to stop recording' : 'Hold to speak'}
                   className={cn(
                     'relative flex items-center justify-center',
                     'h-20 w-20 rounded-full',

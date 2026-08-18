@@ -67,11 +67,23 @@ def _not_found(resource: str, rid: str, request_id: str | None = None) -> HTTPEx
     })
 
 
-def _unprocessable(detail: str) -> HTTPException:
+def _unprocessable(detail: str, request_id: str | None = None) -> HTTPException:
     return HTTPException(status_code=422, detail={
         "type": "validation-error", "title": "Validation Error", "status": 422,
         "detail": detail,
+        "request_id": request_id or _request_id(),
     })
+
+
+def _validate_uuid(value: str, field: str, request_id: str | None = None) -> None:
+    """Raise 422 if value is not a valid UUID4 string."""
+    import re
+    uuid_re = re.compile(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+        re.IGNORECASE,
+    )
+    if not uuid_re.match(value):
+        raise _unprocessable(f"'{field}' must be a valid UUID, got: {value!r}", request_id)
 
 
 async def get_org_service(request: Request) -> AsyncGenerator[OrgService, None]:
@@ -371,7 +383,7 @@ async def update_mission(
         if mission:
             updates = body.model_dump(exclude_none=True, exclude={"status"})
             if updates:
-                mission = await service.update_organization(mission_id, updates)
+                mission = await service.update_organization(mission_id, updates)  # type: ignore[assignment]
     if not mission:
         raise _not_found("Mission", mission_id, x_request_id)
     return MissionResponse.model_validate(mission)
@@ -1589,7 +1601,7 @@ async def org_strategic_brief(
         advisor = get_strategic_advisor()
         brief = await advisor.generate_weekly_brief(
             org_id=org_id,
-            org_name=org.name,
+            org_name=str(org.name),
             health=health,
         )
         return {
