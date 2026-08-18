@@ -2031,3 +2031,560 @@ The experience the user described ("glowing nodes, autonomous bots working, Jarv
 
 Currently present: 7 (dark surfaces) ✅, partial 8 (Graphify only)
 Missing: 1,2,3,4,5,6 across most pages
+
+---
+
+# DEEP CODE ANALYSIS — v3 (2026-08-18)
+## Component-Level Audit: Everything That Can Be Improved
+
+---
+
+## Executive Summary
+
+| Category | Issue | Count | Impact |
+|----------|-------|-------|--------|
+| Feature dirs with zero animation | ❌ | **46 / 55** | Every feature looks static |
+| Shared layout components without animation | Sidebar, TopBar, ConfirmModal | **3** | Affects every page |
+| Interactive components without hover/tap | No whileHover/whileTap | **67** | No tactile feedback |
+| Mutations without optimistic updates | No onMutate | **48** | UI feels laggy on actions |
+| Inline fetch in useEffect | Should be TanStack Query | **22** | Duplicate loading states |
+| TypeScript `any` | Type safety gaps | **32 files** | Runtime errors in prod |
+| Pages with useQuery but no Skeleton | Missing loading state | **8** | White flash on load |
+| Console.log in prod | ToolsPage.tsx | **1** | Dev noise in prod |
+
+---
+
+## Critical: Shared Layout Components (Affects EVERY Page)
+
+### Sidebar.tsx — 410 lines, ZERO animation
+
+The sidebar is visible on every page. Currently:
+- Collapse/expand: instant width change, no spring
+- Nav item hover: CSS `hover:bg-accent` only
+- Active item: static color change, no spring
+- Mobile overlay: no AnimatePresence
+
+**What it needs:**
+```tsx
+// 1. Collapse/expand with spring width:
+<motion.div
+  animate={{ width: collapsed ? 64 : 220 }}
+  transition={{ type: 'spring', stiffness: 280, damping: 26 }}
+>
+
+// 2. Nav item hover lift:
+<motion.div whileHover={{ x: 2 }} whileTap={{ scale: 0.98 }}
+  transition={{ type: 'spring', stiffness: 600, damping: 35 }}>
+
+// 3. Active indicator spring:
+<motion.div layoutId="sidebar-active-indicator"
+  className="absolute left-0 inset-y-0 w-0.5 bg-[#00D4FF] rounded-r-full" />
+
+// 4. Mobile overlay AnimatePresence:
+<AnimatePresence>
+  {sidebarOpen && (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/40 z-20 md:hidden" />
+  )}
+</AnimatePresence>
+
+// 5. Logo pulse: the Zap icon should pulse electric on mount
+<motion.div animate={{ scale: [1, 1.1, 1] }} transition={{ duration: 2, repeat: Infinity }}>
+  <Zap className="h-5 w-5 text-[#00D4FF]" />
+</motion.div>
+```
+
+### TopBar.tsx — 193 lines, ZERO animation
+
+The top bar search and notifications are visible everywhere. Currently:
+- Search: no AnimatePresence on results dropdown
+- Plan badge: static colored span
+- Theme toggle: instant swap, no spring
+
+**What it needs:**
+```tsx
+// 1. Search results dropdown AnimatePresence:
+<AnimatePresence>
+  {results.length > 0 && (
+    <motion.div
+      initial={{ opacity: 0, y: -8, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0,  scale: 1 }}
+      exit={{    opacity: 0, y: -4, scale: 0.98 }}
+      transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+      className="absolute top-full mt-1 left-0 w-80 bg-[#1A1F2E] ..."
+    >
+      {results.map((r, i) => (
+        <motion.div key={r.id}
+          initial={{ opacity: 0, x: -8 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: i * 0.03, type: 'spring', stiffness: 280, damping: 26 }}>
+          ...
+        </motion.div>
+      ))}
+    </motion.div>
+  )}
+</AnimatePresence>
+
+// 2. Notification badge: bounce when count increases
+<motion.span key={notifCount}
+  initial={{ scale: 0.5 }} animate={{ scale: 1 }}
+  transition={{ type: 'spring', stiffness: 450, damping: 18 }}
+  className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-[#00D4FF] text-[9px] font-bold">
+  {notifCount}
+</motion.span>
+
+// 3. Cmd+K hint: glow on focus
+// 4. Theme toggle: spring rotate on icon swap
+```
+
+### ConfirmModal.tsx — 146 lines, ZERO animation
+
+All destructive confirmations (delete agent, archive workflow, etc.) use this modal. Currently instant appear/disappear.
+
+**What it needs:**
+```tsx
+// Backdrop + modal with AnimatePresence:
+<AnimatePresence>
+  {open && (
+    <>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        className="fixed inset-0 bg-black/60 z-40" />
+      <motion.div
+        initial={{ opacity: 0, scale: 0.94, y: 12 }}
+        animate={{ opacity: 1, scale: 1,    y: 0 }}
+        exit={{    opacity: 0, scale: 0.96, y: 8 }}
+        transition={{ type: 'spring', stiffness: 280, damping: 26 }}
+        className="fixed z-50 ...">
+        {/* Destructive: red-tinted confirm button pulses attention */}
+        <motion.button
+          whileTap={{ scale: 0.97 }}
+          transition={{ type: 'spring', stiffness: 600, damping: 35 }}
+          className="bg-rose-600 hover:bg-rose-700 ...">
+          {confirmLabel}
+        </motion.button>
+      </motion.div>
+    </>
+  )}
+</AnimatePresence>
+```
+
+---
+
+## Critical: Dashboard Components
+
+### LiveActivityStream.tsx — THE "BOTS WORKING" FEED — ZERO animation
+
+This is the single most important agentic component on the dashboard. It shows running goals in real-time. Currently renders a static list.
+
+**Current:** `const displayed = goals.slice(0, maxItems)` → plain `<div>` per item.
+
+**What it needs:**
+```tsx
+import { motion, AnimatePresence } from 'framer-motion';
+import { StatusOrb } from '@/components/ui/StatusOrb';
+
+// REPLACE the return with:
+return (
+  <div className="space-y-1">
+    <AnimatePresence mode="popLayout">
+      {displayed.map((goal, i) => (
+        <motion.div
+          key={goal.id}
+          layout
+          initial={{ opacity: 0, y: -10, scale: 0.97 }}
+          animate={{ opacity: 1, y: 0,   scale: 1 }}
+          exit={{    opacity: 0, x: 20,  scale: 0.95 }}
+          transition={{ type: 'spring', stiffness: 300, damping: 26, delay: i * 0.03 }}
+          onClick={() => navigate(`/goals/${goal.id}`)}
+          className="flex items-center gap-3 p-2.5 rounded-lg cursor-pointer
+                     hover:bg-white/[0.04] hover:shadow-[0_0_12px_rgba(0,212,255,0.08)]
+                     transition-shadow group"
+        >
+          <StatusOrb status={goal.status} size={8} />
+          <span className="flex-1 text-sm text-[#94A3B8] truncate group-hover:text-[#F1F5F9] transition-colors">
+            {goal.goal}
+          </span>
+          <span className="text-xs text-[#475569] tabular-nums shrink-0">
+            {timeAgo(goal.created_at)}
+          </span>
+          {goal.cost_usd != null && (
+            <span className="text-xs text-[#00D4FF] tabular-nums shrink-0">
+              ${goal.cost_usd.toFixed(3)}
+            </span>
+          )}
+        </motion.div>
+      ))}
+    </AnimatePresence>
+  </div>
+);
+```
+
+### AgentOrbitView.tsx — D3 Force Graph — ZERO spring physics
+
+D3 is used for layout only. Status colors are static hex strings. No spring on node entrance.
+
+**Current gaps:**
+- Status colors: `active: "#22c55e"` → generic green, not electric `#00D4FF`
+- No AnimatePresence on node enter/exit
+- No glowing ring on active nodes
+- Static SVG rendering, no CSS transitions
+
+**What it needs:**
+```tsx
+// 1. Electric color for active agents:
+const STATUS_COLORS = {
+  active: "#00D4FF",  // ← was #22c55e
+  idle:   "#475569",
+  error:  "#EF4444",
+};
+
+// 2. SVG circles: add CSS filter for glow on active nodes
+// In the D3 circle rendering:
+circle
+  .attr('filter', d => d.status === 'active' ? 'url(#glow-filter)' : 'none')
+
+// 3. Add SVG defs for glow filter:
+svg.append('defs').html(`
+  <filter id="glow-filter" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+    <feMerge>
+      <feMergeNode in="coloredBlur"/>
+      <feMergeNode in="SourceGraphic"/>
+    </feMerge>
+  </filter>
+`);
+
+// 4. Pulse ring on active nodes (CSS animation):
+circle.attr('class', d => d.status === 'active' ? 'agent-active-pulse' : '')
+// CSS: .agent-active-pulse { animation: pulse-ring 1.8s ease-in-out infinite; }
+```
+
+### AIOpsDashboard.tsx — 7 `any` types, no animation
+
+The secondary dashboard mode with AI ops panel. Has lists but no stagger.
+
+**Fixes needed:**
+- Replace `any` with proper interfaces
+- Add stagger on metrics list
+- Electric color on active service indicators
+
+---
+
+## Critical: Goals Components (The Heart of the Product)
+
+### MissionGoalComposer.tsx — NO animation
+
+This is the primary goal submission input — the most used interaction in the entire app. It has no animation whatsoever.
+
+**Current:** CSS classes only, `transition-colors` on some elements.
+
+**What it needs:**
+```tsx
+// 1. Input focus glow (the signature interaction):
+<motion.div
+  animate={isFocused ? {
+    boxShadow: '0 0 0 2px rgba(0,212,255,0.4), 0 0 20px rgba(0,212,255,0.15)'
+  } : {
+    boxShadow: '0 0 0 1px rgba(255,255,255,0.08)'
+  }}
+  transition={{ type: 'spring', stiffness: 280, damping: 26 }}
+  className="rounded-xl">
+  <textarea ... onFocus={() => setFocused(true)} onBlur={() => setFocused(false)} />
+</motion.div>
+
+// 2. Workflow mode pills: selected pill scale
+<motion.button
+  key={mode.id}
+  whileTap={{ scale: 0.96 }}
+  animate={selectedMode === mode.id ? { scale: 1.02 } : { scale: 1 }}
+  transition={{ type: 'spring', stiffness: 600, damping: 35 }}>
+
+// 3. Submit button: JARVISButton with spring press:
+<JARVISButton type="submit" className="...">
+  {submitting ? <Loader2 className="animate-spin" /> : <Zap />}
+  {submitting ? 'Launching...' : 'Launch Goal'}
+</JARVISButton>
+
+// 4. Intent preview: slide down AnimatePresence when input has content:
+<AnimatePresence>
+  {goalText.length > 10 && (
+    <motion.div
+      initial={{ opacity: 0, y: -6, height: 0 }}
+      animate={{ opacity: 1, y: 0,  height: 'auto' }}
+      exit={{    opacity: 0, y: -4, height: 0 }}
+      transition={{ type: 'spring', stiffness: 280, damping: 26 }}>
+      <p className="text-xs text-[#475569]">Will use: {suggestedAgent}</p>
+    </motion.div>
+  )}
+</AnimatePresence>
+```
+
+### GoalOutcomeHero.tsx — NO animation
+
+The success/failure state shown after a goal completes. Currently static.
+
+**What it needs:**
+```tsx
+// Success state: emerald scale-in + confetti
+<motion.div
+  initial={{ scale: 0.8, opacity: 0 }}
+  animate={{ scale: 1, opacity: 1 }}
+  transition={{ type: 'spring', stiffness: 300, damping: 20 }}>
+  <CheckCircle2 className="h-16 w-16 text-emerald-400" />
+</motion.div>
+
+// Failure state: rose shake on mount
+<motion.div
+  initial={{ x: 0 }}
+  animate={{ x: [0, -8, 8, -6, 6, 0] }}
+  transition={{ duration: 0.4, delay: 0.2 }}>
+```
+
+### GoalResultCanvas.tsx, GoalEvidencePanel.tsx, GoalExplainPanel.tsx — NO animation
+
+All goal result views are static. They show rich data (evidence, explanation, results) but with zero entrance animation.
+
+**Pattern for all three:**
+```tsx
+// Wrap in JARVISPageShell equivalent (or add motion.div directly):
+<motion.div
+  initial={{ opacity: 0, y: 12 }}
+  animate={{ opacity: 1, y: 0 }}
+  transition={{ type: 'spring', stiffness: 280, damping: 26 }}>
+
+// For lists within (evidence items, explain steps):
+// Use JARVISStagger + JARVISStaggerItem
+```
+
+---
+
+## Missing Optimistic Updates (48 Mutations)
+
+Optimistic updates make the UI feel instant. Without them, every user action has a visible delay.
+
+**Priority mutations to fix (highest user impact):**
+
+| File | Mutation | Fix |
+|------|----------|-----|
+| `AgentsListPage` | Delete agent | Optimistic remove from list |
+| `GoalsListPage` | Cancel goal | Optimistic status → 'cancelling' |
+| `AgentDetailPage` | Update agent config | Optimistic field update |
+| `ApprovalsPage` | Approve/Reject | Optimistic remove from pending |
+| `KnowledgePage` | Delete collection | Optimistic remove |
+| `ToolsPage` | Toggle tool | Optimistic status flip |
+| `SchedulesPage` | Toggle schedule | Optimistic active flip |
+| `ConnectorsRegisteredPage` | Disconnect | Optimistic status → 'offline' |
+
+**Pattern:**
+```tsx
+const deleteMutation = useMutation({
+  mutationFn: (id: string) => agentsApi.delete(id),
+  onMutate: async (id) => {
+    await qc.cancelQueries({ queryKey: ['agents'] });
+    const prev = qc.getQueryData(['agents']);
+    qc.setQueryData(['agents'], (old: Agent[]) =>
+      old?.filter(a => a.id !== id) ?? []);
+    return { prev };
+  },
+  onError: (_, __, ctx) => qc.setQueryData(['agents'], ctx?.prev),
+  onSettled: () => qc.invalidateQueries({ queryKey: ['agents'] }),
+});
+```
+
+---
+
+## Inline Fetch → TanStack Query (22 files)
+
+Using `useEffect + fetch` causes: no caching, duplicate requests, manual loading state, no retry.
+
+**Files to convert (priority):**
+```
+features/agents/AgentIdentityPage.tsx         — useEffect fetch for identity data
+features/artifacts/ArtifactsBrowserPage.tsx   — useEffect fetch for artifacts
+features/auth/AuthPage.tsx                    — useEffect fetch for SSO config
+features/chat/AgentMemoryPage.tsx             — useEffect fetch for memories
+features/eval/EvalPage.tsx                    — useEffect fetch for eval runs
+features/goals/GoalDNAPage.tsx                — useEffect fetch for DNA data
+```
+
+**Pattern:**
+```tsx
+// BEFORE:
+useEffect(() => {
+  fetch('/api/v1/agents').then(r => r.json()).then(setAgents);
+}, []);
+
+// AFTER:
+const { data: agents } = useQuery({
+  queryKey: ['agents', orgId],
+  queryFn: () => agentsApi.list(orgId),
+  staleTime: 30_000,
+});
+```
+
+---
+
+## TypeScript `any` Fixes (32 files)
+
+**Highest impact files:**
+
+| File | `any` count | Fix |
+|------|------------|-----|
+| `AgentOrbitView.tsx` | 3 | Define `SimulationNode` interface |
+| `AIOpsDashboard.tsx` | 7 | Define `AIMetric`, `ServiceStatus` interfaces |
+| `GoalDetailPage.tsx` | Multiple | Use existing `Goal` type from api/client |
+| `GoalsListPage.tsx` | Multiple | Narrow with `Goal` type |
+| `KnowledgeGraphExplorerPage.tsx` | Multiple | Define `GraphNode`, `GraphEdge` |
+| `ModelControlCenter.tsx` | 4 | Define `Model`, `ModelConfig` interfaces |
+
+---
+
+## Missing Virtualization (High-Volume Lists)
+
+Only 4 files use `useVirtualizer`. These lists can grow to 100s/1000s of items:
+
+| Feature | List | Current | Should Use |
+|---------|------|---------|-----------|
+| `GoalsListPage` | Goals list | `.map()` | `useVirtualizer` |
+| `AgentsListPage` | Agent cards | `.map()` | `useVirtualizer` |
+| `AuditExplorerPage` | Audit events | `.map()` | `useVirtualizer` |
+| `ToolsPage` | Tools list | `.map()` | `useVirtualizer` |
+| `MemoryExplorerPage` | Memory cards | `.map()` | `useVirtualizer` |
+| `NotificationCenterPage` | Notifications | `.map()` | `useVirtualizer` |
+
+---
+
+## Missing hooks/ Directory (Most Features)
+
+46 of 55 features have NO dedicated hooks directory. Without hooks:
+- Business logic mixed into Page components
+- No reusability across pages
+- No isolated testing
+
+**Features that need hooks extraction:**
+```
+Most impactful:
+  features/goals/hooks/useGoals.ts          — list query + pagination
+  features/goals/hooks/useGoalStream.ts     — SSE streaming
+  features/agents/hooks/useAgents.ts        — agent queries
+  features/agents/hooks/useAgentStatus.ts   — real-time status
+  features/knowledge/hooks/useKnowledge.ts  — collection queries
+  features/workflow/hooks/useWorkflow.ts    — workflow CRUD
+```
+
+---
+
+## Ingestion Feature — Components Exist but No Animation
+
+`features/ingestion/components/` has: `SourceCard.tsx`, `SourceDetailDrawer.tsx`, `SourceList.tsx`
+
+None have animation. These are the components shown during file upload (drag-drop, progress, queue).
+
+**SourceCard.tsx needs:**
+```tsx
+// Card hover: lift + electric border
+// Processing state: animated progress fill
+// Complete state: emerald flash
+```
+
+**SourceList.tsx needs:**
+```tsx
+// JARVISStagger on list
+// New item enters from top with springs.bouncy
+// Item remove: scale out exit
+```
+
+---
+
+## Full Improvement Sequence (Updated with Component-Level Findings)
+
+```
+Step 0-A: Fix --primary color in globals.css (#3B82F6 → #00D4FF)
+Step 0-B: Create lib/design/tokens.ts, motion.ts, StatusOrb.tsx, EmptyState.tsx
+
+Step 1-SHARED: Animate shared layout (affects every page)
+  1a. Sidebar.tsx — spring collapse, nav item hover, layoutId active indicator
+  1b. TopBar.tsx — AnimatePresence search results, notification badge bounce
+  1c. ConfirmModal.tsx — AnimatePresence backdrop + modal spring
+
+Step 1-DASHBOARD: Animate core dashboard components
+  1d. LiveActivityStream.tsx — AnimatePresence popLayout, StatusOrb, hover glow
+  1e. AgentOrbitView.tsx — electric active color, SVG glow filter, pulse ring
+  1f. AIOpsDashboard.tsx — stagger metrics, fix 7 `any` types
+
+Step 1-GOALS: Animate goal submission and results
+  1g. MissionGoalComposer.tsx — focus glow, pill spring, JARVISButton, intent preview
+  1h. GoalOutcomeHero.tsx — scale-in success, shake failure
+  1i. GoalResultCanvas.tsx, GoalEvidencePanel.tsx, GoalExplainPanel.tsx — stagger
+
+Step 2: Apply JARVISStagger + StatusOrb to 20 shell-only pages
+Step 3: Add hover:shadow-glow-electric to all clickable cards
+Step 4: Replace all inline status dots with <StatusOrb>
+Step 5: Add AnimatePresence to all existing dropdowns/modals
+Step 6: GraphExplorerPage — glowing nodes
+Step 7: 48 mutations → add optimistic updates (priority: agents, goals, approvals)
+Step 8: 22 inline fetches → convert to TanStack Query
+Step 9: Add virtualization to 6 high-volume lists
+Step 10: Fix 32 TypeScript `any` types
+Step 11: Extract hooks to hooks/ directory for 10 priority features
+Step 12: Ingestion components animation (SourceCard, SourceList, SourceDetailDrawer)
+Step 13: Chat components (ChatStepCard, ChatHITLCard, ChatArtifactPanel)
+Step 14: Triggers components (TriggerList, TriggerCreateModal)
+Step 15: Templates components (TemplatePickerModal, TemplateInstantiator)
+```
+
+---
+
+## Feature-by-Feature Animation Status
+
+```
+❌ 46/55 features: zero motion in any file
+✅  3/55 features: good (gateway, org, settings)
+⚠️  6/55 features: partial (dashboard, eval, goals, landing, workflow, models)
+
+Top 10 highest-impact features to fix first:
+  1. dashboard — LiveActivityStream, AgentOrbitView (most visible)
+  2. goals     — MissionGoalComposer, GoalDetailPage (most used)
+  3. agents    — AgentsListPage, AgentDetailPage (primary resource)
+  4. knowledge — KnowledgePage, GraphExplorerPage (D3 glowing nodes)
+  5. workflows — all 8 sub-pages (complex feature, partial motion)
+  6. governance — AuditExplorerPage (hash chain animation)
+  7. ingestion  — drop zone, progress queue
+  8. chat       — ChatStepCard, ChatHITLCard (agentic execution cards)
+  9. approvals  — HITL queue cards
+ 10. notifications — SSE-driven live feed
+```
+
+---
+
+## Updated Definition of Done
+
+The dashboard feels "world-class agentic" when ALL of these are true:
+
+### Visual Identity ✓/✗
+- [ ] Primary accent = `#00D4FF` electric cyan (currently `#3B82F6`)
+- [ ] Running agents/goals show sonar-ping orbs (StatusOrb component)
+- [ ] Cards lift 2px + electric glow edge on hover
+- [ ] Dark surfaces: `#0A0D14` → `#0F1117` → `#1A1F2E` hierarchy
+
+### Motion & Animation ✓/✗
+- [ ] Page entrance: blur+y spring (✅ done for all 87 pages)
+- [ ] Sidebar collapse/expand: spring width (❌ missing)
+- [ ] Search results: AnimatePresence dropdown (❌ missing)
+- [ ] Lists: JARVISStagger enter sequence (❌ 0/87 pages)
+- [ ] SSE activity feed: items slide in from top with springs.bouncy (❌ missing)
+- [ ] Modal open/close: AnimatePresence spring (❌ ConfirmModal missing)
+
+### Agentic Signals ✓/✗
+- [ ] LiveActivityStream: animated, StatusOrb per event (❌ zero animation)
+- [ ] Goal execution: streaming typewriter + step pulse (❌ missing)
+- [ ] AgentOrbitView: electric color, SVG glow filter (❌ wrong color, no glow)
+- [ ] MissionGoalComposer: focus glow, intent preview (❌ no animation)
+- [ ] Running agent badge on every agent card (❌ missing)
+
+### Code Quality ✓/✗
+- [ ] Zero TypeScript `any` (❌ 32 files)
+- [ ] Zero inline fetch in useEffect (❌ 22 files)
+- [ ] All mutations have optimistic updates (❌ 48 missing)
+- [ ] All high-volume lists virtualized (❌ 6 lists)
+- [ ] Zero console.log in prod (❌ 1 file)
