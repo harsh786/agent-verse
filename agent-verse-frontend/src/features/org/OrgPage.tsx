@@ -17,7 +17,7 @@
 import { useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug } from 'lucide-react';
+import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { OrgHealthWidget }      from './components/OrgHealthWidget';
 import { MissionsList }          from './components/MissionsList';
@@ -29,7 +29,12 @@ import { GraphifyProgress }      from './components/GraphifyProgress';
 import { VoiceModal }            from './components/VoiceModal';
 import { CursorPresence }        from './components/CursorPresence';
 import { ConnectorMarketplace }  from './components/ConnectorMarketplace';
-import { useOrganization }       from './hooks/useOrg';
+import { MorningBrief }          from './components/MorningBrief';
+import { NowNextWhy }            from './components/NowNextWhy';
+import { OrgHistoryNav }         from './components/OrgHistoryNav';
+import { DigitalTwinPanel }      from './components/DigitalTwinPanel';
+import { CommandHistoryPanel }   from './components/CommandHistoryPanel';
+import { useOrganization, useOrgHealth, useMissions } from './hooks/useOrg';
 import type { OrgMission }       from './types';
 
 const PAGE_SPRING = { type: 'spring', stiffness: 200, damping: 24 } as const;
@@ -44,8 +49,14 @@ export function OrgPage() {
   const [showGraphify, setShowGraphify]       = useState(false);
   const [showVoice, setShowVoice]             = useState(false);
   const [showConnectors, setShowConnectors]   = useState(false);
+  const [showTwin, setShowTwin]               = useState(false);
+  const [showHistory, setShowHistory]         = useState(false);
+  const [showCommands, setShowCommands]       = useState(false);
 
   const { data: org, isLoading: orgLoading, refetch } = useOrganization(orgId ?? null);
+  const { data: health }    = useOrgHealth(orgId ?? null);
+  const { data: missionInf } = useMissions(orgId, {});
+  const activeMissions = (missionInf?.pages?.flatMap(p => p.data ?? []) ?? []).filter((m: OrgMission) => m.status === 'active');
 
   const handleMissionClick = useCallback((mission: OrgMission) => {
     setSelectedMission(prev => prev === mission.id ? null : mission.id);
@@ -151,6 +162,57 @@ export function OrgPage() {
               <Plug className="h-4 w-4" aria-hidden />
             </button>
 
+            {/* Digital Twin */}
+            <button
+              onClick={() => setShowTwin(v => !v)}
+              aria-label="Digital Twin capacity view"
+              style={{ touchAction: 'manipulation' }}
+              className={cn(
+                'p-2 rounded-lg transition-colors duration-150',
+                'min-w-[44px] min-h-[44px] flex items-center justify-center',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
+                showTwin
+                  ? 'text-purple-300 bg-purple-500/10'
+                  : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
+              )}
+            >
+              <Cpu className="h-4 w-4" aria-hidden />
+            </button>
+
+            {/* Command History */}
+            <button
+              onClick={() => setShowCommands(v => !v)}
+              aria-label="Command gateway history"
+              style={{ touchAction: 'manipulation' }}
+              className={cn(
+                'p-2 rounded-lg transition-colors duration-150',
+                'min-w-[44px] min-h-[44px] flex items-center justify-center',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
+                showCommands
+                  ? 'text-emerald-300 bg-emerald-500/10'
+                  : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
+              )}
+            >
+              <Terminal className="h-4 w-4" aria-hidden />
+            </button>
+
+            {/* History */}
+            <button
+              onClick={() => setShowHistory(v => !v)}
+              aria-label="Organisation history"
+              style={{ touchAction: 'manipulation' }}
+              className={cn(
+                'p-2 rounded-lg transition-colors duration-150',
+                'min-w-[44px] min-h-[44px] flex items-center justify-center',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
+                showHistory
+                  ? 'text-amber-300 bg-amber-500/10'
+                  : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
+              )}
+            >
+              <Clock className="h-4 w-4" aria-hidden />
+            </button>
+
             {/* Refresh */}
             <button
               onClick={() => refetch()}
@@ -217,6 +279,77 @@ export function OrgPage() {
             className="w-72 shrink-0 hidden lg:flex flex-col overflow-y-auto"
             aria-label="Organisation sidebar"
           >
+            {/* Digital Twin panel */}
+            <AnimatePresence mode="wait">
+              {showTwin && (
+                <motion.div
+                  key="twin"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+                  style={{ overflow: 'hidden' }}
+                  className="border-b border-[#1E2535]"
+                >
+                  <div className="p-4">
+                    <DigitalTwinPanel orgId={orgId} />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Command history panel */}
+            <AnimatePresence mode="wait">
+              {showCommands && (
+                <motion.div
+                  key="commands"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+                  style={{ overflow: 'hidden' }}
+                  className="border-b border-[#1E2535]"
+                >
+                  <div className="p-4 max-h-96 overflow-y-auto">
+                    <CommandHistoryPanel orgId={orgId} />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* History nav panel */}
+            <AnimatePresence mode="wait">
+              {showHistory && (
+                <motion.div
+                  key="history"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+                  style={{ overflow: 'hidden' }}
+                  className="border-b border-[#1E2535]"
+                >
+                  <div className="p-4">
+                    <OrgHistoryNav orgId={orgId} compact />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Morning brief panel — always show at top */}
+            <div className="p-4 border-b border-[#1E2535]">
+              <MorningBrief orgId={orgId} compact />
+            </div>
+
+            {/* Now/Next/Why panel */}
+            <div className="p-4 border-b border-[#1E2535]">
+              <NowNextWhy
+                health={health as Parameters<typeof NowNextWhy>[0]['health']}
+                missions={activeMissions}
+                isLoading={orgLoading}
+              />
+            </div>
+
             {/* Graphify panel */}
             <AnimatePresence mode="wait">
               {showGraphify && (
