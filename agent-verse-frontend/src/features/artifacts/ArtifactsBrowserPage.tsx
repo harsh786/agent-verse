@@ -336,7 +336,7 @@ function ArtifactCard({
 
   return (
     <div
-      className="bg-card border border-border rounded-xl p-4 hover:border-primary/30 hover:shadow-sm transition-all cursor-pointer group flex flex-col gap-3"
+      className="bg-card border border-border rounded-xl p-4 hover:border-primary/30 hover:shadow-sm transition-[color,background-color,border-color,opacity,box-shadow,transform] cursor-pointer group flex flex-col gap-3"
       onClick={onOpen}
       role="button"
       tabIndex={0}

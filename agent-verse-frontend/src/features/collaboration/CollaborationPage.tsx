@@ -10,6 +10,7 @@ import { useCollabSocket } from '@/lib/ws/useCollabSocket';
 import { apiFetch } from '@/lib/api/client';
 import { CRDTEditor } from '@/components/collab/CRDTEditor';
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface CollabSession {
@@ -424,7 +425,7 @@ function LiveSessionPanel({
                   <span className="flex items-center gap-1 text-red-500"><ThumbsDown className="h-3 w-3" /> {disaVotes}</span>
                   {(agreeVotes + disaVotes) > 0 && (
                     <div className="w-20 h-1.5 rounded-full bg-red-100 overflow-hidden">
-                      <div className="h-full rounded-full bg-green-400 transition-all" style={{ width: `${(agreeVotes / (agreeVotes + disaVotes)) * 100}%` }} />
+                      <div className="h-full rounded-full bg-green-400 transition-[color,background-color,border-color,opacity,box-shadow,transform]" style={{ width: `${(agreeVotes / (agreeVotes + disaVotes)) * 100}%` }} />
                     </div>
                   )}
                 </div>
@@ -455,7 +456,7 @@ function LiveSessionPanel({
                     <button
                       key={rt.value}
                       onClick={() => setRoundType(rt.value)}
-                      className={`px-2.5 py-0.5 rounded-full text-xs font-medium transition-all ${roundType === rt.value ? `${rt.color} ring-2 ring-offset-1 ring-current` : 'bg-muted text-muted-foreground hover:bg-accent'}`}
+                      className={`px-2.5 py-0.5 rounded-full text-xs font-medium transition-[color,background-color,border-color,opacity,box-shadow,transform] ${roundType === rt.value ? `${rt.color} ring-2 ring-offset-1 ring-current` : 'bg-muted text-muted-foreground hover:bg-accent'}`}
                     >
                       {rt.label}
                     </button>
@@ -815,6 +816,7 @@ export function CollaborationPage() {
   const filtered = sessions.filter((s) => statusFilter === 'all' ? true : s.status === statusFilter);
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6">
 
       {/* Page header */}
@@ -847,7 +849,7 @@ export function CollaborationPage() {
                 <button
                   key={tpl.name}
                   onClick={() => applyTemplate(tpl)}
-                  className="text-left p-3 rounded-lg border border-border hover:border-primary hover:bg-accent transition-all"
+                  className="text-left p-3 rounded-lg border border-border hover:border-primary hover:bg-accent transition-[color,background-color,border-color,opacity,box-shadow,transform]"
                 >
                   <ModeBadge mode={tpl.mode} />
                   <p className="font-medium text-xs mt-1.5">{tpl.name}</p>
@@ -865,7 +867,7 @@ export function CollaborationPage() {
                 <button
                   key={mode}
                   onClick={() => setSelectedMode(mode)}
-                  className={`p-3 rounded-lg border text-left transition-all ${selectedMode === mode ? 'border-primary bg-primary/5 ring-1 ring-primary/20' : 'border-border hover:bg-accent'}`}
+                  className={`p-3 rounded-lg border text-left transition-[color,background-color,border-color,opacity,box-shadow,transform] ${selectedMode === mode ? 'border-primary bg-primary/5 ring-1 ring-primary/20' : 'border-border hover:bg-accent'}`}
                 >
                   <div className={`flex items-center gap-1.5 text-xs font-semibold ${cfg.color}`}>
                     {getModeIcon(mode)} {cfg.label}
@@ -934,7 +936,7 @@ export function CollaborationPage() {
             <button
               key={s}
               onClick={() => setStatusFilter(s)}
-              className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${statusFilter === s ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:bg-accent'}`}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition-[color,background-color,border-color,opacity,box-shadow,transform] ${statusFilter === s ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:bg-accent'}`}
             >
               {s.charAt(0).toUpperCase() + s.slice(1)}
             </button>
@@ -966,7 +968,7 @@ export function CollaborationPage() {
               <div
                 key={s.session_id}
                 data-testid="session-card"
-                className="bg-card border border-border rounded-xl p-4 hover:border-primary/50 hover:shadow-sm transition-all cursor-pointer group"
+                className="bg-card border border-border rounded-xl p-4 hover:border-primary/50 hover:shadow-sm transition-[color,background-color,border-color,opacity,box-shadow,transform] cursor-pointer group"
                 onClick={() => setActiveSession(s)}
               >
                 <div className="flex items-start justify-between mb-2">
@@ -1023,5 +1025,6 @@ export function CollaborationPage() {
         )}
       </div>
     </div>
+    </JARVISPageShell>
   );
 }

@@ -17,6 +17,7 @@ import { ThemedRadarChart } from '@/components/charts/ThemedRadarChart';
 import { toast } from '@/stores/toast';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface RedTeamResult {
@@ -363,7 +364,7 @@ function ScorecardTab({ apiKey }: { apiKey: string }) {
                     </div>
                     <div className="w-full bg-muted rounded-full h-2">
                       <div
-                        className={`h-2 rounded-full transition-all duration-500 ${DIM_COLORS[dim] ?? 'bg-indigo-500'}`}
+                        className={`h-2 rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-500 ${DIM_COLORS[dim] ?? 'bg-indigo-500'}`}
                         style={{ width: `${pct}%` }}
                       />
                     </div>
@@ -711,7 +712,7 @@ function RedTeamTab({ apiKey }: { apiKey: string }) {
               <span>{progress}%</span>
             </div>
             <div className="w-full bg-muted rounded-full h-2">
-              <div className="h-2 rounded-full bg-orange-500 transition-all duration-300" style={{ width: `${progress}%` }} />
+              <div className="h-2 rounded-full bg-orange-500 transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-300" style={{ width: `${progress}%` }} />
             </div>
           </div>
         )}
@@ -747,7 +748,7 @@ function RedTeamTab({ apiKey }: { apiKey: string }) {
             </div>
             <div className="w-full bg-muted rounded-full h-3">
               <div
-                className={`h-3 rounded-full transition-all ${passRate >= 80 ? 'bg-emerald-500' : passRate >= 50 ? 'bg-amber-500' : 'bg-red-500'}`}
+                className={`h-3 rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] ${passRate >= 80 ? 'bg-emerald-500' : passRate >= 50 ? 'bg-amber-500' : 'bg-red-500'}`}
                 style={{ width: `${passRate}%` }}
               />
             </div>
@@ -1079,6 +1080,7 @@ export function EvalPage() {
   ];
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-foreground">Eval & Testing</h1>
@@ -1112,5 +1114,6 @@ export function EvalPage() {
       {tab === 'redteam' && <RedTeamTab apiKey={apiKey} />}
       {tab === 'suites' && <SuitesTab apiKey={apiKey} />}
     </div>
+    </JARVISPageShell>
   );
 }

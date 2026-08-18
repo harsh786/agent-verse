@@ -65,7 +65,7 @@ function DomainCard({
   return (
     <div
       onClick={onClick}
-      className="group cursor-pointer rounded-xl border bg-card hover:border-primary/50 hover:shadow-md transition-all duration-200 overflow-hidden"
+      className="group cursor-pointer rounded-xl border bg-card hover:border-primary/50 hover:shadow-md transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 overflow-hidden"
       role="button"
       tabIndex={0}
       onKeyDown={(e) => e.key === 'Enter' && onClick()}

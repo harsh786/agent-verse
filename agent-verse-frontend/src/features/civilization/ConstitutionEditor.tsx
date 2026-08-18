@@ -125,7 +125,7 @@ function SliderField({ def, value, onChange, readOnly }: {
       <div className="relative h-4 flex items-center">
         <div className="absolute inset-x-0 h-1.5 bg-white/8 rounded-full overflow-hidden">
           <div
-            className="h-full bg-gradient-to-r from-indigo-500 to-violet-500 rounded-full transition-all duration-150"
+            className="h-full bg-gradient-to-r from-indigo-500 to-violet-500 rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150"
             style={{ width: `${pct}%` }}
           />
         </div>
@@ -143,7 +143,7 @@ function SliderField({ def, value, onChange, readOnly }: {
         />
         {/* Thumb */}
         <div
-          className="absolute w-3.5 h-3.5 bg-white rounded-full shadow-lg border-2 border-indigo-400 pointer-events-none transition-all duration-150"
+          className="absolute w-3.5 h-3.5 bg-white rounded-full shadow-lg border-2 border-indigo-400 pointer-events-none transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150"
           style={{ left: `calc(${pct}% - 7px)` }}
         />
       </div>
@@ -370,7 +370,7 @@ export function ConstitutionEditor({ constitution, onSave, readOnly = false }: P
               flex items-center gap-1.5 flex-1 justify-center px-3 py-2 rounded-lg text-xs font-semibold
               bg-indigo-600 text-white hover:bg-indigo-500
               disabled:opacity-30 disabled:cursor-not-allowed
-              transition-all duration-150 active:scale-95
+              transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150 active:scale-95
             "
           >
             {saving
@@ -390,7 +390,7 @@ export function ConstitutionEditor({ constitution, onSave, readOnly = false }: P
               bg-white/5 border border-white/10 text-slate-400
               hover:bg-white/10 hover:text-slate-200
               disabled:opacity-30 disabled:cursor-not-allowed
-              transition-all duration-150
+              transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150
             "
           >
             <RefreshCw className="h-3.5 w-3.5" />

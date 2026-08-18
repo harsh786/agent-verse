@@ -112,7 +112,7 @@ function BudgetBar({ pct, className }: { pct: number; className?: string }): JSX
   return (
     <div className={`relative h-2 rounded-full bg-muted overflow-hidden ${className ?? ""}`}>
       <div
-        className={`absolute inset-y-0 left-0 rounded-full transition-all ${barColor}`}
+        className={`absolute inset-y-0 left-0 rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] ${barColor}`}
         style={{ width: `${Math.min(pct, 100)}%` }}
       />
     </div>

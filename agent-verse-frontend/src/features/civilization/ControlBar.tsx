@@ -125,7 +125,7 @@ export function ControlBar({
           flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold
           bg-indigo-600 text-white hover:bg-indigo-500
           disabled:opacity-30 disabled:cursor-not-allowed
-          transition-all duration-150 active:scale-95 flex-shrink-0
+          transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150 active:scale-95 flex-shrink-0
         "
       >
         {submitting
@@ -146,7 +146,7 @@ export function ControlBar({
         title={isPaused ? 'Resume' : 'Pause'}
         className={`
           flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold
-          transition-all duration-150 active:scale-95 flex-shrink-0
+          transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150 active:scale-95 flex-shrink-0
           ${isPaused
             ? 'bg-green-600/90 text-white hover:bg-green-500'
             : 'bg-amber-600/80 text-white hover:bg-amber-500'
@@ -174,7 +174,7 @@ export function ControlBar({
               flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs
               bg-white/5 border border-white/10 text-slate-400
               hover:bg-white/10 hover:text-slate-200 hover:border-white/20
-              transition-all duration-150 active:scale-95
+              transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150 active:scale-95
             "
           >
             <DollarSign className="h-3.5 w-3.5" />

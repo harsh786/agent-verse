@@ -206,7 +206,7 @@ function LiveStrategyCard({
 
   return (
     <div
-      className={`relative border-2 rounded-xl p-4 bg-card transition-all ${
+      className={`relative border-2 rounded-xl p-4 bg-card transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
         isWinner ? "border-amber-400 shadow-amber-100 shadow-md" :
         isRunning ? "border-blue-300 shadow-sm animate-pulse" :
         "border-border"

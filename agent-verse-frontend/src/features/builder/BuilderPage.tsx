@@ -147,7 +147,7 @@ export default function BuilderPage() {
               <button
                 key={pt.id}
                 onClick={() => { setProjectType(pt.id); setFramework(FRAMEWORKS[pt.id as keyof typeof FRAMEWORKS]?.[0] ?? 'React'); }}
-                className={`p-4 border-2 rounded-xl text-left transition-all ${
+                className={`p-4 border-2 rounded-xl text-left transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
                   projectType === pt.id
                     ? 'border-primary bg-primary/5'
                     : 'border-border hover:border-primary/40'

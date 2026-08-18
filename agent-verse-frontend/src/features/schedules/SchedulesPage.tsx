@@ -20,6 +20,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { toast } from '@/stores/toast';
 import { apiFetch } from '@/lib/api/client';
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 interface Schedule {
@@ -501,7 +502,7 @@ function AnalyticsTab() {
           <div className="flex items-end gap-1.5 h-28">
             {dayEntries.map(([day, count]) => (
               <div key={day} className="flex-1 flex flex-col items-center gap-1">
-                <div className="w-full bg-violet-500 rounded-t transition-all"
+                <div className="w-full bg-violet-500 rounded-t transition-[color,background-color,border-color,opacity,box-shadow,transform]"
                   style={{ height: `${Math.max(4, (count / maxFires) * 96)}px` }} title={`${count} fires`} />
                 <span className="text-[9px] text-muted-foreground rotate-0">{day.slice(5)}</span>
               </div>
@@ -874,6 +875,7 @@ export function SchedulesPage() {
   ];
 
   return (
+    <JARVISPageShell>
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -901,6 +903,7 @@ export function SchedulesPage() {
         </div>
       </div>
     </div>
+    </JARVISPageShell>
   );
 }
 

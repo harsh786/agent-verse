@@ -83,7 +83,7 @@ export function GovernancePanel() {
             return (
               <div
                 key={bundle.id}
-                className={`rounded-xl border p-4 transition-all ${
+                className={`rounded-xl border p-4 transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
                   isActive ? 'border-primary bg-primary/5' : 'border-border bg-card hover:border-primary/50'
                 }`}
               >

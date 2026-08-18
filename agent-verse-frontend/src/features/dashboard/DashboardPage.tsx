@@ -37,6 +37,7 @@ import { AgentOrbitView } from "./components/AgentOrbitView";
 import { toast } from "@/stores/toast";
 import { AIOpsDashboard } from "./AIOpsDashboard";
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── KPI Card ──────────────────────────────────────────────────────────────────
 
 function KpiCard({
@@ -69,7 +70,7 @@ function KpiCard({
   return (
     <button
       onClick={onClick}
-      className={`bg-card border border-border rounded-xl p-4 text-left hover:border-primary/30 hover:shadow-sm transition-all ${
+      className={`bg-card border border-border rounded-xl p-4 text-left hover:border-primary/30 hover:shadow-sm transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
         onClick ? "cursor-pointer" : "cursor-default"
       }`}
     >
@@ -239,6 +240,7 @@ export function DashboardPage() {
   ];
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6 max-w-7xl mx-auto">
       {/* ── Header ───────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
@@ -448,7 +450,7 @@ export function DashboardPage() {
           <button
             key={action.path}
             onClick={() => navigate(action.path)}
-            className="flex items-center gap-2.5 p-3 bg-card border border-border rounded-xl hover:border-primary/30 hover:shadow-sm transition-all text-left"
+            className="flex items-center gap-2.5 p-3 bg-card border border-border rounded-xl hover:border-primary/30 hover:shadow-sm transition-[color,background-color,border-color,opacity,box-shadow,transform] text-left"
             aria-label={`Navigate to ${action.label}`}
           >
             <action.icon className={`h-4 w-4 shrink-0 ${action.color}`} aria-hidden="true" />
@@ -460,5 +462,6 @@ export function DashboardPage() {
       </>
       )}
     </div>
+    </JARVISPageShell>
   );
 }

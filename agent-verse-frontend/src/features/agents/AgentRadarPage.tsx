@@ -135,7 +135,7 @@ export function AgentRadarPage() {
                 </div>
                 <div className="w-full bg-muted rounded-full h-1.5 mb-2">
                   <div
-                    className={`h-1.5 rounded-full transition-all ${pct >= 80 ? "bg-green-500" : pct >= 60 ? "bg-amber-500" : "bg-red-500"}`}
+                    className={`h-1.5 rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] ${pct >= 80 ? "bg-green-500" : pct >= 60 ? "bg-amber-500" : "bg-red-500"}`}
                     style={{ width: `${pct}%` }}
                     role="progressbar"
                     aria-valuenow={pct}

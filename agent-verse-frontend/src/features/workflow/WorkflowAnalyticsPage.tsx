@@ -48,7 +48,7 @@ function MiniBarChart({
         {data.map((d, i) => (
           <div key={i} className="flex-1 flex flex-col items-center gap-1">
             <div
-              className={`w-full rounded-t-sm ${colorClass} transition-all`}
+              className={`w-full rounded-t-sm ${colorClass} transition-[color,background-color,border-color,opacity,box-shadow,transform]`}
               style={{ height: `${Math.round((d.value / max) * 100)}%`, minHeight: '2px' }}
               title={`${d.label}: ${d.value}`}
               role="img"

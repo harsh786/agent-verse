@@ -126,7 +126,7 @@ export function SourceCreateWizard({ onClose, onCreated }: Props) {
                         <button
                           key={f}
                           onClick={() => { setSelectedFamily(f); setStep('type'); }}
-                          className="rounded-xl border border-border p-4 text-left hover:border-primary hover:bg-primary/5 transition-all group"
+                          className="rounded-xl border border-border p-4 text-left hover:border-primary hover:bg-primary/5 transition-[color,background-color,border-color,opacity,box-shadow,transform] group"
                         >
                           <div className={`font-medium text-sm group-hover:text-primary`}>{cfg.label}</div>
                           <div className="text-xs text-muted-foreground mt-1">{cfg.description}</div>
@@ -148,7 +148,7 @@ export function SourceCreateWizard({ onClose, onCreated }: Props) {
                       <button
                         key={t}
                         onClick={() => { setSelectedType(t); setStep('configure'); }}
-                        className="rounded-lg border border-border px-3 py-2 text-left text-sm font-mono hover:border-primary hover:bg-primary/5 transition-all"
+                        className="rounded-lg border border-border px-3 py-2 text-left text-sm font-mono hover:border-primary hover:bg-primary/5 transition-[color,background-color,border-color,opacity,box-shadow,transform]"
                       >
                         {t}
                       </button>

@@ -38,7 +38,7 @@ export function ChatChart({ data = [], title }: Props): JSX.Element {
             <span className="text-xs text-gray-500 w-24 truncate text-right shrink-0">{d.label}</span>
             <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-full h-4 overflow-hidden">
               <div
-                className="h-full bg-indigo-500 rounded-full transition-all"
+                className="h-full bg-indigo-500 rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform]"
                 style={{ width: `${(d.value / max) * 100}%` }}
                 role="presentation"
               />

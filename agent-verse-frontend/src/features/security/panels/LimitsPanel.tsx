@@ -21,7 +21,7 @@ function UsageBar({ label, value, max, unit = '' }: { label: string; value: numb
         <span className="text-muted-foreground">{value.toLocaleString()}{unit} / {max.toLocaleString()}{unit}</span>
       </div>
       <div className="h-2 rounded-full bg-muted overflow-hidden">
-        <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${pct}%` }} />
+        <div className={`h-full rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] ${color}`} style={{ width: `${pct}%` }} />
       </div>
     </div>
   );

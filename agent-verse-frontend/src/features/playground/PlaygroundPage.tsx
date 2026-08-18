@@ -199,7 +199,7 @@ function ToolCard({
 
   return (
     <div
-      className={`border rounded-lg transition-all ${
+      className={`border rounded-lg transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
         isOn ? "border-violet-400 bg-violet-50/30 dark:bg-violet-900/10" : "border-border"
       }`}
     >
@@ -867,7 +867,7 @@ export function PlaygroundPage(): JSX.Element {
               <button
                 key={step.index}
                 onClick={() => setSelectedStep(step === selectedStep ? null : step)}
-                className={`w-full text-left border rounded-xl px-4 py-3 transition-all ${
+                className={`w-full text-left border rounded-xl px-4 py-3 transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
                   stepBorderColor(step.type, step.status)
                 } ${selectedStep?.index === step.index ? "ring-2 ring-violet-400" : ""}`}
               >

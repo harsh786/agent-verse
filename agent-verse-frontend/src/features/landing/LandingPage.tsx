@@ -151,7 +151,7 @@ function PipelineDemo() {
               {PIPELINE_STEPS.map((s, i) => (
                 <div
                   key={s.id}
-                  className={`relative flex flex-col items-center gap-2 p-3 rounded-xl border transition-all duration-500 ${
+                  className={`relative flex flex-col items-center gap-2 p-3 rounded-xl border transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-500 ${
                     active === i
                       ? "border-white/20 bg-white/[0.06] scale-105"
                       : active > i
@@ -174,7 +174,7 @@ function PipelineDemo() {
           </div>
           {/* Result */}
           <div className="px-5 pb-5 pt-8">
-            <div className={`flex items-center gap-3 p-3 rounded-lg border transition-all duration-700 ${
+            <div className={`flex items-center gap-3 p-3 rounded-lg border transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-700 ${
               active >= PIPELINE_STEPS.length - 1 ? "border-emerald-500/30 bg-emerald-900/10" : "border-white/[0.04] opacity-20"
             }`}>
               <span className="text-emerald-400 text-sm">✓</span>
@@ -399,7 +399,7 @@ function CapCard({ icon, title, desc, tag, glow, delay }: CapCard & { delay: num
   return (
     <div
       ref={ref}
-      className={`reveal ${on ? "reveal-on" : ""} group relative overflow-hidden rounded-2xl border border-white/[0.06] bg-white/[0.025] hover:border-violet-500/25 hover:bg-white/[0.04] transition-all duration-300 cursor-default p-5`}
+      className={`reveal ${on ? "reveal-on" : ""} group relative overflow-hidden rounded-2xl border border-white/[0.06] bg-white/[0.025] hover:border-violet-500/25 hover:bg-white/[0.04] transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-300 cursor-default p-5`}
       style={{ transitionDelay: `${delay}ms`, animationDelay: `${delay}ms` }}
     >
       <div className={`absolute inset-0 bg-gradient-to-br ${glow} to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
@@ -801,14 +801,14 @@ function CTASection({ onStart }: { onStart: () => void }) {
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <button
               onClick={onStart}
-              className="group relative px-8 py-4 font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 rounded-xl hover:shadow-2xl hover:shadow-violet-900/40 transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
+              className="group relative px-8 py-4 font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 rounded-xl hover:shadow-2xl hover:shadow-violet-900/40 transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:scale-[1.02] active:scale-[0.98]"
             >
               <span className="absolute inset-0 rounded-xl bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
               Launch your first agent →
             </button>
             <button
               onClick={onStart}
-              className="px-8 py-4 font-medium text-slate-300 border border-white/[0.1] rounded-xl hover:border-white/25 hover:text-white transition-all duration-200 hover:bg-white/[0.03]"
+              className="px-8 py-4 font-medium text-slate-300 border border-white/[0.1] rounded-xl hover:border-white/25 hover:text-white transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:bg-white/[0.03]"
             >
               Sign in to dashboard
             </button>
@@ -832,7 +832,7 @@ function NavBar({ onStart }: { onStart: () => void }) {
   }, []);
 
   return (
-    <nav className={`fixed top-0 inset-x-0 z-50 transition-all duration-300 ${
+    <nav className={`fixed top-0 inset-x-0 z-50 transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-300 ${
       scrolled ? "bg-[#06060e]/90 backdrop-blur-md border-b border-white/[0.06]" : "bg-transparent"
     }`}>
       <div className="max-w-7xl mx-auto flex items-center justify-between px-6 md:px-10 h-16">
@@ -968,12 +968,12 @@ export function LandingPage() {
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-fade-in-up" style={{ animationDelay: "340ms" }}>
             <button
               onClick={go}
-              className="group relative px-7 py-3.5 font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 rounded-xl hover:shadow-xl hover:shadow-violet-900/40 transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
+              className="group relative px-7 py-3.5 font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 rounded-xl hover:shadow-xl hover:shadow-violet-900/40 transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:scale-[1.02] active:scale-[0.98]"
             >
               <span className="absolute inset-0 rounded-xl bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
               Launch your first agent →
             </button>
-            <a href="#platform" className="px-7 py-3.5 font-medium text-slate-300 border border-white/[0.1] rounded-xl hover:border-white/20 hover:text-white transition-all duration-200 hover:bg-white/[0.03]">
+            <a href="#platform" className="px-7 py-3.5 font-medium text-slate-300 border border-white/[0.1] rounded-xl hover:border-white/20 hover:text-white transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:bg-white/[0.03]">
               Explore the platform
             </a>
           </div>

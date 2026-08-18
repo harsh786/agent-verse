@@ -140,7 +140,7 @@ function CivilizationList() {
                 <Link
                   key={civ.id}
                   to={`/civilization/${civ.id}`}
-                  className="group block rounded-2xl transition-all duration-200 hover:scale-[1.01]"
+                  className="group block rounded-2xl transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:scale-[1.01]"
                   style={{
                     background: 'linear-gradient(135deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.02) 100%)',
                     border: '1px solid rgba(255,255,255,0.08)',

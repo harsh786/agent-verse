@@ -102,7 +102,7 @@ export function BlackboardFeed({ entries }: { entries: BlackboardEntry[] }) {
                 <div className="flex items-center gap-1.5">
                   <div className="w-12 h-1 bg-white/5 rounded-full overflow-hidden">
                     <div
-                      className="h-full rounded-full transition-all"
+                      className="h-full rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform]"
                       style={{ width: `${confPct}%`, background: confColor }}
                     />
                   </div>
