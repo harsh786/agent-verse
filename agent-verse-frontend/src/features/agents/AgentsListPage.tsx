@@ -10,6 +10,7 @@ import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { Pagination } from '@/components/ui/Pagination';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 interface Agent {
   agent_id: string;
   name: string;
@@ -343,11 +344,12 @@ export function AgentsListPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
+                <JARVISStagger>
                 {paginatedAgents.map((agent) => (
+                  <JARVISStaggerItem key={agent.agent_id}>
                   <tr
-                    key={agent.agent_id}
                     onClick={() => navigate(`/agents/${agent.agent_id}`)}
-                    className="hover:bg-muted/50 transition-colors cursor-pointer group"
+                    className="hover:bg-[#1A1F2E] transition-colors cursor-pointer group"
                     role="button"
                     aria-label={`View agent ${agent.name}`}
                   >
@@ -401,7 +403,9 @@ export function AgentsListPage() {
                       </div>
                     </td>
                   </tr>
+                  </JARVISStaggerItem>
                 ))}
+                </JARVISStagger>
               </tbody>
             </table>
           )}
