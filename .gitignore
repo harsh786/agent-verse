@@ -35,3 +35,6 @@ docs/superpowers/specs/2026-07-19-karishma-product-centric-resume-design.md
 .gitignore
 docs/superpowers/plans/2026-07-19-karishma-product-centric-resume.md
 Archived/agent-verse-sdk-typescript/node_modules/chai/lib/chai/utils/addChainableMethod.js
+githooks1/*
+.githooks/*
+.githooks/commit-msg
