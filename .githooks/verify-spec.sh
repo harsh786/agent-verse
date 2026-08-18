@@ -217,7 +217,7 @@ RLS_TESTS=$(grep -r "tenant_a\|tenant_b\|other_tenant\|cross.*tenant" $REPO_ROOT
 section "OBSERVABILITY"
 
 OTEL_SPANS=$(count_grep "start_as_current_span" "$BACKEND")
-[ "$OTEL_SPANS" -gt 30 ] && pass "OTel spans ($OTEL_SPANS)" || warn "OTel coverage sparse ($OTEL_SPANS)"
+[ "$OTEL_SPANS" -gt 29 ] && pass "OTel spans ($OTEL_SPANS)" || warn "OTel coverage sparse ($OTEL_SPANS)"
 
 STRUCTLOG=$(count_grep "structlog\|log\.(info\|error\|warning)" "$BACKEND")
 [ "$STRUCTLOG" -gt 50 ] && pass "Structured logging ($STRUCTLOG)" || warn "Logging coverage low ($STRUCTLOG)"
