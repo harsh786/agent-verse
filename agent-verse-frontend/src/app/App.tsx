@@ -45,6 +45,23 @@ const SecurityCenterPage = lazy(() => import('@/features/security/SecurityCenter
 const ChatPage = lazy(() => import('@/features/chat/ChatPage'));
 const AgentMemoryPage = lazy(() => import('@/features/chat/AgentMemoryPage'));
 
+// ── Unrouted pages — now wired ───────────────────────────────────────────────
+const ChannelMappingsPage = lazy(() => import('@/features/channels/ChannelMappingsPage').then(m => ({ default: m.ChannelMappingsPage })));
+const StateMachinesPage   = lazy(() => import('@/features/state-machines/StateMachinesPage').then(m => ({ default: m.StateMachinesPage })));
+const TriggersPage        = lazy(() => import('@/features/triggers/TriggersPage').then(m => ({ default: m.TriggersPage })));
+const WorkflowListPage        = lazy(() => import('@/features/workflow/WorkflowListPage'));
+const WorkflowRunsPage        = lazy(() => import('@/features/workflow/WorkflowRunsPage'));
+const WorkflowRunDetailPage   = lazy(() => import('@/features/workflow/WorkflowRunDetailPage'));
+const WorkflowAnalyticsPage   = lazy(() => import('@/features/workflow/WorkflowAnalyticsPage'));
+const WorkflowMarketplacePage = lazy(() => import('@/features/workflow/WorkflowMarketplacePage'));
+const WorkflowSettingsPage    = lazy(() => import('@/features/workflow/WorkflowSettingsPage'));
+const ApprovalInboxPage       = lazy(() => import('@/features/workflow/ApprovalInboxPage'));
+const MissionPage      = lazy(() => import('@/features/org/MissionPage').then(m => ({ default: m.MissionPage })));
+const DepartmentPage   = lazy(() => import('@/features/org/DepartmentPage'));
+const TeamPage         = lazy(() => import('@/features/org/TeamPage'));
+const StrategicAdvisorPage = lazy(() => import('@/features/org/StrategicAdvisorPage').then(m => ({ default: m.StrategicAdvisorPage })));
+
+
 import { LandingPage } from "@/features/landing/LandingPage";
 import { AuthPage } from "@/features/auth/AuthPage";
 import { SSOCallbackPage } from "@/features/auth/SSOCallbackPage";
@@ -267,7 +284,27 @@ export default function App() {
         <Route path="chat/memory"           element={lazy_rb("Agent Memory",    <AgentMemoryPage />)} />        {/* AI Organization OS */}
         <Route path="org"             element={lazy_rb("Organizations",   <OrgListPage />)} />
         <Route path="org/:orgId"      element={lazy_rb("Org",             <OrgPage />)} />
-        <Route path="org/:orgId/schedules" element={lazy_rb("Schedules",   <ScheduledMissions />)} />
+        <Route path="org/:orgId/schedules"          element={lazy_rb("Schedules",         <ScheduledMissions />)} />
+        <Route path="org/:orgId/gateway"            element={lazy_rb("Org Gateway",       <GatewaySettingsPage />)} />
+        <Route path="org/:orgId/mission/:missionId" element={lazy_rb("Mission",           <MissionPageWrapper />)} />
+        <Route path="org/:orgId/department/:deptId" element={lazy_rb("Department",        <DepartmentPage />)} />
+        <Route path="org/:orgId/team/:teamId"       element={lazy_rb("Team",              <TeamPage />)} />
+        <Route path="org/:orgId/strategic-advisor"  element={lazy_rb("Strategic Advisor", <StrategicAdvisorPage orgId="" />)} />
+
+        {/* Workflow */}
+        <Route path="workflow"                element={lazy_rb("Workflows",           <WorkflowListPage />)} />
+        <Route path="workflow/runs"           element={lazy_rb("Workflow Runs",       <WorkflowRunsPage />)} />
+        <Route path="workflow/runs/:runId"    element={lazy_rb("Workflow Run",        <WorkflowRunDetailPage />)} />
+        <Route path="workflow/analytics"      element={lazy_rb("Workflow Analytics",  <WorkflowAnalyticsPage />)} />
+        <Route path="workflow/marketplace"    element={lazy_rb("Workflow Marketplace",<WorkflowMarketplacePage />)} />
+        <Route path="workflow/settings"       element={lazy_rb("Workflow Settings",   <WorkflowSettingsPage />)} />
+        <Route path="workflow/approvals"      element={lazy_rb("Approval Inbox",      <ApprovalInboxPage />)} />
+
+        {/* Automation */}
+        <Route path="triggers"        element={lazy_rb("Triggers",       <TriggersPage />)} />
+        <Route path="state-machines"  element={lazy_rb("State Machines", <StateMachinesPage />)} />
+        <Route path="channel-mappings" element={lazy_rb("Channels",      <ChannelMappingsPage />)} />
+
         <Route path="settings/roles"  element={lazy_rb("Role Editor",     <RoleEditorPage orgId="" />)} />
         <Route path="settings/privacy" element={lazy_rb("Privacy",        <PrivacySettings />)} />
         <Route path="settings/gateway" element={lazy_rb("Gateway",        <GatewaySettingsPage />)} />
