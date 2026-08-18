@@ -1,0 +1,1295 @@
+# AgentVerse — Jarvis UI/UX Revamp Specification
+**Version:** 1.0 | **Date:** 2026-08-18 | **Status:** READY FOR IMPLEMENTATION
+**Scope:** All 87 frontend Page.tsx files + shared design system foundation
+
+---
+
+## Audit Baseline (Current State)
+
+| Tier | Count | State |
+|------|-------|-------|
+| Score 4+ (fully Jarvis) | **0 / 87** | Not started |
+| Score 1 (JARVISPageShell wrapper only) | **20 / 87** | Page entrance only, no inner motion |
+| Score 2-3 (partial framer-motion) | **13 / 87** | Inconsistent, no design system |
+| Score 0 (zero animation) | **54 / 87** | Plain React |
+
+### What Already Exists
+
+`components/ui/JARVISPageShell.tsx` — **built, working, correct spring physics:**
+```typescript
+export const SPRING_PAGE   = { type: 'spring', stiffness: 280, damping: 26 }
+export const SPRING_PANEL  = { type: 'spring', stiffness: 300, damping: 28 }
+export const SPRING_FAST   = { type: 'spring', stiffness: 600, damping: 35 }
+export const SPRING_SLOW   = { type: 'spring', stiffness: 200, damping: 25 }
+export const SPRING_BOUNCY = { type: 'spring', stiffness: 450, damping: 18 }
+```
+Also contains: `<JARVISStagger>`, `<JARVISStaggerItem>`, `<JARVISButton>` — **built but used by 0 pages**.
+
+### What Is Missing (Must Create Before Implementing Pages)
+
+| File | Status | Blocks |
+|------|--------|--------|
+| `src/lib/design/tokens.ts` | ❌ Missing | Color tokens, glass, shadows |
+| `src/lib/design/motion.ts` | ❌ Missing | Named variants, spring re-exports |
+| `src/components/ui/StatusOrb.tsx` | ❌ Missing | Pulsing status across all pages |
+| `src/hooks/useMotionSafe.ts` | ❌ Missing | Standalone reduced-motion hook |
+| `EmptyState.tsx` animation | ❌ None | 40+ pages show static empty states |
+
+---
+
+## Implementation Order
+
+```
+Phase 0: Foundation (prerequisite — unblocks everything)
+  Step 1: Create lib/design/tokens.ts
+  Step 2: Create lib/design/motion.ts
+  Step 3: Create components/ui/StatusOrb.tsx
+  Step 4: Upgrade EmptyState.tsx with animation
+
+Phase 1: Quick Wins — 20 JARVISPageShell-only pages
+  Apply JARVISStagger + JARVISStaggerItem to card grids and lists
+  ~30 min per page, high visual impact
+
+Phase 2: 54 Zero-Animation Pages
+  Feature by feature, priority ordered
+
+Phase 3: Polish Pass
+  Micro-interactions, hover states, empty states, error states
+```
+
+---
+
+## Phase 0 — Foundation Files
+
+### Step 1: `src/lib/design/tokens.ts`
+
+```typescript
+// src/lib/design/tokens.ts
+// Single source of truth for all Jarvis design values.
+// Import from this file — never hardcode colors or shadows.
+
+export const tokens = {
+  color: {
+    // Primary electric
+    electric:       '#00D4FF',
+    electricDim:    'rgba(0,212,255,0.15)',
+    electricBright: 'rgba(0,212,255,0.60)',
+    electricGlow:   'rgba(0,212,255,0.30)',
+
+    // Accent palette
+    indigo:     '#6366F1',  indigoDim:  'rgba(99,102,241,0.15)',
+    emerald:    '#00E676',  emeraldDim: 'rgba(0,230,118,0.15)',
+    amber:      '#FFB300',  amberDim:   'rgba(255,179,0,0.15)',
+    rose:       '#FF3366',  roseDim:    'rgba(255,51,102,0.15)',
+    violet:     '#A855F7',  violetDim:  'rgba(168,85,247,0.15)',
+
+    // Surfaces (dark hierarchy)
+    surface0: '#020408',   // deepest — page backdrop
+    surface1: '#0A0F1A',   // page background
+    surface2: '#0F1826',   // card background
+    surface3: '#162035',   // elevated panel
+    surface4: '#1E2C4A',   // hover / active
+    surface5: '#253552',   // pressed
+
+    // Text
+    text1: '#F0F6FF',       // primary
+    text2: '#A0B4CC',       // secondary
+    text3: '#5A7494',       // muted
+    textElectric: '#00D4FF',
+
+    // Semantic
+    success: '#00E676',
+    warning: '#FFB300',
+    error:   '#FF3366',
+    info:    '#00D4FF',
+  },
+
+  glass: {
+    subtle:    'rgba(255,255,255,0.03)',
+    light:     'rgba(255,255,255,0.06)',
+    medium:    'rgba(255,255,255,0.10)',
+    strong:    'rgba(255,255,255,0.16)',
+    blur:      'blur(20px)',
+    blurHeavy: 'blur(40px)',
+  },
+
+  border: {
+    subtle:  '1px solid rgba(255,255,255,0.04)',
+    glass:   '1px solid rgba(255,255,255,0.08)',
+    glow:    '1px solid rgba(0,212,255,0.25)',
+    active:  '1px solid rgba(0,212,255,0.60)',
+    error:   '1px solid rgba(255,51,102,0.50)',
+    success: '1px solid rgba(0,230,118,0.40)',
+  },
+
+  shadow: {
+    card:       '0 4px 24px rgba(0,0,0,0.40)',
+    float:      '0 8px 40px rgba(0,0,0,0.60)',
+    glow:       '0 0 20px rgba(0,212,255,0.15)',
+    glowStrong: '0 0 40px rgba(0,212,255,0.35)',
+    glowPulse:  '0 0 60px rgba(0,212,255,0.20)',
+    error:      '0 0 20px rgba(255,51,102,0.20)',
+    success:    '0 0 20px rgba(0,230,118,0.20)',
+  },
+
+  font: {
+    sans: '"Inter", -apple-system, sans-serif',
+    mono: '"JetBrains Mono", "Fira Code", monospace',
+  },
+} as const;
+
+// Tailwind class helpers (use these instead of arbitrary values)
+export const tw = {
+  card:         'bg-[#0F1826] border border-white/[0.08] rounded-xl',
+  cardHover:    'hover:border-[rgba(0,212,255,0.25)] hover:shadow-[0_0_40px_rgba(0,212,255,0.35)] hover:-translate-y-0.5',
+  glass:        'bg-white/[0.06] backdrop-blur-xl border border-white/[0.08]',
+  glassStrong:  'bg-white/[0.10] backdrop-blur-xl border border-white/[0.12]',
+  electric:     'text-[#00D4FF]',
+  electricBg:   'bg-[rgba(0,212,255,0.15)]',
+  electricBorder: 'border-[rgba(0,212,255,0.60)]',
+  surface1:     'bg-[#0A0F1A]',
+  surface2:     'bg-[#0F1826]',
+  surface3:     'bg-[#162035]',
+  surface4:     'bg-[#1E2C4A]',
+} as const;
+```
+
+### Step 2: `src/lib/design/motion.ts`
+
+```typescript
+// src/lib/design/motion.ts
+// All animation variants + spring presets.
+// Re-exports springs from JARVISPageShell for backward compatibility.
+
+import type { Variants } from 'framer-motion';
+
+// ── Spring presets ───────────────────────────────────────────────────────────
+// Re-exported from JARVISPageShell (same values, single truth)
+export const springs = {
+  page:    { type: 'spring', stiffness: 280, damping: 26 } as const,  // page entry
+  panel:   { type: 'spring', stiffness: 300, damping: 28 } as const,  // panels, drawers
+  fast:    { type: 'spring', stiffness: 600, damping: 35 } as const,  // button presses
+  slow:    { type: 'spring', stiffness: 200, damping: 25 } as const,  // slow reveals
+  bouncy:  { type: 'spring', stiffness: 450, damping: 18 } as const,  // notifications, badges
+  gentle:  { type: 'spring', stiffness: 180, damping: 24 } as const,  // hover lifts
+} as const;
+
+// ── Page-level ───────────────────────────────────────────────────────────────
+// Wrap page root in <JARVISPageShell> instead — this variant is for nested pages
+export const pageVariants: Variants = {
+  hidden:  { opacity: 0, y: 16, filter: 'blur(4px)' },
+  visible: { opacity: 1, y: 0,  filter: 'blur(0px)',
+             transition: { ...springs.page, staggerChildren: 0.05 } },
+  exit:    { opacity: 0, y: -8, filter: 'blur(2px)',
+             transition: { duration: 0.15 } },
+};
+
+// ── Cards ────────────────────────────────────────────────────────────────────
+export const cardVariants: Variants = {
+  hidden:  { opacity: 0, y: 20, scale: 0.97 },
+  visible: { opacity: 1, y: 0,  scale: 1, transition: springs.page },
+  hover:   { y: -3, scale: 1.01, transition: springs.gentle },
+  tap:     { scale: 0.98, transition: springs.fast },
+};
+
+// ── Lists ────────────────────────────────────────────────────────────────────
+export const listContainerVariants: Variants = {
+  hidden:  { opacity: 0 },
+  visible: { opacity: 1,
+             transition: { staggerChildren: 0.04, delayChildren: 0.05 } },
+};
+export const listItemVariants: Variants = {
+  hidden:  { opacity: 0, x: -16 },
+  visible: { opacity: 1, x: 0, transition: springs.page },
+  exit:    { opacity: 0, x: 16, transition: { duration: 0.12 } },
+};
+
+// ── Status orb pulse ─────────────────────────────────────────────────────────
+export const pulseVariants: Variants = {
+  idle:    { scale: 1,    opacity: 1 },
+  pulse:   { scale: [1, 1.5, 1], opacity: [1, 0.3, 1],
+             transition: { duration: 1.8, repeat: Infinity, ease: 'easeInOut' } },
+  offline: { scale: 1,    opacity: 0.3 },
+};
+
+// ── Panels & modals ──────────────────────────────────────────────────────────
+export const panelVariants: Variants = {
+  hidden:  { opacity: 0, x: 24 },
+  visible: { opacity: 1, x: 0, transition: springs.panel },
+  exit:    { opacity: 0, x: 24, transition: { duration: 0.15 } },
+};
+export const backdropVariants: Variants = {
+  hidden:  { opacity: 0 },
+  visible: { opacity: 1, transition: { duration: 0.2 } },
+  exit:    { opacity: 0, transition: { duration: 0.15 } },
+};
+export const modalVariants: Variants = {
+  hidden:  { opacity: 0, scale: 0.93, y: 16 },
+  visible: { opacity: 1, scale: 1,    y: 0, transition: springs.page },
+  exit:    { opacity: 0, scale: 0.95, y: 8, transition: { duration: 0.15 } },
+};
+export const drawerVariants: Variants = {
+  hidden:  { y: '100%' },
+  visible: { y: 0, transition: { ...springs.panel, delay: 0.05 } },
+  exit:    { y: '100%', transition: { duration: 0.2 } },
+};
+
+// ── Counters & toasts ────────────────────────────────────────────────────────
+export const counterVariants: Variants = {
+  initial: { y: 12,  opacity: 0 },
+  animate: { y: 0,   opacity: 1, transition: springs.fast },
+  exit:    { y: -12, opacity: 0, transition: { duration: 0.1 } },
+};
+export const toastVariants: Variants = {
+  hidden:  { opacity: 0, y: 40, scale: 0.90 },
+  visible: { opacity: 1, y: 0,  scale: 1, transition: springs.bouncy },
+  exit:    { opacity: 0, y: 20, scale: 0.95, transition: { duration: 0.18 } },
+};
+
+// ── Skeleton shimmer CSS class ────────────────────────────────────────────────
+// Apply as className to skeleton placeholder elements
+export const SKELETON_CLASS =
+  'animate-pulse rounded bg-[#162035] relative overflow-hidden ' +
+  'before:absolute before:inset-0 before:bg-gradient-to-r ' +
+  'before:from-transparent before:via-white/[0.05] before:to-transparent ' +
+  'before:animate-shimmer';
+```
+
+### Step 3: `src/components/ui/StatusOrb.tsx`
+
+```typescript
+// src/components/ui/StatusOrb.tsx
+// Animated status indicator — used on ALL pages that show live state.
+// Automatically pulses when status is 'running' or 'pending'.
+
+import { motion } from 'framer-motion';
+import { useReducedMotion } from 'framer-motion';
+
+export type OrbStatus =
+  | 'running' | 'executing'        // electric pulse
+  | 'completed' | 'complete'        // emerald static
+  | 'failed' | 'error'              // rose static
+  | 'pending' | 'planning'          // amber pulse
+  | 'idle' | 'waiting'              // text3 static
+  | 'offline'                       // dark static
+  | string;                         // fallback
+
+const ORB_COLORS: Record<string, string> = {
+  running:   '#00D4FF', executing:  '#00D4FF',
+  completed: '#00E676', complete:   '#00E676',
+  failed:    '#FF3366', error:      '#FF3366',
+  pending:   '#FFB300', planning:   '#FFB300', waiting_human: '#FFB300',
+  idle:      '#5A7494', waiting:    '#5A7494',
+  offline:   '#2A3A52',
+};
+
+const ACTIVE_STATUSES = new Set([
+  'running', 'executing', 'pending', 'planning', 'waiting_human',
+]);
+
+interface StatusOrbProps {
+  status: OrbStatus;
+  /** Diameter in px. Default: 8 */
+  size?: number;
+  className?: string;
+}
+
+export function StatusOrb({ status, size = 8, className = '' }: StatusOrbProps) {
+  const reduce = useReducedMotion();
+  const color  = ORB_COLORS[status] ?? '#5A7494';
+  const active = ACTIVE_STATUSES.has(status);
+
+  return (
+    <span
+      className={`relative inline-flex shrink-0 ${className}`}
+      style={{ width: size, height: size }}
+      aria-label={`Status: ${status}`}
+      role="img"
+    >
+      {/* Pulse ring — only when active and motion is safe */}
+      {active && !reduce && (
+        <motion.span
+          className="absolute inset-0 rounded-full"
+          style={{ backgroundColor: color }}
+          animate={{ scale: [1, 1.9, 1], opacity: [0.6, 0, 0.6] }}
+          transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
+        />
+      )}
+      {/* Core dot */}
+      <span
+        className="relative rounded-full inline-block"
+        style={{ width: size, height: size, backgroundColor: color }}
+      />
+    </span>
+  );
+}
+```
+
+### Step 4: Upgrade `src/components/ui/EmptyState.tsx`
+
+**Current state:** Plain div, no motion, no Jarvis tokens.  
+**Target:** Animated icon float, stagger text + CTA, 3 visual variants.
+
+```typescript
+// src/components/ui/EmptyState.tsx — UPGRADED
+// Replaces the static version with animated Jarvis-style empty states.
+
+import type { ReactNode } from 'react';
+import { motion, useReducedMotion } from 'framer-motion';
+import { springs } from '@/lib/design/motion';
+
+export type EmptyStateVariant = 'float' | 'pulse' | 'orbit';
+
+interface EmptyStateProps {
+  /** Icon or SVG element */
+  icon?: ReactNode;
+  title: string;
+  description?: string;
+  action?: ReactNode;
+  /** Animation variant for the icon. Default: 'float' */
+  variant?: EmptyStateVariant;
+  className?: string;
+}
+
+const FLOAT_ANIM = {
+  animate: { y: [0, -8, 0] },
+  transition: { duration: 3, repeat: Infinity, ease: 'easeInOut' },
+};
+const PULSE_ANIM = {
+  animate: { scale: [1, 1.08, 1] },
+  transition: { duration: 2, repeat: Infinity, ease: 'easeInOut' },
+};
+const ORBIT_ANIM = {
+  animate: { rotate: 360 },
+  transition: { duration: 8, repeat: Infinity, ease: 'linear' },
+};
+
+export function EmptyState({
+  icon,
+  title,
+  description,
+  action,
+  variant = 'float',
+  className = '',
+}: EmptyStateProps) {
+  const reduce = useReducedMotion();
+
+  const iconAnim =
+    reduce ? {} :
+    variant === 'float' ? FLOAT_ANIM :
+    variant === 'pulse' ? PULSE_ANIM : ORBIT_ANIM;
+
+  const containerVariants = {
+    hidden:  { opacity: 0 },
+    visible: {
+      opacity: 1,
+      transition: reduce ? {} : { staggerChildren: 0.1, delayChildren: 0.1 },
+    },
+  };
+  const itemVariants = {
+    hidden:  { opacity: 0, y: 8 },
+    visible: { opacity: 1, y: 0, transition: springs.page },
+  };
+
+  return (
+    <motion.div
+      variants={containerVariants}
+      initial="hidden"
+      animate="visible"
+      className={`flex flex-col items-center justify-center py-16 px-6 text-center gap-3 ${className}`}
+    >
+      {icon && (
+        <motion.div
+          {...iconAnim}
+          className="text-[#00D4FF] opacity-40 mb-1"
+        >
+          {icon}
+        </motion.div>
+      )}
+      <motion.p variants={itemVariants} className="text-sm font-medium text-[#F0F6FF]">
+        {title}
+      </motion.p>
+      {description && (
+        <motion.p variants={itemVariants} className="text-xs text-[#5A7494] max-w-xs">
+          {description}
+        </motion.p>
+      )}
+      {action && (
+        <motion.div variants={itemVariants} className="mt-1">
+          {action}
+        </motion.div>
+      )}
+    </motion.div>
+  );
+}
+```
+
+---
+
+## Phase 1 — Quick Wins: 20 JARVISPageShell-Only Pages
+
+These pages already have the page-entrance animation from `<JARVISPageShell>`.  
+The work is: wrap their **card grids** in `<JARVISStagger>` and **each card/row** in `<JARVISStaggerItem>`.
+
+**Estimated effort:** ~30 min per page.  
+**Visual impact:** Immediate — every list and grid will stagger in.
+
+### Pages in This Phase
+
+```
+features/agents/AgentDashboardPage.tsx
+features/agents/AgentDetailPage.tsx
+features/agents/AgentsListPage.tsx
+features/analytics/AnalyticsDashboardPage.tsx
+features/approvals/ApprovalsPage.tsx
+features/collaboration/CollaborationPage.tsx
+features/dashboard/DashboardPage.tsx
+features/eval/EvalPage.tsx
+features/goals/GoalDetailPage.tsx
+features/goals/GoalsListPage.tsx
+features/knowledge/KnowledgePage.tsx
+features/marketplace/MarketplacePage.tsx
+features/memory/MemoryExplorerPage.tsx
+features/notifications/NotificationCenterPage.tsx
+features/observability/CostDashboardPage.tsx
+features/observability/ObservabilityPage.tsx
+features/schedules/SchedulesPage.tsx
+features/settings/BillingPage.tsx
+features/settings/SettingsPage.tsx
+features/tools/ToolsPage.tsx
+```
+
+### Pattern to Apply (same for all 20)
+
+```tsx
+// BEFORE:
+<div className="grid grid-cols-3 gap-4">
+  {items.map(item => <ItemCard key={item.id} item={item} />)}
+</div>
+
+// AFTER:
+import { JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
+import { StatusOrb } from '@/components/ui/StatusOrb';
+
+<JARVISStagger className="grid grid-cols-3 gap-4">
+  {items.map(item => (
+    <JARVISStaggerItem key={item.id}>
+      <ItemCard item={item} />
+    </JARVISStaggerItem>
+  ))}
+</JARVISStagger>
+
+// For status orbs in those cards (replace inline colored dots):
+// BEFORE: <span className="w-2 h-2 rounded-full bg-green-400" />
+// AFTER:  <StatusOrb status={item.status} size={8} />
+```
+
+### Page-Specific Notes
+
+**DashboardPage:**
+- Wrap KPI stat cards in `<JARVISStagger staggerMs={80}>`
+- Wrap activity feed items in `<JARVISStagger staggerMs={40}>`
+- Wrap agent grid in `<JARVISStagger staggerMs={60}>`
+
+**GoalsListPage:**
+- Wrap goal rows in `<JARVISStagger staggerMs={40}>`
+- Replace inline status dots with `<StatusOrb status={goal.status} />`
+
+**AgentsListPage:**
+- Wrap agent cards in `<JARVISStagger staggerMs={60}>`
+- Replace inline status indicators with `<StatusOrb status={agent.status} />`
+
+**ApprovalsPage:**
+- Wrap approval cards in `<JARVISStagger staggerMs={60}>`
+- Urgent cards: add `className="ring-1 ring-[#FF3366]/30"` on stagger item
+
+**MarketplacePage:**
+- Wrap template cards in `<JARVISStagger staggerMs={50}>`
+
+**NotificationCenterPage:**
+- Wrap notification items in `<JARVISStagger staggerMs={35}>`
+
+---
+
+## Phase 2 — 54 Zero-Animation Pages
+
+Priority order: highest user-traffic pages first.
+
+### Priority Tier 1 — Core User Journey (implement first)
+
+#### `features/auth/AuthPage.tsx`
+
+```
+What to add:
+1. Wrap root in <JARVISPageShell> (page entrance blur+y)
+2. Wrap form card in <motion.div variants={cardVariants}>
+3. Plan badge reveal: AnimatePresence + y:-8→0 on API key validated
+4. Error state: x shake animation [-8,8,-8,8,0] 300ms
+5. Submit button: <JARVISButton type="submit">
+
+Key motion elements:
+- Logo: scale pulse 1→1.05→1, 2s loop (springs.gentle)
+- Input focus: CSS transition border-color to #00D4FF (Tailwind focus:border-[#00D4FF])
+- Plan badge: motion.div y:-8→0 springs.bouncy after API key blur
+- Wrong key: form shake: animate={{ x: [0,-8,8,-8,8,0] }}
+```
+
+#### `features/auth/MFAVerifyPage.tsx`
+
+```
+What to add:
+1. Wrap in <JARVISPageShell>
+2. Shield icon: scale 0→1 springs.bouncy on mount
+3. Digit inputs: auto-advance with electric focus ring (CSS)
+4. Wrong code: all inputs shake + rose border
+5. Success: ✅ scale 0→1.3→1 springs.bouncy + emerald glow
+```
+
+#### `features/goals/GoalsListPage.tsx` (already has JARVISPageShell)
+
+```
+Inner elements to animate:
+1. Goal input bar focus: CSS border transition to electric
+2. Status orbs: replace with <StatusOrb status={goal.status} />
+3. Goal rows: already wrapped — ensure JARVISStaggerItem applied
+4. Running goal progress bar: motion.div width spring animation
+```
+
+#### `features/goals/GoalDetailPage.tsx` (already has JARVISPageShell)
+
+```
+Inner elements to animate:
+1. Plan step tracker: each step uses JARVISStaggerItem with 0.08s stagger
+2. ✅ completed step: scale 0→1.2→1 springs.bouncy + emerald background flash
+3. 🔄 active step: pulseVariants.pulse ring animation
+4. Step accordion expand: AnimatePresence + height auto springs.page
+5. LangSmith link hover: scale 1.05 springs.fast
+```
+
+### Priority Tier 1 — Remaining Core Pages
+
+**Pattern for all:** Same 4-step approach:
+1. Wrap root in `<JARVISPageShell>` (or confirm it already is)
+2. Wrap all lists/grids in `<JARVISStagger>`
+3. Wrap list items in `<JARVISStaggerItem>`
+4. Replace status dots with `<StatusOrb>`
+
+Apply to these in order:
+
+```
+features/agents/AgentCreatePage.tsx     — NL/manual tab AnimatePresence
+features/agents/AgentDetailPage.tsx     — already has shell, add inner stagger
+features/agents/AgentRadarPage.tsx      — D3 radar: axes stagger out springs.slow
+features/agents/AgentIdentityPage.tsx   — avatar drop zone ring animation
+features/agents/AgentPersonalityPage.tsx — slider spring thumb (whileDrag)
+features/audit/AuditExplorerPage.tsx    — audit rows stagger, rose for errors
+features/governance/GovernancePage.tsx  — timeline stagger, hash verify animation
+features/ingestion/SourcesPage.tsx      — drop zone conic border, queue stagger
+features/knowledge/KnowledgePage.tsx    — already has shell, add card stagger
+features/connectors/ConnectorsCatalogPage.tsx — category filter AnimatePresence
+features/connectors/ConnectorsRegisteredPage.tsx — health orb StatusOrb
+features/connectors/ConnectorDetailPage.tsx — tool rows stagger
+features/channels/ChannelMappingsPage.tsx — channel card stagger
+features/compliance/CompliancePage.tsx  — score arc springs.slow
+features/domains/DomainsPage.tsx        — tree expand spring height
+features/domains/DomainDetailPage.tsx   — tab content y:8→0
+features/enterprise/EnterprisePage.tsx  — feature card stagger
+features/eval/EvalPage.tsx              — already has shell, add score bars
+features/gateway/GatewaySettingsPage.tsx — already has motion, add shell
+features/settings/BudgetManagerPage.tsx  — gauge fill spring
+features/settings/GuardrailCenterPage.tsx — rule card stagger
+features/settings/RoleEditorPage.tsx     — already has motion, add shell
+features/settings/ScopeExplorerPage.tsx  — scope tree spring height
+features/simulation/SimulationPage.tsx  — simulation banner animation
+features/skills/SkillsPage.tsx          — skill card stagger
+features/status/StatusPage.tsx          — uptime bars stagger fill
+features/templates/TemplateLibraryPage.tsx — template card stagger
+features/tools/ToolsPage.tsx            — already has shell, add stagger
+features/training/TrainingExportPage.tsx — progress bar spring fill
+features/triggers/TriggersPage.tsx      — trigger rows stagger
+```
+
+### Priority Tier 2 — Secondary Pages
+
+```
+features/a2a/A2APage.tsx
+features/admin/AdminPage.tsx
+features/analytics/SelfImprovementPage.tsx
+features/artifacts/ArtifactsBrowserPage.tsx
+features/auth/SSOCallbackPage.tsx
+features/builder/BuilderPage.tsx
+features/chat/ChatPage.tsx
+features/chat/AgentMemoryPage.tsx
+features/civilization/CivilizationPage.tsx
+features/collaboration/CollaborationPage.tsx   — already has shell
+features/connectors/OAuthCallbackPage.tsx
+features/coordination/CoordinationRunPage.tsx
+features/errors/NotFoundPage.tsx
+features/goals/GhostRunPage.tsx
+features/goals/GoalDiffPage.tsx
+features/goals/GoalDNAPage.tsx
+features/integrations/IntegrationsPage.tsx
+features/knowledge-graph/GraphExplorerPage.tsx
+features/lab/AgentLabPage.tsx
+features/landing/LandingPage.tsx
+features/marketplace/MarketplacePage.tsx    — already has shell
+features/memory/MemoryExplorerPage.tsx      — already has shell
+features/notifications/NotificationCenterPage.tsx — already has shell
+features/observability/CostDashboardPage.tsx — already has shell
+features/observability/ObservabilityPage.tsx — already has shell
+features/ocr/OcrPage.tsx
+features/onboarding/OnboardingPage.tsx
+features/org/OrgListPage.tsx                — already has motion
+features/org/OrgPage.tsx                    — already has motion
+features/org/StrategicAdvisorPage.tsx       — already has motion
+features/perception/PerceptionPage.tsx
+features/playground/PlaygroundPage.tsx
+features/rbac/RbacPage.tsx
+features/rpa/RpaLivePage.tsx
+features/schedules/SchedulesPage.tsx        — already has shell
+features/security/SecurityCenterPage.tsx
+features/settings/BillingPage.tsx          — already has shell
+features/settings/SettingsPage.tsx         — already has shell
+features/state-machines/StateMachinesPage.tsx
+features/workflow-builder/WorkflowBuilderPage.tsx
+```
+
+### Priority Tier 3 — Workflow Sub-Pages (partial motion exists, standardize)
+
+```
+features/workflow/ApprovalInboxPage.tsx     — already has motion, add shell
+features/workflow/WorkflowAnalyticsPage.tsx — already has motion, add shell
+features/workflow/WorkflowBuilderPage.tsx   — already has motion, add shell
+features/workflow/WorkflowListPage.tsx      — already has motion, add shell
+features/workflow/WorkflowMarketplacePage.tsx — already has motion, add shell
+features/workflow/WorkflowRunDetailPage.tsx — already has motion, add shell
+features/workflow/WorkflowRunsPage.tsx      — already has motion, add shell
+features/workflow/WorkflowSettingsPage.tsx  — already has motion, add shell
+```
+
+For all Tier 3 pages: wrap in `<JARVISPageShell>` and replace `duration`-based transitions with spring equivalents.
+
+---
+
+## Phase 3 — Polish Pass
+
+After Phase 2, apply these cross-cutting polish items:
+
+### 3.1 Hover States on All Interactive Cards
+
+Every card that is clickable/navigable needs:
+```tsx
+// Add to the card's motion.div or JARVISStaggerItem wrapper:
+whileHover={{ y: -3, transition: springs.gentle }}
+whileTap={{ scale: 0.98, transition: springs.fast }}
+// And these Tailwind classes:
+className="... transition-shadow hover:shadow-[0_0_40px_rgba(0,212,255,0.35)]
+           hover:border-[rgba(0,212,255,0.25)] cursor-pointer"
+```
+
+### 3.2 Empty States — Replace Static with Animated
+
+Every page that currently shows `<EmptyState>` benefits from:
+```tsx
+// BEFORE (static):
+<EmptyState title="No goals yet" />
+
+// AFTER (animated, with icon):
+import { Target } from 'lucide-react';
+<EmptyState
+  icon={<Target size={40} />}
+  title="No goals yet"
+  description="Define a goal and deploy your agents"
+  variant="float"
+  action={<button>Create First Goal</button>}
+/>
+```
+
+### 3.3 Replace All Inline Status Dots
+
+Search pattern: `className="w-2 h-2 rounded-full bg-green` (and similar)  
+Replace with: `<StatusOrb status={...} size={8} />`
+
+### 3.4 Fix Duration-Based Transitions to Springs
+
+Search: `transition={{ duration:` in any feature page  
+Replace: use spring equivalents from `springs` — never `duration`/`ease` for UI motion.
+
+```tsx
+// WRONG:
+transition={{ duration: 0.3, ease: 'easeOut' }}
+
+// RIGHT:
+transition={springs.page}       // for enters/exits
+transition={springs.fast}       // for button presses
+transition={springs.bouncy}     // for notifications/badges
+transition={springs.gentle}     // for hover lifts
+```
+
+### 3.5 Loading Skeleton Upgrade
+
+Every page that shows loading state should use animated skeletons:
+```tsx
+// BEFORE:
+<div className="h-8 bg-gray-200 rounded animate-pulse" />
+
+// AFTER:
+import { Skeleton } from '@/components/ui/Skeleton';
+<Skeleton className="h-8 w-full" />
+// (Skeleton.tsx already exists — ensure it uses SKELETON_CLASS from motion.ts)
+```
+
+---
+
+## Accessibility Requirements (All Phases)
+
+Per WCAG 2.2 AA — apply alongside every animation:
+
+1. **`useReducedMotion` compliance:** All motion already handled by `JARVISPageShell` and the `springs` approach. `JARVISStagger` already checks `useReducedMotion()`.
+
+2. **`aria-label` on icon-only buttons:**
+   ```tsx
+   // Every icon-only button needs aria-label:
+   <JARVISButton aria-label="Cancel goal">
+     <X size={16} />
+   </JARVISButton>
+   ```
+
+3. **`aria-live` for dynamic content:**
+   ```tsx
+   // SSE-driven content needs aria-live:
+   <div aria-live="polite" aria-atomic="true">
+     {streamingOutput}
+   </div>
+   ```
+
+4. **Focus management on modals:** Use `autoFocus` on first interactive element inside `motion.div` modal wrappers.
+
+5. **Touch targets:** Minimum 44×44px on mobile for all interactive elements.
+
+---
+
+## TypeScript Requirements
+
+All new files must:
+- Use strict TypeScript (`"strict": true` already in tsconfig)
+- No `any` types — use `unknown` and narrow
+- Export named types alongside components
+- Use `as const` for config objects (enables literal type inference)
+
+---
+
+## Testing Requirements
+
+Per project TDD mandate — write tests BEFORE implementation:
+
+```
+For each Phase 0 file:
+  - tokens.ts: verify all values are strings (snapshot test)
+  - motion.ts: verify spring values match expected (snapshot)
+  - StatusOrb.tsx: renders for all 8+ status values, pulse when active
+  - EmptyState.tsx: renders, icon floats when motion safe, static when reduced
+
+For each Phase 1 page:
+  - Renders with stagger (smoke test)
+  - Stagger items visible after animation
+  - StatusOrb present for status fields
+
+For each Phase 2/3 page:
+  - Renders without crashing (smoke)
+  - JARVISPageShell wrapping present
+  - No duration-based transitions remain
+```
+
+---
+
+## Completion Checklist
+
+### Phase 0 — Foundation ❌ (not started)
+- [ ] `src/lib/design/tokens.ts` created
+- [ ] `src/lib/design/motion.ts` created
+- [ ] `src/components/ui/StatusOrb.tsx` created
+- [ ] `src/components/ui/EmptyState.tsx` upgraded with animation
+- [ ] All 4 files have tests
+- [ ] TypeScript: 0 new errors
+
+### Phase 1 — 20 Shell-Only Pages ❌ (not started)
+- [ ] DashboardPage: KPI stagger + activity stagger + agent grid stagger
+- [ ] GoalsListPage: row stagger + StatusOrb
+- [ ] AgentsListPage: card stagger + StatusOrb
+- [ ] ApprovalsPage: card stagger + urgent rose ring
+- [ ] CollaborationPage: stagger
+- [ ] EvalPage: stagger
+- [ ] KnowledgePage: collection card stagger
+- [ ] MarketplacePage: template card stagger
+- [ ] MemoryExplorerPage: memory card stagger
+- [ ] NotificationCenterPage: notification stagger
+- [ ] CostDashboardPage: stagger
+- [ ] ObservabilityPage: trace row stagger
+- [ ] SchedulesPage: schedule row stagger
+- [ ] BillingPage: invoice row stagger
+- [ ] SettingsPage: settings section stagger
+- [ ] ToolsPage: tool row stagger
+- [ ] AgentDashboardPage: chart stagger
+- [ ] AgentDetailPage: tab content stagger
+- [ ] AnalyticsDashboardPage: chart stagger
+- [ ] GoalDetailPage: step stagger + accordion
+
+### Phase 2 — 54 Zero-Animation Pages ❌ (not started)
+- [ ] Tier 1: ~30 priority pages (auth, agents sub-pages, audit, governance, ingestion, connectors, channels, compliance, domains, enterprise, settings sub-pages, simulation, skills, status, templates, training, triggers)
+- [ ] Tier 2: ~20 secondary pages
+- [ ] Tier 3: 8 workflow sub-pages (standardize existing motion)
+
+### Phase 3 — Polish ❌ (not started)
+- [ ] Hover states on all clickable cards
+- [ ] All empty states upgraded
+- [ ] All inline status dots → StatusOrb
+- [ ] All duration-based transitions → springs
+- [ ] Loading skeletons animated
+
+### Final Verification
+- [ ] 0 pages with `score < 2` in Jarvis audit script
+- [ ] TypeScript: 0 errors
+- [ ] Lighthouse Accessibility ≥ 95 on core pages
+- [ ] `prefers-reduced-motion` tested manually
+- [ ] `npm run test` passes
+
+---
+
+## Page-by-Page Animation Detail
+
+### dashboard — `DashboardPage.tsx`
+**Current:** JARVISPageShell only  
+**Target animation:**
+- KPI cards: `JARVISStagger staggerMs={80}` + `JARVISStaggerItem`
+- Activity feed (SSE): new item enters top (y:-16→0, springs.bouncy)
+- Agent grid: `JARVISStagger staggerMs={60}`, orbs → `<StatusOrb>`
+- Quick goal bar focus: CSS `focus:border-[#00D4FF] focus:shadow-[0_0_20px_rgba(0,212,255,0.15)]`
+
+### goals/GoalsListPage — `GoalsListPage.tsx`
+**Current:** JARVISPageShell only  
+**Target:**
+- Goal rows: `JARVISStagger staggerMs={40}` + `JARVISStaggerItem`
+- Status column: `<StatusOrb status={goal.status} />`
+- Running goal: progress bar `motion.div` width from `0%` to `${pct}%` with springs.page
+
+### goals/GoalDetailPage — `GoalDetailPage.tsx`
+**Current:** JARVISPageShell only  
+**Target:**
+- Plan steps: `JARVISStagger staggerMs={80}` on step list
+- Completed step: `motion.div` scale 0→1.2→1 springs.bouncy + emerald flash (background-color animation)
+- Active step: `<StatusOrb status="running" size={10} />` + pulsing ring
+- Step accordion: `AnimatePresence` + `motion.div` height `0→auto`
+
+### agents/AgentsListPage — `AgentsListPage.tsx`
+**Current:** JARVISPageShell only  
+**Target:**
+- Card grid: `JARVISStagger staggerMs={60}` + `JARVISStaggerItem`
+- Status orb: `<StatusOrb status={agent.status} size={10} />`
+- Card hover: `whileHover={{ y: -3 }}` + CSS shadow transition
+
+### agents/AgentDetailPage — `AgentDetailPage.tsx`
+**Current:** JARVISPageShell only  
+**Target:**
+- Tab content: `AnimatePresence mode="wait"` + `motion.div` y:8→0 per tab
+- Readiness score: `motion.div` arc (SVG strokeDashoffset) from 0 to score
+- Tool list: `JARVISStagger staggerMs={30}` + `JARVISStaggerItem`
+
+### agents/AgentDashboardPage — `AgentDashboardPage.tsx`
+**Current:** JARVISPageShell only  
+**Target:**
+- KPI strip: `JARVISStagger staggerMs={80}`
+- Charts: D3 path draw-in via CSS stroke-dashoffset animation
+
+### agents/AgentRadarPage — `AgentRadarPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- D3 `ThemedRadarChart`: axes animate outward (JS-driven stagger in D3)
+- Score bars below: `JARVISStagger` + fill animation via `motion.div` width
+
+### agents/AgentCreatePage — `AgentCreatePage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Tab switch: `AnimatePresence` x:±30→0 springs.page
+- Submit button: `<JARVISButton type="submit">`
+- Success navigate: brief emerald flash before navigate
+
+### agents/AgentIdentityPage — `AgentIdentityPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Avatar drop zone: `whileHover={{ scale: 1.02 }}` + CSS conic border via Tailwind
+- Drag active: `animate={{ scale: 1.04, borderColor: '#00D4FF' }}`
+- Save button: `<JARVISButton>`
+
+### agents/AgentPersonalityPage — `AgentPersonalityPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Sliders: `whileDrag` spring physics thumb (custom slider or range input CSS)
+- Pill selection: selected pill `animate={{ scale: 1.05 }}` springs.fast
+- Save button: `<JARVISButton>`
+
+### analytics/AnalyticsDashboardPage — `AnalyticsDashboardPage.tsx`
+**Current:** JARVISPageShell only  
+**Target:**
+- KPI row: `JARVISStagger staggerMs={80}`
+- Chart cards: `JARVISStagger staggerMs={100}` + `JARVISStaggerItem`
+
+### analytics/SelfImprovementPage — `SelfImprovementPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Prompt version nodes: `JARVISStagger` horizontal
+- A/B winner badge: scale 0→1.2→1 springs.bouncy + emerald flash
+
+### approvals/ApprovalsPage — `ApprovalsPage.tsx`
+**Current:** JARVISPageShell only  
+**Target:**
+- Pending cards: `JARVISStagger staggerMs={60}`
+- Urgent card: `className="ring-1 ring-[#FF3366]/30"` + amber pulse badge
+- Approve action: `AnimatePresence` exit x:40 emerald flash
+- Reject action: exit x:-40 rose flash
+
+### artifacts/ArtifactsBrowserPage — `ArtifactsBrowserPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Grid: `JARVISStagger staggerMs={40}`
+- Thumbnail: `initial={{ filter: 'blur(8px)' }} animate={{ filter: 'blur(0px)' }}`
+
+### audit/AuditExplorerPage — `AuditExplorerPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Timeline rows: `JARVISStagger staggerMs={35}`
+- Security event rows: `className="border-l-2 border-[#FF3366]/50"`
+- New SSE event: `JARVISStaggerItem` entry from top
+
+### auth/AuthPage — (see Phase 2 section above)
+### auth/MFAVerifyPage — (see Phase 2 section above)
+### auth/SSOCallbackPage
+**Target:** Wrap in `<JARVISPageShell>`. Electric spinner. Status typewriter text.
+
+### builder/BuilderPage — `BuilderPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Node spring physics on drag release (handled by @xyflow/react built-in)
+- Selected node: `animate={{ boxShadow: '0 0 0 2px #00D4FF' }}`
+
+### channels/ChannelMappingsPage — `ChannelMappingsPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Channel cards: `JARVISStagger staggerMs={60}` + `JARVISStaggerItem`
+- Connected status: `<StatusOrb status="running" />` (using running for connected)
+
+### chat/ChatPage — `ChatPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Messages: `JARVISStaggerItem` per message
+- User msg: `initial={{ x: 16 }}` animate to 0 springs.page
+- AI msg: `initial={{ x: -16 }}` animate to 0 springs.page
+- Typing indicator: 3-dot stagger scale 0.5→1→0.5
+
+### chat/AgentMemoryPage — `AgentMemoryPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Memory cards: `JARVISStagger staggerMs={40}` + virtualized
+- Forget action: scale 0 + opacity 0 exit springs.fast + rose flash
+
+### civilization/CivilizationPage — `CivilizationPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- D3 globe: continuous rotation animation (JS-driven, slow 2rpm)
+- Stats row: `JARVISStagger staggerMs={80}`
+
+### collaboration/CollaborationPage — `CollaborationPage.tsx`
+**Current:** JARVISPageShell only  
+**Target:**
+- Presence avatars: `JARVISStagger staggerMs={50}` + bouncy enter
+- Remote cursor: `motion.div` spring-follow (update position with springs.gentle)
+
+### compliance/CompliancePage — `CompliancePage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Score arcs: SVG arc draw-in animation (strokeDashoffset 0→circumference×score)
+- Score cards: `JARVISStagger staggerMs={80}`
+- Gap rows: `JARVISStagger staggerMs={40}`
+
+### connectors/ (all 4 pages)
+**Target pattern:** `<JARVISPageShell>` + `JARVISStagger` on card/row grids + `<StatusOrb>` for health
+
+### coordination/CoordinationRunPage — `CoordinationRunPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Agent graph: D3 force spring settle (JS-driven)
+- Messages: `JARVISStaggerItem` per message, direction based on sender
+
+### domains/ (2 pages)
+**Target:** `<JARVISPageShell>` + tree spring height expand + new domain springs.bouncy
+
+### enterprise/EnterprisePage — `EnterprisePage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Feature cards: `JARVISStagger staggerMs={70}` + `JARVISStaggerItem`
+
+### errors/NotFoundPage — `NotFoundPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- 404 text: CSS glitch keyframe animation (translateX ±3px + opacity flicker)
+- "Signal lost" text: typewriter 40ms/char after 300ms delay
+- CTA buttons: `JARVISButton` with springs.bouncy enter (delay 0.4s)
+
+### eval/EvalPage — `EvalPage.tsx`
+**Current:** JARVISPageShell only  
+**Target:**
+- Run rows: `JARVISStagger staggerMs={40}`
+- Score bars: `motion.div` width 0→score% springs.page
+- Delta badges: `motion.span` counterVariants color (emerald/rose/amber)
+
+### gateway/GatewaySettingsPage — `GatewaySettingsPage.tsx`
+**Current:** motion.div present (score 3) — add JARVISPageShell  
+**Target:** Wrap in `<JARVISPageShell>`. Route health: `<StatusOrb>`.
+
+### goals/ sub-pages (GhostRunPage, GoalDiffPage, GoalDNAPage)
+**Target:**
+- All: wrap in `<JARVISPageShell>`
+- GoalDiffPage: panes slide from sides simultaneously springs.page
+- GoalDNAPage: D3 force knowledge graph spring settle
+- GhostRunPage: scrubber thumb `whileDrag` spring physics
+
+### governance/GovernancePage — `GovernancePage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Timeline rows: `JARVISStagger staggerMs={35}`
+- Hash verify: sequential chain verification animation (JS-driven)
+
+### ingestion/SourcesPage — `SourcesPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Drop zone: `whileHover={{ scale: 1.01 }}` + CSS conic gradient border
+- Queue items: `JARVISStagger staggerMs={50}`
+- Progress bars: `motion.div` width spring animation
+
+### integrations/IntegrationsPage — `IntegrationsPage.tsx`
+**Current:** Zero animation  
+**Target:** Same as ConnectorsCatalogPage
+
+### knowledge-graph/GraphExplorerPage — `GraphExplorerPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- D3/xyflow nodes: spring physics settle on mount (JS-driven)
+- Selected node: `animate={{ scale: 1.2, filter: 'drop-shadow(0 0 8px #00D4FF)' }}`
+
+### lab/AgentLabPage — `AgentLabPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Run button: `<JARVISButton>` + springs.fast press
+- Compare pane: `AnimatePresence` + panelVariants from right
+
+### landing/LandingPage — `LandingPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell delay={0}>`
+- Hero text: pageVariants with blur
+- CTA buttons: `JARVISButton` springs.bouncy enter
+- Feature sections: `IntersectionObserver` → trigger `JARVISStagger`
+
+### marketplace/MarketplacePage — `MarketplacePage.tsx`
+**Current:** JARVISPageShell only  
+**Target:**
+- Template cards: `JARVISStagger staggerMs={50}` + `JARVISStaggerItem`
+- Category tab switch: `AnimatePresence` content fade
+
+### memory/MemoryExplorerPage — `MemoryExplorerPage.tsx`
+**Current:** JARVISPageShell only  
+**Target:**
+- Memory cards: `JARVISStagger staggerMs={40}` + virtualized list
+- Tab switch: `AnimatePresence` + y:8→0
+- D3 cluster: force spring settle
+
+### notifications/NotificationCenterPage — `NotificationCenterPage.tsx`
+**Current:** JARVISPageShell only  
+**Target:**
+- Notification items: `JARVISStagger staggerMs={35}`
+- New SSE item: `initial={{ y: -16 }}` + springs.bouncy entry
+- Mark read: opacity 1→0.6 transition
+
+### observability/ (both pages)
+**Current:** JARVISPageShell only  
+**Target:**
+- Trace rows: `JARVISStagger staggerMs={30}` + virtualized
+- Duration bars: `motion.div` width 0→px springs.page
+- CostDashboard gauges: fill springs.page
+
+### ocr/OcrPage — `OcrPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Bounding boxes: scale 0.95→1 stagger springs.page
+- Confidence bars: `motion.div` width spring animation
+
+### onboarding/OnboardingPage — `OnboardingPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Step transition: `AnimatePresence` x:±40→0 springs.page
+- Final step: confetti + `animate={{ scale: [1, 1.3, 1] }}` springs.bouncy
+
+### org/ (3 pages)
+**Current:** OrgPage + OrgListPage + StrategicAdvisorPage have motion (score 2-3)  
+**Target:** Add `<JARVISPageShell>` to OrgListPage and StrategicAdvisorPage. Ensure no duration-based transitions.
+
+### perception/PerceptionPage — `PerceptionPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Bounding boxes: stagger appearance springs.page
+- Confidence bars: spring fill animation
+
+### playground/PlaygroundPage — `PlaygroundPage.tsx`
+**Current:** Zero animation  
+**Target:** Same as AgentLabPage pattern
+
+### rbac/RbacPage — `RbacPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Permission matrix: `JARVISStagger` rows + `JARVISStaggerItem` per row
+- Toggle: scale flip springs.fast
+
+### rpa/RpaLivePage — `RpaLivePage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Step list: `JARVISStagger staggerMs={50}`
+- Active step: `animate={{ borderLeft: '2px solid #00D4FF' }}`
+
+### schedules/SchedulesPage — `SchedulesPage.tsx`
+**Current:** JARVISPageShell only  
+**Target:**
+- Schedule rows: `JARVISStagger staggerMs={45}`
+- Active toggle: `<StatusOrb>` transitions color springs.fast
+
+### security/SecurityCenterPage — `SecurityCenterPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- OWASP grid: `JARVISStagger staggerMs={50}` + `JARVISStaggerItem`
+- Score arc: SVG draw-in animation
+- ⚠ items: amber pulse ring after mount
+
+### settings/ sub-pages
+- **BillingPage** (has shell): Add gauge fill `motion.div` width springs.page
+- **BudgetManagerPage**: Wrap + gauge animation + slider spring
+- **GuardrailCenterPage**: Wrap + rule card stagger + toggle springs.fast
+- **RoleEditorPage** (has motion): Add shell, ensure spring physics
+- **ScopeExplorerPage**: Wrap + tree height springs.page
+
+### simulation/SimulationPage — `SimulationPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- SIMULATION banner: amber/violet gradient border + bouncy entry
+- Simulated badge: violet springs.bouncy first appear
+
+### skills/SkillsPage — `SkillsPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Skill cards: `JARVISStagger staggerMs={60}` + `JARVISStaggerItem`
+- Enable orb: `<StatusOrb status="running" />` when enabled
+
+### state-machines/StateMachinesPage — `StateMachinesPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- @xyflow/react canvas: spring physics on node drag (built-in)
+- State hover: `whileHover={{ scale: 1.05 }}`
+
+### status/StatusPage — `StatusPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Component rows: `JARVISStagger staggerMs={40}`
+- Status orbs: `<StatusOrb status={component.status} />`
+- Uptime bars: `JARVISStagger staggerMs={8}` (one per day = fine-grained)
+
+### templates/TemplateLibraryPage — `TemplateLibraryPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Template cards: `JARVISStagger staggerMs={50}` + `JARVISStaggerItem`
+
+### tools/ToolsPage — `ToolsPage.tsx`
+**Current:** JARVISPageShell only  
+**Target:**
+- Tool rows: `JARVISStagger staggerMs={30}` (virtualized)
+- Risk badge: color springs.fast on hover
+
+### training/TrainingExportPage — `TrainingExportPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Job cards: `JARVISStagger staggerMs={60}`
+- Progress bar: `motion.div` width spring animation from 0 to `${pct}%`
+
+### triggers/TriggersPage — `TriggersPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- Trigger rows: `JARVISStagger staggerMs={45}`
+- Active orb: `<StatusOrb status="running" />` when enabled
+
+### workflow-builder/WorkflowBuilderPage — `WorkflowBuilderPage.tsx`
+**Current:** Zero animation  
+**Target:**
+- Wrap in `<JARVISPageShell>`
+- @xyflow/react canvas: spring node physics built-in
+- Step palette items: `JARVISStaggerItem` each
+
+### workflow/ sub-pages (8 pages — standardize)
+All 8 need `<JARVISPageShell>` added. Replace any `duration`-based transitions with springs.
+Existing `motion.div` elements are valid — just add the shell wrapper.
+
+---
+
+## Success Criteria
+
+When this revamp is complete:
+
+```
+Jarvis audit script output:
+  Score 0 (no Jarvis):        0 / 87  ← was 54
+  Score 1 (shell only):       0 / 87  ← was 20
+  Score 2-3 (partial):        0 / 87  ← was 13
+  Score 4+ (good Jarvis):    87 / 87  ← was 0
+
+Design system files:
+  ✅ src/lib/design/tokens.ts
+  ✅ src/lib/design/motion.ts
+  ✅ src/components/ui/StatusOrb.tsx
+  ✅ src/components/ui/EmptyState.tsx (animated)
+
+No duration-based transitions in any Page.tsx
+All StatusOrb replaces all inline colored status dots
+All empty states show animated icons
+All interactive cards have hover lift + glow
+prefers-reduced-motion: all animations respect it
+TypeScript: 0 new errors
+```
