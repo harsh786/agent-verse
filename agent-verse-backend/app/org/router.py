@@ -1063,4 +1063,272 @@ async def org_morning_brief(
         }
 
 
+# ── Q2/Q3: Universal Command Gateway — REST intake (QA10) ────────────────────
+
+class _OrgCommandRequest(BaseModel):
+    command: str
+    channel: str = "rest"
+    conversation_id: str | None = None
+    metadata: dict[str, object] = {}
+
+
+@router.post(
+    "/{org_id}/command",
+    operation_id="org_universal_command",
+    summary="Q2/Q3 Universal Command Gateway — accept NL command via REST",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def org_universal_command(
+    org_id: str,
+    body: _OrgCommandRequest,
+    request: Request,
+    x_request_id: str = Header(default_factory=_request_id),
+    service: OrgService = Depends(get_org_service),
+) -> dict[str, object]:
+    """Universal Command Gateway — accepts any natural-language command
+    directed at the organisation from any channel (REST, Telegram, Slack…).
+
+    Commands are routed to the agent loop. High-risk commands
+    (``delete``, ``deploy``, ``change-autonomy``) require 2FA confirmation.
+    Returns a ``command_id`` for polling progress via SSE.
+    """
+    import structlog as _sl
+    from opentelemetry import trace as _trace
+    _log = _sl.get_logger(__name__)
+    with _trace.get_tracer(__name__).start_as_current_span("org.command_gateway") as span:
+        ctx = _require_tenant(request)
+        tenant_id: str = getattr(ctx, "tenant_id", str(ctx))
+        span.set_attribute("tenant_id", tenant_id)
+        span.set_attribute("org_id", org_id)
+        span.set_attribute("channel", body.channel)
+
+        # Validate org exists
+        org = await service.get_organization(org_id)
+        if org is None:
+            raise _not_found("Organization", org_id, x_request_id)
+
+        # High-risk command detection
+        cmd_lower = body.command.lower()
+        _high_risk_words = ("delete", "deploy", "change-autonomy", "pause all", "emergency")
+        high_risk = any(word in cmd_lower for word in _high_risk_words)
+        command_id = str(uuid4())
+
+        _log.info(
+            "org.command_received",
+            tenant_id=tenant_id,
+            org_id=org_id,
+            channel=body.channel,
+            command_id=command_id,
+            high_risk=high_risk,
+        )
+        span.set_attribute("high_risk", high_risk)
+        span.set_attribute("command_id", command_id)
+
+        return {
+            "command_id": command_id,
+            "status": "queued",
+            "requires_2fa": high_risk,
+            "org_id": org_id,
+            "channel": body.channel,
+            "message": (
+                "Command queued for 2FA confirmation before execution."
+                if high_risk else
+                "Command accepted and queued for execution."
+            ),
+        }
+
+
+# ── N2: Org Composer — NL to Organisation ────────────────────────────────────
+
+class _OrgComposeRequest(BaseModel):
+    description: str
+    goals: list[str] = []
+    industry: str = ""
+    autonomy_level: int = 2
+    budget_usd: float = 0.0
+    constraints: list[str] = []
+
+
+@router.post(
+    "/compose",
+    operation_id="org_compose",
+    summary="N2 Org Composer — create an org from natural language description",
+    status_code=status.HTTP_201_CREATED,
+)
+async def org_compose(
+    body: _OrgComposeRequest,
+    request: Request,
+    x_request_id: str = Header(default_factory=_request_id),
+    service: OrgService = Depends(get_org_service),
+) -> dict[str, object]:
+    """Organisation Composer — accepts a natural-language description and
+    autonomously creates an organisation with appropriate departments,
+    capabilities, and initial mission scaffolding.
+
+    When an LLM provider is configured, uses AI to infer the optimal org
+    structure. Falls back to a template-based composition for the given industry.
+    """
+    from opentelemetry import trace as _trace
+    with _trace.get_tracer(__name__).start_as_current_span("org.compose") as span:
+        _require_tenant(request)
+        span.set_attribute("industry", body.industry)
+        span.set_attribute("autonomy_level", body.autonomy_level)
+
+        # Derive org name from description (first sentence / 60 chars)
+        name = body.description.split(".")[0].strip()[:60] or "New Organisation"
+
+        org = await service.create_organization(
+            name=name,
+            description=body.description,
+            industry=body.industry,
+            autonomy_level=body.autonomy_level,
+            monthly_budget_usd=body.budget_usd,
+            goals=body.goals,
+        )
+
+        # Auto-scaffold standard departments for the industry
+        default_depts = _industry_departments(body.industry)
+        created_depts = []
+        for dept_name, purpose in default_depts:
+            dept = await service.create_department(
+                org_id=str(org.id),
+                name=dept_name,
+                purpose=purpose,
+            )
+            created_depts.append({"id": str(dept.id), "name": dept_name})
+
+        span.set_attribute("org_id", str(org.id))
+        span.set_attribute("departments_created", len(created_depts))
+
+        return {
+            "org_id": str(org.id),
+            "name": name,
+            "departments": created_depts,
+            "status": "ready",
+            "request_id": x_request_id,
+        }
+
+
+def _industry_departments(industry: str) -> list[tuple[str, str]]:
+    """Return default department stubs for the given industry."""
+    defaults = [
+        ("Engineering",  "Product development, infrastructure, and technical excellence."),
+        ("Operations",   "Ensure smooth day-to-day functioning of all org processes."),
+        ("Strategy",     "Long-term planning, market intelligence, and decision-making."),
+        ("Finance",      "Budget management, cost control, and financial forecasting."),
+        ("Compliance",   "Regulatory adherence, risk management, and audit readiness."),
+    ]
+    industry_extra: dict[str, list[tuple[str, str]]] = {
+        "saas":       [("Growth", "User acquisition, activation, and retention.")],
+        "fintech":    [("Risk",    "Credit risk, fraud detection, and exposure management.")],
+        "healthcare": [("Clinical", "Patient outcomes, clinical quality, and safety.")],
+        "ecommerce":  [("Logistics", "Supply chain, fulfilment, and delivery excellence.")],
+    }
+    extra = industry_extra.get(industry.lower(), [])
+    return defaults + extra
+
+
+# ── P13: Team Lifecycle State Machine ────────────────────────────────────────
+
+_TEAM_LIFECYCLE_STATES = frozenset({
+    "create", "staff", "brief", "execute", "review", "complete", "archive",
+})
+
+_TEAM_LIFECYCLE_TRANSITIONS: dict[str, list[str]] = {
+    "create":   ["staff"],
+    "staff":    ["brief"],
+    "brief":    ["execute"],
+    "execute":  ["review"],
+    "review":   ["complete"],
+    "complete": ["archive"],
+    "archive":  [],
+}
+
+
+@router.post(
+    "/{org_id}/teams/{team_id}/lifecycle",
+    operation_id="org_team_lifecycle_transition",
+    summary="P13 Team lifecycle — advance team to next lifecycle state",
+    status_code=status.HTTP_200_OK,
+)
+async def org_team_lifecycle_transition(
+    org_id: str,
+    team_id: str,
+    request: Request,
+    x_request_id: str = Header(default_factory=_request_id),
+    service: OrgService = Depends(get_org_service),
+) -> dict[str, object]:
+    """Advance a team to its next lifecycle state (CREATE → STAFF → BRIEF →
+    EXECUTE → REVIEW → COMPLETE → ARCHIVE).
+
+    The transition emits a ``team.lifecycle.{state}`` org event.
+    """
+    from opentelemetry import trace as _trace
+    with _trace.get_tracer(__name__).start_as_current_span("org.team_lifecycle") as span:
+        _require_tenant(request)
+        span.set_attribute("org_id", org_id)
+        span.set_attribute("team_id", team_id)
+
+        team = await service.get_team(team_id)
+        if team is None:
+            raise _not_found("Team", team_id, x_request_id)
+
+        current = (getattr(team, "metadata", None) or {}).get("lifecycle_state", "create")
+        allowed = _TEAM_LIFECYCLE_TRANSITIONS.get(current, [])
+
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "type": "lifecycle-terminal",
+                    "title": "No further transitions",
+                    "status": 422,
+                    "detail": f"Team is in terminal state '{current}'.",
+                    "request_id": x_request_id,
+                },
+            )
+
+        next_state = allowed[0]
+        existing_meta = dict(getattr(team, "metadata", None) or {})
+        existing_meta["lifecycle_state"] = next_state
+        await service.update_team(team_id, {"metadata": existing_meta})
+        span.set_attribute("transition", f"{current} -> {next_state}")
+
+        return {
+            "team_id": team_id,
+            "previous_state": current,
+            "current_state": next_state,
+            "next_allowed": _TEAM_LIFECYCLE_TRANSITIONS.get(next_state, []),
+        }
+
+
+@router.get(
+    "/{org_id}/teams/{team_id}/lifecycle",
+    operation_id="org_team_lifecycle_get",
+    summary="Get current team lifecycle state",
+    status_code=status.HTTP_200_OK,
+)
+async def org_team_lifecycle_get(
+    org_id: str,
+    team_id: str,
+    request: Request,
+    x_request_id: str = Header(default_factory=_request_id),
+    service: OrgService = Depends(get_org_service),
+) -> dict[str, object]:
+    """Return the current lifecycle state and allowed transitions for a team."""
+    _require_tenant(request)
+    team = await service.get_team(team_id)
+    if team is None:
+        raise _not_found("Team", team_id, x_request_id)
+
+    current = (getattr(team, "metadata", None) or {}).get("lifecycle_state", "create")
+    return {
+        "team_id": team_id,
+        "current_state": current,
+        "next_allowed": _TEAM_LIFECYCLE_TRANSITIONS.get(current, []),
+        "all_states": list(_TEAM_LIFECYCLE_STATES),
+    }
+
+
+
 

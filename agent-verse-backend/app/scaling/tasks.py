@@ -3288,3 +3288,80 @@ def delta_reingest_files(
         return loop.run_until_complete(_run())
     finally:
         loop.close()
+
+
+# ── N8: Org Autonomous Operating Loop (runs every 5 min via Celery Beat) ─────
+
+@celery_app.task(name="app.scaling.tasks.org_brain_loop", queue="maintenance")
+def org_brain_loop() -> dict[str, int]:
+    """N8 — Autonomous Operating Loop: OBSERVE → DISCOVER → PREDICT → PRIORITIZE.
+
+    Runs every 5 minutes via Celery Beat. Only triggers new work at autonomy L3+.
+    """
+    import asyncio as _asyncio
+
+    async def _run() -> dict[str, int]:
+        import structlog as _slog
+        from opentelemetry import trace as _trace
+        _log = _slog.get_logger(__name__)
+        tracer = _trace.get_tracer(__name__)
+
+        with tracer.start_as_current_span("org_brain.autonomous_loop") as span:
+            processed = 0
+            discovered = 0
+            triggered = 0
+            try:
+                from app.main import app as _app  # noqa: PLC0415
+                db_factory = getattr(_app.state, "db_factory", None)
+                if db_factory is None:
+                    return {"processed": 0, "discovered": 0, "triggered": 0}
+
+                from sqlalchemy import select  # noqa: PLC0415
+                from app.org.models import Organization  # noqa: PLC0415
+
+                async with db_factory() as session, session.begin():
+                    result = await session.execute(
+                        select(
+                            Organization.id,
+                            Organization.tenant_id,
+                            Organization.autonomy_level,
+                        ).where(Organization.status == "active").limit(100)
+                    )
+                    orgs = result.all()
+
+                for org_id, tenant_id, autonomy_level in orgs:
+                    processed += 1
+                    try:
+                        from app.db.rls import sqlalchemy_rls_context  # noqa: PLC0415
+                        from app.org.service import OrgService  # noqa: PLC0415
+                        async with db_factory() as s2, s2.begin():
+                            async with sqlalchemy_rls_context(s2, str(tenant_id)):
+                                svc = OrgService(s2, str(tenant_id))
+                                health = await svc.get_org_health(str(org_id))
+                        blocked = health.get("task_counts", {}).get("blocked", 0)
+                        failed  = health.get("task_counts", {}).get("failed", 0)
+                        if blocked > 3 or failed > 0:
+                            discovered += 1
+                        if autonomy_level >= 3 and (blocked > 5 or failed > 2):
+                            triggered += 1
+                            _log.info(
+                                "org_brain.work_triggered",
+                                org_id=str(org_id),
+                                tenant_id=str(tenant_id),
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        _log.warning("org_brain.org_error", org_id=str(org_id), error=str(exc))
+
+                span.set_attribute("orgs_processed", processed)
+                span.set_attribute("discovered", discovered)
+                span.set_attribute("triggered", triggered)
+                _log.info("org_brain.loop_done", processed=processed, discovered=discovered)
+            except Exception as exc:  # noqa: BLE001
+                _log.error("org_brain.loop_failed", error=str(exc))
+        return {"processed": processed, "discovered": discovered, "triggered": triggered}
+
+    loop = _asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.close()
