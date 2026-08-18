@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { CommandPalette } from "@/components/command-palette/CommandPalette";
+import { SkipNav } from "@/components/ui/SkipNav";
 import { useUiStore } from "@/stores/ui";
 import { useAuthStore } from "@/stores/auth";
 import { useEmergencyStore } from "@/stores/emergency";
@@ -57,6 +58,7 @@ export function AppLayout() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#0A0D14]">
+      <SkipNav />
       {/* Mobile backdrop — closes sidebar when tapped */}
       {sidebarOpen && (
         <div
@@ -66,7 +68,7 @@ export function AppLayout() {
         />
       )}
 
-      <Sidebar />
+      <Sidebar id="sidebar-nav" />
 
       <div
         className={clsx(
@@ -79,7 +81,7 @@ export function AppLayout() {
       >
         <TopBar />
         <EmergencyBanner />
-        <main className="flex-1 overflow-auto p-4 md:p-6">
+        <main id="main-content" className="flex-1 overflow-auto p-4 md:p-6">
           <Outlet />
         </main>
       </div>

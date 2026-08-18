@@ -39,7 +39,7 @@ const ENTERPRISE_PINNED = new Set([
   "/workflow-builder",
 ]);
 
-export function Sidebar() {
+export function Sidebar({ id }: { id?: string }) {
   const { sidebarOpen, toggleSidebar } = useUiStore();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const tenantId = useAuthStore((s) => s.tenantId);
@@ -158,6 +158,7 @@ export function Sidebar() {
         />
       )}
       <aside
+        id={id}
         className={clsx(
           // JARVIS surface — glass-dark with scanline depth
           "fixed inset-y-0 left-0 z-30 flex flex-col",

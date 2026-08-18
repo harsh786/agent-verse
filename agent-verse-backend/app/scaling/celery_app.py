@@ -170,6 +170,12 @@ celery_app.conf.update(
             "schedule": 30,
             "options": {"queue": "maintenance"},
         },
+        # ── N8: Org Autonomous Loop — runs every 5 minutes ─────────────────
+        "org-brain-autonomous-loop": {
+            "task": "app.scaling.tasks.org_brain_loop",
+            "schedule": 300.0,  # every 5 minutes
+            "options": {"queue": "maintenance"},
+        },
         # ── M-1: Eight new maintenance tasks ──────────────────────────────
         "warm-jwks-cache": {
             "task": "app.scaling.tasks.warm_jwks_cache",
