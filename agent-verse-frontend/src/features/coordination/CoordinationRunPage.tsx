@@ -11,6 +11,7 @@ import { RunTimeline } from './RunTimeline';
 import { SharedTranscript } from './SharedTranscript';
 import { useCoordinationStream } from './useCoordinationStream';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 export function CoordinationRunPage() {
   const { sessionId = '' } = useParams();
@@ -77,14 +78,14 @@ export function CoordinationRunPage() {
             <span className="text-muted-foreground">Stream: {stream.status}</span>
             <span className="font-mono text-xs text-muted-foreground">cursor {stream.lastSequence}</span>
           </div>
-          <div className="flex gap-2">
+          <JARVISStagger className="flex gap-2">
             {['pending', 'active', 'paused'].includes(run.session.state) && (
               <button type="button" disabled={transition.isPending} onClick={() => window.confirm('Cancel this coordination session?') && transition.mutate('cancel')} className="min-h-11 min-w-11 rounded-md border px-3 py-1.5 text-sm disabled:opacity-50">Cancel</button>
             )}
             {run.session.state === 'paused' && (
               <button type="button" disabled={transition.isPending} onClick={() => transition.mutate('resume')} className="min-h-11 min-w-11 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50">Resume</button>
             )}
-          </div>
+          </JARVISStagger>
         </section>
         {transition.error && <p role="alert" className="text-sm text-red-600">The session command failed. Refresh and try again.</p>}
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1.6fr)_minmax(330px,0.9fr)]">

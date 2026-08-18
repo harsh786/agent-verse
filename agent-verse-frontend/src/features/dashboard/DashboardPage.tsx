@@ -38,6 +38,7 @@ import { toast } from "@/stores/toast";
 import { AIOpsDashboard } from "./AIOpsDashboard";
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ── KPI Card ──────────────────────────────────────────────────────────────────
 
 function KpiCard({
@@ -96,7 +97,7 @@ function KpiCard({
         {isLoading ? (
           <Skeleton className="h-7 w-16 mb-1" />
         ) : (
-          <p className="text-2xl font-bold text-foreground tabular-nums">{value}</p>
+          <p className="text-2xl font-bold text-[#00D4FF] tabular-nums">{value}</p>
         )}
         <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
         {sub && <p className="text-xs text-muted-foreground/60 mt-0.5">{sub}</p>}
@@ -241,7 +242,7 @@ export function DashboardPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6 max-w-7xl mx-auto">
+    <JARVISStagger className="space-y-6 max-w-7xl mx-auto">
       {/* ── Header ───────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
@@ -461,7 +462,7 @@ export function DashboardPage() {
       </div>
       </>
       )}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

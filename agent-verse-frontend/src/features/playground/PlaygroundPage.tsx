@@ -32,6 +32,7 @@ import {
 import { simulationApi, apiFetch, API_BASE } from "@/lib/api/client";
 import { useAuthStore } from "@/stores/auth";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -578,7 +579,7 @@ export function PlaygroundPage(): JSX.Element {
 
   return (
     <JARVISPageShell>
-    <div className="flex h-[calc(100vh-4rem)] overflow-hidden">
+    <JARVISStagger className="flex h-[calc(100vh-4rem)] overflow-hidden">
       {/* ── Left Sidebar ──────────────────────────────────────────────────── */}
       <div className="w-64 flex-shrink-0 border-r border-border flex flex-col bg-card/50 overflow-y-auto">
         <div className="p-3 space-y-3">
@@ -1050,7 +1051,7 @@ export function PlaygroundPage(): JSX.Element {
           </div>
         </div>
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

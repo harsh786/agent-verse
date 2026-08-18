@@ -19,6 +19,7 @@ import { toast } from '../../stores/toast';
 import { workflowsApi, apiFetch } from '../../lib/api/client';
 import { MissionControlLayout } from '@/components/ui/MissionControlLayout';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ─── Node Types ──────────────────────────────────────────────────────────────
 
@@ -1311,11 +1312,13 @@ function WorkflowBuilderInner() {
 export function WorkflowBuilderPage() {
   return (
     <JARVISPageShell>
+    <JARVISStagger className="h-full">
     <MissionControlLayout showOperationalBar={false}>
       <ReactFlowProvider>
         <WorkflowBuilderInner />
       </ReactFlowProvider>
     </MissionControlLayout>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

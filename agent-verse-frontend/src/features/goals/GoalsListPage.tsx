@@ -203,7 +203,7 @@ export function GoalsListPage() {
         <button
           onClick={() => setShowTemplatePicker(true)}
           aria-label="Browse goal templates"
-          className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-border rounded-lg hover:bg-muted transition-colors"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-border rounded-lg hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
         >
           Browse goal templates
         </button>
@@ -394,7 +394,7 @@ export function GoalsListPage() {
             <tbody className="divide-y divide-border">
               <JARVISStagger>
               {paginatedGoals.map((goal) => (
-                <JARVISStaggerItem key={goal.id}>
+                <JARVISStaggerItem interactive key={goal.id}>
                 <tr
                   onClick={() => navigate(`/goals/${goal.id}`)}
                   className={`hover:bg-[#1A1F2E] cursor-pointer transition-colors ${

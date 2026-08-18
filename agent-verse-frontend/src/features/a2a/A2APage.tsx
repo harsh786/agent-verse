@@ -8,16 +8,14 @@
  */
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  Network, Send, RefreshCw, Copy, Check, Loader2, Plus,
-  Trash2, Zap, ChevronDown, ChevronRight, ShieldCheck,
-  ExternalLink, AlertCircle,
-} from "lucide-react";
+
 import { a2aApi, type AgentCard, type A2ATask } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { AlertCircle, Check, CheckSquare, ChevronDown, ChevronRight, Copy, ExternalLink, Loader2, Network, Plus, RefreshCw, Send, ShieldCheck, Trash2, Zap } from 'lucide-react';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -227,7 +225,12 @@ function TasksTab() {
 
         {isLoading && <div className="space-y-2">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-14 rounded-xl" />)}</div>}
         {!isLoading && tasks.length === 0 && (
-          <EmptyState title="No tasks yet" description="Dispatch your first task using the form." />
+          <EmptyState
+          icon={<CheckSquare size={40} />}
+          title="No tasks yet"
+          description="Dispatch your first task using the form."
+          variant="float"
+        />
         )}
         {tasks.map((t) => <TaskRow key={t.task_id} task={t} />)}
       </div>
@@ -398,7 +401,12 @@ function RemoteAgentsTab({ onDispatch }: { onDispatch: (endpoint: string) => voi
       </div>
 
       {agents.length === 0 ? (
-        <EmptyState title="No remote agents registered" description="Add agents to build your A2A network." />
+        <EmptyState
+          icon={<Network size={40} />}
+          title="No remote agents registered"
+          description="Add agents to build your A2A network."
+          variant="float"
+        />
       ) : (
         <div className="space-y-3">
           {agents.map((a, i) => (
@@ -470,7 +478,7 @@ export function A2APage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6 max-w-5xl">
+    <JARVISStagger className="space-y-6 max-w-5xl">
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -506,7 +514,7 @@ export function A2APage() {
       {tab === "tasks"   && <TasksTab />}
       {tab === "card"    && <AgentCardTab />}
       {tab === "remotes" && <RemoteAgentsTab onDispatch={() => setTab("tasks")} />}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

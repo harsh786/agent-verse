@@ -31,7 +31,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 type RiskLevel = "critical" | "high" | "medium" | "low";
@@ -501,6 +501,7 @@ export function ApprovalsPage() {
       onKeyDown={handleKeyDown}
       aria-label="Approval inbox"
     >
+      <JARVISStagger className="space-y-5">
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div>
@@ -709,7 +710,12 @@ export function ApprovalsPage() {
             </div>
           )}
           {!historyLoading && history.length === 0 && (
-            <EmptyState title="No history yet" description="Resolved approval requests will appear here." />
+            <EmptyState
+          icon={<Inbox size={40} />}
+          title="No history yet"
+          description="Resolved approval requests will appear here."
+          variant="float"
+        />
           )}
           {history.map((req) => (
             <HistoryRow key={req.request_id} req={req} />
@@ -735,6 +741,7 @@ export function ApprovalsPage() {
 
       {/* Keyboard shortcuts dialog */}
       {showHelp && <ShortcutHelp onClose={() => setShowHelp(false)} />}
+      </JARVISStagger>
     </div>
     </JARVISPageShell>
   );

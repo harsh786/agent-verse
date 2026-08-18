@@ -1,5 +1,6 @@
 import type { IngestionQuota } from '../types';
 import { motion } from 'framer-motion';
+import { SPRING_SLOW } from '@/components/ui/JARVISPageShell';
 
 interface Props { quota: IngestionQuota; }
 
@@ -61,7 +62,7 @@ function QuotaRow({ label, used, limit, pct, isCritical, format = String }: {
         <motion.div
           initial={{ width: 0 }}
           animate={{ width: `${Math.min(pct, 100)}%` }}
-          transition={{ duration: 0.8, ease: 'easeOut', delay: 0.1 }}
+          transition={{ ...SPRING_SLOW, delay: 0.1 }}
           className={`h-full rounded-full ${color}`}
         />
       </div>

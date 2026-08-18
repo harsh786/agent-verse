@@ -158,7 +158,7 @@ export function AgentsListPage() {
               <Bot className="h-5 w-5 text-primary" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-foreground tracking-tight">Agent Registry</h1>
+              <h1 className="text-2xl font-bold text-[#00D4FF] tracking-tight">Agent Registry</h1>
               <p className="text-muted-foreground text-sm mt-0.5">
                 {(agents as Agent[]).length} autonomous agents under mission control
               </p>
@@ -346,7 +346,7 @@ export function AgentsListPage() {
               <tbody className="divide-y divide-border">
                 <JARVISStagger>
                 {paginatedAgents.map((agent) => (
-                  <JARVISStaggerItem key={agent.agent_id}>
+                  <JARVISStaggerItem interactive key={agent.agent_id}>
                   <tr
                     onClick={() => navigate(`/agents/${agent.agent_id}`)}
                     className="hover:bg-[#1A1F2E] transition-colors cursor-pointer group"

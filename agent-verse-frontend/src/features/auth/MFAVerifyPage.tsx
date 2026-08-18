@@ -11,6 +11,7 @@ import { mfaApi } from '@/lib/api/client';
 import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 export default function MFAVerifyPage() {
   const navigate = useNavigate();
@@ -57,7 +58,7 @@ export default function MFAVerifyPage() {
 
   return (
     <JARVISPageShell>
-    <div className="min-h-screen bg-background flex items-center justify-center p-4">
+    <JARVISStagger className="min-h-screen bg-background flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         {/* Header */}
         <div className="text-center mb-8">
@@ -152,7 +153,7 @@ export default function MFAVerifyPage() {
           </a>
         </p>
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

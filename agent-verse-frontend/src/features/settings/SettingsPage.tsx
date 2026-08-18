@@ -14,6 +14,7 @@ import { apiFetch as apiClient, tenantsApi } from '@/lib/api/client';
 import { MFASettings } from './MFASettings';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Tenant {
@@ -85,7 +86,7 @@ function ConfirmModal({
         <div className="flex gap-3 mt-6 justify-end">
           <button
             onClick={onCancel}
-            className="px-4 py-2 text-sm border border-border rounded-lg hover:bg-muted transition-colors"
+            className="px-4 py-2 text-sm border border-border rounded-lg hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
           >
             Cancel
           </button>
@@ -940,7 +941,7 @@ export function SettingsPage() {
 
   return (
     <JARVISPageShell>
-    <div className="max-w-4xl">
+    <JARVISStagger className="max-w-4xl">
       <div className="mb-6">
         <h1 className="text-2xl font-bold">{t('settings.title')}</h1>
         <p className="text-muted-foreground text-sm mt-1">
@@ -982,7 +983,7 @@ export function SettingsPage() {
           {renderTab()}
         </div>
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

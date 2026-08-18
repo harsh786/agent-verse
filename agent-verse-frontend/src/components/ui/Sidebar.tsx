@@ -1,8 +1,6 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { clsx } from "clsx";
 import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { SPRING_PAGE } from "@/components/ui/JARVISPageShell";
 
 import {
   LayoutDashboard, Target, Bot, Plug, Calendar, BookOpen, Database,
@@ -41,7 +39,7 @@ const ENTERPRISE_PINNED = new Set([
   "/workflow-builder",
 ]);
 
-export function Sidebar({ id }: { id?: string }) {
+export function Sidebar() {
   const { sidebarOpen, toggleSidebar } = useUiStore();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const tenantId = useAuthStore((s) => s.tenantId);
@@ -151,31 +149,23 @@ export function Sidebar({ id }: { id?: string }) {
 
   return (
     <>
-      {/* Mobile backdrop — AnimatePresence for smooth fade */}
-      <AnimatePresence>
-        {sidebarOpen && (
-          <motion.div
-            key="sidebar-backdrop"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.18 }}
-            className="fixed inset-0 bg-black/40 z-[29] md:hidden"
-            onClick={toggleSidebar}
-            aria-hidden="true"
-          />
-        )}
-      </AnimatePresence>
-      <motion.aside
-        id={id}
-        animate={{
-          width: sidebarOpen ? 256 : 64,
-          x: sidebarOpen ? 0 : (typeof window !== 'undefined' && window.innerWidth < 768 ? -256 : 0),
-        }}
-        transition={SPRING_PAGE}
+      {/* Mobile backdrop — click outside to close sidebar */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/40 z-[29] md:hidden"
+          onClick={toggleSidebar}
+          aria-hidden="true"
+        />
+      )}
+      <aside
         className={clsx(
-          "fixed inset-y-0 left-0 z-30 flex flex-col overflow-hidden",
+          // JARVIS surface — glass-dark with scanline depth
+          "fixed inset-y-0 left-0 z-30 flex flex-col",
           "bg-[#0F1117] border-r border-[#1E2535]",
+          // web-guidelines: no transition:all — list specific properties
+          "transition-[width,transform] duration-200",
+          sidebarOpen ? "w-64" : "w-16",
+          sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
         )}
       >
       {/* Mobile close button — only visible when open on mobile */}
@@ -300,10 +290,12 @@ export function Sidebar({ id }: { id?: string }) {
                     className={({ isActive }) =>
                       clsx(
                         "flex items-center gap-3 px-3 py-2.5 rounded-lg mx-1 text-sm font-medium",
+                        // web-guidelines: list specific transition props
                         "transition-[background-color,color] duration-150",
+                        // web-guidelines: touch-action
                         "select-none",
                         isActive
-                          ? "bg-[rgba(0,212,255,0.08)] text-[#00D4FF] border-l-2 border-[#00D4FF]"
+                          ? "bg-blue-500/10 text-blue-300 border-l-2 border-blue-500"
                           : "text-[#94A3B8] hover:bg-[#1A1F2E] hover:text-[#F1F5F9] border-l-2 border-transparent"
                       )
                     }
@@ -411,7 +403,7 @@ export function Sidebar({ id }: { id?: string }) {
           )}
         />
       </button>
-      </motion.aside>
+      </aside>
     </>
   );
 }

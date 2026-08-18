@@ -4,6 +4,7 @@ import { API_BASE, integrationsApi } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 interface ProviderConfig {
   name: string;
@@ -63,7 +64,7 @@ export function IntegrationsPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6">
+    <JARVISStagger className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Integrations</h1>
         <p className="text-muted-foreground text-sm mt-1">
@@ -139,7 +140,7 @@ export function IntegrationsPage() {
           </ul>
         )}
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

@@ -56,6 +56,8 @@ import { toast } from '@/stores/toast';
 import { useEventStream } from '@/lib/sse/useEventStream';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { StatusOrb } from '@/components/ui/StatusOrb';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -964,7 +966,7 @@ function ApprovalsTab({ tenantId }: { tenantId: string }) {
           )}
         </h3>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+          <StatusOrb status="running" size={8} />
           Live updates
         </div>
       </div>
@@ -1631,7 +1633,7 @@ export function GovernancePage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-5">
+    <JARVISStagger className="space-y-5">
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -1676,7 +1678,7 @@ export function GovernancePage() {
           {activeTab === 'budget' && <BudgetTab />}
         </div>
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

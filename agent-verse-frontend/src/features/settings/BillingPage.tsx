@@ -7,6 +7,7 @@ import { toast } from '@/stores/toast';
 import { apiFetch, billingApi, type RazorpayPlan } from '@/lib/api/client';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface PlanLimits {
@@ -408,9 +409,9 @@ export default function BillingPage() {
 
   return (
     <JARVISPageShell>
-    <div className="p-6 max-w-4xl mx-auto space-y-8">
+    <JARVISStagger className="p-6 max-w-4xl mx-auto space-y-8">
       <div>
-        <h1 className="text-2xl font-bold text-foreground">Billing &amp; Usage</h1>
+        <h1 className="text-2xl font-bold text-[#00D4FF]">Billing &amp; Usage</h1>
         <p className="text-muted-foreground mt-1">Manage your plan and monitor usage</p>
       </div>
 
@@ -506,7 +507,7 @@ export default function BillingPage() {
                 ) : (
                   <button
                     onClick={() => handleUpgrade(plan.plan_id)}
-                    className="mt-3 w-full text-center text-xs py-1.5 rounded border border-border text-foreground hover:bg-muted transition-colors"
+                    className="mt-3 w-full text-center text-xs py-1.5 rounded border border-border text-foreground hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
                   >
                     Select
                   </button>
@@ -592,7 +593,7 @@ export default function BillingPage() {
           onClose={() => setUpgradeModalPlan(null)}
         />
       )}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

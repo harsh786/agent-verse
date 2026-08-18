@@ -5,6 +5,7 @@ import { TriggerCreateModal } from './components/TriggerCreateModal';
 import { TriggerDLQPanel } from './components/TriggerDLQPanel';
 import { useTriggers } from './hooks';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 type ActiveTab = 'all' | 'dlq';
 
@@ -86,13 +87,13 @@ export function TriggersPage() {
 function StatCard({ label, value, icon }: { label: string; value: number | string; icon: string }) {
   return (
     <JARVISPageShell>
-    <div className="rounded-xl border border-border bg-card p-4">
+    <JARVISStagger className="rounded-xl border border-border bg-card p-4">
       <div className="flex items-center justify-between">
         <span className="text-xs text-muted-foreground font-medium uppercase tracking-wide">{label}</span>
         <span className="text-base">{icon}</span>
       </div>
       <div className="mt-2 text-2xl font-semibold tabular-nums">{value}</div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

@@ -21,6 +21,7 @@ import { toast } from '@/stores/toast';
 import { apiFetch } from '@/lib/api/client';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 interface Schedule {
@@ -876,7 +877,7 @@ export function SchedulesPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-5">
+    <JARVISStagger className="space-y-5">
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
           <Calendar className="h-6 w-6 text-violet-500" /> Schedules
@@ -902,7 +903,7 @@ export function SchedulesPage() {
           {activeTab === 'nl'        && <NLSchedulerTab />}
         </div>
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

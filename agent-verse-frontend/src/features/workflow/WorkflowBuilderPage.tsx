@@ -50,6 +50,7 @@ import { useAutoLayout } from './builder/canvas-utils/useAutoLayout';
 import { panelSlide, toolbarButton, modalBackdrop, modalContent, edgeFlow } from './design/motion';
 import type { WorkflowNodeData } from './builder/nodes/BaseWorkflowNode';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── History for undo/redo ─────────────────────────────────────────────────────
 
@@ -506,7 +507,7 @@ export default function WorkflowBuilderPage() {
 
   return (
     <JARVISPageShell>
-    <div className="flex flex-col h-screen bg-slate-950 text-white">
+    <JARVISStagger className="flex flex-col h-screen bg-slate-950 text-white">
       {/* Top bar */}
       <header className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-white/10
                           bg-slate-900/80 backdrop-blur-xl z-30">
@@ -547,7 +548,7 @@ export default function WorkflowBuilderPage() {
           />
         </ReactFlowProvider>
       </main>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

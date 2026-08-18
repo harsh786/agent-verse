@@ -32,6 +32,7 @@ import { perceptionApi } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -400,7 +401,7 @@ function SingleTab({
             data-testid="btn-analyze"
             onClick={() => (screenshot ? analyzeMutation.mutate() : analyzePageMutation.mutate())}
             disabled={!urlValid || disabled || isLoading}
-            className="flex items-center gap-1.5 px-3 py-2 border border-border rounded-md text-sm disabled:opacity-50 hover:bg-muted transition-colors"
+            className="flex items-center gap-1.5 px-3 py-2 border border-border rounded-md text-sm disabled:opacity-50 hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
           >
             {analyzeMutation.isPending || analyzePageMutation.isPending ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -413,7 +414,7 @@ function SingleTab({
             data-testid="btn-extract"
             onClick={() => extractMutation.mutate()}
             disabled={!urlValid || disabled || extractMutation.isPending}
-            className="flex items-center gap-1.5 px-3 py-2 border border-border rounded-md text-sm disabled:opacity-50 hover:bg-muted transition-colors"
+            className="flex items-center gap-1.5 px-3 py-2 border border-border rounded-md text-sm disabled:opacity-50 hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
           >
             {extractMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanText className="h-4 w-4" />}
             Extract text
@@ -744,7 +745,7 @@ export function PerceptionPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-5">
+    <JARVISStagger className="space-y-5">
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -791,7 +792,7 @@ export function PerceptionPage() {
           {activeTab === 'history' && <HistoryTab refresh={historyRefresh} />}
         </div>
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

@@ -18,6 +18,7 @@ import { TraceExplorer } from './TraceExplorer';
 import { RuntimeDecisionPanel } from './RuntimeDecisionPanel';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const GRAFANA_URL = import.meta.env.VITE_GRAFANA_URL ?? 'http://localhost:3001';
 
@@ -748,7 +749,7 @@ function TraceRow({ span, minTime, totalTime, depth, onSelect }: {
 
   return (
     <div
-      className="flex items-center gap-3 py-1.5 hover:bg-muted/40 cursor-pointer rounded px-2"
+      className="flex items-center gap-3 py-1.5 hover:bg-muted/40 cursor-pointer rounded px-2 hover:-translate-y-0.5 transition-[transform,box-shadow] hover:shadow-[0_0_24px_rgba(0,212,255,0.20)]"
       onClick={() => onSelect(span)}
     >
       <div className="w-56 flex-shrink-0 flex items-center gap-1" style={{ paddingLeft: depth * 16 }}>
@@ -1219,11 +1220,11 @@ export function ObservabilityPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6 max-w-6xl">
+    <JARVISStagger className="space-y-6 max-w-6xl">
       {/* Header */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Observability</h1>
+          <h1 className="text-2xl font-bold text-[#00D4FF]">Observability</h1>
           <p className="text-sm text-muted-foreground mt-1">
             System health, live metrics, distributed traces and log stream
           </p>
@@ -1237,7 +1238,7 @@ export function ObservabilityPage() {
                 setLastRefresh(new Date());
                 qc.invalidateQueries({ queryKey: ['observability'] });
               }}
-              className="p-1 rounded hover:bg-muted transition-colors"
+              className="p-1 rounded hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
               title="Refresh now"
             >
               <RefreshCw className="h-3.5 w-3.5" />
@@ -1330,7 +1331,7 @@ export function ObservabilityPage() {
       {tab === 'logs' && (
         <LogsTab since={since} until={until} />
       )}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

@@ -12,6 +12,7 @@ import { ThemedBarChart, ThemedLineChart } from '@/components/charts';
 import { CHART_COLORS, CHART_AXIS_COLOR, CHART_TOOLTIP_STYLE } from '@/components/charts';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 const PERIODS = [7, 30, 90] as const;
@@ -284,7 +285,7 @@ export function AnalyticsDashboardPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6 pb-8">
+    <JARVISStagger className="space-y-6 pb-8">
       {/* ── Header ── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
@@ -598,7 +599,7 @@ export function AnalyticsDashboardPage() {
           </div>
         )}
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

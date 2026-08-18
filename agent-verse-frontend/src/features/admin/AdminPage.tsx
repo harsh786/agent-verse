@@ -17,7 +17,7 @@ import {
   Search, Settings2, Shield, TrendingUp, Users, Zap,
 } from 'lucide-react';
 import { adminApi } from '@/lib/api/client';
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -71,7 +71,7 @@ function MetricCard({
       </div>
       <div>
         <p className="text-xs text-slate-500 uppercase tracking-wider">{label}</p>
-        <p className="text-2xl font-bold text-white">{value}</p>
+        <p className="text-2xl font-bold text-[#00D4FF]">{value}</p>
         {sub && <p className="text-xs text-slate-500 mt-0.5">{sub}</p>}
       </div>
     </div>
@@ -143,7 +143,7 @@ export default function AdminPage() {
 
   return (
     <JARVISPageShell>
-    <div className="flex flex-col gap-6 p-4 lg:p-6" data-testid="admin-page">
+    <JARVISStagger className="flex flex-col gap-6 p-4 lg:p-6" data-testid="admin-page">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
@@ -309,7 +309,7 @@ export default function AdminPage() {
           </a>
         ))}
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

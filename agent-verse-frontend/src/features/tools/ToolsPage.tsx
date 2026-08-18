@@ -25,6 +25,7 @@ import { keymap } from '@codemirror/view';
 import { Prec } from '@codemirror/state';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type Tab = 'code' | 'files' | 'email';
@@ -793,7 +794,7 @@ export function ToolsPage() {
   const [tab, setTab] = useState<Tab>('code');
   return (
     <JARVISPageShell>
-    <div className="space-y-6 max-w-6xl">
+    <JARVISStagger className="space-y-6 max-w-6xl">
       <div>
         <h1 className="text-2xl font-bold">Tools</h1>
         <p className="text-muted-foreground text-sm mt-1">
@@ -832,7 +833,7 @@ export function ToolsPage() {
         {tab === 'files' && <FileManager />}
         {tab === 'email' && <EmailComposer />}
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

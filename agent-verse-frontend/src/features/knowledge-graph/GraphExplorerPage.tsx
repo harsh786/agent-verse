@@ -4,6 +4,7 @@ import { Network, Search, Plus, ChevronRight, Loader2, GitBranch, Database, Cpu,
 import { toast } from '@/stores/toast';
 import { apiFetch } from '@/lib/api/client';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 const NODE_TYPE_ICONS: Record<string, React.ElementType> = {
   entity: GitBranch,
@@ -87,7 +88,7 @@ export function GraphExplorerPage() {
 
   return (
     <JARVISPageShell>
-    <div className="flex h-[calc(100vh-6rem)] gap-4">
+    <JARVISStagger className="flex h-[calc(100vh-6rem)] gap-4">
       {/* Left panel: Node list */}
       <div className="w-80 flex flex-col gap-3 shrink-0">
         {/* Header */}
@@ -281,7 +282,7 @@ export function GraphExplorerPage() {
           </div>
         )}
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

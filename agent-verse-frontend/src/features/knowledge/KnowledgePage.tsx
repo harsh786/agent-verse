@@ -23,6 +23,7 @@ import { Pagination } from '@/components/ui/Pagination';
 import { apiFetch, API_BASE } from '@/lib/api/client';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 interface Collection { collection_id: string; name: string; doc_count?: number; embedder?: string; created_at?: string; }
@@ -1083,7 +1084,7 @@ export function KnowledgePage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-5">
+    <JARVISStagger className="space-y-5">
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
           <Brain className="h-6 w-6 text-violet-500" /> Knowledge
@@ -1113,7 +1114,7 @@ export function KnowledgePage() {
           {activeTab === 'documents'   && <DocumentsTab collections={collections} />}
         </div>
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

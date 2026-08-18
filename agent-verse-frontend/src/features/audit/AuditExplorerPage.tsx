@@ -9,7 +9,7 @@ import {
   Filter,
   RefreshCw,
   Search,
-  ShieldCheck,
+  ShieldCheck, Inbox,
 } from "lucide-react";
 import {
   auditApi,
@@ -423,8 +423,10 @@ export function AuditExplorerPage() {
         </div>
       ) : filtered.length === 0 ? (
         <EmptyState
+          icon={<Inbox size={40} />}
           title="No audit entries"
           description="No events match the current filters. Try adjusting or resetting the filter panel."
+          variant="float"
         />
       ) : (
         <div data-testid="audit-table" className="overflow-x-auto border border-border rounded-xl">

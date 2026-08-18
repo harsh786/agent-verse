@@ -1,17 +1,14 @@
 import { useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import {
-  ArrowLeft, Loader2,
-  CheckCircle, XCircle, Zap,
-  Activity, Pencil,
-} from 'lucide-react';
+import { Activity, ArrowLeft, CheckCircle, Loader2, Pencil, Wrench, XCircle, Zap } from 'lucide-react';
 import { connectorsApi } from '@/lib/api/client';
 import { DetailLayout } from '@/components/detail/DetailLayout';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { toast } from '@/stores/toast';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 const TABS = [
   { key: 'overview', label: 'Overview' },
@@ -242,7 +239,7 @@ export function ConnectorDetailPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-0">
+    <JARVISStagger className="space-y-0">
       <div className="px-6 py-3">
         <button
           onClick={() => navigate('/connectors')}
@@ -330,9 +327,11 @@ export function ConnectorDetailPage() {
                 <Skeleton className="h-16 w-full" />
               ) : tools.length === 0 ? (
                 <EmptyState
-                  title="No tools discovered"
-                  description="Run discovery to see available tools."
-                />
+          icon={<Wrench size={40} />}
+          title="No tools discovered"
+          description="Run discovery to see available tools."
+          variant="float"
+        />
               ) : (
                 <ul className="space-y-1">
                   {tools.map((t, i) => (
@@ -360,7 +359,7 @@ export function ConnectorDetailPage() {
         {/* FIX 3: Usage tab — real implementation */}
         {activeTab === 'usage' && <UsageTab connectorId={connectorId!} />}
       </DetailLayout>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

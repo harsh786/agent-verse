@@ -60,6 +60,8 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { StatusOrb } from '@/components/ui/StatusOrb';
 // ── Constants & helpers ───────────────────────────────────────────────────────
 
 const PERIODS = [
@@ -278,7 +280,7 @@ function BudgetModal({ onClose }: BudgetModalProps): JSX.Element {
         <div className="flex gap-3 mt-6">
           <button
             onClick={onClose}
-            className="flex-1 border border-border rounded-lg py-2 text-sm hover:bg-muted transition-colors"
+            className="flex-1 border border-border rounded-lg py-2 text-sm hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
           >
             Cancel
           </button>
@@ -996,7 +998,7 @@ export function CostDashboardPage(): JSX.Element {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6">
+    <JARVISStagger className="space-y-6">
       {/* ── Command Bar ──────────────────────────────────────────────── */}
       <div className="sticky top-0 z-10 bg-background/80 backdrop-blur-md border-b border-border/60 -mx-6 px-6 py-3 flex flex-wrap items-center gap-3">
         <div>
@@ -1041,7 +1043,7 @@ export function CostDashboardPage(): JSX.Element {
 
         <button
           onClick={() => setBudgetModalOpen(true)}
-          className="flex items-center gap-1.5 border border-border rounded-lg px-3 py-1.5 text-xs hover:bg-muted transition-colors"
+          className="flex items-center gap-1.5 border border-border rounded-lg px-3 py-1.5 text-xs hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
           aria-label="Set budget"
         >
           <Settings className="h-3.5 w-3.5" />
@@ -1050,7 +1052,7 @@ export function CostDashboardPage(): JSX.Element {
 
         <button
           onClick={handleExportCsv}
-          className="flex items-center gap-1.5 border border-border rounded-lg px-3 py-1.5 text-xs hover:bg-muted transition-colors"
+          className="flex items-center gap-1.5 border border-border rounded-lg px-3 py-1.5 text-xs hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
           aria-label="Export CSV"
         >
           <Download className="h-3.5 w-3.5" />
@@ -1234,7 +1236,7 @@ export function CostDashboardPage(): JSX.Element {
           )}
           {anomalyDates.size > 0 && (
             <p className="text-xs text-red-500 mt-2 flex items-center gap-1">
-              <span className="inline-block h-2 w-2 rounded-full bg-red-500" />
+              <StatusOrb status="failed" size={8} />
               Red dots = anomaly days
             </p>
           )}
@@ -1336,7 +1338,7 @@ export function CostDashboardPage(): JSX.Element {
 
       {/* ── Budget Modal ─────────────────────────────────────────────── */}
       {budgetModalOpen && <BudgetModal onClose={() => setBudgetModalOpen(false)} />}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

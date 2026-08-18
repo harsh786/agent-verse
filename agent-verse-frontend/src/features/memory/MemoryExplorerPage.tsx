@@ -11,7 +11,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Trash2, Search, Plus, Brain, Wrench, Cpu, X, Loader2,
-  AlertTriangle, CheckCircle2, ChevronDown, Pencil,
+  AlertTriangle, CheckCircle2, ChevronDown, Pencil, Inbox,
 } from 'lucide-react';
 import { memoryApi, type RecallResult, type MemoryEntry } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
@@ -648,9 +648,11 @@ export function MemoryExplorerPage() {
                 </div>
               ) : execMemories.length === 0 ? (
                 <EmptyState
-                  title="No execution memories"
-                  description="Winning execution plans are recorded as agents complete goals."
-                />
+          icon={<Inbox size={40} />}
+          title="No execution memories"
+          description="Winning execution plans are recorded as agents complete goals."
+          variant="float"
+        />
               ) : (
                 <ul className="divide-y divide-neural-violet/10">
                   {execMemories.map((m, i) => (

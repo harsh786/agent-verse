@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { toast } from "@/stores/toast";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -181,7 +182,7 @@ export function ScopeExplorerPage(): JSX.Element {
 
   return (
     <JARVISPageShell>
-    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-8">
+    <JARVISStagger className="p-4 md:p-6 max-w-5xl mx-auto space-y-8">
 
       {/* ── Current plan banner ─────────────────────────────────────── */}
       <div className="bg-card border border-border rounded-xl p-5 flex flex-wrap items-center justify-between gap-4">
@@ -301,7 +302,7 @@ export function ScopeExplorerPage(): JSX.Element {
                               });
                               toast({ kind: 'info', message: 'Choose a plan to unlock more scopes' });
                             }}
-                            className="shrink-0 flex items-center gap-1 px-3 py-1.5 text-xs border border-border rounded-md hover:bg-muted transition-colors"
+                            className="shrink-0 flex items-center gap-1 px-3 py-1.5 text-xs border border-border rounded-md hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
                             title="Upgrade your plan to unlock this scope"
                           >
                             <Zap className="h-3 w-3" />
@@ -387,10 +388,10 @@ export function ScopeExplorerPage(): JSX.Element {
                   <code className="flex-1 bg-muted px-3 py-2 rounded-lg text-sm font-mono break-all">
                     {showRaw ? createdKey.raw_key : "•".repeat(Math.min(createdKey.raw_key.length, 48))}
                   </code>
-                  <button onClick={() => setShowRaw((v) => !v)} className="p-2 border border-border rounded-lg hover:bg-muted transition-colors" aria-label="Toggle visibility">
+                  <button onClick={() => setShowRaw((v) => !v)} className="p-2 border border-border rounded-lg hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]" aria-label="Toggle visibility">
                     {showRaw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
-                  <button onClick={() => void copyText(createdKey.raw_key)} className="p-2 border border-border rounded-lg hover:bg-muted transition-colors" aria-label="Copy key">
+                  <button onClick={() => void copyText(createdKey.raw_key)} className="p-2 border border-border rounded-lg hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]" aria-label="Copy key">
                     <Copy className="h-4 w-4" />
                   </button>
                 </div>
@@ -445,7 +446,7 @@ export function ScopeExplorerPage(): JSX.Element {
         onConfirm={() => { if (revokeId) revokeMutation.mutate(revokeId); }}
         onCancel={() => setRevokeId(null)}
       />
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

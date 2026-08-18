@@ -38,6 +38,7 @@ import { TemplateCard } from '@/features/templates/components/TemplateCard';
 import { TemplateInstantiator } from '@/features/templates/components/TemplateInstantiator';
 import { toast } from '@/stores/toast';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ── Domain metadata lookup ────────────────────────────────────────────────────
 
 const DOMAIN_META: Record<
@@ -622,7 +623,7 @@ export default function DomainDetailPage() {
 
   return (
     <JARVISPageShell>
-    <div className="p-6 max-w-7xl mx-auto">
+    <JARVISStagger className="p-6 max-w-7xl mx-auto">
       {/* Back link + breadcrumb */}
       <div className="flex items-center gap-2 mb-6 text-sm text-muted-foreground">
         <Link
@@ -644,7 +645,7 @@ export default function DomainDetailPage() {
             {meta.icon}
           </span>
         </div>
-        <h1 className="text-3xl font-bold text-foreground">{meta.name}</h1>
+        <h1 className="text-3xl font-bold text-[#00D4FF]">{meta.name}</h1>
         {meta.description && (
           <p className="text-muted-foreground mt-2 text-lg max-w-2xl">{meta.description}</p>
         )}
@@ -776,7 +777,7 @@ export default function DomainDetailPage() {
           }}
         />
       )}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

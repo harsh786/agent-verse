@@ -23,7 +23,7 @@ import {
   Crown,
   Swords,
   Zap,
-  Square,
+  Square, Inbox,
 } from "lucide-react";
 import {
   agentsApi,
@@ -900,9 +900,11 @@ function ScoreTab(): JSX.Element {
           <Skeleton className="h-40 w-full" />
         ) : chartData.length === 0 ? (
           <EmptyState
-            title="No eval results"
-            description="Run an eval suite to see performance history here."
-          />
+          icon={<Inbox size={40} />}
+          title="No eval results"
+          description="Run an eval suite to see performance history here."
+          variant="float"
+        />
         ) : (
           <ThemedBarChart
             data={chartData}

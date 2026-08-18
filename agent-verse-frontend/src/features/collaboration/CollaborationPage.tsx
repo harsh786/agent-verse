@@ -11,6 +11,7 @@ import { apiFetch } from '@/lib/api/client';
 import { CRDTEditor } from '@/components/collab/CRDTEditor';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface CollabSession {
@@ -817,7 +818,7 @@ export function CollaborationPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6">
+    <JARVISStagger className="space-y-6">
 
       {/* Page header */}
       <div className="flex items-start justify-between">
@@ -1024,7 +1025,7 @@ export function CollaborationPage() {
           </div>
         )}
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

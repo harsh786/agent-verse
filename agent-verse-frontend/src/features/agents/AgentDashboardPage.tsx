@@ -6,6 +6,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { Skeleton } from '@/components/ui/Skeleton';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
 export function AgentDashboardPage() {
@@ -79,7 +80,7 @@ export function AgentDashboardPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6">
+    <JARVISStagger className="space-y-6">
       <div className="flex items-center gap-3">
         <button
           onClick={() => navigate(`/agents/${agentId}`)}
@@ -195,7 +196,7 @@ export function AgentDashboardPage() {
           <p className="px-5 py-4 text-sm text-muted-foreground">No goals run by this agent yet.</p>
         )}
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

@@ -21,6 +21,7 @@ import { useChatStream } from './hooks/useChatStream';
 import { chatApi } from '@/lib/api/chat';
 import type { ChatMessage } from './types/chat.types';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 export default function ChatPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -179,7 +180,7 @@ export default function ChatPage() {
 
   return (
     <JARVISPageShell>
-    <div className="flex h-full w-full overflow-hidden bg-white dark:bg-gray-950">
+    <JARVISStagger className="flex h-full w-full overflow-hidden bg-white dark:bg-gray-950">
       <ChatSidebar
         sessions={sessions}
         folders={folders}
@@ -249,7 +250,7 @@ export default function ChatPage() {
           </div>
         )}
       </main>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

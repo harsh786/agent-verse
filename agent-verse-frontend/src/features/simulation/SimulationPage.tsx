@@ -25,6 +25,7 @@ import { useAuthStore } from "@/stores/auth";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8000";
 
@@ -456,7 +457,7 @@ export function SimulationPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6 max-w-6xl">
+    <JARVISStagger className="space-y-6 max-w-6xl">
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -640,7 +641,7 @@ export function SimulationPage() {
           )}
         </div>
       )}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

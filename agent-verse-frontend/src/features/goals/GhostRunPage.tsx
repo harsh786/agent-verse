@@ -8,6 +8,7 @@ import { useNavigate } from "react-router-dom";
 import { goalsApi, type GhostRunStrategy, type GhostRunResponse } from "@/lib/api/client";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 import {
   Ghost, Play, ExternalLink, Trophy, Plus, Trash2, Settings2,
   CheckCircle2, XCircle, Clock, Zap, BarChart3, History, ChevronRight,
@@ -641,7 +642,7 @@ export function GhostRunPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6 max-w-5xl">
+    <JARVISStagger className="space-y-6 max-w-5xl">
       {/* Winner Banner */}
       {winnerName && (
         <div className="flex items-center gap-3 p-4 bg-amber-50 dark:bg-amber-950/30 border border-amber-300 rounded-xl">
@@ -795,7 +796,7 @@ export function GhostRunPage() {
             setGoalStatuses({});
             launch.mutate();
           }}
-          className="flex items-center gap-2 px-6 py-2.5 border border-border text-sm font-medium rounded-lg hover:bg-muted transition-colors"
+          className="flex items-center gap-2 px-6 py-2.5 border border-border text-sm font-medium rounded-lg hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
         >
           <Zap className="h-4 w-4" /> Run Again
         </button>
@@ -826,7 +827,7 @@ export function GhostRunPage() {
           </div>
         </div>
       )}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

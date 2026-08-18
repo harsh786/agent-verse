@@ -4,6 +4,7 @@ import { Pencil, Play, Trash2, Download, Upload, Search, X as XIcon, Wrench } fr
 import { useAuthStore } from '../../stores/auth';
 import { toast } from '@/stores/toast';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 const API = import.meta.env.VITE_API_BASE_URL || '';
 
@@ -400,11 +401,11 @@ export default function SkillsPage() {
 
   return (
     <JARVISPageShell>
-    <div className="p-6 max-w-5xl mx-auto">
+    <JARVISStagger className="p-6 max-w-5xl mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Skills</h1>
+          <h1 className="text-2xl font-bold text-[#00D4FF]">Skills</h1>
           <p className="text-muted-foreground mt-1">
             Composable instruction packs that reduce tokens and improve focus
           </p>
@@ -660,7 +661,7 @@ export default function SkillsPage() {
           )}
         </div>
       )}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

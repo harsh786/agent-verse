@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { marketplaceApi, templatesApi, type MarketplaceV2Template } from '@/lib/api/client';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 const DOMAINS = [
   { key: 'hr-talent', name: 'HR & Talent', icon: '👥', tagline: 'Hire, onboard, and retain faster', color: 'bg-blue-100 dark:bg-blue-900/20' },
@@ -66,7 +67,7 @@ function DomainCard({
   return (
     <div
       onClick={onClick}
-      className="group cursor-pointer rounded-xl border bg-card hover:border-primary/50 hover:shadow-md transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 overflow-hidden"
+      className="group cursor-pointer rounded-xl border bg-card hover:border-primary/50 hover:shadow-md transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 overflow-hidden hover:-translate-y-0.5 transition-[transform,box-shadow] hover:shadow-[0_0_24px_rgba(0,212,255,0.20)]"
       role="button"
       tabIndex={0}
       onKeyDown={(e) => e.key === 'Enter' && onClick()}
@@ -147,9 +148,9 @@ export default function DomainsPage() {
 
   return (
     <JARVISPageShell>
-    <div className="p-6 max-w-7xl mx-auto">
+    <JARVISStagger className="p-6 max-w-7xl mx-auto">
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-foreground">Domain Solutions</h1>
+        <h1 className="text-3xl font-bold text-[#00D4FF]">Domain Solutions</h1>
         <p className="text-muted-foreground mt-2 text-lg">
           37 industry verticals, 200+ pre-built agents, 150+ goal templates — ready to install.
         </p>
@@ -182,7 +183,7 @@ export default function DomainsPage() {
           No domains match &quot;{search}&quot;
         </div>
       )}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

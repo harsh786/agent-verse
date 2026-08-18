@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { workflowEngineApi, type WEWorkflow } from '../../lib/api/client';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Panel selector ────────────────────────────────────────────────────────────
 
@@ -224,7 +225,7 @@ export default function WorkflowSettingsPage() {
 
   return (
     <JARVISPageShell>
-    <div className="min-h-screen bg-slate-950 text-white">
+    <JARVISStagger className="min-h-screen bg-slate-950 text-white">
       <header className="sticky top-0 z-30 flex items-center gap-3 px-6 py-4 border-b
                           border-white/10 bg-slate-950/90 backdrop-blur-xl">
         <Link to={`/workflows/${id}/edit`} className="text-white/40 hover:text-white"
@@ -274,7 +275,7 @@ export default function WorkflowSettingsPage() {
           </motion.div>
         </main>
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }
