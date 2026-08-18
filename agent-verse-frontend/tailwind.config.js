@@ -68,7 +68,9 @@ export default {
       },
       // ── Box shadows (JARVIS glow system) ──────────────────────────────
       boxShadow: {
-        "glow-blue":  "0 0 20px rgba(59,130,246,0.15)",
+        "glow-blue":  "0 0 20px rgba(0,212,255,0.15)",
+        "glow-electric": "0 0 20px rgba(0,212,255,0.15)",
+        "glow-electric-strong": "0 0 40px rgba(0,212,255,0.35)",
         "glow-cyan":  "0 0 15px rgba(6,182,212,0.2)",
         "glow-violet":"0 0 20px rgba(139,92,246,0.2)",
         "card":       "0 4px 24px rgba(0,0,0,0.4)",

@@ -3365,3 +3365,79 @@ def org_brain_loop() -> dict[str, int]:
         return loop.run_until_complete(_run())
     finally:
         loop.close()
+
+
+# ── PART 43: Org Intelligence + Digest + Twin Sync Cron Tasks ─────────────────
+
+@celery_app.task(name="app.scaling.tasks.org_intelligence_cron", queue="maintenance")
+def org_intelligence_cron() -> dict:
+    """
+    PART 43: org-intelligence-cron — runs every 15 minutes.
+    Detects bottlenecks, generates insights, updates org health scores.
+    """
+    from app.org.feature_flags import is_feature_enabled, _run_org_intelligence_cron
+    if not is_feature_enabled("org_analytics_enabled"):
+        return {"status": "disabled"}
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run_org_intelligence_cron())
+    except Exception as exc:
+        logger.error("org_intelligence_cron failed: %s", exc)
+        return {"error": str(exc)}
+    finally:
+        loop.close()
+
+
+@celery_app.task(name="app.scaling.tasks.org_digest_cron", queue="maintenance")
+def org_digest_cron() -> dict:
+    """
+    PART 43: org-digest-cron — runs daily at 06:00 UTC.
+    Generates "While You Were Away" digests for all active orgs.
+    """
+    from app.org.feature_flags import is_feature_enabled, _run_org_digest_cron
+    if not is_feature_enabled("org_digest_enabled"):
+        return {"status": "disabled"}
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run_org_digest_cron())
+    except Exception as exc:
+        logger.error("org_digest_cron failed: %s", exc)
+        return {"error": str(exc)}
+    finally:
+        loop.close()
+
+
+@celery_app.task(name="app.scaling.tasks.org_twin_sync", queue="maintenance")
+def org_twin_sync(event: dict) -> dict:
+    """
+    PART 43: org-twin-sync — event-driven, triggered on org events.
+    Updates digital twin state to reflect real-world org changes.
+    """
+    from app.org.feature_flags import _run_org_twin_sync
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_run_org_twin_sync(event))
+        return {"status": "ok", "event_type": event.get("event_type", "unknown")}
+    except Exception as exc:
+        logger.warning("org_twin_sync failed: %s", exc)
+        return {"error": str(exc)}
+    finally:
+        loop.close()
+
+
+# Register org cron tasks in Celery beat schedule
+try:
+    from celery.schedules import crontab as _crontab
+
+    celery_app.conf.beat_schedule["org-intelligence-every-15min"] = {
+        "task": "app.scaling.tasks.org_intelligence_cron",
+        "schedule": 900,  # 15 minutes
+        "options": {"queue": "maintenance"},
+    }
+    celery_app.conf.beat_schedule["org-digest-daily-6am"] = {
+        "task": "app.scaling.tasks.org_digest_cron",
+        "schedule": _crontab(hour=6, minute=0),
+        "options": {"queue": "maintenance"},
+    }
+except Exception as _org_sched_exc:
+    logger.warning("Failed to register org cron schedules: %s", _org_sched_exc)
