@@ -1,69 +1,55 @@
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, AlertCircle, Info, AlertTriangle, X } from "lucide-react";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
+import { X } from "lucide-react";
 import { useToastStore } from "@/stores/toast";
 import type { ToastItem } from "@/stores/toast";
+import { StatusOrb } from "./StatusOrb";
 
 const KIND_CONFIG = {
-  success: {
-    icon: CheckCircle2,
-    className: "border-green-500/40 bg-green-50/80 dark:bg-green-950/40 text-green-800 dark:text-green-300",
-    duration: 4000,
-  },
-  error: {
-    icon: AlertCircle,
-    className: "border-red-500/40 bg-red-50/80 dark:bg-red-950/40 text-red-800 dark:text-red-300",
-    duration: 6000,
-  },
-  info: {
-    icon: Info,
-    className: "border-blue-500/40 bg-blue-50/80 dark:bg-blue-950/40 text-blue-800 dark:text-blue-300",
-    duration: 4000,
-  },
-  warning: {
-    icon: AlertTriangle,
-    className: "border-yellow-500/40 bg-yellow-50/80 dark:bg-yellow-950/40 text-yellow-800 dark:text-yellow-300",
-    duration: 0, // sticky
-  },
+  success: { borderColor: '#10B981', orbStatus: 'completed', duration: 4000 },
+  error:   { borderColor: '#EF4444', orbStatus: 'failed',    duration: 6000 },
+  info:    { borderColor: '#00D4FF', orbStatus: 'idle',       duration: 4000 },
+  warning: { borderColor: '#F59E0B', orbStatus: 'pending',   duration: 0 },
 } as const;
+
+const SPRING = { type: 'spring', stiffness: 450, damping: 18 } as const;
 
 function ToastItemView({ id, kind, message, duration, action, paused }: ToastItem & { paused?: boolean }) {
   const dismiss = useToastStore((s) => s.dismiss);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const config = KIND_CONFIG[kind] ?? KIND_CONFIG.info;
-  const Icon = config.icon;
-  // Use per-toast duration override if provided, otherwise fall back to kind default
   const effectiveDuration = duration !== undefined ? duration : config.duration;
 
   useEffect(() => {
     if (effectiveDuration > 0 && !paused) {
       timerRef.current = setTimeout(() => dismiss(id), effectiveDuration);
     }
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, [id, effectiveDuration, dismiss, paused]);
 
   return (
     <div
-      className={`flex items-start gap-3 border rounded-lg shadow-lg px-4 py-3 text-sm max-w-sm
-        animate-in slide-in-from-bottom-2 duration-300 ${config.className}`}
+      className="flex items-center gap-3 px-4 py-3 rounded-xl min-w-[280px] max-w-[420px]
+                 bg-[#1A1F2E] border border-white/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.5)]
+                 cursor-pointer hover:border-white/[0.14] transition-colors"
+      style={{ borderLeft: `3px solid ${config.borderColor}` }}
+      onClick={() => dismiss(id)}
+      role="status"
     >
-      <Icon className="h-4 w-4 mt-0.5 shrink-0" aria-hidden="true" />
-      <span className="flex-1 break-words">
-        {message}
-        {action && (
-          <button
-            onClick={() => { action.onClick(); dismiss(id); }}
-            className="ml-2 text-xs underline font-medium hover:no-underline focus:outline-none"
-          >
-            {action.label}
-          </button>
-        )}
-      </span>
+      <StatusOrb status={config.orbStatus} size={8} className="shrink-0" />
+      <p className="text-sm text-[#F1F5F9] flex-1 leading-snug break-words">{message}</p>
+      {action && (
+        <button
+          onClick={(e) => { e.stopPropagation(); action.onClick(); dismiss(id); }}
+          className="text-xs text-[#00D4FF] hover:text-white transition-colors shrink-0 font-medium ml-1"
+        >
+          {action.label}
+        </button>
+      )}
       <button
         aria-label="Dismiss notification"
-        onClick={() => dismiss(id)}
-        className="text-current opacity-60 hover:opacity-100 transition-opacity shrink-0 ml-1"
+        onClick={(e) => { e.stopPropagation(); dismiss(id); }}
+        className="text-[#475569] hover:text-[#94A3B8] transition-colors shrink-0 ml-1"
       >
         <X className="h-3.5 w-3.5" />
       </button>
@@ -74,9 +60,11 @@ function ToastItemView({ id, kind, message, duration, action, paused }: ToastIte
 export function Toaster() {
   const toasts = useToastStore((s) => s.toasts);
   const [hovering, setHovering] = useState(false);
+  const reduce = useReducedMotion();
+
   return (
     <div
-      className="fixed bottom-4 right-4 z-[100] flex flex-col-reverse gap-2 max-h-screen overflow-hidden pointer-events-none"
+      className="fixed bottom-4 right-4 z-[200] flex flex-col gap-2 items-end pointer-events-none"
       role="region"
       aria-label="Notifications"
       aria-live="polite"
@@ -84,11 +72,21 @@ export function Toaster() {
       onMouseEnter={() => setHovering(true)}
       onMouseLeave={() => setHovering(false)}
     >
-      {toasts.map((t) => (
-        <div key={t.id} className="pointer-events-auto">
-          <ToastItemView {...t} paused={hovering} />
-        </div>
-      ))}
+      <AnimatePresence mode="popLayout">
+        {toasts.map((t) => (
+          <motion.div
+            key={t.id}
+            layout
+            initial={reduce ? { opacity: 0 } : { opacity: 0, y: 32, scale: 0.92 }}
+            animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0,  scale: 1 }}
+            exit={reduce  ? { opacity: 0 } : { opacity: 0, y: 12, scale: 0.96 }}
+            transition={reduce ? { duration: 0.15 } : SPRING}
+            className="pointer-events-auto"
+          >
+            <ToastItemView {...t} paused={hovering} />
+          </motion.div>
+        ))}
+      </AnimatePresence>
     </div>
   );
 }
