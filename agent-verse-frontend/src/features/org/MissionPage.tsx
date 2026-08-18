@@ -5,7 +5,7 @@
  *  - Header: title, status, progress, cost, agents
  *  - Timeline: planning → research → execution → review → done
  *  - Team graph: agent nodes with live status
- *  - KanbanBoard: task board (TODO / IN PROGRESS / REVIEW / DONE / APPROVED)
+ *  - KanbanBoard: task board (TODO | IN_PROGRESS | REVIEW | DONE | APPROVED)
  *  - ArtifactGallery: versioned outputs
  *  - ApprovalQueue: pending approvals for this mission
  *  - Activity feed: real-time event stream
