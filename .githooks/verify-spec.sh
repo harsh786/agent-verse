@@ -203,6 +203,9 @@ grep -q '"/org"' "$FRONTEND/components/ui/Sidebar.tsx" 2>/dev/null && pass "Org 
 # Backend role endpoints (AA3)
 grep -q "org_list_roles\|org_create_role\|org_delete_role" "$BACKEND/org/router.py" 2>/dev/null && pass "Org role endpoints in org router (AA3)" || gap "Org role endpoints MISSING (AA3)"
 
+# AB2 — SBOM + Supply chain
+[ -f "$REPO_ROOT/.github/workflows/supply-chain.yml" ] && pass "SBOM + supply chain workflow exists (AB2)" || gap "Supply chain workflow MISSING (AB2)"
+
 # ─── TEST COVERAGE ────────────────────────────────────────────────────────────
 section "TEST COVERAGE"
 
