@@ -6,6 +6,7 @@ import { QuotaUsageBar } from './components/QuotaUsageBar';
 import { useSources, useIngestionQuota } from './hooks';
 import type { SourceFamily } from './types';
 import { FAMILY_CONFIG } from './types';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 export function SourcesPage() {
   const [showCreate, setShowCreate] = useState(false);
@@ -107,6 +108,7 @@ function FamilyChip({
   family: string; active: boolean; label: string; count?: number; onClick: () => void;
 }) {
   return (
+    <JARVISPageShell>
     <button
       onClick={onClick}
       role="checkbox"
@@ -124,5 +126,6 @@ function FamilyChip({
         </span>
       )}
     </button>
+    </JARVISPageShell>
   );
 }

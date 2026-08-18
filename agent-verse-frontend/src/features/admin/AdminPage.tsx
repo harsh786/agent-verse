@@ -17,6 +17,7 @@ import {
   Search, Settings2, Shield, TrendingUp, Users, Zap,
 } from 'lucide-react';
 import { adminApi } from '@/lib/api/client';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -141,6 +142,7 @@ export default function AdminPage() {
   const lastUpdated = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString() : '—';
 
   return (
+    <JARVISPageShell>
     <div className="flex flex-col gap-6 p-4 lg:p-6" data-testid="admin-page">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -308,5 +310,6 @@ export default function AdminPage() {
         ))}
       </div>
     </div>
+    </JARVISPageShell>
   );
 }

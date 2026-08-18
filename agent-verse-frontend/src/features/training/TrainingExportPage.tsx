@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import { trainingApi, apiFetch, type TrainingPreview } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -387,6 +388,7 @@ export function TrainingExportPage() {
   const currentFormat = FORMATS.find(f => f.id === format);
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -674,6 +676,7 @@ export function TrainingExportPage() {
         </div>
       </div>
     </div>
+    </JARVISPageShell>
   );
 }
 

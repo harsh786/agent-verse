@@ -63,6 +63,7 @@ import { insightsApi, goalsApi } from '@/lib/api/client';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { toast } from '@/stores/toast';
 import { layeredLayout, type FlowNodeInput, type FlowEdgeInput } from '@/components/graph/FlowCanvas';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -764,10 +765,12 @@ function StatPill({
   danger?: boolean;
 }) {
   return (
+    <JARVISPageShell>
     <div className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border ${danger ? 'bg-red-50 border-red-200 text-red-700' : 'bg-muted border-border'}`}>
       {icon}
       <span className="font-bold">{value}</span>
       <span className={danger ? 'text-red-500' : 'text-muted-foreground'}>{label}</span>
     </div>
+    </JARVISPageShell>
   );
 }

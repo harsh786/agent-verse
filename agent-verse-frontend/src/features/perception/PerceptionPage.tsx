@@ -31,6 +31,7 @@ import { useNavigate } from 'react-router-dom';
 import { perceptionApi } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { StatusBadge } from '@/components/ui/StatusBadge';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -742,6 +743,7 @@ export function PerceptionPage() {
   ];
 
   return (
+    <JARVISPageShell>
     <div className="space-y-5">
       {/* Header */}
       <div>
@@ -790,5 +792,6 @@ export function PerceptionPage() {
         </div>
       </div>
     </div>
+    </JARVISPageShell>
   );
 }

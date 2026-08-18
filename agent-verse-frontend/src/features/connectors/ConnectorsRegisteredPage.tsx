@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth';
 import { Eye, EyeOff, Plus, Trash2, ExternalLink, CheckCircle2, XCircle, Loader2, Info } from 'lucide-react';
 import { connectorsApi, type ConnectorResponse, type CatalogAuthField } from '@/lib/api/client';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Auth-type field definitions ─────────────────────────────────────────────
 
@@ -715,6 +716,7 @@ export function ConnectorsRegisteredPage() {
     !registerMutation.isPending;
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -1046,5 +1048,6 @@ export function ConnectorsRegisteredPage() {
         onCancel={() => setConfirmDeleteId(null)}
       />
     </div>
+    </JARVISPageShell>
   );
 }

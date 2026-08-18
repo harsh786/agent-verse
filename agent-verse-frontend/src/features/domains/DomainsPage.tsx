@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { marketplaceApi, templatesApi, type MarketplaceV2Template } from '@/lib/api/client';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 const DOMAINS = [
   { key: 'hr-talent', name: 'HR & Talent', icon: '👥', tagline: 'Hire, onboard, and retain faster', color: 'bg-blue-100 dark:bg-blue-900/20' },
@@ -145,6 +146,7 @@ export default function DomainsPage() {
   );
 
   return (
+    <JARVISPageShell>
     <div className="p-6 max-w-7xl mx-auto">
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-foreground">Domain Solutions</h1>
@@ -181,5 +183,6 @@ export default function DomainsPage() {
         </div>
       )}
     </div>
+    </JARVISPageShell>
   );
 }

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CheckCircle, ChevronRight, Loader2, Zap } from "lucide-react";
 import { settingsApi, connectorsApi, goalsApi, agentsApi } from "@/lib/api/client";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 type Step = 1 | 2 | 3 | 4;
 
@@ -395,6 +396,7 @@ export function OnboardingPage() {
     setCurrentStep((s) => Math.min(s + 1, 4) as Step);
 
   return (
+    <JARVISPageShell>
     <div className="min-h-screen bg-background flex flex-col items-center justify-center px-4 py-12">
       <div className="w-full max-w-lg">
         {/* Logo */}
@@ -465,5 +467,6 @@ export function OnboardingPage() {
         </div>
       </div>
     </div>
+    </JARVISPageShell>
   );
 }

@@ -22,6 +22,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { toast } from "@/stores/toast";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -208,6 +209,7 @@ export function AuditExplorerPage() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
+    <JARVISPageShell>
     <div className="p-6 max-w-7xl mx-auto space-y-5">
 
       {/* ── Header ── */}
@@ -527,6 +529,7 @@ export function AuditExplorerPage() {
         </div>
       )}
     </div>
+    </JARVISPageShell>
   );
 }
 

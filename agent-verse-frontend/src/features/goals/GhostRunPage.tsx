@@ -7,6 +7,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { goalsApi, type GhostRunStrategy, type GhostRunResponse } from "@/lib/api/client";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import {
   Ghost, Play, ExternalLink, Trophy, Plus, Trash2, Settings2,
   CheckCircle2, XCircle, Clock, Zap, BarChart3, History, ChevronRight,
@@ -639,6 +640,7 @@ export function GhostRunPage() {
   // ── Phase 3: Results ──────────────────────────────────────────────────────
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6 max-w-5xl">
       {/* Winner Banner */}
       {winnerName && (
@@ -825,5 +827,6 @@ export function GhostRunPage() {
         </div>
       )}
     </div>
+    </JARVISPageShell>
   );
 }

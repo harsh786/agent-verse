@@ -24,6 +24,7 @@ import { simulationApi, type SimulationSummary } from "@/lib/api/client";
 import { useAuthStore } from "@/stores/auth";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8000";
 
@@ -454,6 +455,7 @@ export function SimulationPage() {
   };
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6 max-w-6xl">
       {/* Header */}
       <div>
@@ -639,6 +641,7 @@ export function SimulationPage() {
         </div>
       )}
     </div>
+    </JARVISPageShell>
   );
 }
 export default SimulationPage;

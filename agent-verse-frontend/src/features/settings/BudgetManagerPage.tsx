@@ -30,6 +30,7 @@ import { ThemedLineChart } from "@/components/charts";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -353,6 +354,7 @@ export function BudgetManagerPage(): JSX.Element {
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
+    <JARVISPageShell>
     <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-6">
       {/* ── Header ── */}
       <div className="flex items-start justify-between gap-4">
@@ -988,5 +990,6 @@ export function BudgetManagerPage(): JSX.Element {
         )}
       </section>
     </div>
+    </JARVISPageShell>
   );
 }

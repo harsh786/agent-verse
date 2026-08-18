@@ -25,6 +25,7 @@ import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -397,6 +398,7 @@ export function RbacPage(): JSX.Element {
   const TAB_OFF = `${TAB_BASE} border-transparent text-muted-foreground hover:text-foreground`;
 
   return (
+    <JARVISPageShell>
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
 
       {/* ── Page header ──────────────────────────────────────────────────── */}
@@ -825,6 +827,7 @@ export function RbacPage(): JSX.Element {
         onCancel={() => setDeleteIpId(null)}
       />
     </div>
+    </JARVISPageShell>
   );
 }
 

@@ -13,6 +13,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -559,6 +560,7 @@ export function AgentIdentityPage(): JSX.Element {
   const credentials = credentialsQuery.data ?? [];
 
   return (
+    <JARVISPageShell>
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
       {/* Header */}
       <div>
@@ -650,5 +652,6 @@ export function AgentIdentityPage(): JSX.Element {
         onCancel={() => setRevokeTarget(null)}
       />
     </div>
+    </JARVISPageShell>
   );
 }

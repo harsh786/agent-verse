@@ -8,6 +8,7 @@ import { insightsApi, agentsApi } from "@/lib/api/client";
 import { ThemedRadarChart } from "@/components/charts";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ArrowLeft, TrendingUp, TrendingDown } from "lucide-react";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 const DIMENSION_LABELS: Record<string, string> = {
   speed: "Speed",
@@ -66,6 +67,7 @@ export function AgentRadarPage() {
   const isAboveAvg = successRate > platformAvg;
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6 max-w-3xl">
       <div className="flex items-center gap-3">
         <button
@@ -151,5 +153,6 @@ export function AgentRadarPage() {
         </div>
       )}
     </div>
+    </JARVISPageShell>
   );
 }

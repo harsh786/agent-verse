@@ -11,6 +11,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, Play, CheckCircle, XCircle, Clock, Loader2, Pause } from 'lucide-react';
 import { workflowEngineApi, type WERun } from '../../lib/api/client';
 import { getStatusClasses } from './design/tokens';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 const STATUS_ICONS: Record<string, React.ReactNode> = {
   pending:       <Clock className="h-3.5 w-3.5" />,
@@ -85,6 +86,7 @@ export default function WorkflowRunsPage() {
   });
 
   return (
+    <JARVISPageShell>
     <div className="min-h-screen bg-slate-950 text-white">
       <header className="sticky top-0 z-30 flex items-center gap-3 px-6 py-4 border-b
                           border-white/10 bg-slate-950/90 backdrop-blur-xl">
@@ -123,5 +125,6 @@ export default function WorkflowRunsPage() {
         )}
       </main>
     </div>
+    </JARVISPageShell>
   );
 }

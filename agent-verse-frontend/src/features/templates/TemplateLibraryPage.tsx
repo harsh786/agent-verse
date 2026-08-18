@@ -10,6 +10,7 @@ import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { toast } from "@/stores/toast";
 import { Plus, BookOpen, Search, X } from "lucide-react";
 import { useDebounce } from "@/hooks/useDebounce";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // All 37 content-YAML domains + legacy soft-coded domains for backwards compat
 const DOMAINS = [
@@ -201,6 +202,7 @@ export function TemplateLibraryPage() {
   const filtered = templates;
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6 max-w-5xl">
       <div className="flex items-center justify-between">
         <div>
@@ -322,5 +324,6 @@ export function TemplateLibraryPage() {
         onCancel={() => setDeleteId(null)}
       />
     </div>
+    </JARVISPageShell>
   );
 }

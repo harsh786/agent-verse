@@ -10,6 +10,7 @@ import { ParentChildTopology } from './ParentChildTopology';
 import { RunTimeline } from './RunTimeline';
 import { SharedTranscript } from './SharedTranscript';
 import { useCoordinationStream } from './useCoordinationStream';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 export function CoordinationRunPage() {
   const { sessionId = '' } = useParams();
@@ -44,6 +45,7 @@ export function CoordinationRunPage() {
   ] as const;
 
   return (
+    <JARVISPageShell>
     <main className="mx-auto max-w-[1500px] space-y-6 p-4 md:p-8">
       <header className="flex flex-col justify-between gap-5 border-b border-border pb-6 lg:flex-row lg:items-end">
         <div>
@@ -120,6 +122,7 @@ export function CoordinationRunPage() {
         </>
       )}
     </main>
+    </JARVISPageShell>
   );
 }
 

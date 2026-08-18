@@ -19,6 +19,7 @@ import {
 import { workflowEngineApi, type WEWorkflow } from '../../lib/api/client';
 import { getStatusClasses } from './design/tokens';
 import { nodeBounce, emptyStateFade } from './design/motion';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Status badge ──────────────────────────────────────────────────────────────
 
@@ -221,6 +222,7 @@ export default function WorkflowListPage() {
   );
 
   return (
+    <JARVISPageShell>
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950
                     text-white">
       {/* Header */}
@@ -345,5 +347,6 @@ export default function WorkflowListPage() {
         )}
       </main>
     </div>
+    </JARVISPageShell>
   );
 }

@@ -11,6 +11,7 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 export default function OAuthCallbackPage() {
   const [searchParams] = useSearchParams();
@@ -60,6 +61,7 @@ export default function OAuthCallbackPage() {
   }, [searchParams]);
 
   return (
+    <JARVISPageShell>
     <div className="min-h-screen bg-background flex items-center justify-center p-8">
       <div className="text-center max-w-sm space-y-4">
         {status === 'processing' && (
@@ -90,5 +92,6 @@ export default function OAuthCallbackPage() {
         )}
       </div>
     </div>
+    </JARVISPageShell>
   );
 }
