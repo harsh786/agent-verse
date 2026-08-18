@@ -109,6 +109,7 @@ function FamilyChip({
 }) {
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <button
       onClick={onClick}
       role="checkbox"

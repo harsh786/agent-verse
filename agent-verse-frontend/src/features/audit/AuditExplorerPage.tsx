@@ -210,6 +210,7 @@ export function AuditExplorerPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="p-6 max-w-7xl mx-auto space-y-5">
 
       {/* ── Header ── */}

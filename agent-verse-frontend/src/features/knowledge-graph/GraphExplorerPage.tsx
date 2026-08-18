@@ -87,6 +87,7 @@ export function GraphExplorerPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="flex h-[calc(100vh-6rem)] gap-4">
       {/* Left panel: Node list */}
       <div className="w-80 flex flex-col gap-3 shrink-0">

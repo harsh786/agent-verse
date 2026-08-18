@@ -25,7 +25,7 @@ import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -209,9 +209,10 @@ function GrantRoleModal({ open, onClose }: GrantRoleModalProps): JSX.Element | n
         <div className="space-y-2">
           <p className="text-xs font-medium text-muted-foreground">Select Role</p>
           <div className="grid grid-cols-2 gap-2">
+            <JARVISStagger>
             {ROLES.map((r) => (
+              <JARVISStaggerItem key={r}>
               <button
-                key={r}
                 type="button"
                 onClick={() => setRole(r)}
                 className={`flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg text-left border-2 transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
@@ -225,7 +226,9 @@ function GrantRoleModal({ open, onClose }: GrantRoleModalProps): JSX.Element | n
                   {ROLE_SCOPES[r].slice(0, 2).join(", ")}
                 </span>
               </button>
+              </JARVISStaggerItem>
             ))}
+            </JARVISStagger>
           </div>
         </div>
 
@@ -399,6 +402,7 @@ export function RbacPage(): JSX.Element {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
 
       {/* ── Page header ──────────────────────────────────────────────────── */}

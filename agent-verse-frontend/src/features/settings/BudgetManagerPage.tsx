@@ -355,6 +355,7 @@ export function BudgetManagerPage(): JSX.Element {
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-6">
       {/* ── Header ── */}
       <div className="flex items-start justify-between gap-4">

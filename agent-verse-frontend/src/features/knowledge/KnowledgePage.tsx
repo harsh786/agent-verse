@@ -22,7 +22,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Pagination } from '@/components/ui/Pagination';
 import { apiFetch, API_BASE } from '@/lib/api/client';
 
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 interface Collection { collection_id: string; name: string; doc_count?: number; embedder?: string; created_at?: string; }
@@ -130,8 +130,10 @@ function CollectionsTab() {
         </div>
       ) : (
         <div data-testid="collections-grid" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <JARVISStagger>
           {collections.map((c) => (
-            <div key={c.collection_id} data-testid={`collection-card-${c.collection_id}`}
+            <JARVISStaggerItem key={c.collection_id}>
+            <div data-testid={`collection-card-${c.collection_id}`}
               className="bg-card border border-border rounded-xl overflow-hidden">
               <div className="p-4 space-y-2">
                 <div className="flex items-start justify-between gap-2">
@@ -174,7 +176,9 @@ function CollectionsTab() {
                 </button>
               </div>
             </div>
+            </JARVISStaggerItem>
           ))}
+          </JARVISStagger>
         </div>
       )}
       <ConfirmModal
@@ -1083,6 +1087,7 @@ export function KnowledgePage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">

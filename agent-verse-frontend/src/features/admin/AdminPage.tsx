@@ -17,7 +17,7 @@ import {
   Search, Settings2, Shield, TrendingUp, Users, Zap,
 } from 'lucide-react';
 import { adminApi } from '@/lib/api/client';
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -143,6 +143,7 @@ export default function AdminPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="flex flex-col gap-6 p-4 lg:p-6" data-testid="admin-page">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -179,16 +180,19 @@ export default function AdminPage() {
       {/* Plan distribution */}
       <div className="flex flex-wrap gap-2 rounded-xl border border-slate-700 bg-slate-800/40 px-4 py-3" data-testid="plan-distribution">
         <span className="text-xs text-slate-500 mr-2 self-center">Plans:</span>
+        <JARVISStagger>
         {PLANS.map((p) => (
+          <JARVISStaggerItem key={p}>
           <button
-            key={p}
             data-testid={`plan-filter-${p}`}
             onClick={() => setPlanFilter(planFilter === p ? 'all' : p)}
             className={`rounded-full px-3 py-1 text-xs font-medium transition-[color,background-color,border-color,opacity,box-shadow,transform] ${planFilter === p ? PLAN_COLORS[p] : 'bg-slate-700/40 text-slate-400 hover:bg-slate-700 border border-transparent'}`}
           >
             {p.charAt(0).toUpperCase() + p.slice(1)} <span className="opacity-70">({planCounts[p] ?? 0})</span>
           </button>
+          </JARVISStaggerItem>
         ))}
+        </JARVISStagger>
         {planFilter !== 'all' && (
           <button onClick={() => setPlanFilter('all')} className="ml-auto rounded-full px-3 py-1 text-xs text-slate-500 hover:text-slate-300">Clear ×</button>
         )}

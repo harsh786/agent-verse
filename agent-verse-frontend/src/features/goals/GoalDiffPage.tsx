@@ -9,7 +9,7 @@ import { goalsApi } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { GitCompare, Plus, Minus, AlertCircle } from "lucide-react";
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 
 export interface DiffLine {
   type: "added" | "removed" | "unchanged";
@@ -120,6 +120,7 @@ export function GoalDiffPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6 max-w-5xl">
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -221,9 +222,10 @@ export function GoalDiffPage() {
               Execution comparison
             </div>
             <div className="overflow-auto max-h-[500px]">
+              <JARVISStagger>
               {diffLines.map((line, i) => (
+                <JARVISStaggerItem key={i}>
                 <div
-                  key={i}
                   className={`flex items-start px-4 py-0.5 ${
                     line.type === "added"
                       ? "bg-green-50 dark:bg-green-950/30 text-green-800 dark:text-green-300"
@@ -237,7 +239,9 @@ export function GoalDiffPage() {
                   </span>
                   <span className="whitespace-pre-wrap break-all">{line.content}</span>
                 </div>
+                </JARVISStaggerItem>
               ))}
+              </JARVISStagger>
             </div>
           </div>
         </>

@@ -46,6 +46,7 @@ export function CoordinationRunPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <main className="mx-auto max-w-[1500px] space-y-6 p-4 md:p-8">
       <header className="flex flex-col justify-between gap-5 border-b border-border pb-6 lg:flex-row lg:items-end">
         <div>

@@ -68,6 +68,7 @@ export function AgentRadarPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6 max-w-3xl">
       <div className="flex items-center gap-3">
         <button

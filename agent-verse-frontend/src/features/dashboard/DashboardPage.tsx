@@ -37,7 +37,7 @@ import { AgentOrbitView } from "./components/AgentOrbitView";
 import { toast } from "@/stores/toast";
 import { AIOpsDashboard } from "./AIOpsDashboard";
 
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 // ── KPI Card ──────────────────────────────────────────────────────────────────
 
 function KpiCard({
@@ -241,6 +241,7 @@ export function DashboardPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6 max-w-7xl mx-auto">
       {/* ── Header ───────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
@@ -446,9 +447,10 @@ export function DashboardPage() {
 
       {/* ── Quick Actions ─────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <JARVISStagger>
         {quickActions.map((action) => (
+          <JARVISStaggerItem key={action.path}>
           <button
-            key={action.path}
             onClick={() => navigate(action.path)}
             className="flex items-center gap-2.5 p-3 bg-card border border-border rounded-xl hover:border-primary/30 hover:shadow-sm transition-[color,background-color,border-color,opacity,box-shadow,transform] text-left"
             aria-label={`Navigate to ${action.label}`}
@@ -457,7 +459,9 @@ export function DashboardPage() {
             <span className="text-sm font-medium text-foreground">{action.label}</span>
             <ChevronRight className="h-3.5 w-3.5 text-muted-foreground ml-auto shrink-0" aria-hidden="true" />
           </button>
+          </JARVISStaggerItem>
         ))}
+        </JARVISStagger>
       </div>
       </>
       )}

@@ -247,6 +247,7 @@ export function NotificationCenterPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="p-6 max-w-4xl mx-auto space-y-8">
 
       {/* Header */}

@@ -7,7 +7,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { goalsApi, type GhostRunStrategy, type GhostRunResponse } from "@/lib/api/client";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 import {
   Ghost, Play, ExternalLink, Trophy, Plus, Trash2, Settings2,
   CheckCircle2, XCircle, Clock, Zap, BarChart3, History, ChevronRight,
@@ -506,9 +506,10 @@ export function GhostRunPage() {
             Compare By
           </h2>
           <div className="flex flex-wrap gap-2">
+            <JARVISStagger>
             {metrics.map((m, i) => (
+              <JARVISStaggerItem key={m.key}>
               <button
-                key={m.key}
                 onClick={() => {
                   const next = [...metrics];
                   next[i] = { ...m, enabled: !m.enabled };
@@ -522,7 +523,9 @@ export function GhostRunPage() {
               >
                 {m.label}
               </button>
+              </JARVISStaggerItem>
             ))}
+            </JARVISStagger>
           </div>
           <div className="flex items-center gap-2 mt-1">
             <input
@@ -641,6 +644,7 @@ export function GhostRunPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6 max-w-5xl">
       {/* Winner Banner */}
       {winnerName && (

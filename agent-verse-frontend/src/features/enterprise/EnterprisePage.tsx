@@ -9,7 +9,7 @@ import { enterpriseApi, apiFetch } from '@/lib/api/client';
 import type { DataResidencyInfo, EnterpriseExportResult } from '@/lib/api/client';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { toast } from '@/stores/toast';
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 
 // ── Compliance Dashboard ──────────────────────────────────────────────────────
 
@@ -143,8 +143,10 @@ function SAMLWizard(): JSX.Element {
 
       {/* Step indicators */}
       <div className="flex items-center gap-1 mb-6 overflow-x-auto">
+        <JARVISStagger>
         {WIZARD_STEPS.map((s, i) => (
-          <div key={i} className="flex items-center gap-1 flex-shrink-0">
+          <JARVISStaggerItem key={i}>
+          <div className="flex items-center gap-1 flex-shrink-0">
             <button
               onClick={() => i <= step && setStep(i)}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
@@ -162,7 +164,9 @@ function SAMLWizard(): JSX.Element {
             </button>
             {i < WIZARD_STEPS.length - 1 && <ChevronRight className="h-3 w-3 text-muted-foreground flex-shrink-0" />}
           </div>
+          </JARVISStaggerItem>
         ))}
+        </JARVISStagger>
       </div>
 
       {/* Step content */}
@@ -599,6 +603,7 @@ function ResidencySection(): JSX.Element {
 export function EnterprisePage(): JSX.Element {
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="p-4 md:p-6 max-w-3xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Enterprise</h1>

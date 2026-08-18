@@ -59,7 +59,7 @@ import type { CostAnomaly, AgentCost } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
 
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 // ── Constants & helpers ───────────────────────────────────────────────────────
 
 const PERIODS = [
@@ -996,6 +996,7 @@ export function CostDashboardPage(): JSX.Element {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6">
       {/* ── Command Bar ──────────────────────────────────────────────── */}
       <div className="sticky top-0 z-10 bg-background/80 backdrop-blur-md border-b border-border/60 -mx-6 px-6 py-3 flex flex-wrap items-center gap-3">
@@ -1298,11 +1299,13 @@ export function CostDashboardPage(): JSX.Element {
                 </PieChart>
               </ResponsiveContainer>
               <div className="flex-1 space-y-2">
+                <JARVISStagger>
                 {activePieData.map((entry, idx) => {
                   const total = activePieData.reduce((s, d) => s + d.value, 0);
                   const pct = total > 0 ? ((entry.value / total) * 100).toFixed(0) : "0";
                   return (
-                    <div key={entry.name} className="flex items-center gap-2">
+                  <JARVISStaggerItem key={entry.name}>
+                    <div className="flex items-center gap-2">
                       <span
                         className="h-2.5 w-2.5 rounded-full flex-shrink-0"
                         style={{ background: PIE_COLORS[idx % PIE_COLORS.length] }}
@@ -1311,8 +1314,10 @@ export function CostDashboardPage(): JSX.Element {
                       <span className="text-xs font-mono font-medium">{formatCost(entry.value)}</span>
                       <span className="text-xs text-muted-foreground">{pct}%</span>
                     </div>
+                    </JARVISStaggerItem>
                   );
                 })}
+                </JARVISStagger>
               </div>
             </div>
           )}

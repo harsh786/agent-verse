@@ -234,6 +234,7 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
 function SkeletonList() {
   return (
     <div className="space-y-3 animate-pulse">
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
       {[1, 2, 3].map(i => (
         <div key={i} className="flex items-center gap-4 p-4 rounded-xl bg-[#1A1F2E] border border-[#1E2535]">
           <div className="h-10 w-10 rounded-xl bg-[#252B3B] shrink-0" />

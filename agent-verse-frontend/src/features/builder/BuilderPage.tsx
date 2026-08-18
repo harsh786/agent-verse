@@ -3,7 +3,7 @@ import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Code2, Loader2, Zap, Layout, Server, Database, Globe, Smartphone, Bot, FileCode, ChevronRight, CheckCircle, Play, Download } from 'lucide-react';
 import { toast } from '@/stores/toast';
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 
 const PROJECT_TYPES = [
   { id: 'landing', label: 'Landing Page', icon: Layout, description: 'Marketing page with hero, features, CTA' },
@@ -111,6 +111,7 @@ export default function BuilderPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="max-w-4xl space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3">
@@ -242,14 +243,18 @@ export default function BuilderPage() {
         <div className="space-y-4">
           <h2 className="text-base font-semibold">Building your project…</h2>
           <div className="bg-card border border-border rounded-xl p-5 space-y-2">
+            <JARVISStagger>
             {buildProgress.map((p, i) => (
-              <div key={i} className="flex items-center gap-3 text-sm">
+              <JARVISStaggerItem key={i}>
+              <div className="flex items-center gap-3 text-sm">
                 {i === buildProgress.length - 1 && buildMutation.isPending
                   ? <Loader2 className="h-4 w-4 animate-spin text-primary shrink-0" />
                   : <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />}
                 <span>{p}</span>
               </div>
+              </JARVISStaggerItem>
             ))}
+            </JARVISStagger>
             {buildMutation.isPending && (
               <div className="flex items-center gap-3 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin shrink-0" />

@@ -495,6 +495,7 @@ function StatusFilterBar({
       aria-label="Filter missions by status"
       className="flex items-center gap-1 px-4 pt-3 pb-0 overflow-x-auto scrollbar-none shrink-0"
     >
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
       {STATUS_TABS.map(tab => (
         <button
           key={tab.label}

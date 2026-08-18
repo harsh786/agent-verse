@@ -17,7 +17,7 @@ import { ThemedRadarChart } from '@/components/charts/ThemedRadarChart';
 import { toast } from '@/stores/toast';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface RedTeamResult {
@@ -541,9 +541,10 @@ function SimulationTab({ apiKey }: { apiKey: string }) {
           </label>
           {availableTools.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-48 overflow-y-auto" data-testid="tools-picker">
+              <JARVISStagger>
               {availableTools.map((tool) => (
+                <JARVISStaggerItem key={tool.name}>
                 <label
-                  key={tool.name}
                   className={`flex items-start gap-2 p-2 rounded-lg cursor-pointer border transition-colors ${
                     selectedTools.has(tool.name)
                       ? 'bg-indigo-500/10 border-indigo-500/30'
@@ -563,7 +564,9 @@ function SimulationTab({ apiKey }: { apiKey: string }) {
                     )}
                   </div>
                 </label>
+                </JARVISStaggerItem>
               ))}
+              </JARVISStagger>
             </div>
           ) : (
             <p className="text-xs text-muted-foreground/60 italic">
@@ -1081,6 +1084,7 @@ export function EvalPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-foreground">Eval & Testing</h1>

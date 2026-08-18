@@ -375,6 +375,7 @@ export function RoleEditorPage({ orgId }: RoleEditorPageProps) {
     >
       {/* Header */}
       <div className="flex items-start justify-between mb-8">
+        {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
         <div>
           <h1 className="text-[24px] font-bold text-[#F1F5F9] [text-wrap:balance]">Roles &amp; Permissions</h1>
           <p className="text-[14px] text-[#64748B] mt-1">
