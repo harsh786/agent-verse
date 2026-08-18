@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.org.schemas import (
     CreateDepartmentRequest,
@@ -1196,7 +1196,7 @@ async def _route_command_to_agent(
 # ── N2: Org Composer — NL to Organisation ────────────────────────────────────
 
 class _OrgComposeRequest(BaseModel):
-    description: str
+    description: str = Field(min_length=1, max_length=2000)
     goals: list[str] = []
     industry: str = ""
     autonomy_level: int = 2
@@ -1708,7 +1708,7 @@ async def org_decision_history(
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
 
-        from app.org.advanced_services import get_decision_intelligence
+        from app.org.decision_intelligence import get_decision_intelligence
         intel = get_decision_intelligence()
         return {
             "org_id":          org_id,
@@ -1747,7 +1747,7 @@ async def org_batch_create_missions(
 
         if len(body.missions) > 20:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=422,
                 detail={
                     "type": "batch-too-large",
                     "title": "Batch too large",
@@ -1844,3 +1844,73 @@ async def org_graph_version_history(
         "org_id":   org_id,
         "versions": vs.history("knowledge_graph", org_id, limit=limit),
     }
+
+
+# ── PART 14: Department Memory (6th memory tier) ─────────────────────────────
+
+class _DeptMemoryAdd(BaseModel):
+    content: str
+    source: str
+    confidence: float = 0.9
+    tags: list[str] = []
+
+
+@router.get(
+    "/{org_id}/departments/{dept_id}/memory",
+    operation_id="org_dept_memory_list",
+    summary="PART 14 — List department memory entries",
+)
+async def org_dept_memory_list(
+    org_id: str,
+    dept_id: str,
+    request: Request,
+    active_only: bool = Query(default=True),
+    limit: int = Query(default=20, ge=1, le=100),
+    service: OrgService = Depends(get_org_service),
+) -> dict[str, object]:
+    """Return the persistent knowledge stored for this department."""
+    _require_tenant(request)
+    from app.memory.dept_memory import get_dept_memory
+    dm = get_dept_memory()
+    entries = dm.list_entries(dept_id, active_only=active_only, limit=limit)
+    summary = dm.dept_summary(dept_id)
+    return {"dept_id": dept_id, "entries": entries, "summary": summary}
+
+
+@router.post(
+    "/{org_id}/departments/{dept_id}/memory",
+    operation_id="org_dept_memory_add",
+    summary="PART 14 — Add a department memory entry",
+    status_code=status.HTTP_201_CREATED,
+)
+async def org_dept_memory_add(
+    org_id: str,
+    dept_id: str,
+    body: _DeptMemoryAdd,
+    request: Request,
+    service: OrgService = Depends(get_org_service),
+) -> dict[str, object]:
+    """Add new persistent knowledge to a department's memory store."""
+    from opentelemetry import trace as _trace
+    with _trace.get_tracer(__name__).start_as_current_span("org.dept_memory.add") as span:
+        ctx = _require_tenant(request)
+        tenant_id: str = getattr(ctx, "tenant_id", str(ctx))
+        span.set_attribute("dept_id", dept_id)
+
+        from app.memory.dept_memory import get_dept_memory
+        dm = get_dept_memory()
+        entry = await dm.add(
+            dept_id=dept_id,
+            org_id=org_id,
+            tenant_id=tenant_id,
+            content=body.content,
+            source=body.source,
+            confidence=body.confidence,
+            tags=body.tags,
+        )
+        return {
+            "entry_id":   entry.entry_id,
+            "dept_id":    dept_id,
+            "confidence": entry.confidence,
+            "created_at": entry.created_at,
+        }
