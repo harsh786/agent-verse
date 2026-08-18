@@ -40,6 +40,11 @@ class InMemoryMemoryRepository:
         self._lock = asyncio.Lock()
 
     async def write(self, request: MemoryWriteRequest) -> MemoryRecord:
+        from opentelemetry import trace as _trace
+        _tracer = _trace.get_tracer(__name__)
+        with _tracer.start_as_current_span("memory.write") as span:
+            span.set_attribute("tenant_id", request.tenant_id)
+            span.set_attribute("memory_kind", request.memory_kind)
         command = (request.tenant_id, request.idempotency_key)
         async with self._lock:
             prior = self._commands.get(command)
@@ -90,6 +95,11 @@ class InMemoryMemoryRepository:
             return record
 
     async def recall(self, request: MemoryRecallRequest) -> tuple[MemoryRecallHit, ...]:
+        from opentelemetry import trace as _trace
+        _tracer = _trace.get_tracer(__name__)
+        with _tracer.start_as_current_span("memory.recall") as span:
+            span.set_attribute("tenant_id", request.tenant_id)
+            span.set_attribute("query_len", len(request.query))
         query_embedding = await self._embedder(request.query) if self._embedder else None
         ranked: list[MemoryRecallHit] = []
         for record in self._records.values():

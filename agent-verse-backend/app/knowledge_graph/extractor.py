@@ -1,10 +1,12 @@
 """Entity and relationship extraction from text."""
 from __future__ import annotations
+
+import logging
 import re
 import uuid
-import logging
 from typing import Any
-from app.knowledge_graph.models import GraphNode, GraphEdge, NodeType, EdgeType
+
+from app.knowledge_graph.models import EdgeType, GraphEdge, GraphNode, NodeType
 
 _log = logging.getLogger(__name__)
 
@@ -35,7 +37,7 @@ class EntityExtractor:
         seen = set()
 
         import datetime
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        now = datetime.datetime.now(datetime.UTC).isoformat()
 
         for pattern, entity_type in _ENTITY_PATTERNS:
             for match in re.finditer(pattern, text):
@@ -65,6 +67,11 @@ class EntityExtractor:
         self, text: str, tenant_id: str, source_id: str | None = None
     ) -> list[GraphNode]:
         """Extract entities using LLM for higher quality."""
+        from opentelemetry import trace as _trace
+        _tracer = _trace.get_tracer(__name__)
+        with _tracer.start_as_current_span("knowledge_graph.extract_entities_llm") as span:
+            span.set_attribute("tenant_id", tenant_id)
+            span.set_attribute("text_len", len(text))
         if self._provider is None:
             return self.extract_entities_deterministic(text, tenant_id, source_id)
 
@@ -86,7 +93,7 @@ class EntityExtractor:
             entities = json.loads(resp.content.strip())
 
             import datetime
-            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            now = datetime.datetime.now(datetime.UTC).isoformat()
             nodes = []
             for e in entities[:20]:
                 label = str(e.get("label", ""))[:100]
@@ -134,9 +141,9 @@ class EntityExtractor:
                 max_tokens=500,
             ))
 
-            import json
             import datetime
-            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            import json
+            now = datetime.datetime.now(datetime.UTC).isoformat()
             relations = json.loads(resp.content.strip())
 
             entity_map = {e.label: e for e in entities}

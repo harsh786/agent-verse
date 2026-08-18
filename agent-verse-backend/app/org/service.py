@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from opentelemetry import trace
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +33,7 @@ from app.org.models import (
 )
 
 _log = structlog.get_logger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 # ── Task status constants ─────────────────────────────────────────────────────
 TASK_STATUSES = frozenset({
@@ -118,39 +120,43 @@ class OrgService:
         metadata: dict[str, Any] | None = None,
     ) -> Organization:
         """Create a new organization."""
-        if not slug:
-            slug = name.lower().replace(" ", "-")[:64]
-        org = Organization(
-            tenant_id=self._tenant_id,
-            name=name,
-            slug=slug,
-            description=description,
-            industry=industry,
-            jurisdiction=jurisdiction,
-            mission=mission,
-            vision=vision,
-            autonomy_level=max(0, min(5, autonomy_level)),
-            risk_tolerance=risk_tolerance,
-            monthly_budget_usd=monthly_budget_usd,
-            goals=goals or [],
-            policies=policies or {},
-            settings=settings or {},
-            blueprint_ids=blueprint_ids or [],
-            created_by=created_by,
-            metadata=metadata or {},
-        )
-        self._session.add(org)
-        await self._session.flush()
-        await self._emit_event(
-            org.id,
-            "organization.created",
-            title=f"Organization '{name}' created",
-            entity_type="organization",
-            entity_id=str(org.id),
-        )
-        _log.info("org_created tenant=%s org_id=%s name=%s",
-                  self._tenant_id, org.id, name)
-        return org
+        with _tracer.start_as_current_span("org.create_organization") as span:
+            span.set_attribute("tenant_id", self._tenant_id)
+            span.set_attribute("org.name", name)
+            if not slug:
+                slug = name.lower().replace(" ", "-")[:64]
+            org = Organization(
+                tenant_id=self._tenant_id,
+                name=name,
+                slug=slug,
+                description=description,
+                industry=industry,
+                jurisdiction=jurisdiction,
+                mission=mission,
+                vision=vision,
+                autonomy_level=max(0, min(5, autonomy_level)),
+                risk_tolerance=risk_tolerance,
+                monthly_budget_usd=monthly_budget_usd,
+                goals=goals or [],
+                policies=policies or {},
+                settings=settings or {},
+                blueprint_ids=blueprint_ids or [],
+                created_by=created_by,
+                metadata=metadata or {},
+            )
+            self._session.add(org)
+            await self._session.flush()
+            await self._emit_event(
+                org.id,
+                "organization.created",
+                title=f"Organization '{name}' created",
+                entity_type="organization",
+                entity_id=str(org.id),
+            )
+            span.set_attribute("org.id", str(org.id))
+            _log.info("org_created tenant=%s org_id=%s name=%s",
+                      self._tenant_id, org.id, name)
+            return org
 
     async def get_organization(self, org_id: str) -> Organization | None:
         result = await self._session.execute(
@@ -214,26 +220,30 @@ class OrgService:
         manager_agent_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> OrgDepartment:
-        dept = OrgDepartment(
-            tenant_id=self._tenant_id,
-            org_id=uuid.UUID(org_id),
-            name=name,
-            purpose=purpose,
-            capability_domains=capability_domains or [],
-            parent_dept_id=uuid.UUID(parent_dept_id) if parent_dept_id else None,
-            manager_agent_id=manager_agent_id,
-            metadata=metadata or {},
-        )
-        self._session.add(dept)
-        await self._session.flush()
-        await self._emit_event(
-            uuid.UUID(org_id),
-            "department.created",
-            title=f"Department '{name}' created",
-            entity_type="department",
-            entity_id=str(dept.id),
-        )
-        return dept
+        with _tracer.start_as_current_span("org.create_department") as span:
+            span.set_attribute("tenant_id", self._tenant_id)
+            span.set_attribute("org_id", org_id)
+            dept = OrgDepartment(
+                tenant_id=self._tenant_id,
+                org_id=uuid.UUID(org_id),
+                name=name,
+                purpose=purpose,
+                capability_domains=capability_domains or [],
+                parent_dept_id=uuid.UUID(parent_dept_id) if parent_dept_id else None,
+                manager_agent_id=manager_agent_id,
+                metadata=metadata or {},
+            )
+            self._session.add(dept)
+            await self._session.flush()
+            await self._emit_event(
+                uuid.UUID(org_id),
+                "department.created",
+                title=f"Department '{name}' created",
+                entity_type="department",
+                entity_id=str(dept.id),
+            )
+            span.set_attribute("dept.id", str(dept.id))
+            return dept
 
     async def list_departments(self, org_id: str) -> list[OrgDepartment]:
         result = await self._session.execute(
@@ -288,6 +298,10 @@ class OrgService:
         model_config: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> OrgTeam:
+        with _tracer.start_as_current_span("org.create_team") as span:
+            span.set_attribute("tenant_id", self._tenant_id)
+            span.set_attribute("org_id", org_id)
+            span.set_attribute("team.type", team_type)
         team = OrgTeam(
             tenant_id=self._tenant_id,
             org_id=uuid.UUID(org_id),
@@ -431,39 +445,45 @@ class OrgService:
         trigger_event: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> OrgMission:
-        mission = OrgMission(
-            tenant_id=self._tenant_id,
-            org_id=uuid.UUID(org_id),
-            dept_id=uuid.UUID(dept_id) if dept_id else None,
-            title=title,
-            objective=objective,
-            why=why,
-            expected_outcome=expected_outcome,
-            priority=priority,
-            assigned_team_id=uuid.UUID(assigned_team_id) if assigned_team_id else None,
-            autonomy_level=autonomy_level,
-            source=source,
-            success_criteria=success_criteria or [],
-            budget_usd=budget_usd,
-            deadline=deadline,
-            tags=tags or [],
-            created_by=created_by,
-            trigger_event=trigger_event,
-            metadata=metadata or {},
-        )
-        self._session.add(mission)
-        await self._session.flush()
-        await self._emit_event(
-            uuid.UUID(org_id),
-            "mission.created",
-            title=f"Mission '{title}' created",
-            entity_type="mission",
-            entity_id=str(mission.id),
-            payload={"source": source, "priority": priority},
-        )
-        _log.info("mission_created tenant=%s org=%s mission=%s title=%s",
-                  self._tenant_id, org_id, mission.id, title)
-        return mission
+        with _tracer.start_as_current_span("org.create_mission") as span:
+            span.set_attribute("tenant_id", self._tenant_id)
+            span.set_attribute("org_id", org_id)
+            span.set_attribute("mission.priority", priority)
+            span.set_attribute("mission.source", source)
+            mission = OrgMission(
+                tenant_id=self._tenant_id,
+                org_id=uuid.UUID(org_id),
+                dept_id=uuid.UUID(dept_id) if dept_id else None,
+                title=title,
+                objective=objective,
+                why=why,
+                expected_outcome=expected_outcome,
+                priority=priority,
+                assigned_team_id=uuid.UUID(assigned_team_id) if assigned_team_id else None,
+                autonomy_level=autonomy_level,
+                source=source,
+                success_criteria=success_criteria or [],
+                budget_usd=budget_usd,
+                deadline=deadline,
+                tags=tags or [],
+                created_by=created_by,
+                trigger_event=trigger_event,
+                metadata=metadata or {},
+            )
+            self._session.add(mission)
+            await self._session.flush()
+            await self._emit_event(
+                uuid.UUID(org_id),
+                "mission.created",
+                title=f"Mission '{title}' created",
+                entity_type="mission",
+                entity_id=str(mission.id),
+                payload={"source": source, "priority": priority},
+            )
+            span.set_attribute("mission.id", str(mission.id))
+            _log.info("mission_created tenant=%s org=%s mission=%s title=%s",
+                      self._tenant_id, org_id, mission.id, title)
+            return mission
 
     async def get_mission(self, mission_id: str) -> OrgMission | None:
         result = await self._session.execute(
@@ -505,29 +525,34 @@ class OrgService:
     async def update_mission_status(
         self, mission_id: str, status: str
     ) -> OrgMission | None:
-        if status not in MISSION_STATUSES:
-            raise ValueError(f"Invalid mission status: {status!r}")
-        mission = await self.get_mission(mission_id)
-        if not mission:
-            return None
-        old_status = mission.status
-        mission.status = status
-        mission.updated_at = datetime.now(UTC)
-        if status == "active" and not mission.started_at:
-            mission.started_at = datetime.now(UTC)
-        if status in ("completed", "failed", "cancelled"):
-            mission.completed_at = datetime.now(UTC)
-        await self._session.flush()
-        await self._emit_event(
-            mission.org_id,
-            f"mission.{status}",
-            title=f"Mission '{mission.title}' → {status}",
-            entity_type="mission",
-            entity_id=mission_id,
-            severity="warning" if status == "failed" else "info",
-            payload={"old_status": old_status, "new_status": status},
-        )
-        return mission
+        with _tracer.start_as_current_span("org.update_mission_status") as span:
+            span.set_attribute("tenant_id", self._tenant_id)
+            span.set_attribute("mission_id", mission_id)
+            span.set_attribute("new_status", status)
+            if status not in MISSION_STATUSES:
+                raise ValueError(f"Invalid mission status: {status!r}")
+            mission = await self.get_mission(mission_id)
+            if not mission:
+                return None
+            old_status = mission.status
+            mission.status = status
+            mission.updated_at = datetime.now(UTC)
+            if status == "active" and not mission.started_at:
+                mission.started_at = datetime.now(UTC)
+            if status in ("completed", "failed", "cancelled"):
+                mission.completed_at = datetime.now(UTC)
+            await self._session.flush()
+            await self._emit_event(
+                mission.org_id,
+                f"mission.{status}",
+                title=f"Mission '{mission.title}' -> {status}",
+                entity_type="mission",
+                entity_id=mission_id,
+                severity="warning" if status == "failed" else "info",
+                payload={"old_status": old_status, "new_status": status},
+            )
+            span.set_attribute("old_status", old_status)
+            return mission
 
     # ── Task CRUD ─────────────────────────────────────────────────────────────
 
@@ -560,67 +585,73 @@ class OrgService:
         expires_at: datetime | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> OrgTask:
-        # Anti-runaway: depth limit
-        if depth > MAX_TASK_DEPTH:
-            raise ValueError(
-                f"Task depth {depth} exceeds maximum {MAX_TASK_DEPTH}"
-            )
+        with _tracer.start_as_current_span("org.create_task") as span:
+            span.set_attribute("tenant_id", self._tenant_id)
+            span.set_attribute("org_id", org_id)
+            span.set_attribute("task.priority", priority)
+            span.set_attribute("task.depth", depth)
+            # Anti-runaway: depth limit
+            if depth > MAX_TASK_DEPTH:
+                raise ValueError(
+                    f"Task depth {depth} exceeds maximum {MAX_TASK_DEPTH}"
+                )
 
-        # Anti-runaway: per-mission task count
-        if mission_id:
-            count_result = await self._session.execute(
-                select(func.count(OrgTask.id)).where(
-                    and_(
-                        OrgTask.tenant_id == self._tenant_id,
-                        OrgTask.mission_id == uuid.UUID(mission_id),
+            # Anti-runaway: per-mission task count
+            if mission_id:
+                count_result = await self._session.execute(
+                    select(func.count(OrgTask.id)).where(
+                        and_(
+                            OrgTask.tenant_id == self._tenant_id,
+                            OrgTask.mission_id == uuid.UUID(mission_id),
+                        )
                     )
                 )
-            )
-            count = count_result.scalar() or 0
-            if count >= MAX_TASKS_PER_MISSION:
-                raise ValueError(
-                    f"Mission already has {count} tasks (max {MAX_TASKS_PER_MISSION})"
-                )
+                count = count_result.scalar() or 0
+                if count >= MAX_TASKS_PER_MISSION:
+                    raise ValueError(
+                        f"Mission already has {count} tasks (max {MAX_TASKS_PER_MISSION})"
+                    )
 
-        task = OrgTask(
-            tenant_id=self._tenant_id,
-            org_id=uuid.UUID(org_id),
-            mission_id=uuid.UUID(mission_id) if mission_id else None,
-            workstream_id=uuid.UUID(workstream_id) if workstream_id else None,
-            parent_task_id=uuid.UUID(parent_task_id) if parent_task_id else None,
-            title=title,
-            objective=objective,
-            why=why,
-            priority=priority,
-            assigned_team_id=uuid.UUID(assigned_team_id) if assigned_team_id else None,
-            assigned_agent_ids=assigned_agent_ids or [],
-            owner_agent_id=owner_agent_id,
-            required_capabilities=required_capabilities or [],
-            required_tools=required_tools or [],
-            required_models=required_models or [],
-            success_criteria=success_criteria or [],
-            budget_usd=budget_usd,
-            cost_estimate_usd=cost_estimate_usd,
-            risk_level=risk_level,
-            risk_notes=risk_notes,
-            deadline=deadline,
-            dependencies=dependencies or [],
-            depth=depth,
-            linked_goal_id=linked_goal_id,
-            expires_at=expires_at,
-            metadata=metadata or {},
-        )
-        self._session.add(task)
-        await self._session.flush()
-        await self._emit_event(
-            uuid.UUID(org_id),
-            "task.created",
-            title=f"Task '{title}' created",
-            entity_type="task",
-            entity_id=str(task.id),
-            payload={"priority": priority, "risk_level": risk_level, "depth": depth},
-        )
-        return task
+            task = OrgTask(
+                tenant_id=self._tenant_id,
+                org_id=uuid.UUID(org_id),
+                mission_id=uuid.UUID(mission_id) if mission_id else None,
+                workstream_id=uuid.UUID(workstream_id) if workstream_id else None,
+                parent_task_id=uuid.UUID(parent_task_id) if parent_task_id else None,
+                title=title,
+                objective=objective,
+                why=why,
+                priority=priority,
+                assigned_team_id=uuid.UUID(assigned_team_id) if assigned_team_id else None,
+                assigned_agent_ids=assigned_agent_ids or [],
+                owner_agent_id=owner_agent_id,
+                required_capabilities=required_capabilities or [],
+                required_tools=required_tools or [],
+                required_models=required_models or [],
+                success_criteria=success_criteria or [],
+                budget_usd=budget_usd,
+                cost_estimate_usd=cost_estimate_usd,
+                risk_level=risk_level,
+                risk_notes=risk_notes,
+                deadline=deadline,
+                dependencies=dependencies or [],
+                depth=depth,
+                linked_goal_id=linked_goal_id,
+                expires_at=expires_at,
+                metadata=metadata or {},
+            )
+            self._session.add(task)
+            await self._session.flush()
+            await self._emit_event(
+                uuid.UUID(org_id),
+                "task.created",
+                title=f"Task '{title}' created",
+                entity_type="task",
+                entity_id=str(task.id),
+                payload={"priority": priority, "risk_level": risk_level, "depth": depth},
+            )
+            span.set_attribute("task.id", str(task.id))
+            return task
 
     async def get_task(self, task_id: str) -> OrgTask | None:
         result = await self._session.execute(
@@ -812,10 +843,13 @@ class OrgService:
 
     async def get_org_health(self, org_id: str) -> dict[str, Any]:
         """Return a health summary for the organization command center."""
-        uid = uuid.UUID(org_id)
+        with _tracer.start_as_current_span("org.get_org_health") as span:
+            span.set_attribute("tenant_id", self._tenant_id)
+            span.set_attribute("org_id", org_id)
+            uid = uuid.UUID(org_id)
 
-        # Active missions
-        mission_result = await self._session.execute(
+            # Active missions
+            mission_result = await self._session.execute(
             select(func.count(OrgMission.id)).where(
                 and_(
                     OrgMission.tenant_id == self._tenant_id,
@@ -823,10 +857,10 @@ class OrgService:
                     OrgMission.status == "active",
                 )
             )
-        )
+            )
 
-        # Tasks by status
-        task_result = await self._session.execute(
+            # Tasks by status
+            task_result = await self._session.execute(
             select(OrgTask.status, func.count(OrgTask.id)).where(
                 and_(
                     OrgTask.tenant_id == self._tenant_id,
@@ -834,10 +868,10 @@ class OrgService:
                     OrgTask.status.not_in(["archived", "cancelled"]),
                 )
             ).group_by(OrgTask.status)
-        )
+            )
 
-        # Active teams
-        team_result = await self._session.execute(
+            # Active teams
+            team_result = await self._session.execute(
             select(func.count(OrgTeam.id)).where(
                 and_(
                     OrgTeam.tenant_id == self._tenant_id,
@@ -845,12 +879,12 @@ class OrgService:
                     OrgTeam.status == "active",
                 )
             )
-        )
+            )
 
-        # Recent events (last 24h)
-        from datetime import timedelta
-        since_24h = datetime.now(UTC) - timedelta(hours=24)
-        event_result = await self._session.execute(
+            # Recent events (last 24h)
+            from datetime import timedelta
+            since_24h = datetime.now(UTC) - timedelta(hours=24)
+            event_result = await self._session.execute(
             select(OrgEvent.severity, func.count(OrgEvent.id)).where(
                 and_(
                     OrgEvent.tenant_id == self._tenant_id,
@@ -858,10 +892,10 @@ class OrgService:
                     OrgEvent.created_at >= since_24h,
                 )
             ).group_by(OrgEvent.severity)
-        )
+            )
 
-        # Pending approvals
-        approval_result = await self._session.execute(
+            # Pending approvals
+            approval_result = await self._session.execute(
             select(func.count(OrgTask.id)).where(
                 and_(
                     OrgTask.tenant_id == self._tenant_id,
@@ -869,35 +903,38 @@ class OrgService:
                     OrgTask.status == "approval_required",
                 )
             )
-        )
+            )
 
-        task_counts: dict[str, int] = {}
-        for status, cnt in task_result.all():
-            task_counts[status] = cnt
+            task_counts: dict[str, int] = {}
+            for status, cnt in task_result.all():
+                task_counts[status] = cnt
 
-        event_counts: dict[str, int] = {}
-        for severity, cnt in event_result.all():
-            event_counts[severity] = cnt
+            event_counts: dict[str, int] = {}
+            for severity, cnt in event_result.all():
+                event_counts[severity] = cnt
 
-        active_missions = mission_result.scalar() or 0
-        active_teams = team_result.scalar() or 0
-        pending_approvals = approval_result.scalar() or 0
+            active_missions = mission_result.scalar() or 0
+            active_teams = team_result.scalar() or 0
+            pending_approvals = approval_result.scalar() or 0
 
-        overall_health = "healthy"
-        if task_counts.get("failed", 0) > 0 or event_counts.get("critical", 0) > 0:
-            overall_health = "degraded"
-        if pending_approvals > 5:
-            overall_health = "attention_needed"
+            overall_health = "healthy"
+            if task_counts.get("failed", 0) > 0 or event_counts.get("critical", 0) > 0:
+                overall_health = "degraded"
+            if pending_approvals > 5:
+                overall_health = "attention_needed"
 
-        return {
-            "health": overall_health,
-            "active_missions": active_missions,
-            "active_teams": active_teams,
-            "pending_approvals": pending_approvals,
-            "task_counts": task_counts,
-            "event_counts_24h": event_counts,
-            "items_needing_attention": pending_approvals + task_counts.get("blocked", 0),
-        }
+            health_data = {
+                "health": overall_health,
+                "active_missions": active_missions,
+                "active_teams": active_teams,
+                "pending_approvals": pending_approvals,
+                "task_counts": task_counts,
+                "event_counts_24h": event_counts,
+                "items_needing_attention": pending_approvals + task_counts.get("blocked", 0),
+            }
+            span.set_attribute("health", overall_health)
+            span.set_attribute("active_missions", active_missions)
+            return health_data
 
     # ── Blueprint CRUD ────────────────────────────────────────────────────────
 

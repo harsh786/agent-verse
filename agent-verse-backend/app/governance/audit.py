@@ -62,17 +62,23 @@ class AuditLog:
             import asyncio
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(self._db_record(event, tenant_ctx.tenant_id))
+                _task = loop.create_task(self._db_record(event, tenant_ctx.tenant_id))  # noqa: RUF006
             except RuntimeError:
                 pass  # No running loop (e.g., in sync test context)
 
     async def _db_record(self, event: AuditEvent, tenant_id: str) -> None:
+        from opentelemetry import trace as _trace
+        _tracer = _trace.get_tracer(__name__)
+        with _tracer.start_as_current_span("governance.audit.db_record") as span:
+            span.set_attribute("tenant_id", tenant_id)
+            span.set_attribute("tool_name", event.tool_name or "")
+            span.set_attribute("outcome", event.outcome)
         if self._db is None:
             return
         try:
             from app.db.models.governance import AuditLog as AuditLogModel
             from app.db.rls import sqlalchemy_rls_context
-            async with self._db() as session, session.begin():
+            async with self._db() as session, session.begin():  # noqa: SIM117
                 async with sqlalchemy_rls_context(session, tenant_id):
                     row = AuditLogModel(
                         id=event.event_id,
