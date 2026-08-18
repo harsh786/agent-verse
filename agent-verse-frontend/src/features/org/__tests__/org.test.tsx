@@ -7,7 +7,7 @@
  *   - test-coverage: ≥90% coverage target
  *   - web-guidelines: verify aria-label, role, keyboard navigation
  */
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -208,15 +208,17 @@ describe('OrgListPage', () => {
   });
 
   it('shows create form when button clicked', async () => {
-    const user = userEvent.setup();
     const { OrgListPage } = await import('../OrgListPage');
-    wrap(<OrgListPage />);
+    const { container } = wrap(<OrgListPage />);
     await screen.findByRole('heading');
     const newBtn = screen.getByRole('button', { name: /New Organization/i });
-    await user.click(newBtn);
-    // A text input appears inside the create form
-    const input = document.querySelector('input[type="text"]');
-    expect(input).toBeTruthy();
+    // Use fireEvent to synchronously fire the click and trigger state update
+    fireEvent.click(newBtn);
+    // Wait for form input to appear in the DOM
+    await waitFor(() => {
+      const input = container.querySelector('input[type="text"]');
+      expect(input).toBeTruthy();
+    });
   });
 });
 
