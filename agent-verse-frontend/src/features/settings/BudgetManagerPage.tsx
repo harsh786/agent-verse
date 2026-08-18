@@ -330,7 +330,7 @@ export function BudgetManagerPage(): JSX.Element {
             void budgetsQ.refetch();
             void govQ.refetch();
           }}
-          className="text-xs text-primary hover:underline"
+          className="text-xs text-[#00D4FF] hover:underline"
         >
           Retry
         </button>
@@ -341,6 +341,9 @@ export function BudgetManagerPage(): JSX.Element {
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only"></div>
     <JARVISStagger className="p-4 md:p-6 max-w-6xl mx-auto space-y-6">
       {/* ── Header ── */}
       <div className="flex items-start justify-between gap-4">
@@ -355,7 +358,7 @@ export function BudgetManagerPage(): JSX.Element {
             <button
               onClick={() => saveMutation.mutate()}
               disabled={saveMutation.isPending}
-              className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-50"
+              className="flex items-center gap-2 px-4 py-2 bg-[#00D4FF] text-[#00D4FF]-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-50"
             >
               <Save className="h-4 w-4" />
               {saveMutation.isPending ? "Saving…" : "Save Changes"}
@@ -971,7 +974,7 @@ export function BudgetManagerPage(): JSX.Element {
                 <button
                   onClick={() => runGoalMutation.mutate(goalInput.trim())}
                   disabled={runGoalMutation.isPending}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2 border border-primary text-primary rounded-lg text-sm font-medium hover:bg-primary/5 disabled:opacity-50"
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2 border border-[#00D4FF] text-primary rounded-lg text-sm font-medium hover:bg-primary/5 disabled:opacity-50"
                 >
                   <Zap className="h-4 w-4" />
                   {runGoalMutation.isPending ? "Submitting…" : "Run This Goal"}

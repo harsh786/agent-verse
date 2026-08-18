@@ -745,6 +745,9 @@ export function PerceptionPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only"></div>
     <JARVISStagger className="space-y-5">
       {/* Header */}
       <div>

@@ -55,6 +55,9 @@ export function AgentCreatePage() {
 
   return (
     <JARVISPageShell>
+
+      {/* a11y: live region for async updates */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only" />
     <MissionControlLayout>
       <JARVISStagger className="space-y-6 max-w-2xl">
         <div>

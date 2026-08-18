@@ -253,7 +253,7 @@ function SchedulesTab({ advisorPrefill, onAdvisorPrefillUsed }: SchedulesTabProp
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
         {selected.size > 0 && (
-          <div className="flex items-center gap-2 bg-primary/5 border border-primary/20 rounded-lg px-3 py-1.5">
+          <div className="flex items-center gap-2 bg-primary/5 border border-[#00D4FF]/20 rounded-lg px-3 py-1.5">
             <span className="text-xs font-medium text-primary">{selected.size} selected</span>
             <button onClick={() => bulkPauseMutation.mutate()} className="text-xs px-2 py-1 bg-amber-600 text-white rounded">Pause</button>
             <button onClick={() => bulkResumeMutation.mutate()} className="text-xs px-2 py-1 bg-green-600 text-white rounded">Resume</button>

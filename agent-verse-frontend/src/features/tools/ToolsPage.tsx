@@ -446,7 +446,7 @@ function FileManager() {
       <div className="md:col-span-2 bg-card border border-border rounded-xl overflow-hidden flex flex-col">
         <div className="px-4 py-3 border-b border-border flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
-            <FolderOpen className="h-4 w-4 text-primary" aria-hidden="true" />
+            <FolderOpen className="h-4 w-4 text-[#00D4FF]" aria-hidden="true" />
             <h2 className="text-sm font-semibold">Workspace</h2>
             {files.length > 0 && (
               <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
@@ -671,7 +671,7 @@ function EmailComposer() {
           onSubmit={(e) => { e.preventDefault(); sendMutation.mutate(); }}
         >
           <div className="px-5 py-3 border-b border-border bg-muted/20 flex items-center gap-2">
-            <Mail className="h-4 w-4 text-primary" aria-hidden="true" />
+            <Mail className="h-4 w-4 text-[#00D4FF]" aria-hidden="true" />
             <h2 className="text-sm font-semibold">New Message</h2>
           </div>
 
@@ -794,6 +794,9 @@ export function ToolsPage() {
   const [tab, setTab] = useState<Tab>('code');
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only"></div>
     <JARVISStagger className="space-y-6 max-w-6xl">
       <div>
         <h1 className="text-2xl font-bold">Tools</h1>

@@ -248,6 +248,9 @@ export function NotificationCenterPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
     <JARVISStagger className="p-6 max-w-4xl mx-auto space-y-8">
 
       {/* Header */}

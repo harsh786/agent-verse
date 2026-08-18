@@ -22,7 +22,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { toast } from "@/stores/toast";
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -215,7 +215,7 @@ export function AuditExplorerPage() {
       {/* ── Header ── */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2">
-          <Activity className="h-5 w-5 text-primary" aria-hidden="true" />
+          <Activity className="h-5 w-5 text-[#00D4FF]" aria-hidden="true" />
           <h1 className="text-2xl font-bold">Audit Explorer</h1>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -262,12 +262,12 @@ export function AuditExplorerPage() {
       </div>
 
       {/* ── Stats row ── */}
-      <div data-testid="audit-stats" className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <JARVISStagger className="grid grid-cols-2 md:grid-cols-4 gap-3" data-testid="audit-stats">
         <StatCard label="Total Events"      value={stats.total}    colorClass="bg-card border-border text-foreground" />
         <StatCard label="Allowed"           value={stats.allowed}  colorClass="bg-green-50  border-green-200  text-green-900  dark:bg-green-950/40  dark:border-green-800  dark:text-green-100" />
         <StatCard label="Denied"            value={stats.denied}   colorClass="bg-red-50    border-red-200    text-red-900    dark:bg-red-950/40    dark:border-red-800    dark:text-red-100" />
         <StatCard label="Approval Required" value={stats.approval} colorClass="bg-orange-50 border-orange-200 text-orange-900 dark:bg-orange-950/40 dark:border-orange-800 dark:text-orange-100" />
-      </div>
+      </JARVISStagger>
 
       {/* ── Hash-chain verification result ── */}
       {chainResult && (

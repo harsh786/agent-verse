@@ -63,7 +63,7 @@ export function AIOpsDashboard() {
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Zap className="h-6 w-6 text-primary" />
+          <Zap className="h-6 w-6 text-[#00D4FF]" />
           AI Operations Center
         </h1>
         <p className="text-sm text-muted-foreground mt-0.5">
@@ -106,7 +106,7 @@ export function AIOpsDashboard() {
           <button
             key={label}
             onClick={onClick}
-            className="bg-card border border-border rounded-xl p-5 text-left hover:border-primary/30 transition-colors group"
+            className="bg-card border border-border rounded-xl p-5 text-left hover:border-[#00D4FF]/30 transition-colors group"
           >
             <div className="flex items-center justify-between mb-3">
               <p className="text-xs font-medium text-muted-foreground">{label}</p>
@@ -125,7 +125,7 @@ export function AIOpsDashboard() {
         <div className="lg:col-span-2 bg-card border border-border rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4 border-b border-border">
             <h2 className="text-sm font-semibold flex items-center gap-2">
-              <Activity className="h-4 w-4 text-primary" />
+              <Activity className="h-4 w-4 text-[#00D4FF]" />
               Active Goals
             </h2>
             <button
@@ -174,7 +174,7 @@ export function AIOpsDashboard() {
           <div className="bg-card border border-border rounded-xl overflow-hidden">
             <div className="flex items-center justify-between px-4 py-3 border-b border-border">
               <h2 className="text-sm font-semibold flex items-center gap-2">
-                <Brain className="h-4 w-4 text-primary" />
+                <Brain className="h-4 w-4 text-[#00D4FF]" />
                 Provider Health
               </h2>
               <button
@@ -210,7 +210,7 @@ export function AIOpsDashboard() {
           {/* Regression Status */}
           <div className="bg-card border border-border rounded-xl p-4">
             <h2 className="text-sm font-semibold flex items-center gap-2 mb-3">
-              <TrendingUp className="h-4 w-4 text-primary" />
+              <TrendingUp className="h-4 w-4 text-[#00D4FF]" />
               Regression Status
             </h2>
             <div className="flex items-center gap-2">

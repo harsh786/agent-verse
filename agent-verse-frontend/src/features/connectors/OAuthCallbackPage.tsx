@@ -63,11 +63,14 @@ export default function OAuthCallbackPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* a11y: live region for async updates */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only" />
     <JARVISStagger className="min-h-screen bg-background flex items-center justify-center p-8">
       <div className="text-center max-w-sm space-y-4">
         {status === 'processing' && (
           <>
-            <Loader2 className="h-12 w-12 animate-spin text-primary mx-auto" />
+            <Loader2 className="h-12 w-12 animate-spin text-[#00D4FF] mx-auto" />
             <h2 className="text-lg font-semibold">Processing authorization…</h2>
           </>
         )}

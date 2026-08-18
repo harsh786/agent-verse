@@ -245,7 +245,7 @@ function PreFlightTab(): JSX.Element {
         <button
           onClick={() => void runGovCheck()}
           disabled={!goal.trim() || loading !== null}
-          className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm hover:opacity-90 disabled:opacity-50"
+          className="flex items-center gap-2 px-4 py-2 bg-[#00D4FF] text-[#00D4FF]-foreground rounded-lg text-sm hover:opacity-90 disabled:opacity-50"
         >
           <Shield className="h-4 w-4" />
           {loading === "gov" ? "Checking…" : "Run Governance Check"}
@@ -496,7 +496,7 @@ function LiveSimTab(): JSX.Element {
             <button
               onClick={() => void runSim()}
               disabled={!goal.trim() || running}
-              className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm hover:opacity-90 disabled:opacity-50"
+              className="flex items-center gap-2 px-4 py-2 bg-primary text-[#00D4FF]-foreground rounded-lg text-sm hover:opacity-90 disabled:opacity-50"
             >
               <Play className="h-4 w-4" /> {running ? "Simulating…" : "Run Simulation"}
             </button>
@@ -1042,7 +1042,7 @@ export function AgentLabPage(): JSX.Element {
             onClick={() => setTab(key)}
             className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
               tab === key
-                ? "border-primary text-primary"
+                ? "border-[#00D4FF] text-primary"
                 : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >

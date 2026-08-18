@@ -102,11 +102,14 @@ export function AuthPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* a11y: live region for async updates */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only" />
     <JARVISStagger className="min-h-screen flex items-center justify-center bg-background px-4">
       <div className="w-full max-w-md">
         <div className="flex flex-col items-center gap-3 mb-8">
           <div className="flex items-center gap-2">
-            <Zap className="h-8 w-8 text-blue-500" aria-hidden="true" />
+            <Zap className="h-8 w-8 text-[#00D4FF]" aria-hidden="true" />
             <span className="text-2xl font-bold">AgentVerse</span>
           </div>
           <p className="text-muted-foreground text-sm text-center">
@@ -167,7 +170,7 @@ export function AuthPage() {
                 value={tenantId}
                 onChange={(e) => setTenantId(e.target.value)}
                 placeholder="my-org"
-                className="w-full px-3 py-2 text-sm border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                className="w-full px-3 py-2 text-sm border border-input rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-[#00D4FF]"
                 autoComplete="username"
                 required
               />
@@ -202,7 +205,7 @@ export function AuthPage() {
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full py-2 px-4 bg-primary text-primary-foreground text-sm font-medium rounded-md hover:opacity-90 transition-opacity"
+              className="w-full py-2 px-4 bg-[#00D4FF] text-[#00D4FF]-foreground text-sm font-medium rounded-md hover:opacity-90 transition-opacity"
             >
               {isSubmitting ? 'Signing in…' : 'Sign in'}
             </button>
@@ -213,7 +216,7 @@ export function AuthPage() {
             <button
               type="button"
               onClick={() => window.open('mailto:hello@agentverse.ai?subject=Access Request', '_blank')}
-              className="text-primary hover:underline text-sm"
+              className="text-[#00D4FF] hover:underline text-sm"
             >
               Request access
             </button>

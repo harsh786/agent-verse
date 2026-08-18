@@ -54,7 +54,7 @@ function Step1LLM({ onNext }: { onNext: () => void }) {
           <select
             value={provider}
             onChange={(e) => setProvider(e.target.value)}
-            className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:ring-2 focus:ring-primary outline-none"
+            className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:ring-2 focus:ring-[#00D4FF] outline-none"
           >
             <option value="openai">OpenAI</option>
             <option value="anthropic">Anthropic</option>
@@ -93,7 +93,7 @@ function Step1LLM({ onNext }: { onNext: () => void }) {
       <button
         onClick={handleSave}
         disabled={saving || saved}
-        className="flex items-center gap-2 px-5 py-2.5 bg-primary text-primary-foreground text-sm rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
+        className="flex items-center gap-2 px-5 py-2.5 bg-[#00D4FF] text-[#00D4FF]-foreground text-sm rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
       >
         {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
         {saved ? "Saved!" : "Save & Continue"}
@@ -200,7 +200,7 @@ function Step2Connector({ onNext, onSkip }: { onNext: () => void; onSkip: () => 
         <button
           onClick={handleRegister}
           disabled={saving || saved}
-          className="flex items-center gap-2 px-5 py-2.5 bg-primary text-primary-foreground text-sm rounded-lg hover:opacity-90 disabled:opacity-50"
+          className="flex items-center gap-2 px-5 py-2.5 bg-primary text-[#00D4FF]-foreground text-sm rounded-lg hover:opacity-90 disabled:opacity-50"
         >
           {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
           {saved ? "Registered!" : "Register & Continue"}
@@ -398,11 +398,14 @@ export function OnboardingPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* a11y: live region for async updates */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only" />
     <JARVISStagger className="min-h-screen bg-background flex flex-col items-center justify-center px-4 py-12">
       <div className="w-full max-w-lg">
         {/* Logo */}
         <div className="flex items-center gap-2 justify-center mb-8">
-          <Zap className="h-8 w-8 text-blue-500" />
+          <Zap className="h-8 w-8 text-[#00D4FF]" />
           <span className="text-2xl font-bold">AgentVerse</span>
         </div>
 

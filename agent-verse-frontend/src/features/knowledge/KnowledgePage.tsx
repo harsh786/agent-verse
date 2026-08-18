@@ -644,7 +644,7 @@ function IngestTab() {
       {/* File upload zone */}
       {['pdf', 'docx', 'text', 'markdown'].includes(selectedSource) && (
         <div onDrop={onDrop} onDragOver={(e) => e.preventDefault()}
-          className="border-2 border-dashed border-border rounded-xl p-6 flex flex-col items-center gap-2 cursor-pointer hover:border-primary/50 transition-colors"
+          className="border-2 border-dashed border-border rounded-xl p-6 flex flex-col items-center gap-2 cursor-pointer hover:border-[#00D4FF]/50 transition-colors"
           onClick={() => fileRef.current?.click()}>
           <Upload className="h-6 w-6 text-muted-foreground" />
           <p className="text-sm text-muted-foreground">Drag & drop a file here, or click to browse</p>
@@ -964,10 +964,10 @@ function DocumentsTab({ collections }: { collections: Collection[] }) {
             return (
               <div
                 key={docId}
-                className="flex items-start gap-3 p-4 border border-border rounded-xl hover:border-primary/30 transition-colors group"
+                className="flex items-start gap-3 p-4 border border-border rounded-xl hover:border-[#00D4FF]/30 transition-colors group"
               >
                 <div className="p-2 bg-primary/10 rounded-lg shrink-0">
-                  <FileText className="h-4 w-4 text-primary" />
+                  <FileText className="h-4 w-4 text-[#00D4FF]" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">

@@ -112,11 +112,14 @@ export default function BuilderPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* a11y: live region for async updates */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only" />
     <JARVISStagger className="max-w-4xl space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3">
         <div className="p-2.5 bg-primary/10 rounded-xl">
-          <Code2 className="h-6 w-6 text-primary" />
+          <Code2 className="h-6 w-6 text-[#00D4FF]" />
         </div>
         <div>
           <h1 className="text-2xl font-bold">AI Project Builder</h1>
@@ -153,7 +156,7 @@ export default function BuilderPage() {
                 className={`p-4 border-2 rounded-xl text-left transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
                   projectType === pt.id
                     ? 'border-primary bg-primary/5'
-                    : 'border-border hover:border-primary/40'
+                    : 'border-border hover:border-[#00D4FF]/40'
                 }`}
               >
                 <pt.icon className={`h-6 w-6 mb-2 ${projectType === pt.id ? 'text-primary' : 'text-muted-foreground'}`} />

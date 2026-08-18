@@ -69,6 +69,9 @@ export function AgentRadarPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
     <JARVISStagger className="space-y-6 max-w-3xl">
       <div className="flex items-center gap-3">
         <button

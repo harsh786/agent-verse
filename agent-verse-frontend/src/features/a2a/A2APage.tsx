@@ -129,7 +129,7 @@ function TasksTab() {
       <div className="lg:col-span-2 space-y-4">
         <div className="bg-card border border-border rounded-xl p-5 space-y-4">
           <h3 className="text-sm font-semibold flex items-center gap-2">
-            <Send className="h-4 w-4 text-primary" /> Dispatch Task
+            <Send className="h-4 w-4 text-[#00D4FF]" /> Dispatch Task
           </h3>
           <div>
             <label className="block text-xs font-medium mb-1" htmlFor="a2a-goal">Goal</label>
@@ -482,7 +482,7 @@ export function A2APage() {
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Network className="h-6 w-6 text-primary" aria-hidden="true" />
+          <Network className="h-6 w-6 text-[#00D4FF]" aria-hidden="true" />
           A2A Network
         </h1>
         <p className="text-sm text-muted-foreground mt-0.5">

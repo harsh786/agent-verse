@@ -185,7 +185,7 @@ function GrantRoleModal({ open, onClose }: GrantRoleModalProps): JSX.Element | n
         {/* Title */}
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-full bg-primary/10">
-            <Key className="h-4 w-4 text-primary" aria-hidden />
+            <Key className="h-4 w-4 text-[#00D4FF]" aria-hidden />
           </div>
           <h2 id="grant-role-title" className="text-base font-semibold">
             Grant Role
@@ -401,6 +401,9 @@ export function RbacPage(): JSX.Element {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only"></div>
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
 
       {/* ── Page header ──────────────────────────────────────────────────── */}

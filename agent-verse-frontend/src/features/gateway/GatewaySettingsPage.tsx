@@ -152,7 +152,7 @@ function ChannelCard({ channel, index, onConnect }: {
         <div className="flex items-center gap-2 mb-0.5">
           <p className="text-[14px] font-semibold text-[#F1F5F9]">{channel.name}</p>
           {channel.alwaysOn && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 font-medium">Always On</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-[#00D4FF] font-medium">Always On</span>
           )}
           {isConn && !channel.alwaysOn && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-medium">Connected</span>
@@ -183,7 +183,7 @@ function ChannelCard({ channel, index, onConnect }: {
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 min-h-[34px]',
             isConn
               ? 'text-[#94A3B8] hover:text-[#F1F5F9] hover:bg-[#252B3B]'
-              : 'text-blue-400 bg-blue-500/10 hover:bg-blue-500/20',
+              : 'text-[#00D4FF] bg-blue-500/10 hover:bg-blue-500/20',
           ].join(' ')}
         >
           {isConn ? <><Settings className="h-3.5 w-3.5" aria-hidden />Manage</> : <><Plus className="h-3.5 w-3.5" aria-hidden />Connect</>}

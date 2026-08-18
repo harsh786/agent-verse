@@ -623,6 +623,9 @@ export default function DomainDetailPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
     <JARVISStagger className="p-6 max-w-7xl mx-auto">
       {/* Back link + breadcrumb */}
       <div className="flex items-center gap-2 mb-6 text-sm text-muted-foreground">

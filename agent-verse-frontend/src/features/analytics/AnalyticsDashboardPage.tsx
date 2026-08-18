@@ -39,7 +39,7 @@ function fmt(v: number | undefined | null, decimals = 0) {
 
 function percentileBadge(p: number): { label: string; className: string } {
   if (p <= 10) return { label: 'Top 10%', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' };
-  if (p <= 25) return { label: 'Top 25%', className: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' };
+  if (p <= 25) return { label: 'Top 25%', className: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-[#00D4FF]' };
   if (p <= 50) return { label: 'Average', className: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' };
   return { label: 'Below Avg', className: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' };
 }
@@ -285,6 +285,9 @@ export function AnalyticsDashboardPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* a11y: live region for async updates */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only" />
     <JARVISStagger className="space-y-6 pb-8">
       {/* ── Header ── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -298,7 +301,7 @@ export function AnalyticsDashboardPage() {
               key={p}
               onClick={() => setDays(p)}
               aria-pressed={days === p}
-              className={`px-3 py-1.5 text-sm transition-colors ${days === p ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
+              className={`px-3 py-1.5 text-sm transition-colors ${days === p ? 'bg-[#00D4FF] text-[#00D4FF]-foreground' : 'hover:bg-muted'}`}
             >
               {p}d
             </button>
@@ -314,7 +317,7 @@ export function AnalyticsDashboardPage() {
             value={fmt(totalGoals)}
             sub={`${days}d period`}
             icon={<Target className="h-4 w-4" />}
-            accentClass="bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400"
+            accentClass="bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-[#00D4FF]"
           />
           <KpiCard
             label="Success Rate"

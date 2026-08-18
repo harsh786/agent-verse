@@ -204,11 +204,14 @@ export function TemplateLibraryPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
     <JARVISStagger className="space-y-6 max-w-5xl">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
-            <BookOpen className="h-6 w-6 text-primary" aria-hidden="true" />
+            <BookOpen className="h-6 w-6 text-[#00D4FF]" aria-hidden="true" />
             Template Library
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">

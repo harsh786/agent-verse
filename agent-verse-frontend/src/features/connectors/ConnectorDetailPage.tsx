@@ -52,7 +52,7 @@ function HealthTab({ connectorId, connector }: { connectorId: string; connector:
         <button
           onClick={() => testMutation.mutate()}
           disabled={testMutation.isPending}
-          className="flex items-center gap-2 px-3 py-1.5 bg-primary text-primary-foreground text-sm rounded-lg hover:opacity-90 disabled:opacity-50"
+          className="flex items-center gap-2 px-3 py-1.5 bg-[#00D4FF] text-[#00D4FF]-foreground text-sm rounded-lg hover:opacity-90 disabled:opacity-50"
         >
           {testMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
           {testMutation.isPending ? 'Testing…' : 'Test Connection'}
@@ -230,7 +230,7 @@ export function ConnectorDetailPage() {
     return (
       <div className="text-center py-20 text-muted-foreground">
         Connector not found.{' '}
-        <button onClick={() => navigate('/connectors')} className="text-primary hover:underline">
+        <button onClick={() => navigate('/connectors')} className="text-[#00D4FF] hover:underline">
           Back
         </button>
       </div>

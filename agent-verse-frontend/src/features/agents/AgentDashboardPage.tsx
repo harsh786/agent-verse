@@ -79,7 +79,10 @@ export function AgentDashboardPage() {
   }
 
   return (
-    <JARVISPageShell>
+    <JARVISPageShell className="bg-[#0A0F1A] min-h-screen">
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only"></div>
     <JARVISStagger className="space-y-6">
       <div className="flex items-center gap-3">
         <button

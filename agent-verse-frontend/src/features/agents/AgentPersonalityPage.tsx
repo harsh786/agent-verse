@@ -131,6 +131,9 @@ export function AgentPersonalityPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
     <JARVISStagger className="space-y-6 max-w-2xl">
       <div className="flex items-center gap-3">
         <button onClick={() => navigate(`/agents/${agentId}`)} className="p-1.5 rounded-lg hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors" aria-label="Back">
@@ -138,7 +141,7 @@ export function AgentPersonalityPage() {
         </button>
         <div>
           <h1 className="text-xl font-bold flex items-center gap-2">
-            <Sliders className="h-5 w-5 text-primary" aria-hidden="true" />
+            <Sliders className="h-5 w-5 text-[#00D4FF]" aria-hidden="true" />
             Agent Personality
           </h1>
           <p className="text-sm text-muted-foreground">{isLoading ? "Loading…" : agent?.name ?? agentId}</p>

@@ -58,12 +58,15 @@ export default function MFAVerifyPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* a11y: live region for async updates */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only" />
     <JARVISStagger className="min-h-screen bg-background flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         {/* Header */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary/10 mb-4">
-            <Shield className="h-8 w-8 text-primary" />
+            <Shield className="h-8 w-8 text-[#00D4FF]" />
           </div>
           <h1 className="text-2xl font-bold">Two-Factor Authentication</h1>
           <p className="text-muted-foreground mt-2">
