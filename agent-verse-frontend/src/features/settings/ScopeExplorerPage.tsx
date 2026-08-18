@@ -227,7 +227,7 @@ export function ScopeExplorerPage(): JSX.Element {
             const scopes = PLAN_SCOPES[tier];
             const isCurrent = tier === plan;
             return (
-              <div key={tier} className={`rounded-lg border-2 p-3 transition-all ${isCurrent ? `border-current ${m.badge}` : "border-border bg-muted/20"}`}>
+              <div key={tier} className={`rounded-lg border-2 p-3 transition-[color,background-color,border-color,opacity,box-shadow,transform] ${isCurrent ? `border-current ${m.badge}` : "border-border bg-muted/20"}`}>
                 <div className="flex items-center justify-between mb-2">
                   <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${m.badge}`}>{m.label}</span>
                   {isCurrent && <span className="text-xs font-medium text-green-600 dark:text-green-400">Current</span>}

@@ -25,7 +25,7 @@ interface TemplateCardProps {
 export function TemplateCard({ template, onUse, onEdit, onDelete, pickerMode = false }: TemplateCardProps) {
   const domainColor = DOMAIN_COLORS[template.domain] ?? DOMAIN_COLORS.general;
   return (
-    <div className="bg-card border border-border rounded-xl p-5 hover:border-primary/30 hover:shadow-sm transition-all flex flex-col gap-3">
+    <div className="bg-card border border-border rounded-xl p-5 hover:border-primary/30 hover:shadow-sm transition-[color,background-color,border-color,opacity,box-shadow,transform] flex flex-col gap-3">
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <div className="p-1.5 bg-primary/10 rounded-lg shrink-0">

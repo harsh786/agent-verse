@@ -39,6 +39,7 @@ import { AdaptiveResultPanel } from "./components/AdaptiveResultPanel";
 import { artifactToCsv, artifactToMarkdown } from "./resultArtifact";
 import type { GoalEvent as StreamGoalEvent } from "@/lib/sse/useGoalStream";
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Tab = "results" | "evidence" | "execution" | "events" | "eval" | "explain";
@@ -814,6 +815,7 @@ export function GoalDetailPage() {
   const artifact = goal.result_artifact as any;
 
   return (
+    <JARVISPageShell>
     <div className="space-y-5 w-full">
       {/* ── Header ── */}
       <div>
@@ -1176,5 +1178,6 @@ export function GoalDetailPage() {
         </details>
       )}
     </div>
+    </JARVISPageShell>
   );
 }

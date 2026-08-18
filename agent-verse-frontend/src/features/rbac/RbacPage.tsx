@@ -213,7 +213,7 @@ function GrantRoleModal({ open, onClose }: GrantRoleModalProps): JSX.Element | n
                 key={r}
                 type="button"
                 onClick={() => setRole(r)}
-                className={`flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg text-left border-2 transition-all ${
+                className={`flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg text-left border-2 transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
                   role === r
                     ? `${ROLE_PILL[r]} shadow-sm`
                     : "border-border hover:border-muted-foreground/40 hover:bg-muted/50"
@@ -592,7 +592,7 @@ export function RbacPage(): JSX.Element {
                             data-testid={`delete-role-${r.id}`}
                             onClick={() => setDeleteRoleId(r.id)}
                             aria-label={`Remove role for ${r.user_id}`}
-                            className="p-1.5 rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all"
+                            className="p-1.5 rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-[color,background-color,border-color,opacity,box-shadow,transform]"
                           >
                             <Trash2 className="h-3.5 w-3.5" aria-hidden />
                           </button>
@@ -775,7 +775,7 @@ export function RbacPage(): JSX.Element {
                           data-testid={`delete-ip-${entry.id}`}
                           onClick={() => setDeleteIpId(entry.id)}
                           aria-label={`Remove CIDR ${entry.cidr}`}
-                          className="p-1.5 rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all"
+                          className="p-1.5 rounded-md text-muted-foreground hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-[color,background-color,border-color,opacity,box-shadow,transform]"
                         >
                           <Trash2 className="h-3.5 w-3.5" aria-hidden />
                         </button>

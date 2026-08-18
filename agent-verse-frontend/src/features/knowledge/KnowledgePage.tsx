@@ -22,6 +22,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Pagination } from '@/components/ui/Pagination';
 import { apiFetch, API_BASE } from '@/lib/api/client';
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 interface Collection { collection_id: string; name: string; doc_count?: number; embedder?: string; created_at?: string; }
@@ -1081,6 +1082,7 @@ export function KnowledgePage() {
   ];
 
   return (
+    <JARVISPageShell>
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -1112,6 +1114,7 @@ export function KnowledgePage() {
         </div>
       </div>
     </div>
+    </JARVISPageShell>
   );
 }
 

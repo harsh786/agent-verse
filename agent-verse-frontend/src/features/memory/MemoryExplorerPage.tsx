@@ -21,6 +21,7 @@ import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { Pagination } from '@/components/ui/Pagination';
 import { MissionControlLayout } from '@/components/ui/MissionControlLayout';
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const MEMORY_TYPES = ['fact', 'skill', 'preference', 'tool_usage', 'goal_completion', 'observation'];
@@ -351,6 +352,7 @@ export function MemoryExplorerPage() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
+    <JARVISPageShell>
     <MissionControlLayout>
       <div className="space-y-6 max-w-4xl">
         {/* Page header */}
@@ -714,5 +716,6 @@ export function MemoryExplorerPage() {
         />
       </div>
     </MissionControlLayout>
+    </JARVISPageShell>
   );
 }

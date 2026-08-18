@@ -1289,7 +1289,7 @@ function WorkflowBuilderInner() {
                 <button
                   key={tmpl.id}
                   onClick={() => loadTemplate(tmpl)}
-                  className="text-left p-4 border border-neural-violet/20 rounded-xl hover:border-neural-violet/50 hover:bg-neural-violet/5 transition-all group"
+                  className="text-left p-4 border border-neural-violet/20 rounded-xl hover:border-neural-violet/50 hover:bg-neural-violet/5 transition-[color,background-color,border-color,opacity,box-shadow,transform] group"
                   aria-label={`Load template ${tmpl.name}`}
                 >
                   <p className="font-medium text-sm text-white group-hover:text-neural-violet transition-colors">{tmpl.name}</p>

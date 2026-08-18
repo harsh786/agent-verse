@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 interface AgentVersion {
   snapshot_id: string;
   created_at: string;
@@ -330,6 +331,7 @@ export function AgentDetailPage() {
   }
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6 max-w-4xl">
       {/* Back */}
       <button
@@ -792,5 +794,6 @@ export function AgentDetailPage() {
         <CredentialsTab agentId={agentId!} />
       )}
     </div>
+    </JARVISPageShell>
   );
 }

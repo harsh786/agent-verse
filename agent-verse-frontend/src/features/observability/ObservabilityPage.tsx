@@ -17,6 +17,7 @@ import { observabilityApi, logsApi, type LogEntry } from '@/lib/api/client';
 import { TraceExplorer } from './TraceExplorer';
 import { RuntimeDecisionPanel } from './RuntimeDecisionPanel';
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const GRAFANA_URL = import.meta.env.VITE_GRAFANA_URL ?? 'http://localhost:3001';
 
@@ -1217,6 +1218,7 @@ export function ObservabilityPage() {
   const until = timeState.end.toISOString();
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6 max-w-6xl">
       {/* Header */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -1329,5 +1331,6 @@ export function ObservabilityPage() {
         <LogsTab since={since} until={until} />
       )}
     </div>
+    </JARVISPageShell>
   );
 }

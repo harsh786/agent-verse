@@ -100,7 +100,7 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
                   <button
                     key={family}
                     onClick={() => { setSelectedFamily(family); setStep('type'); }}
-                    className="rounded-xl border border-border p-4 text-left hover:border-primary hover:bg-primary/5 transition-all group"
+                    className="rounded-xl border border-border p-4 text-left hover:border-primary hover:bg-primary/5 transition-[color,background-color,border-color,opacity,box-shadow,transform] group"
                   >
                     <div className="font-medium text-sm group-hover:text-primary">{TRIGGER_FAMILY_LABELS[family]}</div>
                     <div className="text-xs text-muted-foreground mt-1">{FAMILY_DESCRIPTIONS[family]}</div>
@@ -123,7 +123,7 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
                   <button
                     key={type}
                     onClick={() => { setSelectedType(type); setStep('config'); }}
-                    className="rounded-lg border border-border px-3 py-2 text-left text-sm font-mono hover:border-primary hover:bg-primary/5 transition-all"
+                    className="rounded-lg border border-border px-3 py-2 text-left text-sm font-mono hover:border-primary hover:bg-primary/5 transition-[color,background-color,border-color,opacity,box-shadow,transform]"
                   >
                     {type}
                   </button>

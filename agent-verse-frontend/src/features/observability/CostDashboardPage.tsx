@@ -59,6 +59,7 @@ import type { CostAnomaly, AgentCost } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Constants & helpers ───────────────────────────────────────────────────────
 
 const PERIODS = [
@@ -820,7 +821,7 @@ function LiveCostTicker({ days }: { days: PeriodDays }): JSX.Element {
 
   return (
     <span
-      className={`text-xs font-mono px-2 py-1 rounded-full transition-all duration-300 ${
+      className={`text-xs font-mono px-2 py-1 rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-300 ${
         flash
           ? delta > 0
             ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
@@ -994,6 +995,7 @@ export function CostDashboardPage(): JSX.Element {
   }, [days]);
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6">
       {/* ── Command Bar ──────────────────────────────────────────────── */}
       <div className="sticky top-0 z-10 bg-background/80 backdrop-blur-md border-b border-border/60 -mx-6 px-6 py-3 flex flex-wrap items-center gap-3">
@@ -1140,7 +1142,7 @@ export function CostDashboardPage(): JSX.Element {
         </div>
         <div className="w-full bg-muted rounded-full h-3 overflow-hidden">
           <div
-            className={`h-3 rounded-full transition-all duration-700 ${
+            className={`h-3 rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-700 ${
               utilization > 80 ? "bg-red-500" : utilization > 50 ? "bg-yellow-500" : "bg-green-500"
             }`}
             style={{ width: `${Math.min(utilization, 100)}%` }}
@@ -1335,5 +1337,6 @@ export function CostDashboardPage(): JSX.Element {
       {/* ── Budget Modal ─────────────────────────────────────────────── */}
       {budgetModalOpen && <BudgetModal onClose={() => setBudgetModalOpen(false)} />}
     </div>
+    </JARVISPageShell>
   );
 }

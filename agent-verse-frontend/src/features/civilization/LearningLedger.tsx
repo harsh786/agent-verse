@@ -129,7 +129,7 @@ export function LearningLedger({ records }: { records: LearningRecord[] }) {
             {scorePct !== null && (
               <div className="h-1 bg-white/5 rounded-full overflow-hidden">
                 <div
-                  className="h-full rounded-full transition-all duration-700"
+                  className="h-full rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-700"
                   style={{
                     width: `${scorePct}%`,
                     background: scorePct > 70 ? '#22c55e' : scorePct > 40 ? '#f59e0b' : '#ef4444',

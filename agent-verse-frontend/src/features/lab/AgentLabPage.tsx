@@ -124,7 +124,7 @@ function StepTimeline({ steps }: { steps: SimStep[] }): JSX.Element | null {
       {steps.map((step) => (
         <div
           key={step.step}
-          className={`flex gap-3 rounded-lg px-4 py-3 border transition-all ${
+          className={`flex gap-3 rounded-lg px-4 py-3 border transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
             step.status === "running"
               ? "border-blue-300 bg-blue-50/40 dark:bg-blue-900/20"
               : step.status === "done"

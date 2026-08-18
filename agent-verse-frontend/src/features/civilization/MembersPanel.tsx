@@ -137,7 +137,7 @@ function MemberCard({
           opacity-0 group-hover:opacity-100
           w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0
           text-slate-500 hover:text-red-400 hover:bg-red-500/10
-          transition-all duration-150 disabled:opacity-30
+          transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150 disabled:opacity-30
         "
       >
         {killMutation.isPending
@@ -249,7 +249,7 @@ function AddAgentModal({
           </div>
           <button
             onClick={onClose}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-slate-200 hover:bg-white/10 transition-all"
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-slate-200 hover:bg-white/10 transition-[color,background-color,border-color,opacity,box-shadow,transform]"
           >
             <X className="h-4 w-4" />
           </button>
@@ -302,7 +302,7 @@ function AddAgentModal({
                       <button
                         key={aid}
                         onClick={() => setSelectedId(aid)}
-                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-all ${
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
                           isSelected
                             ? 'bg-indigo-600/20 border border-indigo-500/40'
                             : 'bg-white/3 border border-white/6 hover:bg-white/8'
@@ -413,7 +413,7 @@ function AddAgentModal({
               w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold
               bg-indigo-600 text-white hover:bg-indigo-500
               disabled:opacity-30 disabled:cursor-not-allowed
-              transition-all duration-150 active:scale-[0.99]
+              transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150 active:scale-[0.99]
             "
           >
             {isPending
@@ -462,7 +462,7 @@ export function MembersPanel({ civId }: Props) {
           className="
             flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold
             bg-indigo-600/80 text-white border border-indigo-500/40
-            hover:bg-indigo-500 transition-all duration-150 active:scale-95
+            hover:bg-indigo-500 transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150 active:scale-95
           "
           aria-label="Add agent to civilization"
         >

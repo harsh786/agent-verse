@@ -473,7 +473,7 @@ function DomainAgentCard({
   const hasRequiredParams = requiredParams.length > 0;
 
   return (
-    <div className="bg-card border border-border rounded-xl p-4 flex flex-col gap-3 hover:border-primary/30 hover:shadow-sm transition-all">
+    <div className="bg-card border border-border rounded-xl p-4 flex flex-col gap-3 hover:border-primary/30 hover:shadow-sm transition-[color,background-color,border-color,opacity,box-shadow,transform]">
       <div className="flex items-start gap-2">
         <div className="p-1.5 bg-primary/10 rounded-lg shrink-0">
           <Package className="h-4 w-4 text-primary" aria-hidden="true" />

@@ -472,7 +472,7 @@ export function RpaLivePage() {
               </div>
               <button
                 onClick={(e) => { e.stopPropagation(); setDeleteTarget(s.session_id); }}
-                className="p-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all"
+                className="p-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-[color,background-color,border-color,opacity,box-shadow,transform]"
                 aria-label="Close session"
               >
                 <Trash2 className="h-3.5 w-3.5" />

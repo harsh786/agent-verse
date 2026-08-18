@@ -102,7 +102,7 @@ function MiniBar({ label, value, max, color }: { label: string; value: number; m
     <div className="flex items-center gap-2 text-xs">
       <span className="w-24 text-muted-foreground shrink-0 capitalize">{label}</span>
       <div className="flex-1 bg-muted rounded h-3 overflow-hidden">
-        <div className={`h-full rounded transition-all ${color}`} style={{ width: `${Math.max(2, pct)}%` }} />
+        <div className={`h-full rounded transition-[color,background-color,border-color,opacity,box-shadow,transform] ${color}`} style={{ width: `${Math.max(2, pct)}%` }} />
       </div>
       <span className="w-8 text-right font-mono tabular-nums">{value}</span>
     </div>

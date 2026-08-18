@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 type ChannelType = "slack" | "webhook" | "teams";
@@ -116,7 +117,7 @@ function ChannelCard({
   return (
     <div
       data-testid={`channel-item-${channel.channel_id}`}
-      className={`flex items-center gap-4 bg-card border rounded-xl px-5 py-4 transition-all ${
+      className={`flex items-center gap-4 bg-card border rounded-xl px-5 py-4 transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
         localEnabled ? "border-border" : "border-border/40 opacity-60"
       }`}
     >
@@ -245,6 +246,7 @@ export function NotificationCenterPage() {
   const activeChannels = channels.filter(getEnabled).length;
 
   return (
+    <JARVISPageShell>
     <div className="p-6 max-w-4xl mx-auto space-y-8">
 
       {/* Header */}
@@ -284,7 +286,7 @@ export function NotificationCenterPage() {
                 const { label, icon: Icon } = CHANNEL_META[t];
                 return (
                   <button key={t} onClick={() => handleTypeChange(t)}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-medium transition-all ${
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-medium transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
                       channelType === t
                         ? "border-primary bg-primary/10 text-primary"
                         : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
@@ -376,6 +378,7 @@ export function NotificationCenterPage() {
       </div>
 
     </div>
+    </JARVISPageShell>
   );
 }
 

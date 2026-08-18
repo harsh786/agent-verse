@@ -5,6 +5,7 @@ import { ArrowLeft, Loader2 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { Skeleton } from '@/components/ui/Skeleton';
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
 export function AgentDashboardPage() {
@@ -77,6 +78,7 @@ export function AgentDashboardPage() {
   }
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6">
       <div className="flex items-center gap-3">
         <button
@@ -194,5 +196,6 @@ export function AgentDashboardPage() {
         )}
       </div>
     </div>
+    </JARVISPageShell>
   );
 }

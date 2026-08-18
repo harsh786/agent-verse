@@ -141,7 +141,7 @@ function ScoreDistribution({ data }: { data: Record<string, number> }) {
           <span className="w-20 text-muted-foreground shrink-0">{bucket}</span>
           <div className="flex-1 bg-muted rounded h-4 overflow-hidden">
             <div
-              className={`h-full rounded transition-all ${colors[bucket] ?? 'bg-primary'}`}
+              className={`h-full rounded transition-[color,background-color,border-color,opacity,box-shadow,transform] ${colors[bucket] ?? 'bg-primary'}`}
               style={{ width: `${Math.max(4, (count / max) * 100)}%` }}
             />
           </div>

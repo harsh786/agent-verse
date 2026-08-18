@@ -99,7 +99,7 @@ export const AgentNode = memo(({ data, selected }: { data: AgentNodeData; select
     <div
       className={`
         relative rounded-2xl overflow-visible cursor-pointer select-none
-        transition-all duration-200 ease-out
+        transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 ease-out
         ${selected
           ? `ring-2 ring-white/60 ring-offset-2 ring-offset-slate-900 shadow-2xl ${cfg.glow} scale-105`
           : `hover:ring-1 hover:ring-white/30 hover:shadow-xl hover:${cfg.glow} hover:scale-[1.02]`
@@ -200,7 +200,7 @@ export const AgentNode = memo(({ data, selected }: { data: AgentNodeData; select
             </div>
             <div className="h-1 bg-white/5 rounded-full overflow-hidden">
               <div
-                className={`h-full rounded-full bg-gradient-to-r ${cfg.gradient} transition-all duration-700`}
+                className={`h-full rounded-full bg-gradient-to-r ${cfg.gradient} transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-700`}
                 style={{ width: `${repPct}%` }}
               />
             </div>

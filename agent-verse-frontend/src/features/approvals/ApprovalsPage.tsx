@@ -31,6 +31,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 type RiskLevel = "critical" | "high" | "medium" | "low";
@@ -192,7 +193,7 @@ function ApprovalCard({
   return (
     <div
       ref={cardRef}
-      className={`bg-card border border-border rounded-xl overflow-hidden transition-all ${style.border} ${
+      className={`bg-card border border-border rounded-xl overflow-hidden transition-[color,background-color,border-color,opacity,box-shadow,transform] ${style.border} ${
         isFocused ? "ring-2 ring-primary ring-offset-1" : ""
       } ${style.pulse ? "animate-pulse-once" : ""}`}
       data-testid="approval-card"
@@ -493,6 +494,7 @@ export function ApprovalsPage() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
+    <JARVISPageShell>
     <div
       className="space-y-5 max-w-3xl outline-none"
       tabIndex={0}
@@ -734,5 +736,6 @@ export function ApprovalsPage() {
       {/* Keyboard shortcuts dialog */}
       {showHelp && <ShortcutHelp onClose={() => setShowHelp(false)} />}
     </div>
+    </JARVISPageShell>
   );
 }

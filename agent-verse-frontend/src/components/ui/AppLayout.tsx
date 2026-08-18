@@ -72,7 +72,7 @@ export function AppLayout() {
 
       <div
         className={clsx(
-          "flex flex-col flex-1 overflow-hidden transition-all duration-200 min-w-0",
+          "flex flex-col flex-1 overflow-hidden transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 min-w-0",
           // On desktop: offset by sidebar width
           sidebarOpen ? "md:ml-64" : "md:ml-16",
           // On mobile: no margin (sidebar overlays)

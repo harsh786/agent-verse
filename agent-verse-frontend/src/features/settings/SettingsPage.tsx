@@ -13,6 +13,7 @@ import { toast } from '@/stores/toast';
 import { apiFetch as apiClient, tenantsApi } from '@/lib/api/client';
 import { MFASettings } from './MFASettings';
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Tenant {
@@ -715,7 +716,7 @@ function AppearanceTab() {
             <button
               key={t}
               onClick={() => setTheme(t)}
-              className={`relative p-4 border-2 rounded-xl text-sm font-medium transition-all capitalize ${
+              className={`relative p-4 border-2 rounded-xl text-sm font-medium transition-[color,background-color,border-color,opacity,box-shadow,transform] capitalize ${
                 theme === t
                   ? 'border-primary bg-primary/5 text-primary'
                   : 'border-border hover:border-primary/40'
@@ -752,7 +753,7 @@ function AppearanceTab() {
             <button
               key={value}
               onClick={() => setDensity(value)}
-              className={`p-4 border-2 rounded-xl text-left transition-all ${
+              className={`p-4 border-2 rounded-xl text-left transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
                 density === value
                   ? 'border-primary bg-primary/5'
                   : 'border-border hover:border-primary/40'
@@ -938,6 +939,7 @@ export function SettingsPage() {
   };
 
   return (
+    <JARVISPageShell>
     <div className="max-w-4xl">
       <div className="mb-6">
         <h1 className="text-2xl font-bold">{t('settings.title')}</h1>
@@ -981,5 +983,6 @@ export function SettingsPage() {
         </div>
       </div>
     </div>
+    </JARVISPageShell>
   );
 }

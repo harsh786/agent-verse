@@ -118,7 +118,7 @@ export function GoalExplainPanel({ goalId }: Props) {
                 {t.confidence !== undefined && (
                   <div className="flex items-center gap-2 mt-1" role="progressbar" aria-valuenow={Math.round(t.confidence * 100)} aria-valuemin={0} aria-valuemax={100} aria-label={`Confidence ${Math.round(t.confidence * 100)}%`}>
                     <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
-                      <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${t.confidence * 100}%` }} />
+                      <div className="h-full bg-primary rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform]" style={{ width: `${t.confidence * 100}%` }} />
                     </div>
                     <span className="text-muted-foreground tabular-nums">{Math.round(t.confidence * 100)}%</span>
                   </div>

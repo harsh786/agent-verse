@@ -72,7 +72,7 @@ export default function SecurityCenterPage() {
                   data-testid={`tab-${tab.id}`}
                   onClick={() => setActiveTab(tab.id)}
                   title={tab.description}
-                  className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all border ${
+                  className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-[color,background-color,border-color,opacity,box-shadow,transform] border ${
                     activeTab === tab.id
                       ? 'bg-neural-violet text-white border-neural-violet shadow-lg shadow-neural-violet/20'
                       : 'text-white/50 border-neural-violet/15 hover:bg-neural-violet/10 hover:text-white/80 hover:border-neural-violet/30'

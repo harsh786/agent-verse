@@ -182,7 +182,7 @@ export default function AdminPage() {
             key={p}
             data-testid={`plan-filter-${p}`}
             onClick={() => setPlanFilter(planFilter === p ? 'all' : p)}
-            className={`rounded-full px-3 py-1 text-xs font-medium transition-all ${planFilter === p ? PLAN_COLORS[p] : 'bg-slate-700/40 text-slate-400 hover:bg-slate-700 border border-transparent'}`}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-[color,background-color,border-color,opacity,box-shadow,transform] ${planFilter === p ? PLAN_COLORS[p] : 'bg-slate-700/40 text-slate-400 hover:bg-slate-700 border border-transparent'}`}
           >
             {p.charAt(0).toUpperCase() + p.slice(1)} <span className="opacity-70">({planCounts[p] ?? 0})</span>
           </button>

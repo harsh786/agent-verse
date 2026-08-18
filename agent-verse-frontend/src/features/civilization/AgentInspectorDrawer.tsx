@@ -104,7 +104,7 @@ export function AgentInspectorDrawer({ civilizationId, agentId, onClose }: Props
           <button
             onClick={onClose}
             aria-label="Close inspector"
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-slate-200 hover:bg-white/10 transition-all"
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-slate-200 hover:bg-white/10 transition-[color,background-color,border-color,opacity,box-shadow,transform]"
           >
             <X className="h-4 w-4" />
           </button>
@@ -201,7 +201,7 @@ export function AgentInspectorDrawer({ civilizationId, agentId, onClose }: Props
                           </div>
                           <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
                             <div
-                              className="h-full rounded-full transition-all duration-700"
+                              className="h-full rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-700"
                               style={{
                                 width: `${Math.min(100, (Number(member.budget_spent_usd) / Number(member.budget_usd)) * 100)}%`,
                                 background: 'linear-gradient(90deg, #6366f1 0%, #a855f7 100%)',

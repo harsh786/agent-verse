@@ -178,7 +178,7 @@ function DropZone({
       onDrop={handleDrop}
       className={[
         'flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed',
-        'cursor-pointer select-none px-6 py-12 text-center transition-all duration-200',
+        'cursor-pointer select-none px-6 py-12 text-center transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200',
         dragging
           ? 'border-indigo-500 bg-indigo-500/10 scale-[1.01]'
           : 'border-slate-700 bg-slate-800/40 hover:border-slate-500 hover:bg-slate-800/60',
@@ -241,7 +241,7 @@ function FieldRow({ name, field }: { name: string; field: OcrFieldResult }) {
         <div className="flex items-center gap-2">
           <div className="h-1.5 w-20 rounded-full bg-slate-700">
             <div
-              className={`h-1.5 rounded-full transition-all ${confidenceColor(field.confidence)}`}
+              className={`h-1.5 rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] ${confidenceColor(field.confidence)}`}
               style={{ width: pct(field.confidence) }}
             />
           </div>
@@ -572,7 +572,7 @@ export default function OcrPage() {
             onClick={() => setTab(t.id)}
             data-testid={`tab-${t.id}`}
             className={[
-              'flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all',
+              'flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-[color,background-color,border-color,opacity,box-shadow,transform]',
               tab === t.id
                 ? 'bg-indigo-600 text-white shadow'
                 : 'text-slate-400 hover:text-slate-200',

@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { apiFetch, billingApi, type RazorpayPlan } from '@/lib/api/client';
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface PlanLimits {
@@ -84,7 +85,7 @@ function UsageBar({ label, used, limit }: { label: string; used: number; limit: 
         </span>
       </div>
       <div className="h-2 rounded-full bg-muted overflow-hidden">
-        <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${pct}%` }} />
+        <div className={`h-full rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] ${color}`} style={{ width: `${pct}%` }} />
       </div>
     </div>
   );
@@ -229,7 +230,7 @@ function RazorpayCheckout({ plan, onSuccess, onClose }: RazorpayCheckoutProps) {
                 <button
                   key={c}
                   onClick={() => setCycle(c)}
-                  className={`relative p-4 border-2 rounded-xl text-left transition-all ${
+                  className={`relative p-4 border-2 rounded-xl text-left transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
                     cycle === c
                       ? 'border-primary bg-primary/5'
                       : 'border-border hover:border-primary/40'
@@ -406,6 +407,7 @@ export default function BillingPage() {
   };
 
   return (
+    <JARVISPageShell>
     <div className="p-6 max-w-4xl mx-auto space-y-8">
       <div>
         <h1 className="text-2xl font-bold text-foreground">Billing &amp; Usage</h1>
@@ -471,7 +473,7 @@ export default function BillingPage() {
             {plans.map((plan) => (
               <div
                 key={plan.plan_id}
-                className={`rounded-lg border p-4 transition-all ${
+                className={`rounded-lg border p-4 transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
                   plan.plan_id === currentPlan
                     ? 'border-primary ring-1 ring-primary'
                     : highlightPlan === plan.plan_id
@@ -591,5 +593,6 @@ export default function BillingPage() {
         />
       )}
     </div>
+    </JARVISPageShell>
   );
 }

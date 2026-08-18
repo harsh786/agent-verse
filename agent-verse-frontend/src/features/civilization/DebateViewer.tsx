@@ -43,7 +43,7 @@ function ConfidenceMeter({ value, colorClass }: { value: number; colorClass: str
       </div>
       <div className="h-1 bg-white/5 rounded-full overflow-hidden">
         <div
-          className={`h-full rounded-full transition-all duration-700 ${colorClass.includes('blue') ? 'bg-blue-500' : 'bg-orange-500'}`}
+          className={`h-full rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-700 ${colorClass.includes('blue') ? 'bg-blue-500' : 'bg-orange-500'}`}
           style={{ width: `${pct}%` }}
         />
       </div>

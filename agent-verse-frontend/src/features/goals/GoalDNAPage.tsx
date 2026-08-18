@@ -103,7 +103,7 @@ function DnaNode({ data, selected }: NodeProps) {
     <div
       className={`
         rounded-xl border-2 px-3 py-2.5 min-w-[140px] max-w-[200px]
-        shadow-sm transition-all duration-150
+        shadow-sm transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-150
         ${style.bg} ${style.border}
         ${selected ? 'ring-2 ring-primary ring-offset-1 shadow-md scale-105' : 'hover:shadow-md hover:scale-[1.02]'}
       `}

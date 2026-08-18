@@ -18,6 +18,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { Pagination } from "@/components/ui/Pagination";
 import { toast } from "@/stores/toast";
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 const STATUS_OPTIONS = ["all", "planning", "executing", "complete", "failed", "waiting_human"];
 
 type SortField = "created_at" | "status" | "goal";
@@ -191,6 +192,7 @@ export function GoalsListPage() {
   };
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
@@ -471,5 +473,6 @@ export function GoalsListPage() {
         />
       )}
     </div>
+    </JARVISPageShell>
   );
 }

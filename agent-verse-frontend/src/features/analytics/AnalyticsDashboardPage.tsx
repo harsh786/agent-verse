@@ -11,6 +11,7 @@ import type { AnalyticsGoalMetrics, CostMetrics, EvalMetrics, AnalyticsToolMetri
 import { ThemedBarChart, ThemedLineChart } from '@/components/charts';
 import { CHART_COLORS, CHART_AXIS_COLOR, CHART_TOOLTIP_STYLE } from '@/components/charts';
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 const PERIODS = [7, 30, 90] as const;
@@ -92,7 +93,7 @@ function FunnelChart({ stages }: { stages: FunnelStage[] }) {
             <div className="flex-1 flex items-center gap-2">
               <div className="flex-1 h-6 bg-muted rounded-sm overflow-hidden">
                 <div
-                  className={`h-full rounded-sm transition-all duration-500 ${s.color}`}
+                  className={`h-full rounded-sm transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-500 ${s.color}`}
                   style={{ width: `${width}%` }}
                 />
               </div>
@@ -168,7 +169,7 @@ function BenchmarkBar({ label, yours, platform, format }: {
             style={{ width: `${(platform / maxVal) * 100}%` }}
           />
           <div
-            className={`absolute inset-y-0 left-0 rounded-full transition-all ${yours >= platform ? 'bg-emerald-500' : 'bg-blue-500'}`}
+            className={`absolute inset-y-0 left-0 rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] ${yours >= platform ? 'bg-emerald-500' : 'bg-blue-500'}`}
             style={{ width: `${(yours / maxVal) * 100}%` }}
           />
         </div>
@@ -282,6 +283,7 @@ export function AnalyticsDashboardPage() {
   const filteredEvalTrend = evalTrendData;
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6 pb-8">
       {/* ── Header ── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -597,5 +599,6 @@ export function AnalyticsDashboardPage() {
         )}
       </div>
     </div>
+    </JARVISPageShell>
   );
 }

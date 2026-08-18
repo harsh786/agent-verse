@@ -24,6 +24,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import { keymap } from '@codemirror/view';
 import { Prec } from '@codemirror/state';
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type Tab = 'code' | 'files' | 'email';
@@ -564,7 +565,7 @@ function FileManager() {
                           <button
                             aria-label={`Delete ${f.name}`}
                             onClick={() => setDeleteTarget(f.path ?? f.name)}
-                            className="p-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all"
+                            className="p-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-[color,background-color,border-color,opacity,box-shadow,transform]"
                           >
                             <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
                           </button>
@@ -791,6 +792,7 @@ const TAB_META: { key: Tab; label: string; icon: React.ReactNode }[] = [
 export function ToolsPage() {
   const [tab, setTab] = useState<Tab>('code');
   return (
+    <JARVISPageShell>
     <div className="space-y-6 max-w-6xl">
       <div>
         <h1 className="text-2xl font-bold">Tools</h1>
@@ -831,5 +833,6 @@ export function ToolsPage() {
         {tab === 'email' && <EmailComposer />}
       </div>
     </div>
+    </JARVISPageShell>
   );
 }

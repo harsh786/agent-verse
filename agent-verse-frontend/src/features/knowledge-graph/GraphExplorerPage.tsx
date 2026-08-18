@@ -188,7 +188,7 @@ export function GraphExplorerPage() {
               <button
                 key={node.node_id}
                 onClick={() => setSelectedNode(node)}
-                className={`w-full text-left p-3 rounded-lg border transition-all ${selectedNode?.node_id === node.node_id ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/30'}`}
+                className={`w-full text-left p-3 rounded-lg border transition-[color,background-color,border-color,opacity,box-shadow,transform] ${selectedNode?.node_id === node.node_id ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/30'}`}
               >
                 <div className="flex items-start gap-2">
                   <div className={`p-1 rounded text-[10px] shrink-0 ${colorClass}`}>

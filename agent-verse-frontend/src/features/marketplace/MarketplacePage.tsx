@@ -33,6 +33,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
 import { useAuthStore } from "@/stores/auth";
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const DOMAINS = [
@@ -147,7 +148,7 @@ function MarketplaceCard({
 
   return (
     <div
-      className="bg-card border border-border rounded-xl p-5 flex flex-col gap-3 hover:border-primary/30 hover:shadow-md transition-all cursor-pointer group"
+      className="bg-card border border-border rounded-xl p-5 flex flex-col gap-3 hover:border-primary/30 hover:shadow-md transition-[color,background-color,border-color,opacity,box-shadow,transform] cursor-pointer group"
       onClick={onSelect}
       role="button"
       tabIndex={0}
@@ -815,6 +816,7 @@ export function MarketplacePage() {
   };
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6 max-w-6xl">
       {/* Page header */}
       <div className="flex items-start justify-between gap-4">
@@ -964,5 +966,6 @@ export function MarketplacePage() {
       {/* Publish modal */}
       {publishOpen && <PublishModal onClose={() => setPublishOpen(false)} />}
     </div>
+    </JARVISPageShell>
   );
 }

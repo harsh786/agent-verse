@@ -9,6 +9,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { Pagination } from '@/components/ui/Pagination';
 
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 interface Agent {
   agent_id: string;
   name: string;
@@ -147,6 +148,7 @@ export function AgentsListPage() {
     : null;
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6">
       {/* Page header */}
         <div className="flex items-center justify-between">
@@ -186,7 +188,7 @@ export function AgentsListPage() {
               <button
                 key={mode}
                 onClick={() => updateParams({ mode, page: null })}
-                className={`px-3 py-1 text-xs rounded-full border transition-all ${
+                className={`px-3 py-1 text-xs rounded-full border transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
                   filterMode === mode
                     ? 'bg-primary text-primary-foreground border-primary'
                     : 'border-border text-muted-foreground hover:border-primary/40 hover:text-foreground hover:bg-muted'
@@ -415,5 +417,6 @@ export function AgentsListPage() {
           />
         )}
     </div>
+    </JARVISPageShell>
   );
 }
