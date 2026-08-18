@@ -21,6 +21,7 @@ export { DigitalTwinPanel }      from './components/DigitalTwinPanel';
 export { CommandHistoryPanel }   from './components/CommandHistoryPanel';
 export { TeamLifecycleIndicator } from './components/TeamLifecycleIndicator';
 export { OrgHistoryNav }         from './components/OrgHistoryNav';
+export { ObsidianVaultExplorer } from './components/ObsidianVaultExplorer';
 export { StrategicAdvisorPage }  from './StrategicAdvisorPage';
 export * from './hooks/useOrg';
 export * from './types';

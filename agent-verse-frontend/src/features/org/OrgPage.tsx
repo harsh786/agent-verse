@@ -17,7 +17,7 @@
 import { useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal } from 'lucide-react';
+import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal, BookOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { OrgHealthWidget }      from './components/OrgHealthWidget';
 import { MissionsList }          from './components/MissionsList';
@@ -34,6 +34,7 @@ import { NowNextWhy }            from './components/NowNextWhy';
 import { OrgHistoryNav }         from './components/OrgHistoryNav';
 import { DigitalTwinPanel }      from './components/DigitalTwinPanel';
 import { CommandHistoryPanel }   from './components/CommandHistoryPanel';
+import { ObsidianVaultExplorer } from './components/ObsidianVaultExplorer';
 import { useOrganization, useOrgHealth, useMissions } from './hooks/useOrg';
 import type { OrgMission }       from './types';
 
@@ -52,6 +53,7 @@ export function OrgPage() {
   const [showTwin, setShowTwin]               = useState(false);
   const [showHistory, setShowHistory]         = useState(false);
   const [showCommands, setShowCommands]       = useState(false);
+  const [showObsidian, setShowObsidian]       = useState(false);
 
   const { data: org, isLoading: orgLoading, refetch } = useOrganization(orgId ?? null);
   const { data: health }    = useOrgHealth(orgId ?? null);
@@ -213,6 +215,23 @@ export function OrgPage() {
               <Clock className="h-4 w-4" aria-hidden />
             </button>
 
+            {/* Obsidian Vault */}
+            <button
+              onClick={() => setShowObsidian(v => !v)}
+              aria-label="Obsidian vault explorer"
+              style={{ touchAction: 'manipulation' }}
+              className={cn(
+                'p-2 rounded-lg transition-colors duration-150',
+                'min-w-[44px] min-h-[44px] flex items-center justify-center',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
+                showObsidian
+                  ? 'text-violet-300 bg-violet-500/10'
+                  : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
+              )}
+            >
+              <BookOpen className="h-4 w-4" aria-hidden />
+            </button>
+
             {/* Refresh */}
             <button
               onClick={() => refetch()}
@@ -331,6 +350,25 @@ export function OrgPage() {
                 >
                   <div className="p-4">
                     <OrgHistoryNav orgId={orgId} compact />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Obsidian Vault Explorer panel */}
+            <AnimatePresence mode="wait">
+              {showObsidian && (
+                <motion.div
+                  key="obsidian"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+                  style={{ overflow: 'hidden' }}
+                  className="border-b border-[#1E2535]"
+                >
+                  <div className="p-4">
+                    <ObsidianVaultExplorer orgId={orgId} compact />
                   </div>
                 </motion.div>
               )}
