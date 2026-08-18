@@ -941,6 +941,9 @@ export function SettingsPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only"></div>
     <JARVISStagger className="max-w-4xl">
       <div className="mb-6">
         <h1 className="text-2xl font-bold">{t('settings.title')}</h1>

@@ -851,10 +851,10 @@ export function GoalDetailPage() {
           {agentId ? (
             <button
               onClick={() => navigate(`/agents/${agentId}`)}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border bg-card hover:bg-muted hover:border-primary/30 transition-colors group"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border bg-card hover:bg-muted hover:border-[#00D4FF]/30 transition-colors group"
               title="View agent details"
             >
-              <Bot className="h-3.5 w-3.5 text-primary shrink-0" aria-hidden="true" />
+              <Bot className="h-3.5 w-3.5 text-[#00D4FF] shrink-0" aria-hidden="true" />
               <div className="flex flex-col items-start min-w-0">
                 <span className="font-semibold text-foreground group-hover:text-primary transition-colors">
                   {agentDetail?.name ?? "Loading agent…"}

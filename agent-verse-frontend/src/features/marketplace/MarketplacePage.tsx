@@ -817,6 +817,9 @@ export function MarketplacePage() {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
     <div className="space-y-6 max-w-6xl">
       {/* Page header */}
       <div className="flex items-start justify-between gap-4">

@@ -767,6 +767,9 @@ function StatPill({
 }) {
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only"></div>
     <JARVISStagger>
       {icon}
       <span className="font-bold">{value}</span>

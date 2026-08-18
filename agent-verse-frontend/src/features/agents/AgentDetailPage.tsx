@@ -66,7 +66,7 @@ function CredentialsTab({ agentId }: { agentId: string }) {
         <h3 className="text-sm font-semibold text-foreground">Agent Credentials</h3>
         <button
           onClick={() => setIssuing(true)}
-          className="px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity"
+          className="px-3 py-1.5 text-xs bg-[#00D4FF] text-[#00D4FF]-foreground rounded-md hover:opacity-90 transition-opacity"
         >
           Issue Credential
         </button>
@@ -92,7 +92,7 @@ function CredentialsTab({ agentId }: { agentId: string }) {
                 )
               }
               disabled={issueMutation.isPending}
-              className="px-3 py-1 text-xs bg-primary text-primary-foreground rounded disabled:opacity-50"
+              className="px-3 py-1 text-xs bg-primary text-[#00D4FF]-foreground rounded disabled:opacity-50"
             >
               {issueMutation.isPending ? 'Issuing…' : 'Issue'}
             </button>
@@ -333,6 +333,9 @@ export function AgentDetailPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
     <JARVISStagger className="space-y-6 max-w-4xl">
       {/* Back */}
       <button
@@ -430,7 +433,7 @@ export function AgentDetailPage() {
               <input
                 value={editForm.name ?? ""}
                 onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
-                className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:ring-2 focus:ring-primary outline-none"
+                className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:ring-2 focus:ring-[#00D4FF] outline-none"
               />
             </div>
             <div>
@@ -516,7 +519,7 @@ export function AgentDetailPage() {
             onClick={() => setTab(key)}
             className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
               tab === key
-                ? 'border-primary text-primary'
+                ? 'border-[#00D4FF] text-primary'
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
           >
@@ -549,7 +552,7 @@ export function AgentDetailPage() {
               </h2>
               <div className="flex flex-wrap gap-2">
                 {(agent.connector_ids as string[]).map((cid: string) => (
-                  <span key={cid} className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300 text-xs px-2 py-1 rounded">
+                  <span key={cid} className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-[#00D4FF] text-xs px-2 py-1 rounded">
                     {cid}
                   </span>
                 ))}
@@ -606,7 +609,7 @@ export function AgentDetailPage() {
                         ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
                         : g.status === "failed"
                         ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
-                        : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                        : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-[#00D4FF]"
                     }`}>{g.status}</span>
                   </div>
                 ))}

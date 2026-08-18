@@ -63,7 +63,10 @@ export function IntegrationsPage() {
   });
 
   return (
-    <JARVISPageShell>
+    <JARVISPageShell className="bg-[#0A0F1A] min-h-screen">
+
+      {/* a11y: live region for async updates */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only" />
     <JARVISStagger className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Integrations</h1>

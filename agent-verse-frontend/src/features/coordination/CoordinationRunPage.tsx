@@ -100,7 +100,7 @@ export function CoordinationRunPage() {
 
           <aside className="space-y-6">
             <section className="rounded-xl border bg-card p-5">
-              <Activity className="mb-3 h-4 w-4 text-primary" aria-hidden="true" />
+              <Activity className="mb-3 h-4 w-4 text-[#00D4FF]" aria-hidden="true" />
               <MagenticLedgerView ledger={run.ledger} />
             </section>
 

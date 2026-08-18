@@ -158,12 +158,15 @@ export function SSOCallbackPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* a11y: live region for async updates */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only" />
     <JARVISStagger className="min-h-screen flex items-center justify-center bg-background px-4">
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="flex flex-col items-center gap-3 mb-8">
           <div className="flex items-center gap-2">
-            <Zap className="h-8 w-8 text-blue-500" aria-hidden="true" />
+            <Zap className="h-8 w-8 text-[#00D4FF]" aria-hidden="true" />
             <span className="text-2xl font-bold">AgentVerse</span>
           </div>
         </div>
@@ -172,7 +175,7 @@ export function SSOCallbackPage() {
           {callbackStatus === "exchanging" && (
             <>
               <Loader2
-                className="h-10 w-10 animate-spin text-blue-500 mx-auto"
+                className="h-10 w-10 animate-spin text-[#00D4FF] mx-auto"
                 aria-label="Signing in"
               />
               <h1 className="text-lg font-semibold">Signing you in</h1>
@@ -215,7 +218,7 @@ export function SSOCallbackPage() {
               </p>
               <button
                 onClick={() => navigate("/auth", { replace: true })}
-                className="mt-2 px-6 py-2 bg-primary text-primary-foreground text-sm font-medium rounded-md hover:opacity-90 transition-opacity"
+                className="mt-2 px-6 py-2 bg-[#00D4FF] text-[#00D4FF]-foreground text-sm font-medium rounded-md hover:opacity-90 transition-opacity"
               >
                 Back to Sign In
               </button>

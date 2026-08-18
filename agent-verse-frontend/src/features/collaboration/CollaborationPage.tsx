@@ -969,7 +969,7 @@ export function CollaborationPage() {
               <div
                 key={s.session_id}
                 data-testid="session-card"
-                className="bg-card border border-border rounded-xl p-4 hover:border-primary/50 hover:shadow-sm transition-[color,background-color,border-color,opacity,box-shadow,transform] cursor-pointer group"
+                className="bg-card border border-border rounded-xl p-4 hover:border-[#00D4FF]/50 hover:shadow-sm transition-[color,background-color,border-color,opacity,box-shadow,transform] cursor-pointer group"
                 onClick={() => setActiveSession(s)}
               >
                 <div className="flex items-start justify-between mb-2">

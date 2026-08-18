@@ -89,7 +89,7 @@ export function OrgPage() {
           <div className="flex items-center gap-3 min-w-0">
             <div className="relative">
               <div className="h-8 w-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center">
-                <Building2 className="h-4 w-4 text-blue-400" aria-hidden />
+                <Building2 className="h-4 w-4 text-[#00D4FF]" aria-hidden />
               </div>
               {/* Active pulse (frontend-design signature) */}
               <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-emerald-400 animate-pulse-glow" aria-hidden />
@@ -502,7 +502,7 @@ function StatusFilterBar({
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
             'min-h-[32px]',
             value === tab.value
-              ? 'bg-blue-500/10 text-blue-300 ring-1 ring-blue-500/30'
+              ? 'bg-blue-500/10 text-[#00D4FF] ring-1 ring-blue-500/30'
               : 'text-[#94A3B8] hover:text-[#F1F5F9] hover:bg-[#1A1F2E]',
           )}
         >

@@ -94,7 +94,7 @@ export function GraphExplorerPage() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <h1 className="text-lg font-bold flex items-center gap-2">
-            <Network className="h-5 w-5 text-primary" />
+            <Network className="h-5 w-5 text-[#00D4FF]" />
             Graph Explorer
           </h1>
           <button
@@ -191,7 +191,7 @@ export function GraphExplorerPage() {
               <button
                 key={node.node_id}
                 onClick={() => setSelectedNode(node)}
-                className={`w-full text-left p-3 rounded-lg border transition-[color,background-color,border-color,opacity,box-shadow,transform] ${selectedNode?.node_id === node.node_id ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/30'}`}
+                className={`w-full text-left p-3 rounded-lg border transition-[color,background-color,border-color,opacity,box-shadow,transform] ${selectedNode?.node_id === node.node_id ? 'border-primary bg-primary/5' : 'border-border hover:border-[#00D4FF]/30'}`}
               >
                 <div className="flex items-start gap-2">
                   <div className={`p-1 rounded text-[10px] shrink-0 ${colorClass}`}>
@@ -246,7 +246,7 @@ export function GraphExplorerPage() {
             {nodeDetail?.edges && nodeDetail.edges.length > 0 && (
               <div>
                 <p className="text-sm font-semibold mb-3 flex items-center gap-2">
-                  <GitBranch className="h-4 w-4 text-primary" />
+                  <GitBranch className="h-4 w-4 text-[#00D4FF]" />
                   Connections ({nodeDetail.edges.length})
                 </p>
                 <div className="space-y-2">

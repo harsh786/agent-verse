@@ -31,7 +31,7 @@ export function StatusPage() {
   const lastUpdated = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString() : '—';
 
   return (
-    <JARVISPageShell>
+    <JARVISPageShell className="bg-[#0A0F1A] min-h-screen">
     <JARVISStagger className="min-h-screen bg-background" data-testid="status-page">
       {/* Header */}
       <div className="border-b border-border bg-card">

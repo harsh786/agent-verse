@@ -148,6 +148,9 @@ export default function DomainsPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* a11y: live region for async updates */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only" />
     <JARVISStagger className="p-6 max-w-7xl mx-auto">
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-[#00D4FF]">Domain Solutions</h1>

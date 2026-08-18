@@ -174,7 +174,7 @@ function MockToolBuilder({
         aria-expanded={open}
       >
         <div className="flex items-center gap-2 text-sm font-semibold">
-          <Wrench className="h-4 w-4 text-primary" />
+          <Wrench className="h-4 w-4 text-[#00D4FF]" />
           Mock Tools
           {mockedCount > 0 && (
             <span className="text-[10px] bg-primary text-primary-foreground px-2 py-0.5 rounded-full">{mockedCount} mocked</span>
@@ -461,7 +461,7 @@ export function SimulationPage() {
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
-          <FlaskConical className="h-6 w-6 text-primary" aria-hidden="true" />
+          <FlaskConical className="h-6 w-6 text-[#00D4FF]" aria-hidden="true" />
           Simulation Studio
         </h1>
         <p className="text-sm text-muted-foreground mt-0.5">
@@ -615,7 +615,7 @@ export function SimulationPage() {
             aria-expanded={historyOpen}
           >
             <div className="flex items-center gap-2">
-              <Clock className="h-4 w-4 text-primary" /> Run History ({history.length})
+              <Clock className="h-4 w-4 text-[#00D4FF]" /> Run History ({history.length})
             </div>
             {historyOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </button>

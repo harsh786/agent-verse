@@ -424,7 +424,7 @@ export function RpaLivePage() {
       <div className="w-64 flex flex-col bg-card border border-border rounded-xl overflow-hidden shrink-0">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/20 shrink-0">
           <div className="flex items-center gap-2">
-            <Terminal className="h-4 w-4 text-primary" aria-hidden="true" />
+            <Terminal className="h-4 w-4 text-[#00D4FF]" aria-hidden="true" />
             <h2 className="text-sm font-semibold">Sessions</h2>
             {sessions.length > 0 && (
               <span className="text-[10px] bg-muted text-muted-foreground px-1.5 rounded">{sessions.length}</span>
@@ -686,7 +686,7 @@ export function RpaLivePage() {
                 aria-expanded={toolConsoleOpen}
               >
                 <div className="flex items-center gap-2">
-                  <Terminal className="h-4 w-4 text-primary" />
+                  <Terminal className="h-4 w-4 text-[#00D4FF]" />
                   Tool Console
                 </div>
                 {toolConsoleOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}

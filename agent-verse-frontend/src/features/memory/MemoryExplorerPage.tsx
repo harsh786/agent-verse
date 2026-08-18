@@ -353,6 +353,9 @@ export function MemoryExplorerPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
     <MissionControlLayout>
       <div className="space-y-6 max-w-4xl">
         {/* Page header */}

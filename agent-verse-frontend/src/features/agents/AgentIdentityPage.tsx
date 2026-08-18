@@ -562,6 +562,9 @@ export function AgentIdentityPage(): JSX.Element {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only"></div>
     <JARVISStagger className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
       {/* Header */}
       <div>

@@ -82,6 +82,9 @@ export default function AgentMemoryPage(): JSX.Element {
 
   return (
     <JARVISPageShell>
+
+      {/* a11y: live region for async updates */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only" />
     <JARVISStagger className="max-w-2xl mx-auto px-4 py-8">
       <div className="flex items-center gap-3 mb-6">
         <Brain className="w-6 h-6 text-indigo-600" />

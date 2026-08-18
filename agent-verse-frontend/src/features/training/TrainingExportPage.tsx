@@ -143,7 +143,7 @@ function ScoreDistribution({ data }: { data: Record<string, number> }) {
           <span className="w-20 text-muted-foreground shrink-0">{bucket}</span>
           <div className="flex-1 bg-muted rounded h-4 overflow-hidden">
             <div
-              className={`h-full rounded transition-[color,background-color,border-color,opacity,box-shadow,transform] ${colors[bucket] ?? 'bg-primary'}`}
+              className={`h-full rounded transition-[color,background-color,border-color,opacity,box-shadow,transform] ${colors[bucket] ?? 'bg-[#00D4FF]'}`}
               style={{ width: `${Math.max(4, (count / max) * 100)}%` }}
             />
           </div>
@@ -390,6 +390,9 @@ export function TrainingExportPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* a11y: live region for async updates */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only" />
     <JARVISStagger className="space-y-6">
       {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -406,7 +409,7 @@ export function TrainingExportPage() {
           href="https://platform.openai.com/docs/guides/fine-tuning"
           target="_blank"
           rel="noreferrer"
-          className="flex items-center gap-1.5 text-xs text-blue-500 hover:underline"
+          className="flex items-center gap-1.5 text-xs text-[#00D4FF] hover:underline"
         >
           <ExternalLink className="h-3.5 w-3.5" />
           OpenAI fine-tuning docs
@@ -445,7 +448,7 @@ export function TrainingExportPage() {
             <div>
               <label htmlFor="min-score" className="block text-sm font-medium mb-1">
                 Minimum eval score:{' '}
-                <span className="font-mono text-primary">{minScore.toFixed(2)}</span>
+                <span className="font-mono text-[#00D4FF]">{minScore.toFixed(2)}</span>
               </label>
               <input
                 id="min-score"
@@ -632,7 +635,7 @@ export function TrainingExportPage() {
                 data-testid="btn-export"
                 onClick={() => exportMutation.mutate()}
                 disabled={exportMutation.isPending}
-                className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm disabled:opacity-50 hover:bg-primary/90 transition-colors"
+                className="flex items-center gap-2 px-4 py-2 bg-primary text-[#00D4FF]-foreground rounded-md text-sm disabled:opacity-50 hover:bg-primary/90 transition-colors"
               >
                 {exportMutation.isPending ? (
                   <><Loader2 className="h-4 w-4 animate-spin" /> Exporting…</>

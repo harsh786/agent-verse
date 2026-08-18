@@ -107,7 +107,7 @@ function PermCell({ checked, disabled, onChange, label }: { checked: boolean; di
         'w-7 h-7 rounded-md flex items-center justify-center mx-auto',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70',
         disabled ? 'cursor-not-allowed opacity-30' : 'cursor-pointer',
-        checked ? 'bg-blue-600/20 text-blue-400' : 'bg-[#252B3B] text-[#475569]',
+        checked ? 'bg-blue-600/20 text-[#00D4FF]' : 'bg-[#252B3B] text-[#475569]',
       ].join(' ')}
     >
       {checked ? <Check className="h-3.5 w-3.5" aria-hidden /> : <X className="h-3.5 w-3.5" aria-hidden />}
@@ -130,7 +130,7 @@ function RoleRow({ role, onEdit, onDelete, index }: { role: OrgRole; onEdit: (r:
       <div className="flex items-center gap-3 px-4 py-3">
         <div className={[
           'w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0',
-          role.isBuiltIn ? 'bg-purple-500/10 text-purple-400' : 'bg-blue-500/10 text-blue-400',
+          role.isBuiltIn ? 'bg-purple-500/10 text-purple-400' : 'bg-blue-500/10 text-[#00D4FF]',
         ].join(' ')}>
           {role.isBuiltIn ? <Lock className="h-3.5 w-3.5" aria-hidden /> : <Shield className="h-3.5 w-3.5" aria-hidden />}
         </div>

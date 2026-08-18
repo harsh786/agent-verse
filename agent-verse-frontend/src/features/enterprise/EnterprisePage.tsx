@@ -150,9 +150,9 @@ function SAMLWizard(): JSX.Element {
               onClick={() => i <= step && setStep(i)}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                 i === step
-                  ? 'bg-primary text-primary-foreground'
+                  ? 'bg-[#00D4FF] text-[#00D4FF]-foreground'
                   : i < step
-                  ? 'bg-primary/10 text-primary'
+                  ? 'bg-primary/10 text-[#00D4FF]'
                   : 'text-muted-foreground'
               }`}
             >
@@ -177,7 +177,7 @@ function SAMLWizard(): JSX.Element {
                 onClick={() => setSelectedIdp(idp)}
                 className={`px-4 py-3 rounded-lg border text-sm transition-colors ${
                   selectedIdp === idp
-                    ? 'border-primary bg-primary/10 text-primary'
+                    ? 'border-[#00D4FF] bg-primary/10 text-primary'
                     : 'border-border hover:bg-muted'
                 }`}
               >
@@ -229,7 +229,7 @@ function SAMLWizard(): JSX.Element {
                 value={samlConfig.ssoUrl}
                 onChange={(e) => setSamlConfig(s => ({ ...s, ssoUrl: e.target.value }))}
                 placeholder="https://idp.example.com/saml/sso"
-                className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-[#00D4FF]"
               />
             </div>
             <div>
@@ -600,6 +600,9 @@ function ResidencySection(): JSX.Element {
 export function EnterprisePage(): JSX.Element {
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only"></div>
     <JARVISStagger className="p-4 md:p-6 max-w-3xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Enterprise</h1>

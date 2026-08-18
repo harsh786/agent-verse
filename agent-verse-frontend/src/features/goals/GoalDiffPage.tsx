@@ -121,10 +121,13 @@ export function GoalDiffPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only">{loadingA ? "Loading…" : ""}</div>
     <JARVISStagger className="space-y-6 max-w-5xl">
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
-          <GitCompare className="h-6 w-6 text-primary" aria-hidden="true" />
+          <GitCompare className="h-6 w-6 text-[#00D4FF]" aria-hidden="true" />
           Execution Diff
         </h1>
         <p className="text-sm text-muted-foreground mt-1">

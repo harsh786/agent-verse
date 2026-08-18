@@ -781,11 +781,14 @@ export function CompliancePage() {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only"></div>
     <div className="p-6 max-w-5xl mx-auto space-y-6">
       {/* Page header */}
       <div className="flex items-center gap-3">
         <div className="p-2 bg-primary/10 rounded-lg shrink-0">
-          <Shield className="h-5 w-5 text-primary" />
+          <Shield className="h-5 w-5 text-[#00D4FF]" />
         </div>
         <div>
           <h1 className="text-xl font-bold tracking-tight">Compliance</h1>

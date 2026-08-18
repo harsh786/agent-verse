@@ -182,7 +182,7 @@ function BenchmarksTab(): JSX.Element {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <BarChart3 className="h-5 w-5 text-primary" />
+        <BarChart3 className="h-5 w-5 text-[#00D4FF]" />
         <div>
           <h2 className="font-semibold">Your Performance vs Platform</h2>
           <p className="text-xs text-muted-foreground">

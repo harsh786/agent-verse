@@ -92,7 +92,7 @@ function ShortcutHelp({ onClose }: { onClose: () => void }) {
       <div className="relative bg-card border border-border rounded-xl shadow-2xl max-w-sm w-full p-5">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-semibold flex items-center gap-2">
-            <Keyboard className="h-4 w-4 text-primary" aria-hidden="true" /> Keyboard Shortcuts
+            <Keyboard className="h-4 w-4 text-[#00D4FF]" aria-hidden="true" /> Keyboard Shortcuts
           </h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground" aria-label="Close">
             <X className="h-4 w-4" />

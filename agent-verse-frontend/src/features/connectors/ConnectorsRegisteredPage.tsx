@@ -718,6 +718,9 @@ export function ConnectorsRegisteredPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
     <JARVISStagger className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">

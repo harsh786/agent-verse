@@ -208,7 +208,7 @@ export function StrategicAdvisorPage({ orgId, orgName }: StrategicAdvisorPagePro
               <BriefSection
                 icon={TrendingUp}    title="Opportunities"
                 items={brief.opportunities}
-                iconColor="text-blue-400" bgColor="bg-blue-500/10" delay={0.15}
+                iconColor="text-[#00D4FF]" bgColor="bg-blue-500/10" delay={0.15}
               />
             </JARVISStaggerItem>
             <JARVISStaggerItem>

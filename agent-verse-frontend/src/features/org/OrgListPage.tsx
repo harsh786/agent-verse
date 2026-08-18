@@ -159,7 +159,7 @@ function OrgCard({ org, onClick }: { org: Organization; onClick: () => void }) {
     >
       {/* Icon */}
       <div className="h-10 w-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center shrink-0">
-        <Building2 className="h-5 w-5 text-blue-400" aria-hidden />
+        <Building2 className="h-5 w-5 text-[#00D4FF]" aria-hidden />
       </div>
 
       {/* Name + status (impeccable-ui: name dominant, meta secondary) */}
@@ -194,7 +194,7 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
   return (
     <div className="flex flex-col items-center justify-center py-20 text-center">
       <div className="h-16 w-16 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-5">
-        <Activity className="h-7 w-7 text-blue-400" aria-hidden />
+        <Activity className="h-7 w-7 text-[#00D4FF]" aria-hidden />
       </div>
       <h2 className="text-[17px] font-semibold text-[#F1F5F9] tracking-[-0.01em] mb-2">
         No organizations yet

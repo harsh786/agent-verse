@@ -143,6 +143,9 @@ export default function AdminPage() {
 
   return (
     <JARVISPageShell>
+
+      {/* Accessibility: announce loading state */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only"></div>
     <JARVISStagger className="flex flex-col gap-6 p-4 lg:p-6" data-testid="admin-page">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4">

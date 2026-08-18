@@ -86,7 +86,7 @@ function CivilizationList() {
           {/* Create civilization button */}
           <button
             onClick={() => setShowNewCivModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:opacity-90 transition-opacity"
+            className="flex items-center gap-2 px-4 py-2 bg-[#00D4FF] text-[#00D4FF]-foreground text-sm font-medium rounded-lg hover:opacity-90 transition-opacity"
             aria-label="Create a new civilization"
           >
             <Plus className="h-4 w-4" />
@@ -247,7 +247,7 @@ function CivilizationList() {
                   value={newCivForm.name}
                   onChange={e => setNewCivForm(f => ({ ...f, name: e.target.value }))}
                   placeholder="e.g. Research Cluster Alpha"
-                  className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-[#00D4FF]"
                 />
               </div>
               <div>
@@ -306,7 +306,7 @@ function CivilizationList() {
                   }
                 }}
                 disabled={!newCivForm.name.trim()}
-                className="flex-1 py-2.5 bg-primary text-primary-foreground font-medium rounded-lg hover:opacity-90 disabled:opacity-50"
+                className="flex-1 py-2.5 bg-primary text-[#00D4FF]-foreground font-medium rounded-lg hover:opacity-90 disabled:opacity-50"
               >
                 Create Civilization
               </button>
@@ -490,7 +490,7 @@ function CivilizationTheater({ civId }: { civId: string }) {
                 style={{ background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.2)' }}
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-                <span className="text-blue-300 font-medium">{activeCount} active</span>
+                <span className="text-[#00D4FF] font-medium">{activeCount} active</span>
               </span>
               <span className="text-slate-600">{totalCount} total</span>
             </div>
