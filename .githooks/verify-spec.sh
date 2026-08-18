@@ -195,6 +195,14 @@ grep -q '"/org"' "$FRONTEND/components/ui/Sidebar.tsx" 2>/dev/null && pass "Org 
 [ -f "$FRONTEND/features/org/components/CursorPresence.tsx" ]       && pass "CursorPresence exists (Phase 5)"   || gap "CursorPresence MISSING"
 [ -f "$FRONTEND/features/org/components/ConnectorMarketplace.tsx" ] && pass "ConnectorMarketplace exists (Phase 6)" || gap "ConnectorMarketplace MISSING"
 
+# AA3 / AA4 / AA5 — newly required
+[ -f "$FRONTEND/features/settings/RoleEditorPage.tsx" ]   && pass "RoleEditorPage exists (AA3)"    || gap "RoleEditorPage MISSING"
+[ -f "$FRONTEND/features/org/ScheduledMissions.tsx" ]      && pass "ScheduledMissions exists (AA4)" || gap "ScheduledMissions MISSING"
+[ -f "$FRONTEND/features/settings/PrivacySettings.tsx" ]  && pass "PrivacySettings exists (AA5)"   || gap "PrivacySettings MISSING"
+
+# Backend role endpoints (AA3)
+grep -q "org_list_roles\|org_create_role\|org_delete_role" "$BACKEND/org/router.py" 2>/dev/null && pass "Org role endpoints in org router (AA3)" || gap "Org role endpoints MISSING (AA3)"
+
 # ─── TEST COVERAGE ────────────────────────────────────────────────────────────
 section "TEST COVERAGE"
 
