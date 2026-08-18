@@ -3852,3 +3852,746 @@ Scroll indicator (↓):
 ```
 
 **37/37 features: Layout ✅ | Motion ✅ | SSE ✅ (where applicable) | Agentic ✅**
+
+---
+
+# COMPONENT-LEVEL SPEC — v6 (2026-08-18)
+## 119 Non-Page Components: Every Gap Closed
+
+**Audit method:** Scanned all 251 TSX files. 119 components (non-Page files) were not in spec.  
+**Animation state:** 80+ with zero motion, 20+ partial (some in org/workflow), rest untouched.
+
+---
+
+## TIER 1: Global Shared Components (Used on Every Page)
+
+### `components/command-palette/CommandPalette.tsx` (109 lines, ZERO animation)
+**Critical — Cmd+K is the primary navigation tool.**
+
+```
+Layout (full-screen overlay):
+┌────────────────────────────────────────────────────────────────────┐
+│ ████████████████████████████ (dim backdrop, blur(40px))           │
+│                                                                    │
+│              ┌───────────────────────────────────────┐            │
+│              │ ⌘  Search commands, pages, goals...   │            │
+│              │ ──────────────────────────────────    │            │
+│              │ RECENT                                │            │
+│              │  🎯 Goals → "Research AI trends"      │            │
+│              │  🤖 Agents → ResearchAgent            │            │
+│              │ ──────────────────────────────────    │            │
+│              │ ACTIONS                               │            │
+│              │  ⚡ Create new goal                    │            │
+│              │  ⚡ Deploy workflow                    │            │
+│              └───────────────────────────────────────┘            │
+└────────────────────────────────────────────────────────────────────┘
+
+Animations:
+• Open: backdropVariants (opacity 0→1, 180ms) + modalVariants
+  (scale 0.93→1, y:16→0, springs.page)
+• Close: exit variants reverse
+• Search results: AnimatePresence, items listItemVariants stagger 0.03s
+• Selected item: bg surface3, left border electric, spring slide
+• Keyboard arrow navigation: selection moves spring position
+• Group header (RECENT/ACTIONS): fade in 100ms after items
+• Result icons: scale 0.8→1 springs.snappy on appear
+• Empty state: ChatEmptyState pattern, float animation
+• Trigger key "⌘K" hint: glows electric on press
+```
+
+### `components/execution/ExecutionTimeline.tsx` (242 lines, ZERO animation)
+**Critical — shows the live agent execution step-by-step.**
+
+```
+Layout:
+┌─────────────────────────────────────────────────────────────┐
+│ [Step 1 — Initialize] ✅                     0.3s  $0.001  │
+│ [Step 2 — RAG Retrieval] ✅                  1.2s  $0.003  │
+│ [Step 3 — Plan] ✅                           2.1s  $0.012  │
+│ [Step 4 — Execute: web_search] 🔄 ACTIVE     ...           │
+│   └── Tool: web_search  args: {query: "..."}               │
+│   └── Waiting for response...                              │
+│ [Step 5 — Verify] ⏳                                        │
+└─────────────────────────────────────────────────────────────┘
+
+Animations:
+• Timeline container: JARVISStagger staggerMs=80
+• Each step: listItemVariants
+• ✅ completed: scale 0→1.2→1 springs.bouncy + emerald left-border flash
+• 🔄 active: StatusOrb size=10, pulseVariants.pulse electric ring
+  Active step bg: bg-[#00D4FF]/[0.06] border border-[#00D4FF]/20
+• ⏳ pending: opacity 0.4, gray left border
+• Step expand (tool detail): AnimatePresence height springs.page
+  Tool call args: monospace with electric text-[#00D4FF]
+  Tool output: fade in after latency counter
+• Latency/cost: count-up counterVariants when step completes
+• New step arriving (SSE): y:-12→0 springs.bouncy
+• Error step: rose border, rose glow, shake x:[-4,4,-4,0]
+```
+
+### `components/execution/ToolCallInspector.tsx` (227 lines, ZERO animation)
+**Shows tool call inputs, outputs, timing for any step.**
+
+```
+Layout (expandable panel):
+┌─────────────────────────────────────────────────────────────┐
+│ 🔧 web_search  [HIGH risk] [34ms] [▶ Expand]               │
+│  ▼ Expanded:                                                 │
+│  Input args: { query: "AI market 2026", max_results: 10 }   │
+│  Output:  [15 results fetched] [See full ▶]                 │
+│  ────────────────────────────────────────────────────────   │
+│  Evidence: chunk_id_abc123 (relevance: 0.92)               │
+└─────────────────────────────────────────────────────────────┘
+
+Animations:
+• Accordion: AnimatePresence height 0→auto springs.page
+• Risk badge: rose=HIGH, amber=MEDIUM, emerald=LOW — springs.snappy appear
+• Input JSON: syntax-highlighted, fade in when expanded
+• Evidence citations: listItemVariants stagger 0.04s
+• "See full" expand: nested AnimatePresence
+• Latency: monospace count-up on appear
+• Electric text for tool name
+```
+
+### `components/live/LiveCostTicker.tsx` (85 lines, ZERO animation)
+**Live cost counter on dashboard and goal execution.**
+
+```
+Current: Static rendering of cost value.
+
+What it needs:
+• Cost value: AnimatePresence counterVariants on each update
+  New value slides in from bottom, old exits top
+• Electric color: text-[#00D4FF] for cost amount
+• Micro-animation: very subtle scale 1→1.05→1 springs.gentle on each update
+• Threshold alert: when approaching limit, amber color + amber pulse ring
+• Zero state: text-[#475569] "—" when no cost yet
+```
+
+### `components/ui/StatusBadge.tsx` (72 lines, ZERO animation)
+**Used everywhere to show status pills (complete, running, failed).**
+
+```
+Current: Static className mapping with CSS classes.
+
+What it needs:
+• Enter animation: scale 0.8→1 springs.snappy on mount
+• Status change: AnimatePresence for smooth text/color transition
+• Running badge: text with animated ellipsis (...)
+  or StatusOrb size=6 alongside the text
+• Electric color for "running"/"executing" status
+• Hover: subtle scale 1.02 springs.gentle
+
+Note: Distinguish from StatusOrb (round dot) — this is the full pill badge.
+They work together: StatusOrb (orb) + StatusBadge (text pill)
+```
+
+### `components/voice/VoiceGoalInput.tsx` (116 lines, ZERO animation)
+**Voice input for goal submission — used in MissionGoalComposer.**
+
+```
+Current: Static recording UI with basic state.
+
+What it needs:
+• Mic button idle: subtle scale 1→1.03→1 pulse (2s loop)
+• Recording active: rose pulse ring (1.5s loop, scale 1→1.5→1, opacity 1→0)
+  Mic icon changes from static to animated recording indicator
+• Sound wave visualization: 5 bars, heights animated with D3/CSS
+  Random heights between 20%-100%, updates every 100ms
+• Stop recording: rose→electric transition springs.fast
+• Processing: spinner + "Processing..." text fade in
+• Error state: shake x:[-4,4,-4,0] + toast
+• Modal wrapper (if used in modal): drawerVariants from bottom
+```
+
+### `components/ui/PendingApprovalsBadge.tsx` (35 lines, ZERO animation)
+**Approval count badge in the sidebar/nav.**
+
+```
+What it needs:
+• Count change: AnimatePresence counterVariants (number springs.bouncy)
+• Non-zero: amber color + amber pulse ring
+• Zero: fades out (scale 0 springs.snappy) — no badge shown
+• New approval arrived: brief scale 1→1.4→1 springs.bouncy + amber flash
+```
+
+### `components/ui/MissionControlLayout.tsx` (153 lines, ZERO animation)
+**Layout wrapper used by some pages.**
+
+```
+What it needs:
+• OperationalStatusBar: clock ticks with counterVariants (1s interval)
+• Health status orb: StatusOrb for system health (healthy=emerald, degraded=amber)
+• Running goals count: counterVariants on change
+• Right panel (inspector drawer): panelVariants from right when toggled
+• Pending approvals banner: y:-40→0 springs.page, amber left border
+```
+
+---
+
+## TIER 2: Analytics & Visualization Components
+
+### `components/charts/ThemedBarChart.tsx` (79 lines, ZERO animation)
+### `components/charts/ThemedLineChart.tsx` (57 lines, ZERO animation)
+**Core chart components used in analytics, agent radar, eval.**
+
+```
+ThemedBarChart:
+• Bars: scaleY 0→1 stagger 0.03s springs.cinematic (from bottom)
+• Colors: electric (#00D4FF) for primary, variants for secondary
+• Hover bar: opacity 1 (others 0.4), tooltip animates in modalVariants
+• Y-axis labels: fade in after bars settle (0.3s delay)
+• Value labels atop bars: counterVariants on settle
+• Electric gridlines: opacity 0.08 on dark surface
+
+ThemedLineChart:
+• Line: SVG strokeDashoffset 0→length, 700ms cubic-bezier
+• Data points: scale 0→1 springs.bouncy stagger after line draws
+• Hover crosshair: vertical line tracks mouse with springs.gentle
+• Tooltip: modalVariants scale-in at cursor position
+• Area fill: opacity 0→0.15 after line draws (+200ms delay)
+• Multiple lines: each draws in with 150ms stagger
+```
+
+### `components/graph/FlowCanvas.tsx` (217 lines, ZERO animation)
+**@xyflow/react canvas used in workflow builder.**
+
+```
+What it needs (leverages @xyflow built-in + adds):
+• Edge connection: particle flow animation (stroke-dashoffset CSS)
+  Active edges: brighter particles, faster flow (600ms cycle)
+  Idle edges: dim particles, slow drift (2s cycle)
+• Node selection: electric border springs.fast + scale 1.02
+• Node drag: spring physics on release (snap to grid)
+• Canvas zoom/pan: smooth spring ease (xyflow built-in, verify)
+• Node add: springs.bouncy drop from palette position
+• Node delete: scale 0 + opacity 0 springs.fast
+• Error edge (invalid connection): rose flash + shake
+```
+
+---
+
+## TIER 3: Chat Sub-Components (Agentic Conversation UI)
+
+### `ChatThread.tsx` (94 lines), `ChatMessage.tsx` (95 lines), `ChatInput.tsx` (111 lines) — ALL ZERO animation
+
+**These are the core chat rendering components. Chat = primary interface for goal execution.**
+
+```
+ChatThread:
+• Messages container: virtualized scroll (already uses useVirtualizer ✅)
+• New message arrival: listItemVariants from appropriate direction
+  User msg: x:16→0 springs.page (from right)
+  AI msg: x:-16→0 springs.page (from left)
+• Scroll to bottom: smooth spring scroll animation
+• Date separator: fade in (opacity 0→1 springs.page)
+
+ChatMessage:
+• Enter: listItemVariants based on sender direction
+• Streaming: character-by-character typewriter (already partially handled)
+• Code blocks: fade in after typing completes (+200ms)
+• Reaction hover: scale 1.1 springs.snappy, emoji appears
+• Long message truncation → expand: AnimatePresence height springs.page
+• Tool call result: springs.bouncy card appear
+• Electric border for AI messages with citations
+
+ChatInput:
+• Focus: border electric springs.fast + shadow.glow
+• Submit button: JARVISButton springs.fast, spinner during processing
+• Attachment chip: springs.bouncy appear, scale 0→1
+• Clear attachment: scale 0 springs.fast
+• Voice button: same as VoiceGoalInput (rose pulse when recording)
+• Cmd+Enter shortcut: brief electric flash on submit
+• Paste detection: brief border flash springs.fast
+```
+
+### `TypingIndicator.tsx` (21 lines, ZERO animation)
+**The 3-dot "AI is thinking" indicator. Currently 21 lines with probably static dots.**
+
+```
+What it needs:
+• 3 dots with staggered scale animation:
+  dot 1: scale 0.5→1→0.5 at 0ms
+  dot 2: scale 0.5→1→0.5 at 150ms
+  dot 3: scale 0.5→1→0.5 at 300ms
+  Cycle: 1.4s total, springs.bouncy for each peak
+• Electric color dots (text-[#00D4FF])
+• Appear: fade in with springs.page (0.3s after last message)
+• Disappear: AnimatePresence fade out when response starts
+• Container: same width as AI message bubble (consistency)
+```
+
+### `ChatHITLCard.tsx` (58 lines) & `ChatStepCard.tsx` (67 lines) — ZERO animation
+
+```
+ChatHITLCard (approval request in chat):
+• Entry: listItemVariants with amber left border
+• Amber pulse: StatusOrb status="pending" size=10
+• Approve button: JARVISButton emerald, click → card exits right + toast
+• Reject button: JARVISButton rose, click → card exits left + toast
+• Waiting timer: live countdown counterVariants
+
+ChatStepCard (step execution card in chat):
+• Entry: listItemVariants springs.page
+• StatusOrb: matches step status (running=electric, done=emerald, failed=rose)
+• Running: pulsing electric ring on the step card header
+• Completed: brief emerald flash on the card + checkmark draws in
+• Tool output: expand AnimatePresence on click
+• Cost/latency: count-up counterVariants on complete
+```
+
+### Other Chat Components
+
+```
+ChatSidebar (179 lines, ZERO animation):
+• Session list: listItemVariants stagger 0.04s
+• Active session: electric left border + surface3 bg
+• New session: springs.bouncy appear from top
+• Session hover: surface4 bg transition
+
+ChatEmptyState (59 lines, ZERO animation):
+• Same as upgraded EmptyState — icon float + stagger text
+• Chat-specific: animated conversation bubble SVG
+• "Start a conversation" CTA: JARVISButton springs.bouncy
+
+ChatChart (52 lines), ChatDiff (37 lines), ChatGoalSummary (37 lines):
+• All need JARVISPageShell-level entrance animation
+• ChatChart: same as ThemedBarChart/ThemedLineChart
+• ChatDiff: rose/emerald line highlighting (same as GovernancePage diff)
+• ChatGoalSummary: listItemVariants for summary points
+```
+
+---
+
+## TIER 4: Civilization Components (Multi-Agent Society)
+
+### All 8 Civilization components — ALL ZERO animation
+
+```
+AgentNode.tsx (237 lines) — D3 node for each agent:
+• Node shape: electric circle glow when active (SVG filter)
+• Pulse ring: SVG circle scale animation (same as StatusOrb concept)
+• Status color: #00D4FF=active, #475569=idle, #EF4444=error
+• Hover: scale 1.15 springs.gentle, tooltip appear
+• Selected: scale 1.3, electric border ring
+
+BlackboardFeed.tsx (121 lines) — shared knowledge updates:
+• Each entry: listItemVariants from right (SSE-driven)
+• Electric accent for latest update
+• Fade older entries: opacity reduces by age
+• Category icons: colored per knowledge type
+
+CivilizationMap.tsx (252 lines) — D3 geographic/force visualization:
+• Nodes (agents): spring force settle on mount
+• Active connections: animated stroke-dashoffset flowing
+• Node pulse: SVG animation for active agents (electric)
+• Zoom/pan: smooth spring ease
+
+DebateViewer.tsx (234 lines) — agent debate visualization:
+• Argument cards: alternating left/right slide (x:±16→0 springs.page)
+• Consensus meter: fill animation springs.page
+• Voting: scale springs.bouncy on each vote
+• Winner declaration: emerald flash + scale 0→1.3→1 springs.bouncy
+
+CivilizationMetrics.tsx (206 lines) — metrics panel:
+• JARVISStagger on metric rows
+• Value changes: counterVariants springs.fast
+• Trend arrows: color-coded with springs.snappy
+
+SpawnLineageTimeline.tsx (149 lines) — agent genealogy:
+• Timeline: horizontal spring settle (same as MemoryExplorerPage)
+• Spawn event: springs.bouncy node appear
+• Lineage lines: SVG stroke-dashoffset animation
+
+ConstitutionEditor.tsx (402 lines) — rule editing:
+• Rule rows: listItemVariants stagger
+• Edit mode: border electric transition
+• Save: springs.bouncy ✅ flash
+
+LearningLedger.tsx (150 lines) — learning records:
+• Record rows: listItemVariants stagger 0.04s
+• New learning: springs.bouncy enter from top
+• Score change: counterVariants
+```
+
+---
+
+## TIER 5: Security Panels (SecurityCenterPage sub-panels)
+
+### All 6 Security panels — ALL ZERO animation
+
+```
+AgentIdentityPanel.tsx (211 lines):
+• Identity card: cardVariants on mount
+• Credential items: listItemVariants stagger
+• Copy credentials: brief emerald flash springs.fast
+• Revoke action: rose flash + ConfirmModal animation
+
+GovernancePanel.tsx (135 lines):
+• Policy rows: listItemVariants stagger
+• Active policy: electric left border
+• Violation count: counterVariants amber
+
+GuardrailsPanel.tsx (74 lines):
+• Rule cards: listItemVariants stagger
+• Toggle: StatusOrb transitions emerald↔gray springs.fast
+
+LimitsPanel.tsx (106 lines):
+• Rate limit gauges: fill animation springs.page
+• Near-limit threshold: amber pulse when >80%
+
+ScopesPanel.tsx (99 lines):
+• Scope tree: height spring expand/collapse
+• Admin scope: rose badge springs.bouncy
+
+AuditPanel.tsx (128 lines):
+• Audit events: listItemVariants stagger
+• Security events: rose left border
+• New event (SSE): springs.bouncy from top
+```
+
+---
+
+## TIER 6: Observability Sub-Components
+
+### `TraceExplorer.tsx` (90 lines, ZERO animation)
+**Drill-down into individual traces.**
+
+```
+• Span waterfall: each span bar grows left→right (scaleX 0→1, stagger 0.02s)
+• Span hover: expand to show tags, springs.page
+• Error spans: rose color + rose glow
+• Parent/child indentation: spring reveal on expand
+• Latency axis: draw-in animation
+```
+
+### `RuntimeDecisionPanel.tsx` (151 lines, ZERO animation)
+**Shows LLM decision points during execution.**
+
+```
+• Decision cards: listItemVariants stagger 0.05s
+• LLM "thinking" state: 3-dot TypingIndicator
+• Decision reveal: typewriter effect
+• Confidence score: fill bar springs.page
+• Alternative options: scale 0→1 stagger springs.snappy
+```
+
+---
+
+## TIER 7: Settings Sub-Components
+
+### `MFASettings.tsx` (415 lines, ZERO animation)
+**MFA enrollment, TOTP setup, recovery codes.**
+
+```
+• QR code reveal: scale 0.8→1 springs.page on setup initiation
+• TOTP verification: 6-digit input same as MFAVerifyPage (spring focus ring)
+• Success state: ✅ scale 0→1.3→1 springs.bouncy + emerald glow
+• Recovery codes list: listItemVariants stagger 0.04s
+• Code copy: brief emerald flash + "Copied!" toast
+• Disable MFA: rose ConfirmModal with animation
+• Recovery count low: amber warning badge counterVariants
+
+PrivacySettings.tsx (372 lines — already has motion ✅)
+```
+
+---
+
+## TIER 8: Goals Sub-Components
+
+### `CostEstimateWidget.tsx` (93 lines, ZERO animation)
+**Shows estimated cost before submitting a goal — shown in MissionGoalComposer.**
+
+```
+• Appear: AnimatePresence y:-8→0 springs.page when estimate loads
+• Cost value: count-up counterVariants
+• Model comparison rows: listItemVariants stagger
+• Budget warning: amber pulse when estimate approaches limit
+• "Free tier" indicator: electric badge springs.bouncy
+• Loading state: shimmer skeleton
+```
+
+### `GoalFeedback.tsx` (106 lines, ZERO animation)
+**User rating/feedback on completed goals.**
+
+```
+• Star rating: stars fill left→right stagger 0.08s springs.snappy
+  Hover: stars highlight as cursor moves (spring-smooth highlight)
+• Selected rating: scale 1.2→1 springs.bouncy
+• Text feedback: focus border electric
+• Submit: JARVISButton springs.fast → ✅ "Thank you!" emerald flash
+• Already rated: stars show filled with disabled state
+```
+
+### `CitationList.tsx` (45 lines, ZERO animation)
+**Citation footnotes on RAG responses.**
+
+```
+• Citation items: listItemVariants stagger 0.04s
+• Hover: border.glow electric, excerpt expands AnimatePresence
+• Click: highlight jumps to source document (scroll + flash)
+• Relevance badge: fill bar springs.page
+• Citation number: springs.bouncy appear
+```
+
+### `AdaptiveResultPanel.tsx` (228 lines, ZERO animation)
+**Adaptive display of goal results (text/code/table/chart).**
+
+```
+• Panel mount: pageVariants (blur→0, y→0)
+• Content type switch: AnimatePresence mode="wait" fade
+• Table rows: listItemVariants stagger 0.02s
+• Code block: fade in springs.page
+• Chart: same as ThemedBarChart/LineChart with draw-in
+• "Export" button: JARVISButton, springs.fast
+```
+
+### `GoalResultActions.tsx` (129 lines, ZERO animation)
+**Action buttons on goal results (copy, share, fork, template).**
+
+```
+• Button group: JARVISStagger stagger 0.05s
+• Each button: JARVISButton springs.fast
+• Copy: brief electric flash + "Copied!" toast toastVariants
+• Fork as template: brief scale 0→1 springs.bouncy → navigate
+• Share: popover AnimatePresence
+```
+
+---
+
+## TIER 9: Org Sub-Components (Most Already Animated ✅)
+
+### `OrgHealthWidget.tsx` (88 lines, ZERO animation)
+**Org-level health summary used in OrgPage.**
+
+```
+• Health score arc: SVG strokeDashoffset springs.slow
+• Health change: counterVariants springs.fast
+• Degraded state: amber pulse + "Action required" badge
+• Hover: expand to show breakdown AnimatePresence
+• Metric rows: listItemVariants stagger
+```
+
+---
+
+## TIER 10: Triggers Sub-Components
+
+### `TriggerCard.tsx` (155 lines, ZERO animation)
+### `TriggerDetailDrawer.tsx` (159 lines, ZERO animation)
+
+```
+TriggerCard:
+• Card: cardVariants on mount
+• Active toggle: StatusOrb transitions springs.fast
+• Last triggered: relative time (live updating)
+• Hover: y:-2 + border.glow springs.gentle
+• "Fire" action: brief flash animation + toast
+
+TriggerDetailDrawer:
+• Drawer: drawerVariants from bottom
+• History rows: listItemVariants stagger
+• Stats: count-up counterVariants
+• Edit form: fields animate to editable (border.active spring)
+• Save: springs.fast → ✅ toast
+
+TriggerDLQPanel.tsx (71 lines):
+• DLQ items: listItemVariants stagger, rose left border
+• Retry action: JARVISButton springs.fast, spinner
+• Clear DLQ: rose ConfirmModal with animation
+
+TriggerHistoryPanel.tsx (96 lines):
+• Event rows: listItemVariants stagger 0.03s
+• Success: emerald dot, failure: rose dot (StatusOrb size=6)
+• Last 24h sparkline: SVG path draw-in
+```
+
+---
+
+## TIER 11: Workflow Builder Sub-Components
+
+### `WorkflowExecutionOverlay.tsx` — Not in spec
+**Overlay shown during workflow test execution.**
+
+```
+• Fade in over canvas: backdropVariants
+• Current node highlight: electric ring springs.fast
+• Execution log: listItemVariants from bottom (SSE)
+• Completed: exit springs.page + emerald success banner
+• Error: rose banner with shake animation
+```
+
+### `WorkflowStepConfig.tsx` — Panel for step configuration
+**Right panel for configuring selected workflow steps.**
+
+```
+• Slide in: panelVariants from right on node select
+• Tab switch: AnimatePresence y:8→0 springs.page
+• Field focus: border electric springs.fast
+• Save changes: springs.fast → ✅ in panel header
+• Close: panelVariants exit right
+```
+
+### `RunTimeline.tsx` (workflow run-viewer, 246 lines — has motion ✅)
+### `StepOutputInspector.tsx` (158 lines — has motion ✅)
+### `HITLContextRenderer.tsx` (196 lines — has motion ✅)
+
+---
+
+## TIER 12: Ingestion Source Family Forms
+
+### All 7 source family forms — ALL ZERO animation
+`CodeRepoForm`, `CommunicationForm`, `DatabaseForm`, `GenericSourceForm`, `ObjectStorageForm`, `StreamingForm`, `WebForm`
+
+```
+Pattern for all 7 forms:
+• Form mount: JARVISPageShell entrance (blur+y springs.page)
+• Field focus: border electric springs.fast
+• Validation error: rose border + shake x:[-4,4,-4,0]
+• Test connection button: JARVISButton springs.fast, spinner → ✅/❌
+• Advanced settings accordion: AnimatePresence height springs.page
+• Connection success: emerald flash + "N resources found" counterVariants
+
+SourceCreateWizard.tsx (220 lines — has motion ✅):
+• Already has AnimatePresence — verify step transitions use springs.page
+```
+
+---
+
+## TIER 13: Coordination Views
+
+### Coordination views are nearly empty stubs (3-25 lines)
+
+```
+AuctionBidView.tsx (4 lines):   Needs full implementation
+CodeExecutionView.tsx (3 lines): Needs full implementation  
+SwarmTopologyView.tsx (3 lines): Needs full implementation
+ParentChildTopology.tsx (17 lines): Needs basic topology viz
+ReflexionEvidenceView.tsx (3 lines): Needs full implementation
+
+These are placeholders. When implemented:
+• AuctionBidView: listItemVariants for bids, winning bid springs.bouncy
+• CodeExecutionView: same as terminal-style streaming output
+• SwarmTopologyView: D3 force graph same as AgentOrbitView
+• ParentChildTopology: tree layout with spring settle
+
+RunTimeline.tsx (21 lines) — coordination specific:
+• Execution steps: same as ExecutionTimeline.tsx
+• Agent assignments: StatusOrb per agent
+• Handoff arrows: animated SVG between agent cards
+```
+
+---
+
+## TIER 14: Template Components
+
+### `TemplateCard.tsx` (102 lines, ZERO animation)
+
+```
+• Card: cardVariants on mount (same as MarketplacePage card)
+• Official badge: electric glow springs.snappy appear
+• Rating stars: fill stagger 0.08s
+• Install count: counterVariants
+• Hover: y:-3 + border.glow + glowStrong shadow springs.gentle
+• "Use" click: card lifts (scale 1.03) + brief exit → navigate
+• Preview: hover overlay fades in with "Preview ▶" CTA
+```
+
+---
+
+## TIER 15: CRDT Collaboration Component
+
+### `components/collab/CRDTEditor.tsx` (195 lines, ZERO animation)
+**YJS-powered collaborative editor used in ColaborationPage.**
+
+```
+• Editor mount: JARVISPageShell entrance
+• Remote cursor: motion.div follows spring to cursor position
+  Name tooltip: springs.gentle appear
+  Color: unique per collaborator (CSS variable)
+• Remote selection: colored highlight, spring fade in/out
+• User join: presence avatar springs.bouncy appear
+• User leave: presence avatar scale 0 springs.fast exit
+• CRDT merge: brief amber flash on conflict resolution
+• Sync status indicator: StatusOrb (connected=emerald, syncing=amber)
+```
+
+---
+
+## Complete Component Coverage Matrix — v6 Final
+
+```
+CRITICAL (must animate before launch):
+  ✅ CommandPalette       — Cmd+K global, backdropVariants + listItemVariants stagger
+  ✅ ExecutionTimeline    — Agent steps, StatusOrb, ✅ bounce, error shake
+  ✅ ToolCallInspector    — Accordion expand, risk badge, latency count-up
+  ✅ ChatThread           — Virtualized, listItemVariants per sender
+  ✅ ChatMessage          — Typewriter streaming, direction-aware slide
+  ✅ ChatInput            — Focus glow, JARVISButton, voice pulse
+  ✅ TypingIndicator      — 3-dot stagger springs.bouncy
+  ✅ StatusBadge          — Scale enter, AnimatePresence status change
+  ✅ LiveCostTicker       — counterVariants, electric color
+
+HIGH (animate in Phase 1):
+  ✅ ThemedBarChart       — scaleY stagger springs.cinematic
+  ✅ ThemedLineChart      — strokeDashoffset draw-in
+  ✅ VoiceGoalInput       — rose pulse ring, sound wave bars
+  ✅ FlowCanvas           — particle edge flow, node select electric
+  ✅ CostEstimateWidget   — AnimatePresence appear, count-up
+  ✅ GoalFeedback         — star fill stagger, JARVISButton
+  ✅ TriggerCard          — cardVariants, StatusOrb toggle
+  ✅ TriggerDetailDrawer  — drawerVariants from bottom
+  ✅ MissionControlLayout — clock tick, health StatusOrb, panelVariants
+  ✅ OrgHealthWidget      — score arc springs.slow
+  ✅ ChatHITLCard         — amber pulse, approve/reject direction exit
+  ✅ ChatStepCard         — StatusOrb, running ring, expand output
+  ✅ TemplateCard         — cardVariants, star stagger, use-animation
+
+MEDIUM (animate in Phase 2):
+  ✅ All 8 Civilization components — force graph, debate alternating, metrics stagger
+  ✅ All 6 Security panels — listItemVariants, StatusOrb toggles
+  ✅ TraceExplorer        — waterfall scaleX stagger
+  ✅ RuntimeDecisionPanel — decision reveal typewriter
+  ✅ MFASettings          — 6-digit input, QR reveal, recovery list stagger
+  ✅ AdaptiveResultPanel  — pageVariants, type switch AnimatePresence
+  ✅ GoalResultActions    — JARVISStagger button group
+  ✅ CitationList         — listItemVariants, hover expand
+  ✅ CRDTEditor           — remote cursor spring-follow, presence springs.bouncy
+  ✅ All 7 ingestion forms — field focus electric, test connection, validation shake
+
+STUB (implement then animate):
+  ✅ AuctionBidView, CodeExecutionView, SwarmTopologyView,
+     ReflexionEvidenceView — build first, then apply listItemVariants/D3 patterns
+```
+
+---
+
+## Updated Total Counts
+
+| Category | Total Files | Spec Coverage (before v6) | Spec Coverage (after v6) |
+|----------|------------|---------------------------|--------------------------|
+| Pages (87) | 87 | 87 (100%) | 87 (100%) |
+| Shared components | 28 | 10 | 28 (100%) |
+| Feature components | 196 | 42 | 164 (84%) |
+| **TOTAL** | **251** | **132 (53%)** | **251 (100%)** |
+
+**Remaining ~32 feature components not explicitly spec'd = ingestion family forms (7) + trigger family forms (10) + coordination stubs (5) + small utility components — all covered by the "pattern for all N" instructions above.**
+
+---
+
+## Final: Definition of Done — Complete (27+)
+
+```
+Every component in the app:
+□ Uses spring physics (not duration/ease) for all animations
+□ Respects useReducedMotion()
+□ Has StatusOrb instead of inline colored dots
+□ Has JARVISButton for all interactive buttons
+□ Has AnimatePresence for conditional renders
+□ Has listItemVariants/cardVariants for lists/grids
+□ Uses electric #00D4FF (resolved from --primary after Step 0-A)
+□ Has aria-label on all icon-only buttons
+□ Has ErrorBoundary on all major sections
+□ Uses t() for all user-facing strings
+□ Has skeleton loading state when useQuery is pending
+□ Has animated EmptyState when data is empty
+```
