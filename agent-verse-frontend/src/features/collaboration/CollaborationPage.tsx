@@ -10,7 +10,7 @@ import { useCollabSocket } from '@/lib/ws/useCollabSocket';
 import { apiFetch } from '@/lib/api/client';
 import { CRDTEditor } from '@/components/collab/CRDTEditor';
 
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface CollabSession {
@@ -535,16 +535,19 @@ function LiveSessionPanel({
               {messages.length === 0 && (
                 <p className="text-sm text-muted-foreground text-center py-6">No messages yet — start collaborating</p>
               )}
+              <JARVISStagger>
               {messages.map((msg, i) => {
                 const isYou    = msg.sender === 'you';
                 const isSystem = msg.type === 'system';
                 if (isSystem) {
                   return (
-                    <div key={i} className="flex justify-center">
+                <JARVISStaggerItem key={i}>
+                    <div className="flex justify-center">
                       <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs bg-purple-50 text-purple-700 border border-purple-200">
                         <Sparkles className="h-3 w-3" /> {msg.content}
                       </div>
                     </div>
+                    </JARVISStaggerItem>
                   );
                 }
                 return (
@@ -563,6 +566,7 @@ function LiveSessionPanel({
                   </div>
                 );
               })}
+              </JARVISStagger>
               <div ref={messagesEndRef} />
             </div>
             <div className="border-t border-border p-3 flex gap-2">
@@ -817,6 +821,7 @@ export function CollaborationPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6">
 
       {/* Page header */}

@@ -6,7 +6,7 @@ import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { apiFetch, billingApi, type RazorpayPlan } from '@/lib/api/client';
 
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface PlanLimits {
@@ -408,6 +408,7 @@ export default function BillingPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="p-6 max-w-4xl mx-auto space-y-8">
       <div>
         <h1 className="text-2xl font-bold text-foreground">Billing &amp; Usage</h1>
@@ -470,9 +471,10 @@ export default function BillingPage() {
           <EmptySection message="Plan information not available" />
         ) : plans.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <JARVISStagger>
             {plans.map((plan) => (
+              <JARVISStaggerItem key={plan.plan_id}>
               <div
-                key={plan.plan_id}
                 className={`rounded-lg border p-4 transition-[color,background-color,border-color,opacity,box-shadow,transform] ${
                   plan.plan_id === currentPlan
                     ? 'border-primary ring-1 ring-primary'
@@ -512,7 +514,9 @@ export default function BillingPage() {
                   </button>
                 )}
               </div>
+              </JARVISStaggerItem>
             ))}
+            </JARVISStagger>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

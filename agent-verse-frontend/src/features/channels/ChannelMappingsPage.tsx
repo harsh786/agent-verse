@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api/client';
 import { MessageSquare, Plus, CheckCircle, AlertCircle } from 'lucide-react';
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 
 interface ChannelMapping {
   id: string;
@@ -44,6 +44,7 @@ export function ChannelMappingsPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="flex flex-col gap-6 p-6 max-w-screen-lg mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -93,8 +94,10 @@ export function ChannelMappingsPage() {
       {/* Channel list */}
       {mappings.length > 0 && (
         <div className="rounded-xl border border-border bg-card overflow-hidden divide-y divide-border">
+          <JARVISStagger>
           {mappings.map((m) => (
-            <div key={m.id} className="flex items-center gap-4 px-4 py-3">
+            <JARVISStaggerItem key={m.id}>
+            <div className="flex items-center gap-4 px-4 py-3">
               <span className="text-2xl" aria-label={m.channel_type}>
                 {CHANNEL_ICONS[m.channel_type] ?? '🔗'}
               </span>
@@ -107,7 +110,9 @@ export function ChannelMappingsPage() {
                 Connected
               </span>
             </div>
+            </JARVISStaggerItem>
           ))}
+          </JARVISStagger>
         </div>
       )}
 

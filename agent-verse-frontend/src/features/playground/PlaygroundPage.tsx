@@ -578,6 +578,7 @@ export function PlaygroundPage(): JSX.Element {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden">
       {/* ── Left Sidebar ──────────────────────────────────────────────────── */}
       <div className="w-64 flex-shrink-0 border-r border-border flex flex-col bg-card/50 overflow-y-auto">

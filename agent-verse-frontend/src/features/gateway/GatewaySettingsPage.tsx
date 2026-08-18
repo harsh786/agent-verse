@@ -346,6 +346,7 @@ export function GatewaySettingsPage({ orgId }: GatewaySettingsPageProps) {
       className="max-w-3xl mx-auto px-6 py-8"
     >
       <div className="mb-8">
+        {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
         <h1 className="text-[24px] font-bold text-[#F1F5F9] [text-wrap:balance]">Command Gateway</h1>
         <p className="text-[14px] text-[#64748B] mt-1 tabular-nums">
           {connectedCount} channel{connectedCount !== 1 ? 's' : ''} active

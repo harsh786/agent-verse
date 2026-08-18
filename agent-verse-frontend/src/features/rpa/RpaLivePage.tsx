@@ -22,7 +22,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { toast } from "@/stores/toast";
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -417,6 +417,7 @@ export function RpaLivePage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="flex flex-col h-[calc(100vh-8rem)] gap-4 max-w-7xl">
       {/* Page title (visually hidden but accessible) */}
       <h1 className="sr-only">RPA Live</h1>
@@ -453,9 +454,10 @@ export function RpaLivePage() {
               </button>
             </div>
           )}
+          <JARVISStagger>
           {sessions.map((s) => (
+            <JARVISStaggerItem key={s.session_id}>
             <div
-              key={s.session_id}
               onClick={() => setActiveSession(s.session_id)}
               className={`flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-muted/40 transition-colors border-l-2 group ${
                 activeSession === s.session_id ? "border-l-primary bg-primary/5" : "border-l-transparent"
@@ -480,7 +482,9 @@ export function RpaLivePage() {
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
             </div>
+            </JARVISStaggerItem>
           ))}
+          </JARVISStagger>
         </div>
       </div>
 

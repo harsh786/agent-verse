@@ -779,6 +779,7 @@ export function CompliancePage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="p-6 max-w-5xl mx-auto space-y-6">
       {/* Page header */}
       <div className="flex items-center gap-3">

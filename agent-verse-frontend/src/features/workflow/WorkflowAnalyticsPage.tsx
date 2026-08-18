@@ -95,6 +95,7 @@ export default function WorkflowAnalyticsPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="min-h-screen bg-slate-950 text-white">
       <header className="sticky top-0 z-30 flex items-center gap-3 px-6 py-4 border-b
                           border-white/10 bg-slate-950/90 backdrop-blur-xl">

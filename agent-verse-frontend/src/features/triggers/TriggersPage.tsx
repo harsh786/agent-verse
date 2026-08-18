@@ -86,6 +86,7 @@ export function TriggersPage() {
 function StatCard({ label, value, icon }: { label: string; value: number | string; icon: string }) {
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="rounded-xl border border-border bg-card p-4">
       <div className="flex items-center justify-between">
         <span className="text-xs text-muted-foreground font-medium uppercase tracking-wide">{label}</span>

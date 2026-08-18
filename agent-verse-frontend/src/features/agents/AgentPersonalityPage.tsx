@@ -9,7 +9,7 @@ import { agentsApi } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
 import { ArrowLeft, Sliders, Save } from "lucide-react";
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 
 interface PersonalitySlider {
   id: string;
@@ -130,6 +130,7 @@ export function AgentPersonalityPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6 max-w-2xl">
       <div className="flex items-center gap-3">
         <button onClick={() => navigate(`/agents/${agentId}`)} className="p-1.5 rounded-lg hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors" aria-label="Back">
@@ -148,8 +149,10 @@ export function AgentPersonalityPage() {
         <div className="space-y-4">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-20 rounded-xl" />)}</div>
       ) : (
         <div className="space-y-4">
+          <JARVISStagger>
           {SLIDERS.map((slider) => (
-            <div key={slider.id} className="bg-card border border-border rounded-xl p-5">
+            <JARVISStaggerItem key={slider.id}>
+            <div className="bg-card border border-border rounded-xl p-5">
               <div className="flex items-center justify-between mb-1">
                 <label className="text-sm font-medium" htmlFor={`slider-${slider.id}`}>{slider.label}</label>
                 <span className="text-xs text-muted-foreground">{values[slider.id]}%</span>
@@ -173,7 +176,9 @@ export function AgentPersonalityPage() {
                 <span className="text-xs text-muted-foreground shrink-0">{slider.rightLabel}</span>
               </div>
             </div>
+            </JARVISStaggerItem>
           ))}
+          </JARVISStagger>
         </div>
       )}
 

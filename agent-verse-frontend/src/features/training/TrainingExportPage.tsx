@@ -29,7 +29,7 @@ import {
 } from 'lucide-react';
 import { trainingApi, apiFetch, type TrainingPreview } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -261,8 +261,10 @@ function ExportHistoryPanel({ refresh }: { refresh: number }) {
         </button>
       </div>
       <div className="divide-y divide-border">
+        <JARVISStagger>
         {history.map((r) => (
-          <div key={r.id} className="px-4 py-2.5 flex items-center gap-4 text-sm">
+          <JARVISStaggerItem key={r.id}>
+          <div className="px-4 py-2.5 flex items-center gap-4 text-sm">
             <span
               className={`px-2 py-0.5 rounded text-xs font-medium uppercase ${
                 FORMAT_BADGE_COLORS[r.format] ?? 'bg-muted text-muted-foreground'
@@ -281,7 +283,9 @@ function ExportHistoryPanel({ refresh }: { refresh: number }) {
               {formatDate(r.timestamp)}
             </span>
           </div>
+          </JARVISStaggerItem>
         ))}
+        </JARVISStagger>
       </div>
     </div>
   );
@@ -389,6 +393,7 @@ export function TrainingExportPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">

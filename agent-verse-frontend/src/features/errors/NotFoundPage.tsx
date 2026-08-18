@@ -5,6 +5,7 @@ import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 export default function NotFoundPage() {
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="flex flex-col items-center justify-center min-h-[70vh] p-8 text-center">
       <div className="mb-8">
         <p className="text-8xl font-bold text-primary/20 select-none">404</p>

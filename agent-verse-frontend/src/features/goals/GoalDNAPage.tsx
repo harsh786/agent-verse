@@ -766,6 +766,7 @@ function StatPill({
 }) {
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border ${danger ? 'bg-red-50 border-red-200 text-red-700' : 'bg-muted border-border'}`}>
       {icon}
       <span className="font-bold">{value}</span>

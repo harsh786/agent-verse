@@ -45,6 +45,7 @@ export default function SecurityCenterPage() {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <MissionControlLayout>
       <div className="space-y-0" data-testid="security-center-page">
         {/* Header */}

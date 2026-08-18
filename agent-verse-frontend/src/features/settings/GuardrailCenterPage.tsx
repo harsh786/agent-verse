@@ -24,7 +24,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -351,13 +351,17 @@ function RulesTab(): JSX.Element {
         <div className="bg-muted/30 border border-border rounded-xl p-4">
           <p className="text-sm font-medium mb-3">Quick-start with a compliance template:</p>
           <div className="flex flex-wrap gap-2">
+            <JARVISStagger>
             {DOMAIN_TEMPLATES.map((t) => (
-              <button key={t.name} onClick={() => applyTemplateMutation.mutate(t.rules)}
+              <JARVISStaggerItem key={t.name}>
+              <button onClick={() => applyTemplateMutation.mutate(t.rules)}
                 disabled={applyTemplateMutation.isPending}
                 className={`px-3 py-1.5 rounded-md border text-xs font-medium transition-colors ${t.color}`}>
                 {t.name} ({t.rules.length} rules)
               </button>
+              </JARVISStaggerItem>
             ))}
+            </JARVISStagger>
           </div>
         </div>
       )}
@@ -587,6 +591,7 @@ export function GuardrailCenterPage(): JSX.Element {
 
   return (
     <JARVISPageShell>
+      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-5">
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
