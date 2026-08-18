@@ -7,6 +7,7 @@ import { useSources, useIngestionQuota } from './hooks';
 import type { SourceFamily } from './types';
 import { FAMILY_CONFIG } from './types';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 export function SourcesPage() {
   const [showCreate, setShowCreate] = useState(false);
@@ -19,7 +20,8 @@ export function SourcesPage() {
   const syncing  = 0; // real-time from SSE
 
   return (
-    <div className="flex flex-col gap-6 p-6 max-w-screen-xl mx-auto">
+    <JARVISPageShell>
+    <JARVISStagger className="flex flex-col gap-6 p-6 max-w-screen-xl mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -86,7 +88,8 @@ export function SourcesPage() {
 
       {/* Create wizard */}
       {showCreate && <SourceCreateWizard onClose={() => setShowCreate(false)} />}
-    </div>
+    </JARVISStagger>
+    </JARVISPageShell>
   );
 }
 

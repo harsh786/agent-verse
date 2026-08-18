@@ -14,6 +14,7 @@ import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -90,7 +91,7 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }):
     <button
       onClick={handleCopy}
       aria-label={label}
-      className="inline-flex items-center gap-1 px-2 py-1 text-xs border border-border rounded hover:bg-muted transition-colors"
+      className="inline-flex items-center gap-1 px-2 py-1 text-xs border border-border rounded hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
     >
       {copied ? <CheckCheck className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
       {copied ? "Copied" : "Copy"}
@@ -561,7 +562,7 @@ export function AgentIdentityPage(): JSX.Element {
 
   return (
     <JARVISPageShell>
-    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
+    <JARVISStagger className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
       {/* Header */}
       <div>
         <button
@@ -651,7 +652,7 @@ export function AgentIdentityPage(): JSX.Element {
         onConfirm={() => revokeTarget && revokeMutation.mutate(revokeTarget)}
         onCancel={() => setRevokeTarget(null)}
       />
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

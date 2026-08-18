@@ -9,6 +9,7 @@ import { ThemedRadarChart } from "@/components/charts";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ArrowLeft, TrendingUp, TrendingDown } from "lucide-react";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 const DIMENSION_LABELS: Record<string, string> = {
   speed: "Speed",
@@ -68,7 +69,7 @@ export function AgentRadarPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6 max-w-3xl">
+    <JARVISStagger className="space-y-6 max-w-3xl">
       <div className="flex items-center gap-3">
         <button
           onClick={() => navigate(`/agents/${agentId}`)}
@@ -85,7 +86,7 @@ export function AgentRadarPage() {
         </div>
         {health && (
           <div className="ml-auto text-right">
-            <p className="text-2xl font-bold text-foreground">{Math.round(avgScore * 100)}%</p>
+            <p className="text-2xl font-bold text-[#00D4FF]">{Math.round(avgScore * 100)}%</p>
             <p className="text-xs text-muted-foreground">Overall health</p>
           </div>
         )}
@@ -152,7 +153,7 @@ export function AgentRadarPage() {
           })}
         </div>
       )}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

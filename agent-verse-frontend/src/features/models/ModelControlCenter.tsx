@@ -5,6 +5,7 @@ import {
   CheckCircle, XCircle, Loader2,
 } from 'lucide-react';
 import { toast } from '@/stores/toast';
+import { StatusOrb } from '@/components/ui/StatusOrb';
 
 export function ModelControlCenter() {
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
@@ -175,8 +176,8 @@ export function ModelControlCenter() {
                   </div>
                   <div className="flex items-center gap-1">
                     {m.health?.is_healthy
-                      ? <div className="w-2 h-2 rounded-full bg-green-500" title="Healthy" />
-                      : <div className="w-2 h-2 rounded-full bg-red-500" title="Unhealthy" />}
+                      ? <StatusOrb status="active" size={8} />
+                      : <StatusOrb status="failed" size={8} />}
                   </div>
                 </div>
 

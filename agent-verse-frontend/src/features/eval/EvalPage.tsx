@@ -18,6 +18,7 @@ import { toast } from '@/stores/toast';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface RedTeamResult {
@@ -1081,9 +1082,9 @@ export function EvalPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6">
+    <JARVISStagger className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-foreground">Eval & Testing</h1>
+        <h1 className="text-2xl font-bold text-[#00D4FF]">Eval & Testing</h1>
         <p className="text-sm text-muted-foreground mt-1">
           7-dimension scoring, goal simulation, red team testing, and eval suites
         </p>
@@ -1113,7 +1114,7 @@ export function EvalPage() {
       {tab === 'simulation' && <SimulationTab apiKey={apiKey} />}
       {tab === 'redteam' && <RedTeamTab apiKey={apiKey} />}
       {tab === 'suites' && <SuitesTab apiKey={apiKey} />}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

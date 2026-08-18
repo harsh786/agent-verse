@@ -30,6 +30,7 @@ import {
 import { trainingApi, apiFetch, type TrainingPreview } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -389,7 +390,7 @@ export function TrainingExportPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6">
+    <JARVISStagger className="space-y-6">
       {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
@@ -675,7 +676,7 @@ export function TrainingExportPage() {
           {showHistory && <ExportHistoryPanel refresh={historyRefresh} />}
         </div>
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

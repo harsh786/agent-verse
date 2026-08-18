@@ -17,7 +17,7 @@ import {
   Search,
   Shield,
   Trash2,
-  Users,
+  Users, Inbox,
 } from "lucide-react";
 import { rbacApi } from "@/lib/api/client";
 import type { IpAllowlistEntry, RoleAssignment } from "@/lib/api/client";
@@ -732,9 +732,11 @@ export function RbacPage(): JSX.Element {
             </div>
           ) : allIps.length === 0 ? (
             <EmptyState
-              title="No allowlist entries"
-              description="All IPs are allowed until the first entry is added."
-            />
+          icon={<Inbox size={40} />}
+          title="No allowlist entries"
+          description="All IPs are allowed until the first entry is added."
+          variant="float"
+        />
           ) : (
             <div
               data-testid="ip-list"

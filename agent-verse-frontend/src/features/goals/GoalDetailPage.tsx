@@ -22,7 +22,7 @@ import {
   ChevronDown, ChevronRight, Pause, Play, Dna, GitCompare,
   Ghost, FlaskConical, RotateCcw, Download, FileJson, FileText,
   Copy, Printer, Terminal, ListTree, BookOpen, Sparkles, Zap,
-  Clock, AlertTriangle, Bot, Plug, Layers,
+  Clock, AlertTriangle, Bot, Plug, Layers, Inbox,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { goalsApi, governanceApi, agentsApi } from "@/lib/api/client";
@@ -1078,7 +1078,12 @@ export function GoalDetailPage() {
           {eventsLoading
             ? Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)
             : eventLog.length === 0
-            ? <EmptyState title="No persisted events" description="Events appear after goal execution completes." />
+            ? <EmptyState
+          icon={<Inbox size={40} />}
+          title="No persisted events"
+          description="Events appear after goal execution completes."
+          variant="float"
+        />
             : eventLog.map((ev, i) => (
               <div key={i} className="flex items-start gap-3 p-3 rounded-lg border bg-card text-sm">
                 <span className="font-mono text-xs text-muted-foreground whitespace-nowrap">

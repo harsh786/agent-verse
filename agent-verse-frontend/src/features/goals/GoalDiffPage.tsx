@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { GitCompare, Plus, Minus, AlertCircle } from "lucide-react";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 export interface DiffLine {
   type: "added" | "removed" | "unchanged";
@@ -120,7 +121,7 @@ export function GoalDiffPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6 max-w-5xl">
+    <JARVISStagger className="space-y-6 max-w-5xl">
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
           <GitCompare className="h-6 w-6 text-primary" aria-hidden="true" />
@@ -242,7 +243,7 @@ export function GoalDiffPage() {
           </div>
         </>
       )}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

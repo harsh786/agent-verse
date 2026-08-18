@@ -25,6 +25,7 @@ import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Pagination } from "@/components/ui/Pagination";
 import { toast } from "@/stores/toast";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -478,7 +479,7 @@ export function ArtifactsBrowserPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6 max-w-6xl">
+    <JARVISStagger className="space-y-6 max-w-6xl">
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
@@ -631,7 +632,7 @@ export function ArtifactsBrowserPage() {
           onPageSizeChange={() => {}}
         />
       )}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

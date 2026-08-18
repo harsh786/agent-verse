@@ -12,17 +12,15 @@
  */
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  Plus, Trash2, Terminal, RefreshCw,
-  Loader2, AlertCircle, Zap, ChevronDown, ChevronUp, X, Clock,
-  Mouse, Keyboard, Crosshair, Copy,
-} from "lucide-react";
+
 import { rpaApi, type RpaSession, type RpaTool, type RpaExecuteResult } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { toast } from "@/stores/toast";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { AlertCircle, ChevronDown, ChevronUp, Clock, Copy, Crosshair, Keyboard, Loader2, Mouse, Plus, RefreshCw, Terminal, Trash2, Users, X, Zap } from 'lucide-react';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -417,7 +415,7 @@ export function RpaLivePage() {
 
   return (
     <JARVISPageShell>
-    <div className="flex flex-col h-[calc(100vh-8rem)] gap-4 max-w-7xl">
+    <JARVISStagger className="flex flex-col h-[calc(100vh-8rem)] gap-4 max-w-7xl">
       {/* Page title (visually hidden but accessible) */}
       <h1 className="sr-only">RPA Live</h1>
       {/* Layout */}
@@ -489,9 +487,11 @@ export function RpaLivePage() {
         {!activeSession ? (
           <div className="flex-1 bg-card border border-border rounded-xl flex items-center justify-center">
             <EmptyState
-              title="No session selected"
-              description="Select a session from the left panel or create a new one."
-            />
+          icon={<Users size={40} />}
+          title="No session selected"
+          description="Select a session from the left panel or create a new one."
+          variant="float"
+        />
           </div>
         ) : (
           <>
@@ -744,7 +744,7 @@ export function RpaLivePage() {
         </div>
       )}
       </div>{/* end layout div */}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

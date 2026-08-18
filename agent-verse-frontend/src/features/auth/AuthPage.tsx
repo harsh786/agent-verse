@@ -4,6 +4,7 @@ import { Eye, EyeOff, Zap } from "lucide-react";
 import { useAuthStore } from "@/stores/auth";
 import { mfaApi } from "@/lib/api/client";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const REDIRECT_URI = typeof window !== "undefined"
@@ -101,7 +102,7 @@ export function AuthPage() {
 
   return (
     <JARVISPageShell>
-    <div className="min-h-screen flex items-center justify-center bg-background px-4">
+    <JARVISStagger className="min-h-screen flex items-center justify-center bg-background px-4">
       <div className="w-full max-w-md">
         <div className="flex flex-col items-center gap-3 mb-8">
           <div className="flex items-center gap-2">
@@ -219,7 +220,7 @@ export function AuthPage() {
           </p>
         </div>
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

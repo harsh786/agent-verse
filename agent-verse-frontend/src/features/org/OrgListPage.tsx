@@ -131,7 +131,7 @@ export function OrgListPage() {
       ) : (
         <JARVISStagger className="space-y-3" staggerMs={60}>
           {orgList.map((org: Organization) => (
-            <JARVISStaggerItem key={org.id}>
+            <JARVISStaggerItem interactive key={org.id}>
               <OrgCard org={org} onClick={() => navigate(`/org/${org.id}`)} />
             </JARVISStaggerItem>
           ))}

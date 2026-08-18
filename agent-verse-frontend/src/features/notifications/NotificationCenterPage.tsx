@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 type ChannelType = "slack" | "webhook" | "teams";
@@ -45,7 +46,7 @@ function StatCard({ label, value, subtext }: { label: string; value: string | nu
   return (
     <div className="bg-card border border-border rounded-xl px-5 py-4">
       <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{label}</p>
-      <p className="mt-1 text-2xl font-bold text-foreground">{value}</p>
+      <p className="mt-1 text-2xl font-bold text-[#00D4FF]">{value}</p>
       {subtext && <p className="text-xs text-muted-foreground mt-0.5">{subtext}</p>}
     </div>
   );
@@ -247,7 +248,7 @@ export function NotificationCenterPage() {
 
   return (
     <JARVISPageShell>
-    <div className="p-6 max-w-4xl mx-auto space-y-8">
+    <JARVISStagger className="p-6 max-w-4xl mx-auto space-y-8">
 
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
@@ -306,7 +307,7 @@ export function NotificationCenterPage() {
               {createMutation.isPending ? "Adding…" : "Add channel"}
             </button>
             <button onClick={() => { setShowForm(false); setFormFields({}); }}
-              className="px-4 py-2 border border-border text-muted-foreground rounded-lg text-sm hover:bg-muted transition-colors">
+              className="px-4 py-2 border border-border text-muted-foreground rounded-lg text-sm hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]">
               Cancel
             </button>
           </div>
@@ -377,7 +378,7 @@ export function NotificationCenterPage() {
         </div>
       </div>
 
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

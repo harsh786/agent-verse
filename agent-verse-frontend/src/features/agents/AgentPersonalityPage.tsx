@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
 import { ArrowLeft, Sliders, Save } from "lucide-react";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 interface PersonalitySlider {
   id: string;
@@ -130,7 +131,7 @@ export function AgentPersonalityPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6 max-w-2xl">
+    <JARVISStagger className="space-y-6 max-w-2xl">
       <div className="flex items-center gap-3">
         <button onClick={() => navigate(`/agents/${agentId}`)} className="p-1.5 rounded-lg hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors" aria-label="Back">
           <ArrowLeft className="h-4 w-4" />
@@ -204,7 +205,7 @@ export function AgentPersonalityPage() {
         <Save className="h-4 w-4" aria-hidden="true" />
         {save.isPending ? "Saving…" : "Save Personality"}
       </button>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

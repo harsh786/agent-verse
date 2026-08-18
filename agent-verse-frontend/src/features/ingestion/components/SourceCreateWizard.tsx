@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { X, ChevronRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { SPRING_PAGE } from '@/components/ui/JARVISPageShell';
 import type { SourceFamily } from '../types';
 import { FAMILY_CONFIG, ALL_FAMILIES } from '../types';
 import { useCreateSource } from '../hooks';
@@ -113,7 +114,7 @@ export function SourceCreateWizard({ onClose, onCreated }: Props) {
               initial={{ x: 60, opacity: 0 }}
               animate={{ x: 0, opacity: 1 }}
               exit={{ x: -60, opacity: 0 }}
-              transition={{ duration: 0.2 }}
+              transition={SPRING_PAGE}
             >
               {/* Step 1: Pick family */}
               {step === 'family' && (

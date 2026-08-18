@@ -2,23 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import type { JSX } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  DollarSign,
-  AlertTriangle,
-  CheckCircle2,
-  TrendingUp,
-  RefreshCw,
-  ChevronDown,
-  ChevronUp,
-  Save,
-  RotateCcw,
-  Zap,
-  AlertCircle,
-  ArrowUpDown,
-  ArrowUp,
-  ArrowDown,
-  Info,
-} from "lucide-react";
+
 import {
   costsApi,
   governanceApi,
@@ -31,6 +15,8 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { AlertCircle, AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, Bot, CheckCircle2, ChevronDown, ChevronUp, DollarSign, Inbox, Info, RefreshCw, RotateCcw, Save, TrendingUp, Zap } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -355,7 +341,7 @@ export function BudgetManagerPage(): JSX.Element {
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <JARVISPageShell>
-    <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-6">
+    <JARVISStagger className="p-4 md:p-6 max-w-6xl mx-auto space-y-6">
       {/* ── Header ── */}
       <div className="flex items-start justify-between gap-4">
         <div>
@@ -493,9 +479,11 @@ export function BudgetManagerPage(): JSX.Element {
           <Skeleton className="h-48 w-full" />
         ) : chartData.length === 0 ? (
           <EmptyState
-            title="No cost data available"
-            description="Cost data will appear as goals are executed."
-          />
+          icon={<Inbox size={40} />}
+          title="No cost data available"
+          description="Cost data will appear as goals are executed."
+          variant="float"
+        />
         ) : (
           <ThemedLineChart
             data={chartData}
@@ -644,9 +632,11 @@ export function BudgetManagerPage(): JSX.Element {
               </div>
             ) : agentCosts.length === 0 ? (
               <EmptyState
-                title="No agents found"
-                description="Per-agent overrides will appear once agents have run goals."
-              />
+          icon={<Bot size={40} />}
+          title="No agents found"
+          description="Per-agent overrides will appear once agents have run goals."
+          variant="float"
+        />
             ) : (
               <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
                 {agentCosts.map((agent) => {
@@ -802,9 +792,11 @@ export function BudgetManagerPage(): JSX.Element {
               <Skeleton className="h-48 w-full" />
             ) : sortedAgents.length === 0 ? (
               <EmptyState
-                title="No agent cost data"
-                description="Data will appear after goals are executed."
-              />
+          icon={<Bot size={40} />}
+          title="No agent cost data"
+          description="Data will appear after goals are executed."
+          variant="float"
+        />
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -989,7 +981,7 @@ export function BudgetManagerPage(): JSX.Element {
           </div>
         )}
       </section>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

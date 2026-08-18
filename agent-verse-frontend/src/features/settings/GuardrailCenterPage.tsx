@@ -10,11 +10,7 @@
 import { useState } from "react";
 import type { JSX, CSSProperties } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  Shield, Plus, Trash2, Play, AlertCircle, AlertTriangle,
-  BarChart2, CheckCircle, XCircle, Edit2, RefreshCw,
-  ToggleLeft, ToggleRight, Activity,
-} from "lucide-react";
+
 import { guardrailsApi } from "@/lib/api/client";
 import type {
   GuardrailConfig, CreateGuardrailRequest, GuardrailTestResult,
@@ -25,6 +21,8 @@ import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { Activity, AlertCircle, AlertTriangle, BarChart2, CheckCircle, CheckCircle2, Edit2, Play, Plus, RefreshCw, Shield, ToggleLeft, ToggleRight, Trash2, XCircle } from 'lucide-react';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -364,9 +362,19 @@ function RulesTab(): JSX.Element {
 
       {/* Rules list */}
       {filtered.length === 0 && rules.length > 0 ? (
-        <EmptyState title="No rules match filter" description="Change the severity filter." />
+        <EmptyState
+          icon={<Shield size={40} />}
+          title="No rules match filter"
+          description="Change the severity filter."
+          variant="float"
+        />
       ) : filtered.length === 0 ? (
-        <EmptyState title="No guardrails configured" description="Create a rule to start protecting your agents." />
+        <EmptyState
+          icon={<Shield size={40} />}
+          title="No guardrails configured"
+          description="Create a rule to start protecting your agents."
+          variant="float"
+        />
       ) : (
         <div className="border border-border rounded-xl overflow-hidden">
           {filtered.map((r, i) => (
@@ -449,7 +457,12 @@ function ViolationsTab(): JSX.Element {
       {isLoading ? (
         <div className="space-y-2">{Array.from({length: 5}).map((_, i) => <Skeleton key={i} className="h-14" />)}</div>
       ) : violations.length === 0 ? (
-        <EmptyState title="No violations" description="Guardrails are running cleanly." />
+        <EmptyState
+          icon={<CheckCircle2 size={40} />}
+          title="No violations"
+          description="Guardrails are running cleanly."
+          variant="float"
+        />
       ) : (
         <div data-testid="violations-table" className="border border-border rounded-xl overflow-hidden">
           <table className="w-full text-sm">
@@ -587,7 +600,7 @@ export function GuardrailCenterPage(): JSX.Element {
 
   return (
     <JARVISPageShell>
-    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-5">
+    <JARVISStagger className="p-4 md:p-6 max-w-5xl mx-auto space-y-5">
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
           <Shield className="h-6 w-6 text-blue-500" /> Guardrail Center
@@ -615,7 +628,7 @@ export function GuardrailCenterPage(): JSX.Element {
           {activeTab === "test"       && <TestPlaygroundTab />}
         </div>
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

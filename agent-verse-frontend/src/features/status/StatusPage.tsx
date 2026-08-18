@@ -4,7 +4,7 @@
  */
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle, AlertTriangle, HelpCircle, RefreshCw } from 'lucide-react';
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 interface Component { status: 'operational' | 'degraded' | 'unknown'; latency_ms?: number; }
 interface StatusData { status: string; components: Record<string, Component>; timestamp: number; }
@@ -32,7 +32,7 @@ export function StatusPage() {
 
   return (
     <JARVISPageShell>
-    <div className="min-h-screen bg-background" data-testid="status-page">
+    <JARVISStagger className="min-h-screen bg-background" data-testid="status-page">
       {/* Header */}
       <div className="border-b border-border bg-card">
         <div className="max-w-2xl mx-auto px-6 py-6 flex items-center justify-between">
@@ -108,7 +108,7 @@ export function StatusPage() {
           <a href="https://twitter.com/agentverse" className="underline hover:text-foreground" target="_blank" rel="noreferrer">@agentverse</a>.
         </p>
       </div>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

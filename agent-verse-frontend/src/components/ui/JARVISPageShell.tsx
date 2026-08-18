@@ -78,9 +78,12 @@ export function JARVISStagger({
 export function JARVISStaggerItem({
   children,
   className = '',
+  interactive = false,
 }: {
-  children:  ReactNode;
-  className?: string;
+  children:     ReactNode;
+  className?:   string;
+  /** When true, adds whileHover (y:-3) + whileTap (scale:0.98) spring physics */
+  interactive?: boolean;
 }) {
   const reduce = useReducedMotion();
   return (
@@ -89,6 +92,8 @@ export function JARVISStaggerItem({
         hidden:  { opacity: 0, y: 12 },
         visible: { opacity: 1, y: 0, transition: SPRING_FAST },
       }}
+      whileHover={interactive && !reduce ? { y: -3, transition: SPRING_SLOW } : undefined}
+      whileTap={interactive && !reduce ? { scale: 0.98, transition: SPRING_FAST } : undefined}
       className={className}
     >
       {children}

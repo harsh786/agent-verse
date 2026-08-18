@@ -11,6 +11,7 @@ import { toast } from "@/stores/toast";
 import { Plus, BookOpen, Search, X } from "lucide-react";
 import { useDebounce } from "@/hooks/useDebounce";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // All 37 content-YAML domains + legacy soft-coded domains for backwards compat
 const DOMAINS = [
@@ -203,7 +204,7 @@ export function TemplateLibraryPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6 max-w-5xl">
+    <JARVISStagger className="space-y-6 max-w-5xl">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -323,7 +324,7 @@ export function TemplateLibraryPage() {
         onConfirm={() => deleteId && deleteMutation.mutate(deleteId)}
         onCancel={() => setDeleteId(null)}
       />
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

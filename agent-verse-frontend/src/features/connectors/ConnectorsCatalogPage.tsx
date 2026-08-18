@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth';
 import { connectorsApi, type CatalogEntry } from '@/lib/api/client';
 import { OAuthPopupButton } from './OAuthPopupButton';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 const CATEGORY_LABELS: Record<string, string> = {
   all: 'All',
@@ -234,7 +235,7 @@ export function ConnectorsCatalogPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6">
+    <JARVISStagger className="space-y-6">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold">Connector Catalog</h1>
@@ -263,7 +264,7 @@ export function ConnectorsCatalogPage() {
           <button
             type="button"
             onClick={() => navigate('/connectors')}
-            className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium text-foreground shadow-sm hover:bg-muted transition-colors"
+            className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium text-foreground shadow-sm hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
           >
             My Connectors
           </button>
@@ -392,7 +393,7 @@ export function ConnectorsCatalogPage() {
           ))}
         </div>
       )}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

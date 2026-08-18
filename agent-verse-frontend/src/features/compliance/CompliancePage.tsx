@@ -14,7 +14,7 @@ import {
   Loader2,
   Plus,
   RefreshCw,
-  X,
+  X, Inbox,
 } from "lucide-react";
 import { complianceApi } from "@/lib/api/client";
 import type { ComplianceFrameworkStatus, Contract } from "@/lib/api/client";
@@ -561,8 +561,10 @@ function ContractsTab() {
         </div>
       ) : contractList.length === 0 ? (
         <EmptyState
+          icon={<Inbox size={40} />}
           title="No contracts available"
           description="Data processing and service agreements will appear here once issued."
+          variant="float"
         />
       ) : (
         <ul className="space-y-2">

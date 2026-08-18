@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth';
 import { agentsApi } from '@/lib/api/client';
 import { MissionControlLayout } from '@/components/ui/MissionControlLayout';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 export function AgentCreatePage() {
   const apiKey = useAuthStore((s) => s.apiKey);
@@ -55,7 +56,7 @@ export function AgentCreatePage() {
   return (
     <JARVISPageShell>
     <MissionControlLayout>
-      <div className="space-y-6 max-w-2xl">
+      <JARVISStagger className="space-y-6 max-w-2xl">
         <div>
           <button
             onClick={() => navigate('/agents')}
@@ -68,7 +69,7 @@ export function AgentCreatePage() {
               <Bot className="h-5 w-5 text-neural-violet" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-white tracking-tight">Create Agent</h1>
+              <h1 className="text-2xl font-bold text-[#00D4FF] tracking-tight">Create Agent</h1>
               <p className="text-white/40 text-sm mt-0.5">
                 Build an agent using AI or manual configuration
               </p>
@@ -285,7 +286,7 @@ export function AgentCreatePage() {
             </form>
           </div>
         )}
-      </div>
+      </JARVISStagger>
     </MissionControlLayout>
     </JARVISPageShell>
   );

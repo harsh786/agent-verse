@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Utilities
@@ -924,7 +925,7 @@ export function LandingPage() {
 
   return (
     <JARVISPageShell>
-    <div className="min-h-screen bg-[#06060e] text-white overflow-x-hidden">
+    <JARVISStagger className="min-h-screen bg-[#06060e] text-white overflow-x-hidden">
 
       {/* Background atmosphere */}
       <div className="fixed inset-0 pointer-events-none z-0">
@@ -991,7 +992,7 @@ export function LandingPage() {
               { n: "0", l: "hardcoded workflows" },
             ].map(({ n, l }) => (
               <div key={l} className="flex flex-col items-center">
-                <span className="font-display text-2xl font-bold text-white">{n}</span>
+                <span className="font-display text-2xl font-bold text-[#00D4FF]">{n}</span>
                 <span className="text-[11px] text-slate-500 mt-0.5">{l}</span>
               </div>
             ))}
@@ -1029,7 +1030,7 @@ export function LandingPage() {
       </div>
 
       <Footer />
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

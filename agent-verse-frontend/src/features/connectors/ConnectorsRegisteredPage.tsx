@@ -6,6 +6,7 @@ import { Eye, EyeOff, Plus, Trash2, ExternalLink, CheckCircle2, XCircle, Loader2
 import { connectorsApi, type ConnectorResponse, type CatalogAuthField } from '@/lib/api/client';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Auth-type field definitions ─────────────────────────────────────────────
 
@@ -717,7 +718,7 @@ export function ConnectorsRegisteredPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6">
+    <JARVISStagger className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -729,7 +730,7 @@ export function ConnectorsRegisteredPage() {
         <div className="flex items-center gap-2">
           <Link
             to="/connectors/catalog"
-            className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-foreground shadow-sm hover:bg-muted transition-colors"
+            className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium text-foreground shadow-sm hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
           >
             Browse Catalog
           </Link>
@@ -1047,7 +1048,7 @@ export function ConnectorsRegisteredPage() {
         }}
         onCancel={() => setConfirmDeleteId(null)}
       />
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

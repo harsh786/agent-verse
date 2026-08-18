@@ -3,7 +3,7 @@ import type { JSX } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2, XCircle, AlertCircle, Clock, FlaskConical, RotateCcw,
-  TrendingUp, TrendingDown, Lightbulb, BarChart3,
+  TrendingUp, TrendingDown, Lightbulb, BarChart3, Inbox,
 } from "lucide-react";
 import {
   Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
@@ -399,9 +399,11 @@ export function SelfImprovementPage(): JSX.Element {
             </div>
           ) : experiments.length === 0 ? (
             <EmptyState
-              title="No experiments yet"
-              description="A/B experiments are created automatically as the system detects optimization opportunities."
-            />
+          icon={<Inbox size={40} />}
+          title="No experiments yet"
+          description="A/B experiments are created automatically as the system detects optimization opportunities."
+          variant="float"
+        />
           ) : (
             experiments.map((exp) => (
               <div key={exp.id} className="bg-card border border-border rounded-xl">
@@ -489,9 +491,11 @@ export function SelfImprovementPage(): JSX.Element {
             <LoadingSpinner />
           ) : suggestions.length === 0 ? (
             <EmptyState
-              title="No suggestions"
-              description="The optimizer will generate suggestions as it analyzes agent performance."
-            />
+          icon={<Inbox size={40} />}
+          title="No suggestions"
+          description="The optimizer will generate suggestions as it analyzes agent performance."
+          variant="float"
+        />
           ) : (
             suggestions.map((s) => (
               <div key={s.id} className="bg-card border border-border rounded-xl px-5 py-4 flex items-start justify-between gap-4">
@@ -556,9 +560,11 @@ export function SelfImprovementPage(): JSX.Element {
             <LoadingSpinner />
           ) : history.length === 0 ? (
             <EmptyState
-              title="No optimization history"
-              description="Concluded experiments and applied optimizations will appear here."
-            />
+          icon={<Inbox size={40} />}
+          title="No optimization history"
+          description="Concluded experiments and applied optimizations will appear here."
+          variant="float"
+        />
           ) : (
             <div className="relative pl-6 border-l border-border space-y-4">
               {history

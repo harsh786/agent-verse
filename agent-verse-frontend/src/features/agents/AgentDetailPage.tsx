@@ -2,11 +2,7 @@ import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import {
-  ArrowLeft, Loader2, Download, Camera, RotateCcw,
-  Edit3, Save, X, Clock, Target, ChevronDown, ChevronRight,
-  Activity, Sliders, Shield,
-} from "lucide-react";
+
 import {
   goalsApi, agentsApi, knowledgeApi, credentialsApi,
   type CreateAgentRequest,
@@ -16,6 +12,9 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { Activity, ArrowLeft, Brain, Camera, ChevronDown, ChevronRight, Clock, Download, Edit3, Inbox, Loader2, Lock, RotateCcw, Save, Shield, Sliders, Target, X } from 'lucide-react';
+
 interface AgentVersion {
   snapshot_id: string;
   created_at: string;
@@ -109,8 +108,10 @@ function CredentialsTab({ agentId }: { agentId: string }) {
 
       {(creds as any[]).length === 0 ? (
         <EmptyState
+          icon={<Inbox size={40} />}
           title="No credentials issued"
           description="Issue API credentials scoped to this agent."
+          variant="float"
         />
       ) : (
         <div className="space-y-2">
@@ -332,7 +333,7 @@ export function AgentDetailPage() {
 
   return (
     <JARVISPageShell>
-    <div className="space-y-6 max-w-4xl">
+    <JARVISStagger className="space-y-6 max-w-4xl">
       {/* Back */}
       <button
         onClick={() => navigate("/agents")}
@@ -663,7 +664,11 @@ export function AgentDetailPage() {
           ) : permsError ? (
             <EmptyState title="Failed to load permissions" description={String(permsError)} />
           ) : !permissions ? (
-            <EmptyState title="No permissions configured" />
+            <EmptyState
+          icon={<Lock size={40} />}
+          title="No permissions configured"
+          variant="float"
+        />
           ) : (() => {
             // Backend returns { agent_id, permissions: [{tool_name, level, ...}] | {} }
             // Normalise to array
@@ -677,7 +682,12 @@ export function AgentDetailPage() {
               : [];
 
             if (permList.length === 0) {
-              return <EmptyState title="No permissions configured" description="This agent has no tool-level permission rules." />;
+              return <EmptyState
+          icon={<Lock size={40} />}
+          title="No permissions configured"
+          description="This agent has no tool-level permission rules."
+          variant="float"
+        />;
             }
 
             return (
@@ -706,7 +716,12 @@ export function AgentDetailPage() {
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground">Assign knowledge collections this agent can retrieve from.</p>
           {allKnowledge.length === 0 ? (
-            <EmptyState title="No knowledge collections" description="Create a collection in the Knowledge page first." />
+            <EmptyState
+          icon={<Brain size={40} />}
+          title="No knowledge collections"
+          description="Create a collection in the Knowledge page first."
+          variant="float"
+        />
           ) : (
             <div className="divide-y border rounded-lg overflow-hidden">
               {allKnowledge.map((k) => (
@@ -738,9 +753,11 @@ export function AgentDetailPage() {
             <EmptyState title="Failed to load rollout gate" description={String(rolloutError)} />
           ) : !rolloutGate ? (
             <EmptyState
-              title="No rollout gate configured"
-              description="Rollout gates control traffic steering to this agent version."
-            />
+          icon={<Inbox size={40} />}
+          title="No rollout gate configured"
+          description="Rollout gates control traffic steering to this agent version."
+          variant="float"
+        />
           ) : (() => {
             // Backend returns { gate_passed, reason, run_count, pass_rate, avg_score, agent_id }
             const raw = rolloutGate as any;
@@ -793,7 +810,7 @@ export function AgentDetailPage() {
       {tab === 'credentials' && (
         <CredentialsTab agentId={agentId!} />
       )}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

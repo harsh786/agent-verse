@@ -22,7 +22,7 @@ import { useTranslation } from "react-i18next";
 import {
   ShoppingBag, Search, Star, Download, Plug, ShieldCheck,
   ChevronRight, X, Loader2, Plus, ExternalLink, Zap,
-  Package, BookmarkPlus,
+  Package, BookmarkPlus, Inbox,
 } from "lucide-react";
 import {
   marketplaceApi, templatesApi,
@@ -917,8 +917,10 @@ export function MarketplacePage() {
         </div>
       ) : isError ? (
         <EmptyState
+          icon={<Inbox size={40} />}
           title="Could not load marketplace"
           description="Ensure the backend is running and the insights router is registered."
+          variant="float"
         />
       ) : templates.length === 0 ? (
         <EmptyState

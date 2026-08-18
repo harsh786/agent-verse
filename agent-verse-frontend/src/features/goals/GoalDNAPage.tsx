@@ -64,6 +64,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { toast } from '@/stores/toast';
 import { layeredLayout, type FlowNodeInput, type FlowEdgeInput } from '@/components/graph/FlowCanvas';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -298,21 +299,21 @@ function GraphToolbar({
       <div className="flex flex-col gap-1 bg-card/90 backdrop-blur-sm border border-border rounded-xl shadow-md p-1">
         <button
           onClick={() => zoomIn()}
-          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-muted transition-colors"
+          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
           title="Zoom in (+)"
         >
           <Plus className="h-4 w-4 text-muted-foreground" />
         </button>
         <button
           onClick={() => zoomOut()}
-          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-muted transition-colors"
+          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
           title="Zoom out (-)"
         >
           <Minus className="h-4 w-4 text-muted-foreground" />
         </button>
         <button
           onClick={() => fitView({ padding: 0.15, duration: 400 })}
-          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-muted transition-colors"
+          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
           title="Fit view (F)"
         >
           <Maximize2 className="h-4 w-4 text-muted-foreground" />
@@ -320,14 +321,14 @@ function GraphToolbar({
         <div className="h-px bg-border mx-1" />
         <button
           onClick={onRefresh}
-          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-muted transition-colors"
+          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
           title="Refresh"
         >
           <RefreshCw className={`h-4 w-4 text-muted-foreground ${isRefreshing ? 'animate-spin' : ''}`} />
         </button>
         <button
           onClick={onExport}
-          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-muted transition-colors"
+          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
           title="Export as PNG"
         >
           <Download className="h-4 w-4 text-muted-foreground" />
@@ -593,7 +594,7 @@ export function GoalDNAPage() {
         <div className="flex items-center gap-3">
           <button
             onClick={() => navigate(`/goals/${goalId}`)}
-            className="p-1.5 rounded-lg hover:bg-muted transition-colors"
+            className="p-1.5 rounded-lg hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
             title="Back to goal"
           >
             <ArrowLeft className="h-4 w-4 text-muted-foreground" />
@@ -633,7 +634,7 @@ export function GoalDNAPage() {
           <button
             onClick={() => void refetch()}
             disabled={isFetching}
-            className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-border hover:bg-muted transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-border hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow] disabled:opacity-50"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? 'animate-spin' : ''}`} />
             Refresh
@@ -766,11 +767,11 @@ function StatPill({
 }) {
   return (
     <JARVISPageShell>
-    <div className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border ${danger ? 'bg-red-50 border-red-200 text-red-700' : 'bg-muted border-border'}`}>
+    <JARVISStagger>
       {icon}
       <span className="font-bold">{value}</span>
       <span className={danger ? 'text-red-500' : 'text-muted-foreground'}>{label}</span>
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }

@@ -26,7 +26,7 @@ import {
   type BatchOcrResponse,
 } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -552,11 +552,11 @@ export default function OcrPage() {
 
   return (
     <JARVISPageShell>
-    <div className="flex flex-col gap-6 p-4 lg:p-6" data-testid="ocr-page">
+    <JARVISStagger className="flex flex-col gap-6 p-4 lg:p-6" data-testid="ocr-page">
       {/* Page header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-[#00D4FF] flex items-center gap-2">
             <ScanText className="h-6 w-6 text-indigo-400" />
             OCR Document Extraction
           </h1>
@@ -845,7 +845,7 @@ export default function OcrPage() {
           )}
         </div>
       )}
-    </div>
+    </JARVISStagger>
     </JARVISPageShell>
   );
 }
