@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api/client';
 import { GitBranch, Plus, Trash2, AlertCircle } from 'lucide-react';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 interface StateMachineItem {
   machine_id: string;
@@ -204,6 +205,7 @@ function CreateStateMachineModal({ onClose, onCreated }: { onClose: () => void; 
   }
 
   return (
+    <JARVISPageShell>
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="Create state machine">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div className="relative w-full max-w-md rounded-xl bg-background shadow-xl p-6">
@@ -253,5 +255,6 @@ function CreateStateMachineModal({ onClose, onCreated }: { onClose: () => void; 
         </div>
       </div>
     </div>
+    </JARVISPageShell>
   );
 }

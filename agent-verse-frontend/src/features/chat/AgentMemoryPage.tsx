@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useState, type JSX } from 'react';
 import { Brain, Trash2, Edit2, Plus, Check, X } from 'lucide-react';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 interface Memory {
   id: string;
@@ -79,6 +80,7 @@ export default function AgentMemoryPage(): JSX.Element {
   };
 
   return (
+    <JARVISPageShell>
     <div className="max-w-2xl mx-auto px-4 py-8">
       <div className="flex items-center gap-3 mb-6">
         <Brain className="w-6 h-6 text-indigo-600" />
@@ -171,5 +173,6 @@ export default function AgentMemoryPage(): JSX.Element {
         )}
       </div>
     </div>
+    </JARVISPageShell>
   );
 }

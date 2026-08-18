@@ -55,6 +55,7 @@ import { useEmergencyStore } from '@/stores/emergency';
 import { toast } from '@/stores/toast';
 import { useEventStream } from '@/lib/sse/useEventStream';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -1629,6 +1630,7 @@ export function GovernancePage() {
   ];
 
   return (
+    <JARVISPageShell>
     <div className="space-y-5">
       {/* Header */}
       <div>
@@ -1675,5 +1677,6 @@ export function GovernancePage() {
         </div>
       </div>
     </div>
+    </JARVISPageShell>
   );
 }

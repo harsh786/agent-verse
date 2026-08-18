@@ -5,6 +5,7 @@ import { ArrowLeft, Bot } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import { agentsApi } from '@/lib/api/client';
 import { MissionControlLayout } from '@/components/ui/MissionControlLayout';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 export function AgentCreatePage() {
   const apiKey = useAuthStore((s) => s.apiKey);
@@ -52,6 +53,7 @@ export function AgentCreatePage() {
   void apiKey;
 
   return (
+    <JARVISPageShell>
     <MissionControlLayout>
       <div className="space-y-6 max-w-2xl">
         <div>
@@ -285,6 +287,7 @@ export function AgentCreatePage() {
         )}
       </div>
     </MissionControlLayout>
+    </JARVISPageShell>
   );
 }
 

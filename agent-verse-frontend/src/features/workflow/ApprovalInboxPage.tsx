@@ -20,6 +20,7 @@ import {
 import { workflowEngineApi } from '../../lib/api/client';
 import { PRIORITY_COLORS } from './design/tokens';
 import { nodeBounce, emptyStateFade, slaPulse, swipeTint, springs } from './design/motion';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Priority badge ────────────────────────────────────────────────────────────
 
@@ -289,6 +290,7 @@ export default function ApprovalInboxPage() {
   const items = (data?.items ?? []) as ApprovalRequest[];
 
   return (
+    <JARVISPageShell>
     <div className="min-h-screen bg-slate-950 text-white">
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-white/10 bg-slate-950/90 backdrop-blur-xl
@@ -395,5 +397,6 @@ export default function ApprovalInboxPage() {
         )}
       </main>
     </div>
+    </JARVISPageShell>
   );
 }

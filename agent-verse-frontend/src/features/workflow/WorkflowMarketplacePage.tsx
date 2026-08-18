@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Search, GitFork, Loader2, LayoutTemplate, Tag } from 'lucide-react';
 import { workflowEngineApi } from '../../lib/api/client';
 import { nodeBounce, emptyStateFade } from './design/motion';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 const COMPLEXITY_COLORS: Record<string, string> = {
   simple:  'text-emerald-400 bg-emerald-500/15 border-emerald-500/30',
@@ -136,6 +137,7 @@ export default function WorkflowMarketplacePage() {
   });
 
   return (
+    <JARVISPageShell>
     <div className="min-h-screen bg-slate-950 text-white">
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-white/10 bg-slate-950/90
@@ -232,5 +234,6 @@ export default function WorkflowMarketplacePage() {
         )}
       </main>
     </div>
+    </JARVISPageShell>
   );
 }

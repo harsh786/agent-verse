@@ -17,6 +17,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { ThemedBarChart } from "@/components/charts";
 import { CHART_COLORS, CHART_AXIS_COLOR, CHART_TOOLTIP_STYLE } from "@/components/charts";
 import { toast } from "@/stores/toast";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -320,6 +321,7 @@ export function SelfImprovementPage(): JSX.Element {
   ];
 
   return (
+    <JARVISPageShell>
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Self-Improvement</h1>
@@ -588,5 +590,6 @@ export function SelfImprovementPage(): JSX.Element {
         </div>
       )}
     </div>
+    </JARVISPageShell>
   );
 }

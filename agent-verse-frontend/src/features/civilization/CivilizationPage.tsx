@@ -32,6 +32,7 @@ import { ConstitutionEditor } from './ConstitutionEditor';
 import { SpawnLineageTimeline } from './SpawnLineageTimeline';
 import { MembersPanel } from './MembersPanel';
 import type { CivilizationEvent, Civilization } from '../../lib/api/civilizationApi';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 type Panel = 'overview' | 'members' | 'blackboard' | 'learnings' | 'spawns' | 'debates' | 'constitution' | 'replay';
 
@@ -708,6 +709,7 @@ function ReplayPanel({ events }: { events: CivilizationEvent[] }) {
   }
 
   return (
+    <JARVISPageShell>
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-[10px] text-slate-500 mb-2">
         <span>{events.length} event{events.length !== 1 ? 's' : ''}</span>
@@ -729,6 +731,7 @@ function ReplayPanel({ events }: { events: CivilizationEvent[] }) {
         </div>
       ))}
     </div>
+    </JARVISPageShell>
   );
 }
 

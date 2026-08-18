@@ -1,8 +1,10 @@
 import { Link } from 'react-router-dom';
 import { Search, Home, ArrowLeft } from 'lucide-react';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 export default function NotFoundPage() {
   return (
+    <JARVISPageShell>
     <div className="flex flex-col items-center justify-center min-h-[70vh] p-8 text-center">
       <div className="mb-8">
         <p className="text-8xl font-bold text-primary/20 select-none">404</p>
@@ -29,5 +31,6 @@ export default function NotFoundPage() {
         </button>
       </div>
     </div>
+    </JARVISPageShell>
   );
 }

@@ -22,6 +22,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { toast } from "@/stores/toast";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -777,6 +778,7 @@ export function CompliancePage() {
   const [activeTab, setActiveTab] = useState<TabId>("frameworks");
 
   return (
+    <JARVISPageShell>
     <div className="p-6 max-w-5xl mx-auto space-y-6">
       {/* Page header */}
       <div className="flex items-center gap-3">
@@ -818,6 +820,7 @@ export function CompliancePage() {
         {activeTab === "consent" && <ConsentTab />}
       </div>
     </div>
+    </JARVISPageShell>
   );
 }
 

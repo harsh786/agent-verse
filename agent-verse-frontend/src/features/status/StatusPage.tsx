@@ -4,6 +4,7 @@
  */
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle, AlertTriangle, HelpCircle, RefreshCw } from 'lucide-react';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 interface Component { status: 'operational' | 'degraded' | 'unknown'; latency_ms?: number; }
 interface StatusData { status: string; components: Record<string, Component>; timestamp: number; }
@@ -30,6 +31,7 @@ export function StatusPage() {
   const lastUpdated = dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString() : '—';
 
   return (
+    <JARVISPageShell>
     <div className="min-h-screen bg-background" data-testid="status-page">
       {/* Header */}
       <div className="border-b border-border bg-card">
@@ -107,5 +109,6 @@ export function StatusPage() {
         </p>
       </div>
     </div>
+    </JARVISPageShell>
   );
 }

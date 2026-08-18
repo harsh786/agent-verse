@@ -7,6 +7,7 @@ import { AuditPanel } from './panels/AuditPanel';
 import { ScopesPanel } from './panels/ScopesPanel';
 import { LimitsPanel } from './panels/LimitsPanel';
 import { MissionControlLayout } from '@/components/ui/MissionControlLayout';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 const TABS = [
   { id: 'identity',    label: 'Agent Identity', icon: Lock,          description: 'Per-agent keys, capability manifests, delegation lineage' },
@@ -43,6 +44,7 @@ export default function SecurityCenterPage() {
   const [activeTab, setActiveTab] = useState<TabId>('identity');
 
   return (
+    <JARVISPageShell>
     <MissionControlLayout>
       <div className="space-y-0" data-testid="security-center-page">
         {/* Header */}
@@ -100,5 +102,6 @@ export default function SecurityCenterPage() {
         </div>
       </div>
     </MissionControlLayout>
+    </JARVISPageShell>
   );
 }

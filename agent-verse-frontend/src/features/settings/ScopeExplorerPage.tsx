@@ -12,6 +12,7 @@ import type { ApiKeyResponse } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { toast } from "@/stores/toast";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -179,6 +180,7 @@ export function ScopeExplorerPage(): JSX.Element {
   );
 
   return (
+    <JARVISPageShell>
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-8">
 
       {/* ── Current plan banner ─────────────────────────────────────── */}
@@ -444,5 +446,6 @@ export function ScopeExplorerPage(): JSX.Element {
         onCancel={() => setRevokeId(null)}
       />
     </div>
+    </JARVISPageShell>
   );
 }

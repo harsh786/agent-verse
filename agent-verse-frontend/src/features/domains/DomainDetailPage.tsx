@@ -37,6 +37,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { TemplateCard } from '@/features/templates/components/TemplateCard';
 import { TemplateInstantiator } from '@/features/templates/components/TemplateInstantiator';
 import { toast } from '@/stores/toast';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Domain metadata lookup ────────────────────────────────────────────────────
 
 const DOMAIN_META: Record<
@@ -620,6 +621,7 @@ export default function DomainDetailPage() {
   };
 
   return (
+    <JARVISPageShell>
     <div className="p-6 max-w-7xl mx-auto">
       {/* Back link + breadcrumb */}
       <div className="flex items-center gap-2 mb-6 text-sm text-muted-foreground">
@@ -775,5 +777,6 @@ export default function DomainDetailPage() {
         />
       )}
     </div>
+    </JARVISPageShell>
   );
 }

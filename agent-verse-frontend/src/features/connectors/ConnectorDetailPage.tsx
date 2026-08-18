@@ -11,6 +11,7 @@ import { DetailLayout } from '@/components/detail/DetailLayout';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { toast } from '@/stores/toast';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 const TABS = [
   { key: 'overview', label: 'Overview' },
@@ -240,6 +241,7 @@ export function ConnectorDetailPage() {
   }
 
   return (
+    <JARVISPageShell>
     <div className="space-y-0">
       <div className="px-6 py-3">
         <button
@@ -359,5 +361,6 @@ export function ConnectorDetailPage() {
         {activeTab === 'usage' && <UsageTab connectorId={connectorId!} />}
       </DetailLayout>
     </div>
+    </JARVISPageShell>
   );
 }

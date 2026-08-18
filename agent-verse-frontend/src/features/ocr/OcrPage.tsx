@@ -26,6 +26,7 @@ import {
   type BatchOcrResponse,
 } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -550,6 +551,7 @@ export default function OcrPage() {
   ];
 
   return (
+    <JARVISPageShell>
     <div className="flex flex-col gap-6 p-4 lg:p-6" data-testid="ocr-page">
       {/* Page header */}
       <div className="flex items-start justify-between">
@@ -844,5 +846,6 @@ export default function OcrPage() {
         </div>
       )}
     </div>
+    </JARVISPageShell>
   );
 }

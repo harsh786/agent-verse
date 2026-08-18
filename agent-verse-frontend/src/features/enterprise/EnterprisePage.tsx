@@ -9,6 +9,7 @@ import { enterpriseApi, apiFetch } from '@/lib/api/client';
 import type { DataResidencyInfo, EnterpriseExportResult } from '@/lib/api/client';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { toast } from '@/stores/toast';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Compliance Dashboard ──────────────────────────────────────────────────────
 
@@ -597,6 +598,7 @@ function ResidencySection(): JSX.Element {
 
 export function EnterprisePage(): JSX.Element {
   return (
+    <JARVISPageShell>
     <div className="p-4 md:p-6 max-w-3xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Enterprise</h1>
@@ -612,5 +614,6 @@ export function EnterprisePage(): JSX.Element {
       <ExportSection />
       <DeleteSection />
     </div>
+    </JARVISPageShell>
   );
 }

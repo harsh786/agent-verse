@@ -8,6 +8,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Utilities
@@ -922,6 +923,7 @@ export function LandingPage() {
   const go = useCallback(() => navigate("/auth"), [navigate]);
 
   return (
+    <JARVISPageShell>
     <div className="min-h-screen bg-[#06060e] text-white overflow-x-hidden">
 
       {/* Background atmosphere */}
@@ -1028,5 +1030,6 @@ export function LandingPage() {
 
       <Footer />
     </div>
+    </JARVISPageShell>
   );
 }

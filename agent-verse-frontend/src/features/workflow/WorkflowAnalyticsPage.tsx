@@ -10,6 +10,7 @@ import { springs } from './design/motion';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, TrendingUp, DollarSign, CheckCircle, Clock, Loader2, AlertCircle } from 'lucide-react';
 import { workflowEngineApi } from '../../lib/api/client';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Stat card ─────────────────────────────────────────────────────────────────
 
@@ -93,6 +94,7 @@ export default function WorkflowAnalyticsPage() {
   const last7days = generateDays(7);
 
   return (
+    <JARVISPageShell>
     <div className="min-h-screen bg-slate-950 text-white">
       <header className="sticky top-0 z-30 flex items-center gap-3 px-6 py-4 border-b
                           border-white/10 bg-slate-950/90 backdrop-blur-xl">
@@ -172,5 +174,6 @@ export default function WorkflowAnalyticsPage() {
         )}
       </main>
     </div>
+    </JARVISPageShell>
   );
 }

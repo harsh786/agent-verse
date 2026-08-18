@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Code2, Loader2, Zap, Layout, Server, Database, Globe, Smartphone, Bot, FileCode, ChevronRight, CheckCircle, Play, Download } from 'lucide-react';
 import { toast } from '@/stores/toast';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 const PROJECT_TYPES = [
   { id: 'landing', label: 'Landing Page', icon: Layout, description: 'Marketing page with hero, features, CTA' },
@@ -109,6 +110,7 @@ export default function BuilderPage() {
   const frameworks = FRAMEWORKS[projectType as keyof typeof FRAMEWORKS] ?? ['React'];
 
   return (
+    <JARVISPageShell>
     <div className="max-w-4xl space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3">
@@ -332,5 +334,6 @@ export default function BuilderPage() {
         </div>
       )}
     </div>
+    </JARVISPageShell>
   );
 }

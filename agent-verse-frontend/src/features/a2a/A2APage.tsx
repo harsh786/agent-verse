@@ -17,6 +17,7 @@ import { a2aApi, type AgentCard, type A2ATask } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -468,6 +469,7 @@ export function A2APage() {
   const [tab, setTab] = useState<Tab>("tasks");
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6 max-w-5xl">
       {/* Header */}
       <div>
@@ -505,5 +507,6 @@ export function A2APage() {
       {tab === "card"    && <AgentCardTab />}
       {tab === "remotes" && <RemoteAgentsTab onDispatch={() => setTab("tasks")} />}
     </div>
+    </JARVISPageShell>
   );
 }

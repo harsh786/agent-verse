@@ -20,6 +20,7 @@ import { useChatHistory, useInvalidateHistory } from './hooks/useChatHistory';
 import { useChatStream } from './hooks/useChatStream';
 import { chatApi } from '@/lib/api/chat';
 import type { ChatMessage } from './types/chat.types';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 export default function ChatPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -177,6 +178,7 @@ export default function ChatPage() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
+    <JARVISPageShell>
     <div className="flex h-full w-full overflow-hidden bg-white dark:bg-gray-950">
       <ChatSidebar
         sessions={sessions}
@@ -248,5 +250,6 @@ export default function ChatPage() {
         )}
       </main>
     </div>
+    </JARVISPageShell>
   );
 }

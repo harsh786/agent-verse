@@ -24,6 +24,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Pagination } from "@/components/ui/Pagination";
 import { toast } from "@/stores/toast";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -476,6 +477,7 @@ export function ArtifactsBrowserPage() {
   const handleRefresh = useCallback(() => qc.invalidateQueries({ queryKey: ["artifacts"] }), [qc]);
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6 max-w-6xl">
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
@@ -630,5 +632,6 @@ export function ArtifactsBrowserPage() {
         />
       )}
     </div>
+    </JARVISPageShell>
   );
 }

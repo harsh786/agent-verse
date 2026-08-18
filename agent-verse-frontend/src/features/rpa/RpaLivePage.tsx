@@ -22,6 +22,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { toast } from "@/stores/toast";
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -415,6 +416,7 @@ export function RpaLivePage() {
   }, [elementPickerMode, activeSessionObj]);
 
   return (
+    <JARVISPageShell>
     <div className="flex flex-col h-[calc(100vh-8rem)] gap-4 max-w-7xl">
       {/* Page title (visually hidden but accessible) */}
       <h1 className="sr-only">RPA Live</h1>
@@ -743,6 +745,7 @@ export function RpaLivePage() {
       )}
       </div>{/* end layout div */}
     </div>
+    </JARVISPageShell>
   );
 }
 

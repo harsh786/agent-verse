@@ -5,6 +5,7 @@ import { CheckCircle2, Zap, Search, SlidersHorizontal } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import { connectorsApi, type CatalogEntry } from '@/lib/api/client';
 import { OAuthPopupButton } from './OAuthPopupButton';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 const CATEGORY_LABELS: Record<string, string> = {
   all: 'All',
@@ -232,6 +233,7 @@ export function ConnectorsCatalogPage() {
   };
 
   return (
+    <JARVISPageShell>
     <div className="space-y-6">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -391,5 +393,6 @@ export function ConnectorsCatalogPage() {
         </div>
       )}
     </div>
+    </JARVISPageShell>
   );
 }

@@ -18,6 +18,7 @@ import { useAuthStore } from '../../stores/auth';
 import { toast } from '../../stores/toast';
 import { workflowsApi, apiFetch } from '../../lib/api/client';
 import { MissionControlLayout } from '@/components/ui/MissionControlLayout';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ─── Node Types ──────────────────────────────────────────────────────────────
 
@@ -1309,11 +1310,13 @@ function WorkflowBuilderInner() {
 
 export function WorkflowBuilderPage() {
   return (
+    <JARVISPageShell>
     <MissionControlLayout showOperationalBar={false}>
       <ReactFlowProvider>
         <WorkflowBuilderInner />
       </ReactFlowProvider>
     </MissionControlLayout>
+    </JARVISPageShell>
   );
 }
 

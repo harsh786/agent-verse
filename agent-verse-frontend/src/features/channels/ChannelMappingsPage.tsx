@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api/client';
 import { MessageSquare, Plus, CheckCircle, AlertCircle } from 'lucide-react';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 interface ChannelMapping {
   id: string;
@@ -42,6 +43,7 @@ export function ChannelMappingsPage() {
   });
 
   return (
+    <JARVISPageShell>
     <div className="flex flex-col gap-6 p-6 max-w-screen-lg mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -160,5 +162,6 @@ export function ChannelMappingsPage() {
         </div>
       )}
     </div>
+    </JARVISPageShell>
   );
 }
