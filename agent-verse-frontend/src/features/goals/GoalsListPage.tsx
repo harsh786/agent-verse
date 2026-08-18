@@ -19,6 +19,7 @@ import { Pagination } from "@/components/ui/Pagination";
 import { toast } from "@/stores/toast";
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 const STATUS_OPTIONS = ["all", "planning", "executing", "complete", "failed", "waiting_human"];
 
 type SortField = "created_at" | "status" | "goal";
@@ -391,12 +392,13 @@ export function GoalsListPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
+              <JARVISStagger>
               {paginatedGoals.map((goal) => (
+                <JARVISStaggerItem key={goal.id}>
                 <tr
-                  key={goal.id}
                   onClick={() => navigate(`/goals/${goal.id}`)}
-                  className={`hover:bg-accent/50 cursor-pointer transition-colors ${
-                    selectedGoals.has(goal.id) ? "bg-primary/5" : ""
+                  className={`hover:bg-[#1A1F2E] cursor-pointer transition-colors ${
+                    selectedGoals.has(goal.id) ? 'bg-[rgba(0,212,255,0.05)]' : ''
                   }`}
                 >
                   {/* Fix 1: per-row checkbox */}
@@ -453,7 +455,9 @@ export function GoalsListPage() {
                     )}
                   </td>
                 </tr>
+                </JARVISStaggerItem>
               ))}
+              </JARVISStagger>
             </tbody>
           </table>
         )}
