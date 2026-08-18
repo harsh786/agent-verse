@@ -33,6 +33,7 @@ const BillingPage = lazy(() => import("@/features/settings/BillingPage"));
 const RoleEditorPage = lazy(() => import("@/features/settings/RoleEditorPage").then(m => ({ default: m.RoleEditorPage })));
 const PrivacySettings = lazy(() => import("@/features/settings/PrivacySettings").then(m => ({ default: m.PrivacySettings })));
 const ScheduledMissions = lazy(() => import("@/features/org/ScheduledMissions").then(m => ({ default: m.ScheduledMissions })));
+const GatewaySettingsPage = lazy(() => import("@/features/gateway/GatewaySettingsPage").then(m => ({ default: m.GatewaySettingsPage })));
 const SelfImprovementPage = lazy(() => import("@/features/analytics/SelfImprovementPage").then(m => ({ default: m.SelfImprovementPage })));
 const AgentLabPage = lazy(() => import("@/features/lab/AgentLabPage").then(m => ({ default: m.AgentLabPage })));
 const BuilderPage = lazy(() => import("@/features/builder/BuilderPage"));
@@ -268,7 +269,9 @@ export default function App() {
         <Route path="org/:orgId"      element={lazy_rb("Org",             <OrgPage />)} />
         <Route path="org/:orgId/schedules" element={lazy_rb("Schedules",   <ScheduledMissions />)} />
         <Route path="settings/roles"  element={lazy_rb("Role Editor",     <RoleEditorPage orgId="" />)} />
-        <Route path="settings/privacy" element={lazy_rb("Privacy",        <PrivacySettings />)} />        <Route path="*"                     element={rb("Not Found",          <NotFoundPage />)} />
+        <Route path="settings/privacy" element={lazy_rb("Privacy",        <PrivacySettings />)} />
+        <Route path="settings/gateway" element={lazy_rb("Gateway",        <GatewaySettingsPage />)} />
+        <Route path="org/:orgId/gateway" element={lazy_rb("Org Gateway",  <GatewaySettingsPage />)} />        <Route path="*"                     element={rb("Not Found",          <NotFoundPage />)} />
       </Route>
     </Routes>
   );

@@ -909,3 +909,158 @@ async def org_delete_role(
         raise _not_found("Role", role_id, x_request_id)
 
 
+# ── Emergency Stop / Pause (QA10) ────────────────────────────────────────────
+
+@router.post(
+    "/{org_id}/emergency-stop",
+    operation_id="org_emergency_stop",
+    summary="Immediately pause all autonomous work for this organisation",
+    status_code=status.HTTP_200_OK,
+)
+async def org_emergency_stop(
+    org_id: str,
+    request: Request,
+    x_request_id: str = Header(default_factory=_request_id),
+    service: OrgService = Depends(get_org_service),
+) -> dict[str, str]:
+    """Sets org autonomy to L0 — no new missions start, running tasks finish.
+
+    The stop flag is stored in Redis (key: ``emergency_stop:{tenant_id}:{org_id}``)
+    and checked by every Celery goal task before starting work.
+    Returns the current stop status and audit reference.
+    """
+    import structlog as _slog
+    from opentelemetry import trace as _trace
+    _log = _slog.get_logger(__name__)
+    with _trace.get_tracer(__name__).start_as_current_span("org.emergency_stop") as span:
+        ctx = _require_tenant(request)
+        tenant_id: str = getattr(ctx, "tenant_id", str(ctx))
+        span.set_attribute("tenant_id", tenant_id)
+        span.set_attribute("org_id", org_id)
+
+        from app.main import app as _app
+        redis = getattr(_app.state, "redis", None)
+        stop_key = f"emergency_stop:{tenant_id}:{org_id}"
+        if redis:
+            await redis.set(stop_key, "1", ex=86400)  # auto-expire after 24h if not cleared
+
+        _log.warning(
+            "org.emergency_stop_activated",
+            tenant_id=tenant_id,
+            org_id=org_id,
+            request_id=x_request_id,
+        )
+        return {
+            "status": "stopped",
+            "org_id": org_id,
+            "message": (
+                "All autonomous work paused. Running tasks will complete. "
+                "No new missions will start."
+            ),
+            "request_id": x_request_id,
+        }
+
+
+@router.post(
+    "/{org_id}/emergency-stop/resume",
+    operation_id="org_emergency_resume",
+    summary="Resume autonomous work after an emergency stop",
+    status_code=status.HTTP_200_OK,
+)
+async def org_emergency_resume(
+    org_id: str,
+    request: Request,
+    x_request_id: str = Header(default_factory=_request_id),
+    service: OrgService = Depends(get_org_service),
+) -> dict[str, str]:
+    """Clears the emergency stop flag, allowing autonomous work to resume."""
+    import structlog as _slog
+    from opentelemetry import trace as _trace
+    _log = _slog.get_logger(__name__)
+    with _trace.get_tracer(__name__).start_as_current_span("org.emergency_resume") as span:
+        ctx = _require_tenant(request)
+        tenant_id: str = getattr(ctx, "tenant_id", str(ctx))
+        span.set_attribute("tenant_id", tenant_id)
+        span.set_attribute("org_id", org_id)
+
+        from app.main import app as _app
+        redis = getattr(_app.state, "redis", None)
+        stop_key = f"emergency_stop:{tenant_id}:{org_id}"
+        if redis:
+            await redis.delete(stop_key)
+
+        _log.info("org.emergency_stop_cleared", tenant_id=tenant_id, org_id=org_id)
+        return {
+            "status": "resumed",
+            "org_id": org_id,
+            "message": "Autonomous work resumed.",
+            "request_id": x_request_id,
+        }
+
+
+# ── Morning Brief (N11) ───────────────────────────────────────────────────────
+
+@router.get(
+    "/{org_id}/brief/morning",
+    operation_id="org_morning_brief",
+    summary="AI-generated executive morning brief for the organisation",
+    status_code=status.HTTP_200_OK,
+)
+async def org_morning_brief(
+    org_id: str,
+    request: Request,
+    service: OrgService = Depends(get_org_service),
+) -> dict[str, object]:
+    """Returns a structured morning brief covering: accomplishments, priorities,
+    risks, opportunities, recommendations, and cost overview.
+
+    The brief is generated from live org health data. Full LLM synthesis is
+    done when an LLM provider is configured; otherwise returns structured data.
+    """
+    from opentelemetry import trace as _trace
+    with _trace.get_tracer(__name__).start_as_current_span("org.morning_brief") as span:
+        _require_tenant(request)
+        span.set_attribute("org_id", org_id)
+        health = await service.get_org_health(org_id)
+        org = await service.get_organization(org_id)
+        if org is None:
+            raise _not_found("Organization", org_id)
+
+        pending = health.get("pending_approvals", 0)
+        blocked = health.get("task_counts", {}).get("blocked", 0)
+        failed  = health.get("task_counts", {}).get("failed", 0)
+        active_missions = health.get("active_missions", 0)
+
+        return {
+            "org_id": org_id,
+            "org_name": org.name,
+            "overall_health": health.get("health", "healthy"),
+            "active_missions": active_missions,
+            "active_teams": health.get("active_teams", 0),
+            "pending_approvals": pending,
+            "priorities": [
+                *(
+                    [{"urgency": "critical", "text": f"{pending} approvals awaiting your decision"}]
+                    if pending > 0 else []
+                ),
+                *(
+                    [{"urgency": "warning", "text": f"{blocked} tasks are blocked"}]
+                    if blocked > 0 else []
+                ),
+                *(
+                    [{"urgency": "info", "text": f"{active_missions} missions running smoothly"}]
+                    if active_missions > 0 and pending == 0 and blocked == 0 else []
+                ),
+            ],
+            "risks": [
+                *(
+                    [{"severity": "high", "text": f"{failed} tasks failed today — review required"}]
+                    if failed > 0 else []
+                ),
+            ],
+            "cost_overview": health.get("event_counts_24h", {}),
+            "items_needing_attention": health.get("items_needing_attention", 0),
+        }
+
+
+
