@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from app.org.schemas import (
     CreateDepartmentRequest,
@@ -775,4 +776,136 @@ async def _run_graphify_job(
 
 async def _phase_noop() -> None:
     """Placeholder; replaced with real extraction calls per phase."""
+
+
+# ── Org-scoped RBAC Role Management (AA3) ────────────────────────────────────
+
+class _RolePermission(BaseModel):
+    feature: str
+    view: bool = False
+    edit: bool = False
+    delete: bool = False
+
+
+class _OrgRoleCreate(BaseModel):
+    model_config = {"populate_by_name": True}
+    name: str
+    description: str = ""
+    permissions: list[_RolePermission] = []
+    member_count: int = 0
+
+
+class _OrgRoleResponse(_OrgRoleCreate):
+    id: str
+    is_built_in: bool = False
+
+
+_BUILT_IN_ROLES: list[_OrgRoleResponse] = [
+    _OrgRoleResponse(id="org_owner",    name="Org Owner",
+                     description="Full control.", is_built_in=True),
+    _OrgRoleResponse(id="org_admin",    name="Org Admin",
+                     description="Manage members, connectors, settings.", is_built_in=True),
+    _OrgRoleResponse(id="mission_lead", name="Mission Lead",
+                     description="Create/edit missions and tasks.", is_built_in=True),
+    _OrgRoleResponse(id="agent_runner", name="Agent Runner",
+                     description="Execute missions.", is_built_in=True),
+    _OrgRoleResponse(id="observer",     name="Observer",
+                     description="View only.", is_built_in=True),
+]
+
+# In-memory store per org (swapped for DB in lifespan when available)
+_CUSTOM_ROLES: dict[str, list[_OrgRoleResponse]] = {}
+
+
+@router.get(
+    "/{org_id}/roles",
+    operation_id="org_list_roles",
+    summary="List org roles (built-in + custom)",
+    response_model=list[_OrgRoleResponse],
+)
+async def org_list_roles(
+    org_id: str,
+    request: Request,
+    service: OrgService = Depends(get_org_service),
+) -> list[_OrgRoleResponse]:
+    """Return all roles for this organisation including built-in and custom."""
+    from opentelemetry import trace as _trace
+    with _trace.get_tracer(__name__).start_as_current_span("org.list_roles") as span:
+        _require_tenant(request)
+        span.set_attribute("org_id", org_id)
+        custom = _CUSTOM_ROLES.get(org_id, [])
+        return [*_BUILT_IN_ROLES, *custom]
+
+
+@router.post(
+    "/{org_id}/roles",
+    operation_id="org_create_role",
+    summary="Create a custom org role",
+    status_code=status.HTTP_201_CREATED,
+    response_model=_OrgRoleResponse,
+)
+async def org_create_role(
+    org_id: str,
+    body: _OrgRoleCreate,
+    request: Request,
+    x_request_id: str = Header(default_factory=_request_id),
+    service: OrgService = Depends(get_org_service),
+) -> _OrgRoleResponse:
+    """Create a new custom role with granular permissions."""
+    from opentelemetry import trace as _trace
+    with _trace.get_tracer(__name__).start_as_current_span("org.create_role") as span:
+        _require_tenant(request)
+        span.set_attribute("org_id", org_id)
+        span.set_attribute("role_name", body.name)
+        role = _OrgRoleResponse(id=str(uuid4()), is_built_in=False, **body.model_dump())
+        _CUSTOM_ROLES.setdefault(org_id, []).append(role)
+        return role
+
+
+@router.put(
+    "/{org_id}/roles/{role_id}",
+    operation_id="org_update_role",
+    summary="Update a custom org role",
+    response_model=_OrgRoleResponse,
+)
+async def org_update_role(
+    org_id: str,
+    role_id: str,
+    body: _OrgRoleCreate,
+    request: Request,
+    x_request_id: str = Header(default_factory=_request_id),
+    service: OrgService = Depends(get_org_service),
+) -> _OrgRoleResponse:
+    """Update permissions on a custom role."""
+    _require_tenant(request)
+    roles = _CUSTOM_ROLES.get(org_id, [])
+    for i, r in enumerate(roles):
+        if r.id == role_id:
+            updated = _OrgRoleResponse(id=role_id, is_built_in=False, **body.model_dump())
+            roles[i] = updated
+            return updated
+    raise _not_found("Role", role_id, x_request_id)
+
+
+@router.delete(
+    "/{org_id}/roles/{role_id}",
+    operation_id="org_delete_role",
+    summary="Delete a custom org role",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def org_delete_role(
+    org_id: str,
+    role_id: str,
+    request: Request,
+    x_request_id: str = Header(default_factory=_request_id),
+    service: OrgService = Depends(get_org_service),
+) -> None:
+    """Delete a custom role (built-in roles cannot be deleted)."""
+    _require_tenant(request)
+    roles = _CUSTOM_ROLES.get(org_id, [])
+    orig = len(roles)
+    _CUSTOM_ROLES[org_id] = [r for r in roles if r.id != role_id]
+    if len(_CUSTOM_ROLES[org_id]) == orig:
+        raise _not_found("Role", role_id, x_request_id)
+
 
