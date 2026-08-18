@@ -3,7 +3,7 @@ import { Copy } from 'lucide-react';
 import { API_BASE, integrationsApi } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { StatusBadge } from '@/components/ui/StatusBadge';
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 interface ProviderConfig {
   name: string;
@@ -63,7 +63,6 @@ export function IntegrationsPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Integrations</h1>
@@ -74,10 +73,8 @@ export function IntegrationsPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <JARVISStagger>
         {PROVIDERS.map((p) => (
-          <JARVISStaggerItem key={p.name}>
-          <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+          <div key={p.name} className="bg-card border border-border rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="font-semibold">{p.name}</h2>
               <StatusBadge status="running" />
@@ -116,9 +113,7 @@ export function IntegrationsPage() {
               </div>
             </div>
           </div>
-          </JARVISStaggerItem>
         ))}
-        </JARVISStagger>
       </div>
 
       {/* Zapier delivery visibility */}

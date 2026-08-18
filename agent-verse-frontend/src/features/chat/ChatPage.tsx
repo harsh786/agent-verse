@@ -179,7 +179,6 @@ export default function ChatPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="flex h-full w-full overflow-hidden bg-white dark:bg-gray-950">
       <ChatSidebar
         sessions={sessions}

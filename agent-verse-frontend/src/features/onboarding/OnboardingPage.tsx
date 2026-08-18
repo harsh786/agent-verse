@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CheckCircle, ChevronRight, Loader2, Zap } from "lucide-react";
 import { settingsApi, connectorsApi, goalsApi, agentsApi } from "@/lib/api/client";
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 type Step = 1 | 2 | 3 | 4;
 
@@ -397,7 +397,6 @@ export function OnboardingPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="min-h-screen bg-background flex flex-col items-center justify-center px-4 py-12">
       <div className="w-full max-w-lg">
         {/* Logo */}
@@ -408,10 +407,8 @@ export function OnboardingPage() {
 
         {/* Progress bar */}
         <div className="flex items-center gap-2 mb-8">
-          <JARVISStagger>
           {STEPS.map((step, i) => (
-            <JARVISStaggerItem key={step.id}>
-            <div className="flex items-center gap-2 flex-1">
+            <div key={step.id} className="flex items-center gap-2 flex-1">
               <div className="flex flex-col items-center gap-1">
                 <div
                   className={`flex items-center justify-center w-8 h-8 rounded-full text-sm font-semibold transition-colors ${
@@ -436,9 +433,7 @@ export function OnboardingPage() {
                 />
               )}
             </div>
-            </JARVISStaggerItem>
           ))}
-          </JARVISStagger>
         </div>
 
         {/* Step content */}

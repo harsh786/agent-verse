@@ -32,7 +32,6 @@ export function StatusPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="min-h-screen bg-background" data-testid="status-page">
       {/* Header */}
       <div className="border-b border-border bg-card">

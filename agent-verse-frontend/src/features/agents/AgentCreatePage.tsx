@@ -54,7 +54,6 @@ export function AgentCreatePage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <MissionControlLayout>
       <div className="space-y-6 max-w-2xl">
         <div>

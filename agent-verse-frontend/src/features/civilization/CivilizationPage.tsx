@@ -710,7 +710,6 @@ function ReplayPanel({ events }: { events: CivilizationEvent[] }) {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-[10px] text-slate-500 mb-2">
         <span>{events.length} event{events.length !== 1 ? 's' : ''}</span>

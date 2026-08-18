@@ -24,7 +24,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import { keymap } from '@codemirror/view';
 import { Prec } from '@codemirror/state';
 
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type Tab = 'code' | 'files' | 'email';
@@ -335,10 +335,8 @@ function CodeRunner() {
             <p className="px-4 py-6 text-xs text-muted-foreground text-center italic">No runs yet.</p>
           ) : (
             <ul className="divide-y divide-border">
-              <JARVISStagger>
               {history.map((h) => (
-                <JARVISStaggerItem key={h.id}>
-                <li className="px-4 py-2.5">
+                <li key={h.id} className="px-4 py-2.5">
                   <div className="flex items-center gap-2 mb-0.5">
                     <span aria-hidden="true">{LANGUAGE_META[h.language].icon}</span>
                     <span className={`w-1.5 h-1.5 rounded-full ${h.result.success ? 'bg-green-500' : 'bg-red-500'}`} aria-hidden="true" />
@@ -360,9 +358,7 @@ function CodeRunner() {
                     {h.label}{h.label.length >= 60 ? '…' : ''}
                   </button>
                 </li>
-                </JARVISStaggerItem>
               ))}
-              </JARVISStagger>
             </ul>
           )}
         </div>
@@ -797,7 +793,6 @@ export function ToolsPage() {
   const [tab, setTab] = useState<Tab>('code');
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6 max-w-6xl">
       <div>
         <h1 className="text-2xl font-bold">Tools</h1>

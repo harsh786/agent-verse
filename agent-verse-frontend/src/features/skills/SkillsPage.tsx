@@ -400,7 +400,6 @@ export default function SkillsPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="p-6 max-w-5xl mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">

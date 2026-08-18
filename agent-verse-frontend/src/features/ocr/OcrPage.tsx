@@ -26,7 +26,7 @@ import {
   type BatchOcrResponse,
 } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -552,7 +552,6 @@ export default function OcrPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="flex flex-col gap-6 p-4 lg:p-6" data-testid="ocr-page">
       {/* Page header */}
       <div className="flex items-start justify-between">
@@ -730,10 +729,9 @@ export default function OcrPage() {
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" data-testid="batch-grid">
-                <JARVISStagger>
                 {batchItems.map((item) => (
-                  <JARVISStaggerItem key={item.id}>
                   <div
+                    key={item.id}
                     className="flex flex-col gap-3 rounded-xl border border-slate-700 bg-slate-800/40 p-4"
                     data-testid={`batch-item-${item.status}`}
                   >
@@ -773,9 +771,7 @@ export default function OcrPage() {
                       <p className="text-xs text-red-400">{item.error}</p>
                     )}
                   </div>
-                  </JARVISStaggerItem>
                 ))}
-                </JARVISStagger>
               </div>
 
               {batchResult && (

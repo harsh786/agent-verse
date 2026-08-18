@@ -15,7 +15,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
 
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 interface AgentVersion {
   snapshot_id: string;
   created_at: string;
@@ -332,7 +332,6 @@ export function AgentDetailPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-6 max-w-4xl">
       {/* Back */}
       <button
@@ -710,10 +709,8 @@ export function AgentDetailPage() {
             <EmptyState title="No knowledge collections" description="Create a collection in the Knowledge page first." />
           ) : (
             <div className="divide-y border rounded-lg overflow-hidden">
-              <JARVISStagger>
               {allKnowledge.map((k) => (
-                <JARVISStaggerItem key={k.collection_id}>
-                <div className="flex items-center justify-between p-3 bg-card">
+                <div key={k.collection_id} className="flex items-center justify-between p-3 bg-card">
                   <span className="text-sm font-medium">{k.name}</span>
                   <div className="flex gap-2">
                     <button
@@ -726,9 +723,7 @@ export function AgentDetailPage() {
                     >Remove</button>
                   </div>
                 </div>
-                </JARVISStaggerItem>
               ))}
-              </JARVISStagger>
             </div>
           )}
         </div>

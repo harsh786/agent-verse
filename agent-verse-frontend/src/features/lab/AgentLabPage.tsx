@@ -40,7 +40,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ThemedBarChart } from "@/components/charts";
 import { toast } from "@/stores/toast";
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -77,10 +77,8 @@ function MockToolsBuilder({
           <Plus className="h-3 w-3" /> Add Tool
         </button>
       </div>
-      <JARVISStagger>
       {tools.map((tool, i) => (
-        <JARVISStaggerItem key={i}>
-        <div className="flex gap-2 items-start">
+        <div key={i} className="flex gap-2 items-start">
           <div className="flex-1 space-y-1">
             <input
               value={tool.name}
@@ -108,9 +106,7 @@ function MockToolsBuilder({
             <Trash2 className="h-3.5 w-3.5" />
           </button>
         </div>
-        </JARVISStaggerItem>
       ))}
-      </JARVISStagger>
       {tools.length === 0 && (
         <p className="text-xs text-muted-foreground italic">
           No custom tools — agent uses real tools.
@@ -1025,7 +1021,6 @@ export function AgentLabPage(): JSX.Element {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">

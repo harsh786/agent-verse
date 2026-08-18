@@ -876,7 +876,6 @@ export function SchedulesPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">

@@ -495,7 +495,6 @@ export function ApprovalsPage() {
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div
       className="space-y-5 max-w-3xl outline-none"
       tabIndex={0}

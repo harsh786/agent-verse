@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api/client';
 import { GitBranch, Plus, Trash2, AlertCircle } from 'lucide-react';
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 
 interface StateMachineItem {
   machine_id: string;
@@ -83,10 +83,9 @@ export function StateMachinesPage() {
               <p className="text-sm">No state machines yet.</p>
             </div>
           )}
-          <JARVISStagger>
           {machines.map((m) => (
-            <JARVISStaggerItem key={m.machine_id}>
             <button
+              key={m.machine_id}
               onClick={() => setSelectedId(m.machine_id)}
               className={`w-full flex items-center gap-3 rounded-xl border p-3 text-left transition-colors ${
                 selectedId === m.machine_id
@@ -107,9 +106,7 @@ export function StateMachinesPage() {
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
             </button>
-            </JARVISStaggerItem>
           ))}
-          </JARVISStagger>
         </div>
 
         {/* Detail */}
@@ -209,7 +206,6 @@ function CreateStateMachineModal({ onClose, onCreated }: { onClose: () => void; 
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="Create state machine">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div className="relative w-full max-w-md rounded-xl bg-background shadow-xl p-6">

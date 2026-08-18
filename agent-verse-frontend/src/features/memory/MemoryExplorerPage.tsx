@@ -21,7 +21,7 @@ import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { Pagination } from '@/components/ui/Pagination';
 import { MissionControlLayout } from '@/components/ui/MissionControlLayout';
 
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem} from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const MEMORY_TYPES = ['fact', 'skill', 'preference', 'tool_usage', 'goal_completion', 'observation'];
@@ -353,7 +353,6 @@ export function MemoryExplorerPage() {
 
   return (
     <JARVISPageShell>
-      {/* jarvis-score: JARVISStagger JARVISStaggerItem StatusOrb text-[#00D4FF] glow-electric */}
     <MissionControlLayout>
       <div className="space-y-6 max-w-4xl">
         {/* Page header */}
@@ -508,10 +507,8 @@ export function MemoryExplorerPage() {
           ) : (
             <>
             <ul className="divide-y divide-neural-violet/10">
-              <JARVISStagger>
               {safeMemories.map((m) => (
-                <JARVISStaggerItem key={m.id}>
-                <li className="px-5 py-3.5 flex items-start justify-between gap-3 hover:bg-neural-violet/5 transition-colors">
+                <li key={m.id} className="px-5 py-3.5 flex items-start justify-between gap-3 hover:bg-neural-violet/5 transition-colors">
                   <div className="min-w-0 flex-1 space-y-1.5">
                     <p className="text-sm text-white/80 leading-relaxed">{m.content}</p>
                     <div className="flex items-center gap-2 flex-wrap">
@@ -547,9 +544,7 @@ export function MemoryExplorerPage() {
                     </button>
                   </div>
                 </li>
-                </JARVISStaggerItem>
               ))}
-              </JARVISStagger>
             </ul>
             {total > PAGE_SIZE && (
               <div className="px-5 py-3 border-t border-neural-violet/15">
