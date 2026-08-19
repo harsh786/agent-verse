@@ -196,8 +196,8 @@ export default function ChatPage() {
         {sessionId ? (
           <>
             {/* Thread header */}
-            <header className="px-6 py-3 border-b border-white/[0.08] dark:border-gray-700 flex items-center justify-between bg-[#0F1826] dark:bg-gray-900">
-              <h1 className="text-sm font-semibold text-[#A0B4CC] dark:text-gray-200 truncate">
+            <header className="px-6 py-3 border-b border-white/[0.08] dark:border-[#1E2535] flex items-center justify-between bg-[#0F1826] dark:bg-[#0F1117]">
+              <h1 className="text-sm font-semibold text-[#A0B4CC] dark:text-[#E2E8F0] truncate">
                 {sessions.find((s) => s.id === sessionId)?.title ?? 'Chat'}
               </h1>
               <span className="text-xs text-[#A0B4CC]">
@@ -228,7 +228,7 @@ export default function ChatPage() {
               💬
             </div>
             <div>
-              <h2 className="text-xl font-semibold text-[#F0F6FF] dark:text-gray-200">
+              <h2 className="text-xl font-semibold text-[#F0F6FF] dark:text-[#E2E8F0]">
                 AgentVerse Chat
               </h2>
               <p className="mt-2 text-sm text-[#5A7494] max-w-sm">
@@ -237,7 +237,7 @@ export default function ChatPage() {
               </p>
             </div>
             <button
-              className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-medium transition-colors"
+              className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-[#F1F5F9] rounded-xl font-medium transition-colors"
               onClick={handleNewSession}
             >
               Start a New Chat

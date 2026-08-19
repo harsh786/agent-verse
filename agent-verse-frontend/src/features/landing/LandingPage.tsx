@@ -144,7 +144,7 @@ function PipelineDemo() {
           <div className="px-5 pt-5 pb-3">
             <div className="flex items-center gap-2 mb-5">
               <span className="text-xs text-[#5A7494] font-mono">goal:</span>
-              <span className="text-sm text-white font-medium">
+              <span className="text-sm text-[#F1F5F9] font-medium">
                 &quot;Find all Jira tickets assigned to Abhay Dwivedi across all projects&quot;
               </span>
             </div>
@@ -161,12 +161,12 @@ function PipelineDemo() {
                       : "border-white/[0.04] bg-[#0F1826]/[0.01] opacity-40"
                   }`}
                 >
-                  <span className={`text-lg ${active === i ? s.color : active > i ? "text-emerald-400" : "text-slate-600"}`}>
+                  <span className={`text-lg ${active === i ? s.color : active > i ? "text-emerald-400" : "text-[#374151]"}`}>
                     {active > i ? "✓" : s.icon}
                   </span>
-                  <span className="text-[10px] font-medium text-slate-400 text-center leading-tight">{s.label}</span>
+                  <span className="text-[10px] font-medium text-[#94A3B8] text-center leading-tight">{s.label}</span>
                   {active === i && (
-                    <div className="absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] text-slate-400 bg-[#0c0c18] px-2 py-0.5 rounded border border-white/[0.06] z-10">
+                    <div className="absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] text-[#94A3B8] bg-[#0c0c18] px-2 py-0.5 rounded border border-white/[0.06] z-10">
                       {s.detail}
                     </div>
                   )}
@@ -180,7 +180,7 @@ function PipelineDemo() {
               active >= PIPELINE_STEPS.length - 1 ? "border-emerald-500/30 bg-emerald-900/10" : "border-white/[0.04] opacity-20"
             }`}>
               <span className="text-emerald-400 text-sm">✓</span>
-              <span className="font-mono text-xs text-slate-300">Found 47 issues across 6 projects · 0.8s · $0.0014</span>
+              <span className="font-mono text-xs text-[#CBD5E1]">Found 47 issues across 6 projects · 0.8s · $0.0014</span>
             </div>
           </div>
         </div>
@@ -401,7 +401,7 @@ function CapCard({ icon, title, desc, tag, glow, delay }: CapCard & { delay: num
   return (
     <div
       ref={ref}
-      className={`reveal ${on ? "reveal-on" : ""} group relative overflow-hidden rounded-2xl border border-white/[0.06] bg-[#0F1826]/[0.025] hover:border-violet-500/25 hover:bg-white/[0.04] transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-300 cursor-default p-5`}
+      className={`reveal ${on ? "reveal-on" : ""} group relative overflow-hidden rounded-2xl border border-white/[0.06] bg-[#0F1826]/[0.025] hover:border-violet-500/25 hover:bg-[#0A0D14]/[0.04] transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-300 cursor-default p-5`}
       style={{ transitionDelay: `${delay}ms`, animationDelay: `${delay}ms` }}
     >
       <div className={`absolute inset-0 bg-gradient-to-br ${glow} to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
@@ -414,8 +414,8 @@ function CapCard({ icon, title, desc, tag, glow, delay }: CapCard & { delay: num
             </span>
           )}
         </div>
-        <h3 className="font-semibold text-white text-sm mb-2 leading-snug">{title}</h3>
-        <p className="text-xs text-slate-400 leading-relaxed">{desc}</p>
+        <h3 className="font-semibold text-[#F1F5F9] text-sm mb-2 leading-snug">{title}</h3>
+        <p className="text-xs text-[#94A3B8] leading-relaxed">{desc}</p>
       </div>
     </div>
   );
@@ -426,8 +426,8 @@ function CapabilitySection({ label, caption, cards }: typeof CAPABILITY_GROUPS[0
   return (
     <div className="py-20">
       <div ref={ref} className={`reveal ${on ? "reveal-on" : ""} text-center mb-12`}>
-        <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">{label}</h2>
-        <p className="text-slate-400 max-w-2xl mx-auto">{caption}</p>
+        <h2 className="font-display text-3xl md:text-4xl font-bold text-[#F1F5F9] mb-3">{label}</h2>
+        <p className="text-[#94A3B8] max-w-2xl mx-auto">{caption}</p>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {cards.map((c, i) => (
@@ -459,7 +459,7 @@ function ConnectorTag({ n, c }: { n: string; c: string }) {
   return (
     <div className="flex-shrink-0 flex items-center gap-2 px-4 py-2 rounded-lg border border-white/[0.06] bg-[#0F1826]/[0.02] hover:border-white/15 transition-colors">
       <span className="h-2 w-2 rounded-full flex-shrink-0" style={{ background: c }} />
-      <span className="text-sm text-slate-300 whitespace-nowrap font-medium">{n}</span>
+      <span className="text-sm text-[#CBD5E1] whitespace-nowrap font-medium">{n}</span>
     </div>
   );
 }
@@ -471,10 +471,10 @@ function ConnectorMarquee() {
         <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-violet-400 mb-4">
           <span className="h-px w-8 bg-violet-400/50" /> Universal Connectivity <span className="h-px w-8 bg-violet-400/50" />
         </div>
-        <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">
+        <h2 className="font-display text-3xl md:text-4xl font-bold text-[#F1F5F9] mb-3">
           227 production-certified connectors
         </h2>
-        <p className="text-slate-400 max-w-xl mx-auto">
+        <p className="text-[#94A3B8] max-w-xl mx-auto">
           Every connector ships with certified read/write tool parity, encrypted credential storage and hot-swap registration.
         </p>
       </div>
@@ -508,7 +508,7 @@ function StatCard({ stat, on }: { stat: typeof STATS[0]; on: boolean }) {
   const count = useCounter(stat.val, 2000, on);
   return (
     <div className="text-center">
-      <div className="font-display text-4xl md:text-5xl font-bold text-white tabular-nums">
+      <div className="font-display text-4xl md:text-5xl font-bold text-[#F1F5F9] tabular-nums">
         {count.toLocaleString()}{stat.suffix}
       </div>
       <div className="text-xs text-[#5A7494] mt-2 leading-tight">{stat.label}</div>
@@ -523,10 +523,10 @@ function StatsSection() {
       <div className="relative rounded-2xl overflow-hidden border border-white/[0.06] bg-gradient-to-br from-violet-900/15 via-[#0c0c18] to-indigo-900/10 p-12 md:p-16">
         <div className="absolute inset-0 landing-grid-bg opacity-10" />
         <div ref={ref} className="relative text-center mb-12">
-          <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">
+          <h2 className="font-display text-3xl md:text-4xl font-bold text-[#F1F5F9] mb-3">
             Built for production at every layer
           </h2>
-          <p className="text-slate-400">Not a demo. Not a prototype. Every number comes from shipped code.</p>
+          <p className="text-[#94A3B8]">Not a demo. Not a prototype. Every number comes from shipped code.</p>
         </div>
         <div className="relative grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-8">
           {STATS.map((s, i) => (
@@ -585,11 +585,11 @@ function ArchCard({ item, delay }: { item: typeof ARCH_LAYERS[0]; delay: number 
     >
       <div className="flex items-center gap-2 mb-4">
         <span className={`h-2 w-2 rounded-full ${item.dot}`} />
-        <span className="text-xs font-semibold text-white">{item.title}</span>
+        <span className="text-xs font-semibold text-[#F1F5F9]">{item.title}</span>
       </div>
       <ul className="space-y-2">
         {item.items.map(it => (
-          <li key={it} className="text-xs text-slate-400 flex items-center gap-1.5">
+          <li key={it} className="text-xs text-[#94A3B8] flex items-center gap-1.5">
             <span className="h-px w-3 bg-slate-600 flex-shrink-0" />{it}
           </li>
         ))}
@@ -606,10 +606,10 @@ function ArchSection() {
         <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-[#5A7494] mb-4">
           <span className="h-px w-8 bg-slate-600" /> Architecture
         </div>
-        <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">
+        <h2 className="font-display text-3xl md:text-4xl font-bold text-[#F1F5F9] mb-3">
           Five production layers, zero compromise
         </h2>
-        <p className="text-slate-400 max-w-xl mx-auto">
+        <p className="text-[#94A3B8] max-w-xl mx-auto">
           Each layer is independently deployable, fully observable, and designed to fail safely.
         </p>
       </div>
@@ -676,13 +676,13 @@ function SpotlightCard({ item, delay }: { item: typeof SPOTLIGHTS[0]; delay: num
       className={`reveal ${on ? "reveal-on" : ""} relative rounded-2xl border ${item.border} bg-[#0F1826]/[0.025] p-6 flex flex-col`}
       style={{ transitionDelay: `${delay}ms` }}
     >
-      <div className={`inline-flex self-start text-xs font-semibold px-2.5 py-1 rounded-full bg-gradient-to-r ${item.accent} text-white mb-4`}>
+      <div className={`inline-flex self-start text-xs font-semibold px-2.5 py-1 rounded-full bg-gradient-to-r ${item.accent} text-[#F1F5F9] mb-4`}>
         {item.role}
       </div>
-      <h3 className="font-display font-bold text-white text-base mb-4 leading-snug">{item.headline}</h3>
+      <h3 className="font-display font-bold text-[#F1F5F9] text-base mb-4 leading-snug">{item.headline}</h3>
       <ul className="space-y-2.5 flex-1">
         {item.bullets.map((b, j) => (
-          <li key={j} className="flex items-start gap-2 text-sm text-slate-400">
+          <li key={j} className="flex items-start gap-2 text-sm text-[#94A3B8]">
             <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-slate-500 flex-shrink-0" />
             {b}
           </li>
@@ -707,10 +707,10 @@ function SpotlightSection() {
         <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-[#5A7494] mb-4">
           <span className="h-px w-8 bg-slate-600" /> Use Cases
         </div>
-        <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">
+        <h2 className="font-display text-3xl md:text-4xl font-bold text-[#F1F5F9] mb-3">
           One platform. Every team.
         </h2>
-        <p className="text-slate-400 max-w-xl mx-auto">
+        <p className="text-[#94A3B8] max-w-xl mx-auto">
           AgentVerse agents work across functions without custom integrations or manual handoffs.
         </p>
       </div>
@@ -743,8 +743,8 @@ function ObsCard({ item, delay }: { item: typeof OBS_ITEMS[0]; delay: number }) 
       style={{ transitionDelay: `${delay}ms` }}
     >
       <div className="text-2xl mb-3">{item.icon}</div>
-      <h3 className="font-semibold text-white text-sm mb-2">{item.title}</h3>
-      <p className="text-xs text-slate-400 leading-relaxed">{item.desc}</p>
+      <h3 className="font-semibold text-[#F1F5F9] text-sm mb-2">{item.title}</h3>
+      <p className="text-xs text-[#94A3B8] leading-relaxed">{item.desc}</p>
     </div>
   );
 }
@@ -757,10 +757,10 @@ function ObsSection() {
         <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-[#5A7494] mb-4">
           <span className="h-px w-8 bg-slate-600" /> Observability
         </div>
-        <h2 className="font-display text-3xl md:text-4xl font-bold text-white mb-3">
+        <h2 className="font-display text-3xl md:text-4xl font-bold text-[#F1F5F9] mb-3">
           Full transparency into every decision
         </h2>
-        <p className="text-slate-400 max-w-xl mx-auto">
+        <p className="text-[#94A3B8] max-w-xl mx-auto">
           See exactly what your agents thought, why they called which tools, and where costs went.
         </p>
       </div>
@@ -790,27 +790,27 @@ function CTASection({ onStart }: { onStart: () => void }) {
             <span className="h-1.5 w-1.5 rounded-full bg-violet-400 animate-pulse" />
             Ready to deploy
           </div>
-          <h2 className="font-display text-4xl md:text-5xl font-bold text-white mb-5 leading-tight">
+          <h2 className="font-display text-4xl md:text-5xl font-bold text-[#F1F5F9] mb-5 leading-tight">
             The operating system for<br />
             <span className="bg-gradient-to-r from-violet-400 via-indigo-300 to-sky-400 bg-clip-text text-transparent">
               autonomous enterprise AI.
             </span>
           </h2>
-          <p className="text-slate-400 text-lg max-w-lg mx-auto mb-10">
+          <p className="text-[#94A3B8] text-lg max-w-lg mx-auto mb-10">
             Multi-tenant. Governance-first. Connects to everything.
             Submit a goal — your agents handle the rest.
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <button
               onClick={onStart}
-              className="group relative px-8 py-4 font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 rounded-xl hover:shadow-2xl hover:shadow-violet-900/40 transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:scale-[1.02] active:scale-[0.98]"
+              className="group relative px-8 py-4 font-semibold text-[#F1F5F9] bg-gradient-to-r from-violet-600 to-indigo-600 rounded-xl hover:shadow-2xl hover:shadow-violet-900/40 transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:scale-[1.02] active:scale-[0.98]"
             >
               <span className="absolute inset-0 rounded-xl bg-[#0F1826]/10 opacity-0 group-hover:opacity-100 transition-opacity" />
               Launch your first agent →
             </button>
             <button
               onClick={onStart}
-              className="px-8 py-4 font-medium text-slate-300 border border-white/[0.1] rounded-xl hover:border-white/25 hover:text-white transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:bg-white/[0.03]"
+              className="px-8 py-4 font-medium text-[#CBD5E1] border border-white/[0.1] rounded-xl hover:border-white/25 hover:text-[#F1F5F9] transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:bg-[#0A0D14]/[0.03]"
             >
               Sign in to dashboard
             </button>
@@ -841,27 +841,27 @@ function NavBar({ onStart }: { onStart: () => void }) {
         {/* Brand */}
         <div className="flex items-center gap-2.5">
           <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center">
-            <span className="text-[11px] font-bold text-white">AV</span>
+            <span className="text-[11px] font-bold text-[#F1F5F9]">AV</span>
           </div>
-          <span className="font-display font-semibold text-white text-base tracking-tight">AgentVerse</span>
+          <span className="font-display font-semibold text-[#F1F5F9] text-base tracking-tight">AgentVerse</span>
         </div>
         {/* Links */}
         <div className="hidden md:flex items-center gap-7">
           {["Platform", "Connectors", "Governance", "Use Cases"].map(l => (
             <a key={l} href={`#${l.toLowerCase().replace(" ", "-")}`}
-              className="text-sm text-slate-400 hover:text-white transition-colors">
+              className="text-sm text-[#94A3B8] hover:text-[#F1F5F9] transition-colors">
               {l}
             </a>
           ))}
         </div>
         {/* Actions */}
         <div className="flex items-center gap-3">
-          <button onClick={onStart} className="text-sm text-slate-400 hover:text-white transition-colors px-3 py-1.5">
+          <button onClick={onStart} className="text-sm text-[#94A3B8] hover:text-[#F1F5F9] transition-colors px-3 py-1.5">
             Sign in
           </button>
           <button
             onClick={onStart}
-            className="px-4 py-2 text-sm font-medium bg-violet-600 hover:bg-violet-500 text-white rounded-lg transition-colors shadow-lg shadow-violet-900/30"
+            className="px-4 py-2 text-sm font-medium bg-violet-600 hover:bg-violet-500 text-[#F1F5F9] rounded-lg transition-colors shadow-lg shadow-violet-900/30"
           >
             Get started
           </button>
@@ -882,9 +882,9 @@ function Footer() {
         <div className="max-w-xs">
           <div className="flex items-center gap-2 mb-4">
             <div className="h-6 w-6 rounded-md bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center">
-              <span className="text-[9px] font-bold text-white">AV</span>
+              <span className="text-[9px] font-bold text-[#F1F5F9]">AV</span>
             </div>
-            <span className="font-display font-semibold text-white">AgentVerse</span>
+            <span className="font-display font-semibold text-[#F1F5F9]">AgentVerse</span>
           </div>
           <p className="text-xs text-[#5A7494] leading-relaxed">
             A multi-tenant operating system for autonomous AI agents. Governance-first. Enterprise-ready. Open architecture.
@@ -897,17 +897,17 @@ function Footer() {
             { h: "Developers", ls: ["Python SDK", "TypeScript SDK", "GitHub Action", "OpenAPI Docs", "Certification"] },
           ].map(({ h, ls }) => (
             <div key={h}>
-              <div className="text-white font-medium mb-3">{h}</div>
+              <div className="text-[#F1F5F9] font-medium mb-3">{h}</div>
               {ls.map(l => (
                 <div key={l} className="mb-1.5">
-                  <a href="#" className="text-[#5A7494] hover:text-slate-300 transition-colors text-xs">{l}</a>
+                  <a href="#" className="text-[#5A7494] hover:text-[#CBD5E1] transition-colors text-xs">{l}</a>
                 </div>
               ))}
             </div>
           ))}
         </div>
       </div>
-      <div className="max-w-7xl mx-auto mt-10 pt-6 border-t border-white/[0.04] flex flex-col sm:flex-row justify-between gap-2 text-[11px] text-slate-600">
+      <div className="max-w-7xl mx-auto mt-10 pt-6 border-t border-white/[0.04] flex flex-col sm:flex-row justify-between gap-2 text-[11px] text-[#374151]">
         <span>© 2026 AgentVerse. The autonomous AI operating system.</span>
         <span>Multi-tenant · Governance-first · 227 connectors</span>
       </div>
@@ -925,7 +925,7 @@ export function LandingPage() {
 
   return (
     <JARVISPageShell>
-    <JARVISStagger className="min-h-screen bg-[#06060e] text-white overflow-x-hidden">
+    <JARVISStagger className="min-h-screen bg-[#06060e] text-[#F1F5F9] overflow-x-hidden">
 
       {/* Background atmosphere */}
       <div className="fixed inset-0 pointer-events-none z-0">
@@ -949,7 +949,7 @@ export function LandingPage() {
           </div>
 
           {/* Headline */}
-          <h1 className="font-display text-5xl md:text-7xl lg:text-[80px] font-extrabold text-white leading-[1.03] tracking-tight mb-7 animate-fade-in-up" style={{ animationDelay: "80ms" }}>
+          <h1 className="font-display text-5xl md:text-7xl lg:text-[80px] font-extrabold text-[#F1F5F9] leading-[1.03] tracking-tight mb-7 animate-fade-in-up" style={{ animationDelay: "80ms" }}>
             Your agents.<br />
             <span className="bg-gradient-to-r from-violet-400 via-indigo-300 to-sky-400 bg-clip-text text-transparent">
               Every tool. Zero code.
@@ -957,13 +957,13 @@ export function LandingPage() {
           </h1>
 
           {/* Typewriter */}
-          <div className="text-xl md:text-2xl text-slate-300 mb-4 animate-fade-in-up h-8" style={{ animationDelay: "180ms" }}>
+          <div className="text-xl md:text-2xl text-[#CBD5E1] mb-4 animate-fade-in-up h-8" style={{ animationDelay: "180ms" }}>
             Your agent&nbsp;<Typewriter />
           </div>
 
-          <p className="text-slate-400 text-base md:text-lg max-w-2xl mx-auto mb-10 leading-relaxed animate-fade-in-up" style={{ animationDelay: "260ms" }}>
+          <p className="text-[#94A3B8] text-base md:text-lg max-w-2xl mx-auto mb-10 leading-relaxed animate-fade-in-up" style={{ animationDelay: "260ms" }}>
             Submit a natural language goal. AgentVerse plans, executes across{" "}
-            <span className="text-white font-medium">227 real-world connectors</span>, verifies results, and replans on failure —
+            <span className="text-[#F1F5F9] font-medium">227 real-world connectors</span>, verifies results, and replans on failure —
             with enterprise governance baked in at every layer.
           </p>
 
@@ -971,12 +971,12 @@ export function LandingPage() {
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 animate-fade-in-up" style={{ animationDelay: "340ms" }}>
             <button
               onClick={go}
-              className="group relative px-7 py-3.5 font-semibold text-white bg-gradient-to-r from-violet-600 to-indigo-600 rounded-xl hover:shadow-xl hover:shadow-violet-900/40 transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:scale-[1.02] active:scale-[0.98]"
+              className="group relative px-7 py-3.5 font-semibold text-[#F1F5F9] bg-gradient-to-r from-violet-600 to-indigo-600 rounded-xl hover:shadow-xl hover:shadow-violet-900/40 transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:scale-[1.02] active:scale-[0.98]"
             >
               <span className="absolute inset-0 rounded-xl bg-[#0F1826]/10 opacity-0 group-hover:opacity-100 transition-opacity" />
               Launch your first agent →
             </button>
-            <a href="#platform" className="px-7 py-3.5 font-medium text-slate-300 border border-white/[0.1] rounded-xl hover:border-white/20 hover:text-white transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:bg-white/[0.03]">
+            <a href="#platform" className="px-7 py-3.5 font-medium text-[#CBD5E1] border border-white/[0.1] rounded-xl hover:border-white/20 hover:text-[#F1F5F9] transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200 hover:bg-[#0A0D14]/[0.03]">
               Explore the platform
             </a>
           </div>

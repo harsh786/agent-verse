@@ -55,7 +55,7 @@ function SLACountdown({ deadline_at }: { deadline_at: string | null }) {
       animate={isUrgent ? 'animate' : 'initial'}
       variants={isUrgent ? slaPulse : undefined}
       className={`text-xs font-medium flex items-center gap-1 ${
-        isOverdue ? 'text-red-400' : isUrgent ? 'text-amber-400' : 'text-white/40'
+        isOverdue ? 'text-red-400' : isUrgent ? 'text-amber-400' : 'text-[#F1F5F9]/40'
       }`}
       aria-label={`SLA deadline: ${isOverdue ? 'overdue' : `${diffH}h ${diffM}m remaining`}`}
     >
@@ -129,7 +129,7 @@ function ApprovalCard({
         </div>
 
         {/* Meta */}
-        <div className="flex items-center gap-3 text-xs text-white/40 mb-3">
+        <div className="flex items-center gap-3 text-xs text-[#F1F5F9]/40 mb-3">
           <span className="flex items-center gap-1">
             <User className="h-3 w-3" aria-hidden />
             {req.step_id}
@@ -143,8 +143,8 @@ function ApprovalCard({
           <div className="space-y-2 mb-3">
             {req.context.slice(0, 2).map((item, i) => (
               <div key={i} className="rounded-lg bg-[#0F1826]/4 border border-white/8 px-3 py-2">
-                <p className="text-xs text-white/50 mb-1">{item.title}</p>
-                <p className="text-xs text-white/80 font-mono truncate">
+                <p className="text-xs text-[#F1F5F9]/50 mb-1">{item.title}</p>
+                <p className="text-xs text-[#F1F5F9]/80 font-mono truncate">
                   {typeof item.data === 'string' ? item.data : JSON.stringify(item.data)}
                 </p>
               </div>
@@ -159,7 +159,7 @@ function ApprovalCard({
             onChange={(e) => setNote(e.target.value)}
             placeholder="Add a note (optional)…"
             rows={2}
-            className="w-full px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-white/80
+            className="w-full px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-[#F1F5F9]/80
                        placeholder-white/30 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500
                        resize-none mb-3"
             aria-label="Decision note"
@@ -178,10 +178,10 @@ function ApprovalCard({
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium
                   transition-colors disabled:opacity-50 ${
                     action.id === 'approve' || action.id === 'approved'
-                      ? 'bg-emerald-600/80 hover:bg-emerald-600 text-white'
+                      ? 'bg-emerald-600/80 hover:bg-emerald-600 text-[#F1F5F9]'
                       : action.id === 'reject' || action.id === 'rejected'
-                      ? 'bg-red-600/60 hover:bg-red-600/80 text-white'
-                      : 'bg-sky-600/60 hover:bg-sky-600/80 text-white'
+                      ? 'bg-red-600/60 hover:bg-red-600/80 text-[#F1F5F9]'
+                      : 'bg-sky-600/60 hover:bg-sky-600/80 text-[#F1F5F9]'
                   }`}
                 aria-label={`${action.label || action.id} request`}
               >
@@ -198,7 +198,7 @@ function ApprovalCard({
                 onClick={() => onDecide(req.request_id, 'approved', note || undefined)}
                 disabled={isDeciding}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600/80
-                           hover:bg-emerald-600 text-white text-xs font-medium transition-colors
+                           hover:bg-emerald-600 text-[#F1F5F9] text-xs font-medium transition-colors
                            disabled:opacity-50"
                 aria-label="Approve request"
               >
@@ -212,7 +212,7 @@ function ApprovalCard({
                 onClick={() => onDecide(req.request_id, 'rejected', note || undefined)}
                 disabled={isDeciding}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-600/60
-                           hover:bg-red-600/80 text-white text-xs font-medium transition-colors
+                           hover:bg-red-600/80 text-[#F1F5F9] text-xs font-medium transition-colors
                            disabled:opacity-50"
                 aria-label="Reject request"
               >
@@ -225,7 +225,7 @@ function ApprovalCard({
           <button
             onClick={() => setShowNote((v) => !v)}
             className="flex items-center gap-1 px-2 py-1.5 rounded-xl bg-[#0F1826]/5
-                       hover:bg-white/10 text-white/40 text-xs transition-colors ml-auto"
+                       hover:bg-[#0A0D14]/10 text-[#F1F5F9]/40 text-xs transition-colors ml-auto"
             aria-label={showNote ? 'Hide note field' : 'Add note'}
             aria-expanded={showNote}
           >
@@ -292,7 +292,7 @@ export default function ApprovalInboxPage() {
 
   return (
     <JARVISPageShell>
-    <JARVISStagger className="min-h-screen bg-slate-950 text-white">
+    <JARVISStagger className="min-h-screen bg-slate-950 text-[#F1F5F9]">
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-white/10 bg-slate-950/90 backdrop-blur-xl
                           px-6 py-4">
@@ -308,14 +308,14 @@ export default function ApprovalInboxPage() {
                 </span>
               )}
             </h1>
-            <p className="text-xs text-white/40 mt-0.5">
+            <p className="text-xs text-[#F1F5F9]/40 mt-0.5">
               Avg resolution: {stats?.avg_resolution_seconds
                 ? `${Math.round(stats.avg_resolution_seconds / 60)}min`
                 : '—'}
             </p>
           </div>
-          <button onClick={() => refetch()} className="text-white/30 hover:text-white p-2
-                                                         rounded-xl hover:bg-white/5 transition-colors"
+          <button onClick={() => refetch()} className="text-[#F1F5F9]/30 hover:text-[#F1F5F9] p-2
+                                                         rounded-xl hover:bg-[#0A0D14]/5 transition-colors"
             aria-label="Refresh inbox">
             <RefreshCw className="h-4 w-4" />
           </button>
@@ -332,8 +332,8 @@ export default function ApprovalInboxPage() {
               aria-pressed={priorityFilter === p}
               className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-colors ${
                 priorityFilter === p
-                  ? 'bg-sky-600 text-white'
-                  : 'bg-[#0F1826]/5 text-white/50 hover:text-white hover:bg-white/10'
+                  ? 'bg-sky-600 text-[#F1F5F9]'
+                  : 'bg-[#0F1826]/5 text-[#F1F5F9]/50 hover:text-[#F1F5F9] hover:bg-[#0A0D14]/10'
               }`}
             >
               {p || 'All'}
@@ -343,10 +343,10 @@ export default function ApprovalInboxPage() {
           {/* Bulk actions */}
           {selected.size > 0 && (
             <div className="ml-auto flex items-center gap-2">
-              <span className="text-xs text-white/40">{selected.size} selected</span>
+              <span className="text-xs text-[#F1F5F9]/40">{selected.size} selected</span>
               <button
                 onClick={() => handleBulkDecide('approved')}
-                className="px-3 py-1.5 rounded-xl bg-emerald-600/80 hover:bg-emerald-600 text-white
+                className="px-3 py-1.5 rounded-xl bg-emerald-600/80 hover:bg-emerald-600 text-[#F1F5F9]
                            text-xs font-medium transition-colors"
                 aria-label="Bulk approve selected"
               >
@@ -354,7 +354,7 @@ export default function ApprovalInboxPage() {
               </button>
               <button
                 onClick={() => handleBulkDecide('rejected')}
-                className="px-3 py-1.5 rounded-xl bg-red-600/60 hover:bg-red-600/80 text-white
+                className="px-3 py-1.5 rounded-xl bg-red-600/60 hover:bg-red-600/80 text-[#F1F5F9]
                            text-xs font-medium transition-colors"
                 aria-label="Bulk reject selected"
               >
@@ -378,7 +378,7 @@ export default function ApprovalInboxPage() {
             role="status"
           >
             <CheckCircle className="h-14 w-14 mx-auto mb-4 text-emerald-400/30" aria-hidden />
-            <p className="text-white/50 text-sm">All caught up! No pending approvals.</p>
+            <p className="text-[#F1F5F9]/50 text-sm">All caught up! No pending approvals.</p>
           </motion.div>
         ) : (
           <AnimatePresence mode="popLayout">

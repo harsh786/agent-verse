@@ -64,7 +64,7 @@ const DOC_TYPE_COLORS: Record<OcrDocumentType, string> = {
   invoice: 'bg-red-500/20 text-red-400 border-red-500/40',
   bank_statement: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40',
   receipt: 'bg-sky-500/20 text-sky-400 border-sky-500/40',
-  general: 'bg-slate-500/20 text-slate-400 border-slate-500/40',
+  general: 'bg-slate-500/20 text-[#94A3B8] border-slate-500/40',
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -182,13 +182,13 @@ function DropZone({
         'cursor-pointer select-none px-6 py-12 text-center transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200',
         dragging
           ? 'border-indigo-500 bg-indigo-500/10 scale-[1.01]'
-          : 'border-slate-700 bg-slate-800/40 hover:border-slate-500 hover:bg-slate-800/60',
+          : 'border-[#1E2535] bg-[#1A1F2E]/40 hover:border-slate-500 hover:bg-[#1A1F2E]/60',
         disabled ? 'pointer-events-none opacity-50' : '',
       ].join(' ')}
     >
       <Upload className={`h-10 w-10 ${dragging ? 'text-indigo-400' : 'text-[#5A7494]'}`} />
-      <p className="text-sm text-slate-400">{label}</p>
-      <p className="text-xs text-slate-600">JPEG · PNG · WebP · GIF · PDF — max 10 MB</p>
+      <p className="text-sm text-[#94A3B8]">{label}</p>
+      <p className="text-xs text-[#374151]">JPEG · PNG · WebP · GIF · PDF — max 10 MB</p>
       <input
         ref={inputRef}
         type="file"
@@ -231,16 +231,16 @@ function ConfidenceRing({ value }: { value: number }) {
 
 function FieldRow({ name, field }: { name: string; field: OcrFieldResult }) {
   return (
-    <tr className="border-b border-slate-800 hover:bg-slate-800/30">
-      <td className="py-2.5 pr-4 text-xs font-medium text-slate-400 whitespace-nowrap capitalize">
+    <tr className="border-b border-[#1E2535] hover:bg-[#1A1F2E]/30">
+      <td className="py-2.5 pr-4 text-xs font-medium text-[#94A3B8] whitespace-nowrap capitalize">
         {name.replace(/_/g, ' ')}
       </td>
-      <td className="py-2.5 pr-4 text-sm text-slate-200 font-mono max-w-[240px] break-all">
-        {field.value || <span className="text-slate-600 italic">—</span>}
+      <td className="py-2.5 pr-4 text-sm text-[#E2E8F0] font-mono max-w-[240px] break-all">
+        {field.value || <span className="text-[#374151] italic">—</span>}
       </td>
       <td className="py-2.5 pr-4">
         <div className="flex items-center gap-2">
-          <div className="h-1.5 w-20 rounded-full bg-slate-700">
+          <div className="h-1.5 w-20 rounded-full bg-[#252B3B]">
             <div
               className={`h-1.5 rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] ${confidenceColor(field.confidence)}`}
               style={{ width: pct(field.confidence) }}
@@ -259,7 +259,7 @@ function FieldRow({ name, field }: { name: string; field: OcrFieldResult }) {
       <td className="py-2.5">
         <button
           onClick={() => copyText(field.value)}
-          className="rounded p-1 text-slate-600 hover:text-slate-300 transition-colors"
+          className="rounded p-1 text-[#374151] hover:text-[#CBD5E1] transition-colors"
           aria-label={`Copy ${name}`}
           title="Copy value"
         >
@@ -298,7 +298,7 @@ function OcrResultPanel({
   return (
     <div className="flex flex-col gap-4" data-testid="ocr-result">
       {/* Header row */}
-      <div className="flex flex-wrap items-center gap-4 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
+      <div className="flex flex-wrap items-center gap-4 rounded-xl border border-[#1E2535] bg-[#1A1F2E]/60 p-4">
         <ConfidenceRing value={result.overall_confidence} />
 
         <div className="flex flex-1 flex-col gap-2">
@@ -313,12 +313,12 @@ function OcrResultPanel({
               {DOC_TYPE_LABELS[result.document_type] ?? result.document_type}
             </span>
 
-            <span className="inline-flex items-center gap-1 rounded-full border border-slate-600 bg-slate-700/50 px-3 py-0.5 text-xs text-slate-300">
+            <span className="inline-flex items-center gap-1 rounded-full border border-[#1E2535] bg-[#252B3B]/50 px-3 py-0.5 text-xs text-[#CBD5E1]">
               <Zap className="h-3 w-3 text-yellow-400" />
               {result.engine_used === 'tesseract' ? 'Tesseract' : 'LLM Vision'}
             </span>
 
-            <span className="inline-flex items-center gap-1 rounded-full border border-slate-600 bg-slate-700/50 px-3 py-0.5 text-xs text-slate-300">
+            <span className="inline-flex items-center gap-1 rounded-full border border-[#1E2535] bg-[#252B3B]/50 px-3 py-0.5 text-xs text-[#CBD5E1]">
               <Layers className="h-3 w-3 text-sky-400" />
               {result.page_count} {result.page_count === 1 ? 'page' : 'pages'}
             </span>
@@ -336,20 +336,20 @@ function OcrResultPanel({
         <div className="flex gap-2">
           <button
             onClick={exportJson}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-600 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-400 hover:text-white transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-1.5 text-xs text-[#CBD5E1] hover:border-slate-400 hover:text-[#F1F5F9] transition-colors"
             data-testid="export-json"
           >
             <Download className="h-3.5 w-3.5" /> Export JSON
           </button>
           <button
             onClick={onSave}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-600 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-400 hover:text-white transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-1.5 text-xs text-[#CBD5E1] hover:border-slate-400 hover:text-[#F1F5F9] transition-colors"
           >
             <History className="h-3.5 w-3.5" /> Save
           </button>
           <button
             onClick={onReset}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-600 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-400 hover:text-white transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-1.5 text-xs text-[#CBD5E1] hover:border-slate-400 hover:text-[#F1F5F9] transition-colors"
             data-testid="new-extraction"
           >
             <RefreshCw className="h-3.5 w-3.5" /> New
@@ -359,12 +359,12 @@ function OcrResultPanel({
 
       {/* Fields table */}
       {fields.length > 0 && (
-        <div className="rounded-xl border border-slate-700 bg-slate-800/40 p-4">
-          <h3 className="mb-3 text-sm font-semibold text-slate-300">Extracted Fields</h3>
+        <div className="rounded-xl border border-[#1E2535] bg-[#1A1F2E]/40 p-4">
+          <h3 className="mb-3 text-sm font-semibold text-[#CBD5E1]">Extracted Fields</h3>
           <div className="overflow-x-auto">
             <table className="w-full text-left" data-testid="fields-table">
               <thead>
-                <tr className="border-b border-slate-700">
+                <tr className="border-b border-[#1E2535]">
                   <th className="pb-2 text-xs uppercase tracking-wider text-[#5A7494]">Field</th>
                   <th className="pb-2 text-xs uppercase tracking-wider text-[#5A7494]">Value</th>
                   <th className="pb-2 text-xs uppercase tracking-wider text-[#5A7494]">Confidence</th>
@@ -383,17 +383,17 @@ function OcrResultPanel({
       )}
 
       {/* Raw text accordion */}
-      <div className="rounded-xl border border-slate-700 bg-slate-800/40">
+      <div className="rounded-xl border border-[#1E2535] bg-[#1A1F2E]/40">
         <button
           onClick={() => setRawOpen((o) => !o)}
-          className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium text-slate-300 hover:text-white transition-colors"
+          className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium text-[#CBD5E1] hover:text-[#F1F5F9] transition-colors"
           data-testid="raw-text-toggle"
           aria-expanded={rawOpen}
         >
           <span className="flex items-center gap-2">
             <ScanText className="h-4 w-4 text-indigo-400" />
             Raw Extracted Text
-            <span className="rounded-full bg-slate-700 px-2 py-0.5 text-xs text-slate-400">
+            <span className="rounded-full bg-[#252B3B] px-2 py-0.5 text-xs text-[#94A3B8]">
               {result.raw_text.length} chars
             </span>
           </span>
@@ -401,17 +401,17 @@ function OcrResultPanel({
         </button>
 
         {rawOpen && (
-          <div className="border-t border-slate-700 p-4">
+          <div className="border-t border-[#1E2535] p-4">
             <div className="relative">
               <pre
-                className="max-h-72 overflow-y-auto rounded-lg bg-slate-900 p-4 text-xs text-slate-300 leading-relaxed whitespace-pre-wrap break-words"
+                className="max-h-72 overflow-y-auto rounded-lg bg-[#0F1117] p-4 text-xs text-[#CBD5E1] leading-relaxed whitespace-pre-wrap break-words"
                 data-testid="raw-text"
               >
-                {result.raw_text || <span className="text-slate-600 italic">No text extracted</span>}
+                {result.raw_text || <span className="text-[#374151] italic">No text extracted</span>}
               </pre>
               <button
                 onClick={() => copyText(result.raw_text)}
-                className="absolute right-2 top-2 rounded-md bg-slate-800 p-1.5 text-[#5A7494] hover:text-slate-300 transition-colors"
+                className="absolute right-2 top-2 rounded-md bg-[#1A1F2E] p-1.5 text-[#5A7494] hover:text-[#CBD5E1] transition-colors"
                 aria-label="Copy raw text"
                 data-testid="copy-raw"
               >
@@ -560,14 +560,14 @@ export default function OcrPage() {
             <ScanText className="h-6 w-6 text-indigo-400" />
             OCR Document Extraction
           </h1>
-          <p className="mt-1 text-sm text-slate-400">
+          <p className="mt-1 text-sm text-[#94A3B8]">
             Extract text and structured fields from images and PDFs using Tesseract or LLM Vision
           </p>
         </div>
       </div>
 
       {/* Tab bar */}
-      <div className="flex gap-1 rounded-xl border border-slate-700 bg-slate-800/40 p-1">
+      <div className="flex gap-1 rounded-xl border border-[#1E2535] bg-[#1A1F2E]/40 p-1">
         {TABS.map((t) => (
           <button
             key={t.id}
@@ -576,8 +576,8 @@ export default function OcrPage() {
             className={[
               'flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-[color,background-color,border-color,opacity,box-shadow,transform]',
               tab === t.id
-                ? 'bg-indigo-600 text-white shadow'
-                : 'text-slate-400 hover:text-slate-200',
+                ? 'bg-indigo-600 text-[#F1F5F9] shadow'
+                : 'text-[#94A3B8] hover:text-[#E2E8F0]',
             ].join(' ')}
           >
             {t.icon}
@@ -594,23 +594,23 @@ export default function OcrPage() {
               {!file ? (
                 <DropZone onFile={handleSingleFile} />
               ) : (
-                <div className="flex flex-col gap-4 rounded-xl border border-slate-700 bg-slate-800/40 p-4">
+                <div className="flex flex-col gap-4 rounded-xl border border-[#1E2535] bg-[#1A1F2E]/40 p-4">
                   {/* Preview */}
                   <div className="flex items-center gap-4">
                     {preview ? (
                       <img
                         src={preview}
                         alt="Preview"
-                        className="h-20 w-20 rounded-lg object-cover border border-slate-700"
+                        className="h-20 w-20 rounded-lg object-cover border border-[#1E2535]"
                         data-testid="image-preview"
                       />
                     ) : (
-                      <div className="flex h-20 w-20 items-center justify-center rounded-lg border border-slate-700 bg-slate-800">
+                      <div className="flex h-20 w-20 items-center justify-center rounded-lg border border-[#1E2535] bg-[#1A1F2E]">
                         <FileText className="h-8 w-8 text-[#5A7494]" />
                       </div>
                     )}
                     <div className="flex flex-col gap-1">
-                      <p className="font-medium text-slate-200" data-testid="filename">
+                      <p className="font-medium text-[#E2E8F0]" data-testid="filename">
                         {file.name}
                       </p>
                       <p className="text-xs text-[#5A7494]">
@@ -629,7 +629,7 @@ export default function OcrPage() {
                   <button
                     onClick={handleExtract}
                     disabled={extractMutation.isPending}
-                    className="flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-6 py-3 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60 transition-colors"
+                    className="flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-6 py-3 text-sm font-semibold text-[#F1F5F9] hover:bg-indigo-500 disabled:opacity-60 transition-colors"
                     data-testid="extract-btn"
                   >
                     {extractMutation.isPending ? (
@@ -647,10 +647,10 @@ export default function OcrPage() {
 
                   {extractMutation.isPending && (
                     <div
-                      className="flex items-center gap-2 text-sm text-slate-400"
+                      className="flex items-center gap-2 text-sm text-[#94A3B8]"
                       data-testid="loading-indicator"
                     >
-                      <div className="h-1.5 flex-1 rounded-full bg-slate-700 overflow-hidden">
+                      <div className="h-1.5 flex-1 rounded-full bg-[#252B3B] overflow-hidden">
                         <div className="h-1.5 w-1/3 rounded-full bg-indigo-500 animate-pulse" />
                       </div>
                     </div>
@@ -703,7 +703,7 @@ export default function OcrPage() {
           {batchItems.length > 0 && (
             <>
               <div className="flex items-center justify-between">
-                <p className="text-sm text-slate-400">
+                <p className="text-sm text-[#94A3B8]">
                   {batchItems.length}/{MAX_BATCH} files queued
                 </p>
                 <div className="flex gap-2">
@@ -716,7 +716,7 @@ export default function OcrPage() {
                   <button
                     onClick={() => batchMutation.mutate(batchItems.filter((i) => i.status === 'pending'))}
                     disabled={batchMutation.isPending || batchItems.every((i) => i.status !== 'pending')}
-                    className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-60 transition-colors"
+                    className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-medium text-[#F1F5F9] hover:bg-indigo-500 disabled:opacity-60 transition-colors"
                     data-testid="extract-batch-btn"
                   >
                     {batchMutation.isPending ? (
@@ -732,16 +732,16 @@ export default function OcrPage() {
                 {batchItems.map((item) => (
                   <div
                     key={item.id}
-                    className="flex flex-col gap-3 rounded-xl border border-slate-700 bg-slate-800/40 p-4"
+                    className="flex flex-col gap-3 rounded-xl border border-[#1E2535] bg-[#1A1F2E]/40 p-4"
                     data-testid={`batch-item-${item.status}`}
                   >
                     <div className="flex items-center gap-2">
                       <FileText className="h-5 w-5 shrink-0 text-[#5A7494]" />
-                      <p className="truncate text-sm font-medium text-slate-200">{item.file.name}</p>
+                      <p className="truncate text-sm font-medium text-[#E2E8F0]">{item.file.name}</p>
                       {item.status === 'pending' && (
                         <button
                           onClick={() => setBatchItems((p) => p.filter((i) => i.id !== item.id))}
-                          className="ml-auto shrink-0 text-slate-600 hover:text-red-400 transition-colors"
+                          className="ml-auto shrink-0 text-[#374151] hover:text-red-400 transition-colors"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
@@ -752,7 +752,7 @@ export default function OcrPage() {
                     </div>
 
                     {item.result && (
-                      <div className="flex flex-col gap-1 rounded-lg bg-slate-900/50 p-2">
+                      <div className="flex flex-col gap-1 rounded-lg bg-[#0F1117]/50 p-2">
                         <span
                           className={`self-start rounded-full border px-2 py-0.5 text-xs font-medium ${
                             DOC_TYPE_COLORS[item.result.document_type] ?? DOC_TYPE_COLORS.general
@@ -760,7 +760,7 @@ export default function OcrPage() {
                         >
                           {DOC_TYPE_LABELS[item.result.document_type] ?? item.result.document_type}
                         </span>
-                        <p className="text-xs text-slate-400">
+                        <p className="text-xs text-[#94A3B8]">
                           Confidence: <span className={confidenceText(item.result.overall_confidence)}>{pct(item.result.overall_confidence)}</span>
                           &nbsp;·&nbsp;{Object.keys(item.result.fields).length} fields
                         </p>
@@ -775,9 +775,9 @@ export default function OcrPage() {
               </div>
 
               {batchResult && (
-                <div className="rounded-xl border border-slate-700 bg-slate-800/40 px-4 py-3 text-sm text-slate-300">
+                <div className="rounded-xl border border-[#1E2535] bg-[#1A1F2E]/40 px-4 py-3 text-sm text-[#CBD5E1]">
                   Batch complete: <span className="text-emerald-400 font-medium">{batchResult.succeeded}</span> succeeded,{' '}
-                  <span className={batchResult.failed > 0 ? 'text-red-400 font-medium' : 'text-slate-400'}>
+                  <span className={batchResult.failed > 0 ? 'text-red-400 font-medium' : 'text-[#94A3B8]'}>
                     {batchResult.failed}
                   </span>{' '}
                   failed out of {batchResult.total} documents.
@@ -792,10 +792,10 @@ export default function OcrPage() {
       {tab === 'history' && (
         <div className="flex flex-col gap-4">
           {history.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-slate-700 py-16 text-center">
-              <History className="h-10 w-10 text-slate-600" />
+            <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-[#1E2535] py-16 text-center">
+              <History className="h-10 w-10 text-[#374151]" />
               <p className="text-sm text-[#5A7494]">No extraction history yet</p>
-              <p className="text-xs text-slate-600">Save results from the Single tab to see them here</p>
+              <p className="text-xs text-[#374151]">Save results from the Single tab to see them here</p>
             </div>
           ) : (
             <>
@@ -811,13 +811,13 @@ export default function OcrPage() {
                 {history.map((entry) => (
                   <div
                     key={entry.id}
-                    className="flex flex-col gap-2 rounded-xl border border-slate-700 bg-slate-800/40 p-4"
+                    className="flex flex-col gap-2 rounded-xl border border-[#1E2535] bg-[#1A1F2E]/40 p-4"
                     data-testid="history-entry"
                   >
                     <div className="flex items-center justify-between gap-4">
                       <div className="flex items-center gap-2 min-w-0">
                         <FileText className="h-4 w-4 shrink-0 text-[#5A7494]" />
-                        <span className="truncate text-sm font-medium text-slate-200">{entry.filename}</span>
+                        <span className="truncate text-sm font-medium text-[#E2E8F0]">{entry.filename}</span>
                       </div>
                       <span className="shrink-0 text-xs text-[#5A7494]">
                         {new Date(entry.timestamp).toLocaleString()}

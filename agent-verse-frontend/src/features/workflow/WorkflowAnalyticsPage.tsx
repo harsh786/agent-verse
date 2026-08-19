@@ -27,10 +27,10 @@ function StatCard({
     <div className="rounded-2xl border border-white/8 bg-[#0F1826]/3 px-5 py-4">
       <div className={`flex items-center gap-2 ${colorMap[color] ?? colorMap.sky} mb-2`}>
         {icon}
-        <span className="text-xs font-medium text-white/50">{label}</span>
+        <span className="text-xs font-medium text-[#F1F5F9]/50">{label}</span>
       </div>
       <p className="text-2xl font-bold text-[#00D4FF]">{value}</p>
-      {subtext && <p className="text-xs text-white/30 mt-1">{subtext}</p>}
+      {subtext && <p className="text-xs text-[#F1F5F9]/30 mt-1">{subtext}</p>}
     </div>
   );
 }
@@ -45,7 +45,7 @@ function MiniBarChart({
   const max = Math.max(...data.map((d) => d.value), 1);
   return (
     <div className="rounded-2xl border border-white/8 bg-[#0F1826]/3 p-5">
-      <h3 className="text-sm font-semibold text-white mb-4">{title}</h3>
+      <h3 className="text-sm font-semibold text-[#F1F5F9] mb-4">{title}</h3>
       <div className="flex items-end gap-1.5 h-24">
         {data.map((d, i) => (
           <div key={i} className="flex-1 flex flex-col items-center gap-1">
@@ -56,7 +56,7 @@ function MiniBarChart({
               role="img"
               aria-label={`${d.label}: ${d.value}`}
             />
-            <span className="text-xs text-white/30 truncate w-full text-center" title={d.label}>
+            <span className="text-xs text-[#F1F5F9]/30 truncate w-full text-center" title={d.label}>
               {d.label.slice(0, 3)}
             </span>
           </div>
@@ -99,16 +99,16 @@ export default function WorkflowAnalyticsPage() {
 
       {/* Accessibility: announce loading state */}
       <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
-    <JARVISStagger className="min-h-screen bg-slate-950 text-white">
+    <JARVISStagger className="min-h-screen bg-slate-950 text-[#F1F5F9]">
       <header className="sticky top-0 z-30 flex items-center gap-3 px-6 py-4 border-b
                           border-white/10 bg-slate-950/90 backdrop-blur-xl">
-        <Link to={`/workflows/${id}/edit`} className="text-white/40 hover:text-white"
+        <Link to={`/workflows/${id}/edit`} className="text-[#F1F5F9]/40 hover:text-[#F1F5F9]"
           aria-label="Back to builder">
           <ChevronLeft className="h-5 w-5" />
         </Link>
         <div>
           <h1 className="text-sm font-bold">{wf?.name ?? 'Workflow'} — Analytics</h1>
-          <p className="text-xs text-white/40">Last 30 days</p>
+          <p className="text-xs text-[#F1F5F9]/40">Last 30 days</p>
         </div>
       </header>
 
@@ -169,7 +169,7 @@ export default function WorkflowAnalyticsPage() {
 
             {/* Empty analytics state */}
             {!analytics && (
-              <div className="text-center py-12 text-white/30" role="status">
+              <div className="text-center py-12 text-[#F1F5F9]/30" role="status">
                 <AlertCircle className="h-10 w-10 mx-auto mb-3 opacity-30" aria-hidden />
                 <p className="text-sm">Analytics data will appear after the first run.</p>
               </div>

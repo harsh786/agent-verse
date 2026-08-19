@@ -68,7 +68,7 @@ const AUTH_TYPE_CONFIGS: Record<string, AuthTypeConfig> = {
   basic: {
     label: 'Basic Auth',
     description: 'Sends Authorization: Basic base64(username:password)',
-    color: 'bg-[#0F1826] text-[#F0F6FF] dark:bg-gray-800/30 dark:text-gray-400',
+    color: 'bg-[#0F1826] text-[#F0F6FF] dark:bg-[#1A1F2E]/30 dark:text-[#94A3B8]',
     fields: [
       {
         key: 'username',

@@ -12,7 +12,7 @@ import {
   Hammer, Sparkles, Plus, Search, TestTube2, Microscope, MousePointer2, Hash,
   Library, ClipboardList, User, LogOut,
   // ── Added for missing features ──────────────────────────────────────────
-  MessageSquare, GitMerge, Share2, Moon,
+  MessageSquare, GitMerge, Share2, Moon, ScanText, ShieldAlert, Braces, Workflow,
 } from "lucide-react";
 import { useUiStore } from "@/stores/ui";
 import { useQuery } from "@tanstack/react-query";
@@ -114,6 +114,10 @@ export function Sidebar() {
         { to: "/observability",       icon: Activity,     label: "Observability"    },
         { to: "/observability/cost",  icon: DollarSign,   label: "Cost Dashboard"   },
         { to: "/eval",                icon: BarChart3,    label: "Eval"             },
+        { to: "/eval-suites",         icon: FlaskConical, label: "Eval Suites"      },
+        { to: "/prompt-variants",     icon: Braces,       label: "Prompt Variants"  },
+        { to: "/red-team",            icon: ShieldAlert,  label: "Red Team"         },
+        { to: "/workflow-engine",     icon: Workflow,     label: "Workflow Engine"  },
         { to: "/enterprise",          icon: Building,     label: "Enterprise"       },
         { to: "/analytics",           icon: BarChart2,    label: "Analytics"        },
         { to: "/workflow-builder",    icon: GitBranch,    label: "Workflow Builder" },
@@ -139,6 +143,7 @@ export function Sidebar() {
         { to: "/connectors/catalog", icon: Package,       label: "Connector Catalog" },
         { to: "/simulation",         icon: Microscope,    label: "Simulation"        },
         { to: "/settings/budgets",   icon: DollarSign,    label: "Budget Manager"    },
+        { to: "/ocr",               icon: ScanText,       label: "OCR Extraction"    },
       ],
     },
   ];

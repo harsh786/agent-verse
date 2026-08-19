@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api/client';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { GitBranch, Plus, Trash2, AlertCircle } from 'lucide-react';
 
 interface StateMachineItem {
@@ -41,6 +42,7 @@ export function StateMachinesPage() {
   });
 
   return (
+    <JARVISPageShell>
     <div className="flex flex-col gap-6 p-6 max-w-screen-xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
@@ -171,6 +173,7 @@ export function StateMachinesPage() {
         />
       )}
     </div>
+    </JARVISPageShell>
   );
 }
 

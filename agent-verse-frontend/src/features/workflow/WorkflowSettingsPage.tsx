@@ -44,22 +44,22 @@ function GeneralPanel({ wf }: { wf: WEWorkflow }) {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-sm font-semibold text-white mb-4">General Settings</h3>
+        <h3 className="text-sm font-semibold text-[#F1F5F9] mb-4">General Settings</h3>
         <div className="space-y-4">
           <div>
-            <label className="block text-xs font-medium text-white/50 mb-1" htmlFor="wf-name">
+            <label className="block text-xs font-medium text-[#F1F5F9]/50 mb-1" htmlFor="wf-name">
               Workflow Name
             </label>
             <input
               id="wf-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-white
+              className="w-full px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-[#F1F5F9]
                          text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-white/50 mb-1" htmlFor="wf-desc">
+            <label className="block text-xs font-medium text-[#F1F5F9]/50 mb-1" htmlFor="wf-desc">
               Description
             </label>
             <textarea
@@ -67,12 +67,12 @@ function GeneralPanel({ wf }: { wf: WEWorkflow }) {
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
-              className="w-full px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-white
+              className="w-full px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-[#F1F5F9]
                          text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-white/50 mb-1" htmlFor="retention">
+            <label className="block text-xs font-medium text-[#F1F5F9]/50 mb-1" htmlFor="retention">
               Run Retention (days)
             </label>
             <input
@@ -82,7 +82,7 @@ function GeneralPanel({ wf }: { wf: WEWorkflow }) {
               onChange={(e) => setRetention(Number(e.target.value))}
               min={1}
               max={365}
-              className="w-32 px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-white
+              className="w-32 px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-[#F1F5F9]
                          text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
             />
           </div>
@@ -90,7 +90,7 @@ function GeneralPanel({ wf }: { wf: WEWorkflow }) {
             onClick={() => saveMutation.mutate()}
             disabled={saveMutation.isPending}
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500
-                       text-white text-sm font-medium transition-colors disabled:opacity-60"
+                       text-[#F1F5F9] text-sm font-medium transition-colors disabled:opacity-60"
           >
             {saveMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             Save Changes
@@ -109,16 +109,16 @@ function PermissionsPanel({ wf }: { wf: WEWorkflow }) {
 
   return (
     <div>
-      <h3 className="text-sm font-semibold text-white mb-4">Access Control</h3>
+      <h3 className="text-sm font-semibold text-[#F1F5F9] mb-4">Access Control</h3>
       <div className="rounded-xl border border-white/10 divide-y divide-white/5">
         {isLoading ? (
-          <div className="p-4 text-xs text-white/40">Loading permissions…</div>
+          <div className="p-4 text-xs text-[#F1F5F9]/40">Loading permissions…</div>
         ) : (
           <div className="p-4">
-            <p className="text-xs text-white/40">
+            <p className="text-xs text-[#F1F5F9]/40">
               Workflow RBAC — grant viewer, editor, runner, or admin access to users or roles.
             </p>
-            <p className="text-xs text-white/30 mt-2">
+            <p className="text-xs text-[#F1F5F9]/30 mt-2">
               Owner: {wf.id}
             </p>
           </div>
@@ -131,12 +131,12 @@ function PermissionsPanel({ wf }: { wf: WEWorkflow }) {
 function SecretsPanel({ wf: _wf }: { wf: WEWorkflow }) {
   return (
     <div>
-      <h3 className="text-sm font-semibold text-white mb-4">Secret References</h3>
-      <p className="text-xs text-white/40 mb-4">
+      <h3 className="text-sm font-semibold text-[#F1F5F9] mb-4">Secret References</h3>
+      <p className="text-xs text-[#F1F5F9]/40 mb-4">
         Vault references used in this workflow. Values are never shown — only names are listed.
       </p>
       <div className="rounded-xl border border-white/10 p-4">
-        <p className="text-xs text-white/30">
+        <p className="text-xs text-[#F1F5F9]/30">
           Use <code className="text-sky-400">{'{{vault://SECRET_NAME}}'}</code> in step
           configuration to reference secrets stored in the vault.
         </p>
@@ -148,12 +148,12 @@ function SecretsPanel({ wf: _wf }: { wf: WEWorkflow }) {
 function EnvVarsPanel({ wf }: { wf: WEWorkflow }) {
   return (
     <div>
-      <h3 className="text-sm font-semibold text-white mb-4">Environment Variables</h3>
-      <p className="text-xs text-white/40 mb-4">
+      <h3 className="text-sm font-semibold text-[#F1F5F9] mb-4">Environment Variables</h3>
+      <p className="text-xs text-[#F1F5F9]/40 mb-4">
         Key-value pairs accessible via <code className="text-sky-400">{'{{env.KEY}}'}</code> in steps.
       </p>
       <div className="rounded-xl border border-white/10 p-4">
-        <p className="text-xs text-white/30">
+        <p className="text-xs text-[#F1F5F9]/30">
           Workflow ID: {wf.id} | Version: {wf.version}
         </p>
       </div>
@@ -164,8 +164,8 @@ function EnvVarsPanel({ wf }: { wf: WEWorkflow }) {
 function NotificationsPanel({ wf: _wf }: { wf: WEWorkflow }) {
   return (
     <div>
-      <h3 className="text-sm font-semibold text-white mb-4">Notification Rules</h3>
-      <p className="text-xs text-white/40">
+      <h3 className="text-sm font-semibold text-[#F1F5F9] mb-4">Notification Rules</h3>
+      <p className="text-xs text-[#F1F5F9]/40">
         Configure email, Slack, or webhook notifications for run events
         (run_completed, run_failed, hitl_requested, etc.).
       </p>
@@ -176,15 +176,15 @@ function NotificationsPanel({ wf: _wf }: { wf: WEWorkflow }) {
 function WebhookPanel({ wf }: { wf: WEWorkflow }) {
   return (
     <div>
-      <h3 className="text-sm font-semibold text-white mb-4">Webhook Trigger</h3>
+      <h3 className="text-sm font-semibold text-[#F1F5F9] mb-4">Webhook Trigger</h3>
       <div className="space-y-4">
         <div className="rounded-xl border border-white/10 bg-[#0F1826]/3 p-4">
-          <p className="text-xs text-white/50 mb-2">Webhook URL</p>
+          <p className="text-xs text-[#F1F5F9]/50 mb-2">Webhook URL</p>
           <code className="text-xs text-sky-400 font-mono break-all">
             {`${window.location.origin}/api/v1/webhooks/workflows/${wf.id}`}
           </code>
         </div>
-        <p className="text-xs text-white/30">
+        <p className="text-xs text-[#F1F5F9]/30">
           HMAC-SHA256 signature verification is enforced. Replay protection window: 5 minutes.
         </p>
       </div>
@@ -228,16 +228,16 @@ export default function WorkflowSettingsPage() {
 
       {/* Accessibility: announce loading state */}
       <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
-    <JARVISStagger className="min-h-screen bg-slate-950 text-white">
+    <JARVISStagger className="min-h-screen bg-slate-950 text-[#F1F5F9]">
       <header className="sticky top-0 z-30 flex items-center gap-3 px-6 py-4 border-b
                           border-white/10 bg-slate-950/90 backdrop-blur-xl">
-        <Link to={`/workflows/${id}/edit`} className="text-white/40 hover:text-white"
+        <Link to={`/workflows/${id}/edit`} className="text-[#F1F5F9]/40 hover:text-[#F1F5F9]"
           aria-label="Back to builder">
           <ChevronLeft className="h-5 w-5" />
         </Link>
         <div>
           <h1 className="text-sm font-bold">{wf.name} — Settings</h1>
-          <p className="text-xs text-white/40">Workflow configuration</p>
+          <p className="text-xs text-[#F1F5F9]/40">Workflow configuration</p>
         </div>
       </header>
 
@@ -254,7 +254,7 @@ export default function WorkflowSettingsPage() {
                     transition-colors ${
                       activePanel === pid
                         ? 'bg-sky-600/20 text-sky-400 font-medium'
-                        : 'text-white/50 hover:text-white hover:bg-white/5'
+                        : 'text-[#F1F5F9]/50 hover:text-[#F1F5F9] hover:bg-[#0A0D14]/5'
                     }`}
                 >
                   <Icon className="h-4 w-4" aria-hidden />

@@ -44,7 +44,7 @@ function TemplateCard({
       initial="initial"
       animate="animate"
       exit="exit"
-      className="rounded-2xl border border-white/8 bg-[#0F1826]/3 hover:bg-white/5 p-5
+      className="rounded-2xl border border-white/8 bg-[#0F1826]/3 hover:bg-[#0A0D14]/5 p-5
                  flex flex-col gap-3 transition-colors"
       role="article"
       aria-label={`Template: ${template.name}`}
@@ -52,10 +52,10 @@ function TemplateCard({
       {/* Header */}
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">
-          <h3 className="text-white font-semibold text-sm leading-tight truncate">
+          <h3 className="text-[#F1F5F9] font-semibold text-sm leading-tight truncate">
             {template.name}
           </h3>
-          <p className="text-xs text-white/40 mt-0.5">{template.category}</p>
+          <p className="text-xs text-[#F1F5F9]/40 mt-0.5">{template.category}</p>
         </div>
         <span className={`px-2 py-0.5 rounded-full text-xs font-medium border
           ${COMPLEXITY_COLORS[template.complexity] ?? COMPLEXITY_COLORS.medium}`}>
@@ -64,7 +64,7 @@ function TemplateCard({
       </div>
 
       {/* Description */}
-      <p className="text-xs text-white/60 leading-relaxed line-clamp-2">
+      <p className="text-xs text-[#F1F5F9]/60 leading-relaxed line-clamp-2">
         {template.description}
       </p>
 
@@ -73,7 +73,7 @@ function TemplateCard({
         <div className="flex flex-wrap gap-1">
           {template.tags.slice(0, 4).map((tag) => (
             <span key={tag}
-              className="px-1.5 py-0.5 rounded bg-[#0F1826]/5 text-white/40 text-xs">
+              className="px-1.5 py-0.5 rounded bg-[#0F1826]/5 text-[#F1F5F9]/40 text-xs">
               #{tag}
             </span>
           ))}
@@ -82,7 +82,7 @@ function TemplateCard({
 
       {/* Actions */}
       <div className="flex items-center justify-between mt-auto pt-2 border-t border-white/5">
-        <span className="text-xs text-white/30 flex items-center gap-1">
+        <span className="text-xs text-[#F1F5F9]/30 flex items-center gap-1">
           <Tag className="h-3 w-3" aria-hidden />
           {template.popularity_score > 0 ? `${template.popularity_score} uses` : 'New'}
         </span>
@@ -90,7 +90,7 @@ function TemplateCard({
           onClick={() => onFork(template.slug)}
           disabled={isForking}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600/80
-                     hover:bg-sky-600 text-white text-xs font-medium transition-colors
+                     hover:bg-sky-600 text-[#F1F5F9] text-xs font-medium transition-colors
                      disabled:opacity-50"
           aria-label={`Fork template: ${template.name}`}
         >
@@ -139,7 +139,7 @@ export default function WorkflowMarketplacePage() {
 
   return (
     <JARVISPageShell>
-    <JARVISStagger className="min-h-screen bg-slate-950 text-white">
+    <JARVISStagger className="min-h-screen bg-slate-950 text-[#F1F5F9]">
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-white/10 bg-slate-950/90
                           backdrop-blur-xl px-6 py-4">
@@ -149,7 +149,7 @@ export default function WorkflowMarketplacePage() {
               <LayoutTemplate className="h-5 w-5 text-sky-400" aria-hidden />
               Template Marketplace
             </h1>
-            <p className="text-xs text-white/40 mt-0.5">
+            <p className="text-xs text-[#F1F5F9]/40 mt-0.5">
               {templates?.total ?? 0} ready-to-use workflow templates
             </p>
           </div>
@@ -161,7 +161,7 @@ export default function WorkflowMarketplacePage() {
         <div className="flex flex-wrap gap-3 mb-8 items-start">
           {/* Search */}
           <div className="relative flex-1 min-w-0 max-w-xs">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-white/30" aria-hidden />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#F1F5F9]/30" aria-hidden />
             <input
               type="search"
               value={search}
@@ -169,7 +169,7 @@ export default function WorkflowMarketplacePage() {
               placeholder="Search templates…"
               aria-label="Search templates"
               className="w-full pl-9 pr-3 py-2 rounded-xl border border-white/10 bg-[#0F1826]/5
-                         text-white placeholder-white/30 text-sm focus:outline-none
+                         text-[#F1F5F9] placeholder-white/30 text-sm focus:outline-none
                          focus:ring-2 focus:ring-sky-500"
             />
           </div>
@@ -180,7 +180,7 @@ export default function WorkflowMarketplacePage() {
               onClick={() => setCategory('')}
               aria-pressed={category === ''}
               className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-colors ${
-                category === '' ? 'bg-sky-600 text-white' : 'bg-[#0F1826]/5 text-white/50 hover:text-white hover:bg-white/10'
+                category === '' ? 'bg-sky-600 text-[#F1F5F9]' : 'bg-[#0F1826]/5 text-[#F1F5F9]/50 hover:text-[#F1F5F9] hover:bg-[#0A0D14]/10'
               }`}
             >
               All
@@ -191,7 +191,7 @@ export default function WorkflowMarketplacePage() {
                 onClick={() => setCategory(c.category)}
                 aria-pressed={category === c.category}
                 className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-colors ${
-                  category === c.category ? 'bg-sky-600 text-white' : 'bg-[#0F1826]/5 text-white/50 hover:text-white hover:bg-white/10'
+                  category === c.category ? 'bg-sky-600 text-[#F1F5F9]' : 'bg-[#0F1826]/5 text-[#F1F5F9]/50 hover:text-[#F1F5F9] hover:bg-[#0A0D14]/10'
                 }`}
               >
                 {c.category} <span className="opacity-60">({c.count})</span>
@@ -215,8 +215,8 @@ export default function WorkflowMarketplacePage() {
             className="text-center py-20"
             role="status"
           >
-            <Search className="h-12 w-12 mx-auto mb-4 text-white/10" aria-hidden />
-            <p className="text-white/40 text-sm">No templates found for "{search}"</p>
+            <Search className="h-12 w-12 mx-auto mb-4 text-[#F1F5F9]/10" aria-hidden />
+            <p className="text-[#F1F5F9]/40 text-sm">No templates found for "{search}"</p>
           </motion.div>
         ) : (
           <AnimatePresence mode="popLayout">

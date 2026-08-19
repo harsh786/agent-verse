@@ -63,6 +63,12 @@ const StrategicAdvisorPage = lazy(() => import('@/features/org/StrategicAdvisorP
 // ── Graphify + Obsidian standalone pages ─────────────────────────────────────
 const GraphifyPage  = lazy(() => import('@/features/graphify/GraphifyPage').then(m => ({ default: m.GraphifyPage })));
 const ObsidianPage  = lazy(() => import('@/features/obsidian/ObsidianPage').then(m => ({ default: m.ObsidianPage })));
+// ── New JARVIS pages ──────────────────────────────────────────────────────────
+const EvalSuitesPage       = lazy(() => import('@/features/eval-suites/EvalSuitesPage').then(m => ({ default: m.EvalSuitesPage })));
+const PromptVariantsPage   = lazy(() => import('@/features/prompt-variants/PromptVariantsPage').then(m => ({ default: m.PromptVariantsPage })));
+const RedTeamPage          = lazy(() => import('@/features/red-team/RedTeamPage').then(m => ({ default: m.RedTeamPage })));
+const AgentCredentialsPage = lazy(() => import('@/features/agents/AgentCredentialsPage').then(m => ({ default: m.AgentCredentialsPage })));
+const WorkflowEnginePage   = lazy(() => import('@/features/workflow-engine/WorkflowEnginePage').then(m => ({ default: m.WorkflowEnginePage })));
 
 import { LandingPage } from "@/features/landing/LandingPage";
 import { AuthPage } from "@/features/auth/AuthPage";
@@ -308,6 +314,13 @@ export default function App() {
         <Route path="triggers"        element={lazy_rb("Triggers",       <TriggersPage />)} />
         <Route path="state-machines"  element={lazy_rb("State Machines", <StateMachinesPage />)} />
         <Route path="channel-mappings" element={lazy_rb("Channels",      <ChannelMappingsPage />)} />
+
+        {/* New JARVIS pages */}
+        <Route path="eval-suites"              element={lazy_rb("Eval Suites",       <EvalSuitesPage />)} />
+        <Route path="prompt-variants"          element={lazy_rb("Prompt Variants",   <PromptVariantsPage />)} />
+        <Route path="red-team"                 element={lazy_rb("Red Team",          <RedTeamPage />)} />
+        <Route path="agents/:agentId/credentials" element={lazy_rb("Agent Credentials", <AgentCredentialsPage />)} />
+        <Route path="workflow-engine"          element={lazy_rb("Workflow Engine",   <WorkflowEnginePage />)} />
 
         <Route path="settings/roles"  element={lazy_rb("Role Editor",     <RoleEditorPage orgId="" />)} />
         <Route path="settings/privacy" element={lazy_rb("Privacy",        <PrivacySettings />)} />

@@ -246,7 +246,7 @@ function DashboardTab(): JSX.Element {
         <div className="bg-card border border-border rounded-xl p-4 space-y-3">
           <h3 className="text-sm font-medium flex items-center gap-2"><BarChart2 className="h-4 w-4" /> By Severity</h3>
           {Object.entries(stats.by_severity).map(([k, v]) => (
-            <MiniBar key={k} label={k} value={v} max={sevMax} color={sevColors[k] ?? "bg-gray-400"} />
+            <MiniBar key={k} label={k} value={v} max={sevMax} color={sevColors[k] ?? "bg-[#94A3B8]"} />
           ))}
         </div>
         <div className="bg-card border border-border rounded-xl p-4 space-y-3">
