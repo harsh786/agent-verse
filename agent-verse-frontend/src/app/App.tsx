@@ -60,7 +60,9 @@ const MissionPage      = lazy(() => import('@/features/org/MissionPage').then(m 
 const DepartmentPage   = lazy(() => import('@/features/org/DepartmentPage').then(m => ({ default: m.DepartmentPage })));
 const TeamPage         = lazy(() => import('@/features/org/TeamPage').then(m => ({ default: m.TeamPage })));
 const StrategicAdvisorPage = lazy(() => import('@/features/org/StrategicAdvisorPage').then(m => ({ default: m.StrategicAdvisorPage })));
-
+// ── Graphify + Obsidian standalone pages ─────────────────────────────────────
+const GraphifyPage  = lazy(() => import('@/features/graphify/GraphifyPage').then(m => ({ default: m.GraphifyPage })));
+const ObsidianPage  = lazy(() => import('@/features/obsidian/ObsidianPage').then(m => ({ default: m.ObsidianPage })));
 
 import { LandingPage } from "@/features/landing/LandingPage";
 import { AuthPage } from "@/features/auth/AuthPage";
@@ -277,6 +279,8 @@ export default function App() {
         <Route path="builder"               element={lazy_rb("Builder",       <BuilderPage />)} />
         <Route path="models"                element={lazy_rb("Model Registry", <ModelControlCenter />)} />
         <Route path="knowledge-graph"       element={lazy_rb("Knowledge Graph", <GraphExplorerPage />)} />
+        <Route path="graphify"              element={lazy_rb("Graphify",        <GraphifyPage />)} />
+        <Route path="obsidian"              element={lazy_rb("Obsidian Mode",   <ObsidianPage />)} />
         <Route path="admin"                 element={lazy_rb("Admin",          <AdminPage />)} />
         <Route path="security"              element={lazy_rb("Security Center", <SecurityCenterPage />)} />
         <Route path="chat"                  element={lazy_rb("Chat",            <ChatPage />)} />

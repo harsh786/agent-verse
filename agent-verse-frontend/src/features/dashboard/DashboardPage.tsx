@@ -37,8 +37,7 @@ import { AgentOrbitView } from "./components/AgentOrbitView";
 import { toast } from "@/stores/toast";
 import { AIOpsDashboard } from "./AIOpsDashboard";
 
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
-import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 // ── KPI Card ──────────────────────────────────────────────────────────────────
 
 function KpiCard({
@@ -336,6 +335,7 @@ export function DashboardPage() {
       )}
 
       {/* ── KPI Cards ─────────────────────────────────────────────────── */}
+      <JARVISStaggerItem>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard
           icon={Activity}
@@ -375,11 +375,15 @@ export function DashboardPage() {
           onClick={() => navigate("/agents")}
         />
       </div>
+      </JARVISStaggerItem>
 
       {/* ── Quick Goal Submit ──────────────────────────────────────────── */}
+      <JARVISStaggerItem>
       <QuickGoalSubmit />
+      </JARVISStaggerItem>
 
       {/* ── Main content: Activity + Orbit ───────────────────────────── */}
+      <JARVISStaggerItem>
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
         {/* Live Activity Stream — takes 3/5 */}
         <div className="lg:col-span-3 bg-card border border-border rounded-xl p-4">
@@ -444,8 +448,10 @@ export function DashboardPage() {
           )}
         </div>
       </div>
+      </JARVISStaggerItem>
 
       {/* ── Quick Actions ─────────────────────────────────────────────── */}
+      <JARVISStaggerItem>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {quickActions.map((action) => (
           <button
@@ -460,6 +466,7 @@ export function DashboardPage() {
           </button>
         ))}
       </div>
+      </JARVISStaggerItem>
       </>
       )}
     </JARVISStagger>
