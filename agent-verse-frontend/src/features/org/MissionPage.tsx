@@ -25,7 +25,7 @@ import { useMission, useOrgTasks } from './hooks/useOrg';
 import { KanbanBoard } from './KanbanBoard';
 import { ArtifactGallery } from './ArtifactGallery';
 import { ActivityFeed } from './components/ActivityFeed';
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import type { MissionStatus } from './types';
 
 // ── Status config ──────────────────────────────────────────────────────────

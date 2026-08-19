@@ -52,27 +52,27 @@ def upgrade() -> None:
         sa.Column("updated_at",  sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
     op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_artifacts_tenant "
+        "CREATE INDEX IF NOT EXISTS idx_org_artifacts_tenant "
         "ON org_artifacts(tenant_id)"
     )
     op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_artifacts_org "
+        "CREATE INDEX IF NOT EXISTS idx_org_artifacts_org "
         "ON org_artifacts(tenant_id, org_id)"
     )
     op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_artifacts_mission "
+        "CREATE INDEX IF NOT EXISTS idx_org_artifacts_mission "
         "ON org_artifacts(tenant_id, mission_id)"
     )
     op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_artifacts_status "
+        "CREATE INDEX IF NOT EXISTS idx_org_artifacts_status "
         "ON org_artifacts(tenant_id, status)"
     )
     op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_artifacts_kind "
+        "CREATE INDEX IF NOT EXISTS idx_org_artifacts_kind "
         "ON org_artifacts(tenant_id, kind)"
     )
     op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_artifacts_created "
+        "CREATE INDEX IF NOT EXISTS idx_org_artifacts_created "
         "ON org_artifacts(tenant_id, created_at DESC)"
     )
     op.execute("ALTER TABLE org_artifacts ENABLE ROW LEVEL SECURITY")
@@ -104,24 +104,24 @@ def upgrade() -> None:
         sa.Column("updated_at",       sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
     op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_gw_conv_tenant "
+        "CREATE INDEX IF NOT EXISTS idx_gw_conv_tenant "
         "ON gateway_conversations(tenant_id)"
     )
     op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_gw_conv_org "
+        "CREATE INDEX IF NOT EXISTS idx_gw_conv_org "
         "ON gateway_conversations(tenant_id, org_id)"
     )
     op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_gw_conv_channel "
+        "CREATE INDEX IF NOT EXISTS idx_gw_conv_channel "
         "ON gateway_conversations(tenant_id, channel)"
     )
     op.execute(
-        "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_gw_conv_key "
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_gw_conv_key "
         "ON gateway_conversations(tenant_id, channel, channel_user_id, conversation_key) "
         "WHERE conversation_key IS NOT NULL AND channel_user_id IS NOT NULL"
     )
     op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_gw_conv_last_cmd "
+        "CREATE INDEX IF NOT EXISTS idx_gw_conv_last_cmd "
         "ON gateway_conversations(tenant_id, last_command_at DESC)"
     )
     op.execute("ALTER TABLE gateway_conversations ENABLE ROW LEVEL SECURITY")

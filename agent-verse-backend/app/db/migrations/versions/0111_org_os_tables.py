@@ -57,9 +57,9 @@ def upgrade() -> None:
         sa.Column("created_at",          sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at",          sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orgs_tenant_id      ON organizations(tenant_id)")
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orgs_tenant_status  ON organizations(tenant_id, status)")
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orgs_tenant_created ON organizations(tenant_id, created_at DESC)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_orgs_tenant_id      ON organizations(tenant_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_orgs_tenant_status  ON organizations(tenant_id, status)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_orgs_tenant_created ON organizations(tenant_id, created_at DESC)")
 
     # RLS
     op.execute("ALTER TABLE organizations ENABLE ROW LEVEL SECURITY")
@@ -85,9 +85,9 @@ def upgrade() -> None:
         sa.Column("created_at",       sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at",       sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_depts_tenant_org    ON org_departments(tenant_id, org_id)")
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_depts_tenant_status ON org_departments(tenant_id, status)")
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_depts_parent        ON org_departments(parent_dept_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_depts_tenant_org    ON org_departments(tenant_id, org_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_depts_tenant_status ON org_departments(tenant_id, status)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_depts_parent        ON org_departments(parent_dept_id)")
     op.execute("ALTER TABLE org_departments ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE org_departments FORCE ROW LEVEL SECURITY")
     op.execute("""CREATE POLICY tenant_isolation ON org_departments
@@ -113,8 +113,8 @@ def upgrade() -> None:
         sa.Column("created_at",       sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at",       sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_teams_tenant_org    ON org_teams(tenant_id, org_id)")
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_teams_tenant_status ON org_teams(tenant_id, status)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_teams_tenant_org    ON org_teams(tenant_id, org_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_teams_tenant_status ON org_teams(tenant_id, status)")
     op.execute("ALTER TABLE org_teams ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE org_teams FORCE ROW LEVEL SECURITY")
     op.execute("""CREATE POLICY tenant_isolation ON org_teams
@@ -139,7 +139,7 @@ def upgrade() -> None:
         sa.Column("created_at",   sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at",   sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_roles_tenant_org ON org_roles(tenant_id, org_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_roles_tenant_org ON org_roles(tenant_id, org_id)")
     op.execute("ALTER TABLE org_roles ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE org_roles FORCE ROW LEVEL SECURITY")
     op.execute("""CREATE POLICY tenant_isolation ON org_roles
@@ -164,7 +164,7 @@ def upgrade() -> None:
         sa.Column("created_at",           sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at",           sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_caps_tenant ON org_capabilities(tenant_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_caps_tenant ON org_capabilities(tenant_id)")
     op.execute("ALTER TABLE org_capabilities ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE org_capabilities FORCE ROW LEVEL SECURITY")
     op.execute("""CREATE POLICY tenant_isolation ON org_capabilities
@@ -200,10 +200,10 @@ def upgrade() -> None:
         sa.Column("created_at",       sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at",       sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_missions_tenant_org      ON org_missions(tenant_id, org_id)")
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_missions_tenant_status   ON org_missions(tenant_id, org_id, status)")
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_missions_tenant_priority ON org_missions(tenant_id, org_id, priority)")
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_missions_tenant_created  ON org_missions(tenant_id, org_id, created_at DESC)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_missions_tenant_org      ON org_missions(tenant_id, org_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_missions_tenant_status   ON org_missions(tenant_id, org_id, status)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_missions_tenant_priority ON org_missions(tenant_id, org_id, priority)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_missions_tenant_created  ON org_missions(tenant_id, org_id, created_at DESC)")
     op.execute("ALTER TABLE org_missions ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE org_missions FORCE ROW LEVEL SECURITY")
     op.execute("""CREATE POLICY tenant_isolation ON org_missions
@@ -225,7 +225,7 @@ def upgrade() -> None:
         sa.Column("created_at",       sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at",       sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_ws_tenant_mission ON org_workstreams(tenant_id, mission_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_ws_tenant_mission ON org_workstreams(tenant_id, mission_id)")
     op.execute("ALTER TABLE org_workstreams ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE org_workstreams FORCE ROW LEVEL SECURITY")
     op.execute("""CREATE POLICY tenant_isolation ON org_workstreams
@@ -271,11 +271,11 @@ def upgrade() -> None:
         sa.Column("created_at",            sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at",            sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_tasks_tenant_org     ON org_tasks(tenant_id, org_id)")
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_tasks_tenant_mission ON org_tasks(tenant_id, mission_id)")
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_tasks_tenant_status  ON org_tasks(tenant_id, org_id, status)")
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_tasks_depth          ON org_tasks(tenant_id, org_id, depth)")  # anti-runaway
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_tasks_parent         ON org_tasks(parent_task_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_tasks_tenant_org     ON org_tasks(tenant_id, org_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_tasks_tenant_mission ON org_tasks(tenant_id, mission_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_tasks_tenant_status  ON org_tasks(tenant_id, org_id, status)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_tasks_depth          ON org_tasks(tenant_id, org_id, depth)")  # anti-runaway
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_tasks_parent         ON org_tasks(parent_task_id)")
     op.execute("ALTER TABLE org_tasks ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE org_tasks FORCE ROW LEVEL SECURITY")
     op.execute("""CREATE POLICY tenant_isolation ON org_tasks
@@ -305,9 +305,9 @@ def upgrade() -> None:
         sa.Column("created_at",       sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at",       sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_decisions_tenant_org    ON org_decisions(tenant_id, org_id)")
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_decisions_entity        ON org_decisions(tenant_id, entity_type, entity_id)")
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_decisions_approval      ON org_decisions(tenant_id, approval_status)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_decisions_tenant_org    ON org_decisions(tenant_id, org_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_decisions_entity        ON org_decisions(tenant_id, entity_type, entity_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_decisions_approval      ON org_decisions(tenant_id, approval_status)")
     op.execute("ALTER TABLE org_decisions ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE org_decisions FORCE ROW LEVEL SECURITY")
     op.execute("""CREATE POLICY tenant_isolation ON org_decisions
@@ -330,9 +330,9 @@ def upgrade() -> None:
         sa.Column("actor_id",    sa.String(200),     nullable=True),
         sa.Column("created_at",  sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_events_tenant_org_time ON org_events(tenant_id, org_id, created_at DESC)")
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_events_event_type      ON org_events(tenant_id, org_id, event_type)")
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_events_severity        ON org_events(tenant_id, org_id, severity)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_events_tenant_org_time ON org_events(tenant_id, org_id, created_at DESC)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_events_event_type      ON org_events(tenant_id, org_id, event_type)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_events_severity        ON org_events(tenant_id, org_id, severity)")
     op.execute("ALTER TABLE org_events ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE org_events FORCE ROW LEVEL SECURITY")
     op.execute("""CREATE POLICY tenant_isolation ON org_events
@@ -354,8 +354,8 @@ def upgrade() -> None:
         sa.Column("created_at",   sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at",   sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
-    op.execute("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_org_blueprints_domain ON org_blueprints(domain)")
-    op.execute("CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_org_blueprints_slug ON org_blueprints(slug)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_org_blueprints_domain ON org_blueprints(domain)")
+    op.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_org_blueprints_slug ON org_blueprints(slug)")
 
 
 def downgrade() -> None:

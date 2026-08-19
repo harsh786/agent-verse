@@ -51,6 +51,11 @@ class RoleDefinition:
     cost_category: str
     capabilities: list[str]
     model_profile: str = "smart"
+    name: str = ""  # populated from ROLE_DEFINITIONS key at module load
+
+    @property
+    def department(self) -> str:
+        return self.department_kind
 
 
 ROLE_DEFINITIONS: dict[str, RoleDefinition] = {
@@ -258,6 +263,10 @@ class RoleAssignment:
     estimated_hours: float
     priority: int  # 1=essential, 2=important, 3=nice-to-have
 
+    @property
+    def department(self) -> str:
+        return self.department_kind
+
 
 @dataclass
 class TeamManifest:
@@ -272,6 +281,12 @@ class TeamManifest:
     agent_count: int
     requires_human_preview: bool
     formation_reasoning: str
+    org_id: str = ""
+    tenant_id: str = ""
+
+    @property
+    def estimated_agents(self) -> int:
+        return self.agent_count
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -282,6 +297,39 @@ class TeamFormationEngine:
 
     def __init__(self, llm_provider: Any | None = None) -> None:
         self._llm = llm_provider
+
+    async def form_team_for_goal(
+        self,
+        goal: str,
+        org_id: str = "",
+        tenant_id: str = "",
+        budget_usd: float | None = None,
+    ) -> TeamManifest:
+        """Convenience entry-point: form a team directly from a goal string."""
+        import dataclasses
+
+        @dataclasses.dataclass
+        class _SimpleMission:
+            goal_text: str
+            risk_level: str = "low"
+            title: str = ""
+
+        @dataclasses.dataclass
+        class _SimpleOrg:
+            org_id: str = ""
+
+        manifest = await self.form_team(
+            mission=_SimpleMission(goal_text=goal, title=goal[:80]),
+            org=_SimpleOrg(org_id=org_id),
+        )
+        # Attach routing context
+        object.__setattr__(manifest, "org_id", org_id) if dataclasses.is_dataclass(manifest) else None
+        try:
+            manifest.org_id = org_id
+            manifest.tenant_id = tenant_id
+        except Exception:
+            pass
+        return manifest
 
     async def form_team(self, mission: Any, org: Any) -> TeamManifest:
         with _tracer.start_as_current_span("team_formation.form_team") as span:
@@ -482,6 +530,12 @@ class TeamFormationEngine:
 #  Private helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Post-process: assign name from dict key ──────────────────────────────────
+for _role_name, _role_def in ROLE_DEFINITIONS.items():
+    if not _role_def.name:
+        _role_def.name = _role_name
+
+
 def _heuristic_capabilities(goal_text: str) -> list[str]:
     """Keyword-based capability extraction when LLM unavailable."""
     text = goal_text.lower()
@@ -526,3 +580,29 @@ def _estimate_success_probability(
     covered = {cap for r in roles for cap in r.capabilities}
     coverage = len(covered & set(capabilities)) / max(len(capabilities), 1)
     return round(min(base * (0.5 + 0.5 * coverage), 1.0), 3)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  RoleMapper — maps human role labels to RoleDefinitions
+# ─────────────────────────────────────────────────────────────────────────────
+
+class RoleMapper:
+    """Resolves a natural-language role name into a RoleDefinition."""
+
+    def resolve(self, role_name: str) -> RoleDefinition | None:
+        normalised = role_name.lower().strip().replace(" ", "_")
+        return ROLE_DEFINITIONS.get(normalised)
+
+    def list_roles(self) -> list[str]:
+        return list(ROLE_DEFINITIONS.keys())
+
+    def map_capabilities(self, capabilities: list[str]) -> list[RoleDefinition]:
+        """Return RoleDefinitions that cover all requested capabilities."""
+        results: list[RoleDefinition] = []
+        seen: set[str] = set()
+        for cap in capabilities:
+            for role_name, role_def in ROLE_DEFINITIONS.items():
+                if cap in (role_def.capabilities or []) and role_name not in seen:
+                    results.append(role_def)
+                    seen.add(role_name)
+        return results

@@ -38,3 +38,5 @@ Archived/agent-verse-sdk-typescript/node_modules/chai/lib/chai/utils/addChainabl
 githooks1/*
 .githooks/*
 .githooks/commit-msg
+agent-verse-frontend/node_modules/*/*.js
+agent-verse-frontend/node_modules/.vite/deps/react-dom_client.js

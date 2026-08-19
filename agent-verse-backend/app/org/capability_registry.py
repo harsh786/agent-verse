@@ -384,6 +384,7 @@ ROLE_CAPABILITY_MAP: dict[str, list[str]] = {
                         "report_generation", "knowledge_synthesis"],
     "product_manager": ["product_analysis", "user_research", "decision_analysis",
                          "scenario_planning", "market_research"],
+    "market_analyst": ["web_search", "data_analysis", "market_research", "competitive_intelligence"],
     "marketing_manager": ["campaign_management", "email_marketing", "social_media",
                            "content_writing", "seo_optimization"],
     "sales_representative": ["lead_generation", "email_outreach",
@@ -441,6 +442,10 @@ class GapReport:
     proposed: list[str]
     coverage_pct: float
 
+    @property
+    def missing_capabilities(self) -> list[str]:
+        return self.missing
+
 
 class CapabilityGapDetector:
     """Detect capabilities required by a mission that are not in the registry."""
@@ -474,3 +479,39 @@ def get_capabilities_for_role(role_name: str) -> list[str]:
 def get_model_profile_for_dept(dept_kind: str) -> str:
     """Return the preferred model profile name for a department kind."""
     return DEPT_LLM_PROFILES.get(dept_kind, "smart")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CapabilityRegistry — convenience façade expected by tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CapabilityRegistry:
+    """Registry façade over CAPABILITY_REGISTRY catalogue."""
+
+    def __init__(self) -> None:
+        self._extra: dict[str, "CapabilitySpec"] = {}
+
+    def get(self, name: str) -> "CapabilitySpec | None":
+        return self._extra.get(name) or CAPABILITY_REGISTRY.get(name)
+
+    def list_all(self) -> list["CapabilitySpec"]:
+        return list({**CAPABILITY_REGISTRY, **self._extra}.values())
+
+    def for_role(self, role_name: str) -> list["CapabilitySpec"]:
+        names = get_capabilities_for_role(role_name)
+        return [c for n in names if (c := self.get(n)) is not None]
+
+    def register(self, name: str, spec: "CapabilitySpec") -> None:
+        self._extra[name] = spec
+
+    def get_for_role(self, role_name: str) -> list[str]:
+        return get_capabilities_for_role(role_name)
+
+    def detect_gaps(self, required: list[str]) -> "GapReport":
+        missing = [c for c in required if not self.get(c)]
+        coverage = (len(required) - len(missing)) / max(len(required), 1)
+        return GapReport(
+            missing=missing,
+            proposed=[],
+            coverage_pct=coverage,
+        )
