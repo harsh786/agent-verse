@@ -25,6 +25,15 @@ export default defineConfig(({ command, mode }) => ({
   },
   server: {
     port: 5173,
+    proxy: {
+      // Proxy /api/v1/* → http://localhost:8000/v1/*
+      // GraphifyProgress and other components use /api/v1/ prefix
+      '/api/v1': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+    },
   },
   test: {
     environment: "jsdom",
