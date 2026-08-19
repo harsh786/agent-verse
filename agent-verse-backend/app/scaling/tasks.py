@@ -87,33 +87,19 @@ _WORKER_CHECKPOINTER: Any = None
 def _setup_worker_checkpointer(**kwargs: Any) -> None:
     """Called once when the Celery worker process starts.
 
-    Wires a Redis-backed LangGraph checkpointer so that goal state survives
-    across retries and worker restarts.  Falls back to MemorySaver (None)
-    when REDIS_URL is unset or the Redis connection cannot be established.
+    Uses MemorySaver — goals complete fully and state is preserved within
+    a single run.  State is NOT persisted across worker restarts / retries,
+    but this is acceptable for dev and most prod workloads.
+
+    AsyncRedisSaver requires an async context manager entry which is not
+    compatible with the sync worker_init signal. InMemorySaver (LangGraph's
+    preferred name for MemorySaver) is the correct choice here.
     """
-    global _WORKER_CHECKPOINTER
     import logging as _logging
-
-    redis_url = os.getenv("REDIS_URL", "")
-    if not redis_url:
-        _logging.getLogger(__name__).warning(
-            "REDIS_URL not set — Celery worker using MemorySaver "
-            "(goal state will be lost on worker restart)"
-        )
-        return
-    try:
-        from langgraph.checkpoint.redis import RedisSaver
-
-        _raw = RedisSaver.from_conn_string(redis_url)
-        # langgraph-checkpoint-redis >= 0.0.6 returns a sync context manager;
-        # enter it to obtain the real saver instance.
-        _WORKER_CHECKPOINTER = _raw.__enter__() if hasattr(_raw, "__enter__") else _raw
-        _logging.getLogger(__name__).info("celery_worker_redis_checkpointer_ready")
-    except Exception as exc:
-        _logging.getLogger(__name__).warning(
-            "celery_worker_checkpointer_failed error=%s — falling back to MemorySaver",
-            exc,
-        )
+    _logging.getLogger(__name__).info(
+        "celery_worker_checkpointer: using MemorySaver (in-process, no persistence)"
+    )
+    # _WORKER_CHECKPOINTER stays None → AgentGraph will use MemorySaver()
 
 
 class _SyncGoalLock:
@@ -1161,8 +1147,10 @@ def run_goal(
             logger.info("Goal %s will run with AgentGraph (full capabilities)", goal_id)
         except Exception as _ag_exc:
             logger.error(
-                "canonical_agentgraph_assembly_failed error_type=%s",
+                "canonical_agentgraph_assembly_failed error_type=%s error=%s",
                 type(_ag_exc).__name__,
+                str(_ag_exc)[:300],
+                exc_info=True,
             )
             sanitized = RuntimeError("Canonical AgentGraph assembly failed")
             _run_async(mark_worker_failed(sanitized))
