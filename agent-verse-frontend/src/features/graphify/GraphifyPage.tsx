@@ -13,14 +13,15 @@ import { motion } from 'framer-motion';
 import { JARVISPageShell, JARVISStagger, JARVISStaggerItem, SPRING_FAST } from '@/components/ui/JARVISPageShell';
 import { GraphifyProgress } from '@/features/org/components/GraphifyProgress';
 
+import { getAuthHeader } from '@/stores/auth';
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
 async function fetchOrgs(): Promise<{ id: string; name: string }[]> {
-  const key = sessionStorage.getItem('av_api_key') ?? '';
-  const r = await fetch(`${API_BASE}/v1/org/`, { headers: { 'X-API-Key': key } });
+  const r = await fetch(`${API_BASE}/v1/org`, { headers: getAuthHeader() });
   if (!r.ok) return [];
   const d = await r.json();
-  return Array.isArray(d) ? d : d.organizations ?? d.orgs ?? [];
+  return Array.isArray(d) ? d : (d.data ?? d.organizations ?? d.orgs ?? []);
 }
 
 export function GraphifyPage() {
