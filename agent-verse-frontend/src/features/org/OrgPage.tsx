@@ -559,6 +559,7 @@ export function OrgPage() {
           try {
             const { orgApi } = await import('./api');
             await orgApi.createMission(orgId, {
+              org_id: orgId,
               title: text.slice(0, 120),
               objective: text,
               priority: 'high',
