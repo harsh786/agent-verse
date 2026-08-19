@@ -48,7 +48,7 @@ const AgentMemoryPage = lazy(() => import('@/features/chat/AgentMemoryPage'));
 // ── Unrouted pages — now wired ───────────────────────────────────────────────
 const ChannelMappingsPage = lazy(() => import('@/features/channels/ChannelMappingsPage').then(m => ({ default: m.ChannelMappingsPage })));
 const StateMachinesPage   = lazy(() => import('@/features/state-machines/StateMachinesPage').then(m => ({ default: m.StateMachinesPage })));
-const TriggersPage        = lazy(() => import('@/features/triggers/TriggersPage').then(m => ({ default: m.TriggersPage })));
+const TriggersPage            = lazy(() => import('@/features/triggers/TriggersPage').then(m => ({ default: m.TriggersPage })));
 const WorkflowListPage        = lazy(() => import('@/features/workflow/WorkflowListPage'));
 const WorkflowRunsPage        = lazy(() => import('@/features/workflow/WorkflowRunsPage'));
 const WorkflowRunDetailPage   = lazy(() => import('@/features/workflow/WorkflowRunDetailPage'));
@@ -57,8 +57,8 @@ const WorkflowMarketplacePage = lazy(() => import('@/features/workflow/WorkflowM
 const WorkflowSettingsPage    = lazy(() => import('@/features/workflow/WorkflowSettingsPage'));
 const ApprovalInboxPage       = lazy(() => import('@/features/workflow/ApprovalInboxPage'));
 const MissionPage      = lazy(() => import('@/features/org/MissionPage').then(m => ({ default: m.MissionPage })));
-const DepartmentPage   = lazy(() => import('@/features/org/DepartmentPage'));
-const TeamPage         = lazy(() => import('@/features/org/TeamPage'));
+const DepartmentPage   = lazy(() => import('@/features/org/DepartmentPage').then(m => ({ default: m.DepartmentPage })));
+const TeamPage         = lazy(() => import('@/features/org/TeamPage').then(m => ({ default: m.TeamPage })));
 const StrategicAdvisorPage = lazy(() => import('@/features/org/StrategicAdvisorPage').then(m => ({ default: m.StrategicAdvisorPage })));
 
 
@@ -286,7 +286,7 @@ export default function App() {
         <Route path="org/:orgId"      element={lazy_rb("Org",             <OrgPage />)} />
         <Route path="org/:orgId/schedules"          element={lazy_rb("Schedules",         <ScheduledMissions />)} />
         <Route path="org/:orgId/gateway"            element={lazy_rb("Org Gateway",       <GatewaySettingsPage />)} />
-        <Route path="org/:orgId/mission/:missionId" element={lazy_rb("Mission",           <MissionPageWrapper />)} />
+        <Route path="org/:orgId/mission/:missionId" element={lazy_rb("Mission",           <MissionPage />)} />
         <Route path="org/:orgId/department/:deptId" element={lazy_rb("Department",        <DepartmentPage />)} />
         <Route path="org/:orgId/team/:teamId"       element={lazy_rb("Team",              <TeamPage />)} />
         <Route path="org/:orgId/strategic-advisor"  element={lazy_rb("Strategic Advisor", <StrategicAdvisorPage orgId="" />)} />

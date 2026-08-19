@@ -5,7 +5,7 @@
 @tailwind utilities;
 
 /**
- * ═══════════════════════════════════════════════════════════════════
+ * ===================================================================
  *  JARVIS DESIGN TOKEN SYSTEM
  *  Single source of truth for the entire AgentVerse UI.
  *  All 5 skills applied:
@@ -14,15 +14,15 @@
  *    - emil-design-eng:   motion tokens for spring physics
  *    - impeccable-ui:     contrast, spacing, hierarchy tokens
  *    - ui-ux-pro-max:     4.5:1 contrast minimum on all text pairs
- * ═══════════════════════════════════════════════════════════════════
+ * ===================================================================
  */
 
 @layer base {
-  /* ── Dark mode (default — JARVIS identity) ─────────────────────── */
+  /* -- Dark mode (default - JARVIS identity) ----------------------- */
   :root,
   .dark {
     /* Backgrounds (layered depth system) */
-    --background:       220 20% 5%;    /* #0A0D14 — page base */
+    --background:       220 20% 5%;    /* #0A0D14 - page base */
     --bg-base:          #0A0D14;
     --bg-primary:       #0F1117;       /* default surface */
     --bg-secondary:     #1A1F2E;       /* cards, panels */
@@ -34,13 +34,13 @@
     --foreground:       210 40% 96%;
     --card:             222 18% 10%;
     --card-foreground:  210 40% 96%;
-    --primary:          189 100% 42%;  /* electric cyan — #00D4FF */
+    --primary:          189 100% 42%;  /* electric cyan - #00D4FF */
     --primary-foreground: 220 20% 5%;
     --secondary:        217 19% 20%;
     --secondary-foreground: 210 40% 96%;
     --muted:            217 19% 15%;
     --muted-foreground: 215 20% 55%;   /* #94A3B8 */
-    --accent:           263 70% 60%;   /* violet — #8B5CF6 */
+    --accent:           263 70% 60%;   /* violet - #8B5CF6 */
     --accent-foreground: 0 0% 100%;
     --destructive:      0 72% 51%;     /* rose-500 */
     --destructive-foreground: 0 0% 100%;
@@ -87,7 +87,7 @@
     --spring-gentle:  stiffness:200,damping:25;
   }
 
-  /* ── Light mode fallback (rare — JARVIS is always dark) ───────── */
+  /* -- Light mode fallback (rare - JARVIS is always dark) --------- */
   .light {
     --background:     0 0% 99%;
     --foreground:     222 47% 11%;
@@ -116,7 +116,7 @@
   }
 }
 
-/* ── Global base styles ───────────────────────────────────────────────── */
+/* -- Global base styles ------------------------------------------------- */
 @layer base {
   /* web-guidelines: color-scheme tells OS to use dark scrollbar, inputs, etc. */
   html {
@@ -142,8 +142,8 @@
     @apply bg-background text-foreground antialiased;
     /* frontend-design: Inter as body face */
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
-    font-size: 15px;  /* impeccable-ui: body ≥15px */
-    line-height: 1.6; /* impeccable-ui: 1.5–1.7 for body */
+    font-size: 15px;  /* impeccable-ui: body >=15px */
+    line-height: 1.6; /* impeccable-ui: 1.5-1.7 for body */
     background-color: var(--bg-primary);
     color: var(--text-primary);
     /* web-guidelines: touch-action on body for all interactions */
@@ -159,9 +159,9 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* impeccable-ui: heading tracking — negative for large, sentence case */
+  /* impeccable-ui: heading tracking - negative for large, sentence case */
   h1, h2, h3, h4, h5, h6 {
-    line-height: 1.2;    /* impeccable-ui: 1.1–1.3 for headings */
+    line-height: 1.2;    /* impeccable-ui: 1.1-1.3 for headings */
     letter-spacing: -0.02em; /* impeccable-ui: slightly negative for display text */
     /* web-guidelines: text-balance prevents orphans */
     text-wrap: balance;
@@ -174,7 +174,7 @@
   }
 }
 
-/* ── Focus system (web-guidelines: focus-visible, never outline:none) ─── */
+/* -- Focus system (web-guidelines: focus-visible, never outline:none) --- */
 :focus-visible {
   outline: 2px solid var(--accent-blue);
   outline-offset: 2px;
@@ -186,7 +186,7 @@
   outline: none;
 }
 
-/* ── Reduced motion (ALL 5 skills mandate this) ───────────────────────── */
+/* -- Reduced motion (ALL 5 skills mandate this) ------------------------- */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -199,7 +199,7 @@
   /* Framer Motion respects this via useReducedMotion() in components */
 }
 
-/* ── Scrollbars (JARVIS dark) ─────────────────────────────────────────── */
+/* -- Scrollbars (JARVIS dark) ------------------------------------------- */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -215,13 +215,13 @@
   background: #3D4A5C;
 }
 
-/* ── Selection ─────────────────────────────────────────────────────────── */
+/* -- Selection ----------------------------------------------------------- */
 ::selection {
   background: rgba(59, 130, 246, 0.3);
   color: #F1F5F9;
 }
 
-/* ── JARVIS scanline texture (frontend-design signature — barely visible) */
+/* -- JARVIS scanline texture (frontend-design signature - barely visible) */
 .jarvis-surface {
   background-image: repeating-linear-gradient(
     0deg,
@@ -232,7 +232,7 @@
   );
 }
 
-/* ── Glass card (frontend-design: JARVIS glassmorphism) ─────────────────── */
+/* -- Glass card (frontend-design: JARVIS glassmorphism) ------------------- */
 .glass-card {
   backdrop-filter: blur(16px) saturate(180%);
   -webkit-backdrop-filter: blur(16px) saturate(180%);
@@ -240,11 +240,11 @@
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-/* ── Glow effects (JARVIS identity) ─────────────────────────────────────── */
+/* -- Glow effects (JARVIS identity) --------------------------------------- */
 .glow-blue   { box-shadow: var(--shadow-blue); }
 .glow-cyan   { box-shadow: var(--shadow-cyan); }
 
-/* ── Mission Control Theme legacy vars (kept for backward compat) ────────── */
+/* -- Mission Control Theme legacy vars (kept for backward compat) ---------- */
 :root {
   --command-black: #080A12;
   --panel-graphite: #111827;
@@ -265,7 +265,7 @@
   outline-offset: 2px;
 }
 
-/* Reduced motion — WCAG 2.1 Level AA §2.3.3 */
+/* Reduced motion - WCAG 2.1 Level AA sec.2.3.3 */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -277,7 +277,7 @@
   }
 }
 
-/* ── Animation keyframes ────────────────────────────────────────────────── */
+/* -- Animation keyframes -------------------------------------------------- */
 
 /* Credential issue entrance */
 @keyframes credentialIssue {
@@ -313,27 +313,27 @@
 @keyframes liftIn { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 .experiment-entering { animation: liftIn 250ms ease-out forwards; }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   LANDING PAGE — world-class animations & visual system
-   ══════════════════════════════════════════════════════════════════════════ */
+/* ==========================================================================
+   LANDING PAGE - world-class animations & visual system
+   ========================================================================== */
 
 .font-display { font-family: 'Syne', system-ui, sans-serif; }
 
-/* ── Dot grid background ─────────────────────────────────────────────────── */
+/* -- Dot grid background --------------------------------------------------- */
 .landing-grid-bg {
   background-image:
     radial-gradient(circle, rgba(139,92,246,0.25) 1px, transparent 1px);
   background-size: 40px 40px;
 }
 
-/* ── Noise grain texture ─────────────────────────────────────────────────── */
+/* -- Noise grain texture --------------------------------------------------- */
 .landing-noise {
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
   background-repeat: repeat;
   background-size: 200px 200px;
 }
 
-/* ── Scroll-reveal ───────────────────────────────────────────────────────── */
+/* -- Scroll-reveal --------------------------------------------------------- */
 .landing-reveal {
   opacity: 0;
   transform: translateY(28px);
@@ -345,7 +345,7 @@
   transform: translateY(0);
 }
 
-/* ── Fade-in utilities ───────────────────────────────────────────────────── */
+/* -- Fade-in utilities ----------------------------------------------------- */
 @keyframes fadeIn {
   from { opacity: 0; }
   to   { opacity: 1; }
@@ -357,11 +357,11 @@
 .animate-fade-in    { animation: fadeIn 0.7s ease both; }
 .animate-fade-in-up { animation: fadeInUp 0.7s cubic-bezier(0.22,1,0.36,1) both; }
 
-/* ── Cursor blink ────────────────────────────────────────────────────────── */
+/* -- Cursor blink ---------------------------------------------------------- */
 @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
 .animate-blink { animation: blink 1s step-end infinite; }
 
-/* ── Orb drift ───────────────────────────────────────────────────────────── */
+/* -- Orb drift ------------------------------------------------------------- */
 @keyframes orbDrift {
   0%,100% { transform: translate(0, 0) scale(1); }
   33%     { transform: translate(30px, -20px) scale(1.05); }
@@ -374,14 +374,14 @@
 .animate-orb-drift      { animation: orbDrift 14s ease-in-out infinite; }
 .animate-orb-drift-slow { animation: orbDriftSlow 22s ease-in-out infinite; }
 
-/* ── Terminal line entrance ──────────────────────────────────────────────── */
+/* -- Terminal line entrance ------------------------------------------------ */
 @keyframes terminalLine {
   from { opacity: 0; transform: translateX(-4px); }
   to   { opacity: 1; transform: translateX(0); }
 }
 .terminal-line { animation: terminalLine 200ms ease-out both; }
 
-/* ── Marquee ─────────────────────────────────────────────────────────────── */
+/* -- Marquee --------------------------------------------------------------- */
 @keyframes marquee        { from { transform: translateX(0); } to { transform: translateX(-50%); } }
 @keyframes marqueeReverse { from { transform: translateX(-50%); } to { transform: translateX(0); } }
 
@@ -398,10 +398,10 @@
 .animate-marquee:hover,
 .animate-marquee-reverse:hover { animation-play-state: paused; }
 
-/* ── Smooth scroll ───────────────────────────────────────────────────────── */
+/* -- Smooth scroll --------------------------------------------------------- */
 html { scroll-behavior: smooth; }
 
-/* ── Short-form reveal aliases (used by new LandingPage) ─────────────────── */
+/* -- Short-form reveal aliases (used by new LandingPage) ------------------- */
 .reveal {
   opacity: 0;
   transform: translateY(24px);

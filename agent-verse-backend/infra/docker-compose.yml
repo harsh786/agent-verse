@@ -189,6 +189,13 @@ services:
       SEARXNG_URL: http://searxng:8080
       EMBEDDING_DIM: "1536"
       FAKE_LLM_WARNING: "WARNING: No LLM API keys set. Agent goals will use FakeProvider and return dummy responses. Set ANTHROPIC_API_KEY or OPENAI_API_KEY."
+    volumes:
+      # Mount local migration files so new migrations are visible without rebuilding
+      - ../app/db/migrations:/app/app/db/migrations:ro
+      # Mount org router + service for live code changes without rebuild
+      - ../app/org:/app/app/org:ro
+      - ../app/gateway:/app/app/gateway:ro
+      - ../app/agent/graph.py:/app/app/agent/graph.py:ro
     healthcheck:
       test: ["CMD", ".venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=4).read()"]
       interval: 10s
@@ -279,6 +286,8 @@ services:
       # SLACK_TENANT_ID: ""
       # ALERTMANAGER_TENANT_ID: ""
       # DATADOG_TENANT_ID: ""
+    volumes:
+      - ../app/db/migrations:/app/app/db/migrations:ro
     deploy:
       resources:
         limits:
@@ -321,6 +330,8 @@ services:
       # SLACK_TENANT_ID: ""
       # ALERTMANAGER_TENANT_ID: ""
       # DATADOG_TENANT_ID: ""
+    volumes:
+      - ../app/db/migrations:/app/app/db/migrations:ro
     depends_on:
       redis:
         condition: service_healthy

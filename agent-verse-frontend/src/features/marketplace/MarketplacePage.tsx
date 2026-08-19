@@ -22,7 +22,7 @@ import { useTranslation } from "react-i18next";
 import {
   ShoppingBag, Search, Star, Download, Plug, ShieldCheck,
   ChevronRight, X, Loader2, Plus, ExternalLink, Zap,
-  Package, BookmarkPlus, Inbox,
+  Package, BookmarkPlus,
 } from "lucide-react";
 import {
   marketplaceApi, templatesApi,
@@ -32,8 +32,8 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
 import { useAuthStore } from "@/stores/auth";
+import { JARVISStagger, JARVISStaggerItem } from "@/components/ui/JARVISPageShell";
 
-import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const DOMAINS = [
@@ -86,9 +86,9 @@ const DOMAIN_COLORS: Record<string, string> = {
   engineering:       "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
   operations:        "bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300",
   logistics:         "bg-lime-100 text-lime-800 dark:bg-lime-900/30 dark:text-lime-300",
-  cybersecurity:     "bg-[#0F1826] text-slate-800 dark:bg-slate-900/30 dark:text-slate-300",
+  cybersecurity:     "bg-slate-100 text-slate-800 dark:bg-slate-900/30 dark:text-slate-300",
   insurance:         "bg-stone-100 text-stone-800 dark:bg-stone-900/30 dark:text-stone-300",
-  manufacturing:     "bg-[#0F1826] text-zinc-800 dark:bg-zinc-900/30 dark:text-zinc-300",
+  manufacturing:     "bg-zinc-100 text-zinc-800 dark:bg-zinc-900/30 dark:text-zinc-300",
   "real-estate":     "bg-amber-50 text-amber-900 dark:bg-amber-900/20 dark:text-amber-200",
   government:        "bg-neutral-100 text-neutral-800 dark:bg-neutral-900/30 dark:text-neutral-300",
   recruitment:       "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-900/30 dark:text-fuchsia-300",
@@ -100,7 +100,7 @@ const DOMAIN_COLORS: Record<string, string> = {
   "hr-talent":       "bg-pink-100 text-pink-800 dark:bg-pink-900/30 dark:text-pink-300",
   "sales-crm":       "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
   "government-portal": "bg-neutral-100 text-neutral-800 dark:bg-neutral-900/30 dark:text-neutral-300",
-  general:           "bg-[#0F1826] text-[#A0B4CC] dark:bg-slate-800 dark:text-slate-300",
+  general:           "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
 };
 
 const AUTONOMY_LABELS: Record<string, string> = {
@@ -148,7 +148,7 @@ function MarketplaceCard({
 
   return (
     <div
-      className="bg-card border border-border rounded-xl p-5 flex flex-col gap-3 hover:border-primary/30 hover:shadow-md transition-[color,background-color,border-color,opacity,box-shadow,transform] cursor-pointer group"
+      className="bg-card border border-border rounded-xl p-5 flex flex-col gap-3 hover:border-primary/30 hover:shadow-md transition-all cursor-pointer group"
       onClick={onSelect}
       role="button"
       tabIndex={0}
@@ -816,10 +816,6 @@ export function MarketplacePage() {
   };
 
   return (
-    <JARVISPageShell>
-
-      {/* Accessibility: announce loading state */}
-      <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
     <div className="space-y-6 max-w-6xl">
       {/* Page header */}
       <div className="flex items-start justify-between gap-4">
@@ -920,10 +916,8 @@ export function MarketplacePage() {
         </div>
       ) : isError ? (
         <EmptyState
-          icon={<Inbox size={40} />}
           title="Could not load marketplace"
           description="Ensure the backend is running and the insights router is registered."
-          variant="float"
         />
       ) : templates.length === 0 ? (
         <EmptyState
@@ -972,6 +966,5 @@ export function MarketplacePage() {
       {/* Publish modal */}
       {publishOpen && <PublishModal onClose={() => setPublishOpen(false)} />}
     </div>
-    </JARVISPageShell>
   );
 }
