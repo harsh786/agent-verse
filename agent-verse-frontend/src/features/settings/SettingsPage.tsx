@@ -94,7 +94,7 @@ function ConfirmModal({
             onClick={onConfirm}
             className={`px-4 py-2 text-sm rounded-lg transition-colors ${
               isDestructive
-                ? 'bg-red-600 text-white hover:bg-red-700'
+                ? 'bg-red-600 text-[#F1F5F9] hover:bg-red-700'
                 : 'bg-primary text-primary-foreground hover:opacity-90'
             }`}
           >
@@ -725,7 +725,7 @@ function AppearanceTab() {
             >
               <div className={`w-full h-12 rounded-lg mb-2 flex items-center justify-center ${
                 t === 'light' ? 'bg-[#0F1826] border border-white/[0.08]' :
-                t === 'dark' ? 'bg-gray-900' :
+                t === 'dark' ? 'bg-[#0F1117]' :
                 'bg-gradient-to-r from-white to-gray-900'
               }`}>
                 {t === 'light' ? <Sun className="h-5 w-5 text-yellow-500" /> :
@@ -796,7 +796,7 @@ function DeleteConfirmInput({
       <button
         onClick={onConfirm}
         disabled={text !== 'DELETE' || isLoading}
-        className="px-3 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+        className="px-3 py-2 text-sm bg-red-600 text-[#F1F5F9] rounded-lg hover:bg-red-700 disabled:opacity-50"
       >
         {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Confirm'}
       </button>
@@ -868,7 +868,7 @@ function DangerZoneTab() {
         {!confirmDelete ? (
           <button
             onClick={() => setConfirmDelete(true)}
-            className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+            className="px-4 py-2 text-sm bg-red-600 text-[#F1F5F9] rounded-lg hover:bg-red-700 transition-colors"
           >
             Delete Account
           </button>

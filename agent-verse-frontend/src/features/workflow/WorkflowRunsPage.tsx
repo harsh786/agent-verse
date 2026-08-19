@@ -47,7 +47,7 @@ function RunRow({ run }: { run: WERun }) {
     <Link
       to={`/workflow-runs/${run.run_id}`}
       className="flex items-center gap-4 px-4 py-3 rounded-xl border border-white/8
-                 bg-[#0F1826]/3 hover:bg-white/6 transition-colors group"
+                 bg-[#0F1826]/3 hover:bg-[#0A0D14]/6 transition-colors group"
       aria-label={`Run ${run.run_id}, status: ${run.status}`}
     >
       <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${statusCls}`}>
@@ -55,11 +55,11 @@ function RunRow({ run }: { run: WERun }) {
         {run.status}
       </span>
 
-      <code className="text-xs text-white/40 font-mono truncate max-w-[200px]">
+      <code className="text-xs text-[#F1F5F9]/40 font-mono truncate max-w-[200px]">
         {run.run_id}
       </code>
 
-      <div className="flex items-center gap-4 ml-auto text-xs text-white/40">
+      <div className="flex items-center gap-4 ml-auto text-xs text-[#F1F5F9]/40">
         <span>{run.step_count} step{run.step_count !== 1 ? 's' : ''}</span>
         <span>{duration}</span>
         <span>${run.cost_usd.toFixed(4)}</span>
@@ -91,16 +91,16 @@ export default function WorkflowRunsPage() {
 
       {/* Accessibility: announce loading state */}
       <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
-    <JARVISStagger className="min-h-screen bg-slate-950 text-white">
+    <JARVISStagger className="min-h-screen bg-slate-950 text-[#F1F5F9]">
       <header className="sticky top-0 z-30 flex items-center gap-3 px-6 py-4 border-b
                           border-white/10 bg-slate-950/90 backdrop-blur-xl">
-        <Link to={`/workflows/${id}/edit`} className="text-white/40 hover:text-white transition-colors"
+        <Link to={`/workflows/${id}/edit`} className="text-[#F1F5F9]/40 hover:text-[#F1F5F9] transition-colors"
           aria-label="Back to workflow builder">
           <ChevronLeft className="h-5 w-5" />
         </Link>
         <div>
           <h1 className="text-sm font-bold">{wf?.name ?? 'Workflow'} — Runs</h1>
-          <p className="text-xs text-white/40">{runs?.total ?? 0} total runs</p>
+          <p className="text-xs text-[#F1F5F9]/40">{runs?.total ?? 0} total runs</p>
         </div>
       </header>
 
@@ -110,7 +110,7 @@ export default function WorkflowRunsPage() {
             <Loader2 className="h-6 w-6 text-sky-400 animate-spin" />
           </div>
         ) : (runs?.items ?? []).length === 0 ? (
-          <div className="text-center py-16 text-white/30">
+          <div className="text-center py-16 text-[#F1F5F9]/30">
             <Play className="h-12 w-12 mx-auto mb-4 opacity-20" aria-hidden />
             <p className="text-sm">No runs yet. Trigger the workflow to see runs here.</p>
           </div>

@@ -69,7 +69,7 @@ const PLAN_ORDER = ["free", "starter", "professional", "enterprise"] as const;
 type PlanTier = (typeof PLAN_ORDER)[number];
 
 const PLAN_META: Record<PlanTier, { label: string; badge: string; dot: string }> = {
-  free:         { label: "Free",       badge: "bg-muted text-muted-foreground border-border",                                          dot: "bg-gray-400" },
+  free:         { label: "Free",       badge: "bg-muted text-muted-foreground border-border",                                          dot: "bg-[#94A3B8]" },
   starter:      { label: "Starter",    badge: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-300",       dot: "bg-blue-500" },
   professional: { label: "Pro",        badge: "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-900/30 dark:text-purple-300", dot: "bg-purple-500" },
   enterprise:   { label: "Enterprise", badge: "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300",  dot: "bg-amber-500" },

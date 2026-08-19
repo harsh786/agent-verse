@@ -27,7 +27,7 @@ function StepResultRow({ step }: { step: WEStepResult }) {
   return (
     <div className="border border-white/8 rounded-xl overflow-hidden">
       <button
-        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-white/4 transition-colors"
+        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[#0A0D14]/4 transition-colors"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
         aria-label={`Step ${step.step_id} — ${step.status}`}
@@ -39,13 +39,13 @@ function StepResultRow({ step }: { step: WEStepResult }) {
           {step.status}
         </span>
 
-        <span className="text-sm text-white font-medium">{step.step_id}</span>
-        <span className="text-xs text-white/40">{step.step_type}</span>
+        <span className="text-sm text-[#F1F5F9] font-medium">{step.step_id}</span>
+        <span className="text-xs text-[#F1F5F9]/40">{step.step_type}</span>
 
-        {duration && <span className="ml-auto text-xs text-white/30">{duration}</span>}
+        {duration && <span className="ml-auto text-xs text-[#F1F5F9]/30">{duration}</span>}
         {expanded
-          ? <ChevronDown className="h-4 w-4 text-white/30 ml-2" />
-          : <ChevronRight className="h-4 w-4 text-white/30 ml-2" />}
+          ? <ChevronDown className="h-4 w-4 text-[#F1F5F9]/30 ml-2" />
+          : <ChevronRight className="h-4 w-4 text-[#F1F5F9]/30 ml-2" />}
       </button>
 
       {expanded && (
@@ -57,8 +57,8 @@ function StepResultRow({ step }: { step: WEStepResult }) {
           )}
           {step.output && (
             <div>
-              <p className="text-xs text-white/40 font-semibold uppercase tracking-wide mb-2">Output</p>
-              <pre className="text-xs font-mono text-slate-300 bg-slate-900/60 rounded-lg p-3
+              <p className="text-xs text-[#F1F5F9]/40 font-semibold uppercase tracking-wide mb-2">Output</p>
+              <pre className="text-xs font-mono text-[#CBD5E1] bg-[#0F1117]/60 rounded-lg p-3
                               overflow-auto max-h-60 leading-relaxed">
                 {JSON.stringify(step.output, null, 2)}
               </pre>
@@ -125,12 +125,12 @@ export default function WorkflowRunDetailPage() {
 
       {/* Accessibility: announce loading state */}
       <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
-    <JARVISStagger className="min-h-screen bg-slate-950 text-white">
+    <JARVISStagger className="min-h-screen bg-slate-950 text-[#F1F5F9]">
       <header className="sticky top-0 z-30 flex items-center gap-3 px-6 py-4 border-b
                           border-white/10 bg-slate-950/90 backdrop-blur-xl">
         <Link
           to={`/workflows/${run.workflow_id}/runs`}
-          className="text-white/40 hover:text-white transition-colors"
+          className="text-[#F1F5F9]/40 hover:text-[#F1F5F9] transition-colors"
           aria-label="Back to runs"
         >
           <ChevronLeft className="h-5 w-5" />
@@ -142,7 +142,7 @@ export default function WorkflowRunDetailPage() {
             </span>
             Run Detail
           </h1>
-          <code className="text-xs text-white/30 font-mono">{run.run_id}</code>
+          <code className="text-xs text-[#F1F5F9]/30 font-mono">{run.run_id}</code>
         </div>
 
         {run.status === 'running' && (
@@ -187,10 +187,10 @@ export default function WorkflowRunDetailPage() {
             <div key={label}
               className="rounded-xl border border-white/8 bg-[#0F1826]/3 px-4 py-3
                          flex items-center gap-3">
-              <span className="text-white/30">{icon}</span>
+              <span className="text-[#F1F5F9]/30">{icon}</span>
               <div>
-                <p className="text-xs text-white/40">{label}</p>
-                <p className="text-sm font-semibold text-white">{value}</p>
+                <p className="text-xs text-[#F1F5F9]/40">{label}</p>
+                <p className="text-sm font-semibold text-[#F1F5F9]">{value}</p>
               </div>
             </div>
           ))}
@@ -199,10 +199,10 @@ export default function WorkflowRunDetailPage() {
         {/* Outputs */}
         {Object.keys(run.outputs ?? {}).length > 0 && (
           <section aria-labelledby="outputs-heading">
-            <h2 id="outputs-heading" className="text-sm font-semibold text-white mb-3">
+            <h2 id="outputs-heading" className="text-sm font-semibold text-[#F1F5F9] mb-3">
               Outputs
             </h2>
-            <pre className="text-xs font-mono text-slate-300 bg-slate-900/60 rounded-xl p-4
+            <pre className="text-xs font-mono text-[#CBD5E1] bg-[#0F1117]/60 rounded-xl p-4
                             overflow-auto max-h-48 leading-relaxed border border-white/8">
               {JSON.stringify(run.outputs, null, 2)}
             </pre>
@@ -219,11 +219,11 @@ export default function WorkflowRunDetailPage() {
 
         {/* Step timeline */}
         <section aria-labelledby="steps-heading">
-          <h2 id="steps-heading" className="text-sm font-semibold text-white mb-3">
+          <h2 id="steps-heading" className="text-sm font-semibold text-[#F1F5F9] mb-3">
             Step Timeline
           </h2>
           {(steps ?? []).length === 0 ? (
-            <p className="text-xs text-white/30">No step results yet.</p>
+            <p className="text-xs text-[#F1F5F9]/30">No step results yet.</p>
           ) : (
             <div className="space-y-2" role="list" aria-label="Step results">
               {(steps ?? []).map((step) => (

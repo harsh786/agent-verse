@@ -58,7 +58,7 @@ function WorkflowCard({
       initial="initial"
       animate="animate"
       exit="exit"
-      className="group relative rounded-2xl border border-white/10 bg-[#0F1826]/5 hover:bg-white/8
+      className="group relative rounded-2xl border border-white/10 bg-[#0F1826]/5 hover:bg-[#0A0D14]/8
                  backdrop-blur-sm p-5 flex flex-col gap-3 transition-colors
                  focus-within:ring-2 focus-within:ring-sky-500"
       role="article"
@@ -67,11 +67,11 @@ function WorkflowCard({
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
-          <h3 className="text-white font-semibold truncate text-sm leading-tight">
+          <h3 className="text-[#F1F5F9] font-semibold truncate text-sm leading-tight">
             {wf.name}
           </h3>
           {wf.description && (
-            <p className="text-white/50 text-xs mt-1 line-clamp-2 leading-relaxed">
+            <p className="text-[#F1F5F9]/50 text-xs mt-1 line-clamp-2 leading-relaxed">
               {wf.description}
             </p>
           )}
@@ -80,7 +80,7 @@ function WorkflowCard({
       </div>
 
       {/* Meta */}
-      <div className="flex items-center gap-3 text-xs text-white/40">
+      <div className="flex items-center gap-3 text-xs text-[#F1F5F9]/40">
         {wf.trigger_type && (
           <span className="flex items-center gap-1">
             <Zap className="h-3 w-3" />
@@ -98,8 +98,8 @@ function WorkflowCard({
         <Link
           to={`/workflows/${wf.id}/edit`}
           className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium
-                     py-1.5 rounded-lg bg-[#0F1826]/5 hover:bg-white/10 text-white/70
-                     hover:text-white transition-colors"
+                     py-1.5 rounded-lg bg-[#0F1826]/5 hover:bg-[#0A0D14]/10 text-[#F1F5F9]/70
+                     hover:text-[#F1F5F9] transition-colors"
           aria-label={`Edit workflow ${wf.name}`}
         >
           <Edit2 className="h-3.5 w-3.5" /> Edit
@@ -119,7 +119,7 @@ function WorkflowCard({
 
         <button
           onClick={() => onDelete(wf.id)}
-          className="p-1.5 rounded-lg text-white/30 hover:text-red-400
+          className="p-1.5 rounded-lg text-[#F1F5F9]/30 hover:text-red-400
                      hover:bg-red-500/10 transition-colors"
           aria-label={`Delete workflow ${wf.name}`}
         >
@@ -149,7 +149,7 @@ function EmptyState({ onCreateBlank, onBrowseTemplates }: {
       <div className="relative mb-6">
         <div className="w-24 h-24 rounded-3xl bg-[#0F1826]/5 border border-white/10 flex items-center
                         justify-center">
-          <Zap className="h-10 w-10 text-white/20" />
+          <Zap className="h-10 w-10 text-[#F1F5F9]/20" />
         </div>
         <div className="absolute -right-2 -top-2 w-8 h-8 rounded-xl bg-sky-500/20 border
                         border-sky-500/30 flex items-center justify-center">
@@ -157,8 +157,8 @@ function EmptyState({ onCreateBlank, onBrowseTemplates }: {
         </div>
       </div>
 
-      <h2 className="text-xl font-semibold text-white mb-2">No workflows yet</h2>
-      <p className="text-white/50 text-sm mb-8 max-w-xs leading-relaxed">
+      <h2 className="text-xl font-semibold text-[#F1F5F9] mb-2">No workflows yet</h2>
+      <p className="text-[#F1F5F9]/50 text-sm mb-8 max-w-xs leading-relaxed">
         Build repeatable business processes that run autonomously with AI, tools, and
         human approval checkpoints.
       </p>
@@ -167,14 +167,14 @@ function EmptyState({ onCreateBlank, onBrowseTemplates }: {
         <button
           onClick={onCreateBlank}
           className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500
-                     text-white text-sm font-medium transition-colors"
+                     text-[#F1F5F9] text-sm font-medium transition-colors"
         >
           <Plus className="h-4 w-4" /> Create blank workflow
         </button>
         <button
           onClick={onBrowseTemplates}
           className="flex items-center gap-2 px-5 py-2.5 rounded-xl border border-white/15
-                     hover:border-white/25 text-white/70 hover:text-white text-sm font-medium
+                     hover:border-white/25 text-[#F1F5F9]/70 hover:text-[#F1F5F9] text-sm font-medium
                      transition-colors"
         >
           <LayoutTemplate className="h-4 w-4" /> Browse templates
@@ -225,14 +225,14 @@ export default function WorkflowListPage() {
   return (
     <JARVISPageShell>
     <JARVISStagger className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950
-                    text-white">
+                    text-[#F1F5F9]">
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-white/8 bg-slate-950/80
                          backdrop-blur-xl px-6 py-4">
         <div className="max-w-6xl mx-auto flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-lg font-bold text-white">Workflows</h1>
-            <p className="text-xs text-white/40 mt-0.5">
+            <h1 className="text-lg font-bold text-[#F1F5F9]">Workflows</h1>
+            <p className="text-xs text-[#F1F5F9]/40 mt-0.5">
               Automate business processes with AI, tools, and human approval
             </p>
           </div>
@@ -241,7 +241,7 @@ export default function WorkflowListPage() {
             <button
               onClick={() => setShowTemplates(true)}
               className="flex items-center gap-2 px-3.5 py-2 rounded-xl border border-white/15
-                         hover:border-white/25 text-white/70 hover:text-white text-sm transition-colors"
+                         hover:border-white/25 text-[#F1F5F9]/70 hover:text-[#F1F5F9] text-sm transition-colors"
               aria-label="Browse workflow templates"
             >
               <LayoutTemplate className="h-4 w-4" /> Templates
@@ -249,7 +249,7 @@ export default function WorkflowListPage() {
             <button
               onClick={createBlank}
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500
-                         text-white text-sm font-medium transition-colors"
+                         text-[#F1F5F9] text-sm font-medium transition-colors"
               aria-label="Create new workflow"
             >
               <Plus className="h-4 w-4" /> New Workflow
@@ -263,7 +263,7 @@ export default function WorkflowListPage() {
         <div className="flex items-center gap-3 mb-6 flex-wrap">
           {/* Search */}
           <div className="relative flex-1 min-w-0 max-w-xs">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-white/30"
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#F1F5F9]/30"
                     aria-hidden />
             <input
               type="search"
@@ -272,14 +272,14 @@ export default function WorkflowListPage() {
               placeholder="Search workflows…"
               aria-label="Search workflows"
               className="w-full pl-9 pr-3 py-2 rounded-xl border border-white/10 bg-[#0F1826]/5
-                         text-white placeholder-white/30 text-sm focus:outline-none
+                         text-[#F1F5F9] placeholder-white/30 text-sm focus:outline-none
                          focus:ring-2 focus:ring-sky-500 focus:border-transparent"
             />
           </div>
 
           {/* Status filter */}
           <div className="flex items-center gap-1.5">
-            <Filter className="h-4 w-4 text-white/30" aria-hidden />
+            <Filter className="h-4 w-4 text-[#F1F5F9]/30" aria-hidden />
             {['', 'draft', 'published', 'archived'].map((s) => (
               <button
                 key={s}
@@ -287,8 +287,8 @@ export default function WorkflowListPage() {
                 aria-pressed={statusFilter === s}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                   statusFilter === s
-                    ? 'bg-sky-600 text-white'
-                    : 'bg-[#0F1826]/5 text-white/50 hover:text-white hover:bg-white/10'
+                    ? 'bg-sky-600 text-[#F1F5F9]'
+                    : 'bg-[#0F1826]/5 text-[#F1F5F9]/50 hover:text-[#F1F5F9] hover:bg-[#0A0D14]/10'
                 }`}
               >
                 {s || 'All'}
@@ -298,8 +298,8 @@ export default function WorkflowListPage() {
 
           <button
             onClick={() => refetch()}
-            className="ml-auto p-2 rounded-xl text-white/30 hover:text-white
-                       hover:bg-white/5 transition-colors"
+            className="ml-auto p-2 rounded-xl text-[#F1F5F9]/30 hover:text-[#F1F5F9]
+                       hover:bg-[#0A0D14]/5 transition-colors"
             aria-label="Refresh list"
           >
             <RefreshCw className="h-4 w-4" />
@@ -342,7 +342,7 @@ export default function WorkflowListPage() {
 
         {/* Count */}
         {filtered.length > 0 && (
-          <p className="mt-6 text-xs text-white/30 text-right">
+          <p className="mt-6 text-xs text-[#F1F5F9]/30 text-right">
             {filtered.length} workflow{filtered.length !== 1 ? 's' : ''}
           </p>
         )}

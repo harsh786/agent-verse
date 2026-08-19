@@ -88,7 +88,7 @@ export default function AgentMemoryPage(): JSX.Element {
     <JARVISStagger className="max-w-2xl mx-auto px-4 py-8">
       <div className="flex items-center gap-3 mb-6">
         <Brain className="w-6 h-6 text-indigo-600" />
-        <h1 className="text-xl font-semibold text-[#F0F6FF] dark:text-gray-200">Agent Memory</h1>
+        <h1 className="text-xl font-semibold text-[#F0F6FF] dark:text-[#E2E8F0]">Agent Memory</h1>
       </div>
       <p className="text-sm text-[#5A7494] mb-6">
         Memories help the agent personalise its responses across sessions.
@@ -98,17 +98,17 @@ export default function AgentMemoryPage(): JSX.Element {
       {adding ? (
         <div className="flex gap-2 mb-4">
           <input
-            className="flex-1 text-sm border border-white/[0.08] dark:border-gray-700 rounded-xl px-3 py-2 bg-[#0A0F1A] dark:bg-gray-800 text-[#F0F6FF] dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className="flex-1 text-sm border border-white/[0.08] dark:border-[#1E2535] rounded-xl px-3 py-2 bg-[#0A0F1A] dark:bg-[#1A1F2E] text-[#F0F6FF] dark:text-[#E2E8F0] focus:outline-none focus:ring-2 focus:ring-indigo-500"
             placeholder="New memory…"
             value={newContent}
             onChange={(e) => setNewContent(e.target.value)}
             autoFocus
             aria-label="New memory content"
           />
-          <button className="p-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl" onClick={handleAdd} aria-label="Save memory">
+          <button className="p-2 bg-indigo-600 hover:bg-indigo-700 text-[#F1F5F9] rounded-xl" onClick={handleAdd} aria-label="Save memory">
             <Check className="w-4 h-4" />
           </button>
-          <button className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl" onClick={() => setAdding(false)} aria-label="Cancel">
+          <button className="p-2 hover:bg-[#1A1F2E] dark:hover:bg-[#1A1F2E] rounded-xl" onClick={() => setAdding(false)} aria-label="Cancel">
             <X className="w-4 h-4 text-[#A0B4CC]" />
           </button>
         </div>
@@ -128,7 +128,7 @@ export default function AgentMemoryPage(): JSX.Element {
         {memories.map((m) => (
           <div
             key={m.id}
-            className="flex items-start gap-3 p-3 bg-[#0F1826] dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl group"
+            className="flex items-start gap-3 p-3 bg-[#0F1826] dark:bg-[#1A1F2E] border border-gray-100 dark:border-[#1E2535] rounded-xl group"
             role="listitem"
           >
             <Brain className="w-4 h-4 text-indigo-400 mt-0.5 shrink-0" />
@@ -145,7 +145,7 @@ export default function AgentMemoryPage(): JSX.Element {
               </div>
             ) : (
               <div className="flex-1">
-                <p className="text-sm text-[#A0B4CC] dark:text-gray-200">{m.content}</p>
+                <p className="text-sm text-[#A0B4CC] dark:text-[#E2E8F0]">{m.content}</p>
                 <p className="text-xs text-[#A0B4CC] mt-0.5">
                   {m.source} · {new Date(m.created_at).toLocaleDateString()}
                 </p>
@@ -153,7 +153,7 @@ export default function AgentMemoryPage(): JSX.Element {
             )}
             <div className="hidden group-hover:flex items-center gap-1">
               <button
-                className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+                className="p-1 hover:bg-[#1A1F2E] dark:hover:bg-[#252B3B] rounded"
                 onClick={() => { setEditingId(m.id); setEditContent(m.content); }}
                 aria-label="Edit memory"
               >

@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react';
+import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Pencil, Play, Trash2, Download, Upload, Search, X as XIcon, Wrench } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth';
@@ -398,6 +399,7 @@ export default function SkillsPage() {
   // ── Render ────────────────────────────────────────────────────────────────────
 
   return (
+    <JARVISPageShell>
     <div className="p-6 max-w-5xl mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
@@ -659,5 +661,6 @@ export default function SkillsPage() {
         </div>
       )}
     </div>
+    </JARVISPageShell>
   );
 }

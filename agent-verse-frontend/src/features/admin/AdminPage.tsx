@@ -42,7 +42,7 @@ const PLANS = ['free', 'starter', 'professional', 'enterprise'] as const;
 type Plan = typeof PLANS[number];
 
 const PLAN_COLORS: Record<string, string> = {
-  free:         'bg-slate-700/60 text-slate-300 border border-slate-600',
+  free:         'bg-[#252B3B]/60 text-[#CBD5E1] border border-[#1E2535]',
   starter:      'bg-blue-500/20 text-blue-400 border border-blue-500/40',
   professional: 'bg-purple-500/20 text-purple-400 border border-purple-500/40',
   enterprise:   'bg-amber-500/20 text-amber-400 border border-amber-500/40',
@@ -65,7 +65,7 @@ function MetricCard({
     red:     'text-red-400 bg-red-500/10',
   };
   return (
-    <div className="flex items-center gap-4 rounded-xl border border-slate-700 bg-slate-800/60 p-4" data-testid={testId}>
+    <div className="flex items-center gap-4 rounded-xl border border-[#1E2535] bg-[#1A1F2E]/60 p-4" data-testid={testId}>
       <div className={`rounded-lg p-2.5 ${colors[accent]}`}>
         <Icon className={`h-5 w-5 ${colors[accent].split(' ')[0]}`} />
       </div>
@@ -150,11 +150,11 @@ export default function AdminPage() {
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-[#F1F5F9] flex items-center gap-2">
             <Shield className="h-6 w-6 text-indigo-400" />
             Platform Administration
           </h1>
-          <p className="mt-1 text-sm text-slate-400">Manage tenants, plans, and platform health</p>
+          <p className="mt-1 text-sm text-[#94A3B8]">Manage tenants, plans, and platform health</p>
         </div>
         <div className="flex items-center gap-3">
           <HealthBadge status={health?.status} />
@@ -163,7 +163,7 @@ export default function AdminPage() {
             disabled={usageLoading}
             data-testid="refresh-btn"
             aria-label="Refresh metrics"
-            className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 hover:border-slate-500 transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-1.5 text-xs text-[#94A3B8] hover:text-[#E2E8F0] hover:border-slate-500 transition-colors"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${usageLoading ? 'animate-spin' : ''}`} />
             Refresh
@@ -180,36 +180,36 @@ export default function AdminPage() {
       </div>
 
       {/* Plan distribution */}
-      <div className="flex flex-wrap gap-2 rounded-xl border border-slate-700 bg-slate-800/40 px-4 py-3" data-testid="plan-distribution">
+      <div className="flex flex-wrap gap-2 rounded-xl border border-[#1E2535] bg-[#1A1F2E]/40 px-4 py-3" data-testid="plan-distribution">
         <span className="text-xs text-[#5A7494] mr-2 self-center">Plans:</span>
         {PLANS.map((p) => (
           <button
             key={p}
             data-testid={`plan-filter-${p}`}
             onClick={() => setPlanFilter(planFilter === p ? 'all' : p)}
-            className={`rounded-full px-3 py-1 text-xs font-medium transition-[color,background-color,border-color,opacity,box-shadow,transform] ${planFilter === p ? PLAN_COLORS[p] : 'bg-slate-700/40 text-slate-400 hover:bg-slate-700 border border-transparent'}`}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-[color,background-color,border-color,opacity,box-shadow,transform] ${planFilter === p ? PLAN_COLORS[p] : 'bg-[#252B3B]/40 text-[#94A3B8] hover:bg-[#252B3B] border border-transparent'}`}
           >
             {p.charAt(0).toUpperCase() + p.slice(1)} <span className="opacity-70">({planCounts[p] ?? 0})</span>
           </button>
         ))}
         {planFilter !== 'all' && (
-          <button onClick={() => setPlanFilter('all')} className="ml-auto rounded-full px-3 py-1 text-xs text-[#5A7494] hover:text-slate-300">Clear ×</button>
+          <button onClick={() => setPlanFilter('all')} className="ml-auto rounded-full px-3 py-1 text-xs text-[#5A7494] hover:text-[#CBD5E1]">Clear ×</button>
         )}
       </div>
 
       {/* Tenant table */}
-      <div className="rounded-xl border border-slate-700 bg-slate-800/40 overflow-hidden">
-        <div className="flex items-center gap-3 border-b border-slate-700 px-4 py-3">
-          <h2 className="font-semibold text-slate-200 flex-1 flex items-center gap-2">
+      <div className="rounded-xl border border-[#1E2535] bg-[#1A1F2E]/40 overflow-hidden">
+        <div className="flex items-center gap-3 border-b border-[#1E2535] px-4 py-3">
+          <h2 className="font-semibold text-[#E2E8F0] flex-1 flex items-center gap-2">
             <Database className="h-4 w-4 text-[#5A7494]" />
             Tenants
             <span className="text-xs text-[#5A7494] font-normal">{sorted.length} / {allTenants.length}</span>
           </h2>
-          <p className="hidden sm:block text-xs text-slate-600">Updated {lastUpdated}</p>
+          <p className="hidden sm:block text-xs text-[#374151]">Updated {lastUpdated}</p>
           <div className="relative">
             <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#5A7494]" />
             <input
-              className="rounded-lg border border-slate-700 bg-slate-900 pl-7 pr-3 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 focus:border-indigo-500 focus:outline-none w-44"
+              className="rounded-lg border border-[#1E2535] bg-[#0F1117] pl-7 pr-3 py-1.5 text-xs text-[#E2E8F0] placeholder:text-[#374151] focus:border-indigo-500 focus:outline-none w-44"
               placeholder="Search…"
               value={search}
               data-testid="tenant-search"
@@ -227,7 +227,7 @@ export default function AdminPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm" data-testid="tenant-table">
               <thead>
-                <tr className="border-b border-slate-700 text-xs uppercase tracking-wider text-[#5A7494]">
+                <tr className="border-b border-[#1E2535] text-xs uppercase tracking-wider text-[#5A7494]">
                   <th className="px-4 py-2.5 font-medium">Tenant ID</th>
                   <th className="px-4 py-2.5 font-medium hidden sm:table-cell">Name</th>
                   <th className="px-4 py-2.5 font-medium">Plan</th>
@@ -242,9 +242,9 @@ export default function AdminPage() {
                     </td>
                   </tr>
                 ) : sorted.map((t) => (
-                  <tr key={t.tenant_id} className="border-b border-slate-800 last:border-0 hover:bg-slate-700/20 transition-colors" data-testid="tenant-row">
-                    <td className="px-4 py-3 font-mono text-xs text-slate-300 max-w-[160px] truncate">{t.tenant_id}</td>
-                    <td className="px-4 py-3 text-slate-400 hidden sm:table-cell text-xs">{t.name ?? '—'}</td>
+                  <tr key={t.tenant_id} className="border-b border-[#1E2535] last:border-0 hover:bg-[#252B3B]/20 transition-colors" data-testid="tenant-row">
+                    <td className="px-4 py-3 font-mono text-xs text-[#CBD5E1] max-w-[160px] truncate">{t.tenant_id}</td>
+                    <td className="px-4 py-3 text-[#94A3B8] hidden sm:table-cell text-xs">{t.name ?? '—'}</td>
                     <td className="px-4 py-3">
                       <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${PLAN_COLORS[t.plan] ?? ''}`}>{t.plan}</span>
                     </td>
@@ -253,14 +253,14 @@ export default function AdminPage() {
                         <Loader2 className="h-4 w-4 animate-spin text-indigo-400" />
                       ) : (
                         <select
-                          className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none"
+                          className="rounded-lg border border-[#1E2535] bg-[#1A1F2E] px-2 py-1 text-xs text-[#E2E8F0] focus:border-indigo-500 focus:outline-none"
                           value={t.plan}
                           data-testid={`plan-select-${t.tenant_id}`}
                           disabled={planMutation.isPending}
                           aria-label={`Change plan for ${t.tenant_id}`}
                           onChange={(e) => e.target.value !== t.plan && planMutation.mutate({ tenantId: t.tenant_id, plan: e.target.value })}
                         >
-                          {PLANS.map((p) => <option key={p} value={p} className="bg-slate-900">{p.charAt(0).toUpperCase() + p.slice(1)}</option>)}
+                          {PLANS.map((p) => <option key={p} value={p} className="bg-[#0F1117]">{p.charAt(0).toUpperCase() + p.slice(1)}</option>)}
                         </select>
                       )}
                     </td>
@@ -273,8 +273,8 @@ export default function AdminPage() {
       </div>
 
       {/* System health */}
-      <div className="rounded-xl border border-slate-700 bg-slate-800/40 p-4" data-testid="system-health">
-        <h2 className="mb-3 font-semibold text-slate-200 flex items-center gap-2">
+      <div className="rounded-xl border border-[#1E2535] bg-[#1A1F2E]/40 p-4" data-testid="system-health">
+        <h2 className="mb-3 font-semibold text-[#E2E8F0] flex items-center gap-2">
           <Activity className="h-4 w-4 text-emerald-400" />
           System Health
         </h2>
@@ -289,7 +289,7 @@ export default function AdminPage() {
             return (
               <div key={name} className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 ${isOk ? 'border-emerald-800/50 bg-emerald-900/10' : 'border-red-800/50 bg-red-900/10'}`} data-testid={`health-${name.toLowerCase()}`}>
                 <div className={`h-2 w-2 rounded-full shrink-0 ${isOk ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                <span className="text-xs text-slate-300">{name}</span>
+                <span className="text-xs text-[#CBD5E1]">{name}</span>
                 <span className={`ml-auto text-xs ${isOk ? 'text-emerald-500' : 'text-red-400'}`}>{isOk ? 'ok' : (status ?? '—')}</span>
               </div>
             );
@@ -306,7 +306,7 @@ export default function AdminPage() {
         ].map(({ label, icon: Icon, href }) => (
           <a key={label} href={href}
             data-testid={`quick-link-${label.toLowerCase().replace(/\s+/g, '-')}`}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-400 hover:border-slate-500 hover:text-slate-200 transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-2 text-xs text-[#94A3B8] hover:border-slate-500 hover:text-[#E2E8F0] transition-colors"
           >
             <Icon className="h-3.5 w-3.5" /> {label}
           </a>

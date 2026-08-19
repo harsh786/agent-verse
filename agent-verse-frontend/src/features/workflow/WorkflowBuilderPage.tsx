@@ -247,7 +247,7 @@ function BuilderCanvas({
       <div className="flex-1 relative" onDragOver={onDragOver} onDrop={onDrop}>
         {/* Toolbar */}
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2
-                         bg-slate-900/90 backdrop-blur-md rounded-2xl border border-white/10
+                         bg-[#0F1117]/90 backdrop-blur-md rounded-2xl border border-white/10
                          px-3 py-1.5 shadow-xl">
           {/* Undo/redo */}
           <motion.button
@@ -257,7 +257,7 @@ function BuilderCanvas({
             whileTap="pressed"
             onClick={doUndo}
             disabled={!history.canUndo}
-            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/8
+            className="p-1.5 rounded-lg text-[#F1F5F9]/40 hover:text-[#F1F5F9] hover:bg-[#0A0D14]/8
                        disabled:opacity-30 transition-colors"
             aria-label="Undo"
             title="Undo (Ctrl+Z)"
@@ -271,7 +271,7 @@ function BuilderCanvas({
             whileTap="pressed"
             onClick={doRedo}
             disabled={!history.canRedo}
-            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/8
+            className="p-1.5 rounded-lg text-[#F1F5F9]/40 hover:text-[#F1F5F9] hover:bg-[#0A0D14]/8
                        disabled:opacity-30 transition-colors"
             aria-label="Redo"
             title="Redo (Ctrl+Y)"
@@ -284,7 +284,7 @@ function BuilderCanvas({
           {/* Auto layout */}
           <button
             onClick={autoLayout}
-            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/8
+            className="p-1.5 rounded-lg text-[#F1F5F9]/40 hover:text-[#F1F5F9] hover:bg-[#0A0D14]/8
                        transition-colors"
             aria-label="Auto-layout nodes"
             title="Auto Layout"
@@ -296,7 +296,7 @@ function BuilderCanvas({
           <button
             onClick={() => setShowYaml((v) => !v)}
             className={`p-1.5 rounded-lg transition-colors
-              ${showYaml ? 'text-sky-400 bg-sky-500/15' : 'text-white/40 hover:text-white hover:bg-white/8'}`}
+              ${showYaml ? 'text-sky-400 bg-sky-500/15' : 'text-[#F1F5F9]/40 hover:text-[#F1F5F9] hover:bg-[#0A0D14]/8'}`}
             aria-label="Toggle YAML editor"
             aria-pressed={showYaml}
             title="Toggle YAML"
@@ -326,7 +326,7 @@ function BuilderCanvas({
             onClick={handleSave}
             disabled={isSaving}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600
-                       hover:bg-sky-500 text-white text-xs font-medium transition-colors
+                       hover:bg-sky-500 text-[#F1F5F9] text-xs font-medium transition-colors
                        disabled:opacity-60"
             aria-label="Save workflow"
           >
@@ -366,11 +366,11 @@ function BuilderCanvas({
             gap={20}
           />
           <Controls
-            className="bg-slate-900/80 border border-white/10 rounded-xl shadow-lg"
+            className="bg-[#0F1117]/80 border border-white/10 rounded-xl shadow-lg"
             aria-label="Canvas controls"
           />
           <MiniMap
-            className="bg-slate-900/80 border border-white/10 rounded-xl"
+            className="bg-[#0F1117]/80 border border-white/10 rounded-xl"
             nodeColor={() => '#334155'}
             aria-label="Workflow minimap"
           />
@@ -388,7 +388,7 @@ function BuilderCanvas({
               animate="animate"
               exit="exit"
               className="absolute top-0 right-0 bottom-0 w-[400px] border-l border-white/10
-                         bg-slate-900/95 backdrop-blur-md flex flex-col shadow-2xl z-10"
+                         bg-[#0F1117]/95 backdrop-blur-md flex flex-col shadow-2xl z-10"
           style={modalBackdrop.animate as React.CSSProperties}
               aria-label="YAML editor"
             >
@@ -399,7 +399,7 @@ function BuilderCanvas({
                 exit="exit"
                 className="flex items-center justify-between px-4 py-3 border-b border-white/10"
               >
-                <span className="text-sm font-semibold text-white flex items-center gap-2">
+                <span className="text-sm font-semibold text-[#F1F5F9] flex items-center gap-2">
                   <Code2 className="h-4 w-4 text-sky-400" />
                   Workflow YAML
                 </span>
@@ -410,7 +410,7 @@ function BuilderCanvas({
                 )}
                 <button
                   onClick={() => setShowYaml(false)}
-                  className="text-white/40 hover:text-white"
+                  className="text-[#F1F5F9]/40 hover:text-[#F1F5F9]"
                   aria-label="Close YAML editor"
                 >
                   <X className="h-4 w-4" />
@@ -423,7 +423,7 @@ function BuilderCanvas({
                   updateFromYaml(e.target.value);
                 }}
                 spellCheck={false}
-                className="flex-1 bg-transparent text-xs text-slate-300 font-mono
+                className="flex-1 bg-transparent text-xs text-[#CBD5E1] font-mono
                            p-4 resize-none outline-none overflow-auto leading-relaxed"
                 aria-label="Edit workflow YAML"
               />
@@ -441,7 +441,7 @@ function BuilderCanvas({
             initial="initial"
             animate="animate"
             exit="exit"
-            className="w-80 border-l border-white/10 bg-slate-900/95 backdrop-blur-md"
+            className="w-80 border-l border-white/10 bg-[#0F1117]/95 backdrop-blur-md"
           >
             <WorkflowStepConfig
               node={selectedNode}
@@ -507,20 +507,20 @@ export default function WorkflowBuilderPage() {
 
   return (
     <JARVISPageShell>
-    <JARVISStagger className="flex flex-col h-screen bg-slate-950 text-white">
+    <JARVISStagger className="flex flex-col h-screen bg-slate-950 text-[#F1F5F9]">
       {/* Top bar */}
       <header className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-white/10
-                          bg-slate-900/80 backdrop-blur-xl z-30">
+                          bg-[#0F1117]/80 backdrop-blur-xl z-30">
         <button
           onClick={() => navigate('/workflows')}
-          className="text-white/40 hover:text-white transition-colors"
+          className="text-[#F1F5F9]/40 hover:text-[#F1F5F9] transition-colors"
           aria-label="Back to workflows"
         >
           <ChevronLeft className="h-5 w-5" />
         </button>
         <div>
-          <h1 className="text-sm font-bold text-white leading-tight">{wf.name}</h1>
-          <p className="text-xs text-white/40">v{wf.version} · {wf.status}</p>
+          <h1 className="text-sm font-bold text-[#F1F5F9] leading-tight">{wf.name}</h1>
+          <p className="text-xs text-[#F1F5F9]/40">v{wf.version} · {wf.status}</p>
         </div>
         <div className="flex items-center gap-2 ml-auto">
           {wf.status === 'draft' && (
@@ -529,7 +529,7 @@ export default function WorkflowBuilderPage() {
                 qc.invalidateQueries({ queryKey: ['workflow-engine', 'get', id] })
               )}
               className="flex items-center gap-2 px-4 py-1.5 rounded-xl bg-emerald-600
-                         hover:bg-emerald-500 text-white text-xs font-medium transition-colors"
+                         hover:bg-emerald-500 text-[#F1F5F9] text-xs font-medium transition-colors"
               aria-label="Publish workflow"
             >
               <Zap className="h-3.5 w-3.5" /> Publish
