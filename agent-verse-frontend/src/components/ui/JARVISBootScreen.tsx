@@ -24,12 +24,12 @@ interface JARVISBootScreenProps {
 }
 
 const BOOT_LINES = [
-  { text: 'NEURAL MESH............OK', delay: 1300 },
-  { text: 'AGENT RUNTIME..........OK', delay: 1550 },
-  { text: 'MEMORY VAULT...........OK', delay: 1750 },
-  { text: 'GOVERNANCE ENGINE......OK', delay: 1950 },
-  { text: 'MISSION PLANNER........OK', delay: 2100 },
-  { text: 'ALL SYSTEMS NOMINAL', delay: 2350, highlight: true },
+  { text: 'NEURAL MESH............OK', delay: 1400 },
+  { text: 'AGENT RUNTIME..........OK', delay: 1900 },
+  { text: 'MEMORY VAULT...........OK', delay: 2350 },
+  { text: 'GOVERNANCE ENGINE......OK', delay: 2750 },
+  { text: 'MISSION PLANNER........OK', delay: 3150 },
+  { text: 'ALL SYSTEMS NOMINAL', delay: 3700, highlight: true },
 ];
 
 function useTypingEffect(text: string, startDelay: number, speed = 28) {
@@ -300,7 +300,7 @@ export function JARVISBootScreen({ orgName = 'AgentVerse OS', onComplete, durati
               <motion.div
                 initial={{ width: '0%' }}
                 animate={{ width: '100%' }}
-                transition={{ duration: 2, delay: 1.3, ease: 'easeInOut' }}
+                transition={{ duration: 3.8, delay: 1.3, ease: 'easeInOut' }}
                 className="h-full bg-gradient-to-r from-[#00D4FF] to-[#7C3AED]"
                 style={{ boxShadow: '0 0 8px rgba(0,212,255,0.8)' }}
               />
