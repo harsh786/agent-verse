@@ -119,6 +119,65 @@ def _detect_providers() -> list[ProviderConfig]:
                 provider_type="ollama",
                 base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
                 display_name="Ollama (local)",
+                models=["qwen3:8b", "qwen2.5-coder:7b", "nomic-embed-text"],
+            )
+        )
+
+    # OpenRouter — single key, 50+ models
+    if os.getenv("OPENROUTER_API_KEY"):
+        providers.append(
+            ProviderConfig(
+                provider_type="openrouter",
+                api_key=os.getenv("OPENROUTER_API_KEY", ""),
+                models=["anthropic/claude-3-5-sonnet", "openai/gpt-4o", "deepseek/deepseek-v3"],
+                display_name="OpenRouter",
+            )
+        )
+
+    # NVIDIA NIM
+    if os.getenv("NGC_API_KEY") or os.getenv("NVIDIA_NIM_BASE_URL"):
+        providers.append(
+            ProviderConfig(
+                provider_type="nvidia_nim",
+                api_key=os.getenv("NGC_API_KEY", ""),
+                base_url=os.getenv("NVIDIA_NIM_BASE_URL", ""),
+                models=["nvidia/llama-3.1-nemotron-70b-instruct"],
+                display_name="NVIDIA NIM",
+            )
+        )
+
+    # Simple OpenAI-compatible providers
+    _SIMPLE_PROVIDERS = [
+        ("mistral",     "MISTRAL_API_KEY",     "mistral-large-latest",                              "Mistral AI"),
+        ("deepseek",    "DEEPSEEK_API_KEY",     "deepseek-chat",                                     "DeepSeek"),
+        ("perplexity",  "PERPLEXITY_API_KEY",   "llama-3.1-sonar-large-128k-online",                 "Perplexity"),
+        ("fireworks",   "FIREWORKS_API_KEY",    "accounts/fireworks/models/llama-v3p1-70b-instruct", "Fireworks AI"),
+        ("xai",         "XAI_API_KEY",          "grok-beta",                                         "xAI (Grok)"),
+        ("moonshot",    "MOONSHOT_API_KEY",      "moonshot-v1-8k",                                    "Moonshot AI"),
+        ("cerebras",    "CEREBRAS_API_KEY",      "llama3.1-70b",                                      "Cerebras"),
+        ("yi",          "YI_API_KEY",            "yi-large",                                          "01.AI (Yi)"),
+        ("huggingface", "HF_API_KEY",            "meta-llama/Llama-3.1-70B-Instruct",                "HuggingFace"),
+        ("sambanova",   "SAMBANOVA_API_KEY",     "Meta-Llama-3.1-70B-Instruct",                      "SambaNova"),
+    ]
+    for provider_type, env_key, default_model, display_name in _SIMPLE_PROVIDERS:
+        if os.getenv(env_key):
+            providers.append(
+                ProviderConfig(
+                    provider_type=provider_type,
+                    api_key=os.getenv(env_key, ""),
+                    models=[default_model],
+                    display_name=display_name,
+                )
+            )
+
+    # Azure OpenAI
+    if os.getenv("AZURE_OPENAI_API_KEY") and os.getenv("AZURE_OPENAI_RESOURCE"):
+        providers.append(
+            ProviderConfig(
+                provider_type="azure_openai",
+                api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
+                models=[os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")],
+                display_name="Azure OpenAI",
             )
         )
 
@@ -219,13 +278,12 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
             return None
 
     elif ptype == "ollama":
-        # Ollama: no key needed, just a base_url
-        from app.providers.openai_compatible import OpenAICompatibleProvider
+        # Delegate to the full OllamaProvider (native embed API, model management, etc.)
+        from app.providers.ollama_provider import OllamaProvider
 
-        return OpenAICompatibleProvider(
-            api_key="ollama",  # placeholder
-            base_url=cfg.base_url or "http://localhost:11434/v1",
-            default_model=configured_model or "llama3.2",
+        return OllamaProvider(
+            base_url=cfg.base_url or "http://localhost:11434",
+            default_model=configured_model or "qwen3:8b",
         )
 
     elif ptype == "groq":
@@ -238,6 +296,61 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
             base_url=cfg.base_url or "https://api.groq.com/openai/v1",
             default_model=configured_model or "llama-3.1-70b-versatile",
         )
+
+    elif ptype == "openrouter":
+        if not cfg.api_key:
+            return None
+        from app.providers.openrouter_provider import OpenRouterProvider
+
+        return OpenRouterProvider(
+            api_key=cfg.api_key,
+            default_model=configured_model or "anthropic/claude-3-5-sonnet",
+        )
+
+    elif ptype == "nvidia_nim":
+        from app.providers.nvidia_nim_provider import NvidiaNIMProvider
+
+        return NvidiaNIMProvider(
+            api_key=cfg.api_key or None,
+            base_url=cfg.base_url or None,
+            default_model=configured_model or "nvidia/llama-3.1-nemotron-70b-instruct",
+        )
+
+    elif ptype in (
+        "mistral", "deepseek", "perplexity", "fireworks", "xai",
+        "moonshot", "cerebras", "yi", "huggingface", "sambanova", "azure_openai",
+    ):
+        from app.providers.simple_providers import (
+            AzureOpenAIProvider,
+            CerebrasProvider,
+            DeepSeekProvider,
+            FireworksProvider,
+            HuggingFaceProvider,
+            MistralProvider,
+            MoonshotProvider,
+            PerplexityProvider,
+            SambanovaProvider,
+            XAIProvider,
+            YiProvider,
+        )
+
+        _klass_map = {
+            "mistral":     MistralProvider,
+            "deepseek":    DeepSeekProvider,
+            "perplexity":  PerplexityProvider,
+            "fireworks":   FireworksProvider,
+            "xai":         XAIProvider,
+            "moonshot":    MoonshotProvider,
+            "cerebras":    CerebrasProvider,
+            "yi":          YiProvider,
+            "huggingface": HuggingFaceProvider,
+            "sambanova":   SambanovaProvider,
+            "azure_openai": AzureOpenAIProvider,
+        }
+        klass = _klass_map[ptype]
+        if not cfg.api_key and ptype != "azure_openai":
+            return None
+        return klass(api_key=cfg.api_key or None)
 
     return None
 
