@@ -139,9 +139,9 @@ export default function WorkflowMarketplacePage() {
 
   return (
     <JARVISPageShell>
-    <JARVISStagger className="min-h-screen bg-slate-950 text-[#F1F5F9]">
+    <JARVISStagger className="min-h-screen bg-[#060810] text-[#F1F5F9]">
       {/* Header */}
-      <header className="sticky top-0 z-30 border-b border-white/10 bg-slate-950/90
+      <header className="sticky top-0 z-30 border-b border-white/10 bg-[#060810]/90
                           backdrop-blur-xl px-6 py-4">
         <div className="max-w-6xl mx-auto flex items-center justify-between gap-4">
           <div>

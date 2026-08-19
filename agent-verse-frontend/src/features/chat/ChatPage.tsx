@@ -180,7 +180,7 @@ export default function ChatPage() {
 
   return (
     <JARVISPageShell>
-    <JARVISStagger className="flex h-full w-full overflow-hidden bg-[#0F1826] dark:bg-gray-950">
+    <JARVISStagger className="flex h-full w-full overflow-hidden bg-[#0F1826] dark:bg-[#060810]">
       <ChatSidebar
         sessions={sessions}
         folders={folders}

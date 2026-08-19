@@ -163,7 +163,7 @@ export default function AdminPage() {
             disabled={usageLoading}
             data-testid="refresh-btn"
             aria-label="Refresh metrics"
-            className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-1.5 text-xs text-[#94A3B8] hover:text-[#E2E8F0] hover:border-slate-500 transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-1.5 text-xs text-[#94A3B8] hover:text-[#E2E8F0] hover:border-[#3D4D6A] transition-colors"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${usageLoading ? 'animate-spin' : ''}`} />
             Refresh
@@ -306,7 +306,7 @@ export default function AdminPage() {
         ].map(({ label, icon: Icon, href }) => (
           <a key={label} href={href}
             data-testid={`quick-link-${label.toLowerCase().replace(/\s+/g, '-')}`}
-            className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-2 text-xs text-[#94A3B8] hover:border-slate-500 hover:text-[#E2E8F0] transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-2 text-xs text-[#94A3B8] hover:border-[#3D4D6A] hover:text-[#E2E8F0] transition-colors"
           >
             <Icon className="h-3.5 w-3.5" /> {label}
           </a>

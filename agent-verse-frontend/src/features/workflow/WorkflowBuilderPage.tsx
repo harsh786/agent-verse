@@ -239,7 +239,7 @@ function BuilderCanvas({
   });
 
   return (
-    <div className="flex h-full w-full overflow-hidden bg-slate-950">
+    <div className="flex h-full w-full overflow-hidden bg-[#060810]">
       {/* Tool palette */}
       <WorkflowToolPalette />
 
@@ -356,13 +356,13 @@ function BuilderCanvas({
           fitViewOptions={{ padding: 0.15 }}
           minZoom={0.1}
           maxZoom={2.5}
-          className="bg-slate-950"
+          className="bg-[#060810]"
           aria-label="Workflow canvas"
           deleteKeyCode={null /* handled by our shortcut hook */}
         >
           <Background
             variant={BackgroundVariant.Dots}
-            color="#334155"
+            color="#2D3748"
             gap={20}
           />
           <Controls
@@ -371,7 +371,7 @@ function BuilderCanvas({
           />
           <MiniMap
             className="bg-[#0F1117]/80 border border-white/10 rounded-xl"
-            nodeColor={() => '#334155'}
+            nodeColor={() => '#2D3748'}
             aria-label="Workflow minimap"
           />
 
@@ -487,7 +487,7 @@ export default function WorkflowBuilderPage() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+      <div className="min-h-screen bg-[#060810] flex items-center justify-center">
         <Loader2 className="h-8 w-8 text-sky-400 animate-spin" />
       </div>
     );
@@ -495,7 +495,7 @@ export default function WorkflowBuilderPage() {
 
   if (error || !wf) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-red-400"
+      <div className="min-h-screen bg-[#060810] flex items-center justify-center text-red-400"
         role="alert">
         Failed to load workflow.{' '}
         <button onClick={() => navigate('/workflows')} className="underline ml-2">
@@ -507,7 +507,7 @@ export default function WorkflowBuilderPage() {
 
   return (
     <JARVISPageShell>
-    <JARVISStagger className="flex flex-col h-screen bg-slate-950 text-[#F1F5F9]">
+    <JARVISStagger className="flex flex-col h-screen bg-[#060810] text-[#F1F5F9]">
       {/* Top bar */}
       <header className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-white/10
                           bg-[#0F1117]/80 backdrop-blur-xl z-30">

@@ -128,7 +128,7 @@ export default function AgentMemoryPage(): JSX.Element {
         {memories.map((m) => (
           <div
             key={m.id}
-            className="flex items-start gap-3 p-3 bg-[#0F1826] dark:bg-[#1A1F2E] border border-gray-100 dark:border-[#1E2535] rounded-xl group"
+            className="flex items-start gap-3 p-3 bg-[#0F1826] dark:bg-[#1A1F2E] border border-[#F1F5F9] dark:border-[#1E2535] rounded-xl group"
             role="listitem"
           >
             <Brain className="w-4 h-4 text-indigo-400 mt-0.5 shrink-0" />

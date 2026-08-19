@@ -100,7 +100,7 @@ export default function WorkflowRunDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+      <div className="min-h-screen bg-[#060810] flex items-center justify-center">
         <Loader2 className="h-8 w-8 text-sky-400 animate-spin" />
       </div>
     );
@@ -108,7 +108,7 @@ export default function WorkflowRunDetailPage() {
 
   if (!run) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-red-400"
+      <div className="min-h-screen bg-[#060810] flex items-center justify-center text-red-400"
         role="alert">
         Run not found.
       </div>
@@ -125,9 +125,9 @@ export default function WorkflowRunDetailPage() {
 
       {/* Accessibility: announce loading state */}
       <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
-    <JARVISStagger className="min-h-screen bg-slate-950 text-[#F1F5F9]">
+    <JARVISStagger className="min-h-screen bg-[#060810] text-[#F1F5F9]">
       <header className="sticky top-0 z-30 flex items-center gap-3 px-6 py-4 border-b
-                          border-white/10 bg-slate-950/90 backdrop-blur-xl">
+                          border-white/10 bg-[#060810]/90 backdrop-blur-xl">
         <Link
           to={`/workflows/${run.workflow_id}/runs`}
           className="text-[#F1F5F9]/40 hover:text-[#F1F5F9] transition-colors"
