@@ -14,6 +14,7 @@ import { motion, useReducedMotion } from 'framer-motion';
 import {
   Clock, AlertCircle, CheckCircle2, Zap,
   PauseCircle, XCircle, Circle, ChevronRight,
+  Cpu, GitBranch, Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { OrgMission, MissionStatus, Priority } from '../types';
@@ -207,6 +208,50 @@ export const MissionCard = React.memo(function MissionCard({
           </span>
         </div>
       )}
+
+      {/* ── Execution metadata (team formation + dispatch status) ── */}
+      {(() => {
+        const meta = mission.metadata as Record<string, unknown> | undefined;
+        const goalId = meta?.goal_id as string | undefined;
+        const dispatched = meta?.dispatched as boolean | undefined;
+        const plan = meta?.orchestration_plan_summary as {
+          topology?: string; departments?: string[]; autonomy_level?: number;
+        } | undefined;
+        const depts = plan?.departments ?? [];
+        if (!goalId && !dispatched && depts.length === 0) return null;
+        return (
+          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+            {/* Dispatched / executing indicator */}
+            {goalId && (
+              <span className="flex items-center gap-1 text-[10px] font-medium text-[#00D4FF]/80">
+                {mission.status === 'active'
+                  ? <motion.span animate={{ rotate: 360 }} transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}>
+                      <Loader2 className="h-3 w-3 text-[#00D4FF]" />
+                    </motion.span>
+                  : <Cpu className="h-3 w-3" />
+                }
+                {mission.status === 'active' ? 'Executing' : 'Agent dispatched'}
+              </span>
+            )}
+            {/* Topology badge */}
+            {plan?.topology && (
+              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#00D4FF]/8 text-[10px] text-[#00D4FF]/70 border border-[#00D4FF]/15">
+                <GitBranch className="h-2.5 w-2.5" />
+                {plan.topology}
+              </span>
+            )}
+            {/* Department tags */}
+            {depts.slice(0, 3).map((d: string) => (
+              <span key={d} className="px-1.5 py-0.5 rounded bg-[#1E2535] text-[10px] text-[#64748B] border border-[#252B3B] capitalize">
+                {d}
+              </span>
+            ))}
+            {depts.length > 3 && (
+              <span className="text-[10px] text-[#475569]">+{depts.length - 3}</span>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Footer meta — tertiary (impeccable-ui: clearly de-emphasized) */}
       <div className="flex items-center justify-between text-[11px] text-[#475569] min-w-0">

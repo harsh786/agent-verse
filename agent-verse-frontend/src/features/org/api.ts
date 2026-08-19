@@ -72,10 +72,35 @@ export const orgApi = {
   // ── Missions ──────────────────────────────────────────────────────────────
 
   createMission(orgId: string, req: CreateMissionRequest): Promise<OrgMission> {
-    return apiFetch<OrgMission>(`${BASE}/${orgId}/missions`, {
+    // Use /missions/execute which triggers MetaOrchestrator team formation
+    // + dispatches to AgentGraph via GoalService — not just a DB record create.
+    return apiFetch<{
+      mission_id: string; title: string; status: string;
+      goal_id?: string; topology?: string; departments?: string[];
+      agent_count?: number; autonomy_level?: number; estimated_cost_usd?: number;
+      dispatched?: boolean;
+    }>(`${BASE}/${orgId}/missions/execute`, {
       method: 'POST',
       body: JSON.stringify(req),
-    });
+    }).then(r => ({
+      // Map execute response → OrgMission shape for downstream consumers
+      id:          r.mission_id,
+      org_id:      orgId,
+      title:       r.title,
+      status:      r.status ?? 'active',
+      priority:    req.priority ?? 'medium',
+      objective:   req.objective ?? '',
+      metadata:    {
+        goal_id:                  r.goal_id,
+        dispatched:               r.dispatched,
+        orchestration_plan_summary: {
+          topology:     r.topology,
+          departments:  r.departments ?? [],
+          autonomy_level: r.autonomy_level,
+          estimated_cost_usd: r.estimated_cost_usd,
+        },
+      },
+    } as unknown as OrgMission));
   },
 
   listMissions(orgId: string, params?: { status?: string; priority?: string; limit?: number; cursor?: string }): Promise<CursorPage<OrgMission>> {
