@@ -81,6 +81,8 @@ export interface OrgMission {
   completed_at:     string | null;
   created_at:       string;
   updated_at:       string;
+  /** Populated by /missions/execute: goal_id, topology, departments, dispatched */
+  metadata?:        Record<string, unknown>;
 }
 
 export interface OrgTask {
