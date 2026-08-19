@@ -247,6 +247,18 @@ class AgentGraph(
         self._goal_tree_threshold = goal_tree_threshold
         self._hitl_timeout: float = 300.0
         self._checkpointer = checkpointer if checkpointer is not None else MemorySaver()
+        # Ensure the checkpointer supports async — LangGraph's ainvoke requires
+        # aget_tuple().  The sync RedisSaver doesn't implement it, causing
+        # NotImplementedError inside the Celery worker.  Fall back to MemorySaver
+        # which is always async-safe.
+        try:
+            import inspect
+            _aget = getattr(self._checkpointer, 'aget_tuple', None)
+            if _aget is not None and not inspect.iscoroutinefunction(_aget):
+                # Sync implementation — replace with in-memory checkpointer
+                self._checkpointer = MemorySaver()
+        except Exception:
+            self._checkpointer = MemorySaver()
         self._bulkhead_registry = bulkhead_registry
         self._cost_tracker = cost_tracker
         self._step_callback = step_callback
