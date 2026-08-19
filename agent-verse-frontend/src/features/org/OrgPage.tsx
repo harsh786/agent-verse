@@ -264,6 +264,70 @@ export function OrgPage() {
           <OrgHealthWidget orgId={orgId} />
         </div>
 
+        {/* ── JARVIS Agent Orbit — glowing autonomous bot ring ─────────────── */}
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ type: 'spring', stiffness: 320, damping: 28, delay: 0.15 }}
+          className="px-6 py-2.5 border-b border-[#1E2535] shrink-0 hidden sm:block"
+        >
+          <div className="flex items-center gap-3 overflow-x-auto scrollbar-none">
+            {/* Live system label */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <motion.span
+                animate={{ opacity: [1, 0.3, 1] }}
+                transition={{ duration: 1.6, repeat: Infinity }}
+                className="h-1.5 w-1.5 rounded-full bg-emerald-400"
+              />
+              <span className="text-[10px] font-medium text-[#475569] uppercase tracking-widest">
+                Live
+              </span>
+            </div>
+
+            {/* Glowing status orbs — one per active mission */}
+            {[...Array(Math.max(1, (health as any)?.active_missions ?? 1))].map((_, i) => (
+              <motion.div
+                key={i}
+                initial={{ scale: 0, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={{ type: 'spring', stiffness: 500, damping: 25, delay: 0.2 + i * 0.07 }}
+                className="relative shrink-0"
+              >
+                {/* Outer glow ring */}
+                <motion.div
+                  animate={{ scale: [1, 1.6, 1], opacity: [0.4, 0, 0.4] }}
+                  transition={{ duration: 2.2 + i * 0.3, repeat: Infinity, ease: 'easeInOut', delay: i * 0.4 }}
+                  className="absolute inset-0 rounded-full bg-[#00D4FF]"
+                />
+                {/* Inner bot dot */}
+                <div className="relative h-8 w-8 rounded-full bg-[#1A1F2E] border border-[#00D4FF]/40 flex items-center justify-center">
+                  <motion.div
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 4 + i, repeat: Infinity, ease: 'linear' }}
+                    className="h-3 w-3"
+                  >
+                    <Cpu className="h-3 w-3 text-[#00D4FF]" />
+                  </motion.div>
+                </div>
+              </motion.div>
+            ))}
+
+            {/* Connecting line */}
+            <div className="flex-1 h-px bg-gradient-to-r from-[#00D4FF]/20 via-[#00D4FF]/5 to-transparent" />
+
+            {/* Org status badge */}
+            <motion.div
+              animate={{ boxShadow: ['0 0 8px rgba(0,212,255,0.2)', '0 0 16px rgba(0,212,255,0.4)', '0 0 8px rgba(0,212,255,0.2)'] }}
+              transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+              className="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-[#00D4FF]/30 bg-[#00D4FF]/5"
+            >
+              <span className="text-[10px] font-semibold text-[#00D4FF] uppercase tracking-wider">
+                {org?.status ?? 'active'}
+              </span>
+            </motion.div>
+          </div>
+        </motion.div>
+
         {/* ── Main content area ───────────────────────────────────────────── */}
         <div className="flex-1 flex overflow-hidden">
 
