@@ -3,8 +3,7 @@ import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Code2, Loader2, Zap, Layout, Server, Database, Globe, Smartphone, Bot, FileCode, ChevronRight, CheckCircle, Play, Download } from 'lucide-react';
 import { toast } from '@/stores/toast';
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
-import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 
 const PROJECT_TYPES = [
   { id: 'landing', label: 'Landing Page', icon: Layout, description: 'Marketing page with hero, features, CTA' },
@@ -117,6 +116,7 @@ export default function BuilderPage() {
       <div aria-live="polite" aria-atomic="true" className="sr-only" />
     <JARVISStagger className="max-w-4xl space-y-6">
       {/* Header */}
+      <JARVISStaggerItem>
       <div className="flex items-center gap-3">
         <div className="p-2.5 bg-primary/10 rounded-xl">
           <Code2 className="h-6 w-6 text-[#00D4FF]" />
@@ -126,8 +126,10 @@ export default function BuilderPage() {
           <p className="text-sm text-muted-foreground mt-0.5">Describe your project and let AI generate the scaffolding</p>
         </div>
       </div>
+      </JARVISStaggerItem>
 
       {/* Progress steps */}
+      <JARVISStaggerItem>
       <div className="flex items-center gap-2">
         {(['type', 'config', 'building', 'done'] as const).map((s, i) => (
           <div key={s} className="flex items-center gap-2">
@@ -143,6 +145,7 @@ export default function BuilderPage() {
           </div>
         ))}
       </div>
+      </JARVISStaggerItem>
 
       {/* Step 1: Project Type */}
       {step === 'type' && (
