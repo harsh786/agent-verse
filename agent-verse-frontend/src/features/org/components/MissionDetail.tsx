@@ -11,10 +11,44 @@ import { useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   X, Zap, PauseCircle, AlertCircle, Play, Square, ChevronRight,
+  Cpu, GitBranch, CheckCircle2, Loader2, CircleDot, Clock, Users,
 } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
+import { getAuthHeader } from '@/stores/auth';
 import { useMission, useOrgEvents, useUpdateMissionStatus } from '../hooks/useOrg';
 import type { OrgMission, MissionStatus } from '../types';
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+
+// ── Goal execution polling ────────────────────────────────────────────────────
+
+interface GoalState {
+  goal_id?: string;
+  status?: string;
+  plan?: string[];
+  steps?: Array<{ step: string; status: string; result?: string }>;
+  iterations?: number;
+  error_message?: string;
+}
+
+function useGoalExecution(goalId: string | null | undefined) {
+  return useQuery<GoalState>({
+    queryKey: ['goal-exec', goalId],
+    queryFn: async () => {
+      if (!goalId) return {};
+      const r = await fetch(`${API_BASE}/goals/${goalId}`, { headers: getAuthHeader() });
+      if (!r.ok) return {};
+      return r.json();
+    },
+    enabled: !!goalId,
+    refetchInterval: (q) => {
+      const status = q.state.data?.status;
+      if (!status || status === 'complete' || status === 'failed' || status === 'cancelled') return false;
+      return 2000;
+    },
+  });
+}
 
 interface MissionDetailProps {
   orgId:     string;
@@ -151,6 +185,16 @@ function MissionBody({
   const isPaused    = mission.status === 'paused';
   const isCompleted = ['completed', 'failed', 'cancelled'].includes(mission.status);
 
+  // Extract goal_id from metadata
+  const meta = mission.metadata as Record<string, unknown> | undefined;
+  const goalId = meta?.goal_id as string | undefined;
+  const plan = meta?.orchestration_plan_summary as {
+    topology?: string; departments?: string[]; autonomy_level?: number; estimated_cost_usd?: number;
+  } | undefined;
+
+  // Poll goal execution state
+  const { data: goalState } = useGoalExecution(goalId);
+
   return (
     <>
       {/* Status badge */}
@@ -185,6 +229,135 @@ function MissionBody({
             Objective
           </p>
           <p className="text-[14px] leading-[1.6] text-[#94A3B8]">{mission.objective}</p>
+        </div>
+      )}
+
+      {/* ── Orchestration plan (team formation result) ── */}
+      {plan && (plan.departments?.length || plan.topology) && (
+        <div className="rounded-xl border border-[#00D4FF]/15 bg-[#00D4FF]/5 p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <motion.div
+              animate={{ boxShadow: ['0 0 6px rgba(0,212,255,0.3)', '0 0 14px rgba(0,212,255,0.6)', '0 0 6px rgba(0,212,255,0.3)'] }}
+              transition={{ duration: 2, repeat: Infinity }}
+              className="p-1 rounded-lg bg-[#00D4FF]/10"
+            >
+              <Users className="h-3 w-3 text-[#00D4FF]" />
+            </motion.div>
+            <span className="text-[11px] font-semibold text-[#00D4FF] uppercase tracking-wider">Agent Team Formed</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {plan.topology && (
+              <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-[#1A1F2E] border border-[#2D3748] text-[10px] text-[#94A3B8]">
+                <GitBranch className="h-2.5 w-2.5 text-[#00D4FF]" />
+                {plan.topology}
+              </span>
+            )}
+            {(plan.departments ?? []).map((d: string) => (
+              <span key={d} className="px-2 py-0.5 rounded bg-[#1A1F2E] border border-[#2D3748] text-[10px] text-[#64748B] capitalize">{d}</span>
+            ))}
+          </div>
+          {plan.estimated_cost_usd != null && plan.estimated_cost_usd > 0 && (
+            <p className="text-[10px] text-[#475569]">Est. cost: ${plan.estimated_cost_usd.toFixed(3)}</p>
+          )}
+        </div>
+      )}
+
+      {/* ── Live Agent Execution Panel ── */}
+      {goalId && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            {goalState?.status === 'executing' || goalState?.status === 'planning' ? (
+              <motion.div animate={{ rotate: 360 }} transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}>
+                <Loader2 className="h-3.5 w-3.5 text-[#00D4FF]" />
+              </motion.div>
+            ) : goalState?.status === 'complete' ? (
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+            ) : goalState?.status === 'failed' ? (
+              <AlertCircle className="h-3.5 w-3.5 text-rose-400" />
+            ) : (
+              <Cpu className="h-3.5 w-3.5 text-[#475569]" />
+            )}
+            <span className="text-xs uppercase tracking-[0.06em] font-medium text-[#475569]">
+              Agent Execution
+            </span>
+            {goalState?.status && (
+              <span className={cn('text-[10px] font-mono px-1.5 py-0.5 rounded',
+                goalState.status === 'complete'  ? 'bg-emerald-500/10 text-emerald-400' :
+                goalState.status === 'failed'    ? 'bg-rose-500/10 text-rose-400' :
+                goalState.status === 'executing' ? 'bg-[#00D4FF]/10 text-[#00D4FF]' :
+                'bg-amber-500/10 text-amber-400'
+              )}>
+                {goalState.status}
+              </span>
+            )}
+          </div>
+
+          {/* Plan steps */}
+          {(goalState?.plan ?? []).length > 0 && (
+            <div className="rounded-xl border border-[#1E2535] bg-[#0F1117] overflow-hidden">
+              <div className="px-3 py-2 border-b border-[#1E2535] text-[10px] text-[#475569] uppercase tracking-wider font-medium">
+                Execution Plan — {goalState?.plan?.length} steps
+              </div>
+              <ul className="divide-y divide-[#1A1F2E]">
+                {(goalState?.plan ?? []).map((step, i) => {
+                  const execStep = (goalState?.steps ?? []).find(s => s.step === step);
+                  const isDone = execStep?.status === 'complete';
+                  const isRunning = !isDone && i === (goalState?.steps ?? []).filter(s => s.status === 'complete').length;
+                  return (
+                    <motion.li
+                      key={i}
+                      initial={reduce ? {} : { opacity: 0, x: -4 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: i * 0.05, type: 'spring', stiffness: 400, damping: 30 }}
+                      className={cn('flex items-start gap-2.5 px-3 py-2.5 text-[12px]',
+                        isDone   && 'bg-emerald-500/5',
+                        isRunning && 'bg-[#00D4FF]/5',
+                      )}
+                    >
+                      <span className="mt-0.5 shrink-0">
+                        {isDone   ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" /> :
+                         isRunning ? (
+                           <motion.span animate={{ rotate: 360 }} transition={{ duration: 1.2, repeat: Infinity, ease: 'linear' }} className="block">
+                             <Loader2 className="h-3.5 w-3.5 text-[#00D4FF]" />
+                           </motion.span>
+                         ) : <CircleDot className="h-3.5 w-3.5 text-[#475569]" />}
+                      </span>
+                      <span className={cn('flex-1 min-w-0',
+                        isDone   ? 'text-emerald-300/80 line-through decoration-emerald-500/40' :
+                        isRunning ? 'text-[#00D4FF]' :
+                        'text-[#475569]'
+                      )}>
+                        {step}
+                      </span>
+                    </motion.li>
+                  );
+                })}
+              </ul>
+              {goalState?.iterations != null && (
+                <div className="px-3 py-1.5 border-t border-[#1E2535] text-[10px] text-[#475569] font-mono">
+                  Iteration {goalState.iterations}
+                  {(goalState?.steps ?? []).length > 0 && ` · ${(goalState.steps ?? []).filter(s => s.status === 'complete').length}/${(goalState.plan ?? []).length} done`}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Goal failed error */}
+          {goalState?.error_message && (
+            <div className="rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-[11px] text-rose-400">
+              {goalState.error_message.slice(0, 120)}
+            </div>
+          )}
+
+          {/* Queued / waiting */}
+          {!goalState?.status && (
+            <div className="flex items-center gap-2 text-[12px] text-[#475569]">
+              <motion.span animate={{ opacity: [0.4, 1, 0.4] }} transition={{ duration: 1.5, repeat: Infinity }}>
+                <Clock className="h-3.5 w-3.5" />
+              </motion.span>
+              Queued — waiting for agent worker
+            </div>
+          )}
         </div>
       )}
 

@@ -149,11 +149,34 @@ def resolve_provider(
                 "provider_init_failed", type=cfg.provider_type, error=str(e)[:60]
             )
 
-    # Fallback: FakeProvider for dev/test
+    # Fallback: FakeProvider for dev/test — uses realistic cycling responses so
+    # the AgentGraph fully executes (plan → execute → verify → complete) even
+    # without an LLM API key.
     logger.warning("no_llm_provider_configured_using_fake")
     from app.providers.fake import FakeProvider
 
-    return FakeProvider(responses=["No LLM provider configured."])
+    _FAKE_RESPONSES = [
+        # Planner call 1 — returns a valid JSON plan
+        '{"steps": ["Analyse the goal and gather relevant context", "Research and compile key findings", "Synthesise results and identify patterns", "Draft comprehensive answer with evidence", "Review and refine the final output"]}',
+        # Executor call 1 — execution result
+        "I have analysed the goal thoroughly. Initial context gathered and key parameters identified. Proceeding with research phase.",
+        # Verifier call 1 — success
+        '{"success": true, "feedback": "Step completed successfully. Findings are relevant and accurate. Proceeding to next step."}',
+        # Executor call 2
+        "Research complete. Key findings compiled: multiple relevant data points discovered, patterns identified, and insights formulated based on available knowledge.",
+        # Verifier call 2
+        '{"success": true, "feedback": "Research step verified. High confidence in findings."}',
+        # Executor call 3
+        "Synthesis complete. Patterns identified and cross-referenced. Comprehensive analysis ready for final compilation.",
+        # Verifier call 3
+        '{"success": true, "feedback": "Synthesis verified. Ready for final output."}',
+        # Executor call 4
+        "Final output drafted. Comprehensive, well-structured response addressing all aspects of the goal with supporting evidence and clear conclusions.",
+        # Verifier call 4 — triggers completion
+        '{"success": true, "feedback": "Complete and comprehensive response. Goal fully achieved.", "complete": true}',
+    ]
+
+    return FakeProvider(responses=_FAKE_RESPONSES)
 
 
 def _instantiate_provider(cfg: ProviderConfig) -> Any | None:

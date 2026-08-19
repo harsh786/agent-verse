@@ -57,6 +57,16 @@ export function OrgPage() {
   const [booted, setBooted] = useState(false);
   const handleBootComplete = useCallback(() => {
     setBooted(true);
+    // JARVIS speaks on initialization — best-effort, not critical
+    try {
+      const utter = new window.SpeechSynthesisUtterance(
+        'AgentVerse initialized. All systems online. Ready for commands.'
+      );
+      utter.rate = 0.92;
+      utter.pitch = 0.85;
+      utter.volume = 0.8;
+      window.speechSynthesis.speak(utter);
+    } catch { /* speech not supported */ }
   }, []);
 
   const { data: org, isLoading: orgLoading, refetch } = useOrganization(orgId ?? null);
@@ -536,11 +546,27 @@ export function OrgPage() {
       <VoiceModal
         open={showVoice}
         onClose={() => setShowVoice(false)}
-        onTranscript={(text) => {
+        onTranscript={async (text) => {
+          if (!text.trim() || !orgId) return;
           setShowVoice(false);
-          setShowCreate(true);
-          // Pre-fill title via URL state or context in a real implementation
-          void text;
+          // Speak confirmation back
+          try {
+            const u = new window.SpeechSynthesisUtterance(`Mission received. Executing: ${text.slice(0, 60)}`);
+            u.rate = 0.92; u.pitch = 0.85; u.volume = 0.7;
+            window.speechSynthesis.speak(u);
+          } catch { /* ignore */ }
+          // Directly execute the mission without opening a drawer
+          try {
+            const { orgApi } = await import('./api');
+            await orgApi.createMission(orgId, {
+              title: text.slice(0, 120),
+              objective: text,
+              priority: 'high',
+            });
+          } catch {
+            // Fallback: open create drawer pre-filled
+            setShowCreate(true);
+          }
         }}
         placeholder="Describe a mission for your agents…"
       />
