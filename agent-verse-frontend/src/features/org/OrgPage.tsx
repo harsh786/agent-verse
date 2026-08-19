@@ -18,6 +18,7 @@ import { useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISBootScreen } from '@/components/ui/JARVISBootScreen';
 import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal, BookOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { OrgHealthWidget }      from './components/OrgHealthWidget';
@@ -52,6 +53,13 @@ export function OrgPage() {
   const [showHistory, setShowHistory]         = useState(false);
   const [showCommands, setShowCommands]       = useState(false);
   const [showObsidian, setShowObsidian]       = useState(false);
+  // JARVIS boot screen — shown once per org session
+  const bootKey = `jarvis_booted_${orgId}`;
+  const [booted, setBooted] = useState(() => !!sessionStorage.getItem(bootKey));
+  const handleBootComplete = useCallback(() => {
+    sessionStorage.setItem(bootKey, '1');
+    setBooted(true);
+  }, [bootKey]);
 
   const { data: org, isLoading: orgLoading, refetch } = useOrganization(orgId ?? null);
   const { data: health }    = useOrgHealth(orgId ?? null);
@@ -83,6 +91,14 @@ export function OrgPage() {
       </a>
 
       <JARVISPageShell className="flex flex-col h-full bg-[#0A0D14] overflow-hidden">
+        {/* JARVIS boot sequence — plays once per org, then reveals main UI */}
+        {!booted && (
+          <JARVISBootScreen
+            orgName={org?.name ?? 'AgentVerse'}
+            onComplete={handleBootComplete}
+            duration={3200}
+          />
+        )}
         <div id="main-content" className="contents">
         {/* ── Top bar ────────────────────────────────────────────────────── */}
         <header className="flex items-center justify-between px-6 py-4 border-b border-[#1E2535] shrink-0">

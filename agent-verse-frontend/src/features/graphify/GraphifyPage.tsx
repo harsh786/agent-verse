@@ -5,7 +5,7 @@
  * and live progress streaming. Graphify converts any org knowledge base into
  * an interactive glowing knowledge graph.
  */
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Share2, Sparkles, Zap, Info } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -32,6 +32,13 @@ export function GraphifyPage() {
     queryKey: ['orgs-for-graphify'],
     queryFn: fetchOrgs,
   });
+
+  // Auto-select the first org so users don't need to pick manually
+  useEffect(() => {
+    if (orgs.length > 0 && !selectedOrg) {
+      setSelectedOrg(orgs[0].id);
+    }
+  }, [orgs, selectedOrg]);
 
   return (
     <JARVISPageShell>
