@@ -53,13 +53,11 @@ export function OrgPage() {
   const [showHistory, setShowHistory]         = useState(false);
   const [showCommands, setShowCommands]       = useState(false);
   const [showObsidian, setShowObsidian]       = useState(false);
-  // JARVIS boot screen — shown once per org session
-  const bootKey = `jarvis_booted_${orgId}`;
-  const [booted, setBooted] = useState(() => !!sessionStorage.getItem(bootKey));
+  // JARVIS boot screen — shown every visit
+  const [booted, setBooted] = useState(false);
   const handleBootComplete = useCallback(() => {
-    sessionStorage.setItem(bootKey, '1');
     setBooted(true);
-  }, [bootKey]);
+  }, []);
 
   const { data: org, isLoading: orgLoading, refetch } = useOrganization(orgId ?? null);
   const { data: health }    = useOrgHealth(orgId ?? null);
@@ -96,7 +94,7 @@ export function OrgPage() {
           <JARVISBootScreen
             orgName={org?.name ?? 'AgentVerse'}
             onComplete={handleBootComplete}
-            duration={3200}
+            duration={5000}
           />
         )}
         <div id="main-content" className="contents">
