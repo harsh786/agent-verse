@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0087_orchestration_tables"
-down_revision = "0086_runtime_profile_fields"
+revision = "0087"
+down_revision = "0086"
 branch_labels = None
 depends_on = None
 

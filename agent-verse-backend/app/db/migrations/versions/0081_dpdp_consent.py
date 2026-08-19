@@ -2,8 +2,8 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = '0081_dpdp_consent'
-down_revision = '0080_policy_rules'
+revision = '0081'
+down_revision = '0080'
 branch_labels = None
 depends_on = None
 

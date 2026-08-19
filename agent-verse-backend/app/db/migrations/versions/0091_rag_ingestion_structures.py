@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0091_rag_ingestion_structures"
-down_revision = "0090_parent_child_retrieval"
+revision = "0091"
+down_revision = "0090"
 branch_labels = None
 depends_on = None
 

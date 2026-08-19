@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0095_raft_lifecycle"
-down_revision = "0094_knowledge_graph_rls"
+revision = "0095"
+down_revision = "0094"
 branch_labels = None
 depends_on = None
 

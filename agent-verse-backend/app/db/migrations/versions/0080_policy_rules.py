@@ -2,8 +2,8 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = '0080_policy_rules'
-down_revision = '0079_marketplace_monetization'
+revision = '0080'
+down_revision = '0079'
 branch_labels = None
 depends_on = None
 

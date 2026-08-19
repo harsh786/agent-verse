@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0106"
-down_revision = "0105_add_chat_tables"
+down_revision = "0105"
 branch_labels = None
 depends_on = None
 

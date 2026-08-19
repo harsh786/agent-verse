@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0093_current_embedding_defaults"
-down_revision = "0092_repository_ingestion_leases"
+revision = "0093"
+down_revision = "0092"
 branch_labels = None
 depends_on = None
 

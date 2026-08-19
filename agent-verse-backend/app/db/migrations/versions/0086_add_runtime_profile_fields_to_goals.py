@@ -11,8 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = "0086_runtime_profile_fields"
-down_revision = "0085_add_knowledge_graph"
+revision = "0086"
+down_revision = "0085"
 branch_labels = None
 depends_on = None
 

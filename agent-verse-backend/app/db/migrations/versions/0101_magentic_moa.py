@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0101_magentic_moa"
-down_revision = "0100_handoffs_group_chat"
+revision = "0101"
+down_revision = "0100"
 branch_labels = None
 depends_on = None
 
