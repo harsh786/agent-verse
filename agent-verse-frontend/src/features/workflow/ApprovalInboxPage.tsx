@@ -121,7 +121,7 @@ function ApprovalCard({
               onChange={() => onSelect(req.request_id)}
               aria-label={`Select request ${req.request_id}`}
               className="rounded border-white/20 bg-[#0F1826]/10 text-sky-500
-                         focus:ring-sky-500 focus:ring-offset-slate-900"
+                         focus:ring-sky-500 focus:ring-offset-[#0F1117]"
             />
             <PriorityBadge priority={req.priority} />
           </div>
@@ -292,9 +292,9 @@ export default function ApprovalInboxPage() {
 
   return (
     <JARVISPageShell>
-    <JARVISStagger className="min-h-screen bg-slate-950 text-[#F1F5F9]">
+    <JARVISStagger className="min-h-screen bg-[#060810] text-[#F1F5F9]">
       {/* Header */}
-      <header className="sticky top-0 z-30 border-b border-white/10 bg-slate-950/90 backdrop-blur-xl
+      <header className="sticky top-0 z-30 border-b border-white/10 bg-[#060810]/90 backdrop-blur-xl
                           px-6 py-4">
         <div className="max-w-3xl mx-auto flex items-center justify-between gap-4">
           <div>

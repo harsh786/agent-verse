@@ -64,7 +64,7 @@ const DOC_TYPE_COLORS: Record<OcrDocumentType, string> = {
   invoice: 'bg-red-500/20 text-red-400 border-red-500/40',
   bank_statement: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40',
   receipt: 'bg-sky-500/20 text-sky-400 border-sky-500/40',
-  general: 'bg-slate-500/20 text-[#94A3B8] border-slate-500/40',
+  general: 'bg-[#64748B]/20 text-[#94A3B8] border-[#64748B]/40',
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -182,7 +182,7 @@ function DropZone({
         'cursor-pointer select-none px-6 py-12 text-center transition-[color,background-color,border-color,opacity,box-shadow,transform] duration-200',
         dragging
           ? 'border-indigo-500 bg-indigo-500/10 scale-[1.01]'
-          : 'border-[#1E2535] bg-[#1A1F2E]/40 hover:border-slate-500 hover:bg-[#1A1F2E]/60',
+          : 'border-[#1E2535] bg-[#1A1F2E]/40 hover:border-[#3D4D6A] hover:bg-[#1A1F2E]/60',
         disabled ? 'pointer-events-none opacity-50' : '',
       ].join(' ')}
     >
@@ -214,7 +214,7 @@ function ConfidenceRing({ value }: { value: number }) {
   return (
     <div className="relative flex h-20 w-20 items-center justify-center" data-testid="confidence-ring">
       <svg className="-rotate-90" width="80" height="80">
-        <circle cx="40" cy="40" r={r} stroke="#334155" strokeWidth="6" fill="none" />
+        <circle cx="40" cy="40" r={r} stroke="#2D3748" strokeWidth="6" fill="none" />
         <circle
           cx="40" cy="40" r={r}
           stroke={color} strokeWidth="6" fill="none"
@@ -336,20 +336,20 @@ function OcrResultPanel({
         <div className="flex gap-2">
           <button
             onClick={exportJson}
-            className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-1.5 text-xs text-[#CBD5E1] hover:border-slate-400 hover:text-[#F1F5F9] transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-1.5 text-xs text-[#CBD5E1] hover:border-[#94A3B8] hover:text-[#F1F5F9] transition-colors"
             data-testid="export-json"
           >
             <Download className="h-3.5 w-3.5" /> Export JSON
           </button>
           <button
             onClick={onSave}
-            className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-1.5 text-xs text-[#CBD5E1] hover:border-slate-400 hover:text-[#F1F5F9] transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-1.5 text-xs text-[#CBD5E1] hover:border-[#94A3B8] hover:text-[#F1F5F9] transition-colors"
           >
             <History className="h-3.5 w-3.5" /> Save
           </button>
           <button
             onClick={onReset}
-            className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-1.5 text-xs text-[#CBD5E1] hover:border-slate-400 hover:text-[#F1F5F9] transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-1.5 text-xs text-[#CBD5E1] hover:border-[#94A3B8] hover:text-[#F1F5F9] transition-colors"
             data-testid="new-extraction"
           >
             <RefreshCw className="h-3.5 w-3.5" /> New

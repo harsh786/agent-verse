@@ -726,7 +726,7 @@ function AppearanceTab() {
               <div className={`w-full h-12 rounded-lg mb-2 flex items-center justify-center ${
                 t === 'light' ? 'bg-[#0F1826] border border-white/[0.08]' :
                 t === 'dark' ? 'bg-[#0F1117]' :
-                'bg-gradient-to-r from-white to-gray-900'
+                'bg-gradient-to-r from-white to-[#0F1117]'
               }`}>
                 {t === 'light' ? <Sun className="h-5 w-5 text-yellow-500" /> :
                  t === 'dark' ? <Moon className="h-5 w-5 text-blue-400" /> :

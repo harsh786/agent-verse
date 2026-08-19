@@ -224,10 +224,10 @@ export default function WorkflowListPage() {
 
   return (
     <JARVISPageShell>
-    <JARVISStagger className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950
+    <JARVISStagger className="min-h-screen bg-gradient-to-br from-[#060810] via-[#0F1117] to-[#060810]
                     text-[#F1F5F9]">
       {/* Header */}
-      <header className="sticky top-0 z-30 border-b border-white/8 bg-slate-950/80
+      <header className="sticky top-0 z-30 border-b border-white/8 bg-[#060810]/80
                          backdrop-blur-xl px-6 py-4">
         <div className="max-w-6xl mx-auto flex items-center justify-between gap-4">
           <div>

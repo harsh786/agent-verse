@@ -88,7 +88,7 @@ const DOMAIN_COLORS: Record<string, string> = {
   logistics:         "bg-lime-100 text-lime-800 dark:bg-lime-900/30 dark:text-lime-300",
   cybersecurity:     "bg-[#1A1F2E] text-[#374151] dark:bg-[#0F1117]/30 dark:text-[#CBD5E1]",
   insurance:         "bg-stone-100 text-stone-800 dark:bg-stone-900/30 dark:text-stone-300",
-  manufacturing:     "bg-[#1A1F2E] text-zinc-800 dark:bg-[#0F1117]/30 dark:text-[#CBD5E1]",
+  manufacturing:     "bg-[#1A1F2E] text-[#1A1F2E] dark:bg-[#0F1117]/30 dark:text-[#CBD5E1]",
   "real-estate":     "bg-amber-50 text-amber-900 dark:bg-amber-900/20 dark:text-amber-200",
   government:        "bg-neutral-100 text-neutral-800 dark:bg-neutral-900/30 dark:text-neutral-300",
   recruitment:       "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-900/30 dark:text-fuchsia-300",

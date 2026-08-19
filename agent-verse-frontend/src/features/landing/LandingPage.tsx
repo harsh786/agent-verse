@@ -590,7 +590,7 @@ function ArchCard({ item, delay }: { item: typeof ARCH_LAYERS[0]; delay: number 
       <ul className="space-y-2">
         {item.items.map(it => (
           <li key={it} className="text-xs text-[#94A3B8] flex items-center gap-1.5">
-            <span className="h-px w-3 bg-slate-600 flex-shrink-0" />{it}
+            <span className="h-px w-3 bg-[#475569] flex-shrink-0" />{it}
           </li>
         ))}
       </ul>
@@ -604,7 +604,7 @@ function ArchSection() {
     <div className="py-20">
       <div ref={ref} className={`reveal ${on ? "reveal-on" : ""} text-center mb-14`}>
         <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-[#5A7494] mb-4">
-          <span className="h-px w-8 bg-slate-600" /> Architecture
+          <span className="h-px w-8 bg-[#475569]" /> Architecture
         </div>
         <h2 className="font-display text-3xl md:text-4xl font-bold text-[#F1F5F9] mb-3">
           Five production layers, zero compromise
@@ -683,7 +683,7 @@ function SpotlightCard({ item, delay }: { item: typeof SPOTLIGHTS[0]; delay: num
       <ul className="space-y-2.5 flex-1">
         {item.bullets.map((b, j) => (
           <li key={j} className="flex items-start gap-2 text-sm text-[#94A3B8]">
-            <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-slate-500 flex-shrink-0" />
+            <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-[#64748B] flex-shrink-0" />
             {b}
           </li>
         ))}
@@ -705,7 +705,7 @@ function SpotlightSection() {
     <div className="py-20">
       <div ref={ref} className={`reveal ${on ? "reveal-on" : ""} text-center mb-14`}>
         <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-[#5A7494] mb-4">
-          <span className="h-px w-8 bg-slate-600" /> Use Cases
+          <span className="h-px w-8 bg-[#475569]" /> Use Cases
         </div>
         <h2 className="font-display text-3xl md:text-4xl font-bold text-[#F1F5F9] mb-3">
           One platform. Every team.
@@ -755,7 +755,7 @@ function ObsSection() {
     <div className="py-20">
       <div ref={ref} className={`reveal ${on ? "reveal-on" : ""} text-center mb-14`}>
         <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-widest uppercase text-[#5A7494] mb-4">
-          <span className="h-px w-8 bg-slate-600" /> Observability
+          <span className="h-px w-8 bg-[#475569]" /> Observability
         </div>
         <h2 className="font-display text-3xl md:text-4xl font-bold text-[#F1F5F9] mb-3">
           Full transparency into every decision

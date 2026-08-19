@@ -16,7 +16,7 @@ import type { Organization } from './types';
 const STATUS_DOT: Record<string, string> = {
   active:   'bg-emerald-400',
   paused:   'bg-amber-400',
-  archived: 'bg-slate-500',
+  archived: 'bg-[#64748B]',
 };
 
 export function OrgListPage() {

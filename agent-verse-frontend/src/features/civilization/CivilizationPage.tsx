@@ -45,7 +45,7 @@ function StatusDot({ status }: { status: string }) {
     <span className={`w-2 h-2 rounded-full flex-shrink-0 inline-block ${
       status === 'active' ? 'bg-green-400 animate-pulse' :
       status === 'paused' ? 'bg-amber-400' :
-      'bg-slate-500'
+      'bg-[#64748B]'
     }`} />
   );
 }
@@ -66,7 +66,7 @@ function CivilizationList() {
   return (
     <div
       className="min-h-screen"
-      style={{ background: 'linear-gradient(135deg, #0f172a 0%, #0d1625 100%)' }}
+      style={{ background: 'linear-gradient(135deg, #0F1117 0%, #0d1625 100%)' }}
     >
       {/* Header */}
       <div
