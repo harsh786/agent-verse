@@ -207,11 +207,22 @@ def _scheduled_goal_id(schedule_key: str, *, fire_instance_id: str | None = None
 
 
 def _run_async(coro: Any) -> Any:
-    """Run an async coroutine from a sync Celery task."""
+    """Run an async coroutine from a sync Celery task.
+
+    Disposes the module-level asyncpg engine before closing the event loop so
+    that connection pool cleanup can run while the loop is still active.
+    Without this, SQLAlchemy raises ``RuntimeError: Event loop is closed``
+    for every pooled asyncpg connection during teardown.
+    """
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(coro)
     finally:
+        try:
+            from app.db.session import dispose_task_engine
+            loop.run_until_complete(dispose_task_engine())
+        except Exception:
+            pass
         loop.close()
 
 
@@ -2616,7 +2627,7 @@ def purge_expired_artifacts() -> dict:
                 "DELETE FROM artifacts WHERE expires_at IS NOT NULL AND expires_at < NOW()"
             ))
             return {"purged_count": result.rowcount}
-    import asyncio; return asyncio.run(_run())
+    return _run_async(_run())
 
 
 @celery_app.task(name="agentverse.compliance.run_gdpr_export", bind=True, max_retries=1)
@@ -2772,8 +2783,7 @@ def civilization_tick(civilization_id: str, tenant_id: str) -> dict:
             logging.getLogger(__name__).error("civilization_tick_failed", extra={"error": str(exc)})
             return {"error": str(exc)}
 
-    import asyncio
-    return asyncio.run(_run())
+    return _run_async(_run())
 
 
 @celery_app.task(name="app.scaling.tasks.civilization_learning_step")
@@ -2794,8 +2804,7 @@ def civilization_learning_step(civilization_id: str, tenant_id: str) -> dict:
             logging.getLogger(__name__).error("civilization_learning_failed", extra={"error": str(exc)})
             return {"error": str(exc)}
 
-    import asyncio
-    return asyncio.run(_run())
+    return _run_async(_run())
 
 
 # ── M-1: New maintenance tasks wired into beat schedule ───────────────────────
@@ -2803,7 +2812,6 @@ def civilization_learning_step(civilization_id: str, tenant_id: str) -> dict:
 @celery_app.task(name="app.scaling.tasks.warm_jwks_cache", queue="maintenance")
 def warm_jwks_cache() -> dict:
     """Warm the JWKS Redis cache every 9 minutes to avoid cache misses."""
-    import asyncio
     import json
     import os
 
@@ -2822,7 +2830,7 @@ def warm_jwks_cache() -> dict:
             logging.getLogger(__name__).warning("warm_jwks_cache_failed: %s", exc)
             return {"error": str(exc)}
 
-    return asyncio.run(_run())
+    return _run_async(_run())
 
 
 @celery_app.task(name="app.scaling.tasks.create_guardrail_partitions", queue="maintenance")
@@ -2870,7 +2878,7 @@ def enforce_hitl_sla() -> dict:
         except Exception as exc:
             return {"error": str(exc), "enforced": 0}
 
-    return asyncio.run(_run())
+    return _run_async(_run())
 
 
 @celery_app.task(name="app.scaling.tasks.flush_audit_wal", queue="maintenance")
@@ -2892,7 +2900,7 @@ def flush_audit_wal() -> dict:
         except Exception as exc:
             return {"error": str(exc), "flushed": 0}
 
-    return asyncio.run(_run())
+    return _run_async(_run())
 
 
 @celery_app.task(name="app.scaling.tasks.scan_cost_anomalies", queue="maintenance")
@@ -2928,7 +2936,7 @@ def scan_cost_anomalies() -> dict:
         except Exception as exc:
             return {"error": str(exc), "anomalies_found": 0}
 
-    return asyncio.run(_run())
+    return _run_async(_run())
 
 
 @celery_app.task(name="app.scaling.tasks.embed_marketplace_templates", queue="maintenance")
@@ -2947,7 +2955,7 @@ def embed_marketplace_templates() -> dict:
                 return {"status": "ok", "pending_embeddings": pending}
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
-    return asyncio.run(_run())
+    return _run_async(_run())
 
 
 @celery_app.task(name="app.scaling.tasks.conclude_stale_experiments", queue="maintenance")
@@ -2971,7 +2979,7 @@ def conclude_stale_experiments() -> dict:
                 return {"status": "ok", "concluded": concluded}
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
-    return asyncio.run(_run())
+    return _run_async(_run())
 
 
 @celery_app.task(name="app.scaling.tasks.expire_stale_documents", queue="maintenance")
@@ -2996,7 +3004,7 @@ def expire_stale_documents() -> dict:
                 return {"status": "ok", "deleted": deleted}
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
-    return asyncio.run(_run())
+    return _run_async(_run())
 
 
 @celery_app.task(name="agentverse.process_dpdp_erasures", bind=True, max_retries=3)
@@ -3084,8 +3092,7 @@ def discover_and_tick_civilizations() -> dict:
             logging.getLogger(__name__).error("civilization_discovery_failed", extra={"error": str(exc)})
             return {"error": str(exc)}
 
-    import asyncio
-    return asyncio.run(_run())
+    return _run_async(_run())
 
 
 @celery_app.task(name="app.scaling.tasks.re_embed_collection", queue="maintenance")

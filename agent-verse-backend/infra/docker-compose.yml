@@ -196,6 +196,8 @@ services:
       - ../app/org:/app/app/org:ro
       - ../app/gateway:/app/app/gateway:ro
       - ../app/agent/graph.py:/app/app/agent/graph.py:ro
+      # Mount bootstrap so new routers (org, gateway) get registered
+      - ../app/bootstrap:/app/app/bootstrap:ro
     healthcheck:
       test: ["CMD", ".venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=4).read()"]
       interval: 10s
