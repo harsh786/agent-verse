@@ -9,11 +9,15 @@ unit tests; the defaults build real pools sized per the platform's connection ru
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.core.config import Settings, get_settings
 from app.observability.health import HealthCheck
+
+_log = logging.getLogger(__name__)
 
 PoolFactory = Callable[[], Awaitable[Any]]
 PingFn = Callable[[Any], Awaitable[None]]
@@ -81,8 +85,34 @@ class ConnectionPools:
         self.redis: Any = None
         self.http: Any = None
 
-    async def startup(self) -> None:
-        self.postgres = await self._pg_factory()
+    async def startup(self, *, pg_retries: int = 10, pg_retry_delay: float = 2.0) -> None:
+        import asyncpg
+
+        last_exc: BaseException | None = None
+        for attempt in range(1, pg_retries + 1):
+            try:
+                self.postgres = await self._pg_factory()
+                break
+            except (
+                asyncpg.CannotConnectNowError,
+                asyncpg.TooManyConnectionsError,
+                OSError,
+                ConnectionRefusedError,
+            ) as exc:
+                last_exc = exc
+                _log.warning(
+                    "postgres_not_ready attempt=%d/%d error=%s",
+                    attempt,
+                    pg_retries,
+                    exc,
+                )
+                if attempt < pg_retries:
+                    await asyncio.sleep(pg_retry_delay)
+        else:
+            raise RuntimeError(
+                f"Cannot connect to Postgres after {pg_retries} attempts"
+            ) from last_exc
+
         self.redis = await self._redis_factory()
         self.http = await self._http_factory()
 

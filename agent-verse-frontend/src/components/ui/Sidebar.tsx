@@ -11,6 +11,8 @@ import {
   Bell, KeyRound, FileLock, X, Package, Ghost, TrendingUp, LayoutGrid,
   Hammer, Sparkles, Plus, Search, TestTube2, Microscope, MousePointer2, Hash,
   Library, ClipboardList, User, LogOut,
+  // ── Added for missing features ──────────────────────────────────────────
+  MessageSquare, GitMerge, Share2, Moon,
 } from "lucide-react";
 import { useUiStore } from "@/stores/ui";
 import { useQuery } from "@tanstack/react-query";
@@ -64,24 +66,29 @@ export function Sidebar() {
     {
       heading: "Core",
       items: [
-        { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
-        { to: "/org",       icon: Building,        label: "Organizations" },
-        { to: "/goals",     icon: Target,          label: t('nav.goals')  },
-        { to: "/agents",    icon: Bot,             label: t('nav.agents') },
+        { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard"      },
+        { to: "/org",       icon: Building,        label: "Organizations"  },
+        { to: "/goals",     icon: Target,          label: t('nav.goals')   },
+        { to: "/agents",    icon: Bot,             label: t('nav.agents')  },
+        { to: "/chat",      icon: MessageSquare,   label: "Chat Agents"    },
+        { to: "/triggers",  icon: Zap,             label: "Triggers"       },
+        { to: "/workflow",  icon: GitMerge,        label: "Workflows"      },
       ],
     },
     {
       heading: "Platform",
       items: [
-        { to: "/connectors",    icon: Plug,         label: "Connectors"    },
-        { to: "/knowledge",     icon: BookOpen,     label: t('nav.knowledge')  },
-        { to: "/sources",       icon: Database,     label: "Sources"             },
-        { to: "/knowledge-graph", icon: Network,     label: "Knowledge Graph"   },
-        { to: "/schedules",     icon: Calendar,     label: "Schedules"         },
-        { to: "/skills",        icon: Sparkles,     label: "Skills"        },
-        { to: "/models",        icon: Brain,        label: "Model Registry" },
-        { to: "/collaboration", icon: Users,        label: "Collaboration" },
-        { to: "/coordination",  icon: Hash,         label: "Coordination" },
+        { to: "/connectors",      icon: Plug,      label: "Connectors"       },
+        { to: "/knowledge",       icon: BookOpen,  label: t('nav.knowledge') },
+        { to: "/sources",         icon: Database,  label: "Sources"          },
+        { to: "/knowledge-graph", icon: Network,   label: "Knowledge Graph"  },
+        { to: "/graphify",        icon: Share2,    label: "Graphify"         },
+        { to: "/obsidian",        icon: Moon,      label: "Obsidian Mode"    },
+        { to: "/schedules",       icon: Calendar,  label: "Schedules"        },
+        { to: "/skills",          icon: Sparkles,  label: "Skills"           },
+        { to: "/models",          icon: Brain,     label: "Model Registry"   },
+        { to: "/collaboration",   icon: Users,     label: "Collaboration"    },
+        { to: "/coordination",    icon: Hash,      label: "Coordination"     },
       ],
     },
     {

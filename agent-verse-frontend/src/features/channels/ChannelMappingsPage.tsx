@@ -2,8 +2,6 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api/client';
 import { MessageSquare, Plus, CheckCircle, AlertCircle } from 'lucide-react';
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
-import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 interface ChannelMapping {
   id: string;
@@ -44,8 +42,7 @@ export function ChannelMappingsPage() {
   });
 
   return (
-    <JARVISPageShell>
-    <JARVISStagger className="flex flex-col gap-6 p-6 max-w-screen-lg mx-auto">
+    <div className="flex flex-col gap-6 p-6 max-w-screen-lg mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -147,7 +144,7 @@ export function ChannelMappingsPage() {
             <div className="flex gap-2 justify-end mt-6">
               <button
                 onClick={() => setShowAdd(false)}
-                className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
+                className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted transition-colors"
               >
                 Cancel
               </button>
@@ -162,7 +159,6 @@ export function ChannelMappingsPage() {
           </div>
         </div>
       )}
-    </JARVISStagger>
-    </JARVISPageShell>
+    </div>
   );
 }

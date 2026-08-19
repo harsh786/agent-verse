@@ -3,8 +3,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Pencil, Play, Trash2, Download, Upload, Search, X as XIcon, Wrench } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth';
 import { toast } from '@/stores/toast';
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
-import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 const API = import.meta.env.VITE_API_BASE_URL || '';
 
@@ -400,15 +398,11 @@ export default function SkillsPage() {
   // ── Render ────────────────────────────────────────────────────────────────────
 
   return (
-    <JARVISPageShell>
-
-      {/* Accessibility: announce loading state */}
-      <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
-    <JARVISStagger className="p-6 max-w-5xl mx-auto">
+    <div className="p-6 max-w-5xl mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-[#00D4FF]">Skills</h1>
+          <h1 className="text-2xl font-bold text-foreground">Skills</h1>
           <p className="text-muted-foreground mt-1">
             Composable instruction packs that reduce tokens and improve focus
           </p>
@@ -664,7 +658,6 @@ export default function SkillsPage() {
           )}
         </div>
       )}
-    </JARVISStagger>
-    </JARVISPageShell>
+    </div>
   );
 }

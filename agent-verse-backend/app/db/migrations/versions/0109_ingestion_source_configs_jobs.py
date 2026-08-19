@@ -21,6 +21,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.execute("SET lock_timeout = '5s';")
     # ── source_configs ────────────────────────────────────────────────────────
     op.create_table(
         "source_configs",
