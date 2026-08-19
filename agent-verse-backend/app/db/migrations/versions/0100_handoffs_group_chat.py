@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0100_handoffs_group_chat"
-down_revision = "0099_reasoning_eval"
+revision = "0100"
+down_revision = "0099"
 branch_labels = None
 depends_on = None
 

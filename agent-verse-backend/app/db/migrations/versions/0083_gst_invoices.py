@@ -2,8 +2,8 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = '0083_gst_invoices'
-down_revision = '0082_goal_feedback'
+revision = '0083'
+down_revision = '0082'
 branch_labels = None
 depends_on = None
 

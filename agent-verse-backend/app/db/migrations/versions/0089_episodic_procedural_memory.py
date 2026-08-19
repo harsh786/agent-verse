@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0089_episodic_procedural_memory"
-down_revision = "0088_memory_conflicts"
+revision = "0089"
+down_revision = "0088"
 branch_labels = None
 depends_on = None
 

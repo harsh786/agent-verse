@@ -9,8 +9,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0090_parent_child_retrieval"
-down_revision = "0089_episodic_procedural_memory"
+revision = "0090"
+down_revision = "0089"
 branch_labels = None
 depends_on = None
 

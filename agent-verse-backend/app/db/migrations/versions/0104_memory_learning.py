@@ -11,8 +11,8 @@ from alembic import op
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects import postgresql
 
-revision = "0104_memory_learning"
-down_revision = "0103_routing_safety_optimization"
+revision = "0104"
+down_revision = "0103"
 branch_labels = None
 depends_on = None
 

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0094_knowledge_graph_rls"
-down_revision = "0093_current_embedding_defaults"
+revision = "0094"
+down_revision = "0093"
 branch_labels = None
 depends_on = None
 

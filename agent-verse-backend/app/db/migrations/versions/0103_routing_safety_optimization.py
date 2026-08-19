@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0103_routing_safety_optimization"
-down_revision = "0102_camel_generative_swarm_auction"
+revision = "0103"
+down_revision = "0102"
 branch_labels = None
 depends_on = None
 

@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0098_core_execution"
-down_revision = "0097_coordination_runtime"
+revision = "0098"
+down_revision = "0097"
 branch_labels = None
 depends_on = None
 
