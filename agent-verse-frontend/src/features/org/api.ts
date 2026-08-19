@@ -116,6 +116,8 @@ export const orgApi = {
   // ── Events ────────────────────────────────────────────────────────────────
 
   listEvents(orgId: string, limit = 20): Promise<OrgEvent[]> {
-    return apiFetch<OrgEvent[]>(`${BASE}/${orgId}/events?limit=${limit}`);
+    // Backend returns CursorPage<OrgEvent> {data:[], cursor, hasMore} — unwrap
+    return apiFetch<{ data: OrgEvent[] } | OrgEvent[]>(`${BASE}/${orgId}/events?limit=${limit}`)
+      .then(r => Array.isArray(r) ? r : ((r as { data: OrgEvent[] }).data ?? []));
   },
 };

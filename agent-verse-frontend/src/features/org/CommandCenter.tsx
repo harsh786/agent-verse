@@ -206,7 +206,7 @@ export function CommandCenter({ orgId }: CommandCenterProps) {
               Activity Feed
             </h2>
             <div className="space-y-2" role="feed" aria-label="Organization activity">
-              {(!events || events.length === 0) ? (
+              {(!events || !Array.isArray(events) || events.length === 0) ? (
                 <p className="text-xs text-[var(--text-muted)] py-4 text-center">
                   No recent activity
                 </p>
