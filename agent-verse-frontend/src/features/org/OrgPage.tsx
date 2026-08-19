@@ -20,6 +20,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISBootScreen } from '@/components/ui/JARVISBootScreen';
 import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal, BookOpen } from 'lucide-react';
+import { AgentOrbitView } from '@/features/dashboard/components/AgentOrbitView';
 import { cn } from '@/lib/utils';
 import { OrgHealthWidget }      from './components/OrgHealthWidget';
 import { MissionsList }          from './components/MissionsList';
@@ -468,6 +469,33 @@ export function OrgPage() {
                 isLoading={orgLoading}
               />
             </div>
+
+            {/* ── Agent Orbit Visualization ───────────────────────────── */}
+            {activeMissions.length > 0 && (
+              <div className="p-4 border-b border-[#1E2535]">
+                <div className="flex items-center gap-2 mb-2">
+                  <motion.span
+                    animate={{ opacity: [1, 0.3, 1] }}
+                    transition={{ duration: 1.6, repeat: Infinity }}
+                    className="h-1.5 w-1.5 rounded-full bg-[#00D4FF]"
+                  />
+                  <h2 className="text-[11px] font-medium uppercase tracking-[0.08em] text-[#475569]">
+                    Agent Network — {activeMissions.length} active
+                  </h2>
+                </div>
+                <AgentOrbitView
+                  agents={activeMissions.map((m: OrgMission) => ({
+                    id: m.id,
+                    label: m.title.slice(0, 18),
+                    status: m.status === 'active' ? 'active' : m.status === 'failed' ? 'error' : 'idle',
+                    goalCount: 1,
+                  }))}
+                  width={240}
+                  height={180}
+                  className="mx-auto"
+                />
+              </div>
+            )}
 
             {/* Graphify panel */}
             <AnimatePresence mode="wait">
