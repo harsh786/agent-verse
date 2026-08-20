@@ -1,3 +1,4 @@
+import { toast } from '@/stores/toast';
 /**
  * PART 34 — OrgRealtimeManager.
  *
@@ -194,11 +195,41 @@ export class OrgRealtimeManager {
 
       // ── Approval events ─────────────────────────────────────────────────────
       case ORG_EVENTS.APPROVAL_REQUESTED:
+        qc.invalidateQueries({ queryKey: ['approvals', orgId] });
+        qc.invalidateQueries({ queryKey: orgKeys.health(orgId) });
+        // G-08: Show amber toast with link to approvals page
+        toast({
+          title: '⏳ Approval Required',
+          description: payload?.action ? `Action: ${payload.action}` : 'A mission step requires your approval.',
+          variant: 'warning',
+        });
+        break;
       case ORG_EVENTS.APPROVAL_GRANTED:
+        qc.invalidateQueries({ queryKey: ['approvals', orgId] });
+        qc.invalidateQueries({ queryKey: orgKeys.health(orgId) });
+        toast({
+          title: '✅ Approved',
+          description: payload?.approver ? `Approved by ${payload.approver}` : 'Approval granted.',
+          variant: 'success',
+        });
+        break;
       case ORG_EVENTS.APPROVAL_REJECTED:
+        qc.invalidateQueries({ queryKey: ['approvals', orgId] });
+        qc.invalidateQueries({ queryKey: orgKeys.health(orgId) });
+        toast({
+          title: '❌ Rejected',
+          description: payload?.action ? `Action "${payload.action}" was rejected.` : 'Approval rejected.',
+          variant: 'destructive',
+        });
+        break;
       case ORG_EVENTS.APPROVAL_TIMEOUT:
         qc.invalidateQueries({ queryKey: ['approvals', orgId] });
         qc.invalidateQueries({ queryKey: orgKeys.health(orgId) });
+        toast({
+          title: '⏰ Approval Timed Out',
+          description: payload?.action ? `"${payload.action}" was automatically rejected (timeout).` : 'An approval timed out.',
+          variant: 'destructive',
+        });
         break;
 
       // ── Budget events ───────────────────────────────────────────────────────

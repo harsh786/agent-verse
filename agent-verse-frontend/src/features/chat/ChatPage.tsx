@@ -23,6 +23,8 @@ import type { ChatMessage } from './types/chat.types';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 import { AgenticExecutionPanel } from './components/AgenticExecutionPanel';
+import { ChatHITLCard } from './ChatHITLCard';
+import { governanceApi } from '@/lib/api/client';
 
 export default function ChatPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -194,6 +196,25 @@ export default function ChatPage() {
       />
 
       <main className="flex-1 flex overflow-hidden">
+        {/* G-02: HITL Approval Card — slides in when agent hits approval gate */}
+        {currentEvent?.type === 'hitl_required' && (
+          <div className="px-4 py-2">
+            <ChatHITLCard
+              stepName={(currentEvent as any).action ?? 'Mission step'}
+              riskLevel={(currentEvent as any).risk_level ?? 'high'}
+              timeoutSeconds={(currentEvent as any).timeout_seconds ?? 300}
+              onApprove={async () => {
+                const reqId = (currentEvent as any).request_id;
+                if (reqId) await governanceApi.approve(reqId, 'user:chat', '');
+              }}
+              onReject={async () => {
+                const reqId = (currentEvent as any).request_id;
+                if (reqId) await governanceApi.reject(reqId, 'user:chat', 'Rejected via chat');
+              }}
+            />
+          </div>
+        )}
+
         {/* Agentic Execution Panel — slides in when streaming (spec §6) */}
         {isStreaming && (
           <AgenticExecutionPanel

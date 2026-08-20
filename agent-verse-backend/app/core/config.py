@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     default_classification_provider: str = "ollama"
 
     # --- Voice OS configuration ---------------------------------------------------
+    # --- Public URL (for magic links in approval notifications) ---
+    public_base_url:          str        = "http://localhost:5173"
+
+    # --- Voice OS configuration ---
     voice_enabled:            bool       = True
     voice_device:             str        = "cpu"           # "cpu" | "cuda"
     voice_stt_provider:       str        = "faster_whisper"

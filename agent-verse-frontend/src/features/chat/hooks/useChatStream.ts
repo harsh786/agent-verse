@@ -64,6 +64,9 @@ export function useChatStream(
             esRef.current = null;
             setState((prev) => ({ ...prev, isStreaming: false, currentEvent: event }));
             onDone?.(tokensRef.current);
+          } else if (event.type === 'hitl_required') {
+            // G-02: HITL required — surface to ChatPage via currentEvent
+            setState((prev) => ({ ...prev, currentEvent: event }));
           } else if (event.type === 'error') {
             es.close();
             setState((prev) => ({
