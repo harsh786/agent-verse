@@ -18,6 +18,7 @@ import { useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { JARVISBootScreen } from '@/components/ui/JARVISBootScreen';
 import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal, BookOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { OrgHealthWidget }      from './components/OrgHealthWidget';
@@ -36,6 +37,7 @@ import { OrgHistoryNav }         from './components/OrgHistoryNav';
 import { DigitalTwinPanel }      from './components/DigitalTwinPanel';
 import { CommandHistoryPanel }   from './components/CommandHistoryPanel';
 import { ObsidianVaultExplorer } from './components/ObsidianVaultExplorer';
+import { AgentConstellation }    from './components/AgentConstellation';
 import { LoginGreetingPlayer }   from '@/components/voice/LoginGreetingPlayer';
 import { useVoiceAlerts }        from '@/lib/voice/useVoiceAlerts';
 import { useOrganization, useOrgHealth, useMissions } from './hooks/useOrg';
@@ -46,6 +48,9 @@ export function OrgPage() {
 
   // D-6: Proactive voice alerts — plays TTS audio when mission fails/approval needed
   useVoiceAlerts({ enabled: !!orgId });
+
+  // JARVIS boot screen — show on every org visit
+  const [isBooted, setIsBooted] = useState(false);
 
   const [selectedMission, setSelectedMission] = useState<string | null>(null);
   const [showCreate, setShowCreate]           = useState(false);
@@ -74,6 +79,17 @@ export function OrgPage() {
       <div className="flex items-center justify-center h-full">
         <p className="text-[#94A3B8]">No organization selected.</p>
       </div>
+    );
+  }
+
+  // JARVIS boot screen renders until animation completes
+  if (!isBooted) {
+    return (
+      <JARVISBootScreen
+        orgName={org?.name ?? 'AgentVerse OS'}
+        onComplete={() => setIsBooted(true)}
+        duration={3200}
+      />
     );
   }
 
@@ -421,6 +437,20 @@ export function OrgPage() {
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {/* ── Agent Constellation Orbit ─────────────────────── */}
+            {activeMissions.length > 0 && (
+              <section className="p-4 border-b border-[#1E2535]" aria-label="Active agent constellation">
+                <h2 className="text-[11px] font-medium uppercase tracking-[0.08em] text-[#475569] mb-3 flex items-center gap-1.5">
+                  <Cpu className="h-3 w-3 text-[#00D4FF]" aria-hidden />
+                  <span className="text-[#00D4FF]">Live Agents</span>
+                </h2>
+                <AgentConstellation
+                  orgId={orgId}
+                  missions={activeMissions}
+                />
+              </section>
+            )}
 
             {/* Department tree */}
             <section className="p-4 border-b border-[#1E2535]">

@@ -41,6 +41,7 @@ import type { GoalEvent as StreamGoalEvent } from "@/lib/sse/useGoalStream";
 
 import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 import { GoalExecutionGraph } from './components/GoalExecutionGraph';
+import { GoalNeuralStats }   from './components/GoalNeuralStats';
 import { HITLGateNode } from '@/components/neural/HITLGateNode';
 import { GuardrailShield } from '@/components/neural/GuardrailShield';
 import { TokenWaterfall } from '@/components/neural/TokenWaterfall';
@@ -1117,6 +1118,18 @@ export function GoalDetailPage() {
               className="mb-2"
             />
           )}
+          {/* Neural stats HUD — tokens, cost, guardrails, HITL */}
+          <GoalNeuralStats
+            tokenInput={Number(streamingToken?.cumulative ?? 0)}
+            tokenOutput={0}
+            costUsd={goal?.cost_usd ?? 0}
+            guardrailFired={sseGuardrail ? 1 : 0}
+            guardrailBlocked={0}
+            hitlPending={sseHitlRequest?.status === 'waiting' ? 1 : 0}
+            hitlApproved={sseHitlRequest?.status === 'approved' ? 1 : 0}
+            model={(goal as any)?.model_name ?? ''}
+            className="mb-3"
+          />
           {/* Neural execution graph */}
           {events.length > 0 && (
             <GoalExecutionGraph events={events} className="mb-3" />
