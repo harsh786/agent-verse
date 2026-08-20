@@ -37,11 +37,15 @@ import { DigitalTwinPanel }      from './components/DigitalTwinPanel';
 import { CommandHistoryPanel }   from './components/CommandHistoryPanel';
 import { ObsidianVaultExplorer } from './components/ObsidianVaultExplorer';
 import { LoginGreetingPlayer }   from '@/components/voice/LoginGreetingPlayer';
+import { useVoiceAlerts }        from '@/lib/voice/useVoiceAlerts';
 import { useOrganization, useOrgHealth, useMissions } from './hooks/useOrg';
 import type { OrgMission }       from './types';
 
 export function OrgPage() {
   const { orgId } = useParams<{ orgId: string }>();
+
+  // D-6: Proactive voice alerts — plays TTS audio when mission fails/approval needed
+  useVoiceAlerts({ enabled: !!orgId });
 
   const [selectedMission, setSelectedMission] = useState<string | null>(null);
   const [showCreate, setShowCreate]           = useState(false);
