@@ -114,8 +114,9 @@ export function OrgPage() {
               </div>
               {/* Active pulse (frontend-design signature) */}
               <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-emerald-400 animate-pulse-glow" aria-hidden />
-            </div>            {/* D-7/D-2/D-5: Spoken login greeting via OmniVoice TTS */}
-            {orgId && <LoginGreetingPlayer orgId={orgId} className="hidden sm:flex" />}            <div className="min-w-0">
+            </div>
+            {/* D-7/D-2/D-5: Spoken login greeting via OmniVoice TTS */}
+            <div className="min-w-0">
               <h1
                 className="text-[15px] font-semibold text-[#F1F5F9] tracking-[-0.01em] truncate [text-wrap:balance]"
                 aria-live="polite"
@@ -129,6 +130,9 @@ export function OrgPage() {
           <div className="flex items-center gap-2">
             {/* Cursor presence — who else is viewing */}
             <CursorPresence orgId={orgId} className="hidden sm:flex" />
+
+            {/* D-7: OmniVoice greeting player — shows animated indicator while playing */}
+            {orgId && <LoginGreetingPlayer orgId={orgId} userName={org?.name} className="hidden sm:flex" />}
 
             {/* Voice input */}
             <button
