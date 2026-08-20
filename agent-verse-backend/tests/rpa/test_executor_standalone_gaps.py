@@ -5,14 +5,12 @@ Missing lines targeted:
 """
 from __future__ import annotations
 
-import base64
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.rpa.executor import RPAExecutor, RPAResult
-
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

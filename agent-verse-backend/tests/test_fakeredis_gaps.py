@@ -7,11 +7,9 @@ Missing lines targeted:
 """
 from __future__ import annotations
 
-import asyncio
 import time
 
 import pytest
-
 
 # ── import _FakeRedis and _FakeLuaScript from main.py ─────────────────────────
 
