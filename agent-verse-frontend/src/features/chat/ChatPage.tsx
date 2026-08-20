@@ -22,6 +22,7 @@ import { chatApi } from '@/lib/api/chat';
 import type { ChatMessage } from './types/chat.types';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { AgenticExecutionPanel } from './components/AgenticExecutionPanel';
 
 export default function ChatPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -192,7 +193,16 @@ export default function ChatPage() {
         isLoading={sessionsLoading}
       />
 
-      <main className="flex-1 flex flex-col overflow-hidden">
+      <main className="flex-1 flex overflow-hidden">
+        {/* Agentic Execution Panel — slides in when streaming (spec §6) */}
+        {isStreaming && (
+          <AgenticExecutionPanel
+            events={(currentEvent ? [currentEvent] : []) as any[]}
+            isActive={isStreaming}
+            className="w-64 shrink-0 border-r border-white/[0.06] rounded-none"
+          />
+        )}
+        <div className="flex-1 flex flex-col overflow-hidden">
         {sessionId ? (
           <>
             {/* Thread header */}
@@ -249,6 +259,7 @@ export default function ChatPage() {
             )}
           </div>
         )}
+        </div>{/* end flex-1 flex-col overflow-hidden */}
       </main>
     </JARVISStagger>
     </JARVISPageShell>

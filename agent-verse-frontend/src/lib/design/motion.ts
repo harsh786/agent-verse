@@ -92,3 +92,39 @@ export const orbPulse: Variants = {
              transition: { duration: 1.8, repeat: Infinity, ease: 'easeInOut' } },
   offline: { scale: 1,    opacity: 0.3 },
 };
+
+// ── Neural graph springs (spec §1.4) ─────────────────────────────────────────
+export const SPRING_NODE     = { type: 'spring', stiffness: 380, damping: 30 } as const;
+export const SPRING_PARTICLE = { type: 'spring', stiffness: 800, damping: 40 } as const;
+
+// Legacy flat aliases
+export const SPRING_PAGE   = springs.page;
+export const SPRING_PANEL  = springs.panel;
+export const SPRING_FAST   = springs.fast;
+export const SPRING_SLOW   = springs.slow;
+export const SPRING_BOUNCY = springs.bouncy;
+
+// Named variants (spec §2.2)
+export const fadeUp: Variants = {
+  hidden:  { opacity: 0, y: 12, filter: 'blur(4px)' },
+  visible: { opacity: 1, y: 0,  filter: 'blur(0px)', transition: springs.page as Record<string, unknown> },
+  exit:    { opacity: 0, y: -6, filter: 'blur(2px)', transition: springs.fast as Record<string, unknown> },
+};
+
+export const slideRight: Variants = {
+  hidden:  { opacity: 0, x: -16 },
+  visible: { opacity: 1, x: 0,  transition: springs.panel as Record<string, unknown> },
+  exit:    { opacity: 0, x: -8, transition: springs.fast as Record<string, unknown> },
+};
+
+export const scaleIn: Variants = {
+  hidden:  { opacity: 0, scale: 0.88 },
+  visible: { opacity: 1, scale: 1,    transition: springs.bouncy as Record<string, unknown> },
+  exit:    { opacity: 0, scale: 0.94, transition: springs.fast as Record<string, unknown> },
+};
+
+export const nodeAppear: Variants = {
+  hidden:  { opacity: 0, scale: 0.4, filter: 'blur(8px)' },
+  visible: { opacity: 1, scale: 1,   filter: 'blur(0px)', transition: SPRING_NODE as Record<string, unknown> },
+  exit:    { opacity: 0, scale: 0.6, filter: 'blur(4px)', transition: springs.fast as Record<string, unknown> },
+};

@@ -1,6 +1,9 @@
 /**
  * VoiceModal — JARVIS-style hold-to-speak voice interface.
- * Converts speech to mission objectives using Web Speech API.
+ *
+ * Mode A (Quick transcript): Uses Web Speech API for fast goal capture → submit to org.
+ * Mode B (Full voice OS):    Uses VoiceCommandBar → WebSocket → native STT/TTS pipeline
+ *                            with D-1/D-3/D-4 intent routing and OmniVoice/Kokoro TTS.
  *
  * Skills:
  *   - frontend-design:   JARVIS dark waveform, electric pulse on listening
@@ -11,14 +14,16 @@
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { Mic, MicOff, X, Loader2, CheckCircle2, Zap } from 'lucide-react';
+import { Mic, MicOff, X, Loader2, CheckCircle2, Zap, Cpu } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { VoiceCommandBar } from '@/components/voice/VoiceCommandBar';
 
 interface VoiceModalProps {
-  open:        boolean;
-  onClose:     () => void;
+  open:         boolean;
+  onClose:      () => void;
   onTranscript: (text: string) => void;
   placeholder?: string;
+  orgId?:       string;   // Required for full native voice OS mode (D-1/D-3/D-4)
 }
 
 type ListenState = 'idle' | 'listening' | 'processing' | 'done' | 'error' | 'unsupported';
@@ -47,7 +52,7 @@ declare global {
 // Waveform bars (JARVIS signature element)
 const BARS = 20;
 
-export function VoiceModal({ open, onClose, onTranscript, placeholder }: VoiceModalProps) {
+export function VoiceModal({ open, onClose, onTranscript, placeholder, orgId }: VoiceModalProps) {
   const reduce     = useReducedMotion();
   const [state, setState]       = useState<ListenState>('idle');
   const [transcript, setTranscript] = useState('');
@@ -132,6 +137,12 @@ export function VoiceModal({ open, onClose, onTranscript, placeholder }: VoiceMo
     return () => document.removeEventListener('keydown', onKey);
   }, [open, handleClose]);
 
+  // Mode: "quick" = Web Speech API transcript only, "native" = full voice OS (D-1/D-3/D-4)
+  const [mode, setMode] = useState<'quick' | 'native'>('quick');
+
+  // If orgId provided, offer native mode
+  const canNative = !!orgId;
+
   return (
     <AnimatePresence>
       {open && (
@@ -166,7 +177,37 @@ export function VoiceModal({ open, onClose, onTranscript, placeholder }: VoiceMo
             )}
           >
             {/* Close */}
-            <div className="flex justify-end p-3">
+            <div className="flex justify-between items-center p-3">
+              {/* Mode toggle (only when orgId provided for native voice) */}
+              {canNative && (
+                <div className="flex items-center gap-1 bg-[#1A1F2E] rounded-lg p-0.5">
+                  <button
+                    onClick={() => setMode('quick')}
+                    className={cn(
+                      'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors',
+                      mode === 'quick'
+                        ? 'bg-[#00D4FF]/10 text-[#00D4FF] border border-[#00D4FF]/20'
+                        : 'text-[#475569] hover:text-[#94A3B8]',
+                    )}
+                    aria-pressed={mode === 'quick'}
+                  >
+                    <Mic className="h-3 w-3" aria-hidden /> Quick
+                  </button>
+                  <button
+                    onClick={() => setMode('native')}
+                    className={cn(
+                      'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors',
+                      mode === 'native'
+                        ? 'bg-violet-500/10 text-violet-400 border border-violet-500/20'
+                        : 'text-[#475569] hover:text-[#94A3B8]',
+                    )}
+                    aria-pressed={mode === 'native'}
+                  >
+                    <Cpu className="h-3 w-3" aria-hidden /> AI Voice OS
+                  </button>
+                </div>
+              )}
+              {!canNative && <div />}
               <button
                 onClick={handleClose}
                 aria-label="Close voice modal"
@@ -177,8 +218,30 @@ export function VoiceModal({ open, onClose, onTranscript, placeholder }: VoiceMo
               </button>
             </div>
 
-            {/* JARVIS waveform visualization */}
+            {/* JARVIS waveform visualization — quick mode only */}
             <div className="px-6 pb-2">
+              {/* Native voice OS mode (D-1/D-3/D-4) */}
+              {mode === 'native' && orgId ? (
+                <div className="py-2">
+                  <p className="text-[10px] text-violet-400/70 text-center mb-3 font-mono tracking-wider">
+                    NATIVE VOICE OS · INTENT-AWARE · MISSION-CAPABLE
+                  </p>
+                  <VoiceCommandBar
+                    orgId={orgId}
+                    onMissionCreated={(text) => {
+                      onTranscript(text);
+                      // Keep modal open so user can see the confirmation
+                    }}
+                  />
+                  <button
+                    onClick={handleClose}
+                    className="mt-4 w-full py-2 rounded-lg text-[12px] text-[#475569] hover:text-[#94A3B8] border border-[#2D3748] hover:border-[#475569] transition-colors"
+                  >
+                    Done
+                  </button>
+                </div>
+              ) : (
+              <>
               <div className="flex items-end justify-center gap-0.5 h-16 mb-2" aria-hidden>
                 {bars.map((h, i) => (
                   <motion.div
@@ -294,6 +357,8 @@ export function VoiceModal({ open, onClose, onTranscript, placeholder }: VoiceMo
                   </span>
                 </motion.button>
               )}
+              </>
+            )}
             </div>
           </motion.div>
         </>

@@ -91,7 +91,15 @@ def _extract_key(request: Request) -> str | None:
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         return auth[7:].strip() or None
-    return request.headers.get("X-API-Key") or None
+    # X-API-Key header (standard path)
+    header_key = request.headers.get("X-API-Key")
+    if header_key:
+        return header_key
+    # api_key query param — needed for EventSource (SSE) which cannot set headers
+    query_key = request.query_params.get("api_key")
+    if query_key:
+        return query_key
+    return None
 
 
 def _is_cors_preflight(request: Request) -> bool:

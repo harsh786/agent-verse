@@ -52,3 +52,39 @@ export const tw = {
   surface2:      'bg-[#0F1117]',
   surface3:      'bg-[#1A1F2E]',
 } as const;
+
+// JARVIS spec-compatible alias (spec §2.1)
+export const tokens = {
+  color: {
+    electric: colors.electric, electricDim: colors.electricDim,
+    electricGlow: colors.electricGlow, electricBright: colors.electricBright,
+    emerald: '#00E676', emeraldDim: 'rgba(0,230,118,0.15)',
+    rose: '#FF3366', roseDim: 'rgba(255,51,102,0.15)',
+    amber: '#FFB300', amberDim: 'rgba(255,179,0,0.15)',
+    indigo: '#6366F1', indigoDim: 'rgba(99,102,241,0.15)',
+    violet: '#A855F7', violetDim: 'rgba(168,85,247,0.15)',
+    surface0: colors.surface0, surface1: colors.surface1,
+    surface2: colors.surface2, surface3: colors.surface3,
+    surface4: colors.surface4, surface5: colors.surface5,
+    text1: colors.text1, text2: colors.text2, text3: colors.text3,
+    border1: 'rgba(255,255,255,0.06)',
+    border2: 'rgba(255,255,255,0.10)',
+    border3: 'rgba(255,255,255,0.16)',
+  },
+  glow: {
+    tier1: '0 0 8px rgba(0,212,255,0.12)',
+    tier2: '0 0 16px rgba(0,212,255,0.30), 0 0 4px rgba(0,212,255,0.60)',
+    tier3: '0 0 32px rgba(0,212,255,0.50), 0 0 8px rgba(0,212,255,0.80)',
+    emerald: '0 0 16px rgba(0,230,118,0.30)',
+    rose: '0 0 16px rgba(255,51,102,0.30)',
+    amber: '0 0 16px rgba(255,179,0,0.30)',
+    indigo: '0 0 16px rgba(99,102,241,0.30)',
+    violet: '0 0 16px rgba(168,85,247,0.30)',
+  },
+  glass: {
+    panel: 'backdrop-blur-md bg-[#0A0F1A]/80 border border-white/[0.06]',
+    card: 'backdrop-blur-sm bg-[#0F1826]/90 border border-white/[0.08]',
+    elevated: 'backdrop-blur-md bg-[#162035]/90 border border-white/10',
+    overlay: 'backdrop-blur-xl bg-[#020408]/60',
+  },
+} as const;

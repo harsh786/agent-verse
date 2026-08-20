@@ -74,19 +74,19 @@ CLOUD_TASK_ROUTING: dict[str, list[str]] = {
 
 # Ollama routing — free, private, on-device
 OLLAMA_TASK_ROUTING: dict[str, list[str]] = {
-    "reasoning":      ["qwen3:32b",             "qwen3:14b",             "qwen3:8b"],
-    "coding":         ["qwen2.5-coder:32b",      "qwen2.5-coder:14b",    "qwen2.5-coder:7b"],
-    "drafting":       ["qwen3:8b",               "glm4:9b",               "qwen3:4b"],
-    "analysis":       ["qwen3:14b",              "qwen3:8b",              "qwen2.5:14b"],
-    "summarization":  ["qwen3:4b",               "moonshot:7b",           "qwen3:1.7b"],
-    "classification": ["qwen3:1.7b",             "qwen3:0.6b"],
-    "extraction":     ["qwen2.5:7b",             "qwen3:4b"],
-    "vision":         ["qwen2.5vl:7b",           "qwen2-vl:7b"],
-    "ocr":            ["glm4v:9b",               "qwen2.5vl:7b",          "qwen2-vl:7b"],
-    "long_context":   ["moonshot:7b",            "glm4:9b"],
-    "function_call":  ["qwen3:8b",               "glm4:9b"],
-    "embedding":      ["nomic-embed-text",        "mxbai-embed-large",     "bge-m3"],
-    "reranking":      ["bge-m3"],
+    "reasoning":      ["qwen3.8:latest",          "llama3.2:latest",      "qwen3:8b"],
+    "coding":         ["qwen3.8:latest",           "llama3.2:latest",      "qwen2.5-coder:7b"],
+    "drafting":       ["qwen3.8:latest",           "llama3.2:latest",      "qwen3:4b"],
+    "analysis":       ["qwen3.8:latest",           "llama3.2:latest",      "qwen2.5:14b"],
+    "summarization":  ["qwen3.8:latest",           "llama3.2:latest"],
+    "classification": ["qwen3.8:latest",           "llama3.2:latest"],
+    "extraction":     ["qwen3.8:latest",           "llama3.2:latest"],
+    "vision":         ["glm-ocr:latest"],
+    "ocr":            ["glm-ocr:latest"],
+    "long_context":   ["qwen3.8:latest",           "gpt-oss:latest"],
+    "function_call":  ["qwen3.8:latest"],
+    "embedding":      ["qwen3-embedding:latest"],
+    "reranking":      ["qwen3-embedding:latest"],
 }
 
 # Rough cost estimates (USD per 1 000 tokens) for cloud models

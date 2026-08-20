@@ -18,9 +18,7 @@ import { useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
-import { JARVISBootScreen } from '@/components/ui/JARVISBootScreen';
 import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal, BookOpen } from 'lucide-react';
-import { AgentOrbitView } from '@/features/dashboard/components/AgentOrbitView';
 import { cn } from '@/lib/utils';
 import { OrgHealthWidget }      from './components/OrgHealthWidget';
 import { MissionsList }          from './components/MissionsList';
@@ -38,6 +36,7 @@ import { OrgHistoryNav }         from './components/OrgHistoryNav';
 import { DigitalTwinPanel }      from './components/DigitalTwinPanel';
 import { CommandHistoryPanel }   from './components/CommandHistoryPanel';
 import { ObsidianVaultExplorer } from './components/ObsidianVaultExplorer';
+import { LoginGreetingPlayer }   from '@/components/voice/LoginGreetingPlayer';
 import { useOrganization, useOrgHealth, useMissions } from './hooks/useOrg';
 import type { OrgMission }       from './types';
 
@@ -54,21 +53,6 @@ export function OrgPage() {
   const [showHistory, setShowHistory]         = useState(false);
   const [showCommands, setShowCommands]       = useState(false);
   const [showObsidian, setShowObsidian]       = useState(false);
-  // JARVIS boot screen — shown every visit
-  const [booted, setBooted] = useState(false);
-  const handleBootComplete = useCallback(() => {
-    setBooted(true);
-    // JARVIS speaks on initialization — best-effort, not critical
-    try {
-      const utter = new window.SpeechSynthesisUtterance(
-        'AgentVerse initialized. All systems online. Ready for commands.'
-      );
-      utter.rate = 0.92;
-      utter.pitch = 0.85;
-      utter.volume = 0.8;
-      window.speechSynthesis.speak(utter);
-    } catch { /* speech not supported */ }
-  }, []);
 
   const { data: org, isLoading: orgLoading, refetch } = useOrganization(orgId ?? null);
   const { data: health }    = useOrgHealth(orgId ?? null);
@@ -100,14 +84,6 @@ export function OrgPage() {
       </a>
 
       <JARVISPageShell className="flex flex-col h-full bg-[#0A0D14] overflow-hidden">
-        {/* JARVIS boot sequence — plays once per org, then reveals main UI */}
-        {!booted && (
-          <JARVISBootScreen
-            orgName={org?.name ?? 'AgentVerse'}
-            onComplete={handleBootComplete}
-            duration={5000}
-          />
-        )}
         <div id="main-content" className="contents">
         {/* ── Top bar ────────────────────────────────────────────────────── */}
         <header className="flex items-center justify-between px-6 py-4 border-b border-[#1E2535] shrink-0">
@@ -118,8 +94,8 @@ export function OrgPage() {
               </div>
               {/* Active pulse (frontend-design signature) */}
               <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-emerald-400 animate-pulse-glow" aria-hidden />
-            </div>
-            <div className="min-w-0">
+            </div>            {/* D-7/D-2/D-5: Spoken login greeting via OmniVoice TTS */}
+            {orgId && <LoginGreetingPlayer orgId={orgId} className="hidden sm:flex" />}            <div className="min-w-0">
               <h1
                 className="text-[15px] font-semibold text-[#F1F5F9] tracking-[-0.01em] truncate [text-wrap:balance]"
                 aria-live="polite"
@@ -289,70 +265,6 @@ export function OrgPage() {
           <OrgHealthWidget orgId={orgId} />
         </div>
 
-        {/* ── JARVIS Agent Orbit — glowing autonomous bot ring ─────────────── */}
-        <motion.div
-          initial={{ opacity: 0, y: -8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ type: 'spring', stiffness: 320, damping: 28, delay: 0.15 }}
-          className="px-6 py-2.5 border-b border-[#1E2535] shrink-0 hidden sm:block"
-        >
-          <div className="flex items-center gap-3 overflow-x-auto scrollbar-none">
-            {/* Live system label */}
-            <div className="flex items-center gap-1.5 shrink-0">
-              <motion.span
-                animate={{ opacity: [1, 0.3, 1] }}
-                transition={{ duration: 1.6, repeat: Infinity }}
-                className="h-1.5 w-1.5 rounded-full bg-emerald-400"
-              />
-              <span className="text-[10px] font-medium text-[#475569] uppercase tracking-widest">
-                Live
-              </span>
-            </div>
-
-            {/* Glowing status orbs — one per active mission */}
-            {[...Array(Math.max(1, (health as any)?.active_missions ?? 1))].map((_, i) => (
-              <motion.div
-                key={i}
-                initial={{ scale: 0, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                transition={{ type: 'spring', stiffness: 500, damping: 25, delay: 0.2 + i * 0.07 }}
-                className="relative shrink-0"
-              >
-                {/* Outer glow ring */}
-                <motion.div
-                  animate={{ scale: [1, 1.6, 1], opacity: [0.4, 0, 0.4] }}
-                  transition={{ duration: 2.2 + i * 0.3, repeat: Infinity, ease: 'easeInOut', delay: i * 0.4 }}
-                  className="absolute inset-0 rounded-full bg-[#00D4FF]"
-                />
-                {/* Inner bot dot */}
-                <div className="relative h-8 w-8 rounded-full bg-[#1A1F2E] border border-[#00D4FF]/40 flex items-center justify-center">
-                  <motion.div
-                    animate={{ rotate: 360 }}
-                    transition={{ duration: 4 + i, repeat: Infinity, ease: 'linear' }}
-                    className="h-3 w-3"
-                  >
-                    <Cpu className="h-3 w-3 text-[#00D4FF]" />
-                  </motion.div>
-                </div>
-              </motion.div>
-            ))}
-
-            {/* Connecting line */}
-            <div className="flex-1 h-px bg-gradient-to-r from-[#00D4FF]/20 via-[#00D4FF]/5 to-transparent" />
-
-            {/* Org status badge */}
-            <motion.div
-              animate={{ boxShadow: ['0 0 8px rgba(0,212,255,0.2)', '0 0 16px rgba(0,212,255,0.4)', '0 0 8px rgba(0,212,255,0.2)'] }}
-              transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
-              className="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-[#00D4FF]/30 bg-[#00D4FF]/5"
-            >
-              <span className="text-[10px] font-semibold text-[#00D4FF] uppercase tracking-wider">
-                {org?.status ?? 'active'}
-              </span>
-            </motion.div>
-          </div>
-        </motion.div>
-
         {/* ── Main content area ───────────────────────────────────────────── */}
         <div className="flex-1 flex overflow-hidden">
 
@@ -470,33 +382,6 @@ export function OrgPage() {
               />
             </div>
 
-            {/* ── Agent Orbit Visualization ───────────────────────────── */}
-            {activeMissions.length > 0 && (
-              <div className="p-4 border-b border-[#1E2535]">
-                <div className="flex items-center gap-2 mb-2">
-                  <motion.span
-                    animate={{ opacity: [1, 0.3, 1] }}
-                    transition={{ duration: 1.6, repeat: Infinity }}
-                    className="h-1.5 w-1.5 rounded-full bg-[#00D4FF]"
-                  />
-                  <h2 className="text-[11px] font-medium uppercase tracking-[0.08em] text-[#475569]">
-                    Agent Network — {activeMissions.length} active
-                  </h2>
-                </div>
-                <AgentOrbitView
-                  agents={activeMissions.map((m: OrgMission) => ({
-                    id: m.id,
-                    label: m.title.slice(0, 18),
-                    status: m.status === 'active' ? 'active' : m.status === 'failed' ? 'error' : 'idle',
-                    goalCount: 1,
-                  }))}
-                  width={240}
-                  height={180}
-                  className="mx-auto"
-                />
-              </div>
-            )}
-
             {/* Graphify panel */}
             <AnimatePresence mode="wait">
               {showGraphify && (
@@ -574,28 +459,12 @@ export function OrgPage() {
       <VoiceModal
         open={showVoice}
         onClose={() => setShowVoice(false)}
-        onTranscript={async (text) => {
-          if (!text.trim() || !orgId) return;
+        orgId={orgId}
+        onTranscript={(text) => {
           setShowVoice(false);
-          // Speak confirmation back
-          try {
-            const u = new window.SpeechSynthesisUtterance(`Mission received. Executing: ${text.slice(0, 60)}`);
-            u.rate = 0.92; u.pitch = 0.85; u.volume = 0.7;
-            window.speechSynthesis.speak(u);
-          } catch { /* ignore */ }
-          // Directly execute the mission without opening a drawer
-          try {
-            const { orgApi } = await import('./api');
-            await orgApi.createMission(orgId, {
-              org_id: orgId,
-              title: text.slice(0, 120),
-              objective: text,
-              priority: 'high',
-            });
-          } catch {
-            // Fallback: open create drawer pre-filled
-            setShowCreate(true);
-          }
+          setShowCreate(true);
+          // Pre-fill title via URL state or context in a real implementation
+          void text;
         }}
         placeholder="Describe a mission for your agents…"
       />
