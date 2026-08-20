@@ -655,8 +655,14 @@ async def list_org_approvals(
         if hitl_gateway is None:
             return {"data": [], "org_id": org_id, "total": 0}
 
+        # Build minimal TenantContext for list_pending
         tenant_id = service._tenant_id
-        pending = hitl_gateway.list_pending(tenant_id=tenant_id)
+        try:
+            from app.tenancy.context import PlanTier, TenantContext as _TC
+            _tenant_ctx = _TC(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="org_approvals")
+            pending = hitl_gateway.list_pending(tenant_ctx=_tenant_ctx)
+        except Exception:
+            pending = []
 
         # Filter approvals related to this org's missions (by goal_id prefix or all if no mission match)
         results = []

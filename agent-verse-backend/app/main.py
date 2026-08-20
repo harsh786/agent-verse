@@ -1643,13 +1643,14 @@ def create_app(
 
         # G-19: Initialize OrgEventPublisher so org.approval.* SSE events are sent
         try:
-            from app.org.events import setup_org_event_publisher
-            _org_event_publisher = setup_org_event_publisher(
+            from app.org.events import configure_org_event_publisher
+            configure_org_event_publisher(
                 redis_client=getattr(app.state, "redis", None),
                 audit_service=getattr(app.state, "audit_log", None),
                 notification_router=getattr(app.state, "notification_service", None),
             )
-            app.state.org_event_publisher = _org_event_publisher
+            from app.org.events import get_org_event_publisher as _get_oep
+            app.state.org_event_publisher = _get_oep()
             logger.info("org_event_publisher_initialized")
         except Exception as _oep_exc:
             logger.warning("org_event_publisher_init_failed", error=str(_oep_exc))
