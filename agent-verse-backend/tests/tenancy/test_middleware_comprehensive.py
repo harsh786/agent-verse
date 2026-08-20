@@ -65,7 +65,7 @@ def _make_app(*, resolver=None, rate_limiter=None) -> FastAPI:
 
 
 def _fake_req(auth: str | None = None, x_api_key: str | None = None) -> MagicMock:
-    from starlette.datastructures import Headers
+    from starlette.datastructures import Headers, QueryParams
 
     headers: dict[str, str] = {}
     if auth is not None:
@@ -74,6 +74,7 @@ def _fake_req(auth: str | None = None, x_api_key: str | None = None) -> MagicMoc
         headers["X-API-Key"] = x_api_key
     req = MagicMock()
     req.headers = Headers(headers)
+    req.query_params = QueryParams("")  # empty — prevents MagicMock truthy fallthrough
     return req
 
 
@@ -110,10 +111,11 @@ def test_extract_key_no_headers_returns_none():
 
 
 def test_extract_key_empty_x_api_key_returns_none():
-    from starlette.datastructures import Headers
+    from starlette.datastructures import Headers, QueryParams
 
     req = MagicMock()
     req.headers = Headers({"X-API-Key": ""})
+    req.query_params = QueryParams("")
     assert _extract_key(req) is None
 
 

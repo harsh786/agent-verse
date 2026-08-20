@@ -34,6 +34,21 @@ class ApprovalChain:
     risk_threshold: str         # minimum risk level: "low"|"medium"|"high"|"critical"
     description: str = ""
 
+    # Convenience aliases used by ApprovalChainRegistry consumers
+    @property
+    def required_approvers(self) -> list[str]:
+        """Alias for required_roles — preferred public surface."""
+        return self.required_roles
+
+    @property
+    def any_or_all(self) -> str:
+        """Return 'all' or 'any' normalised from strategy."""
+        if self.strategy == "all":
+            return "all"
+        if self.strategy == "any":
+            return "any"
+        return "all"  # majority treated as all for binary UI
+
 
 @dataclass
 class ApprovalRequest:
@@ -392,3 +407,34 @@ def get_approval_engine() -> ApprovalChainEngine:
     if _engine is None:
         _engine = ApprovalChainEngine()
     return _engine
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Registry — thin lookup wrapper around CHAINS_BY_ID
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Human-friendly aliases so callers don't have to know the exact chain ID.
+_CHAIN_ALIASES: dict[str, str] = {
+    "financial_commitment_50k": "financial_50k",
+    "financial_commitment": "financial_50k",
+}
+
+
+class ApprovalChainRegistry:
+    """Read-only registry of built-in approval chains.
+
+    Usage::
+
+        reg = ApprovalChainRegistry()
+        chain = reg.get("prod_deploy")   # None when not found
+        chains = reg.list_all()
+    """
+
+    def get(self, chain_id: str) -> ApprovalChain | None:
+        """Return the chain for *chain_id* (or a registered alias), or None."""
+        resolved = _CHAIN_ALIASES.get(chain_id, chain_id)
+        return CHAINS_BY_ID.get(resolved)
+
+    def list_all(self) -> list[ApprovalChain]:
+        """Return every built-in approval chain."""
+        return list(APPROVAL_CHAINS)
