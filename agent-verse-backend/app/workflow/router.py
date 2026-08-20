@@ -50,7 +50,7 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 
 
 def _get_tenant(request: Request) -> Any:
-    return request.app.state.tenant_context  # set by TenantMiddleware
+    return getattr(request.state, "tenant", None)  # set by TenantMiddleware as request.state.tenant
 
 
 def _get_workflow_service(request: Request) -> Any:

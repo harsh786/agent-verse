@@ -13,6 +13,7 @@ import { toast } from "@/stores/toast";
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { AgentNeuralRing } from '@/features/org/components/AgentNeuralRing';
 import { Activity, ArrowLeft, Brain, Camera, ChevronDown, ChevronRight, Clock, Download, Edit3, Inbox, Loader2, Lock, RotateCcw, Save, Shield, Sliders, Target, X } from 'lucide-react';
 
 interface AgentVersion {
@@ -346,14 +347,25 @@ export function AgentDetailPage() {
       </button>
 
       {/* Header */}
-      <div className="bg-card border border-border rounded-xl p-5">
+      <div className="bg-[#0A0F1A] border border-white/[0.07] rounded-xl p-5">
         <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-bold" data-testid="agent-name">
-              {agent.name}
-            </h1>
-            <p className="text-xs text-muted-foreground font-mono mt-1">{agent.agent_id}</p>
-            <p className="text-sm text-muted-foreground mt-1">{agent.autonomy_mode}</p>
+          <div className="flex items-center gap-4">
+            {/* Neural ring identity card — spec §7.2 */}
+            <AgentNeuralRing
+              agentId={agent.agent_id}
+              name={agent.name ?? 'Agent'}
+              role={agent.autonomy_mode}
+              status={agent.status === 'active' ? 'active' : agent.status === 'error' ? 'error' : 'idle'}
+              reputationScore={70}
+              size="lg"
+            />
+            <div>
+              <h1 className="text-xl font-bold text-[#F0F6FF]" data-testid="agent-name">
+                {agent.name}
+              </h1>
+              <p className="text-xs text-[#5A7494] font-mono mt-1">{agent.agent_id}</p>
+              <p className="text-sm text-[#A0B4CC] mt-1">{agent.autonomy_mode}</p>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <button

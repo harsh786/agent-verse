@@ -20,7 +20,9 @@ export const SPRING_PAGE   = { type: 'spring', stiffness: 280, damping: 26 } as 
 export const SPRING_PANEL  = { type: 'spring', stiffness: 300, damping: 28 } as const;
 export const SPRING_FAST   = { type: 'spring', stiffness: 600, damping: 35 } as const;
 export const SPRING_SLOW   = { type: 'spring', stiffness: 200, damping: 25 } as const;
-export const SPRING_BOUNCY = { type: 'spring', stiffness: 450, damping: 18 } as const;
+export const SPRING_BOUNCY   = { type: 'spring', stiffness: 450, damping: 18 } as const;
+export const SPRING_NODE     = { type: 'spring', stiffness: 380, damping: 30 } as const;
+export const SPRING_PARTICLE = { type: 'spring', stiffness: 800, damping: 40 } as const;
 
 interface JARVISPageShellProps {
   children:  ReactNode;

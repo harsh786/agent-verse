@@ -431,6 +431,504 @@ Each follows the same `OpenAICompatibleProvider` inheritance pattern with provid
 | Yi-34B | `yi_provider.py` | `https://api.01.ai/v1` | Bearer API key |
 | Cerebras | `cerebras_provider.py` | `https://api.cerebras.ai/v1` | Bearer API key |
 
+---
+
+#### 2.3.4 Ollama Open-Source Provider (`app/providers/ollama_provider.py`)
+
+> **Status:** `app/providers/registry.py` already detects `OLLAMA_BASE_URL` and routes via
+> `OpenAICompatibleProvider`. This section adds a **dedicated provider** that exposes:
+> - Full model catalog for Qwen, GLM, Kimi, and embedding/OCR variants
+> - Per-model capability metadata (vision, OCR, embedding, function-call)
+> - Multi-instance load-balancing (run separate Ollama instances per model family)
+> - Automatic pull-on-miss (pull model if not present before first inference)
+> - Health-check per model with memory requirement validation
+
+Ollama exposes the full OpenAI API at `http://localhost:11434/v1`. The existing
+`OpenAICompatibleProvider(base_url="http://localhost:11434/v1", api_key="ollama")`
+works for chat — the new provider adds embedding, OCR/vision, and model management.
+
+```python
+# app/providers/ollama_provider.py
+"""Ollama self-hosted provider with full model catalog for open-source models.
+
+Supported model families:
+  LLM:        Qwen 3/2.5, GLM-4, Kimi/Moonshot (local), Llama 3.x, Mistral
+  Embedding:  qwen2:7b (embed mode), nomic-embed-text, mxbai-embed-large,
+              all-minilm, bge-m3, qwen2.5:3b (embed)
+  Vision/OCR: qwen2-vl, glm4v:9b, llava-llama3, minicpm-v, moondream2
+
+All models run locally — zero API cost, data never leaves the machine.
+Requires: Ollama server running at OLLAMA_BASE_URL (default: http://localhost:11434)
+"""
+from __future__ import annotations
+
+import asyncio
+import os
+from typing import Any
+
+import httpx
+import structlog
+from opentelemetry import trace
+
+from app.providers.base import (
+    CompletionRequest,
+    CompletionResponse,
+    EmbedRequest,
+    EmbedResponse,
+    TokenUsage,
+)
+
+log    = structlog.get_logger(__name__)
+tracer = trace.get_tracer(__name__)
+
+# ── Ollama model catalog ───────────────────────────────────────────────────────
+# Format: ollama_tag → {capabilities, context_window, ram_gb, pull_name}
+
+OLLAMA_MODEL_CATALOG: dict[str, dict] = {
+
+    # ── Qwen 3 (Alibaba, Apache-2.0) ─────────────────────────────────────────
+    "qwen3:0.6b": {
+        "family": "qwen3", "params": "0.6B",
+        "capabilities": ["chat", "function_call"],
+        "context_window": 32_768, "ram_gb": 1.5,
+        "task_types": ["classification", "extraction"],
+        "tier": "economy",
+    },
+    "qwen3:1.7b": {
+        "family": "qwen3", "params": "1.7B",
+        "capabilities": ["chat", "function_call"],
+        "context_window": 32_768, "ram_gb": 2.5,
+        "task_types": ["classification", "extraction", "summarization"],
+        "tier": "economy",
+    },
+    "qwen3:4b": {
+        "family": "qwen3", "params": "4B",
+        "capabilities": ["chat", "function_call"],
+        "context_window": 32_768, "ram_gb": 4.0,
+        "task_types": ["drafting", "summarization", "classification"],
+        "tier": "standard",
+    },
+    "qwen3:8b": {
+        "family": "qwen3", "params": "8B",
+        "capabilities": ["chat", "function_call", "thinking"],
+        "context_window": 128_000, "ram_gb": 8.0,
+        "task_types": ["reasoning", "coding", "drafting", "analysis"],
+        "tier": "standard",
+    },
+    "qwen3:14b": {
+        "family": "qwen3", "params": "14B",
+        "capabilities": ["chat", "function_call", "thinking"],
+        "context_window": 128_000, "ram_gb": 14.0,
+        "task_types": ["reasoning", "coding", "analysis"],
+        "tier": "premium",
+    },
+    "qwen3:32b": {
+        "family": "qwen3", "params": "32B",
+        "capabilities": ["chat", "function_call", "thinking"],
+        "context_window": 128_000, "ram_gb": 32.0,
+        "task_types": ["reasoning", "coding", "analysis", "long_context"],
+        "tier": "premium",
+    },
+
+    # ── Qwen 2.5 (Alibaba, Apache-2.0) ───────────────────────────────────────
+    "qwen2.5:7b": {
+        "family": "qwen2.5", "params": "7B",
+        "capabilities": ["chat", "function_call"],
+        "context_window": 128_000, "ram_gb": 7.0,
+        "task_types": ["coding", "drafting", "extraction"],
+        "tier": "standard",
+    },
+    "qwen2.5:14b": {
+        "family": "qwen2.5", "params": "14B",
+        "capabilities": ["chat", "function_call"],
+        "context_window": 128_000, "ram_gb": 14.0,
+        "task_types": ["coding", "analysis", "reasoning"],
+        "tier": "premium",
+    },
+    "qwen2.5:72b": {
+        "family": "qwen2.5", "params": "72B",
+        "capabilities": ["chat", "function_call"],
+        "context_window": 128_000, "ram_gb": 72.0,
+        "task_types": ["reasoning", "coding", "analysis", "long_context"],
+        "tier": "premium",
+    },
+
+    # ── Qwen 2.5 Coder (specialised for code generation) ─────────────────────
+    "qwen2.5-coder:7b": {
+        "family": "qwen2.5-coder", "params": "7B",
+        "capabilities": ["chat", "function_call", "code"],
+        "context_window": 128_000, "ram_gb": 7.0,
+        "task_types": ["coding"],
+        "tier": "standard",
+    },
+    "qwen2.5-coder:14b": {
+        "family": "qwen2.5-coder", "params": "14B",
+        "capabilities": ["chat", "function_call", "code"],
+        "context_window": 128_000, "ram_gb": 14.0,
+        "task_types": ["coding"],
+        "tier": "premium",
+    },
+    "qwen2.5-coder:32b": {
+        "family": "qwen2.5-coder", "params": "32B",
+        "capabilities": ["chat", "function_call", "code"],
+        "context_window": 128_000, "ram_gb": 32.0,
+        "task_types": ["coding"],
+        "tier": "premium",
+    },
+
+    # ── Qwen Vision + OCR (multimodal, vision-language) ──────────────────────
+    "qwen2-vl:7b": {
+        "family": "qwen2-vl", "params": "7B",
+        "capabilities": ["chat", "vision", "ocr", "function_call"],
+        "context_window": 32_768, "ram_gb": 10.0,
+        "task_types": ["vision", "ocr"],
+        "tier": "standard",
+    },
+    "qwen2-vl:72b": {
+        "family": "qwen2-vl", "params": "72B",
+        "capabilities": ["chat", "vision", "ocr", "function_call"],
+        "context_window": 32_768, "ram_gb": 80.0,
+        "task_types": ["vision", "ocr"],
+        "tier": "premium",
+    },
+    "qwen2.5vl:7b": {
+        "family": "qwen2.5vl", "params": "7B",
+        "capabilities": ["chat", "vision", "ocr", "function_call"],
+        "context_window": 32_768, "ram_gb": 10.0,
+        "task_types": ["vision", "ocr"],
+        "tier": "standard",
+    },
+    "qwen2.5vl:32b": {
+        "family": "qwen2.5vl", "params": "32B",
+        "capabilities": ["chat", "vision", "ocr", "function_call"],
+        "context_window": 32_768, "ram_gb": 36.0,
+        "task_types": ["vision", "ocr"],
+        "tier": "premium",
+    },
+
+    # ── Qwen Embedding (dense vectors for RAG) ────────────────────────────────
+    # Exposed via Ollama's /api/embeddings endpoint (not /v1/chat/completions)
+    "nomic-embed-text": {
+        "family": "nomic-embed", "params": "137M",
+        "capabilities": ["embedding"],
+        "context_window": 8_192, "ram_gb": 0.5,
+        "embedding_dim": 768,
+        "task_types": ["embedding"],
+        "tier": "economy",
+    },
+    "mxbai-embed-large": {
+        "family": "mxbai", "params": "335M",
+        "capabilities": ["embedding"],
+        "context_window": 512, "ram_gb": 0.7,
+        "embedding_dim": 1_024,
+        "task_types": ["embedding"],
+        "tier": "economy",
+    },
+    "bge-m3": {
+        "family": "bge", "params": "570M",
+        "capabilities": ["embedding"],
+        "context_window": 8_192, "ram_gb": 1.2,
+        "embedding_dim": 1_024,
+        "task_types": ["embedding"],
+        "tier": "economy",
+    },
+    "qwen2.5:3b": {
+        "family": "qwen2.5-embed", "params": "3B",
+        "capabilities": ["chat", "embedding"],
+        "context_window": 32_000, "ram_gb": 3.0,
+        "embedding_dim": 2_048,
+        "task_types": ["embedding", "extraction"],
+        "tier": "economy",
+        "note": "Use with /api/embeddings endpoint for dense embeddings",
+    },
+
+    # ── Zhipu GLM-4 (Tsinghua / Zhipu AI, Apache-2.0) ─────────────────────
+    "glm4:9b": {
+        "family": "glm4", "params": "9B",
+        "capabilities": ["chat", "function_call"],
+        "context_window": 128_000, "ram_gb": 9.0,
+        "task_types": ["reasoning", "drafting", "analysis"],
+        "tier": "standard",
+    },
+
+    # ── GLM-4V (vision + OCR) ─────────────────────────────────────────────────
+    # GLM-4V is the multimodal variant — strong at Chinese and English OCR,
+    # document understanding, chart/table extraction.
+    "glm4v:9b": {
+        "family": "glm4v", "params": "9B",
+        "capabilities": ["chat", "vision", "ocr", "function_call"],
+        "context_window": 8_192, "ram_gb": 12.0,
+        "task_types": ["vision", "ocr", "extraction"],
+        "tier": "standard",
+        "note": "Best-in-class OCR for Chinese + English documents via Ollama",
+    },
+
+    # ── Moonshot / Kimi (local via Ollama — open weights variant) ────────────
+    # Note: Kimi-k1.5 open weights are available on Ollama.
+    # The cloud API (api.moonshot.cn) is handled by moonshot_provider.py.
+    # This covers running Kimi-compatible open weights locally.
+    "moonshot:7b": {
+        "family": "moonshot", "params": "7B",
+        "capabilities": ["chat", "function_call", "long_context"],
+        "context_window": 200_000, "ram_gb": 8.0,
+        "task_types": ["long_context", "drafting", "summarization"],
+        "tier": "standard",
+        "note": "Extremely long context — best local choice for document analysis",
+    },
+    "moonshot:8x7b": {
+        "family": "moonshot-moe", "params": "56B MoE",
+        "capabilities": ["chat", "function_call", "long_context"],
+        "context_window": 200_000, "ram_gb": 48.0,
+        "task_types": ["long_context", "reasoning", "analysis"],
+        "tier": "premium",
+    },
+}
+
+
+class OllamaProvider:
+    """Dedicated Ollama provider for open-source models: Qwen, GLM, Kimi, embeddings.
+
+    Why a dedicated provider instead of just OpenAICompatibleProvider?
+      1. Embedding via /api/embeddings (not OpenAI /v1/embeddings — different payload)
+      2. Model pull-on-miss (auto-pull before first use)
+      3. Model health-check with RAM requirement validation
+      4. Multi-instance support (separate Ollama per model family)
+      5. Full catalog with capability routing metadata
+
+    Auto-detection:
+      OLLAMA_BASE_URL=http://localhost:11434   (single instance)
+    Multi-instance (optional):
+      OLLAMA_CHAT_URL=http://gpu-box-1:11434   (for LLM models)
+      OLLAMA_EMBED_URL=http://cpu-box-1:11434  (for embedding models)
+      OLLAMA_VISION_URL=http://gpu-box-2:11434 (for vision/OCR models)
+    """
+
+    provider_name = "ollama"
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        embed_url: str | None = None,
+        vision_url: str | None = None,
+        auto_pull: bool = True,
+    ) -> None:
+        self._base_url   = (base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")).rstrip("/")
+        self._embed_url  = (embed_url  or os.getenv("OLLAMA_EMBED_URL",  self._base_url)).rstrip("/")
+        self._vision_url = (vision_url or os.getenv("OLLAMA_VISION_URL", self._base_url)).rstrip("/")
+        self._auto_pull  = auto_pull
+        self._pulled: set[str] = set()
+        self._pull_lock  = asyncio.Lock()
+
+    # ── Chat completion ────────────────────────────────────────────────────────
+
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        """Route to OpenAI-compat /v1/chat/completions on Ollama."""
+        with tracer.start_as_current_span("ollama.complete") as span:
+            span.set_attribute("model", request.model)
+            model = request.model
+            url   = self._url_for_model(model)
+
+            await self._ensure_model(model, url)
+
+            from app.providers.openai_compatible import OpenAICompatibleProvider
+            _p = OpenAICompatibleProvider(
+                api_key="ollama",
+                base_url=f"{url}/v1",
+                default_model=model,
+            )
+            return await _p.complete(request)
+
+    # ── Embedding ─────────────────────────────────────────────────────────────
+
+    async def embed(self, request: EmbedRequest) -> EmbedResponse:
+        """Use Ollama's /api/embeddings endpoint (NOT OpenAI format)."""
+        with tracer.start_as_current_span("ollama.embed") as span:
+            span.set_attribute("model", request.model)
+            model = request.model
+            await self._ensure_model(model, self._embed_url)
+
+            texts = request.texts if isinstance(request.texts, list) else [request.texts]
+            embeddings: list[list[float]] = []
+
+            async with httpx.AsyncClient(timeout=120) as client:
+                for text in texts:
+                    r = await client.post(
+                        f"{self._embed_url}/api/embeddings",
+                        json={"model": model, "prompt": text},
+                    )
+                    r.raise_for_status()
+                    embeddings.append(r.json()["embedding"])
+
+            span.set_attribute("embedding_count", len(embeddings))
+            dim = len(embeddings[0]) if embeddings else 0
+            return EmbedResponse(embeddings=embeddings, model=model, dimensions=dim)
+
+    # ── Model management ──────────────────────────────────────────────────────
+
+    async def list_local_models(self) -> list[dict]:
+        """Return list of models currently pulled on the Ollama instance."""
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(f"{self._base_url}/api/tags")
+            r.raise_for_status()
+            return r.json().get("models", [])
+
+    async def pull_model(self, model: str, url: str | None = None) -> None:
+        """Pull a model if not already present. Streams download progress to logs."""
+        target = (url or self._base_url).rstrip("/")
+        log.info("ollama.pulling_model", model=model, url=target)
+        async with httpx.AsyncClient(timeout=600) as client:
+            async with client.stream(
+                "POST", f"{target}/api/pull",
+                json={"name": model, "stream": True},
+            ) as resp:
+                async for line in resp.aiter_lines():
+                    if line:
+                        import json
+                        try:
+                            d = json.loads(line)
+                            if d.get("status") == "success":
+                                log.info("ollama.pull_complete", model=model)
+                        except Exception:
+                            pass
+        self._pulled.add(f"{target}:{model}")
+
+    async def get_model_info(self, model: str) -> dict:
+        """Return metadata for a local Ollama model (parameter count, context, etc.)."""
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                f"{self._base_url}/api/show",
+                json={"name": model},
+            )
+            r.raise_for_status()
+            return r.json()
+
+    async def validate_ram(self, model: str) -> bool:
+        """Check if the host has enough free RAM for the model."""
+        catalog_entry = OLLAMA_MODEL_CATALOG.get(model)
+        if not catalog_entry:
+            return True   # unknown model — allow
+        required_gb = catalog_entry.get("ram_gb", 0)
+        try:
+            import psutil
+            free_gb = psutil.virtual_memory().available / (1024 ** 3)
+            if free_gb < required_gb:
+                log.warning("ollama.insufficient_ram",
+                            model=model, required_gb=required_gb, free_gb=round(free_gb, 1))
+                return False
+        except ImportError:
+            pass   # psutil not installed — skip check
+        return True
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _url_for_model(self, model: str) -> str:
+        """Route to the appropriate Ollama instance based on model capabilities."""
+        caps = OLLAMA_MODEL_CATALOG.get(model, {}).get("capabilities", [])
+        if "vision" in caps or "ocr" in caps:
+            return self._vision_url
+        if "embedding" in caps and "chat" not in caps:
+            return self._embed_url
+        return self._base_url
+
+    async def _ensure_model(self, model: str, url: str) -> None:
+        """Pull model if auto_pull is enabled and model is not yet present."""
+        if not self._auto_pull:
+            return
+        key = f"{url}:{model}"
+        if key in self._pulled:
+            return
+        async with self._pull_lock:
+            if key in self._pulled:
+                return
+            # Check if already pulled
+            try:
+                local = await self.list_local_models()
+                local_names = {m["name"] for m in local}
+                if model in local_names or model.split(":")[0] in local_names:
+                    self._pulled.add(key)
+                    return
+            except Exception:
+                pass
+            # Not present — pull
+            await self.pull_model(model, url)
+```
+
+#### 2.3.5 Ollama Model Routing Configuration
+
+Add to `app/providers/registry.py` auto-detection block:
+
+```python
+# In _detect_providers():
+if os.getenv("OLLAMA_BASE_URL"):
+    providers.append(ProviderConfig(
+        provider_type="ollama",
+        base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+        display_name="Ollama (local open-source)",
+        models=[
+            # Default model set — override via OLLAMA_MODELS env var
+            "qwen3:8b",              # primary reasoning/coding (local)
+            "qwen2.5-coder:7b",      # code generation
+            "qwen2-vl:7b",           # vision / OCR
+            "glm4:9b",               # reasoning (Chinese-optimised)
+            "glm4v:9b",              # vision + OCR (Chinese docs)
+            "nomic-embed-text",      # fast embedding
+            "mxbai-embed-large",     # high-quality embedding
+        ],
+    ))
+```
+
+Add `OllamaProvider` instantiation in `resolve_provider()`:
+
+```python
+if cfg.provider_type == "ollama":
+    from app.providers.ollama_provider import OllamaProvider
+    return OllamaProvider(
+        base_url=cfg.base_url,
+        embed_url=os.getenv("OLLAMA_EMBED_URL"),
+        vision_url=os.getenv("OLLAMA_VISION_URL"),
+        auto_pull=os.getenv("OLLAMA_AUTO_PULL", "true").lower() == "true",
+    )
+```
+
+#### 2.3.6 Ollama Environment Variables
+
+```bash
+# .env — Ollama configuration
+OLLAMA_BASE_URL=http://localhost:11434       # primary instance (LLM)
+OLLAMA_EMBED_URL=http://localhost:11434      # embedding instance (can be same)
+OLLAMA_VISION_URL=http://localhost:11434     # vision/OCR instance (can be same)
+OLLAMA_AUTO_PULL=true                        # auto-pull models on first use
+OLLAMA_MODELS=qwen3:8b,qwen2.5-coder:7b,glm4v:9b,nomic-embed-text
+
+# Use a different default model for Ollama
+OLLAMA_DEFAULT_MODEL=qwen3:8b
+
+# For multi-GPU setups (separate Ollama instances per model family):
+OLLAMA_BASE_URL=http://gpu1:11434            # 40 GB VRAM — runs qwen3:32b
+OLLAMA_EMBED_URL=http://cpu1:11434           # CPU-only — runs embed models
+OLLAMA_VISION_URL=http://gpu2:11434          # 24 GB VRAM — runs qwen2-vl:7b
+```
+
+#### 2.3.7 Ollama → AgentVerse Task-Type Capability Matrix
+
+| Ollama Model | Context | VRAM | `task_type` | Cost | Notes |
+|---|---|---|---|---|---|
+| `qwen3:0.6b` | 32K | 1.5 GB | classification, extraction | **$0** | Fastest — CPU |
+| `qwen3:4b` | 32K | 4 GB | drafting, summarization | **$0** | Consumer GPU |
+| `qwen3:8b` | 128K | 8 GB | reasoning, coding, analysis | **$0** | Best mid-tier local |
+| `qwen3:32b` | 128K | 32 GB | reasoning, coding | **$0** | Near-GPT-4 quality |
+| `qwen2.5-coder:7b` | 128K | 7 GB | **coding** | **$0** | Best local code model |
+| `qwen2.5-coder:32b` | 128K | 32 GB | **coding** | **$0** | Beats GPT-4o on HumanEval |
+| `qwen2-vl:7b` | 32K | 10 GB | **vision, ocr** | **$0** | Strong OCR + chart reading |
+| `qwen2.5vl:7b` | 32K | 10 GB | **vision, ocr** | **$0** | Improved Qwen VL |
+| `glm4:9b` | 128K | 9 GB | reasoning, drafting | **$0** | Chinese/English bilingual |
+| `glm4v:9b` | 8K | 12 GB | **vision, ocr** | **$0** | Best local Chinese OCR |
+| `moonshot:7b` | **200K** | 8 GB | long_context, summarization | **$0** | Longest local context |
+| `nomic-embed-text` | 8K | 0.5 GB | **embedding** (768d) | **$0** | Fast embed, CPU-friendly |
+| `mxbai-embed-large` | 512 | 0.7 GB | **embedding** (1024d) | **$0** | High-quality dense embed |
+| `bge-m3` | 8K | 1.2 GB | **embedding** (1024d) | **$0** | Multilingual embed |
+| `qwen2.5:3b` | 32K | 3 GB | embedding, extraction | **$0** | Generative embed |
+
 ### 2.4 Model Router
 
 #### 2.4.1 `app/providers/model_router.py` (New)
@@ -475,18 +973,58 @@ class ModelRouter:
 
 ```python
 class TaskType(enum.StrEnum):
-    REASONING       = "reasoning"        # Claude Opus 4 / o3
-    CODING          = "coding"           # DeepSeek V3 / Claude 3.5 Sonnet
-    DRAFTING        = "drafting"         # Gemini Flash 2.0 / Llama 3.1 70B
-    ANALYSIS        = "analysis"         # GPT-4o / Claude 3.5 Sonnet
-    SUMMARIZATION   = "summarization"    # Gemini Flash / Claude Haiku
-    CLASSIFICATION  = "classification"   # Gemini Flash / Llama 3.1 8B
-    EXTRACTION      = "extraction"       # GPT-4o-mini / Qwen 2.5 72B
-    VISION          = "vision"           # GPT-4o / Gemini Pro Vision
-    LONG_CONTEXT    = "long_context"     # Gemini 1.5 Pro (1M ctx) / Claude 3.5
-    FUNCTION_CALL   = "function_call"    # GPT-4o / Claude 3.5 Sonnet
-    EMBEDDING       = "embedding"        # Voyage-3-lite / text-embedding-3-small
-    RERANKING       = "reranking"        # Cohere rerank-v3.5 / bge-reranker
+    REASONING       = "reasoning"        # Cloud: Claude Opus 4 / o3
+                                         # Local: qwen3:32b / qwen3:14b
+    CODING          = "coding"           # Cloud: DeepSeek V3 / Claude 3.5 Sonnet
+                                         # Local: qwen2.5-coder:32b / qwen2.5-coder:7b
+    DRAFTING        = "drafting"         # Cloud: Gemini Flash 2.0 / Llama 3.1 70B
+                                         # Local: qwen3:8b / glm4:9b
+    ANALYSIS        = "analysis"         # Cloud: GPT-4o / Claude 3.5 Sonnet
+                                         # Local: qwen3:14b / qwen3:8b
+    SUMMARIZATION   = "summarization"    # Cloud: Gemini Flash / Claude Haiku
+                                         # Local: qwen3:4b / moonshot:7b
+    CLASSIFICATION  = "classification"   # Cloud: Gemini Flash / Llama 3.1 8B
+                                         # Local: qwen3:1.7b / qwen3:0.6b
+    EXTRACTION      = "extraction"       # Cloud: GPT-4o-mini / Qwen 2.5 72B
+                                         # Local: qwen2.5:7b / qwen3:4b
+    VISION          = "vision"           # Cloud: GPT-4o / Gemini Pro Vision
+                                         # Local: qwen2.5vl:7b / qwen2-vl:7b
+    OCR             = "ocr"              # Cloud: GPT-4o / Gemini Pro Vision
+                                         # Local: glm4v:9b (best Chinese OCR)
+                                         #        qwen2-vl:7b (best English OCR)
+    LONG_CONTEXT    = "long_context"     # Cloud: Gemini 1.5 Pro (1M ctx) / Claude 3.5
+                                         # Local: moonshot:7b (200K ctx)
+    FUNCTION_CALL   = "function_call"    # Cloud: GPT-4o / Claude 3.5 Sonnet
+                                         # Local: qwen3:8b / glm4:9b
+    EMBEDDING       = "embedding"        # Cloud: Voyage-3-lite / text-embedding-3-small
+                                         # Local: nomic-embed-text / mxbai-embed-large
+                                         #        bge-m3 (multilingual)
+    RERANKING       = "reranking"        # Cloud: Cohere rerank-v3.5 / bge-reranker
+                                         # Local: bge-reranker-v2-m3 (via Ollama)
+```
+
+**Ollama routing rules in `ModelRouter.select_model()`:**
+
+```python
+# In ModelRouter, when tenant.ollama_enabled=True and criticality != CRITICAL:
+OLLAMA_TASK_ROUTING: dict[str, list[str]] = {
+    "reasoning":      ["qwen3:32b", "qwen3:14b", "qwen3:8b"],
+    "coding":         ["qwen2.5-coder:32b", "qwen2.5-coder:14b", "qwen2.5-coder:7b"],
+    "drafting":       ["qwen3:8b", "glm4:9b", "qwen3:4b"],
+    "analysis":       ["qwen3:14b", "qwen3:8b", "qwen2.5:14b"],
+    "summarization":  ["qwen3:4b", "moonshot:7b", "qwen3:1.7b"],
+    "classification": ["qwen3:1.7b", "qwen3:0.6b"],
+    "extraction":     ["qwen2.5:7b", "qwen3:4b"],
+    "vision":         ["qwen2.5vl:7b", "qwen2-vl:7b"],
+    "ocr":            ["glm4v:9b", "qwen2.5vl:7b", "qwen2-vl:7b"],
+    "long_context":   ["moonshot:7b"],
+    "function_call":  ["qwen3:8b", "glm4:9b"],
+    "embedding":      ["nomic-embed-text", "mxbai-embed-large", "bge-m3"],
+    "reranking":      ["bge-m3"],
+}
+
+# Priority: ollama (free) → cloud (paid)
+# Override: FORCE_CLOUD=true or criticality=CRITICAL bypasses ollama
 ```
 
 #### 2.4.3 Criticality Tiers
@@ -604,31 +1142,32 @@ model_config:
 
 ### 2.7 Files to Create / Modify
 
-| File | Action |
-|------|--------|
-| `app/providers/openrouter_provider.py` | CREATE |
-| `app/providers/nvidia_nim_provider.py` | CREATE |
-| `app/providers/mistral_provider.py` | CREATE |
-| `app/providers/cohere_provider.py` | CREATE |
-| `app/providers/deepseek_provider.py` | CREATE |
-| `app/providers/moonshot_provider.py` | CREATE |
-| `app/providers/zhipu_provider.py` | CREATE |
-| `app/providers/perplexity_provider.py` | CREATE |
-| `app/providers/huggingface_provider.py` | CREATE |
-| `app/providers/fireworks_provider.py` | CREATE |
-| `app/providers/xai_provider.py` | CREATE |
-| `app/providers/bedrock_provider.py` | CREATE |
-| `app/providers/azure_provider.py` | CREATE |
-| `app/providers/vertex_provider.py` | CREATE |
-| `app/providers/yi_provider.py` | CREATE |
-| `app/providers/model_router.py` | CREATE |
-| `app/providers/model_catalog.py` | CREATE |
-| `app/providers/registry.py` | MODIFY — register all new providers |
-| `app/api/model_registry.py` | MODIFY — expose catalog API |
-| `app/db/models/tenant_model_config.py` | CREATE |
-| `app/db/migrations/versions/0109_tenant_model_config.py` | CREATE |
-| `src/features/models/ModelCatalogPage.tsx` | CREATE/MODIFY |
-| `src/features/settings/ModelRoutingPanel.tsx` | CREATE |
+| File | Action | Notes |
+|------|---------|-------|
+| `app/providers/ollama_provider.py` | **CREATE** | Full Ollama provider: Qwen, GLM, Kimi, embed, OCR |
+| `app/providers/openrouter_provider.py` | CREATE | |
+| `app/providers/nvidia_nim_provider.py` | CREATE | |
+| `app/providers/mistral_provider.py` | CREATE | |
+| `app/providers/cohere_provider.py` | CREATE | |
+| `app/providers/deepseek_provider.py` | CREATE | |
+| `app/providers/moonshot_provider.py` | CREATE | Cloud Kimi API |
+| `app/providers/zhipu_provider.py` | CREATE | Cloud GLM API |
+| `app/providers/perplexity_provider.py` | CREATE | |
+| `app/providers/huggingface_provider.py` | CREATE | |
+| `app/providers/fireworks_provider.py` | CREATE | |
+| `app/providers/xai_provider.py` | CREATE | |
+| `app/providers/bedrock_provider.py` | CREATE | |
+| `app/providers/azure_provider.py` | CREATE | |
+| `app/providers/vertex_provider.py` | CREATE | |
+| `app/providers/yi_provider.py` | CREATE | |
+| `app/providers/model_router.py` | CREATE | Includes Ollama routing |
+| `app/providers/model_catalog.py` | CREATE | Includes Ollama catalog |
+| `app/providers/registry.py` | **MODIFY** | Add Ollama auto-detect + OllamaProvider instantiation |
+| `app/api/model_registry.py` | MODIFY | Expose catalog API |
+| `app/db/models/tenant_model_config.py` | CREATE | |
+| `app/db/migrations/versions/0109_tenant_model_config.py` | CREATE | |
+| `src/features/models/ModelCatalogPage.tsx` | CREATE/MODIFY | Show Ollama local models |
+| `src/features/settings/ModelRoutingPanel.tsx` | CREATE | Toggle Ollama per tenant |
 
 ---
 

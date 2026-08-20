@@ -1625,6 +1625,16 @@ def create_app(
                 await close_retrieval_gateways()
                 await close_process_rerankers()
 
+        # ── Voice OS warmup (non-blocking — loads STT/TTS providers in background)
+        if getattr(settings, "voice_enabled", True):
+            try:
+                import asyncio as _voice_asyncio
+                from app.voice.providers import warmup_providers as _voice_warmup
+                _voice_asyncio.create_task(_voice_warmup())
+                logger.info("voice_providers_warmup_scheduled")
+            except Exception as _voice_exc:
+                logger.warning("voice_providers_warmup_skipped", error=str(_voice_exc))
+
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
     async def _resolve_connector_secret(ref: str, tenant_ctx: Any = None) -> str | None:
@@ -1848,10 +1858,9 @@ def create_app(
         _nl_trigger_resolver = NLTriggerResolver()
         _system_template_store = SystemTemplateStore()
 
-        # workflow_service: stub — real impl backed by DB in production lifespan
-        # The routers use getattr(..., "workflow_service", None) → 503 if absent.
-        # Set a sentinel so the 503 branch is never hit unnecessarily.
-        app.state.workflow_service = None         # populated by lifespan when DB is ready
+        # workflow_service: wraps workflow_store with full router-compatible interface
+        from app.workflow.service import WorkflowService as _WorkflowService
+        app.state.workflow_service = _WorkflowService(app.state.workflow_store)
         app.state.workflow_runner = _wf_runner
         app.state.workflow_compiler = _wf_compiler
         app.state.hitl_workflow_gateway = _hitl_wf_gateway

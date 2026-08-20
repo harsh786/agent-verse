@@ -245,8 +245,10 @@ function MapInner({
 /** Wrap with ReactFlowProvider so fitView works */
 export function CivilizationMap(props: CivilizationMapProps) {
   return (
-    <ReactFlowProvider>
-      <MapInner {...props} />
-    </ReactFlowProvider>
+    <div className="relative w-full h-full">
+      <ReactFlowProvider>
+        <MapInner {...props} />
+      </ReactFlowProvider>
+    </div>
   );
 }

@@ -59,6 +59,12 @@ OLLAMA_MODEL_CATALOG: dict[str, dict[str, Any]] = {
     "bge-m3":            {"type": "embed", "ram_gb": 2, "dim": 1024, "capabilities": ["embed", "rerank"]},
     "all-minilm":        {"type": "embed", "ram_gb": 1, "dim": 384,  "capabilities": ["embed"]},
     "nomic-embed-text:v1.5": {"type": "embed", "ram_gb": 1, "dim": 768, "capabilities": ["embed"]},
+    # ── User's installed local models ─────────────────────────────────────────
+    "qwen3.8:latest":            {"type": "text",  "ram_gb": 8,  "context": 128000, "capabilities": ["text", "tools", "thinking"]},
+    "qwen3-embedding:latest":    {"type": "embed", "ram_gb": 4,  "dim": 2048,        "capabilities": ["embed"]},
+    "glm-ocr:latest":            {"type": "vision","ram_gb": 8,  "context": 8192,    "capabilities": ["text", "vision", "ocr"]},
+    "gpt-oss:latest":            {"type": "text",  "ram_gb": 14, "context": 32768,   "capabilities": ["text", "tools"]},
+    "llama3.2:latest":           {"type": "text",  "ram_gb": 2,  "context": 128000,  "capabilities": ["text", "tools"]},
 }
 
 # Lock to prevent duplicate pulls
@@ -84,18 +90,32 @@ class OllamaProvider(OpenAICompatibleProvider):
     def __init__(
         self,
         base_url: str | None = None,
-        default_model: str = "qwen3:8b",
-        default_embed_model: str = "nomic-embed-text",
+        default_model: str | None = None,
+        default_embed_model: str | None = None,
+        default_ocr_model: str | None = None,
     ) -> None:
         _raw_base = base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434") or "http://localhost:11434"
         self._base = _raw_base.rstrip("/")
+        _model = (
+            default_model
+            or os.getenv("OLLAMA_DEFAULT_MODEL", "qwen3.8:latest")
+        )
+        _embed = (
+            default_embed_model
+            or os.getenv("OLLAMA_EMBED_MODEL", "qwen3-embedding:latest")
+        )
+        _ocr = (
+            default_ocr_model
+            or os.getenv("OLLAMA_OCR_MODEL", "glm-ocr:latest")
+        )
         super().__init__(
             api_key="ollama",  # Ollama does not require a real key
             base_url=f"{self._base}/v1",
-            default_model=default_model,
-            supports_vision_flag=False,
+            default_model=_model,
+            supports_vision_flag=True,  # glm-ocr supports vision
         )
-        self._default_embed_model = default_embed_model
+        self._default_embed_model = _embed
+        self._default_ocr_model = _ocr
 
     # ------------------------------------------------------------------
     # Completion — inherited from OpenAICompatibleProvider

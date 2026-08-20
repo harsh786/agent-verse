@@ -40,6 +40,10 @@ import { artifactToCsv, artifactToMarkdown } from "./resultArtifact";
 import type { GoalEvent as StreamGoalEvent } from "@/lib/sse/useGoalStream";
 
 import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
+import { GoalExecutionGraph } from './components/GoalExecutionGraph';
+import { HITLGateNode } from '@/components/neural/HITLGateNode';
+import { GuardrailShield } from '@/components/neural/GuardrailShield';
+import { TokenWaterfall } from '@/components/neural/TokenWaterfall';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Tab = "results" | "evidence" | "execution" | "events" | "eval" | "explain";
@@ -416,8 +420,8 @@ const TERMINAL_EVENT_COLORS: Record<string, string> = {
   goal_failed:          "text-red-300 font-bold",
   goal_cancelled:       "text-orange-400",
   verification_done:    "text-violet-400",
-  worker_started:       "text-[#94A3B8]",
-  worker_complete:      "text-[#94A3B8]",
+  worker_started:       "text-slate-400",
+  worker_complete:      "text-slate-400",
   knowledge_retrieved:  "text-teal-400",
 };
 
@@ -445,7 +449,7 @@ function TerminalLine({ event, onRetry, isRetrying }: {
   const [expanded, setExpanded] = useState(false);
   const type = readStr(event.type) ?? "event";
   const step = readStr(event.step);
-  const color = TERMINAL_EVENT_COLORS[type] ?? "text-[#CBD5E1]";
+  const color = TERMINAL_EVENT_COLORS[type] ?? "text-slate-300";
   const icon = TERMINAL_ICONS[type] ?? "·";
   const isFailure = type === "tool_call_failed" || type === "goal_failed";
   const isTool = type === "tool_call_complete" || type === "tool_call_failed";
@@ -473,7 +477,7 @@ function TerminalLine({ event, onRetry, isRetrying }: {
     <div className={`group ${isFailure ? "bg-red-950/10" : ""}`}>
       <button
         onClick={() => hasDetails && setExpanded((v) => !v)}
-        className={`w-full flex items-center gap-2 px-3 py-1.5 text-left font-mono text-xs hover:bg-[#0A0D14]/5 transition-colors ${hasDetails ? "cursor-pointer" : "cursor-default"}`}
+        className={`w-full flex items-center gap-2 px-3 py-1.5 text-left font-mono text-xs hover:bg-white/5 transition-colors ${hasDetails ? "cursor-pointer" : "cursor-default"}`}
       >
         <span className={`shrink-0 w-4 text-center ${color}`}>{icon}</span>
         <span className={`flex-1 ${color}`}>{label}</span>
@@ -486,7 +490,7 @@ function TerminalLine({ event, onRetry, isRetrying }: {
       {expanded && type === "plan_ready" && Array.isArray(event.steps) && (
         <div className="px-8 pb-2 space-y-0.5">
           {(event.steps as string[]).map((s, i) => (
-            <p key={i} className="font-mono text-xs text-[#94A3B8]">
+            <p key={i} className="font-mono text-xs text-slate-400">
               <span className="text-blue-500 mr-2">{i + 1}.</span>{s}
             </p>
           ))}
@@ -496,7 +500,7 @@ function TerminalLine({ event, onRetry, isRetrying }: {
       {expanded && isTool && (
         <div className="px-8 pb-2">
           {event.output != null && (
-            <pre className="text-[10px] text-[#94A3B8] whitespace-pre-wrap break-words max-h-48 overflow-auto leading-relaxed">
+            <pre className="text-[10px] text-slate-400 whitespace-pre-wrap break-words max-h-48 overflow-auto leading-relaxed">
               {typeof event.output === "string" ? event.output : JSON.stringify(event.output, null, 2)}
             </pre>
           )}
@@ -517,7 +521,7 @@ function TerminalLine({ event, onRetry, isRetrying }: {
       {expanded && type === "verification_done" && (
         <div className="px-8 pb-2">
           {readStr(event.reason) && (
-            <p className="text-[10px] text-[#94A3B8]">{readStr(event.reason)}</p>
+            <p className="text-[10px] text-slate-400">{readStr(event.reason)}</p>
           )}
         </div>
       )}
@@ -560,8 +564,8 @@ function TerminalPanel({
       {/* Terminal header bar */}
       <div className="flex items-center justify-between px-4 py-2 bg-[#161b22] border-b border-[#30363d]">
         <div className="flex items-center gap-2">
-          <Terminal className="h-3.5 w-3.5 text-[#94A3B8]" aria-hidden="true" />
-          <span className="text-xs font-mono text-[#94A3B8]">execution log</span>
+          <Terminal className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+          <span className="text-xs font-mono text-slate-400">execution log</span>
           {connected && (
             <span className="flex items-center gap-1 text-[10px] text-emerald-400">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true" />
@@ -592,7 +596,7 @@ function TerminalPanel({
       >
         {events.length === 0 ? (
           <div className="flex items-center justify-center h-full">
-            <p className="font-mono text-xs text-[#374151]">
+            <p className="font-mono text-xs text-slate-600">
               {["complete", "failed", "cancelled"].includes(goalStatus)
                 ? "No live events captured — connect earlier next time."
                 : "Waiting for events…"}
@@ -622,7 +626,7 @@ function TerminalPanel({
             <p className="font-mono text-[10px] text-yellow-400 mb-1">
               Generating: {streamingToken.step}
             </p>
-            <p className="font-mono text-xs text-[#CBD5E1] whitespace-pre-wrap break-words">
+            <p className="font-mono text-xs text-slate-300 whitespace-pre-wrap break-words">
               {streamingToken.cumulative}
               <span className="inline-block w-0.5 h-3.5 bg-yellow-400 animate-pulse ml-0.5 align-middle" aria-hidden="true" />
             </p>
@@ -644,6 +648,12 @@ export function GoalDetailPage() {
   const tenantId = useAuthStore((s) => s.tenantId);
   const [approvalNote, setApprovalNote] = useState("");
   const [selectedTab, setSelectedTab] = useState<Tab | null>(null);
+
+  // HITL SSE-driven state (G-01 fix: react to events immediately)
+  const [sseHitlRequest, setSseHitlRequest] = useState<{
+    requestId: string; action: string; status: 'waiting' | 'approved' | 'rejected';
+  } | null>(null);
+  const [sseGuardrail, setSseGuardrail] = useState<{ rule: string } | null>(null);
   const tabRefs = useRef<Record<Tab, HTMLButtonElement | null>>({
     results: null, evidence: null, execution: null, events: null, eval: null, explain: null,
   });
@@ -683,7 +693,27 @@ export function GoalDetailPage() {
   const [streamKey, setStreamKey] = useState(0);
   const { events: sseEvents, connected, streamingToken } = useGoalStream(
     goalId ?? "",
-    { reconnectKey: streamKey },
+    {
+      reconnectKey: streamKey,
+      onEvent: (evt) => {
+        // G-01 fix: handle HITL events immediately from SSE (no polling delay)
+        if (evt.type === 'waiting_approval' || evt.type === 'tool_call_pending_approval') {
+          setSseHitlRequest({ requestId: String(evt.request_id ?? ''), action: String(evt.action ?? evt.step ?? ''), status: 'waiting' });
+        }
+        if (evt.type === 'approval_granted' || evt.type === 'hitl_approved') {
+          setSseHitlRequest(prev => prev ? { ...prev, status: 'approved' } : null);
+          setTimeout(() => setSseHitlRequest(null), 3000);
+        }
+        if (evt.type === 'hitl_rejected') {
+          setSseHitlRequest(prev => prev ? { ...prev, status: 'rejected' } : null);
+          setTimeout(() => setSseHitlRequest(null), 3000);
+        }
+        if (evt.type === 'guardrail_rejected' || evt.type === 'tool_call_denied') {
+          setSseGuardrail({ rule: String(evt.rule ?? evt.reason ?? 'policy violation') });
+          setTimeout(() => setSseGuardrail(null), 8000);
+        }
+      },
+    },
   );
 
   // Fetch persisted event log — used to populate Execution tab when SSE has no events
@@ -996,11 +1026,11 @@ export function GoalDetailPage() {
                 className="w-full px-3 py-2 text-sm border border-orange-300 rounded-lg bg-background resize-none focus:outline-none focus:ring-2 focus:ring-orange-400"
               />
               <div className="flex gap-2">
-                <button onClick={() => approveMutation.mutate()} disabled={approveMutation.isPending} className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-[#F1F5F9] text-sm rounded-lg hover:bg-green-700 disabled:opacity-50">
+                <button onClick={() => approveMutation.mutate()} disabled={approveMutation.isPending} className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 disabled:opacity-50">
                   {approveMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <CheckCircle className="h-3.5 w-3.5" aria-hidden="true" />}
                   Approve
                 </button>
-                <button onClick={() => rejectMutation.mutate()} disabled={rejectMutation.isPending} className="flex items-center gap-1.5 px-4 py-2 bg-red-600 text-[#F1F5F9] text-sm rounded-lg hover:bg-red-700 disabled:opacity-50">
+                <button onClick={() => rejectMutation.mutate()} disabled={rejectMutation.isPending} className="flex items-center gap-1.5 px-4 py-2 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 disabled:opacity-50">
                   <XCircle className="h-3.5 w-3.5" aria-hidden="true" /> Reject
                 </button>
               </div>
@@ -1061,9 +1091,37 @@ export function GoalDetailPage() {
         </div>
       )}
 
-      {/* Execution — terminal-style */}
+      {/* Execution — Neural graph + terminal */}
       {activeTab === "execution" && (
         <div id="goal-tabpanel-execution" role="tabpanel" aria-labelledby="goal-tab-execution" className="space-y-3">
+          {/* SSE-driven HITL gate (G-01 fix) */}
+          {sseHitlRequest && (
+            <HITLGateNode
+              action={sseHitlRequest.action}
+              status={sseHitlRequest.status}
+              className="mb-2"
+            />
+          )}
+          {/* SSE-driven guardrail shield */}
+          {sseGuardrail && (
+            <div className="flex justify-center mb-2">
+              <GuardrailShield ruleName={sseGuardrail.rule} visible={!!sseGuardrail} />
+            </div>
+          )}
+          {/* Token waterfall while streaming */}
+          {streamingToken && (
+            <TokenWaterfall
+              stepName={streamingToken.step}
+              tokens={streamingToken.cumulative}
+              isActive
+              className="mb-2"
+            />
+          )}
+          {/* Neural execution graph */}
+          {events.length > 0 && (
+            <GoalExecutionGraph events={events} className="mb-3" />
+          )}
+          {/* Terminal log (existing) */}
           <TerminalPanel
             events={events}
             goalStatus={goal.status}

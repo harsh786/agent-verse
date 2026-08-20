@@ -1,316 +1,386 @@
-"""FastAPI router for Voice — STT transcription and goal refinement.
+"""Voice OS router — STT, TTS, streaming, greeting, persona.
 
-All endpoints:
-  - Require tenant authentication via TenantMiddleware
-  - Return RFC 7807 errors on failure
-  - Include operation_id for OpenAPI
+Endpoints:
+  GET  /v1/voice/status                    — provider readiness
+  POST /v1/voice/transcribe               — audio → transcript (native STT)
+  POST /v1/voice/speak                    — text → WAV audio (native TTS)
+  GET  /v1/voice/greeting/{org_id}        — spoken login greeting with real org stats
+  POST /v1/voice/persona/{org_id}         — upload org voice persona (D-5 cloning)
+  DEL  /v1/voice/persona/{org_id}         — delete org voice persona
+  WS   /v1/voice/stream/{org_id}          — real-time bidirectional voice session
+
+Differentiators:
+  D-1: Voice-to-Mission; D-2: WYWA digest; D-3: Intent Router;
+  D-4: Voice-driven approval; D-5: Multi-language; D-7: Real org health
 """
 from __future__ import annotations
 
+import io
 import os
 from typing import Any
 from uuid import uuid4
 
-import httpx
 import structlog
-from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile, status
+from fastapi import (
+    APIRouter, File, Header, HTTPException, Query, Request,
+    UploadFile, WebSocket, status,
+)
+from fastapi.responses import StreamingResponse
 from opentelemetry import trace
-from pydantic import BaseModel, Field
 
-log = structlog.get_logger(__name__)
+from app.voice.greeting import jurisdiction_to_language, synthesize_greeting
+from app.voice.schemas import PersonaResponse, SpeakRequest, TranscribeResponse, VoiceStatusResponse
+from app.voice.streaming import VoiceStreamingSession
+from app.voice.stt_engine import transcribe
+from app.voice.tts_engine import SAMPLE_RATE, synthesize
+
+log    = structlog.get_logger(__name__)
 tracer = trace.get_tracer(__name__)
-
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
 
-
-# ── Schemas ───────────────────────────────────────────────────────────────────
-
-class TranscribeResponse(BaseModel):
-    transcript: str
-    confidence: float = Field(ge=0.0, le=1.0)
-    language: str = "en"
-
-
-class GoalRefinementRequest(BaseModel):
-    transcript: str = Field(min_length=1, max_length=4096, description="Raw spoken text")
-    org_id: str | None = Field(default=None, description="Organisation context for goal refinement")
-
-
-class GoalRefinementResponse(BaseModel):
-    goal: str = Field(description="Refined mission goal suitable for submission")
-    confidence: float = Field(ge=0.0, le=1.0)
-    suggested_priority: str = Field(
-        default="medium",
-        description="Suggested priority: low | medium | high | critical",
-    )
-    raw_transcript: str
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _require_tenant(request: Request) -> Any:
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "type": "unauthorized",
-                "title": "Unauthorized",
-                "status": 401,
-                "detail": "Missing or invalid API key",
-            },
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail={
+            "type": "unauthorized", "title": "Unauthorized", "status": 401,
+            "detail": "Missing or invalid API key",
+        })
     return ctx
+
+
+def _tenant_id(ctx: Any) -> str:
+    return str(getattr(ctx, "tenant_id", None) or getattr(ctx, "id", ctx))
 
 
 def _request_id() -> str:
     return str(uuid4())
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
-
-@router.post(
-    "/transcribe",
-    operation_id="voice_transcribe",
-    summary="Convert audio blob to text transcript (STT)",
-    response_model=TranscribeResponse,
-    status_code=status.HTTP_200_OK,
-)
-async def voice_transcribe(
-    request: Request,
-    audio: UploadFile = File(description="Audio file (wav/webm/ogg/mp4, max 10 MB)"),
-    x_request_id: str = Header(default_factory=_request_id),
-) -> TranscribeResponse:
-    """Transcribe an uploaded audio clip using the configured STT backend.
-
-    When no STT backend is configured (``WHISPER_API_KEY`` / ``ASSEMBLY_AI_KEY``
-    absent) returns a stub with ``confidence=0`` so the caller knows to fall back
-    to the browser's Web Speech API.
-    """
-    with tracer.start_as_current_span("voice.transcribe") as span:
-        ctx = _require_tenant(request)
-        tenant_id: str = getattr(ctx, "tenant_id", str(ctx))
-        span.set_attribute("tenant_id", tenant_id)
-        span.set_attribute("request_id", x_request_id)
-
-        # Size guard (10 MB)
-        content = await audio.read()
-        if len(content) > 10 * 1024 * 1024:
-            raise HTTPException(
-                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                detail={
-                    "type": "file-too-large",
-                    "title": "Audio too large",
-                    "status": 413,
-                    "detail": "Audio file must be ≤ 10 MB",
-                    "request_id": x_request_id,
-                },
-            )
-
-        span.set_attribute("audio_bytes", len(content))
-        span.set_attribute("audio_content_type", audio.content_type or "unknown")
-
-        try:
-            transcript = await _call_stt_backend(content, audio.content_type or "audio/webm")
-        except Exception as exc:
-            log.error("voice.transcribe.failed", tenant_id=tenant_id, error=str(exc))
-            span.record_exception(exc)
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail={
-                    "type": "stt-error",
-                    "title": "Transcription failed",
-                    "status": 502,
-                    "detail": str(exc),
-                    "request_id": x_request_id,
-                },
-            ) from exc
-
-        log.info("voice.transcribe.complete", tenant_id=tenant_id, chars=len(transcript.transcript))
-        return transcript
-
-
-@router.post(
-    "/goal",
-    operation_id="voice_refine_goal",
-    summary="Refine a raw voice transcript into a mission goal",
-    response_model=GoalRefinementResponse,
-    status_code=status.HTTP_200_OK,
-)
-async def voice_refine_goal(
-    body: GoalRefinementRequest,
-    request: Request,
-    x_request_id: str = Header(default_factory=_request_id),
-) -> GoalRefinementResponse:
-    """Use the LLM provider to turn spoken text into a clean, actionable mission
-    goal.  If no LLM provider is available, returns the transcript unchanged.
-    """
-    with tracer.start_as_current_span("voice.goal_refine") as span:
-        ctx = _require_tenant(request)
-        tenant_id: str = getattr(ctx, "tenant_id", str(ctx))
-        span.set_attribute("tenant_id", tenant_id)
-        span.set_attribute("request_id", x_request_id)
-        span.set_attribute("transcript_len", len(body.transcript))
-
-        try:
-            refined = await _call_goal_refinement(body.transcript, body.org_id, tenant_id)
-        except Exception as exc:
-            log.warning("voice.goal_refine.fallback", tenant_id=tenant_id, error=str(exc))
-            # Graceful degradation — return transcript as-is
-            refined = GoalRefinementResponse(
-                goal=body.transcript,
-                confidence=0.5,
-                suggested_priority="medium",
-                raw_transcript=body.transcript,
-            )
-
-        span.set_attribute("goal_len", len(refined.goal))
-        log.info(
-            "voice.goal_refine.complete",
-            tenant_id=tenant_id,
-            priority=refined.suggested_priority,
-        )
-        return refined
-
-
-# ── STT / LLM backends (pluggable) ───────────────────────────────────────────
-
-async def _call_stt_backend(audio_bytes: bytes, content_type: str) -> TranscribeResponse:
-    """Delegate to a real STT service when configured; otherwise return stub.
-
-    Supported backends (resolved via env vars in priority order):
-      1. OpenAI Whisper  (``OPENAI_API_KEY`` present)
-      2. AssemblyAI      (``ASSEMBLY_AI_KEY`` present)
-      3. Stub            (returns empty transcript, confidence=0)
-    """
-
-    if os.getenv("OPENAI_API_KEY"):
-        return await _whisper_transcribe(audio_bytes, content_type)
-
-    if os.getenv("ASSEMBLY_AI_KEY"):
-        return await _assemblyai_transcribe(audio_bytes)
-
-    # No STT configured — browser handles transcription client-side
-    return TranscribeResponse(transcript="", confidence=0.0, language="en")
-
-
-async def _whisper_transcribe(audio_bytes: bytes, content_type: str) -> TranscribeResponse:
-    """Call OpenAI Whisper-1 for transcription."""
-    import io
-
-    ext_map = {
-        "audio/webm": "webm",
-        "audio/wav": "wav",
-        "audio/mp4": "mp4",
-        "audio/ogg": "ogg",
-    }
-    ext = ext_map.get(content_type, "webm")
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            "https://api.openai.com/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
-            files={"file": (f"audio.{ext}", io.BytesIO(audio_bytes), content_type)},
-            data={"model": "whisper-1"},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        text: str = data.get("text", "")
-        return TranscribeResponse(
-            transcript=text, confidence=0.95, language=data.get("language", "en")
-        )
-
-
-async def _assemblyai_transcribe(audio_bytes: bytes) -> TranscribeResponse:
-    """Upload to AssemblyAI and poll for transcript."""
-    import asyncio
-
-    api_key = os.environ["ASSEMBLY_AI_KEY"]
-    headers = {"authorization": api_key}
-    async with httpx.AsyncClient(timeout=60) as client:
-        # 1 — upload
-        up = await client.post(
-            "https://api.assemblyai.com/v2/upload",
-            headers={**headers, "content-type": "application/octet-stream"},
-            content=audio_bytes,
-        )
-        up.raise_for_status()
-        upload_url: str = up.json()["upload_url"]
-
-        # 2 — submit transcript job
-        sub = await client.post(
-            "https://api.assemblyai.com/v2/transcript",
-            headers=headers,
-            json={"audio_url": upload_url},
-        )
-        sub.raise_for_status()
-        job_id: str = sub.json()["id"]
-
-        # 3 — poll (max 60 s)
-        import asyncio
-
-        for _ in range(30):
-            await asyncio.sleep(2)
-            poll = await client.get(
-                f"https://api.assemblyai.com/v2/transcript/{job_id}",
-                headers=headers,
-            )
-            poll.raise_for_status()
-            data = poll.json()
-            if data["status"] == "completed":
-                return TranscribeResponse(
-                    transcript=data.get("text", ""), confidence=0.9, language="en"
-                )
-            if data["status"] == "error":
-                raise RuntimeError(data.get("error", "AssemblyAI error"))
-
-    raise TimeoutError("AssemblyAI transcription timed out")
-
-
-async def _call_goal_refinement(
-    transcript: str, org_id: str | None, tenant_id: str
-) -> GoalRefinementResponse:
-    """Use the LLM provider to refine a transcript into a mission goal."""
-    from app.main import app as _app
-
-    provider = getattr(_app.state, "provider", None)
-    if provider is None:
-        return GoalRefinementResponse(
-            goal=transcript.strip(),
-            confidence=0.5,
-            suggested_priority="medium",
-            raw_transcript=transcript,
-        )
-
-    from app.providers.base import CompletionRequest, Message
-
-    system = (
-        "You are a mission planning assistant. "
-        "Convert the following spoken transcript into a concise, actionable mission goal. "
-        "Return JSON: {\"goal\": \"...\", \"priority\": \"low|medium|high|critical\"}"
-    )
-    req = CompletionRequest(
-        messages=[
-            Message(role="system", content=system),
-            Message(role="user", content=transcript),
-        ],
-        max_tokens=256,
-        temperature=0.2,
-    )
-    result = await provider.complete(req)
-    import json as _json
-
+@router.get("/status", operation_id="voice_status", response_model=VoiceStatusResponse)
+async def voice_status(request: Request) -> VoiceStatusResponse:
+    _require_tenant(request)
     try:
-        parsed = _json.loads(result.content)
-        return GoalRefinementResponse(
-            goal=parsed.get("goal", transcript.strip()),
-            confidence=0.9,
-            suggested_priority=parsed.get("priority", "medium"),
-            raw_transcript=transcript,
+        from app.voice.providers import get_capabilities
+        caps = await get_capabilities()
+        return VoiceStatusResponse(
+            stt_status=("ready" if caps["stt"]["ready"] else "idle"),
+            tts_status=("ready" if caps["tts"]["ready"] else "idle"),
+            stt_provider=caps["stt"]["provider"], tts_provider=caps["tts"]["provider"],
+            stt_model=os.getenv("VOICE_STT_MODEL", "large-v3-turbo"),
+            tts_model=os.getenv("VOICE_TTS_MODEL", "k2-fsa/OmniVoice"),
+            device=os.getenv("VOICE_DEVICE", "cpu"),
         )
     except Exception:
-        return GoalRefinementResponse(
-            goal=result.content.strip() or transcript.strip(),
-            confidence=0.7,
-            suggested_priority="medium",
-            raw_transcript=transcript,
+        from app.voice import stt_engine, tts_engine
+        return VoiceStatusResponse(
+            stt_status="ready" if stt_engine._model else "idle",
+            tts_status="ready" if tts_engine._model else "idle",
+            stt_model=os.getenv("VOICE_STT_MODEL", "large-v3-turbo"),
+            tts_model=os.getenv("VOICE_TTS_MODEL", "k2-fsa/OmniVoice"),
+            device=os.getenv("VOICE_DEVICE", "cpu"),
         )
+
+
+@router.post("/transcribe", operation_id="voice_transcribe",
+             response_model=TranscribeResponse, status_code=200)
+async def voice_transcribe(
+    request: Request,
+    audio: UploadFile = File(description="WAV/WebM/OGG/MP4 <= 25 MB"),
+    x_request_id: str = Header(default_factory=_request_id),
+) -> TranscribeResponse:
+    with tracer.start_as_current_span("voice.api.transcribe") as span:
+        ctx = _require_tenant(request)
+        tenant_id = _tenant_id(ctx)
+        span.set_attribute("tenant_id", tenant_id)
+        content = await audio.read()
+        max_mb = int(os.getenv("VOICE_MAX_AUDIO_MB", "25"))
+        if len(content) > max_mb * 1024 * 1024:
+            raise HTTPException(status_code=413, detail={
+                "type": "file-too-large", "status": 413,
+                "detail": f"Audio must be <= {max_mb} MB", "request_id": x_request_id,
+            })
+        try:
+            result = await transcribe(content, audio.content_type or "audio/wav")
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail={
+                "type": "stt-error", "status": 502, "detail": str(exc),
+                "request_id": x_request_id,
+            }) from exc
+        log.info("voice.transcribe.ok", tenant_id=tenant_id, chars=len(result["transcript"]))
+        return TranscribeResponse(**result)
+
+
+@router.post("/speak", operation_id="voice_speak", status_code=200)
+async def voice_speak(
+    body: SpeakRequest, request: Request,
+    x_request_id: str = Header(default_factory=_request_id),
+) -> StreamingResponse:
+    with tracer.start_as_current_span("voice.api.speak") as span:
+        ctx = _require_tenant(request)
+        tenant_id = _tenant_id(ctx)
+        span.set_attribute("text_len", len(body.text))
+        ref_audio, ref_text = None, None
+        if body.use_org_persona and body.org_id:
+            ref_audio, ref_text = await _get_persona(request.app, tenant_id, body.org_id)
+        try:
+            wav = await synthesize(
+                body.text, ref_audio=ref_audio, ref_text=ref_text,
+                language=body.language, speed=body.speed,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail={
+                "type": "tts-error", "status": 502, "detail": str(exc),
+                "request_id": x_request_id,
+            }) from exc
+        return _wav_response(wav, x_request_id)
+
+
+@router.get("/greeting/{org_id}", operation_id="voice_greeting", status_code=200)
+async def voice_greeting(
+    org_id: str, request: Request,
+    user_name: str = Query(default="there", max_length=120),
+    language: str = Query(default="", max_length=10),
+    x_request_id: str = Header(default_factory=_request_id),
+) -> StreamingResponse:
+    with tracer.start_as_current_span("voice.api.greeting") as span:
+        ctx = _require_tenant(request)
+        tenant_id = _tenant_id(ctx)
+        span.set_attribute("org_id", org_id)
+
+        # D-5: Auto-detect language from org jurisdiction
+        eff_lang = language or "en"
+        if not language:
+            try:
+                sf = getattr(request.app.state, "db_session_factory", None)
+                if sf:
+                    from app.db.rls import sqlalchemy_rls_context
+                    from app.org.service import OrgService
+                    async with sf() as session:
+                        async with session.begin():
+                            async with sqlalchemy_rls_context(session, tenant_id):
+                                org = await OrgService(session=session, tenant_id=tenant_id).get_organization(org_id)
+                                if org:
+                                    eff_lang = jurisdiction_to_language(getattr(org, "jurisdiction", None))
+            except Exception:
+                pass
+
+        cache_key = f"voice:greeting:{tenant_id}:{org_id}:{eff_lang}"
+        cached = await _redis_get(request.app, cache_key)
+        if cached:
+            return _wav_response(cached, x_request_id)
+
+        health = await _fetch_org_health(request.app, org_id, tenant_id)
+        wywa_items, wywa_summary = await _fetch_wywa(request.app, org_id, tenant_id)
+        ref_audio, ref_text = await _get_persona(request.app, tenant_id, org_id)
+
+        try:
+            wav = await synthesize_greeting(
+                health, user_name, ref_audio=ref_audio, ref_text=ref_text,
+                language=eff_lang, wywa_items=wywa_items, wywa_summary=wywa_summary,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail={
+                "type": "tts-error", "status": 502, "detail": str(exc),
+                "request_id": x_request_id,
+            }) from exc
+
+        ttl = int(os.getenv("VOICE_GREETING_CACHE_TTL", "300"))
+        await _redis_set(request.app, cache_key, wav, ttl)
+        span.set_attribute("wav_bytes", len(wav))
+        return _wav_response(wav, x_request_id)
+
+
+@router.post("/persona/{org_id}", operation_id="voice_persona_upload",
+             response_model=PersonaResponse)
+async def voice_persona_upload(
+    org_id: str, request: Request,
+    audio: UploadFile = File(description="WAV reference audio 3-30s"),
+    ref_text: str = Query(description="Transcript of the reference audio"),
+    language: str = Query(default="en"),
+    x_request_id: str = Header(default_factory=_request_id),
+) -> PersonaResponse:
+    ctx = _require_tenant(request)
+    tenant_id = _tenant_id(ctx)
+    content = await audio.read()
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail={"type": "file-too-large", "status": 413,
+            "detail": "Reference audio must be <= 5 MB"})
+    await _cache_persona(request.app, tenant_id, org_id, content, ref_text, language)
+    url = await _store_persona_audio(tenant_id, org_id, content)
+    import datetime
+    return PersonaResponse(org_id=org_id, tenant_id=tenant_id, ref_audio_url=url,
+        ref_text=ref_text, language=language,
+        created_at=datetime.datetime.utcnow().isoformat())
+
+
+@router.delete("/persona/{org_id}", operation_id="voice_persona_delete",
+               status_code=status.HTTP_204_NO_CONTENT)
+async def voice_persona_delete(org_id: str, request: Request) -> None:
+    ctx = _require_tenant(request)
+    await _delete_persona(request.app, _tenant_id(ctx), org_id)
+
+
+@router.websocket("/stream/{org_id}")
+async def voice_stream(ws: WebSocket, org_id: str,
+                       api_key: str = Query(default="")) -> None:
+    """D-1/D-3/D-4: Real-time voice session — speak goals, approve missions."""
+    await ws.accept()
+    tenant_id = await _ws_auth(ws, api_key)
+    if not tenant_id:
+        await ws.close(code=4001, reason="Unauthorized")
+        return
+
+    # D-5: Auto-detect language
+    language = "en"
+    try:
+        sf = getattr(ws.app.state, "db_session_factory", None)   # type: ignore[attr-defined]
+        if sf:
+            from app.db.rls import sqlalchemy_rls_context
+            from app.org.service import OrgService
+            async with sf() as session:
+                async with session.begin():
+                    async with sqlalchemy_rls_context(session, tenant_id):
+                        org = await OrgService(session=session, tenant_id=tenant_id).get_organization(org_id)
+                        if org:
+                            language = jurisdiction_to_language(getattr(org, "jurisdiction", None))
+    except Exception:
+        pass
+
+    sf         = getattr(ws.app.state, "db_session_factory", None)   # type: ignore[attr-defined]
+    ref_audio, ref_text = await _get_persona(ws.app, tenant_id, org_id)   # type: ignore[attr-defined]
+    sess = VoiceStreamingSession(ws, tenant_id=tenant_id, org_id=org_id,
+        session_factory=sf, ref_audio=ref_audio, ref_text=ref_text, language=language)
+    await sess.run()
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+async def _fetch_org_health(app: Any, org_id: str, tenant_id: str) -> dict:
+    sf = getattr(getattr(app, "state", None), "db_session_factory", None)
+    if not sf:
+        return _fallback_health(org_id)
+    try:
+        from app.db.rls import sqlalchemy_rls_context
+        from app.org.service import OrgService
+        async with sf() as session:
+            async with session.begin():
+                async with sqlalchemy_rls_context(session, tenant_id):
+                    return await OrgService(session=session, tenant_id=tenant_id).get_org_health(org_id)
+    except Exception as exc:
+        log.warning("voice.health_fetch_failed", error=str(exc))
+        return _fallback_health(org_id)
+
+
+def _fallback_health(org_id: str) -> dict:
+    return {"org_id": org_id, "org_name": "your organisation", "overall_health": "healthy",
+            "active_missions": 0, "active_teams": 0, "pending_approvals": 0, "items_needing_attention": 0}
+
+
+async def _fetch_wywa(app: Any, org_id: str, tenant_id: str) -> tuple[int, str]:
+    sf    = getattr(getattr(app, "state", None), "db_session_factory", None)
+    redis = getattr(getattr(app, "state", None), "redis", None)
+    if not sf:
+        return 0, ""
+    try:
+        from app.db.rls import sqlalchemy_rls_context
+        from app.org.digest import DigestGenerator
+        async with sf() as session:
+            async with sqlalchemy_rls_context(session, tenant_id):
+                digest = await DigestGenerator(session=session, redis=redis).generate(org_id, tenant_id)
+                count  = len(getattr(digest, "missions_completed", [])) + len(getattr(digest, "pending_approvals", []))
+                return count, (f"{count} updates while you were away." if count else "")
+    except Exception as exc:
+        log.debug("voice.wywa_failed", error=str(exc))
+        return 0, ""
+
+
+async def _get_persona(app: Any, tid: str, org_id: str) -> tuple[bytes | None, str | None]:
+    try:
+        redis = getattr(getattr(app, "state", None), "redis", None)
+        if not redis:
+            return None, None
+        import base64
+        data = await redis.hgetall(f"voice:persona:{tid}:{org_id}")
+        if not data:
+            return None, None
+        audio = base64.b64decode(data[b"audio"]) if b"audio" in data else None
+        text  = data.get(b"text", b"").decode()
+        return audio, text or None
+    except Exception:
+        return None, None
+
+
+async def _cache_persona(app: Any, tid: str, org_id: str, audio: bytes, ref_text: str, lang: str) -> None:
+    try:
+        redis = getattr(getattr(app, "state", None), "redis", None)
+        if not redis:
+            return
+        import base64
+        await redis.hset(f"voice:persona:{tid}:{org_id}", mapping={
+            "audio": base64.b64encode(audio).decode(), "text": ref_text, "language": lang,
+        })
+    except Exception:
+        pass
+
+
+async def _delete_persona(app: Any, tid: str, org_id: str) -> None:
+    try:
+        redis = getattr(getattr(app, "state", None), "redis", None)
+        if redis:
+            await redis.delete(f"voice:persona:{tid}:{org_id}")
+    except Exception:
+        pass
+
+
+async def _redis_get(app: Any, key: str) -> bytes | None:
+    try:
+        redis = getattr(getattr(app, "state", None), "redis", None)
+        return await redis.get(key) if redis else None
+    except Exception:
+        return None
+
+
+async def _redis_set(app: Any, key: str, value: bytes, ttl: int) -> None:
+    try:
+        redis = getattr(getattr(app, "state", None), "redis", None)
+        if redis:
+            await redis.setex(key, ttl, value)
+    except Exception:
+        pass
+
+
+async def _store_persona_audio(tid: str, org_id: str, audio: bytes) -> str:
+    try:
+        import boto3
+        s3 = boto3.client("s3", endpoint_url=os.getenv("S3_ENDPOINT_URL"),
+            aws_access_key_id=os.getenv("S3_ACCESS_KEY"),
+            aws_secret_access_key=os.getenv("S3_SECRET_KEY"))
+        bucket = os.getenv("VOICE_PERSONA_BUCKET", "agentverse-voice-personas")
+        key    = f"{tid}/{org_id}/ref.wav"
+        s3.put_object(Bucket=bucket, Key=key, Body=audio, ContentType="audio/wav")
+        return f"s3://{bucket}/{key}"
+    except Exception:
+        return f"local://{tid}/{org_id}/ref.wav"
+
+
+async def _ws_auth(ws: WebSocket, api_key: str) -> str | None:
+    if not api_key:
+        return None
+    try:
+        ts = getattr(getattr(ws.app, "state", None), "tenant_service", None)   # type: ignore[attr-defined]
+        if ts is None:
+            return api_key   # dev mode
+        tenant = await ts.get_by_api_key(api_key)
+        return str(tenant.id) if tenant else None
+    except Exception:
+        return None
+
+
+def _wav_response(wav: bytes, rid: str) -> StreamingResponse:
+    return StreamingResponse(io.BytesIO(wav), media_type="audio/wav", headers={
+        "Content-Length": str(len(wav)),
+        "Content-Disposition": "inline; filename=speech.wav",
+        "X-Sample-Rate": str(SAMPLE_RATE),
+        "X-Request-Id": rid, "Cache-Control": "no-cache",
+    })

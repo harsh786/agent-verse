@@ -75,17 +75,42 @@ class Settings(BaseSettings):
     google_api_key: str = ""
     voyage_api_key: str = ""
 
+    # --- Ollama local inference -----------------------------------------------
+    ollama_base_url: str = ""          # e.g. http://localhost:11434
+    ollama_default_model: str = "qwen3.8:latest"
+    ollama_embed_model: str = "qwen3-embedding:latest"
+    ollama_ocr_model: str = "glm-ocr:latest"
+    ollama_auto_pull: bool = False
+
+    # --- Embedding vector dimension (must match the embed model) --------------
+    embedding_dim: int = 2048          # qwen3-embedding uses 2048-d vectors
+
     # --- default model names per task type (override via env vars) ---
-    default_planning_model: str = "gpt-5.2"
-    default_planning_provider: str = "openai"
-    default_execution_model: str = "gpt-4o-mini"
-    default_execution_provider: str = "openai"
-    default_verification_model: str = "gpt-4o-mini"
-    default_verification_provider: str = "openai"
-    default_summarization_model: str = "claude-haiku-3-5"
-    default_summarization_provider: str = "anthropic"
-    default_classification_model: str = "gpt-4o-mini"
-    default_classification_provider: str = "openai"
+    default_planning_model: str = "qwen3.8:latest"
+    default_planning_provider: str = "ollama"
+    default_execution_model: str = "qwen3.8:latest"
+    default_execution_provider: str = "ollama"
+    default_verification_model: str = "qwen3.8:latest"
+    default_verification_provider: str = "ollama"
+    default_summarization_model: str = "qwen3.8:latest"
+    default_summarization_provider: str = "ollama"
+    default_classification_model: str = "qwen3.8:latest"
+    default_classification_provider: str = "ollama"
+
+    # --- Voice OS configuration ---------------------------------------------------
+    voice_enabled:            bool       = True
+    voice_device:             str        = "cpu"           # "cpu" | "cuda"
+    voice_stt_provider:       str        = "faster_whisper"
+    voice_tts_provider:       str        = "kokoro"        # kokoro | omnivoice | elevenlabs | openai_tts | azure_tts
+    voice_stt_model:          str        = "large-v3-turbo"
+    voice_tts_model:          str        = "k2-fsa/OmniVoice"
+    model_cache_dir:          str        = "/app/models"
+    voice_persona_bucket:     str        = "agentverse-voice-personas"
+    voice_greeting_cache_ttl: int        = 300
+    voice_max_audio_mb:       int        = 25
+    s3_endpoint_url:          str | None = None
+    s3_access_key:            str | None = None
+    s3_secret_key:            str | None = None
 
     # --- feature flags ---
     civilization_enabled: bool = False

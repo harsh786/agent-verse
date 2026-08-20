@@ -58,6 +58,12 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "sentence-transformers>=5.6.0",
     "simpleeval>=1.0.7",
+    # Voice OS — native STT + TTS
+    "faster-whisper>=1.1.0",
+    "soundfile>=0.12.1",
+    "numpy>=1.26",
+    "kokoro-onnx>=0.3.4",
+    "misaki[en]>=0.7.0",
 ]
 
 [project.scripts]

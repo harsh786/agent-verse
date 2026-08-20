@@ -119,7 +119,7 @@ def _detect_providers() -> list[ProviderConfig]:
                 provider_type="ollama",
                 base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
                 display_name="Ollama (local)",
-                models=["qwen3:8b", "qwen2.5-coder:7b", "nomic-embed-text"],
+                models=["qwen3.8:latest", "qwen3-embedding:latest", "glm-ocr:latest"],
             )
         )
 
@@ -283,7 +283,9 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
 
         return OllamaProvider(
             base_url=cfg.base_url or "http://localhost:11434",
-            default_model=configured_model or "qwen3:8b",
+            default_model=configured_model or "qwen3.8:latest",
+            default_embed_model="qwen3-embedding:latest",
+            default_ocr_model="glm-ocr:latest",
         )
 
     elif ptype == "groq":

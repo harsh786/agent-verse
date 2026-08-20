@@ -1,15 +1,17 @@
-"""Voice module — Speech-to-Text / Text-to-Speech for mission creation.
+"""Voice OS module — Native STT/TTS/Streaming for AgentVerse.
+
+Providers:
+  STT: faster-whisper (default) | whisper_api | assemblyai
+  TTS: kokoro (default) | omnivoice | elevenlabs | openai_tts | azure_tts
 
 Endpoints:
-  POST /v1/voice/transcribe  - convert audio blob -> text transcript
-  POST /v1/voice/goal        - refine a raw transcript into a mission goal
-
-The module is intentionally thin: it delegates to the LLM provider for
-goal refinement and to an STT backend (Whisper-compatible) for transcription.
-When no STT key is configured it returns a no-op stub so the UI degrades
-gracefully (the browser's Web Speech API handles transcription client-side).
+  GET  /v1/voice/status
+  POST /v1/voice/transcribe
+  POST /v1/voice/speak
+  GET  /v1/voice/greeting/{org_id}
+  POST /v1/voice/persona/{org_id}
+  WS   /v1/voice/stream/{org_id}
 """
-
 from .router import router
 
 __all__ = ["router"]
