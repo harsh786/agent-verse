@@ -1632,6 +1632,12 @@ def create_app(
                 from app.voice.providers import warmup_providers as _voice_warmup
                 _voice_asyncio.create_task(_voice_warmup())
                 logger.info("voice_providers_warmup_scheduled")
+                # D-6: Start proactive voice alert manager
+                from app.voice.alerts import VoiceAlertManager as _VAM
+                _alert_mgr = _VAM(redis=getattr(app.state, "redis", None))
+                await _alert_mgr.start()
+                app.state.voice_alert_manager = _alert_mgr
+                logger.info("voice_alert_manager_started")
             except Exception as _voice_exc:
                 logger.warning("voice_providers_warmup_skipped", error=str(_voice_exc))
 

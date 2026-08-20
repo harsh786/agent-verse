@@ -53,8 +53,9 @@ class IntentResult:
 _CREATE_PATTERNS  = [
     r"\b(launch|start|create|initiate|kick off|begin|run)\b.*\b(mission|campaign|project|initiative|task)\b",
     r"\b(launch|start|create|initiate)\b\s+(.+)",
-    r"\bI want (?:you )?to\b.+",
+    r"\bi want (?:you )?to\b.+",
     r"\blet'?s\b.*\b(do|work on|build|make)\b",
+    r"\b(build|make)\b.+\b(for|to|that)\b",
 ]
 _STATUS_PATTERNS  = [r"\bstatus\b", r"\bhow is\b", r"\bupdate on\b", r"\bwhat'?s happening\b"]
 _APPROVE_PATTERNS = [r"\bapprove\b", r"\bgo ahead\b", r"\bapproved\b", r"\byes,? do it\b", r"\bconfirm\b"]
