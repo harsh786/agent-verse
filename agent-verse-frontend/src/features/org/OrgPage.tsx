@@ -37,7 +37,7 @@ import { OrgHistoryNav }         from './components/OrgHistoryNav';
 import { DigitalTwinPanel }      from './components/DigitalTwinPanel';
 import { CommandHistoryPanel }   from './components/CommandHistoryPanel';
 import { ObsidianVaultExplorer } from './components/ObsidianVaultExplorer';
-import { AgentConstellation }    from './components/AgentConstellation';
+import { MissionOrbit }           from './components/MissionOrbit';
 import { LoginGreetingPlayer }   from '@/components/voice/LoginGreetingPlayer';
 import { useVoiceAlerts }        from '@/lib/voice/useVoiceAlerts';
 import { useOrganization, useOrgHealth, useMissions } from './hooks/useOrg';
@@ -442,17 +442,17 @@ export function OrgPage() {
               )}
             </AnimatePresence>
 
-            {/* ── Agent Constellation Orbit ─────────────────────── */}
+            {/* ── Mission Orbit — glowing nodes for each active mission ── */}
             {activeMissions.length > 0 && (
-              <section className="p-4 border-b border-[#1E2535]" aria-label="Active agent constellation">
-                <h2 className="text-[11px] font-medium uppercase tracking-[0.08em] text-[#475569] mb-3 flex items-center gap-1.5">
-                  <Cpu className="h-3 w-3 text-[#00D4FF]" aria-hidden />
-                  <span className="text-[#00D4FF]">Live Agents</span>
-                </h2>
-                <AgentConstellation
-                  orgId={orgId}
-                  missions={activeMissions}
-                />
+              <section
+                className="flex flex-col items-center py-4 border-b border-[#1E2535]"
+                aria-label="Active mission orbit visualization"
+              >
+                <p className="text-[10px] font-medium uppercase tracking-[0.1em] text-[#00D4FF]/60 mb-2 flex items-center gap-1.5">
+                  <Cpu className="h-2.5 w-2.5" aria-hidden />
+                  {activeMissions.length} Active Mission{activeMissions.length !== 1 ? 's' : ''}
+                </p>
+                <MissionOrbit missions={activeMissions} />
               </section>
             )}
 
