@@ -48,7 +48,7 @@ export function OrgListPage() {
             AI Organizations
           </h1>
           <p className="text-[14px] text-[#94A3B8] mt-1">
-          isLoading ? 'Loading…' : `${orgList.length} organization${orgList.length !== 1 ? 's' : ''}`
+          {isLoading ? 'Loading…' : `${orgList.length} organization${orgList.length !== 1 ? 's' : ''}`}
           </p>
         </div>
         <button

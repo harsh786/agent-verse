@@ -29,11 +29,8 @@ export function useLoginGreeting({
   enabled  = true,
 }: UseLoginGreetingOpts) {
   const [isPlaying, setIsPlaying] = useState(false);
-  const [hasPlayed, setHasPlayed] = useState(() =>
-    typeof window !== 'undefined'
-      ? sessionStorage.getItem(SESSION_KEY(orgId)) === '1'
-      : false,
-  );
+  // Always play on each page load — don't block with sessionStorage
+  const [hasPlayed, setHasPlayed] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const reducedMotion =
@@ -60,7 +57,6 @@ export function useLoginGreeting({
     audio.onended  = () => {
       setIsPlaying(false);
       setHasPlayed(true);
-      sessionStorage.setItem(SESSION_KEY(orgId), '1');
       URL.revokeObjectURL(url);
     };
     audio.onerror = () => { setIsPlaying(false); URL.revokeObjectURL(url); };
