@@ -633,9 +633,9 @@ async def org_events_stream(
 )
 async def list_org_approvals(
     org_id: str,
+    request: Request,
     status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
-    request: Request = None,
     service: OrgService = Depends(get_org_service),
 ) -> dict:
     """G-04: Return approval requests for goals/missions within this org.
