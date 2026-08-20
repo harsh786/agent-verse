@@ -45,7 +45,13 @@ CHANNEL_LIMITS: dict[str, dict[str, Any]] = {
     "mcp":           {"limit": 200, "window": 3600},
     "a2a":           {"limit": 500, "window": 3600},
     "webhook":       {"limit": 300, "window": 3600},
-    "voice_webhook": {"limit": 20,  "window": 3600},
+    "voice_webhook":  {"limit": 20,  "window": 3600},
+    # Voice OS endpoint rate limits (spec Task 5.3)
+    "voice_transcribe": {"limit": 30, "window": 60},
+    "voice_speak":      {"limit": 20, "window": 60},
+    "voice_greeting":   {"limit": 10, "window": 60},
+    "voice_persona":    {"limit": 5,  "window": 60},
+    "voice_stream":     {"limit": 5,  "window": 300},  # 5 concurrent WS sessions
 }
 
 # Action-level limits (applied on top of channel limits)
