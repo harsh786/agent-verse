@@ -33,8 +33,8 @@ JURISDICTION_TO_LANG: dict[str, str] = {
     "korea": "ko", "kr": "ko",
     "italy": "it", "it": "it",
     "russia": "ru", "ru": "ru",
-    "arab": "ar", "uae": "ar", "sa": "ar",
-}
+    "arab": "ar", "uae": "ar", "sa": "ar",    "saudi arabia": "ar", "arabia": "ar",
+    "egypt": "ar", "egypt": "ar",}
 
 _TEMPLATES: dict[str, str] = {
     "healthy": (
@@ -118,12 +118,19 @@ def jurisdiction_to_language(jurisdiction: str | None) -> str:
     if not jurisdiction:
         return "en"
     j = jurisdiction.lower().strip()
-    # Use startswith or exact match to avoid substring false-positives (e.g. 'usa' matching 'sa')
-    for key, lang in JURISDICTION_TO_LANG.items():
+    # First try exact match (longest keys first to avoid short key hijacking)
+    sorted_keys = sorted(JURISDICTION_TO_LANG, key=len, reverse=True)
+    for key in sorted_keys:
         k = key.lower()
-        # Exact match or whole-word match
-        if j == k or j.startswith(k + ' ') or j.endswith(' ' + k) or f' {k} ' in f' {j} ':
-            return lang
+        # Exact match, starts with key, ends with key, or key appears as space-delimited token
+        if j == k:
+            return JURISDICTION_TO_LANG[key]
+        words = j.split()
+        if k in words or k == j:
+            return JURISDICTION_TO_LANG[key]
+        # multi-word key match (e.g. "saudi arabia")
+        if len(k.split()) > 1 and k in j:
+            return JURISDICTION_TO_LANG[key]
     return "en"
 
 

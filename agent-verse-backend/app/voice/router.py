@@ -16,6 +16,7 @@ Differentiators:
 from __future__ import annotations
 
 import io
+import json
 import os
 from typing import Any
 from uuid import uuid4
@@ -384,3 +385,47 @@ def _wav_response(wav: bytes, rid: str) -> StreamingResponse:
         "X-Sample-Rate": str(SAMPLE_RATE),
         "X-Request-Id": rid, "Cache-Control": "no-cache",
     })
+
+
+# ── GET /v1/voice/alerts/stream (D-6 Proactive Voice Alerts via SSE) ─────────
+
+@router.get(
+    "/alerts/stream",
+    operation_id="voice_alerts_stream",
+    summary="SSE stream of proactive TTS alerts (D-6) — mission failures, urgent approvals",
+)
+async def voice_alerts_stream(request: Request) -> StreamingResponse:
+    """D-6: Server-Sent Events stream of base64 PCM audio for proactive alerts.
+
+    Client subscribes once; receives JSON events:
+      {"event_type": "mission_failed", "text": "...", "chunks": ["<base64>", ...]}
+    """
+    ctx       = _require_tenant(request)
+    tenant_id = _tenant_id(ctx)
+
+    from app.voice.alerts import VoiceAlertManager
+    alert_mgr: VoiceAlertManager | None = getattr(request.app.state, "voice_alert_manager", None)
+    if alert_mgr is None:
+        # Lazy-create the manager if not in app.state (e.g. dev mode without full lifespan)
+        redis = getattr(getattr(request.app, "state", None), "redis", None)
+        alert_mgr = VoiceAlertManager(redis=redis)
+        await alert_mgr.start()
+        request.app.state.voice_alert_manager = alert_mgr
+
+    queue = alert_mgr.subscribe(tenant_id)
+
+    async def event_generator():
+        try:
+            while not await request.is_disconnected():
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"   # SSE heartbeat
+        finally:
+            alert_mgr.unsubscribe(tenant_id, queue)
+
+    import asyncio
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
