@@ -18,8 +18,6 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { Pagination } from "@/components/ui/Pagination";
 import { toast } from "@/stores/toast";
 
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
-import { JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 const STATUS_OPTIONS = ["all", "planning", "executing", "complete", "failed", "waiting_human"];
 
 type SortField = "created_at" | "status" | "goal";
@@ -193,10 +191,6 @@ export function GoalsListPage() {
   };
 
   return (
-    <JARVISPageShell>
-
-      {/* Accessibility: announce loading state */}
-      <div aria-live="polite" aria-atomic="true" className="sr-only">{isLoading ? "Loading…" : ""}</div>
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
@@ -206,7 +200,7 @@ export function GoalsListPage() {
         <button
           onClick={() => setShowTemplatePicker(true)}
           aria-label="Browse goal templates"
-          className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-border rounded-lg hover:bg-[#1A1F2E] hover:shadow-glow-electric transition-[background-color,box-shadow]"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-border rounded-lg hover:bg-muted transition-colors"
         >
           Browse goal templates
         </button>
@@ -395,13 +389,12 @@ export function GoalsListPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              <JARVISStagger>
               {paginatedGoals.map((goal) => (
-                <JARVISStaggerItem interactive key={goal.id}>
                 <tr
+                  key={goal.id}
                   onClick={() => navigate(`/goals/${goal.id}`)}
-                  className={`hover:bg-[#1A1F2E] cursor-pointer transition-colors ${
-                    selectedGoals.has(goal.id) ? 'bg-[rgba(0,212,255,0.05)]' : ''
+                  className={`hover:bg-accent/50 cursor-pointer transition-colors ${
+                    selectedGoals.has(goal.id) ? "bg-primary/5" : ""
                   }`}
                 >
                   {/* Fix 1: per-row checkbox */}
@@ -458,9 +451,7 @@ export function GoalsListPage() {
                     )}
                   </td>
                 </tr>
-                </JARVISStaggerItem>
               ))}
-              </JARVISStagger>
             </tbody>
           </table>
         )}
@@ -480,6 +471,5 @@ export function GoalsListPage() {
         />
       )}
     </div>
-    </JARVISPageShell>
   );
 }

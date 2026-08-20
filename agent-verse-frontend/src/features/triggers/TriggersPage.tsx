@@ -4,8 +4,6 @@ import { TriggerList } from './components/TriggerList';
 import { TriggerCreateModal } from './components/TriggerCreateModal';
 import { TriggerDLQPanel } from './components/TriggerDLQPanel';
 import { useTriggers } from './hooks';
-import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
-import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 type ActiveTab = 'all' | 'dlq';
 
@@ -28,7 +26,7 @@ export function TriggersPage() {
         </div>
         <button
           onClick={() => setShowCreate(true)}
-          className="inline-flex items-center gap-2 rounded-lg bg-[#00D4FF] text-[#00D4FF]-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
+          className="inline-flex items-center gap-2 rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
         >
           <Plus className="h-4 w-4" />
           New Trigger
@@ -51,7 +49,7 @@ export function TriggersPage() {
             onClick={() => setActiveTab(tab)}
             className={`px-4 py-2 text-sm font-medium rounded-t border-b-2 transition-colors ${
               activeTab === tab
-                ? 'border-[#00D4FF] text-[#00D4FF]'
+                ? 'border-primary text-primary'
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
           >
@@ -86,17 +84,12 @@ export function TriggersPage() {
 
 function StatCard({ label, value, icon }: { label: string; value: number | string; icon: string }) {
   return (
-    <JARVISPageShell>
-
-      {/* Accessibility: announce loading state */}
-      <div aria-live="polite" aria-atomic="true" className="sr-only"></div>
-    <JARVISStagger className="rounded-xl border border-border bg-card p-4">
+    <div className="rounded-xl border border-border bg-card p-4">
       <div className="flex items-center justify-between">
         <span className="text-xs text-muted-foreground font-medium uppercase tracking-wide">{label}</span>
         <span className="text-base">{icon}</span>
       </div>
       <div className="mt-2 text-2xl font-semibold tabular-nums">{value}</div>
-    </JARVISStagger>
-    </JARVISPageShell>
+    </div>
   );
 }

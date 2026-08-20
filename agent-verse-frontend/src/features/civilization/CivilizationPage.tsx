@@ -45,7 +45,7 @@ function StatusDot({ status }: { status: string }) {
     <span className={`w-2 h-2 rounded-full flex-shrink-0 inline-block ${
       status === 'active' ? 'bg-green-400 animate-pulse' :
       status === 'paused' ? 'bg-amber-400' :
-      'bg-[#64748B]'
+      'bg-slate-500'
     }`} />
   );
 }
@@ -66,7 +66,7 @@ function CivilizationList() {
   return (
     <div
       className="min-h-screen"
-      style={{ background: 'linear-gradient(135deg, #0F1117 0%, #0d1625 100%)' }}
+      style={{ background: 'linear-gradient(135deg, #0f172a 0%, #0d1625 100%)' }}
     >
       {/* Header */}
       <div
@@ -75,7 +75,7 @@ function CivilizationList() {
       >
         <div className="max-w-5xl mx-auto flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold text-[#F1F5F9] flex items-center gap-2">
+            <h1 className="text-xl font-bold text-white flex items-center gap-2">
               <Globe className="h-5 w-5 text-indigo-400" />
               Agent Civilizations
             </h1>
@@ -123,8 +123,8 @@ function CivilizationList() {
               style={{ background: 'rgba(255,255,255,0.03)', border: '2px dashed rgba(255,255,255,0.08)' }}
             >
               <Globe className="h-12 w-12 text-[#A0B4CC] mx-auto mb-4" />
-              <p className="text-base font-semibold text-[#CBD5E1]">No civilizations yet</p>
-              <p className="text-sm text-[#374151] mt-1">
+              <p className="text-base font-semibold text-slate-300">No civilizations yet</p>
+              <p className="text-sm text-slate-600 mt-1">
                 Create one via the API or backend to get started
               </p>
             </div>
@@ -175,17 +175,17 @@ function CivilizationList() {
                           <Globe className="h-5 w-5 text-indigo-400" />
                         </div>
                         <div>
-                          <h2 className="font-bold text-[#F1F5F9] group-hover:text-[#F1F5F9] transition-colors leading-tight">
+                          <h2 className="font-bold text-slate-100 group-hover:text-white transition-colors leading-tight">
                             {civ.name}
                           </h2>
-                          <p className="text-[10px] font-mono text-[#374151] mt-0.5">
+                          <p className="text-[10px] font-mono text-slate-600 mt-0.5">
                             {civ.id.slice(0, 16)}…
                           </p>
                         </div>
                       </div>
                       <div className="flex items-center gap-1.5 flex-shrink-0">
                         <StatusDot status={civ.status} />
-                        <span className="text-xs text-[#94A3B8] capitalize">{civ.status}</span>
+                        <span className="text-xs text-slate-400 capitalize">{civ.status}</span>
                       </div>
                     </div>
 
@@ -205,14 +205,14 @@ function CivilizationList() {
                           <p className="text-sm font-bold tabular-nums" style={{ color: m.color }}>
                             {m.value}
                           </p>
-                          <p className="text-[9px] text-[#374151] mt-px">{m.label}</p>
+                          <p className="text-[9px] text-slate-600 mt-px">{m.label}</p>
                         </div>
                       ))}
                     </div>
 
                     {/* Footer */}
                     <div className="flex items-center justify-between mt-3">
-                      <span className="text-[10px] text-[#374151]">
+                      <span className="text-[10px] text-slate-600">
                         Created {new Date(civ.created_at).toLocaleDateString()}
                       </span>
                       <span className="text-[10px] text-indigo-400 font-medium group-hover:text-indigo-300 transition-colors">
@@ -458,7 +458,7 @@ function CivilizationTheater({ civId }: { civId: string }) {
         {/* Breadcrumb */}
         <Link
           to="/civilization"
-          className="flex items-center gap-1.5 text-xs text-[#5A7494] hover:text-[#CBD5E1] transition-colors flex-shrink-0"
+          className="flex items-center gap-1.5 text-xs text-[#5A7494] hover:text-slate-300 transition-colors flex-shrink-0"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Civilizations</span>
@@ -469,7 +469,7 @@ function CivilizationTheater({ civId }: { civId: string }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <Globe className="h-4 w-4 text-indigo-400 flex-shrink-0" />
-            <h1 className="text-sm font-bold text-[#F1F5F9] truncate">
+            <h1 className="text-sm font-bold text-slate-100 truncate">
               {civ?.name ?? 'Civilization'}
             </h1>
             {isPaused && (
@@ -492,7 +492,7 @@ function CivilizationTheater({ civId }: { civId: string }) {
                 <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
                 <span className="text-[#00D4FF] font-medium">{activeCount} active</span>
               </span>
-              <span className="text-[#374151]">{totalCount} total</span>
+              <span className="text-slate-600">{totalCount} total</span>
             </div>
           )}
 
@@ -566,7 +566,7 @@ function CivilizationTheater({ civId }: { civId: string }) {
                     className="flex items-center gap-2 text-[11px]"
                     style={{ opacity: 1 - i * 0.25 }}
                   >
-                    <span className="text-[#374151] font-mono flex-shrink-0">
+                    <span className="text-slate-600 font-mono flex-shrink-0">
                       {(e.ts ?? '').slice(11, 19)}
                     </span>
                     <EventTypeBadge type={e.type} />
@@ -607,7 +607,7 @@ function CivilizationTheater({ civId }: { civId: string }) {
                     text-[10px] font-medium transition-colors border-b-2 whitespace-nowrap
                     ${isActive
                       ? 'border-indigo-500 text-indigo-300'
-                      : 'border-transparent text-[#374151] hover:text-[#94A3B8] hover:border-[#1E2535]'
+                      : 'border-transparent text-slate-600 hover:text-slate-400 hover:border-slate-700'
                     }
                   `}
                   aria-selected={isActive}
@@ -695,7 +695,7 @@ function PanelPlaceholder({
       >
         <Icon className="h-6 w-6 text-[#5A7494]" />
       </div>
-      <p className="text-xs text-[#374151] max-w-[200px] leading-relaxed">{message}</p>
+      <p className="text-xs text-slate-600 max-w-[200px] leading-relaxed">{message}</p>
     </div>
   );
 }
@@ -726,7 +726,7 @@ function ReplayPanel({ events }: { events: CivilizationEvent[] }) {
           className="flex items-start gap-2 py-1.5 border-b last:border-0 text-xs"
           style={{ borderColor: 'rgba(255,255,255,0.05)' }}
         >
-          <span className="text-[#374151] font-mono text-[10px] flex-shrink-0 pt-0.5">
+          <span className="text-slate-600 font-mono text-[10px] flex-shrink-0 pt-0.5">
             {(e.ts ?? '').slice(11, 19)}
           </span>
           <EventTypeBadge type={e.type} />
