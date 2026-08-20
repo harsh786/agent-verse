@@ -29,6 +29,7 @@ STT_REGISTRY: dict[str, str] = {
 TTS_REGISTRY: dict[str, str] = {
     "omnivoice":   "app.voice.providers.tts.omnivoice.OmniVoiceTTS",
     "kokoro":      "app.voice.providers.tts.kokoro.KokoroTTS",
+    "macos_say":   "app.voice.providers.tts.macos_say.MacOSSayTTS",
     "browser":     "app.voice.providers.tts.browser_fallback.BrowserFallbackTTS",
     "elevenlabs":  "app.voice.providers.tts.elevenlabs.ElevenLabsTTS",
     "openai_tts":  "app.voice.providers.tts.openai_tts.OpenAITTS",
@@ -80,7 +81,7 @@ async def get_tts() -> TTSProvider:
     async with _tts_lock:
         if _tts_instance is not None:
             return _tts_instance
-        provider_name = os.getenv("VOICE_TTS_PROVIDER", "kokoro")
+        provider_name = os.getenv("VOICE_TTS_PROVIDER", "macos_say" if os.path.exists("/usr/bin/say") else "kokoro")
         dotted = TTS_REGISTRY.get(provider_name)
         if dotted is None:
             raise ValueError(
