@@ -101,13 +101,11 @@ async def test_org_approvals_with_pending() -> None:
 
 @pytest.mark.asyncio
 async def test_org_approvals_requires_auth() -> None:
-    """Returns 401 when no tenant context."""
+    """Returns 401 when no tenant context (get_org_service NOT overridden)."""
     bare = FastAPI()
     bare.include_router(org_router)
-    _svc = MagicMock()
-    _svc._tenant_id = TENANT_ID
-    bare.dependency_overrides[get_org_service] = lambda: _svc
-    async with AsyncClient(transport=ASGITransport(bare), base_url="http://test") as c:
+    # Deliberately do NOT override get_org_service — _require_tenant raises 401
+    async with AsyncClient(transport=ASGITransport(app=bare), base_url="http://test") as c:
         resp = await c.get(f"/v1/org/{ORG_ID}/approvals")
     assert resp.status_code == 401
 
@@ -133,9 +131,8 @@ async def test_org_events_stream_requires_auth() -> None:
     """SSE stream returns 401 without auth."""
     bare = FastAPI()
     bare.include_router(org_router)
-    _svc = MagicMock()
-    bare.dependency_overrides[get_org_service] = lambda: _svc
-    async with AsyncClient(transport=ASGITransport(bare), base_url="http://test") as c:
+    # Do NOT override get_org_service — _require_tenant raises 401
+    async with AsyncClient(transport=ASGITransport(app=bare), base_url="http://test") as c:
         resp = await c.get(f"/v1/org/{ORG_ID}/events/stream", timeout=2.0)
     assert resp.status_code == 401
 

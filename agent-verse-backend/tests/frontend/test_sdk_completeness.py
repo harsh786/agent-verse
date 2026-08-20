@@ -7,7 +7,7 @@ def test_typescript_sdk_has_all_required_methods():
     """TypeScript SDK must expose all methods from the API surface."""
     sdk_path = os.path.join(
         os.path.dirname(__file__),
-        "../../../agent-verse-sdk-typescript/src/client.ts"
+        "../../../Archived/agent-verse-sdk-typescript/src/client.ts"
     )
     with open(sdk_path) as f:
         src = f.read()
@@ -29,7 +29,7 @@ def test_typescript_sdk_has_all_required_methods():
 def test_typescript_sdk_has_required_interfaces():
     sdk_path = os.path.join(
         os.path.dirname(__file__),
-        "../../../agent-verse-sdk-typescript/src/client.ts"
+        "../../../Archived/agent-verse-sdk-typescript/src/client.ts"
     )
     with open(sdk_path) as f:
         src = f.read()
@@ -37,7 +37,7 @@ def test_typescript_sdk_has_required_interfaces():
     # Types live in types.ts, but the client imports them — check both files
     types_path = os.path.join(
         os.path.dirname(__file__),
-        "../../../agent-verse-sdk-typescript/src/types.ts"
+        "../../../Archived/agent-verse-sdk-typescript/src/types.ts"
     )
     with open(types_path) as f:
         types_src = f.read()

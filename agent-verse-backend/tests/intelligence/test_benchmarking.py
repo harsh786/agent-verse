@@ -78,7 +78,7 @@ def test_benchmark_store_has_db_persistence():
 
 def test_cli_module_exists():
     import os
-    cli_path = "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-sdk-python/agentverse/cli.py"
+    cli_path = "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/Archived/agent-verse-sdk-python/agentverse/cli.py"
     assert os.path.exists(cli_path), "CLI module must exist"
 
 

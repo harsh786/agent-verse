@@ -93,7 +93,7 @@ def test_consent_record_and_revoke():
 
 def test_mock_server_importable():
     import sys
-    sys.path.insert(0, "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-sdk-python")
+    sys.path.insert(0, "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/Archived/agent-verse-sdk-python")
     from agentverse.mock_server import MockServer
     server = MockServer(port=8099)
     assert server.port == 8099
@@ -103,7 +103,7 @@ def test_mock_server_importable():
 def test_cli_has_logs_command():
     import inspect
     import sys
-    sys.path.insert(0, "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-sdk-python")
+    sys.path.insert(0, "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/Archived/agent-verse-sdk-python")
     from agentverse import cli
     src = inspect.getsource(cli)
     assert "def logs" in src, "CLI must have 'logs' command"

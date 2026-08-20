@@ -1598,36 +1598,6 @@ def create_app(
             except Exception as _orch_exc:
                 logger.warning("orchestration_state_hydration_failed", error=str(_orch_exc))
 
-            # ── Voice OS warmup (before yield — runs at STARTUP) ─────────────
-            if getattr(settings, "voice_enabled", True):
-                try:
-                    import asyncio as _voice_asyncio
-                    from app.voice.providers import warmup_providers as _voice_warmup
-                    _voice_asyncio.create_task(_voice_warmup())
-                    logger.info("voice_providers_warmup_scheduled")
-                    # D-6: Start proactive voice alert manager
-                    from app.voice.alerts import VoiceAlertManager as _VAM
-                    _alert_mgr = _VAM(redis=getattr(app.state, "redis", None))
-                    await _alert_mgr.start()
-                    app.state.voice_alert_manager = _alert_mgr
-                    logger.info("voice_alert_manager_started")
-                except Exception as _voice_exc:
-                    logger.warning("voice_providers_warmup_skipped", error=str(_voice_exc))
-
-            # G-19: Initialize OrgEventPublisher so org.approval.* SSE events are sent
-            try:
-                from app.org.events import configure_org_event_publisher
-                configure_org_event_publisher(
-                    redis_client=getattr(app.state, "redis", None),
-                    audit_service=getattr(app.state, "audit_log", None),
-                    notification_router=getattr(app.state, "notification_service", None),
-                )
-                from app.org.events import get_org_event_publisher as _get_oep
-                app.state.org_event_publisher = _get_oep()
-                logger.info("org_event_publisher_initialized")
-            except Exception as _oep_exc:
-                logger.warning("org_event_publisher_init_failed", error=str(_oep_exc))
-
             try:
                 yield
             finally:
@@ -1654,6 +1624,22 @@ def create_app(
             finally:
                 await close_retrieval_gateways()
                 await close_process_rerankers()
+
+        # ── Voice OS warmup (non-blocking — loads STT/TTS providers in background)
+        if getattr(settings, "voice_enabled", True):
+            try:
+                import asyncio as _voice_asyncio
+                from app.voice.providers import warmup_providers as _voice_warmup
+                _voice_asyncio.create_task(_voice_warmup())
+                logger.info("voice_providers_warmup_scheduled")
+                # D-6: Start proactive voice alert manager
+                from app.voice.alerts import VoiceAlertManager as _VAM
+                _alert_mgr = _VAM(redis=getattr(app.state, "redis", None))
+                await _alert_mgr.start()
+                app.state.voice_alert_manager = _alert_mgr
+                logger.info("voice_alert_manager_started")
+            except Exception as _voice_exc:
+                logger.warning("voice_providers_warmup_skipped", error=str(_voice_exc))
 
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 

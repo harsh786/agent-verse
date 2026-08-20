@@ -283,6 +283,7 @@ class TeamManifest:
     formation_reasoning: str
     org_id: str = ""
     tenant_id: str = ""
+    autonomy_level: int = 3
 
     @property
     def estimated_agents(self) -> int:
@@ -363,6 +364,7 @@ class TeamFormationEngine:
                 success_probability=success_prob,
                 agent_count=len(roles),
                 requires_human_preview=False,
+                autonomy_level=int(getattr(org, "autonomy_level", 3) or 3),
                 formation_reasoning=(
                     f"Formed {len(roles)} roles across {len(departments)} dept(s) "
                     f"covering {len(capabilities)} required capabilities."

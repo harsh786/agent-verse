@@ -52,7 +52,7 @@ def test_phase_20_ts_sdk_has_hitl_methods():
     """TypeScript SDK must have HITL approve/reject methods."""
     with open(
         "/Users/harsh.kumar01/Documents/Learning/Agent-Verse"
-        "/agent-verse-sdk-typescript/src/client.ts"
+        "/Archived/agent-verse-sdk-typescript/src/client.ts"
     ) as f:
         src = f.read()
     assert "approveRequest" in src, "TypeScript SDK must have approveRequest method"
@@ -65,7 +65,7 @@ def test_phase_20_ts_sdk_has_simulation_types():
     """TypeScript SDK must have SimulationResult and GoalTimeline types."""
     with open(
         "/Users/harsh.kumar01/Documents/Learning/Agent-Verse"
-        "/agent-verse-sdk-typescript/src/types.ts"
+        "/Archived/agent-verse-sdk-typescript/src/types.ts"
     ) as f:
         src = f.read()
     assert "SimulationResult" in src, "TypeScript SDK types must have SimulationResult"

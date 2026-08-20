@@ -7,7 +7,7 @@
  *   - web-guidelines:  aria-live for SSE updates, keyboard nav, tabular-nums
  *   - ui-ux-pro-max:   streaming progress bar, reduced-motion fallback
  */
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   X, Zap, PauseCircle, AlertCircle, Play, Square, ChevronRight,
@@ -159,6 +159,8 @@ export function MissionDetail({ orgId, missionId, onClose }: MissionDetailProps)
             onStatusChange={handleStatusChange}
             reduce={!!reduce}
             liveRef={liveRef}
+            orgId={orgId}
+            missionId={missionId}
           />
         ) : (
           <EmptyState />
@@ -171,19 +173,24 @@ export function MissionDetail({ orgId, missionId, onClose }: MissionDetailProps)
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function MissionBody({
-  mission, events, onStatusChange, reduce, liveRef,
+  mission, events, onStatusChange, reduce, liveRef, orgId, missionId,
 }: {
   mission: OrgMission;
   events: Array<{ id: string; title: string; event_type: string; created_at: string }>;
   onStatusChange: (s: MissionStatus) => void;
   reduce: boolean;
   liveRef: React.RefObject<HTMLDivElement | null>;
+  orgId: string;
+  missionId: string;
 }) {
   const statusColor = STATUS_COLOR[mission.status] ?? 'text-slate-400';
   const statusBg    = STATUS_BG[mission.status] ?? 'bg-slate-400/10 ring-slate-700/50';
   const isActive    = mission.status === 'active';
   const isPaused    = mission.status === 'paused';
   const isCompleted = ['completed', 'failed', 'cancelled'].includes(mission.status);
+  const [approving, setApproving] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const updateStatus = useUpdateMissionStatus(orgId);
 
   // Extract goal_id from metadata
   const meta = mission.metadata as Record<string, unknown> | undefined;
@@ -361,15 +368,54 @@ function MissionBody({
                   transition={{ duration: 1.2, repeat: Infinity }}
                 />
               </div>
-              <p className="text-[11px] text-[#94A3B8] mb-2">
+              <p className="text-[11px] text-[#94A3B8] mb-3">
                 This mission step needs your approval to proceed.
               </p>
-              <a
-                href="/approvals"
-                className="inline-flex items-center gap-1 text-[11px] text-amber-400 hover:text-amber-300 font-medium"
-              >
-                Review in Approvals →
-              </a>
+              <div className="flex gap-2">
+                <button
+                  disabled={approving || rejecting}
+                  className="flex-1 py-1.5 text-[11px] font-medium bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg transition-colors"
+                  onClick={async () => {
+                    setApproving(true);
+                    try {
+                      const r = await fetch(`${API_BASE}/v1/org/${orgId}/tasks/${missionId}/approve`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
+                        body: JSON.stringify({ approver: 'user', note: 'Approved from mission panel' }),
+                      });
+                      if (r.ok) await updateStatus.mutateAsync({ missionId, status: 'active' });
+                    } finally {
+                      setApproving(false);
+                    }
+                  }}
+                >
+                  {approving ? '…' : '✓ Approve'}
+                </button>
+                <button
+                  disabled={approving || rejecting}
+                  className="flex-1 py-1.5 text-[11px] font-medium bg-red-900/60 hover:bg-red-900 disabled:opacity-50 text-red-300 rounded-lg transition-colors"
+                  onClick={async () => {
+                    setRejecting(true);
+                    try {
+                      await fetch(`${API_BASE}/v1/org/${orgId}/tasks/${missionId}/reject`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
+                        body: JSON.stringify({ approver: 'user', note: 'Rejected from mission panel' }),
+                      });
+                    } finally {
+                      setRejecting(false);
+                    }
+                  }}
+                >
+                  {rejecting ? '…' : '✕ Reject'}
+                </button>
+                <a
+                  href="/approvals"
+                  className="px-2 py-1.5 text-[11px] text-amber-400 hover:text-amber-300 font-medium self-center whitespace-nowrap"
+                >
+                  Full view →
+                </a>
+              </div>
             </div>
           )}
 
