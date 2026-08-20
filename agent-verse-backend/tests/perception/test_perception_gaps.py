@@ -12,7 +12,6 @@ import io
 
 import pytest
 
-
 # ── BrowserAgent — playwright NOT installed ────────────────────────────────────
 
 def test_browser_agent_available_false_without_playwright(monkeypatch):
@@ -248,8 +247,9 @@ def test_resize_image_b64_invalid_base64_returns_original():
 
 def test_resize_image_b64_large_no_pillow(monkeypatch):
     """Large image without Pillow installed returns original base64."""
-    from app.perception.multimodal import resize_image_b64
     import builtins
+
+    from app.perception.multimodal import resize_image_b64
 
     orig_import = builtins.__import__
 
@@ -277,7 +277,8 @@ def test_resize_image_b64_large_with_pillow():
         buf = io.BytesIO()
         img = Image.new("RGB", (100, 100), color=(255, 0, 0))
         img.save(buf, format="PNG")
-        large_data = buf.getvalue() * 10  # make it bigger by repeating (not valid PNG but tests the size check)
+        # Repeat bytes to exceed max_size (not a valid PNG but tests the size check)
+        large_data = buf.getvalue() * 10
         b64 = base64.b64encode(large_data).decode()
         result = resize_image_b64(b64, max_size=50)
         # Either resized or returned as-is on exception — both are valid

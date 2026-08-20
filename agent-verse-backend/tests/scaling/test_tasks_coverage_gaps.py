@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ── _setup_worker_checkpointer ────────────────────────────────────────────────
 
 def test_setup_worker_checkpointer_runs():
@@ -67,20 +66,20 @@ def test_sync_goal_lock_release_suppresses_errors():
 
 def test_record_goal_duration_metric_exception_path():
     """Exception in observability import is swallowed and logged."""
-    from app.scaling.tasks import _record_goal_duration_metric
     import time
 
-    with patch("app.scaling.tasks.logger") as mock_logger:
-        with patch(
-            "app.observability.metrics.record_goal_duration",
-            side_effect=RuntimeError("otel down"),
-        ):
-            # Should not raise
-            _record_goal_duration_metric(
-                "completed",
-                started_monotonic=time.monotonic() - 1.0,
-                priority="normal",
-            )
+    from app.scaling.tasks import _record_goal_duration_metric
+
+    with patch("app.scaling.tasks.logger") as mock_logger, patch(
+        "app.observability.metrics.record_goal_duration",
+        side_effect=RuntimeError("otel down"),
+    ):
+        # Should not raise
+        _record_goal_duration_metric(
+            "completed",
+            started_monotonic=time.monotonic() - 1.0,
+            priority="normal",
+        )
     mock_logger.warning.assert_called()
 
 
@@ -89,8 +88,8 @@ def test_record_goal_duration_metric_exception_path():
 @pytest.mark.asyncio
 async def test_run_with_signals_cancel():
     """is_cancelled_sync=True → GoalCancelledError raised."""
-    from app.scaling.tasks import _run_with_signals
     from app.reliability.goal_lifecycle import GoalCancelledError
+    from app.scaling.tasks import _run_with_signals
 
     async def _never_ends(**kwargs):
         # Simulate a long-running task that never finishes on its own
