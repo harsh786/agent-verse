@@ -1,6 +1,6 @@
 # AgentVerse — Platform Hardening Design (Per-Phase)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:writing-plans` after this spec is reviewed and approved. Then use `superpowers:executing-plans` to execute each phase in a separate session. All phases use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:writing-plans` **only when the user explicitly instructs** — not automatically after spec approval. Then use `superpowers:executing-plans` to execute each phase in a separate session. All phases use checkbox (`- [ ]`) syntax for tracking.
 
 **Date:** 2026-08-20
 **Status:** Approved (design) → pending plan generation
@@ -15,7 +15,9 @@ Every feature in AgentVerse, across both `agent-verse-backend/` (73 `app/` packa
 
 - Deep code analysis surfaces gaps (broken contracts, auth bypasses, silent failures, missing tests, missing spans, missing retries).
 - Gaps are fixed with **test-first discipline** — the test is red before the fix makes it green.
+- **If a gap requires a code change, that change MUST be made.** Writing the test and stopping is not acceptable — the fix must be applied until the test is green and coverage passes. The loop is: write test (red) → write fix → run tests → if still failing, fix again → repeat until green.
 - Coverage, type safety, and lint gates hold — coverage ≥85% backend / ≥80% frontend, mypy 0, ruff 0, tsc 0, eslint 0.
+- **A phase does not close until every failing test is green.** If a fix introduces a new failure, that failure must also be fixed before the phase can pass its gate.
 - A hard **stage gate** blocks the next phase until the current one is provably green.
 - **No invented work.** If a phase's deep read shows zero gaps, the phase logs "verification-only" and passes its gate.
 
@@ -238,24 +240,36 @@ Each phase doc's gap table is built by applying this 5-step workflow to every FC
      Commit the spec BEFORE writing any tests:
        git commit -m "docs(phase-N): add hardening spec with <X> gaps"
 
-4. Test-first per gap (TDD)
+4. Test-first per gap (TDD) — LOOP UNTIL GREEN
      For each P0/P1 gap in the phase table:
        a. Write a red test (test fails because the bug exists)
        b. Commit: git commit -m "test(phase-N FC-NN G-XX): assert <behavior>"
-       c. Apply the fix
-       d. Commit: git commit -m "fix(phase-N FC-NN G-XX): <one-line fix description>"
+       c. Apply the code fix — the fix MUST be written, not just the test
+       d. Run: uv run pytest tests/<domain>/test_<file>.py::test_<name> -q
+       e. If still red → dig deeper, fix again, run again → repeat until green
+       f. If the fix causes a new failure elsewhere → fix that too before continuing
+       g. Commit only when green: git commit -m "fix(phase-N FC-NN G-XX): <one-line fix description>"
 
-5. Verify & gate
-     Run the verification commands in section 7
+5. Coverage check
+     uv run pytest tests/<phase>/ --cov=app/<pkgs> --cov-fail-under=85
+     If coverage still below 85%: add more tests for untested branches → go back to step 4
+     Repeat until coverage gate passes
+
+6. Verify & gate
+     Run the full verification commands in section 7
      Apply the phase gate (section 8)
+     If gate fails on any criterion: loop back to step 4 for the failing criterion
+     The phase is NOT complete until every gate criterion is met
 ```
 
 ### TDD Discipline (Hard Rule)
 
 - A test must be **red** before the fix makes it green. This catches the "test passes even if you delete the code" anti-pattern.
 - Tests are written **before** fixes — no exceptions.
+- **Fixing the code is mandatory.** A test that documents a bug but is left red is not acceptable. The loop continues until the test is green.
 - One commit per test batch, one commit per fix batch. Never bundle a test and its fix in the same commit (that hides the red→green transition in code review).
 - If a gap is P2 (cosmetic), no test is required — the fix goes directly in the spec acceptance checkbox.
+- **Coverage is a hard gate.** If running `--cov-fail-under=85` fails after all gap fixes, more tests must be written for untested branches and the loop repeats. The phase does not close until the coverage gate passes.
 
 ### "No Invented Work" Rule
 
@@ -520,12 +534,28 @@ After each phase gate, post:
 
 ## 12. Skills Workflows Enforced
 
-This design phase is the **brainstorming** skill's final output. After the user reviews and approves this spec, the next mandatory step is:
+This design phase is the **brainstorming** skill's final output.
 
-- **`superpowers:writing-plans`** — converts this design into an executable Markdown implementation plan. The plan is broken into phases (matching the 4 phases here) and proceeds to writing them. The writing-plans skill produces `docs/superpowers/plans/2026-08-20-platform-hardening-plan.md` (or one plan file per phase — to be decided during the planning step).
-- **`superpowers:executing-plans`** — executes each phase plan in a separate session with review checkpoints between phases. Phase N+1 does not start until Phase N passes its gate (per section 8).
+### Plan Generation — BLOCKED until user says so
 
-**HARD GATE**: No code changes until this spec is reviewed and approved by the user. The brainstorming skill enforces this — design before plan, plan before code.
+**Do NOT invoke `writing-plans` until the user explicitly instructs.** The spec is approved but plan generation is gated on explicit user command. The workflow steps are:
+
+1. Spec written and committed ✅ (done — this file)
+2. User reviews spec ✅ (done)
+3. **User explicitly says: "write the plan" or "proceed to plan"** ← WAITING
+4. Only then invoke `superpowers:writing-plans`
+5. Only then use `superpowers:executing-plans` per phase
+
+### Code-Change Mandate During Execution
+
+When `executing-plans` runs a phase:
+
+- **If any gap requires a code change, that change MUST be made.** The loop is: test (red) → fix → test (green). A red test that is abandoned is a failure, not a completion.
+- **The phase does not close until every test is green AND coverage ≥85%/≥80%.** If coverage is below the gate after all fixes, add more tests for untested branches and fix until the gate passes.
+- **Code fixes cascade.** If a fix causes a new failure, fix the new failure before moving on. The gate is the full test suite, not just the FC's tests.
+- `superpowers:executing-plans` — executes each phase plan in a separate session with review checkpoints between phases. Phase N+1 does not start until Phase N passes its gate (per section 8).
+
+**HARD GATE**: No plan generation until user explicitly instructs. Design is approved and frozen.
 
 ---
 
@@ -568,4 +598,4 @@ This spec is **approved** when the user has confirmed:
 - [x] Final completion definition (all 4 phase DoD checks pass)
 - [x] Out-of-scope list (SDKs, Helm, CI, infra)
 
-**Next action:** Hand this spec to the user for final review. After their sign-off, invoke `superpowers:writing-plans` to convert this design into executable implementation plans (one per phase).
+**Next action:** Wait for user to explicitly say "write the plan" or "proceed". Do NOT invoke `superpowers:writing-plans` until that instruction is given.
