@@ -59,7 +59,7 @@ _CREATE_PATTERNS  = [
 _STATUS_PATTERNS  = [r"\bstatus\b", r"\bhow is\b", r"\bupdate on\b", r"\bwhat'?s happening\b"]
 _APPROVE_PATTERNS = [r"\bapprove\b", r"\bgo ahead\b", r"\bapproved\b", r"\byes,? do it\b", r"\bconfirm\b"]
 _REJECT_PATTERNS  = [r"\breject\b", r"\bdeny\b", r"\bcancel that\b", r"\bdon'?t do\b", r"^no\b"]
-_SUMMARIZE_PATTERNS = [r"\bsummariz\b", r"\bbrief me\b", r"\bwhat happened\b", r"\bdigest\b", r"\bwhat'?s new\b"]
+_SUMMARIZE_PATTERNS = [r"\bsummariz", r"\bbrief me\b", r"\bwhat happened\b", r"\bdigest\b", r"\bwhat'?s new\b"]
 _SEARCH_PATTERNS  = [r"\bfind\b", r"\bsearch\b", r"\bshow me\b", r"\blist\b"]
 
 
