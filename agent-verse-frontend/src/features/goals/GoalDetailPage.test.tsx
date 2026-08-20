@@ -305,7 +305,7 @@ describe('GoalDetailPage', () => {
       ],
     };
 
-    const { container } = renderGoalDetailPage();
+    renderGoalDetailPage();
 
     await userEvent.click(await screen.findByRole('tab', { name: /execution/i }));
     expect((await screen.findAllByText('worker complete')).length).toBeGreaterThan(0);
@@ -313,8 +313,6 @@ describe('GoalDetailPage', () => {
     const executionPanel = screen.getByRole('tabpanel');
     const stepSpinners = executionPanel.querySelectorAll('[class*="animate-spin"]');
     // All step events are complete — step-level spinners should be absent
-    const stepRows = executionPanel.querySelectorAll('[data-event-type]');
-    // If no data-event-type markers, fall back to checking overall count is low
     expect(stepSpinners.length).toBeLessThanOrEqual(1);
   });
 
