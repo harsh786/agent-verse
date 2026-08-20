@@ -117,9 +117,12 @@ def jurisdiction_to_language(jurisdiction: str | None) -> str:
     """D-5: Auto-detect TTS language from org jurisdiction field."""
     if not jurisdiction:
         return "en"
-    j = jurisdiction.lower()
+    j = jurisdiction.lower().strip()
+    # Use startswith or exact match to avoid substring false-positives (e.g. 'usa' matching 'sa')
     for key, lang in JURISDICTION_TO_LANG.items():
-        if key in j:
+        k = key.lower()
+        # Exact match or whole-word match
+        if j == k or j.startswith(k + ' ') or j.endswith(' ' + k) or f' {k} ' in f' {j} ':
             return lang
     return "en"
 
