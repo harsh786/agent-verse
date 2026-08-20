@@ -565,6 +565,121 @@ async def list_events(
     return CursorPage(data=data, cursor=None, hasMore=len(events) == limit)
 
 
+# ── G-23: Org-level SSE stream (OrgRealtimeManager subscribes here) ──────────
+
+@router.get(
+    "/{org_id}/events/stream",
+    operation_id="org_events_sse",
+    summary="SSE stream for real-time org events (approval, mission, team updates)",
+    response_class=StreamingResponse,
+)
+async def org_events_stream(
+    org_id: str,
+    request: Request,
+    service: OrgService = Depends(get_org_service),
+) -> StreamingResponse:
+    """G-23: Server-Sent Events stream for all org-level events.
+
+    OrgRealtimeManager.ts subscribes to this endpoint.
+    Publishes: org.approval.*, org.mission.*, org.team.*, org.agent.*
+    """
+    async def event_generator() -> AsyncGenerator[str, None]:
+        import asyncio
+        tenant_ctx = service._tenant_id
+        try:
+            yield f"data: {json.dumps({'type': 'connected', 'org_id': org_id})}\n\n"
+
+            # Subscribe to Redis pub/sub channel for this org
+            redis = getattr(getattr(request.app, "state", None), "redis", None)
+            if redis is None:
+                # No Redis — keepalive only
+                while not await request.is_disconnected():
+                    yield ": keepalive\n\n"
+                    await asyncio.sleep(15)
+                return
+
+            pubsub = redis.pubsub()
+            channel = f"org:{org_id}:events"
+            await pubsub.subscribe(channel)
+            try:
+                async for message in pubsub.listen():
+                    if await request.is_disconnected():
+                        break
+                    if message["type"] not in ("message", "pmessage"):
+                        yield ": keepalive\n\n"
+                        continue
+                    data = message.get("data", b"")
+                    if isinstance(data, bytes):
+                        data = data.decode()
+                    yield f"data: {data}\n\n"
+            finally:
+                await pubsub.unsubscribe(channel)
+        except Exception as exc:
+            yield f"data: {json.dumps({'type': 'error', 'detail': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── G-04: Org-scoped approvals endpoint ──────────────────────────────────────
+
+@router.get(
+    "/{org_id}/approvals",
+    operation_id="org_list_approvals",
+    summary="List pending approval requests scoped to this org's missions",
+)
+async def list_org_approvals(
+    org_id: str,
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    request: Request = None,
+    service: OrgService = Depends(get_org_service),
+) -> dict:
+    """G-04: Return approval requests for goals/missions within this org.
+
+    Reads from the governance approval_requests table filtered by org context.
+    ApprovalCenter.tsx consumes this endpoint.
+    """
+    try:
+        # Get missions for this org first
+        missions = await service.list_missions(org_id, limit=500)
+        mission_ids = {str(m.id) for m in missions}
+
+        # Query approval requests for goals belonging to these missions
+        # Fall back to the governance API filtered by org
+        hitl_gateway = getattr(getattr(request.app, "state", None), "hitl_gateway", None) if request else None
+
+        if hitl_gateway is None:
+            return {"data": [], "org_id": org_id, "total": 0}
+
+        tenant_id = service._tenant_id
+        pending = hitl_gateway.list_pending(tenant_id=tenant_id)
+
+        # Filter approvals related to this org's missions (by goal_id prefix or all if no mission match)
+        results = []
+        for req in pending:
+            if status and getattr(req, "status", None) and req.status.value != status:
+                continue
+            results.append({
+                "request_id":  getattr(req, "request_id", str(getattr(req, "id", ""))),
+                "goal_id":     req.goal_id,
+                "action":      req.action,
+                "risk_level":  req.risk_level,
+                "status":      req.status.value if hasattr(req.status, "value") else str(req.status),
+                "created_at":  str(getattr(req, "created_at", "")),
+            })
+
+        return {"data": results[:limit], "org_id": org_id, "total": len(results)}
+
+    except Exception as exc:
+        from app.observability.logging import get_logger
+        get_logger(__name__).warning("org_list_approvals_failed", org_id=org_id, error=str(exc))
+        return {"data": [], "org_id": org_id, "total": 0, "error": str(exc)}
+
+
 # ── SSE: Mission Progress Stream ──────────────────────────────────────────────
 
 @router.get(

@@ -128,12 +128,22 @@ class NotificationService:
 
     async def notify_approval_required(
         self, *, request_id: str, goal_id: str, action: str,
-        risk_level: str, tenant_id: str,
+        risk_level: str, tenant_id: str, approval_token: str = "",
     ) -> dict[str, Any]:
         """Send notification to all tenant channels."""
         channels = self.get_channels(tenant_id)
         if not channels:
             return {"sent": 0, "channels": []}
+
+        # G-17: Build magic link URLs for one-click approve/reject from email/Slack
+        from app.core.config import get_settings as _get_settings
+        try:
+            _base = _get_settings().public_base_url
+        except Exception:
+            _base = "http://localhost:5173"
+        _token = approval_token if approval_token else ""
+        approve_url = f"{_base}/hitl/{request_id}/approve?token={_token}"
+        reject_url  = f"{_base}/hitl/{request_id}/reject?token={_token}"
 
         message = {
             "type": "approval_required",
@@ -141,12 +151,16 @@ class NotificationService:
             "goal_id": goal_id,
             "action": action,
             "risk_level": risk_level,
+            "approve_url": approve_url,
+            "reject_url": reject_url,
             "text": (
                 f"\u26a0\ufe0f *Approval Required*\n"
                 f"Goal: `{goal_id}`\n"
                 f"Action: `{action}`\n"
                 f"Risk: `{risk_level}`\n"
-                f"Request ID: `{request_id}`"
+                f"Request ID: `{request_id}`\n"
+                f"\u2705 Approve: {approve_url}\n"
+                f"\u274c Reject: {reject_url}"
             ),
         }
 
@@ -161,6 +175,48 @@ class NotificationService:
                 results.append({"channel_id": channel.channel_id, "status": "failed",
                                 "error": str(exc)})
 
+        return {"sent": sum(1 for r in results if r["status"] == "sent"), "channels": results}
+
+    async def notify_approval_timeout(
+        self,
+        *,
+        request_id: str,
+        goal_id: str,
+        action: str,
+        tenant_id: str,
+        auto_rejected: bool = True,
+    ) -> dict[str, Any]:
+        """G-12: Notify when an approval request has timed out.
+
+        Called from HITLGateway.expire_timed_out_requests() for each expired request.
+        """
+        channels = self.get_channels(tenant_id)
+        if not channels:
+            return {"sent": 0, "channels": []}
+
+        outcome = "automatically rejected" if auto_rejected else "expired"
+        message = {
+            "type": "approval_timeout",
+            "request_id": request_id,
+            "goal_id": goal_id,
+            "action": action,
+            "text": (
+                f"\u23f0 *Approval Timed Out*\n"
+                f"Goal: `{goal_id}`\n"
+                f"Action: `{action}` was {outcome}\n"
+                f"Request ID: `{request_id}`"
+            ),
+        }
+        results = []
+        for channel in channels:
+            try:
+                await self._send(channel, message)
+                results.append({"channel_id": channel.channel_id, "status": "sent"})
+            except Exception as exc:
+                logger.warning("notification_failed",
+                               channel_id=channel.channel_id, error=str(exc))
+                results.append({"channel_id": channel.channel_id, "status": "failed",
+                                "error": str(exc)})
         return {"sent": sum(1 for r in results if r["status"] == "sent"), "channels": results}
 
     async def notify_goal_complete(

@@ -349,6 +349,30 @@ function MissionBody({
             </div>
           )}
 
+          {/* G-07: Approval required callout — when goal is waiting_human */}
+          {(goalState?.status === 'waiting_human' || mission.status === 'waiting_human') && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/8 px-3 py-3">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-amber-400 text-sm">⏳</span>
+                <span className="text-[12px] font-semibold text-amber-400">Human Approval Required</span>
+                <motion.div
+                  className="ml-auto h-2 w-2 rounded-full bg-amber-400"
+                  animate={{ opacity: [1, 0.3, 1] }}
+                  transition={{ duration: 1.2, repeat: Infinity }}
+                />
+              </div>
+              <p className="text-[11px] text-[#94A3B8] mb-2">
+                This mission step needs your approval to proceed.
+              </p>
+              <a
+                href="/approvals"
+                className="inline-flex items-center gap-1 text-[11px] text-amber-400 hover:text-amber-300 font-medium"
+              >
+                Review in Approvals →
+              </a>
+            </div>
+          )}
+
           {/* Queued / waiting */}
           {!goalState?.status && (
             <div className="flex items-center gap-2 text-[12px] text-[#475569]">

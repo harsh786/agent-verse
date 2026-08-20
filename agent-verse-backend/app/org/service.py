@@ -1158,6 +1158,26 @@ class OrgService:
                     except Exception:
                         pass
 
+                # G-21: Check if approval gates require pre-dispatch approval
+                approval_gates = plan_summary.get("approval_gates", [])
+                if approval_gates:
+                    # Create tasks for each gate and mark them approval_required
+                    for gate in (approval_gates[:3] if isinstance(approval_gates, list) else []):
+                        try:
+                            gate_title = str(gate) if isinstance(gate, str) else str(gate.get("type", "approval"))
+                            task = await self.create_task(
+                                org_id=org_id,
+                                mission_id=str(mission.id),
+                                title=f"Approval gate: {gate_title}",
+                                description=f"This mission requires approval for: {gate_title}",
+                                task_type="approval_gate",
+                                metadata={"gate": gate if isinstance(gate, dict) else {"type": gate_title}},
+                            )
+                            # G-22: Set task status to approval_required
+                            await self.update_task_status(str(task.id), "approval_required")
+                        except Exception as gate_exc:
+                            _log.warning("org.approval_gate_task_failed", error=str(gate_exc)[:100])
+
                 # Execution context injected into every AgentGraph call:
                 # The graph's run() reads these as initial_context / org attributes.
                 execution_ctx: dict[str, Any] = {

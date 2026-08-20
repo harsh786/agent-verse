@@ -484,6 +484,23 @@ class HITLGateway:
                 req.status = ApprovalStatus.TIMED_OUT
                 req._event.set()
                 expired.append(req_id)
+                # G-12: fire-and-forget timeout notification
+                if self._notification_service is not None:
+                    try:
+                        import asyncio as _aio
+                        _coro = self._notification_service.notify_approval_timeout(
+                            request_id=req_id,
+                            goal_id=req.goal_id,
+                            action=req.action,
+                            tenant_id=_tenant_id,
+                            auto_rejected=True,
+                        )
+                        try:
+                            _aio.ensure_future(_coro)
+                        except RuntimeError:
+                            pass  # no running loop — skip notification
+                    except Exception:
+                        pass
         return expired
 
     async def load_pending_from_db(self, db: Any, tenant_id: str) -> int:

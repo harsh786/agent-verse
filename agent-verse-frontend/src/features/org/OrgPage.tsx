@@ -38,6 +38,7 @@ import { DigitalTwinPanel }      from './components/DigitalTwinPanel';
 import { CommandHistoryPanel }   from './components/CommandHistoryPanel';
 import { ObsidianVaultExplorer } from './components/ObsidianVaultExplorer';
 import { MissionOrbit }           from './components/MissionOrbit';
+import { ApprovalCenter }         from './ApprovalCenter';
 import { LoginGreetingPlayer }   from '@/components/voice/LoginGreetingPlayer';
 import { useVoiceAlerts }        from '@/lib/voice/useVoiceAlerts';
 import { useOrganization, useOrgHealth, useMissions } from './hooks/useOrg';
@@ -62,6 +63,10 @@ export function OrgPage() {
   const [showHistory, setShowHistory]         = useState(false);
   const [showCommands, setShowCommands]       = useState(false);
   const [showObsidian, setShowObsidian]       = useState(false);
+  const [showApprovals, setShowApprovals]     = useState(false);
+
+  // Auto-open approvals panel when there are pending approvals
+  const pendingApprovalCount = (health as any)?.pending_approvals ?? 0;
 
   const { data: org, isLoading: orgLoading, refetch } = useOrganization(orgId ?? null);
   const { data: health }    = useOrgHealth(orgId ?? null);
@@ -250,6 +255,28 @@ export function OrgPage() {
               <BookOpen className="h-4 w-4" aria-hidden />
             </button>
 
+            {/* G-05: Approvals button — amber badge when pending */}
+            <button
+              onClick={() => setShowApprovals(v => !v)}
+              aria-label={`Approvals${pendingApprovalCount > 0 ? ` (${pendingApprovalCount} pending)` : ''}`}
+              style={{ touchAction: 'manipulation' }}
+              className={cn(
+                'relative p-2 rounded-lg transition-colors duration-150',
+                'min-w-[44px] min-h-[44px] flex items-center justify-center',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60',
+                showApprovals || pendingApprovalCount > 0
+                  ? 'text-amber-400 bg-amber-500/10'
+                  : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
+              )}
+            >
+              <Zap className="h-4 w-4" aria-hidden />
+              {pendingApprovalCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 h-4 w-4 rounded-full bg-amber-500 text-[9px] font-bold text-white flex items-center justify-center">
+                  {pendingApprovalCount > 9 ? '9+' : pendingApprovalCount}
+                </span>
+              )}
+            </button>
+
             {/* Refresh */}
             <button
               onClick={() => refetch()}
@@ -387,6 +414,25 @@ export function OrgPage() {
                 >
                   <div className="p-4">
                     <ObsidianVaultExplorer orgId={orgId} compact />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* G-05: ApprovalCenter panel — shown when showApprovals or pending > 0 */}
+            <AnimatePresence mode="wait">
+              {(showApprovals || pendingApprovalCount > 0) && (
+                <motion.div
+                  key="approvals"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+                  style={{ overflow: 'hidden' }}
+                  className="border-b border-amber-500/20 bg-amber-500/5"
+                >
+                  <div className="max-h-96 overflow-y-auto">
+                    <ApprovalCenter orgId={orgId} />
                   </div>
                 </motion.div>
               )}
