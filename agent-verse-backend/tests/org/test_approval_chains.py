@@ -33,14 +33,17 @@ def test_approval_chain_policy_lookup():
 
 def test_approval_request_creation():
     req = ApprovalRequest(
-        action="prod_deploy",
-        requested_by="agent-123",
-        org_id="org1",
+        request_id="req-test-001",
+        chain_id="prod_deploy",
+        action="Production Deployment",
+        action_detail="Deploy v2.0 to production",
+        mission_id="mission-123",
+        agent_id="agent-123",
         tenant_id="t1",
-        description="Deploy v2.0 to production",
-        risk_level="high",
+        org_id="org1",
+        approvers_needed=["qa_lead", "sre_lead"],
     )
-    assert req.approval_id
+    assert req.request_id == "req-test-001"
     assert req.status == "pending"
 
 
