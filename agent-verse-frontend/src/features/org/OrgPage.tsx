@@ -392,7 +392,21 @@ export function OrgPage() {
               )}
             </AnimatePresence>
 
-            {/* Morning brief panel — always show at top */}
+            {/* ── Mission Orbit — glowing nodes, visible immediately at top ── */}
+            {activeMissions.length > 0 && (
+              <section
+                className="flex flex-col items-center py-4 border-b border-[#1E2535]"
+                aria-label="Active mission orbit visualization"
+              >
+                <p className="text-[10px] font-medium uppercase tracking-[0.1em] text-[#00D4FF]/60 mb-2 flex items-center gap-1.5">
+                  <Cpu className="h-2.5 w-2.5" aria-hidden />
+                  {activeMissions.length} Active Mission{activeMissions.length !== 1 ? 's' : ''}
+                </p>
+                <MissionOrbit missions={activeMissions} />
+              </section>
+            )}
+
+            {/* Morning brief panel */}
             <div className="p-4 border-b border-[#1E2535]">
               <MorningBrief orgId={orgId} compact />
             </div>
@@ -442,19 +456,6 @@ export function OrgPage() {
               )}
             </AnimatePresence>
 
-            {/* ── Mission Orbit — glowing nodes for each active mission ── */}
-            {activeMissions.length > 0 && (
-              <section
-                className="flex flex-col items-center py-4 border-b border-[#1E2535]"
-                aria-label="Active mission orbit visualization"
-              >
-                <p className="text-[10px] font-medium uppercase tracking-[0.1em] text-[#00D4FF]/60 mb-2 flex items-center gap-1.5">
-                  <Cpu className="h-2.5 w-2.5" aria-hidden />
-                  {activeMissions.length} Active Mission{activeMissions.length !== 1 ? 's' : ''}
-                </p>
-                <MissionOrbit missions={activeMissions} />
-              </section>
-            )}
 
             {/* Department tree */}
             <section className="p-4 border-b border-[#1E2535]">
