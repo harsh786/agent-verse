@@ -75,7 +75,8 @@ describe('AuditExplorerPage', () => {
   test('stats section is rendered', async () => {
     mockFetch();
     renderPage();
-    await waitFor(() => expect(screen.getByTestId('audit-stats')).toBeInTheDocument());
+    // Stats section renders StatCard components with these labels
+    await waitFor(() => expect(screen.getByText('Total Events')).toBeInTheDocument());
   });
 
   test('empty state shown when no events', async () => {

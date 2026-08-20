@@ -118,9 +118,9 @@ describe('DashboardPage', () => {
       )
     );
     renderDashboardPage();
-    // StatusBadge renders "Complete" and "Executing" (capitalized labels)
-    await waitFor(() => expect(screen.getByText('Complete')).toBeInTheDocument());
-    expect(screen.getByText('Executing')).toBeInTheDocument();
+    // LiveActivityStream renders goal text (not capitalized status label text)
+    await waitFor(() => expect(screen.getByText('Done goal')).toBeInTheDocument());
+    expect(screen.getByText('Running goal')).toBeInTheDocument();
   });
 
   test('renders Live Activity section header', () => {
