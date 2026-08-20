@@ -65,11 +65,10 @@ export function OrgPage() {
   const [showObsidian, setShowObsidian]       = useState(false);
   const [showApprovals, setShowApprovals]     = useState(false);
 
-  // Auto-open approvals panel when there are pending approvals
-  const pendingApprovalCount = (health as any)?.pending_approvals ?? 0;
-
   const { data: org, isLoading: orgLoading, refetch } = useOrganization(orgId ?? null);
   const { data: health }    = useOrgHealth(orgId ?? null);
+  // Pending approval count for badge — use after health is declared
+  const pendingApprovalCount = (health as any)?.pending_approvals ?? 0;
   const { data: missionInf } = useMissions(orgId, {});
   const activeMissions = (missionInf?.pages?.flatMap(p => p.data ?? []) ?? []).filter((m: OrgMission) => m.status === 'active');
 

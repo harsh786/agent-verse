@@ -350,7 +350,7 @@ function MissionBody({
           )}
 
           {/* G-07: Approval required callout — when goal is waiting_human */}
-          {(goalState?.status === 'waiting_human' || mission.status === 'waiting_human') && (
+          {(goalState?.status === 'waiting_human' || (mission.status as string) === 'waiting_human') && (
             <div className="rounded-lg border border-amber-500/30 bg-amber-500/8 px-3 py-3">
               <div className="flex items-center gap-2 mb-2">
                 <span className="text-amber-400 text-sm">⏳</span>
