@@ -366,14 +366,19 @@ async def _store_persona_audio(tid: str, org_id: str, audio: bytes) -> str:
 
 
 async def _ws_auth(ws: WebSocket, api_key: str) -> str | None:
+    """Authenticate WebSocket using the same key resolver as TenantMiddleware."""
     if not api_key:
         return None
     try:
-        ts = getattr(getattr(ws.app, "state", None), "tenant_service", None)   # type: ignore[attr-defined]
-        if ts is None:
-            return api_key   # dev mode
-        tenant = await ts.get_by_api_key(api_key)
-        return str(tenant.id) if tenant else None
+        # Use the same _tenant_key_resolver that TenantMiddleware uses
+        resolver = getattr(getattr(ws.app, "state", None), "_tenant_key_resolver", None)   # type: ignore[attr-defined]
+        if resolver is None:
+            # Dev mode fallback — no resolver wired
+            return api_key
+        tenant_ctx = await resolver(api_key)
+        if tenant_ctx is None:
+            return None
+        return str(getattr(tenant_ctx, "tenant_id", None) or getattr(tenant_ctx, "id", None))
     except Exception:
         return None
 
