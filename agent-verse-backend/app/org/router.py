@@ -505,6 +505,111 @@ async def update_task_status(
     return TaskResponse.model_validate(task)
 
 
+class _TaskApprovalDecision(BaseModel):
+    approver: str = Field(default="user", description="Approver identity (user ID or role)")
+    note: str = Field(default="", description="Optional reason / note")
+
+
+# ── G-28: Task-level approve endpoint ────────────────────────────────────────
+
+@router.post(
+    "/{org_id}/tasks/{task_id}/approve",
+    response_model=TaskResponse,
+    operation_id="org_task_approve",
+    summary="Approve a blocked task (transitions approval_required → running)",
+)
+async def approve_task(
+    org_id: str,
+    task_id: str,
+    body: _TaskApprovalDecision,
+    request: Request,
+    service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
+) -> TaskResponse:
+    """G-28: Approve a task that is in approval_required status.
+
+    - Sets task status to 'running'
+    - Publishes org.approval.granted event via OrgEventPublisher
+    - Returns updated TaskResponse
+    """
+    task = await service.get_task(task_id)
+    if not task:
+        raise _not_found("Task", task_id, x_request_id)
+
+    updated = await service.update_task_status(
+        task_id, "running",
+        outputs={"approved_by": body.approver, "approval_note": body.note},
+    )
+    if not updated:
+        raise _not_found("Task", task_id, x_request_id)
+
+    # Publish approval-granted event for OrgRealtimeManager
+    try:
+        from app.org.events import get_org_event_publisher
+        pub = get_org_event_publisher()
+        if pub:
+            await pub.publish(
+                event_type="org.approval.granted",
+                org_id=org_id,
+                tenant_id=service._tenant_id,
+                payload={"task_id": task_id, "approver": body.approver, "note": body.note},
+            )
+    except Exception:
+        pass  # Non-critical
+
+    return TaskResponse.model_validate(updated)
+
+
+# ── G-28: Task-level reject endpoint ─────────────────────────────────────────
+
+@router.post(
+    "/{org_id}/tasks/{task_id}/reject",
+    response_model=TaskResponse,
+    operation_id="org_task_reject",
+    summary="Reject a blocked task (transitions approval_required → failed)",
+)
+async def reject_task(
+    org_id: str,
+    task_id: str,
+    body: _TaskApprovalDecision,
+    request: Request,
+    service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
+) -> TaskResponse:
+    """G-28: Reject a task that is in approval_required status.
+
+    - Sets task status to 'failed' with rejection reason
+    - Publishes org.approval.rejected event via OrgEventPublisher
+    - Returns updated TaskResponse
+    """
+    task = await service.get_task(task_id)
+    if not task:
+        raise _not_found("Task", task_id, x_request_id)
+
+    updated = await service.update_task_status(
+        task_id, "failed",
+        outputs={"rejected_by": body.approver, "rejection_reason": body.note},
+    )
+    if not updated:
+        raise _not_found("Task", task_id, x_request_id)
+
+    # Publish approval-rejected event for OrgRealtimeManager
+    try:
+        from app.org.events import get_org_event_publisher
+        pub = get_org_event_publisher()
+        if pub:
+            await pub.publish(
+                event_type="org.approval.rejected",
+                org_id=org_id,
+                tenant_id=service._tenant_id,
+                payload={"task_id": task_id, "approver": body.approver, "reason": body.note},
+            )
+    except Exception:
+        pass  # Non-critical
+
+    return TaskResponse.model_validate(updated)
+
+
 # ── Team Endpoints ────────────────────────────────────────────────────────────
 
 @router.post(
@@ -684,6 +789,91 @@ async def list_org_approvals(
         from app.observability.logging import get_logger
         get_logger(__name__).warning("org_list_approvals_failed", org_id=org_id, error=str(exc))
         return {"data": [], "org_id": org_id, "total": 0, "error": str(exc)}
+
+
+class _OrgApprovalDecision(BaseModel):
+    approver: str = Field(default="user", description="Approver identity (user ID or name)")
+    note: str = Field(default="", description="Optional note or reason")
+
+
+# ── G-24: Org-scoped approve endpoint ────────────────────────────────────────
+
+@router.post(
+    "/{org_id}/approvals/{approval_id}/approve",
+    operation_id="org_approve_request",
+    summary="Approve a pending approval request scoped to this org",
+    status_code=status.HTTP_200_OK,
+)
+async def approve_org_request(
+    org_id: str,
+    approval_id: str,
+    body: _OrgApprovalDecision,
+    request: Request,
+    x_request_id: str = Header(default_factory=_request_id),
+    service: OrgService = Depends(get_org_service),
+) -> dict:
+    """G-24: Approve a HITL request belonging to this org's missions."""
+    hitl_gateway = getattr(getattr(request.app, "state", None), "hitl_gateway", None)
+    if hitl_gateway is None:
+        raise HTTPException(status_code=503, detail="HITL gateway not available")
+
+    tenant_id = service._tenant_id
+    try:
+        await hitl_gateway.resolve(
+            request_id=approval_id,
+            action="approve",
+            approver=body.approver,
+            note=body.note,
+            tenant_id=tenant_id,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail={
+            "type": "not-found", "title": "Approval Not Found",
+            "status": 404, "detail": f"Approval '{approval_id}' not found or already resolved",
+            "request_id": x_request_id,
+        }) from exc
+
+    return {"status": "approved", "approval_id": approval_id, "approver": body.approver}
+
+
+# ── G-24: Org-scoped reject endpoint ─────────────────────────────────────────
+
+@router.post(
+    "/{org_id}/approvals/{approval_id}/reject",
+    operation_id="org_reject_request",
+    summary="Reject a pending approval request scoped to this org",
+    status_code=status.HTTP_200_OK,
+)
+async def reject_org_request(
+    org_id: str,
+    approval_id: str,
+    body: _OrgApprovalDecision,
+    request: Request,
+    x_request_id: str = Header(default_factory=_request_id),
+    service: OrgService = Depends(get_org_service),
+) -> dict:
+    """G-24: Reject a HITL request belonging to this org's missions."""
+    hitl_gateway = getattr(getattr(request.app, "state", None), "hitl_gateway", None)
+    if hitl_gateway is None:
+        raise HTTPException(status_code=503, detail="HITL gateway not available")
+
+    tenant_id = service._tenant_id
+    try:
+        await hitl_gateway.resolve(
+            request_id=approval_id,
+            action="reject",
+            approver=body.approver,
+            note=body.note or "Rejected via org approval center",
+            tenant_id=tenant_id,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail={
+            "type": "not-found", "title": "Approval Not Found",
+            "status": 404, "detail": f"Approval '{approval_id}' not found or already resolved",
+            "request_id": x_request_id,
+        }) from exc
+
+    return {"status": "rejected", "approval_id": approval_id, "approver": body.approver}
 
 
 # ── SSE: Mission Progress Stream ──────────────────────────────────────────────

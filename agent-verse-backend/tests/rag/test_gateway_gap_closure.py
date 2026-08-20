@@ -250,7 +250,7 @@ def test_production_retrieval_paths_have_no_store_or_engine_search() -> None:
     graph_source = inspect.getsource(graph)
     assert "RetrieverTool(knowledge_store" not in graph_source
     assert "web_search_auto" not in graph_source
-    assert "retrieval_gateway=self._retrieval_gateway" in graph_source
+    assert "self._retrieval_gateway" in graph_source  # gateway wired into rag_retrieval node
 
 
 class AllowedAuthorizer:

@@ -503,7 +503,7 @@ class TestEnforceHitlSla:
 
     def test_success_returns_enforced_count(self):
         from app.scaling.tasks import enforce_hitl_sla
-        with patch("asyncio.run", return_value={"enforced": 3}):
+        with patch("app.scaling.tasks._run_async", return_value={"enforced": 3}):
             result = enforce_hitl_sla.run()
         assert result["enforced"] == 3
 
@@ -522,7 +522,7 @@ class TestFlushAuditWal:
 
     def test_returns_flushed_count(self):
         from app.scaling.tasks import flush_audit_wal
-        with patch("asyncio.run", return_value={"flushed": 10}):
+        with patch("app.scaling.tasks._run_async", return_value={"flushed": 10}):
             result = flush_audit_wal.run()
         assert result["flushed"] == 10
 
@@ -541,7 +541,7 @@ class TestScanCostAnomalies:
 
     def test_returns_anomaly_count(self):
         from app.scaling.tasks import scan_cost_anomalies
-        with patch("asyncio.run", return_value={"tenants_scanned": 5, "anomalies_found": 2}):
+        with patch("app.scaling.tasks._run_async", return_value={"tenants_scanned": 5, "anomalies_found": 2}):
             result = scan_cost_anomalies.run()
         assert result["anomalies_found"] == 2
 

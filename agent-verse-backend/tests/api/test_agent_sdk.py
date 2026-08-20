@@ -14,6 +14,7 @@ import pytest
 REPO_ROOT = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "../../..")
 )
+ARCHIVED_ROOT = os.path.join(REPO_ROOT, "Archived")
 
 
 def test_python_sdk_has_update_agent():
@@ -77,7 +78,7 @@ def test_python_sdk_create_agent_request_defaults():
 
 def test_typescript_sdk_has_update_agent_request_type():
     """TypeScript types.ts must have UpdateAgentRequest interface."""
-    types_path = os.path.join(REPO_ROOT, "agent-verse-sdk-typescript", "src", "types.ts")
+    types_path = os.path.join(ARCHIVED_ROOT, "agent-verse-sdk-typescript", "src", "types.ts")
     with open(types_path) as f:
         src = f.read()
     assert "UpdateAgentRequest" in src, "TypeScript SDK must have UpdateAgentRequest type"
@@ -91,7 +92,7 @@ def test_typescript_sdk_has_update_agent_request_type():
 
 def test_typescript_sdk_create_agent_request_no_legacy_fields():
     """TypeScript CreateAgentRequest must not have old description/tools/model fields."""
-    types_path = os.path.join(REPO_ROOT, "agent-verse-sdk-typescript", "src", "types.ts")
+    types_path = os.path.join(ARCHIVED_ROOT, "agent-verse-sdk-typescript", "src", "types.ts")
     with open(types_path) as f:
         src = f.read()
     # Check that CreateAgentRequest block doesn't contain 'model?' (old field)
@@ -106,7 +107,7 @@ def test_typescript_sdk_create_agent_request_no_legacy_fields():
 
 def test_typescript_sdk_has_run_agent():
     """TypeScript SDK client must have runAgent and updateAgent methods."""
-    client_path = os.path.join(REPO_ROOT, "agent-verse-sdk-typescript", "src", "client.ts")
+    client_path = os.path.join(ARCHIVED_ROOT, "agent-verse-sdk-typescript", "src", "client.ts")
     with open(client_path) as f:
         src = f.read()
     assert "runAgent" in src, "TypeScript SDK must have runAgent method"

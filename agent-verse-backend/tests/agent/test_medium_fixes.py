@@ -105,7 +105,7 @@ def test_mock_server_goal_auto_completes():
     """Mock server must auto-complete goals for SDK testing."""
     import inspect
     import sys
-    sdk_path = "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-sdk-python"
+    sdk_path = "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/Archived/agent-verse-sdk-python"
     sys.path.insert(0, sdk_path)
     # Clear any cached agentverse modules so the local SDK path takes priority
     # over the installed venv package (which may lack mock_server when imported
