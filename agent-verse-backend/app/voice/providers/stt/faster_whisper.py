@@ -65,13 +65,22 @@ class FasterWhisperSTT:
             if self._model:
                 return self._model
             from faster_whisper import WhisperModel
+            import pathlib as _pl
             device  = os.getenv("VOICE_DEVICE", "cpu")
             compute = "float16" if device == "cuda" else "int8"
+            # Use a writable local cache — /app/models is Docker-only, read-only on macOS
+            cache_dir = (
+                os.getenv("MODEL_CACHE_DIR")
+                or str(_pl.Path.home() / ".cache" / "agentverse" / "models")
+            )
+            _pl.Path(cache_dir).mkdir(parents=True, exist_ok=True)
+            # Use 'tiny' by default for local dev (37MB); set VOICE_STT_MODEL=large-v3-turbo for production
+            model_name = os.getenv("VOICE_STT_MODEL", "tiny")
             self._model = WhisperModel(
-                os.getenv("VOICE_STT_MODEL", "large-v3-turbo"),
+                model_name,
                 device=device,
                 compute_type=compute,
-                download_root=os.getenv("MODEL_CACHE_DIR", "/app/models"),
+                download_root=cache_dir,
             )
             return self._model
 
