@@ -24,7 +24,7 @@ CLEARBIT_RISK_BASE = "https://risk.clearbit.com/v1"
 TOOL_DEFINITIONS = [
     {
         "name": "clearbit_enrich_person",
-        "description": "Enrich a person record using their email address to get name, title, company, social profiles, and more",
+        "description": "Enrich a person record using their email address to get name, title, company, social profiles, and more",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {
@@ -39,7 +39,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "clearbit_enrich_company",
-        "description": "Enrich a company record using its domain to get description, employees, funding, tech stack, and more",
+        "description": "Enrich a company record using its domain to get description, employees, funding, tech stack, and more",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {
@@ -95,7 +95,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "clearbit_get_risk_score",
-        "description": "Get a fraud risk score for an email address with signals like disposable email, free provider, and more",
+        "description": "Get a fraud risk score for an email address with signals like disposable email, free provider, and more",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

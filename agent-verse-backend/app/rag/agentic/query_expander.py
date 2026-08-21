@@ -58,7 +58,7 @@ class QueryExpander:
                             role="system",
                             content=(
                                 "Generate exactly 3 alternative phrasings of this search query. "
-                                "Each phrasing should capture the same intent but use different words. "
+                                "Each phrasing should capture the same intent but use different words. "  # noqa: E501
                                 "Output one query per line, no numbering, no bullets."
                             ),
                         ),

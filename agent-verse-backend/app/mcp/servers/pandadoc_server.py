@@ -26,7 +26,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "status": {
                     "type": "integer",
-                    "description": "0=draft, 1=sent, 2=viewed, 3=awaiting_approval, 4=approved, 5=rejected, 6=waiting_pay, 7=paid, 8=completed, 9=voided",
+                    "description": "0=draft, 1=sent, 2=viewed, 3=awaiting_approval, 4=approved, 5=rejected, 6=waiting_pay, 7=paid, 8=completed, 9=voided",  # noqa: E501
                 },
                 "q": {"type": "string", "description": "Search query"},
                 "count": {"type": "integer", "default": 50},

@@ -25,8 +25,8 @@ def _get_pyotp():
         import pyotp
 
         return pyotp
-    except ImportError:
-        raise HTTPException(503, "MFA requires pyotp. Run: pip install pyotp")
+    except ImportError as _b904_exc:
+        raise HTTPException(503, "MFA requires pyotp. Run: pip install pyotp") from _b904_exc
 
 
 def _req_tenant(r: Request) -> Any:
@@ -49,7 +49,7 @@ async def enroll_mfa(request: Request) -> dict[str, Any]:
         "secret": secret,
         "provisioning_uri": uri,
         "qr_url": f"https://api.qrserver.com/v1/create-qr-code/?data={uri}&size=200x200",
-        "instructions": "Scan with Google Authenticator, then POST /auth/mfa/confirm with the secret and a valid code.",
+        "instructions": "Scan with Google Authenticator, then POST /auth/mfa/confirm with the secret and a valid code.",  # noqa: E501
     }
 
 
@@ -76,7 +76,7 @@ async def confirm_mfa(body: EnrollConfirmRequest, request: Request) -> dict[str,
             async with db() as session:
                 await session.execute(
                     text(
-                        "UPDATE users SET mfa_enabled = true, mfa_secret = :secret WHERE tenant_id = :tid"
+                        "UPDATE users SET mfa_enabled = true, mfa_secret = :secret WHERE tenant_id = :tid"  # noqa: E501
                     ),
                     {"secret": stored_secret, "tid": tenant.tenant_id},
                 )

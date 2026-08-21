@@ -22,7 +22,7 @@ def upgrade() -> None:
         )
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_vault_key_tenant ON vault_key_versions (tenant_id, is_current)"
+        "CREATE INDEX IF NOT EXISTS ix_vault_key_tenant ON vault_key_versions (tenant_id, is_current)"  # noqa: E501
     )
 
 

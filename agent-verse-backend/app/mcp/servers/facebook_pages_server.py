@@ -44,7 +44,7 @@ TOOL_DEFINITIONS = [
                 },
                 "metric": {
                     "type": "string",
-                    "description": "Comma-separated metrics: page_impressions, page_reach, page_engaged_users, page_fan_adds",
+                    "description": "Comma-separated metrics: page_impressions, page_reach, page_engaged_users, page_fan_adds",  # noqa: E501
                 },
                 "period": {
                     "type": "string",

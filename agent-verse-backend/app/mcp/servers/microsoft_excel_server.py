@@ -127,7 +127,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                         f"{GRAPH_BASE}/me/drive/root/search(q='{arguments['search']}')",
                         headers=hdrs,
                         params={
-                            "$filter": "file/mimeType eq 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
+                            "$filter": "file/mimeType eq 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"  # noqa: E501
                         },
                     )
                 else:

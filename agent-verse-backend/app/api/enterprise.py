@@ -690,7 +690,7 @@ async def deploy_template(
             "template_id": template_id,
         }
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 # --- Intelligence / Self-optimization ---
@@ -1604,7 +1604,7 @@ async def sign_contract(
                 },
             )
     except Exception as exc:
-        raise HTTPException(500, f"Contract signing failed: {exc}")
+        raise HTTPException(500, f"Contract signing failed: {exc}") from exc
 
     return {
         "contract_id": contract_id,
@@ -1661,7 +1661,7 @@ async def get_saml_metadata(request: Request) -> Response:
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(500, f"SAML metadata error: {exc}")
+        raise HTTPException(500, f"SAML metadata error: {exc}") from exc
 
 
 class SAMLConfigRequest(BaseModel):
@@ -1718,7 +1718,7 @@ async def configure_saml(request: Request, body: SAMLConfigRequest) -> dict[str,
                 },
             )
     except Exception as exc:
-        raise HTTPException(500, f"SAML configuration failed: {exc}")
+        raise HTTPException(500, f"SAML configuration failed: {exc}") from exc
     return {"status": "configured", "tenant_id": ctx.tenant_id}
 
 
@@ -1761,7 +1761,7 @@ async def saml_login(request: Request) -> Response:
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(500, f"SAML login error: {exc}")
+        raise HTTPException(500, f"SAML login error: {exc}") from exc
 
 
 @router.post("/saml/acs")
@@ -1820,9 +1820,9 @@ async def saml_acs(request: Request) -> dict[str, Any]:
     except HTTPException:
         raise
     except ValueError as exc:
-        raise HTTPException(401, str(exc))
+        raise HTTPException(401, str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(500, f"SAML ACS error: {exc}")
+        raise HTTPException(500, f"SAML ACS error: {exc}") from exc
 
 
 @router.post("/saml/test")
@@ -1983,7 +1983,7 @@ async def provision_scim_token(request: Request) -> dict[str, Any]:
                 {"id": uuid.uuid4().hex, "tid": ctx.tenant_id, "hash": token_hash},
             )
     except Exception as exc:
-        raise HTTPException(500, f"Token provisioning failed: {exc}")
+        raise HTTPException(500, f"Token provisioning failed: {exc}") from exc
 
     return {
         "token": raw_token,

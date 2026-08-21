@@ -27,7 +27,7 @@ TOOL_DEFINITIONS = [
                 "q": {"type": "string", "description": "Search query string"},
                 "type": {
                     "type": "string",
-                    "description": "Comma-separated types to search: track, album, artist, playlist",
+                    "description": "Comma-separated types to search: track, album, artist, playlist",  # noqa: E501
                     "default": "track",
                 },
                 "limit": {

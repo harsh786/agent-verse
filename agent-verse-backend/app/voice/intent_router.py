@@ -51,7 +51,7 @@ class IntentResult:
 
 
 _CREATE_PATTERNS = [
-    r"\b(launch|start|create|initiate|kick off|begin|run)\b.*\b(mission|campaign|project|initiative|task)\b",
+    r"\b(launch|start|create|initiate|kick off|begin|run)\b.*\b(mission|campaign|project|initiative|task)\b",  # noqa: E501
     r"\b(launch|start|create|initiate)\b\s+(.+)",
     r"\bi want (?:you )?to\b.+",
     r"\blet'?s\b.*\b(do|work on|build|make)\b",

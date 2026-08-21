@@ -1281,8 +1281,8 @@ def run_goal(
                     _iso_feature_flags = {
                         "isolated_agent_execution": _iso_flags.isolated_agent_execution,
                         "isolated_execution_required": _iso_flags.isolated_execution_required,
-                        "isolated_execution_local_runner": _iso_flags.isolated_execution_local_runner,
-                        "isolated_execution_kubernetes_runner": _iso_flags.isolated_execution_kubernetes_runner,
+                        "isolated_execution_local_runner": _iso_flags.isolated_execution_local_runner,  # noqa: E501
+                        "isolated_execution_kubernetes_runner": _iso_flags.isolated_execution_kubernetes_runner,  # noqa: E501
                         "dynamic_orchestration": _iso_flags.dynamic_orchestration,
                         "agentic_rag": _iso_flags.agentic_rag,
                     }
@@ -2884,7 +2884,7 @@ def civilization_tick(civilization_id: str, tenant_id: str) -> dict:
                     row = (
                         await session.execute(
                             text(
-                                "SELECT constitution FROM civilizations WHERE id=:id AND tenant_id=:tid"
+                                "SELECT constitution FROM civilizations WHERE id=:id AND tenant_id=:tid"  # noqa: E501
                             ),
                             {"id": civilization_id, "tid": tenant_id},
                         )
@@ -3192,7 +3192,7 @@ def expire_stale_documents() -> dict:
             async with db() as session:
                 result = await session.execute(
                     text(
-                        f"DELETE FROM documents WHERE created_at < NOW() - INTERVAL '{retention_days} days' "
+                        f"DELETE FROM documents WHERE created_at < NOW() - INTERVAL '{retention_days} days' "  # noqa: E501
                         "RETURNING id"
                     )
                 )
@@ -3419,7 +3419,7 @@ def process_feedback_batch(self: Any) -> dict[str, Any]:  # type: ignore[misc]
                 rows = (
                     await session.execute(
                         _t(
-                            "SELECT DISTINCT tenant_id FROM goal_feedback WHERE processed_at IS NULL LIMIT 500"
+                            "SELECT DISTINCT tenant_id FROM goal_feedback WHERE processed_at IS NULL LIMIT 500"  # noqa: E501
                         )
                     )
                 ).fetchall()

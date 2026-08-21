@@ -33,7 +33,7 @@ TOOL_DEFINITIONS = [
                 },
                 "time_min": {
                     "type": "string",
-                    "description": "RFC3339 datetime; only events after this time (e.g. 2024-01-01T00:00:00Z)",
+                    "description": "RFC3339 datetime; only events after this time (e.g. 2024-01-01T00:00:00Z)",  # noqa: E501
                 },
                 "time_max": {
                     "type": "string",

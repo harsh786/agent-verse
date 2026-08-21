@@ -272,7 +272,7 @@ class UsageAlertService:
             body=(
                 f"{'⚠️' if pct < 1.0 else '🚨'} {resource.title()} usage: "
                 f"{current:.0f}/{limit:.0f} ({pct * 100:.0f}%)\n"
-                f"{'Upgrade plan or increase limit to avoid service interruption.' if pct >= 0.95 else 'Consider upgrading.'}"
+                f"{'Upgrade plan or increase limit to avoid service interruption.' if pct >= 0.95 else 'Consider upgrading.'}"  # noqa: E501
             ),
             requires_action=pct >= 0.95,
         )

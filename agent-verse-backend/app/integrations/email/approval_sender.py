@@ -56,16 +56,16 @@ async def send_approval_email(
         html = f"""<!DOCTYPE html>
 <html><body style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;">
 <h2 style="color:#1e40af;">Action Required: Agent Approval</h2>
-<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin:16px 0;">
+<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin:16px 0;">  # noqa: E501
   <p><strong>Goal:</strong> {goal_description[:200]}</p>
   <p><strong>Action needing approval:</strong> {step_description[:300]}</p>
 </div>
 <p>The autonomous agent is waiting for your decision before proceeding.</p>
 <div style="margin:24px 0;">
-  <a href="{approve_url}" style="background:#16a34a;color:white;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;margin-right:12px;">Approve</a>
-  <a href="{reject_url}" style="background:#dc2626;color:white;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;">Reject</a>
+  <a href="{approve_url}" style="background:#16a34a;color:white;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;margin-right:12px;">Approve</a>  # noqa: E501
+  <a href="{reject_url}" style="background:#dc2626;color:white;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;">Reject</a>  # noqa: E501
 </div>
-<p style="color:#64748b;font-size:12px;">Links expire in 24 hours. To approve/reject with notes, visit the <a href="{frontend_url}/approvals">Approval Inbox</a>.</p>
+<p style="color:#64748b;font-size:12px;">Links expire in 24 hours. To approve/reject with notes, visit the <a href="{frontend_url}/approvals">Approval Inbox</a>.</p>  # noqa: E501
 </body></html>"""
 
         msg = MIMEMultipart("alternative")

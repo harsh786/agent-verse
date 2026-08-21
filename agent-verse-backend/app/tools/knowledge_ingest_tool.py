@@ -44,7 +44,7 @@ class KnowledgeIngestTool:
             },
             "collection_id": {
                 "type": "string",
-                "description": "Target knowledge collection ID. Uses agent default if not specified.",
+                "description": "Target knowledge collection ID. Uses agent default if not specified.",  # noqa: E501
             },
             "title": {
                 "type": "string",
@@ -52,7 +52,7 @@ class KnowledgeIngestTool:
             },
             "wait_for_completion": {
                 "type": "boolean",
-                "description": "Block until content is indexed (default: true). Set false for fire-and-forget.",
+                "description": "Block until content is indexed (default: true). Set false for fire-and-forget.",  # noqa: E501
                 "default": True,
             },
             "dry_run": {

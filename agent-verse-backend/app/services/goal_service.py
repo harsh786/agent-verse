@@ -195,7 +195,7 @@ def _resolve_checkpointer(app_state: Any) -> Any:
                 "redis_saver_unavailable_falling_back_to_memory",
                 redis_url=redis_url[:30],
                 error=str(_e2),
-                impact="GOAL STATE WILL BE LOST ON PROCESS RESTART — install langgraph-checkpoint-redis",
+                impact="GOAL STATE WILL BE LOST ON PROCESS RESTART — install langgraph-checkpoint-redis",  # noqa: E501
             )
             _svc_logger.warning(_msg)
     else:
@@ -206,7 +206,7 @@ def _resolve_checkpointer(app_state: Any) -> Any:
         )
         _svc_logger.warning(
             "no_redis_url_using_memory_saver",
-            impact="GOAL STATE WILL BE LOST ON PROCESS RESTART — set REDIS_URL environment variable",
+            impact="GOAL STATE WILL BE LOST ON PROCESS RESTART — set REDIS_URL environment variable",  # noqa: E501
         )
         _svc_logger.warning(_msg2)
     return MemorySaver()
@@ -2657,10 +2657,10 @@ class GoalService:
                         SELECT
                           COUNT(*) FILTER (WHERE status IN ('complete','completed')) AS completed,
                           COUNT(*) FILTER (WHERE status IN ('failed','error')) AS failed,
-                          COUNT(*) FILTER (WHERE status IN ('planning','executing','waiting_human')) AS active,
+                          COUNT(*) FILTER (WHERE status IN ('planning','executing','waiting_human')) AS active,  # noqa: E501
                           COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
-                          COUNT(*) FILTER (WHERE status IN ('complete','completed') AND created_at::date = CURRENT_DATE) AS completed_today,
-                          AVG(EXTRACT(EPOCH FROM (completed_at - created_at))*1000) FILTER (WHERE status IN ('complete','completed') AND completed_at IS NOT NULL) AS avg_latency_ms,
+                          COUNT(*) FILTER (WHERE status IN ('complete','completed') AND created_at::date = CURRENT_DATE) AS completed_today,  # noqa: E501
+                          AVG(EXTRACT(EPOCH FROM (completed_at - created_at))*1000) FILTER (WHERE status IN ('complete','completed') AND completed_at IS NOT NULL) AS avg_latency_ms,  # noqa: E501
                           COUNT(*) FILTER (WHERE created_at::date = CURRENT_DATE) AS submitted_today
                         FROM goals WHERE tenant_id = :tid
                     """),

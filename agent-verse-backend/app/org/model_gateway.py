@@ -176,7 +176,7 @@ class ModelGateway:
                     continue
                 if latency_budget_s > 0 and profile.latency_slo > latency_budget_s * 1.5:
                     skip_reasons.append(
-                        f"{name}: latency SLO {profile.latency_slo}s exceeds budget {latency_budget_s}s"
+                        f"{name}: latency SLO {profile.latency_slo}s exceeds budget {latency_budget_s}s"  # noqa: E501
                     )
                     continue
                 if has_pii and "gpt" in profile.primary.lower():

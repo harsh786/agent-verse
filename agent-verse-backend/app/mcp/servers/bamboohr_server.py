@@ -43,7 +43,7 @@ TOOL_DEFINITIONS = [
                 "employee_id": {"type": "string", "description": "Employee ID or 'self'"},
                 "fields": {
                     "type": "string",
-                    "description": "Comma-separated field names, e.g. 'firstName,lastName,jobTitle,department'",
+                    "description": "Comma-separated field names, e.g. 'firstName,lastName,jobTitle,department'",  # noqa: E501
                     "default": "firstName,lastName,jobTitle,department,workEmail,hireDate",
                 },
             },

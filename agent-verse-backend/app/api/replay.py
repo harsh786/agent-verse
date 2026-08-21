@@ -47,7 +47,7 @@ async def replay_goal(
             goal_row = (
                 await session.execute(
                     text(
-                        "SELECT id, goal_text, status, created_at, completed_at FROM goals WHERE id=:gid AND tenant_id=:tid"
+                        "SELECT id, goal_text, status, created_at, completed_at FROM goals WHERE id=:gid AND tenant_id=:tid"  # noqa: E501
                     ),
                     {"gid": goal_id, "tid": tenant_ctx.tenant_id},
                 )
@@ -99,7 +99,7 @@ async def replay_goal(
             evals = (
                 await session.execute(
                     text(
-                        "SELECT scores, average_score, created_at FROM evaluations WHERE goal_id=:gid AND tenant_id=:tid"
+                        "SELECT scores, average_score, created_at FROM evaluations WHERE goal_id=:gid AND tenant_id=:tid"  # noqa: E501
                     ),
                     {"gid": goal_id, "tid": tenant_ctx.tenant_id},
                 )

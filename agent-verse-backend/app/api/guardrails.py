@@ -141,7 +141,7 @@ async def list_guardrail_configs(
                         _sql(
                             "SELECT id, tenant_id, agent_id, name, layer, rule_type, "
                             "config, severity, action, enabled, created_at "
-                            "FROM guardrail_configs WHERE tenant_id = :tid ORDER BY created_at DESC",
+                            "FROM guardrail_configs WHERE tenant_id = :tid ORDER BY created_at DESC",  # noqa: E501
                         ),
                         {"tid": tenant_id},
                     )

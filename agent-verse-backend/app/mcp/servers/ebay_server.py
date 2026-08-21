@@ -85,7 +85,7 @@ TOOL_DEFINITIONS = [
                 "metric_keys": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Metric keys e.g. SALES_CONVERSION_RATE, TRANSACTION, LISTING_IMPRESSION_TOTAL",
+                    "description": "Metric keys e.g. SALES_CONVERSION_RATE, TRANSACTION, LISTING_IMPRESSION_TOTAL",  # noqa: E501
                 },
             },
         },
@@ -99,7 +99,7 @@ TOOL_DEFINITIONS = [
                 "keywords": {"type": "string", "description": "Keyword string to search for"},
                 "sort_order": {
                     "type": "string",
-                    "description": "Sort order: BestMatch, CurrentPriceHighest, PricePlusShippingLowest",
+                    "description": "Sort order: BestMatch, CurrentPriceHighest, PricePlusShippingLowest",  # noqa: E501
                     "default": "BestMatch",
                 },
                 "page_number": {

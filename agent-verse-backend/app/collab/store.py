@@ -269,7 +269,7 @@ class CollaborationStore:
                     )
                     current_v = max_result.scalar() or 0
                     raise VersionConflictError(
-                        f"Optimistic concurrency conflict: expected {expected_version}, current {current_v}",
+                        f"Optimistic concurrency conflict: expected {expected_version}, current {current_v}",  # noqa: E501
                         current_version=current_v,
                         expected_version=expected_version,
                     )

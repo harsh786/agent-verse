@@ -113,7 +113,7 @@ TOOL_DEFINITIONS = [
                 "project": {"type": "string"},
                 "wiql_query": {
                     "type": "string",
-                    "description": "WIQL query string (e.g. SELECT [System.Id],[System.Title] FROM WorkItems WHERE [System.TeamProject] = @project)",
+                    "description": "WIQL query string (e.g. SELECT [System.Id],[System.Title] FROM WorkItems WHERE [System.TeamProject] = @project)",  # noqa: E501
                 },
                 "top": {"type": "integer", "default": 50},
             },
@@ -294,7 +294,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
                 details_url,
                 params={
                     "ids": ",".join(ids),
-                    "fields": "System.Id,System.Title,System.State,System.AssignedTo,System.WorkItemType,System.Tags",
+                    "fields": "System.Id,System.Title,System.State,System.AssignedTo,System.WorkItemType,System.Tags",  # noqa: E501
                     "api-version": _API_VERSION,
                 },
             )

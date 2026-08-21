@@ -61,7 +61,7 @@ TOOL_DEFINITIONS = [
                 "model": {
                     "type": "string",
                     "default": "text-embedding-3-small",
-                    "description": "Embedding model: text-embedding-3-small, text-embedding-3-large, text-embedding-ada-002",
+                    "description": "Embedding model: text-embedding-3-small, text-embedding-3-large, text-embedding-ada-002",  # noqa: E501
                 },
                 "encoding_format": {
                     "type": "string",
@@ -249,7 +249,7 @@ TOOL_DEFINITIONS = [
                 "tools": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "Tools available to the assistant, e.g. [{'type': 'code_interpreter'}]",
+                    "description": "Tools available to the assistant, e.g. [{'type': 'code_interpreter'}]",  # noqa: E501
                 },
                 "file_ids": {
                     "type": "array",

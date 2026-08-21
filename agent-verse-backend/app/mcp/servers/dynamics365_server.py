@@ -25,7 +25,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "select": {
                     "type": "string",
-                    "description": "Comma-separated fields to return, e.g. 'name,telephone1,websiteurl'",
+                    "description": "Comma-separated fields to return, e.g. 'name,telephone1,websiteurl'",  # noqa: E501
                 },
                 "filter": {
                     "type": "string",
@@ -64,7 +64,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "select": {
                     "type": "string",
-                    "description": "Comma-separated fields, e.g. 'firstname,lastname,emailaddress1'",
+                    "description": "Comma-separated fields, e.g. 'firstname,lastname,emailaddress1'",  # noqa: E501
                 },
                 "filter": {"type": "string", "description": "OData $filter expression"},
                 "top": {"type": "integer", "default": 50},

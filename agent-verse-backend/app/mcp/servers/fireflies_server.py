@@ -85,7 +85,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "fireflies_add_to_meeting",
-        "description": "Add Fireflies bot to an active or upcoming meeting to record and transcribe",
+        "description": "Add Fireflies bot to an active or upcoming meeting to record and transcribe",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

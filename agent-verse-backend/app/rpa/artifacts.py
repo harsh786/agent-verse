@@ -123,11 +123,11 @@ class MinIOArtifactStore:
                 aws_secret_access_key=self._secret_key,
                 region_name="us-east-1",  # MinIO ignores region but boto3 requires it
             )
-        except ImportError:
+        except ImportError as _b904_exc:
             raise RuntimeError(
                 "aioboto3 not installed. Run: pip install aioboto3\n"
                 "For local development, MinIO is included in docker-compose.yml"
-            )
+            ) from _b904_exc
 
     async def _ensure_bucket(self, client: Any) -> None:
         try:

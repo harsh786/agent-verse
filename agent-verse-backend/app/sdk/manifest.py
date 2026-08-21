@@ -44,8 +44,8 @@ class AgentManifest:
     def from_yaml(cls, path: str) -> AgentManifest:
         try:
             import yaml
-        except ImportError:
-            raise ImportError("pyyaml is required: pip install pyyaml")
+        except ImportError as _b904_exc:
+            raise ImportError("pyyaml is required: pip install pyyaml") from _b904_exc
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
         return cls._from_dict(data)

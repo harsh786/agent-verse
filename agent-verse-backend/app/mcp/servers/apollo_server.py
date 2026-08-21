@@ -20,7 +20,7 @@ APOLLO_BASE = "https://api.apollo.io/v1"
 TOOL_DEFINITIONS = [
     {
         "name": "apollo_search_people",
-        "description": "Search Apollo.io for people matching filters (title, company, location, etc.)",
+        "description": "Search Apollo.io for people matching filters (title, company, location, etc.)",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

@@ -50,7 +50,7 @@ _CONNECTOR_AUTH_FIELDS: dict[str, list[AuthFieldSpec]] = {
             "Personal Access Token",
             "ghp_xxxxxxxxxxxx",
             "password",
-            hint="Create at github.com/settings/tokens — needs repo, read:org scopes. Used for both REST API and MCP server authentication.",
+            hint="Create at github.com/settings/tokens — needs repo, read:org scopes. Used for both REST API and MCP server authentication.",  # noqa: E501
         ),
         AuthFieldSpec(
             "url",
@@ -58,7 +58,7 @@ _CONNECTOR_AUTH_FIELDS: dict[str, list[AuthFieldSpec]] = {
             "https://api.githubcopilot.com/mcp/",
             "url",
             required=False,
-            hint="Official GitHub MCP server. Use https://api.githubcopilot.com/mcp/ (default) or your GitHub Enterprise MCP endpoint.",
+            hint="Official GitHub MCP server. Use https://api.githubcopilot.com/mcp/ (default) or your GitHub Enterprise MCP endpoint.",  # noqa: E501
         ),
     ],
     "confluence": [
@@ -162,7 +162,7 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
     # ── Original 9 ───────────────────────────────────────────────────────────
     ConnectorSpec(
         name="github",
-        description="GitHub — code repositories, PRs, issues, Actions (via official GitHub MCP Server)",
+        description="GitHub — code repositories, PRs, issues, Actions (via official GitHub MCP Server)",  # noqa: E501
         auth_type="bearer",
         default_url="https://api.githubcopilot.com/mcp/",
         icon="github",
@@ -487,7 +487,7 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
     ),
     ConnectorSpec(
         name="omnisend",
-        description="Omnisend — omnichannel marketing contacts, segments, campaigns, and event tracking",
+        description="Omnisend — omnichannel marketing contacts, segments, campaigns, and event tracking",  # noqa: E501
         auth_type="api_key",
         default_url="https://api.omnisend.com/v3",
         icon="omnisend",
@@ -622,7 +622,7 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
     # Transactional Email
     ConnectorSpec(
         name="postmark",
-        description="Postmark — transactional email sending, templates, streams, bounces, and stats",
+        description="Postmark — transactional email sending, templates, streams, bounces, and stats",  # noqa: E501
         auth_type="api_key",
         default_url="https://api.postmarkapp.com",
         icon="postmark",
@@ -777,7 +777,7 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
     ),
     ConnectorSpec(
         name="snovio",
-        description="Snov.io — lead generation: email finding, verification, and prospect management",
+        description="Snov.io — lead generation: email finding, verification, and prospect management",  # noqa: E501
         auth_type="oauth_ac",
         default_url="https://api.snov.io",
         icon="snovio",
@@ -1082,7 +1082,7 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
     ),
     ConnectorSpec(
         name="gumroad",
-        description="Gumroad — Gumroad digital product sales, subscriptions, and license management",
+        description="Gumroad — Gumroad digital product sales, subscriptions, and license management",  # noqa: E501
         auth_type="bearer",
         default_url="https://api.gumroad.com/v2",
         icon="gumroad",
@@ -1196,7 +1196,7 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
     ),
     ConnectorSpec(
         name="hootsuite",
-        description="Hootsuite — Hootsuite social media profile management, scheduling, and analytics",
+        description="Hootsuite — Hootsuite social media profile management, scheduling, and analytics",  # noqa: E501
         auth_type="bearer",
         default_url="https://platform.hootsuite.com/v1",
         icon="hootsuite",
@@ -1210,7 +1210,7 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
     ),
     ConnectorSpec(
         name="buffer",
-        description="Buffer — Buffer social media post scheduling, analytics, and profile management",
+        description="Buffer — Buffer social media post scheduling, analytics, and profile management",  # noqa: E501
         auth_type="bearer",
         default_url="https://api.bufferapp.com/1",
         icon="buffer",
@@ -1253,7 +1253,7 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
     ),
     ConnectorSpec(
         name="apache_kafka",
-        description="Apache Kafka — topic and consumer-group management via Confluent Cloud REST Proxy",
+        description="Apache Kafka — topic and consumer-group management via Confluent Cloud REST Proxy",  # noqa: E501
         auth_type="api_key",
         default_url="https://api.example.com",
         icon="apache_kafka",

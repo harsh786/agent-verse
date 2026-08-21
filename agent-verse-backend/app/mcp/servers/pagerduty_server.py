@@ -290,7 +290,7 @@ async def call_tool(
                 from_email = os.getenv("PAGERDUTY_FROM_EMAIL", "")
                 if not from_email:
                     return {
-                        "error": "PAGERDUTY_FROM_EMAIL not configured (required for incident creation)"
+                        "error": "PAGERDUTY_FROM_EMAIL not configured (required for incident creation)"  # noqa: E501
                     }
                 incident: dict[str, Any] = {
                     "type": "incident",

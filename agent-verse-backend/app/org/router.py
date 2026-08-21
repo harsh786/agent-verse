@@ -11,12 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-
-import structlog
 from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import uuid4
 
+import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -868,7 +867,7 @@ async def list_org_approvals(
         except Exception:
             pending = []
 
-        # Filter approvals related to this org's missions (by goal_id prefix or all if no mission match)
+        # Filter approvals related to this org's missions (by goal_id prefix or all if no mission match)  # noqa: E501
         results = []
         for req in pending:
             if status and getattr(req, "status", None) and req.status.value != status:

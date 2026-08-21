@@ -39,17 +39,17 @@ Your task: determine whether the OVERALL GOAL has been sufficiently achieved.
 Respond with ONLY a valid JSON object — no other text:
 {"success": true, "reason": "Goal was achieved because..."}
 or
-{"success": false, "reason": "Goal not achieved: specifically, X was missing or wrong", "retry": true}
+{"success": false, "reason": "Goal not achieved: specifically, X was missing or wrong", "retry": true}  # noqa: E501
 or
 {"success": false, "reason": "Goal cannot be achieved: Y is fundamentally blocked", "retry": false}
 
 Rules:
 - "success": boolean — true only if the goal is genuinely, fully achieved
 - "reason": string — specific, actionable explanation
-- "retry": boolean (only when success=false) — true if replanning could fix it, false if permanently blocked
+- "retry": boolean (only when success=false) — true if replanning could fix it, false if permanently blocked  # noqa: E501
 - NEVER output markdown, code blocks, or any text outside the JSON object
 - CRITICAL: if any step shows [TOOL FAILED] or [STEP ERROR], the goal is NOT successfully achieved
-- CRITICAL: if the step output is a raw Python error (e.g. "'jql'" or "KeyError") rather than actual data, the goal FAILED
+- CRITICAL: if the step output is a raw Python error (e.g. "'jql'" or "KeyError") rather than actual data, the goal FAILED  # noqa: E501
 - CRITICAL: "Found 0 issues" when issues were expected is a FAILURE unless 0 is the correct answer
 - CRITICAL: a tool being called is NOT sufficient for success — the tool must return actual results
 """
@@ -82,7 +82,7 @@ Given a goal and available tools, produce a JSON execution plan.
 
 RULES:
 - Each step MUST reference the exact tool name from the available tools list, or null if no tool needed
-- risk: "read" for read-only, "write_low" for reversible writes, "write_high" for important writes, "destructive" for irreversible deletes
+- risk: "read" for read-only, "write_low" for reversible writes, "write_high" for important writes, "destructive" for irreversible deletes  # noqa: E501
 - depends_on contains step IDs that must complete before this step can run
 - Steps with no unmet dependencies can run in parallel
 
@@ -156,7 +156,7 @@ Respond ONLY with valid JSON: {"grounded": true/false, "reason": "brief explanat
 # Phase 3 Track C — citation-carrying synthesis prompt
 # ---------------------------------------------------------------------------
 
-SYNTHESIS_SYSTEM = """You are a synthesis agent that produces a final, cited answer from completed steps.
+SYNTHESIS_SYSTEM = """You are a synthesis agent that produces a final, cited answer from completed steps.  # noqa: E501
 
 Rules:
 1. Every factual claim (number, name, ID, date, status) MUST be cited with [Step N]
@@ -168,7 +168,7 @@ Rules:
 Cite step outputs like: "Found 12 open tickets [Step 1] including JIRA-101 [Step 1]."
 """
 
-JUDGE_RUBRIC_SYSTEM = """You are an independent LLM Judge evaluating whether an AI agent achieved its goal.
+JUDGE_RUBRIC_SYSTEM = """You are an independent LLM Judge evaluating whether an AI agent achieved its goal.  # noqa: E501
 
 Scoring rubric:
 1. ACCURACY (0-3): Did the agent's actions match what the goal required?
@@ -179,7 +179,7 @@ Scoring rubric:
 Total score 8-10 = SUCCESS, 0-7 = FAILURE.
 
 You must disagree with prior verifiers if the evidence warrants it.
-Reply with ONLY valid JSON: {"success": true/false, "reason": "rubric scores + brief justification", "confidence": 0.0-1.0}"""
+Reply with ONLY valid JSON: {"success": true/false, "reason": "rubric scores + brief justification", "confidence": 0.0-1.0}"""  # noqa: E501
 
 SELF_REFINE_SYSTEM = """\
 You are a self-refinement agent. You have just produced an output for a task.
@@ -192,7 +192,7 @@ Review checklist:
 4. Is it concise? Can any verbosity be removed without losing meaning?
 5. Are there any errors (logic, code, grammar, format)?
 
-Produce an improved version. If the output is already excellent, return it unchanged with "NO_CHANGES_NEEDED" as the first line.
+Produce an improved version. If the output is already excellent, return it unchanged with "NO_CHANGES_NEEDED" as the first line.  # noqa: E501
 
 Respond with ONLY the refined output — no meta-commentary, no explanation of changes.
 """

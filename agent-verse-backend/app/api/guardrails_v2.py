@@ -58,12 +58,12 @@ async def create_rule(request: Request, body: CreateRuleRequest) -> dict[str, An
     try:
         layers = [GuardrailLayer(layer_val) for layer_val in body.layers]
     except ValueError as e:
-        raise HTTPException(400, f"Invalid layer: {e}")
+        raise HTTPException(400, f"Invalid layer: {e}") from e
 
     try:
         action = GuardrailAction(body.action)
-    except ValueError:
-        raise HTTPException(400, f"Invalid action: {body.action}")
+    except ValueError as _b904_exc:
+        raise HTTPException(400, f"Invalid action: {body.action}") from _b904_exc
 
     rule = GuardrailRule(
         rule_id=str(uuid.uuid4()),
@@ -114,8 +114,8 @@ async def evaluate_content(request: Request, body: EvaluateRequest) -> dict[str,
 
     try:
         layer = GuardrailLayer(body.layer)
-    except ValueError:
-        raise HTTPException(400, f"Invalid layer: {body.layer}")
+    except ValueError as _b904_exc:
+        raise HTTPException(400, f"Invalid layer: {body.layer}") from _b904_exc
 
     result = await guardrails_engine.evaluate(
         content=body.content,
@@ -177,9 +177,9 @@ async def enable_compliance_bundle(request: Request, bundle_name: str) -> dict[s
 
     try:
         bundle = ComplianceBundle(bundle_name)
-    except ValueError:
+    except ValueError as _b904_exc:
         valid = [b.value for b in ComplianceBundle]
-        raise HTTPException(400, f"Unknown bundle: {bundle_name}. Valid: {valid}")
+        raise HTTPException(400, f"Unknown bundle: {bundle_name}. Valid: {valid}") from _b904_exc
 
     bundle_rules = COMPLIANCE_BUNDLES.get(bundle, [])
     created = []

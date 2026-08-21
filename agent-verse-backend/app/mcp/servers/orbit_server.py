@@ -21,7 +21,7 @@ ORBIT_BASE = "https://app.orbit.love/api/v1"
 TOOL_DEFINITIONS = [
     {
         "name": "orbit_list_members",
-        "description": "List community members in an Orbit workspace with optional filtering and pagination",
+        "description": "List community members in an Orbit workspace with optional filtering and pagination",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

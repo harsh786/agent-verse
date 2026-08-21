@@ -57,7 +57,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "properties": {
                     "type": "object",
-                    "description": "Contact properties, e.g. {email: ..., firstname: ..., lastname: ...}",
+                    "description": "Contact properties, e.g. {email: ..., firstname: ..., lastname: ...}",  # noqa: E501
                 },
             },
             "required": ["properties"],
@@ -121,7 +121,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "properties": {
                     "type": "object",
-                    "description": "Deal properties, e.g. {dealname: ..., amount: ..., dealstage: ...}",
+                    "description": "Deal properties, e.g. {dealname: ..., amount: ..., dealstage: ...}",  # noqa: E501
                 },
             },
             "required": ["properties"],

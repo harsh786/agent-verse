@@ -222,23 +222,23 @@ def resolve_provider(
 
     _FAKE_RESPONSES = [
         # Planner call 1 — returns a valid JSON plan
-        '{"steps": ["Analyse the goal and gather relevant context", "Research and compile key findings", "Synthesise results and identify patterns", "Draft comprehensive answer with evidence", "Review and refine the final output"]}',
+        '{"steps": ["Analyse the goal and gather relevant context", "Research and compile key findings", "Synthesise results and identify patterns", "Draft comprehensive answer with evidence", "Review and refine the final output"]}',  # noqa: E501
         # Executor call 1 — execution result
-        "I have analysed the goal thoroughly. Initial context gathered and key parameters identified. Proceeding with research phase.",
+        "I have analysed the goal thoroughly. Initial context gathered and key parameters identified. Proceeding with research phase.",  # noqa: E501
         # Verifier call 1 — success
-        '{"success": true, "feedback": "Step completed successfully. Findings are relevant and accurate. Proceeding to next step."}',
+        '{"success": true, "feedback": "Step completed successfully. Findings are relevant and accurate. Proceeding to next step."}',  # noqa: E501
         # Executor call 2
-        "Research complete. Key findings compiled: multiple relevant data points discovered, patterns identified, and insights formulated based on available knowledge.",
+        "Research complete. Key findings compiled: multiple relevant data points discovered, patterns identified, and insights formulated based on available knowledge.",  # noqa: E501
         # Verifier call 2
         '{"success": true, "feedback": "Research step verified. High confidence in findings."}',
         # Executor call 3
-        "Synthesis complete. Patterns identified and cross-referenced. Comprehensive analysis ready for final compilation.",
+        "Synthesis complete. Patterns identified and cross-referenced. Comprehensive analysis ready for final compilation.",  # noqa: E501
         # Verifier call 3
         '{"success": true, "feedback": "Synthesis verified. Ready for final output."}',
         # Executor call 4
-        "Final output drafted. Comprehensive, well-structured response addressing all aspects of the goal with supporting evidence and clear conclusions.",
+        "Final output drafted. Comprehensive, well-structured response addressing all aspects of the goal with supporting evidence and clear conclusions.",  # noqa: E501
         # Verifier call 4 — triggers completion
-        '{"success": true, "feedback": "Complete and comprehensive response. Goal fully achieved.", "complete": true}',
+        '{"success": true, "feedback": "Complete and comprehensive response. Goal fully achieved.", "complete": true}',  # noqa: E501
     ]
 
     return FakeProvider(responses=_FAKE_RESPONSES)

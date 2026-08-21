@@ -62,7 +62,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "ses_get_send_statistics",
-        "description": "Get sending statistics (bounces, complaints, delivery attempts) for the past two weeks",
+        "description": "Get sending statistics (bounces, complaints, delivery attempts) for the past two weeks",  # noqa: E501
         "parameters": {"type": "object", "properties": {}},
     },
     {

@@ -58,7 +58,7 @@ TOOL_DEFINITIONS = [
                 "name": {"type": "string", "description": "Monitor name"},
                 "type": {
                     "type": "string",
-                    "description": "Monitor type, e.g. 'metric alert', 'log alert', 'service check'",
+                    "description": "Monitor type, e.g. 'metric alert', 'log alert', 'service check'",  # noqa: E501
                 },
                 "query": {"type": "string", "description": "Monitor query string"},
                 "message": {"type": "string", "description": "Notification message"},

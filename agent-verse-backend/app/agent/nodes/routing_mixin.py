@@ -83,7 +83,7 @@ class RoutingMixin:
                 )
                 # Emit is async; record intent in context and let the execute
                 # node pick it up at start of next iteration via event_callback.
-                agent_state.context["_pending_events"] = [*agent_state.context.get("_pending_events", []), {"type": "stuck_loop_detected", "goal_id": agent_state.goal_id, "message": "3 consecutive step failures — forcing replan"}]
+                agent_state.context["_pending_events"] = [*agent_state.context.get("_pending_events", []), {"type": "stuck_loop_detected", "goal_id": agent_state.goal_id, "message": "3 consecutive step failures — forcing replan"}]  # noqa: E501
                 return "replan"
         except Exception:
             pass  # never crash routing

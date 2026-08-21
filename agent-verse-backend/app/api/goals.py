@@ -1086,8 +1086,8 @@ async def get_goal_explanation(request: Request, goal_id: str) -> dict[str, Any]
     svc = _goal_service(request)
     try:
         goal = await svc.get_goal(goal_id=goal_id, tenant_ctx=tenant)
-    except Exception:
-        raise HTTPException(status_code=404, detail=f"Goal {goal_id} not found")
+    except Exception as _b904_exc:
+        raise HTTPException(status_code=404, detail=f"Goal {goal_id} not found") from _b904_exc
     ctx = goal.get("execution_context") or {}
     return {
         "goal_id": goal_id,

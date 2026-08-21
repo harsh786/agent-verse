@@ -203,7 +203,7 @@ class PromptOptimizer:
             async with db() as session, session.begin():
                 await session.execute(
                     text(
-                        f"UPDATE prompt_variants SET {col} = {col} + 1, updated_at = NOW() WHERE id = :id"
+                        f"UPDATE prompt_variants SET {col} = {col} + 1, updated_at = NOW() WHERE id = :id"  # noqa: E501
                     ),
                     {"id": variant_id},
                 )

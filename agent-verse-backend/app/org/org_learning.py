@@ -112,7 +112,7 @@ class OrgLearningPipeline:
                 OrgLesson(
                     lesson_id=self._lid("team", mission_id),
                     category=LearningCategory.TEAM_COMPOSITION,
-                    content=f"Team of {len(team)} agents with roles {[a.get('role', '?') for a in team[:4]]} achieved outcome: {outcome}",
+                    content=f"Team of {len(team)} agents with roles {[a.get('role', '?') for a in team[:4]]} achieved outcome: {outcome}",  # noqa: E501
                     confidence=0.75 if outcome == "completed" else 0.60,
                     **base,
                 )
@@ -124,7 +124,7 @@ class OrgLearningPipeline:
                 OrgLesson(
                     lesson_id=self._lid("model", mission_id),
                     category=LearningCategory.MODEL_ROUTING,
-                    content=f"Models used: {models_used}. Outcome: {outcome}. Success rate implies routing quality.",
+                    content=f"Models used: {models_used}. Outcome: {outcome}. Success rate implies routing quality.",  # noqa: E501
                     confidence=0.70,
                     **base,
                 )
@@ -138,7 +138,7 @@ class OrgLearningPipeline:
                 OrgLesson(
                     lesson_id=self._lid("cost", mission_id),
                     category=LearningCategory.COST_PATTERNS,
-                    content=f"Mission cost ${cost:.2f} vs estimated ${estimated:.2f} ({ratio:.1f}x). Goal type: {mission_data.get('goal_type', 'unknown')}",
+                    content=f"Mission cost ${cost:.2f} vs estimated ${estimated:.2f} ({ratio:.1f}x). Goal type: {mission_data.get('goal_type', 'unknown')}",  # noqa: E501
                     confidence=0.80,
                     **base,
                 )
@@ -150,7 +150,7 @@ class OrgLearningPipeline:
                 OrgLesson(
                     lesson_id=self._lid("risk", mission_id),
                     category=LearningCategory.RISK_INDICATORS,
-                    content=f"Mission failed: {mission_data.get('failure_reason', 'unknown reason')}. Risk level was {mission_data.get('risk_level', 'unknown')}.",
+                    content=f"Mission failed: {mission_data.get('failure_reason', 'unknown reason')}. Risk level was {mission_data.get('risk_level', 'unknown')}.",  # noqa: E501
                     confidence=0.85,
                     evidence=[mission_data.get("failure_reason", "")],
                     **base,
@@ -168,7 +168,7 @@ class OrgLearningPipeline:
             return ValidationResult(
                 passed=False,
                 score=lesson.confidence,
-                reason=f"Confidence {lesson.confidence:.2f} below threshold {self.MIN_CONFIDENCE_FOR_PROMOTION}",
+                reason=f"Confidence {lesson.confidence:.2f} below threshold {self.MIN_CONFIDENCE_FOR_PROMOTION}",  # noqa: E501
             )
 
         # Gate 2: Failed mission lessons go to quarantine

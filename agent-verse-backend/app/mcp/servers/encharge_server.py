@@ -20,7 +20,7 @@ ENCHARGE_BASE = "https://api.encharge.io/v1"
 TOOL_DEFINITIONS = [
     {
         "name": "encharge_create_user",
-        "description": "Create or upsert a user in Encharge with email, name, and custom attributes",
+        "description": "Create or upsert a user in Encharge with email, name, and custom attributes",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

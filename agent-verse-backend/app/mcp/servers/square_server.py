@@ -110,7 +110,7 @@ TOOL_DEFINITIONS = [
                 "types": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Catalog object types e.g. ['ITEM', 'ITEM_VARIATION', 'CATEGORY']",
+                    "description": "Catalog object types e.g. ['ITEM', 'ITEM_VARIATION', 'CATEGORY']",  # noqa: E501
                     "default": ["ITEM"],
                 },
                 "cursor": {"type": "string"},

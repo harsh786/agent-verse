@@ -19,7 +19,7 @@ BASE_URL = "https://people.googleapis.com/v1"
 TOOL_DEFINITIONS = [
     {
         "name": "google_contacts_list_contacts",
-        "description": "List all Google contacts for the authenticated user with optional field filtering",
+        "description": "List all Google contacts for the authenticated user with optional field filtering",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {
@@ -33,7 +33,7 @@ TOOL_DEFINITIONS = [
                 },
                 "person_fields": {
                     "type": "string",
-                    "description": "Comma-separated list of fields (e.g. names,emailAddresses,phoneNumbers)",
+                    "description": "Comma-separated list of fields (e.g. names,emailAddresses,phoneNumbers)",  # noqa: E501
                 },
             },
         },

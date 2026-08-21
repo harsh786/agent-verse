@@ -148,7 +148,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
     signing_secret = os.getenv("DOORDASH_SIGNING_SECRET", "")
     if not developer_id or not key_id or not signing_secret:
         return {
-            "error": "DOORDASH_DEVELOPER_ID, DOORDASH_KEY_ID, and DOORDASH_SIGNING_SECRET not configured"
+            "error": "DOORDASH_DEVELOPER_ID, DOORDASH_KEY_ID, and DOORDASH_SIGNING_SECRET not configured"  # noqa: E501
         }
 
     token = _make_jwt()

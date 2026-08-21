@@ -95,7 +95,7 @@ class OrgLoopDetector:
             return LoopDetection(
                 detected=True,
                 pattern="agent_pingpong",
-                details=f"Delegation depth {len(chain)} exceeds max {EXECUTION_BUDGETS['max_delegation_depth']}",
+                details=f"Delegation depth {len(chain)} exceeds max {EXECUTION_BUDGETS['max_delegation_depth']}",  # noqa: E501
                 recommended_action="kill_and_escalate",
             )
         return LoopDetection(detected=False)
@@ -133,7 +133,7 @@ class OrgLoopDetector:
             return LoopDetection(
                 detected=True,
                 pattern="cost_runaway",
-                details=f"Spent ${spent_usd:.2f} vs budget ${budget_usd:.2f} ({spent_usd / budget_usd:.1f}x)",
+                details=f"Spent ${spent_usd:.2f} vs budget ${budget_usd:.2f} ({spent_usd / budget_usd:.1f}x)",  # noqa: E501
                 recommended_action="pause_and_alert",
             )
         return LoopDetection(detected=False)

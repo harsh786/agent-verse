@@ -52,7 +52,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "google_mybusiness_update_location",
-        "description": "Update business location attributes such as hours, description, or contact info",
+        "description": "Update business location attributes such as hours, description, or contact info",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

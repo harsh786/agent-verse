@@ -97,7 +97,7 @@ class ServiceNowConnector(BaseConnector):
                         )
                         sys_id = rec.get("sys_id", "")
                         number = rec.get("number") or sys_id
-                        text = f"[{table.upper()}] {number}: {short_desc}\nUpdated: {updated}\n\n{body}"
+                        text = f"[{table.upper()}] {number}: {short_desc}\nUpdated: {updated}\n\n{body}"  # noqa: E501
                         doc = RawDocument(
                             doc_id=str(uuid.uuid4()),
                             source_id=config.source_id,

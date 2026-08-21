@@ -46,7 +46,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "phantombuster_get_agent_output",
-        "description": "Get the output data from a PhantomBuster agent's latest or specific execution",
+        "description": "Get the output data from a PhantomBuster agent's latest or specific execution",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

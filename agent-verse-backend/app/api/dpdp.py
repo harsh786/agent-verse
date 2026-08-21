@@ -72,7 +72,7 @@ async def get_consents(data_principal_id: str, request: Request) -> list[dict[st
         rows = (
             await session.execute(
                 text(
-                    "SELECT id, purpose, consent_given, consent_timestamp FROM dpdp_consents WHERE tenant_id = :tid AND data_principal_id = :dpid ORDER BY consent_timestamp DESC"
+                    "SELECT id, purpose, consent_given, consent_timestamp FROM dpdp_consents WHERE tenant_id = :tid AND data_principal_id = :dpid ORDER BY consent_timestamp DESC"  # noqa: E501
                 ),
                 {"tid": tenant.tenant_id, "dpid": data_principal_id},
             )
@@ -97,7 +97,7 @@ async def request_erasure(body: ErasureRequest, request: Request) -> dict[str, A
     async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
         await session.execute(
             text(
-                "INSERT INTO dpdp_erasure_requests (id, tenant_id, data_principal_id, status) VALUES (:id, :tid, :dpid, 'pending')"
+                "INSERT INTO dpdp_erasure_requests (id, tenant_id, data_principal_id, status) VALUES (:id, :tid, :dpid, 'pending')"  # noqa: E501
             ),
             {"id": req_id, "tid": tenant.tenant_id, "dpid": body.data_principal_id},
         )
@@ -105,7 +105,7 @@ async def request_erasure(body: ErasureRequest, request: Request) -> dict[str, A
     return {
         "request_id": req_id,
         "status": "accepted",
-        "message": "Erasure request recorded. Personal data will be deleted within 30 days via our automated erasure pipeline.",
+        "message": "Erasure request recorded. Personal data will be deleted within 30 days via our automated erasure pipeline.",  # noqa: E501
         "grievance_officer": "dpo@agentverse.ai",
     }
 

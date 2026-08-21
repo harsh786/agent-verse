@@ -127,7 +127,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     params["pageSize"] = arguments["page_size"]
                 if "filter_field" in arguments:
                     params["Filter1"] = (
-                        f"{arguments['filter_field']} {arguments.get('filter_operator', 'Is')} {arguments.get('filter_value', '')}"
+                        f"{arguments['filter_field']} {arguments.get('filter_operator', 'Is')} {arguments.get('filter_value', '')}"  # noqa: E501
                     )
                 r = await client.get(
                     f"{base_url}/forms/{form_hash}/entries.json",

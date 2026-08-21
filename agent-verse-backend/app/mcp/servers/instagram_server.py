@@ -27,11 +27,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "account_id": {
                     "type": "string",
-                    "description": "Account ID (uses INSTAGRAM_BUSINESS_ACCOUNT_ID if not provided)",
+                    "description": "Account ID (uses INSTAGRAM_BUSINESS_ACCOUNT_ID if not provided)",  # noqa: E501
                 },
                 "fields": {
                     "type": "string",
-                    "default": "id,username,name,biography,followers_count,media_count,profile_picture_url",
+                    "default": "id,username,name,biography,followers_count,media_count,profile_picture_url",  # noqa: E501
                 },
             },
         },
@@ -46,7 +46,7 @@ TOOL_DEFINITIONS = [
                 "limit": {"type": "integer", "default": 20},
                 "fields": {
                     "type": "string",
-                    "default": "id,caption,media_type,media_url,timestamp,like_count,comments_count",
+                    "default": "id,caption,media_type,media_url,timestamp,like_count,comments_count",  # noqa: E501
                 },
             },
         },
@@ -60,7 +60,7 @@ TOOL_DEFINITIONS = [
                 "media_id": {"type": "string"},
                 "fields": {
                     "type": "string",
-                    "default": "id,caption,media_type,media_url,timestamp,like_count,comments_count,insights",
+                    "default": "id,caption,media_type,media_url,timestamp,like_count,comments_count,insights",  # noqa: E501
                 },
             },
             "required": ["media_id"],

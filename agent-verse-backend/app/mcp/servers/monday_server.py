@@ -65,7 +65,7 @@ TOOL_DEFINITIONS = [
                 "group_id": {"type": "string", "description": "Group to add item to"},
                 "column_values": {
                     "type": "string",
-                    "description": 'JSON string of column values, e.g. \'{"status":{"label":"Done"}}\'',
+                    "description": 'JSON string of column values, e.g. \'{"status":{"label":"Done"}}\'',  # noqa: E501
                 },
             },
             "required": ["board_id", "item_name"],

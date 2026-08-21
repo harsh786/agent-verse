@@ -79,7 +79,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "notion_update_page",
-        "description": "Update properties of a Notion page (archive, title, or database properties)",
+        "description": "Update properties of a Notion page (archive, title, or database properties)",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

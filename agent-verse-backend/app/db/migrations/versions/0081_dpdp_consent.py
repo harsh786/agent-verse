@@ -35,7 +35,7 @@ def upgrade() -> None:
         op.execute(f"ALTER TABLE {tbl} ENABLE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE {tbl} FORCE ROW LEVEL SECURITY")
         op.execute(
-            f"CREATE POLICY tenant_isolation ON {tbl} USING (tenant_id = current_setting('app.tenant_id', TRUE)) WITH CHECK (tenant_id = current_setting('app.tenant_id', TRUE))"
+            f"CREATE POLICY tenant_isolation ON {tbl} USING (tenant_id = current_setting('app.tenant_id', TRUE)) WITH CHECK (tenant_id = current_setting('app.tenant_id', TRUE))"  # noqa: E501
         )
 
 

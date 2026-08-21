@@ -30,13 +30,13 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "gsc_query_search_analytics",
-        "description": "Query search performance data (clicks, impressions, CTR, position) with dimension breakdowns",
+        "description": "Query search performance data (clicks, impressions, CTR, position) with dimension breakdowns",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {
                 "site_url": {
                     "type": "string",
-                    "description": "Exact site URL as in Search Console (e.g. https://example.com/ or sc-domain:example.com)",
+                    "description": "Exact site URL as in Search Console (e.g. https://example.com/ or sc-domain:example.com)",  # noqa: E501
                 },
                 "start_date": {"type": "string", "description": "YYYY-MM-DD start date"},
                 "end_date": {"type": "string", "description": "YYYY-MM-DD end date"},

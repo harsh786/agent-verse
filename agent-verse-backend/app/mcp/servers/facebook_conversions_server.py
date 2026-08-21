@@ -21,13 +21,13 @@ logger = get_logger(__name__)
 TOOL_DEFINITIONS = [
     {
         "name": "facebook_conversions_send_event",
-        "description": "Send a generic server-side conversion event to Facebook via Conversions API",
+        "description": "Send a generic server-side conversion event to Facebook via Conversions API",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {
                 "event_name": {
                     "type": "string",
-                    "description": "Event name: Purchase, Lead, CompleteRegistration, AddToCart, etc.",
+                    "description": "Event name: Purchase, Lead, CompleteRegistration, AddToCart, etc.",  # noqa: E501
                 },
                 "event_time": {
                     "type": "integer",
@@ -39,7 +39,7 @@ TOOL_DEFINITIONS = [
                 },
                 "user_data": {
                     "type": "object",
-                    "description": "Hashed user identifiers: em (email), ph (phone), fn, ln, external_id",
+                    "description": "Hashed user identifiers: em (email), ph (phone), fn, ln, external_id",  # noqa: E501
                 },
                 "custom_data": {
                     "type": "object",

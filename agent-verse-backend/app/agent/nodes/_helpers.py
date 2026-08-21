@@ -43,7 +43,7 @@ def _build_verifier_summary(steps: list) -> str:  # type: ignore[type-arg]
         for tc in getattr(s, "tool_calls", []) or []:
             if not (tc.get("success", True)):
                 parts.append(
-                    f"  [TOOL FAILED] {tc.get('tool_name', '?')}: {tc.get('error', 'unknown error')}"
+                    f"  [TOOL FAILED] {tc.get('tool_name', '?')}: {tc.get('error', 'unknown error')}"  # noqa: E501
                 )
         if getattr(s, "error", None):
             parts.append(f"  [STEP ERROR] {s.error}")

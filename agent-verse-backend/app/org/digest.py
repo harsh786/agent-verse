@@ -481,7 +481,7 @@ class DigestGenerator:
                         DigestItem(
                             category="insight",
                             title="High productivity period",
-                            summary=f"{completed_count} missions completed — exceptional performance.",
+                            summary=f"{completed_count} missions completed — exceptional performance.",  # noqa: E501
                             icon="🚀",
                             priority=3,
                             action_required=False,

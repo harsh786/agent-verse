@@ -1180,7 +1180,7 @@ class IssueCredentialRequest(BaseModel):
 
 @router.get("/{agent_id}/credentials")
 async def list_agent_credentials(agent_id: str, request: Request) -> list[dict[str, Any]]:
-    """List service-account credentials for an agent (public keys only — private keys never returned)."""
+    """List service-account credentials for an agent (public keys only — private keys never returned)."""  # noqa: E501
     tenant = _require_tenant(request)
     svc = getattr(request.app.state, "agent_identity_service", None)
     if svc is None:

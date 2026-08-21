@@ -157,7 +157,7 @@ class ParserRegistry:
             ContentType.PARQUET: _ParquetBridge(ParquetParser()),
             ContentType.AVRO: _AvroBridge(AvroParser()),
             ContentType.LATEX: _LaTeXBridge(LaTeXParser()),
-            ContentType.NOTEBOOK: TextParser(),  # Notebook parser handles .ipynb via pipeline Stage 5
+            ContentType.NOTEBOOK: TextParser(),  # Notebook parser handles .ipynb via pipeline Stage 5  # noqa: E501
         }
 
     def get_parser(self, content_type: ContentType) -> TextParser:

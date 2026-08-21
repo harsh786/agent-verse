@@ -81,7 +81,7 @@ class GitLabConnector(BaseConnector):
                         for issue in r.json():
                             updated = issue.get("updated_at", "")
                             new_cursor = max(new_cursor, updated)
-                            text = f"# [{issue.get('iid')}] {issue.get('title')}\n\nStatus: {issue.get('state')}\nUpdated: {updated}\n\n{issue.get('description') or ''}"
+                            text = f"# [{issue.get('iid')}] {issue.get('title')}\n\nStatus: {issue.get('state')}\nUpdated: {updated}\n\n{issue.get('description') or ''}"  # noqa: E501
                             doc = RawDocument(
                                 doc_id=str(uuid.uuid4()),
                                 source_id=config.source_id,
@@ -114,7 +114,7 @@ class GitLabConnector(BaseConnector):
                         for mr in r.json():
                             updated = mr.get("updated_at", "")
                             new_cursor = max(new_cursor, updated)
-                            text = f"# MR !{mr.get('iid')}: {mr.get('title')}\n\nStatus: {mr.get('state')}\nBranch: {mr.get('source_branch')} → {mr.get('target_branch')}\n\n{mr.get('description') or ''}"
+                            text = f"# MR !{mr.get('iid')}: {mr.get('title')}\n\nStatus: {mr.get('state')}\nBranch: {mr.get('source_branch')} → {mr.get('target_branch')}\n\n{mr.get('description') or ''}"  # noqa: E501
                             doc = RawDocument(
                                 doc_id=str(uuid.uuid4()),
                                 source_id=config.source_id,

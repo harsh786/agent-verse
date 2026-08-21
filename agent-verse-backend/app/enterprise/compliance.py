@@ -123,7 +123,7 @@ class ComplianceController:
                 row = (
                     await session.execute(
                         text(
-                            "SELECT request_id, tenant_id, status, download_url, payload, created_at "
+                            "SELECT request_id, tenant_id, status, download_url, payload, created_at "  # noqa: E501
                             "FROM compliance_requests "
                             "WHERE request_id = :rid AND tenant_id = :tid"
                         ),
@@ -346,10 +346,10 @@ class ComplianceController:
             "tenant_id": tenant_ctx.tenant_id,
             "primary_region": "us-east-1",
             "backup_region": "eu-west-1",
-            "gdpr_compliant": False,  # FIX: was hardcoded True — dynamically checked via /compliance/gdpr
+            "gdpr_compliant": False,  # FIX: was hardcoded True — dynamically checked via /compliance/gdpr  # noqa: E501
             "pci_dss_scope": False,
-            "soc2_type2": False,  # FIX: was hardcoded True — dynamically checked via /compliance/soc2
-            "note": "Use GET /enterprise/compliance/{framework} for authoritative compliance status.",
+            "soc2_type2": False,  # FIX: was hardcoded True — dynamically checked via /compliance/soc2  # noqa: E501
+            "note": "Use GET /enterprise/compliance/{framework} for authoritative compliance status.",  # noqa: E501
         }
 
     async def execute_data_deletion_async(

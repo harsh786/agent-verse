@@ -41,5 +41,5 @@ def build_services(
         raise ValueError("build_services requires both app and settings")
     logger.debug(
         "build_services_called",
-        extra={"has_tenant_service": tenant_service is not None, "has_goal_service": goal_service is not None},
+        extra={"has_tenant_service": tenant_service is not None, "has_goal_service": goal_service is not None},  # noqa: E501
     )

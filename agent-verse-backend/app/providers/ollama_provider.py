@@ -309,7 +309,7 @@ class OllamaProvider(OpenAICompatibleProvider):
             return True, f"{available_gb:.1f} GB available ≥ {required_gb} GB required for {model}"
         return (
             False,
-            f"Insufficient RAM: {available_gb:.1f} GB available, {required_gb} GB required for {model}",
+            f"Insufficient RAM: {available_gb:.1f} GB available, {required_gb} GB required for {model}",  # noqa: E501
         )
 
     # ------------------------------------------------------------------

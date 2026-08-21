@@ -113,7 +113,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
     refresh_token = os.getenv("ACOUSTIC_REFRESH_TOKEN", "")
     if not client_id or not client_secret or not refresh_token:
         return {
-            "error": "ACOUSTIC_CLIENT_ID, ACOUSTIC_CLIENT_SECRET, and ACOUSTIC_REFRESH_TOKEN not configured"
+            "error": "ACOUSTIC_CLIENT_ID, ACOUSTIC_CLIENT_SECRET, and ACOUSTIC_REFRESH_TOKEN not configured"  # noqa: E501
         }
 
     async with httpx.AsyncClient(timeout=30) as client:

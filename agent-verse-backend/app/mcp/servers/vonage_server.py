@@ -84,7 +84,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "status": {
                     "type": "string",
-                    "description": "Filter by call status: started, ringing, answered, machine, completed, busy, cancelled, failed, rejected, timeout, unanswered",
+                    "description": "Filter by call status: started, ringing, answered, machine, completed, busy, cancelled, failed, rejected, timeout, unanswered",  # noqa: E501
                 },
                 "date_start": {
                     "type": "string",

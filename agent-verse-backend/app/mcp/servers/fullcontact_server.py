@@ -20,7 +20,7 @@ FULLCONTACT_BASE = "https://api.fullcontact.com/v3"
 TOOL_DEFINITIONS = [
     {
         "name": "fullcontact_enrich_person",
-        "description": "Enrich a person record using email, phone, or social profile to get demographics, employment, and social data",
+        "description": "Enrich a person record using email, phone, or social profile to get demographics, employment, and social data",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {
@@ -35,7 +35,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "fullcontact_enrich_company",
-        "description": "Enrich a company record using its domain or name to get description, metrics, tech stack, and social profiles",
+        "description": "Enrich a company record using its domain or name to get description, metrics, tech stack, and social profiles",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

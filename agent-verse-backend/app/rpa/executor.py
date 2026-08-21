@@ -645,7 +645,7 @@ class RPAExecutor:
                 f"[simulated] Typed '{a.get('text', '')}' into {a.get('selector', '?')}"
             ),
             "rpa_extract_text": lambda a: (
-                f"[simulated] Extracted text from {a.get('selector', 'body')}: <simulated page content>"
+                f"[simulated] Extracted text from {a.get('selector', 'body')}: <simulated page content>"  # noqa: E501
             ),
             "rpa_screenshot": lambda a: (
                 f"[simulated] Screenshot captured: {a.get('name', 'screenshot')}"
@@ -657,7 +657,7 @@ class RPAExecutor:
                 f"[simulated] Selected '{a.get('value', '?')}' in '{a.get('selector', '?')}'"
             ),
             "rpa_upload_file": lambda a: (
-                f"[simulated] Uploaded file '{a.get('file_path', '?')}' to '{a.get('selector', '?')}'"
+                f"[simulated] Uploaded file '{a.get('file_path', '?')}' to '{a.get('selector', '?')}'"  # noqa: E501
             ),
             "rpa_download_file": lambda a: (
                 f"[simulated] Downloaded file from '{a.get('selector', '?')}'"

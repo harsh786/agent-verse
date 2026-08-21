@@ -20,6 +20,9 @@ from opentelemetry import trace
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.org.approval_chain import (
+    ApprovalChain,
+)
 from app.org.models import (
     Organization,
     OrgBlueprint,
@@ -32,11 +35,6 @@ from app.org.models import (
     OrgTeam,
     OrgWorkstream,
 )
-from app.org.approval_chain import (
-    ApprovalChain,
-    get_approval_engine,
-)
-from app.org.events import get_org_event_publisher
 
 _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -1303,7 +1301,6 @@ class OrgService:
                 if approval_gates:
                     try:
                         from app.org.approval_chain import (
-                            ApprovalChain,
                             get_approval_engine,
                         )
                         from app.org.events import get_org_event_publisher
@@ -1346,7 +1343,7 @@ class OrgService:
                                 if _chain
                                 else "high",
                                 metadata={
-                                    "gate": gate if isinstance(gate, dict) else {"type": gate_title},
+                                    "gate": gate if isinstance(gate, dict) else {"type": gate_title},  # noqa: E501
                                     "task_kind": "approval_gate",
                                 },
                             )

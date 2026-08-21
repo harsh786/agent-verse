@@ -126,7 +126,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "type": {
                     "type": "string",
-                    "description": "Account type filter: BANK, CURRENT, EQUITY, EXPENSE, FIXED, LIABILITY, PREPAYMENT, REVENUE, SALES, TERMLIAB, OTHERINCOME",
+                    "description": "Account type filter: BANK, CURRENT, EQUITY, EXPENSE, FIXED, LIABILITY, PREPAYMENT, REVENUE, SALES, TERMLIAB, OTHERINCOME",  # noqa: E501
                 },
                 "status": {"type": "string", "enum": ["ACTIVE", "ARCHIVED"]},
             },

@@ -43,7 +43,7 @@ class GuardrailProfileSelector:
         regulated_tags = {"gdpr", "hipaa", "pci", "soc2", "dpdp", "sox"}
         # Note: REGULATED takes precedence over STRICT when both risk and compliance apply.
         # REGULATED is a strict superset of STRICT (adds PII redaction + output schema validation),
-        # so it is more restrictive. Compliance-tagged goals need PII redaction regardless of risk level.
+        # so it is more restrictive. Compliance-tagged goals need PII redaction regardless of risk level.  # noqa: E501
         if compliance and set(compliance) & regulated_tags:
             return GuardrailConfig(
                 name=GuardrailBundle.REGULATED,

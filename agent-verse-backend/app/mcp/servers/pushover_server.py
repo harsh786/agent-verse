@@ -83,13 +83,13 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "pushover_create_delivery_receipt",
-        "description": "Retrieve delivery and acknowledgment status for an emergency priority notification",
+        "description": "Retrieve delivery and acknowledgment status for an emergency priority notification",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {
                 "receipt": {
                     "type": "string",
-                    "description": "Receipt token returned when sending an emergency priority message",
+                    "description": "Receipt token returned when sending an emergency priority message",  # noqa: E501
                 },
             },
             "required": ["receipt"],

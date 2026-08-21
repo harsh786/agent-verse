@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 TOOL_DEFINITIONS = [
     {
         "name": "sugarcrm_list_accounts",
-        "description": "List accounts (companies/organisations) in SugarCRM with optional filtering",
+        "description": "List accounts (companies/organisations) in SugarCRM with optional filtering",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

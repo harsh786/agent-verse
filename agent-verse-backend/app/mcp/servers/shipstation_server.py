@@ -28,7 +28,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "order_status": {
                     "type": "string",
-                    "description": "Filter by status: awaiting_payment, awaiting_shipment, shipped, on_hold, cancelled",
+                    "description": "Filter by status: awaiting_payment, awaiting_shipment, shipped, on_hold, cancelled",  # noqa: E501
                 },
                 "store_id": {"type": "integer", "description": "Filter by ShipStation store ID"},
                 "page": {

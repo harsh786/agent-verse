@@ -40,7 +40,7 @@ class Subgraph:
         lines = [f"Entity: {self.center}"]
         for edge in self.edges:
             lines.append(
-                f"  {edge.get('source', '')} --[{edge.get('relation', '')}]--> {edge.get('target', '')}"
+                f"  {edge.get('source', '')} --[{edge.get('relation', '')}]--> {edge.get('target', '')}"  # noqa: E501
             )
         return "\n".join(lines)
 

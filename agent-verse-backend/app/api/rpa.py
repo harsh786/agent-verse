@@ -156,7 +156,7 @@ async def get_session_screenshot(request: Request, session_id: str) -> dict[str,
         screenshot_bytes = await page.screenshot(type="jpeg", quality=60, full_page=False)
         return {
             "session_id": session_id,
-            "screenshot_data_uri": f"data:image/jpeg;base64,{base64.b64encode(screenshot_bytes).decode()}",
+            "screenshot_data_uri": f"data:image/jpeg;base64,{base64.b64encode(screenshot_bytes).decode()}",  # noqa: E501
             "url": page.url,
             "timestamp": datetime.now(UTC).isoformat(),
         }
@@ -178,7 +178,7 @@ async def get_current_view(request: Request, session_id: str) -> dict[str, Any]:
         screenshot_bytes = await page.screenshot(type="jpeg", quality=60, full_page=False)
         return {
             "session_id": session_id,
-            "screenshot_data_uri": f"data:image/jpeg;base64,{base64.b64encode(screenshot_bytes).decode()}",
+            "screenshot_data_uri": f"data:image/jpeg;base64,{base64.b64encode(screenshot_bytes).decode()}",  # noqa: E501
             "url": page.url,
             "timestamp": datetime.now(UTC).isoformat(),
         }

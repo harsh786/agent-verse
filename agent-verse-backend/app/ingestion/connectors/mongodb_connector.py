@@ -57,7 +57,7 @@ class MongoDBConnector(BaseConnector):
             cc = config.connection_config
             client = MongoClient(
                 cc.get("uri")
-                or f"mongodb://{cc.get('username', '')}:{cc.get('password', '')}@{cc.get('host', 'localhost')}:{cc.get('port', 27017)}/",
+                or f"mongodb://{cc.get('username', '')}:{cc.get('password', '')}@{cc.get('host', 'localhost')}:{cc.get('port', 27017)}/",  # noqa: E501
                 serverSelectionTimeoutMS=5000,
             )
             client.admin.command("ping")
@@ -85,7 +85,7 @@ class MongoDBConnector(BaseConnector):
         cc = config.connection_config
         uri = (
             cc.get("uri")
-            or f"mongodb://{cc.get('username', '')}:{cc.get('password', '')}@{cc.get('host', 'localhost')}:{cc.get('port', 27017)}/"
+            or f"mongodb://{cc.get('username', '')}:{cc.get('password', '')}@{cc.get('host', 'localhost')}:{cc.get('port', 27017)}/"  # noqa: E501
         )
         db_name = cc.get("database", "")
         collection_name = cc.get("collection", "")

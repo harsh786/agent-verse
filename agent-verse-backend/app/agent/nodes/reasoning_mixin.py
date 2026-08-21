@@ -29,7 +29,7 @@ from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: 
 
 
 class ReasoningMixin:
-    """Mixin: CoT/reflection nodes (think, reflect, self_consistency, tree_of_thoughts, peer_review, supervisor, debate, refine)."""
+    """Mixin: CoT/reflection nodes (think, reflect, self_consistency, tree_of_thoughts, peer_review, supervisor, debate, refine)."""  # noqa: E501
 
     async def _node_refine(self, state: GraphState) -> dict:
         """Self-Refine node — improves last step output before verification (doc-1 §3.4).

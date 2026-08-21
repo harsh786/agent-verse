@@ -20,7 +20,7 @@ SALESLOFT_BASE = "https://api.salesloft.com/v2"
 TOOL_DEFINITIONS = [
     {
         "name": "salesloft_list_people",
-        "description": "List people (prospects) in Salesloft with optional filtering and pagination",
+        "description": "List people (prospects) in Salesloft with optional filtering and pagination",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

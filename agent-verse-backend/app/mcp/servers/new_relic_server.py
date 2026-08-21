@@ -28,7 +28,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "nrql": {
                     "type": "string",
-                    "description": "NRQL query (e.g. SELECT count(*) FROM Transaction SINCE 1 hour ago)",
+                    "description": "NRQL query (e.g. SELECT count(*) FROM Transaction SINCE 1 hour ago)",  # noqa: E501
                 },
                 "account_id": {
                     "type": "integer",
@@ -74,7 +74,7 @@ TOOL_DEFINITIONS = [
                 "values": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Metric value fields (e.g. ['requests_per_minute', 'average_response_time'])",
+                    "description": "Metric value fields (e.g. ['requests_per_minute', 'average_response_time'])",  # noqa: E501
                 },
                 "from_": {"type": "string", "description": "ISO8601 start time"},
                 "to": {"type": "string", "description": "ISO8601 end time"},
@@ -93,7 +93,7 @@ TOOL_DEFINITIONS = [
                 "name": {"type": "string", "description": "Entity name to search"},
                 "entity_type": {
                     "type": "string",
-                    "description": "Entity type (e.g. APM_APPLICATION_ENTITY, BROWSER_APPLICATION_ENTITY)",
+                    "description": "Entity type (e.g. APM_APPLICATION_ENTITY, BROWSER_APPLICATION_ENTITY)",  # noqa: E501
                 },
                 "tags": {"type": "object", "description": "Key-value tag filters"},
             },

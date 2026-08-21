@@ -97,7 +97,7 @@ async def _update_task_status(task_id: str, status: str, result: str, db: Any) -
         async with db() as session, session.begin():
             await session.execute(
                 text(
-                    "UPDATE a2a_tasks SET status=:status, result=:result, updated_at=NOW() WHERE id=:id"
+                    "UPDATE a2a_tasks SET status=:status, result=:result, updated_at=NOW() WHERE id=:id"  # noqa: E501
                 ),
                 {"id": task_id, "status": status, "result": result[:10000] if result else ""},
             )
@@ -312,7 +312,7 @@ async def list_a2a_tasks(request: Request, limit: int = 50) -> list[dict[str, An
     try:
         from sqlalchemy import text as _t
 
-        q = "SELECT id, goal_text, status, callback_url, requester_id, created_at, result FROM a2a_tasks"
+        q = "SELECT id, goal_text, status, callback_url, requester_id, created_at, result FROM a2a_tasks"  # noqa: E501
         params: dict[str, Any] = {}
         if tid:
             q += " WHERE tenant_id = :tid"

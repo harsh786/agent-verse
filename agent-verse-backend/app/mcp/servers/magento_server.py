@@ -81,7 +81,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "status": {
                     "type": "string",
-                    "description": "Order status filter: pending, processing, complete, canceled, holded, closed",
+                    "description": "Order status filter: pending, processing, complete, canceled, holded, closed",  # noqa: E501
                 },
                 "page_size": {
                     "type": "integer",

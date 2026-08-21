@@ -673,7 +673,7 @@ async def set_byok_vault_key(
         if len(key_bytes) != 32:
             raise ValueError("Key must be 32 bytes when decoded")
     except Exception as exc:
-        raise HTTPException(400, f"Invalid key: {exc}")
+        raise HTTPException(400, f"Invalid key: {exc}") from exc
 
     # In production: store the key reference securely, not the key itself
     return {

@@ -49,7 +49,7 @@ def _require_tenant(request: Request) -> Any:
 
 def _generate_invoice_number(tenant_prefix: str) -> str:
     now = datetime.now(UTC)
-    return f"AV/{now.year}-{str(now.year + 1)[-2:]}/{tenant_prefix[:4].upper()}/{uuid.uuid4().hex[:6].upper()}"
+    return f"AV/{now.year}-{str(now.year + 1)[-2:]}/{tenant_prefix[:4].upper()}/{uuid.uuid4().hex[:6].upper()}"  # noqa: E501
 
 
 @router.post("/invoice", status_code=201)
@@ -89,7 +89,7 @@ async def generate_gst_invoice(body: GSTInvoiceRequest, request: Request) -> dic
         "total_gst_amount": gst_total,
         "total_amount_inr": body.amount_inr,
         "is_inter_state": inter_state,
-        "description": f"AgentVerse {body.plan.title()} Plan — {body.billing_month or datetime.now(UTC).strftime('%B %Y')}",
+        "description": f"AgentVerse {body.plan.title()} Plan — {body.billing_month or datetime.now(UTC).strftime('%B %Y')}",  # noqa: E501
     }
 
     # Persist to DB for 7-year GST retention compliance
@@ -106,7 +106,7 @@ async def generate_gst_invoice(body: GSTInvoiceRequest, request: Request) -> dic
                         "INSERT INTO gst_invoices (id, tenant_id, invoice_number, invoice_date, "
                         "buyer_name, buyer_gstin, taxable_amount_inr, total_gst_amount, "
                         "total_amount_inr, invoice_json) VALUES "
-                        "(:id, :tid, :inv_num, :inv_date, :buyer, :gstin, :taxable, :gst, :total, CAST(:json AS json))"
+                        "(:id, :tid, :inv_num, :inv_date, :buyer, :gstin, :taxable, :gst, :total, CAST(:json AS json))"  # noqa: E501
                     ),
                     {
                         "id": uuid.uuid4().hex,

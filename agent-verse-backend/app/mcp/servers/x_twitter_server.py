@@ -131,7 +131,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "twitter_follow_user",
-        "description": "Follow a Twitter user (requires OAuth 1.0a credentials and authenticated user ID)",
+        "description": "Follow a Twitter user (requires OAuth 1.0a credentials and authenticated user ID)",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {
@@ -178,7 +178,7 @@ def _oauth1_header(method: str, url: str, params: dict | None = None) -> dict[st
             urllib.parse.quote(param_string, safe=""),
         ]
     )
-    signing_key = f"{urllib.parse.quote(api_secret, safe='')}&{urllib.parse.quote(access_token_secret, safe='')}"
+    signing_key = f"{urllib.parse.quote(api_secret, safe='')}&{urllib.parse.quote(access_token_secret, safe='')}"  # noqa: E501
     signature = hmac.new(signing_key.encode(), base_string.encode(), hashlib.sha1).digest()
     import base64
 

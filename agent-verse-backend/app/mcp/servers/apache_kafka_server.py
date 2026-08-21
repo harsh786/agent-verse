@@ -108,7 +108,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     base = os.getenv("KAFKA_REST_ENDPOINT", "").rstrip("/")
     if not base:
         return {
-            "error": "KAFKA_REST_ENDPOINT environment variable not set. Set it to your Confluent REST Proxy or Kafka REST endpoint URL (e.g. https://pkc-xxxxx.region.confluent.cloud)"
+            "error": "KAFKA_REST_ENDPOINT environment variable not set. Set it to your Confluent REST Proxy or Kafka REST endpoint URL (e.g. https://pkc-xxxxx.region.confluent.cloud)"  # noqa: E501
         }
     api_key = os.getenv("KAFKA_API_KEY", "")
     if not api_key:

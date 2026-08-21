@@ -105,7 +105,7 @@ TOOL_DEFINITIONS = [
                 "board_id": {"type": "string"},
                 "type": {
                     "type": "string",
-                    "description": "Filter by item type: sticky_note, shape, text, frame, image, etc.",
+                    "description": "Filter by item type: sticky_note, shape, text, frame, image, etc.",  # noqa: E501
                 },
                 "limit": {"type": "integer", "default": 50},
                 "cursor": {"type": "string"},

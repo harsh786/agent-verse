@@ -291,7 +291,7 @@ class AgentRouter:
 
             agent_summaries = "\n".join(
                 [
-                    f"- {a.get('agent_id', '?')}: {a.get('name', '?')} — {a.get('goal_template', '')[:100]}"
+                    f"- {a.get('agent_id', '?')}: {a.get('name', '?')} — {a.get('goal_template', '')[:100]}"  # noqa: E501
                     for a in agents[:10]
                 ]
             )

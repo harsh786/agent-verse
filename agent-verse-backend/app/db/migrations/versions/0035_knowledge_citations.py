@@ -15,12 +15,12 @@ def upgrade() -> None:
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_doc_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS page_number INT",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS last_modified TIMESTAMPTZ",
-        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS freshness_ttl_hours INT NOT NULL DEFAULT 168",
-        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS needs_reindex BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS freshness_ttl_hours INT NOT NULL DEFAULT 168",  # noqa: E501
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS needs_reindex BOOLEAN NOT NULL DEFAULT FALSE",  # noqa: E501
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ",
-        "CREATE INDEX IF NOT EXISTS ix_documents_needs_reindex ON documents (needs_reindex) WHERE needs_reindex = TRUE",
-        "CREATE INDEX IF NOT EXISTS ix_documents_source_type ON documents (collection_id, source_type)",
-        "CREATE INDEX IF NOT EXISTS ix_documents_source_doc_id ON documents (source_doc_id) WHERE source_doc_id != ''",
+        "CREATE INDEX IF NOT EXISTS ix_documents_needs_reindex ON documents (needs_reindex) WHERE needs_reindex = TRUE",  # noqa: E501
+        "CREATE INDEX IF NOT EXISTS ix_documents_source_type ON documents (collection_id, source_type)",  # noqa: E501
+        "CREATE INDEX IF NOT EXISTS ix_documents_source_doc_id ON documents (source_doc_id) WHERE source_doc_id != ''",  # noqa: E501
     ]
     for stmt in stmts:
         op.execute(stmt)

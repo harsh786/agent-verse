@@ -213,12 +213,12 @@ async def create_checkout_session(
             metadata={"tenant_id": tenant.tenant_id, "plan": body.plan},
         )
         return {"checkout_url": session.url, "session_id": session.id}
-    except ImportError:
-        raise HTTPException(503, "stripe package not installed. Run: pip install stripe")
+    except ImportError as _b904_exc:
+        raise HTTPException(503, "stripe package not installed. Run: pip install stripe") from _b904_exc  # noqa: E501
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(500, f"Billing error: {exc}")
+        raise HTTPException(500, f"Billing error: {exc}") from exc
 
 
 @router.get("/invoices")
@@ -380,7 +380,7 @@ async def create_razorpay_order(request: Request, body: CreateOrderRequest) -> d
         }
     except Exception as exc:
         _log.error("Razorpay order creation failed: %s", exc)
-        raise HTTPException(502, f"Payment service error: {exc}")
+        raise HTTPException(502, f"Payment service error: {exc}") from exc
 
 
 @router.post("/verify-payment")
@@ -430,7 +430,7 @@ async def verify_razorpay_payment(request: Request, body: VerifyPaymentRequest) 
         raise
     except Exception as exc:
         _log.error("Payment verification failed: %s", exc)
-        raise HTTPException(502, f"Payment verification error: {exc}")
+        raise HTTPException(502, f"Payment verification error: {exc}") from exc
 
 
 async def _upgrade_tenant_plan(

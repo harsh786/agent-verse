@@ -117,7 +117,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "sheets_batch_update",
-        "description": "Apply one or more batchUpdate requests to a spreadsheet (formatting, merges, etc.)",
+        "description": "Apply one or more batchUpdate requests to a spreadsheet (formatting, merges, etc.)",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {
@@ -133,7 +133,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "sheets_get_metadata",
-        "description": "Get full spreadsheet metadata including all sheet properties and named ranges",
+        "description": "Get full spreadsheet metadata including all sheet properties and named ranges",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

@@ -121,7 +121,7 @@ TOOL_DEFINITIONS = [
                 "filters": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": 'Segment filter rules, e.g. [{"field": "tag", "key": "level", "relation": ">", "value": "10"}]',
+                    "description": 'Segment filter rules, e.g. [{"field": "tag", "key": "level", "relation": ">", "value": "10"}]',  # noqa: E501
                 },
             },
             "required": ["name", "filters"],
