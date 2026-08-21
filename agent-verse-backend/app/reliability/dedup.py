@@ -6,6 +6,7 @@ can be retried after the window passes.
 
 from __future__ import annotations
 
+import contextlib
 import time
 from typing import Any
 
@@ -61,15 +62,11 @@ class RedisDeduplicationCache:
     async def register(self, tenant_id: str, goal: str, goal_id: str) -> None:
         """Register a goal to prevent duplicates during its execution window."""
         key = f"dedup:{tenant_id}:{hash(goal)}"
-        try:
+        with contextlib.suppress(Exception):
             await self._redis.set(key, goal_id, ex=self._ttl)
-        except Exception:
-            pass
 
     async def unregister(self, tenant_id: str, goal: str) -> None:
         """Remove dedup entry after goal completes."""
         key = f"dedup:{tenant_id}:{hash(goal)}"
-        try:
+        with contextlib.suppress(Exception):
             await self._redis.delete(key)
-        except Exception:
-            pass

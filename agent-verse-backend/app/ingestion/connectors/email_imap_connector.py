@@ -76,13 +76,10 @@ class EmailIMAPConnector(BaseConnector):
             user = cc.get("username", "")
             password = cc.get("password", "")
 
-            if ssl:
-                conn = imaplib.IMAP4_SSL(host, port)
-            else:
-                conn = imaplib.IMAP4(host, port)
+            conn = imaplib.IMAP4_SSL(host, port) if ssl else imaplib.IMAP4(host, port)
 
             conn.login(user, password)
-            typ, mboxes = conn.list()
+            _typ, mboxes = conn.list()
             conn.logout()
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
@@ -111,10 +108,7 @@ class EmailIMAPConnector(BaseConnector):
 
         # IMAP is sync — run in executor
         def _fetch_emails() -> list[tuple[str, str, dict]]:
-            if ssl:
-                conn = imaplib.IMAP4_SSL(host, port)
-            else:
-                conn = imaplib.IMAP4(host, port)
+            conn = imaplib.IMAP4_SSL(host, port) if ssl else imaplib.IMAP4(host, port)
             conn.login(user, password)
             conn.select(mailbox)
 
@@ -126,7 +120,7 @@ class EmailIMAPConnector(BaseConnector):
             results = []
             for uid_bytes in uids:
                 uid = uid_bytes.decode()
-                typ, msg_data = conn.uid("FETCH", uid, "(RFC822)")
+                _typ, msg_data = conn.uid("FETCH", uid, "(RFC822)")
                 if not msg_data or not msg_data[0]:
                     continue
                 raw = msg_data[0][1]

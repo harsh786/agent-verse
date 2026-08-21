@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import json
 from typing import Any, Literal
@@ -57,10 +58,7 @@ def _is_blocked(url: str) -> bool:
 
         # Block common internal hostname patterns
         lower_host = host.lower()
-        if lower_host.endswith(".internal") or lower_host.endswith(".local"):
-            return True
-
-        return False
+        return bool(lower_host.endswith(".internal") or lower_host.endswith(".local"))
     except Exception:
         return True  # Block on parse error (fail-safe)
 
@@ -111,10 +109,8 @@ class HttpRequestTool:
                 # Try to parse JSON
                 parsed: Any = None
                 if "application/json" in resp.headers.get("content-type", ""):
-                    try:
+                    with contextlib.suppress(Exception):
                         parsed = json.loads(body_text)
-                    except Exception:
-                        pass
 
                 return {
                     "status_code": resp.status_code,

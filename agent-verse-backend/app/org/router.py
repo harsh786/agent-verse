@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+
+import structlog
 from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import uuid4
@@ -783,7 +785,6 @@ async def org_events_stream(
     async def event_generator() -> AsyncGenerator[str, None]:
         import asyncio
 
-        tenant_ctx = service._tenant_id
         try:
             yield f"data: {json.dumps({'type': 'connected', 'org_id': org_id})}\n\n"
 
@@ -845,7 +846,7 @@ async def list_org_approvals(
     try:
         # Get missions for this org first
         missions = await service.list_missions(org_id, limit=500)
-        mission_ids = {str(m.id) for m in missions}
+        {str(m.id) for m in missions}
 
         # Query approval requests for goals belonging to these missions
         # Fall back to the governance API filtered by org
@@ -2437,6 +2438,8 @@ async def org_dept_memory_add(
 # Clients: Claude Desktop, Cursor, any JSON-RPC 2.0 / MCP client.
 # Auth: "Authorization: Bearer <api_key>" header or ?api_key= query param.
 
+import contextlib
+
 from fastapi import WebSocket, WebSocketDisconnect
 
 
@@ -2580,7 +2583,7 @@ async def org_mcp_websocket(
         _log.info("mcp.ws.disconnected", org_id=org_id)
     except Exception as exc:
         _log.error("mcp.ws.error", org_id=org_id, error=str(exc)[:150])
-        try:
+        with contextlib.suppress(Exception):
             await websocket.send_text(
                 _json.dumps(
                     {
@@ -2589,8 +2592,6 @@ async def org_mcp_websocket(
                     }
                 )
             )
-        except Exception:
-            pass
 
 
 # ── create_mission_and_execute REST endpoint ─────────────────────────────────

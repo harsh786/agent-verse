@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from typing import Any
 
@@ -42,10 +43,8 @@ class GoalExecutionLock:
     async def release(self, goal_id: str) -> None:
         """Release lock only if we own it (Lua atomic check-and-delete)."""
         key = f"{self.KEY_PREFIX}{goal_id}"
-        try:
+        with contextlib.suppress(Exception):
             await self._redis.eval(self._RELEASE_SCRIPT, 1, key, self._lock_value)
-        except Exception:
-            pass
 
     async def extend(self, goal_id: str, ttl_ms: int = 1_800_000) -> bool:
         """Extend TTL if we still own the lock."""

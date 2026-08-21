@@ -173,7 +173,7 @@ class S3Connector(BaseConnector):
                 key = s3_info.get("object", {}).get("key", "")
                 if bucket and key:
                     # Reuse get_delta for single-object fetch
-                    async for raw, cursor in self._fetch_single(config, bucket, key):
+                    async for raw, _cursor in self._fetch_single(config, bucket, key):
                         yield raw
 
     async def _fetch_single(

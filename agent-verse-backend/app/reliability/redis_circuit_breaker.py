@@ -110,10 +110,7 @@ class RedisCircuitBreaker:
                         return True
                 return False
 
-            if state == CircuitState.HALF_OPEN:
-                return True
-
-            return False
+            return state == CircuitState.HALF_OPEN
         except Exception:
             return self._fallback.can_call()
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os as _os
 import uuid
 from dataclasses import dataclass, field
@@ -132,10 +133,8 @@ class MinIOArtifactStore:
         try:
             await client.head_bucket(Bucket=self._bucket)
         except Exception:
-            try:
+            with contextlib.suppress(Exception):
                 await client.create_bucket(Bucket=self._bucket)
-            except Exception:
-                pass
 
     async def write_bytes(
         self,

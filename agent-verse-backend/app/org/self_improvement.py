@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 import structlog
@@ -33,7 +33,7 @@ _tracer = trace.get_tracer(__name__)
 # ── PART 25: Recovery Hierarchy ───────────────────────────────────────────────
 
 
-class RecoveryAction(str, Enum):
+class RecoveryAction(StrEnum):
     RETRY = "retry"
     MODEL_FALLBACK = "model_fallback"
     REASSIGN = "reassign"
@@ -163,7 +163,7 @@ class OrgRecoveryHierarchy:
 # ── PART 26: Organizational Learning ─────────────────────────────────────────
 
 
-class LearningCategory(str, Enum):
+class LearningCategory(StrEnum):
     TEAM_COMPOSITION = "team_composition"
     MODEL_ROUTING = "model_routing"
     TOOL_RELIABILITY = "tool_reliability"
@@ -284,7 +284,7 @@ class OrgLearningSystem:
 # ── PART 24: Self-Improvement Cycle ──────────────────────────────────────────
 
 
-class ImprovementCyclePhase(str, Enum):
+class ImprovementCyclePhase(StrEnum):
     OBSERVE = "observe"
     ANALYZE = "analyze"
     HYPOTHESIZE = "hypothesize"

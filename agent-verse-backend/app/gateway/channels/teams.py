@@ -43,7 +43,7 @@ class MicrosoftTeamsAdapter(ChannelAdapter):
                 if activity_type == "message":
                     text = raw_payload.get("text", "").strip()
                     from_obj = raw_payload.get("from", {})
-                    service_url = raw_payload.get("serviceUrl", "")
+                    raw_payload.get("serviceUrl", "")
                     conversation = raw_payload.get("conversation", {})
                     return OrgCommand(
                         command_id=command_id,

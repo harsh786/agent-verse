@@ -8,6 +8,7 @@ Environment:
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import Any
 
@@ -170,10 +171,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 lines = [line for line in resp.text.strip().splitlines() if line]
                 events_data = []
                 for line in lines[:1000]:
-                    try:
+                    with contextlib.suppress(Exception):
                         events_data.append(_json.loads(line))
-                    except Exception:
-                        pass
                 return {"events": events_data, "count": len(events_data)}
 
             elif tool_name == "mixpanel_query_funnels":

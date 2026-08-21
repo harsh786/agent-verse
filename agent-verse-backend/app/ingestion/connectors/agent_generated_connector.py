@@ -48,7 +48,7 @@ class AgentGeneratedConnector(BaseConnector):
         source_types = config.connection_config.get(
             "source_types", ["goal_output", "hitl_decision"]
         )
-        agent_ids = config.connection_config.get("agent_ids", [])
+        config.connection_config.get("agent_ids", [])
 
         # Query goal_outputs table for completed goals above quality threshold
         # cursor = ISO timestamp of last ingested goal

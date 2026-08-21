@@ -3,7 +3,7 @@ from __future__ import annotations
 import enum
 
 
-class NetworkMode(str, enum.Enum):
+class NetworkMode(enum.StrEnum):
     NONE = "none"
     ALLOWLIST = "allowlist"
     TENANT_CONNECTORS_ONLY = "tenant_connectors_only"

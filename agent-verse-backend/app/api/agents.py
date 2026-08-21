@@ -1449,10 +1449,7 @@ async def check_readiness(request: Request, agent_id: str) -> dict[str, Any]:
                 except Exception:
                     pass  # Registry check failed — skip check
 
-            if check_status_override:
-                check_status = check_status_override
-            else:
-                check_status = "pass" if connector_ready else "fail"
+            check_status = check_status_override or ("pass" if connector_ready else "fail")
             if not connector_ready:
                 ready = False
             checks.append(

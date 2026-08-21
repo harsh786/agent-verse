@@ -50,10 +50,8 @@ async def sqlalchemy_rls_context(
         yield session
     finally:
         # SET LOCAL auto-resets when transaction ends, but reset explicitly for safety
-        try:
+        with suppress(Exception):
             await session.execute(text("SELECT set_config('app.tenant_id', '', true)"))
-        except Exception:
-            pass
 
 
 @asynccontextmanager

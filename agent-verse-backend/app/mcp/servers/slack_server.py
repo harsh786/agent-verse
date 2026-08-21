@@ -6,6 +6,7 @@ Environment:
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import Any
 
@@ -85,10 +86,8 @@ async def call_tool(
         return await _call_tool_inner(tool_name, arguments, credentials=credentials)
     except httpx.HTTPStatusError as exc:
         error_body = ""
-        try:
+        with contextlib.suppress(Exception):
             error_body = exc.response.text[:500]
-        except Exception:
-            pass
         return {
             "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
             "status_code": exc.response.status_code,

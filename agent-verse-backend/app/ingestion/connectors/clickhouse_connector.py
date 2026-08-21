@@ -89,7 +89,7 @@ class ClickHouseConnector(BaseConnector):
         new_cursor = cursor or ""
 
         for row in result.result_rows:
-            row_dict = dict(zip(col_names, row))
+            row_dict = dict(zip(col_names, row, strict=False))
             new_cursor = str(row_dict.get(cursor_col, new_cursor))
             text = "\n".join(f"{k}: {v}" for k, v in row_dict.items() if v is not None)
             doc = RawDocument(

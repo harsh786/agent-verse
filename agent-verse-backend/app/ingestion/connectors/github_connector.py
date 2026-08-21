@@ -65,7 +65,7 @@ class GitHubConnector(BaseConnector):
 
         token = config.connection_config.get("token", "")
         repos = config.connection_config.get("repos", [])
-        include_issues = config.connection_config.get("include_issues", True)
+        config.connection_config.get("include_issues", True)
         include_code = config.connection_config.get("include_code", True)
 
         ingestor = GitHubIngestor(token=token)

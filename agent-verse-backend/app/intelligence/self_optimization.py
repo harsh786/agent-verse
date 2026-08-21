@@ -334,7 +334,7 @@ class SelfOptimizer:
                 tool_name = suggestion.after or ""
                 existing_connectors = list(agent_config.get("connector_ids", []))
                 if tool_name and tool_name not in existing_connectors:
-                    agent_config["connector_ids"] = existing_connectors + [tool_name]
+                    agent_config["connector_ids"] = [*existing_connectors, tool_name]
 
         # Track the applied change
         import datetime as _dt

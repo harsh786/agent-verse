@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 
 
-class IndexStrategy(str, enum.Enum):
+class IndexStrategy(enum.StrEnum):
     EXACT = "exact"
     HNSW = "hnsw"
     IVF = "ivf"

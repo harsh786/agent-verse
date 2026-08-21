@@ -6,6 +6,7 @@ Routing: AgentRouter for best-member selection.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from app.observability.logging import get_logger
@@ -155,7 +156,7 @@ class Society:
 
         # Publish lifecycle event
         if self._bus is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._bus.publish(
                     from_agent_id=agent_id,
                     topic="lifecycle",
@@ -166,8 +167,6 @@ class Society:
                         "new_reputation": new_rep,
                     },
                 )
-            except Exception:
-                pass
 
         return new_rep
 

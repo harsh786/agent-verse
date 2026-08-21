@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from app.tenancy.context import TenantContext
 
 
-class IdentityScope(str, enum.Enum):
+class IdentityScope(enum.StrEnum):
     TENANT = "tenant"
     AGENT = "agent"
     DELEGATED_AGENT = "delegated_agent"

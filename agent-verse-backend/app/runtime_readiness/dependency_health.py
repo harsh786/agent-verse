@@ -4,7 +4,7 @@ import enum
 from dataclasses import dataclass
 
 
-class DepStatus(str, enum.Enum):
+class DepStatus(enum.StrEnum):
     HEALTHY = "healthy"
     DEGRADED = "degraded"
     UNAVAILABLE = "unavailable"

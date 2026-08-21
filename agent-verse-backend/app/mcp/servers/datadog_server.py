@@ -8,6 +8,7 @@ Environment variables:
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import Any
 
@@ -383,10 +384,8 @@ async def call_tool(
 
     except httpx.HTTPStatusError as exc:
         error_body = ""
-        try:
+        with contextlib.suppress(Exception):
             error_body = exc.response.text[:500]
-        except Exception:
-            pass
         return {
             "error": f"HTTP {exc.response.status_code}: {error_body}",
             "status_code": exc.response.status_code,

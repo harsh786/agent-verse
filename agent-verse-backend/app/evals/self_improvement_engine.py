@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from app.orchestration.runtime_profile import GoalRuntimeProfile
 
 
-class ImprovementAction(str, enum.Enum):
+class ImprovementAction(enum.StrEnum):
     UPDATE_PROMPT_VARIANT = "update_prompt_variant"
     UPDATE_MODEL_ROUTING = "update_model_routing"
     UPDATE_RAG_STRATEGY = "update_rag_strategy"

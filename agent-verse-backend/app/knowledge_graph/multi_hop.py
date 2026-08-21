@@ -113,8 +113,8 @@ class MultiHopReasoner:
                     queue.append(
                         (
                             target,
-                            nodes + [target],
-                            edges + [relation],
+                            [*nodes, target],
+                            [*edges, relation],
                         )
                     )
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 
@@ -114,10 +115,8 @@ class RedisBulkhead:
 
     async def release(self) -> None:
         """Release a previously acquired slot."""
-        try:
+        with contextlib.suppress(Exception):
             await self._redis.eval(self._LUA_RELEASE, 1, self._key)
-        except Exception:
-            pass
 
     def available_slots_sync(self) -> int:
         """Approximate available slots (non-blocking estimate)."""

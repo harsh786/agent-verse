@@ -32,6 +32,11 @@ from app.org.models import (
     OrgTeam,
     OrgWorkstream,
 )
+from app.org.approval_chain import (
+    ApprovalChain,
+    get_approval_engine,
+)
+from app.org.events import get_org_event_publisher
 
 _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -1291,31 +1296,136 @@ class OrgService:
                     except Exception:
                         pass
 
-                # G-21: Check if approval gates require pre-dispatch approval
+                # G-21: Check if approval gates require pre-dispatch approval.
+                # G-06: Wire ApprovalChainEngine into the execution path.
+                # G-29: Notify via NotificationService + publish org.approval.requested event.
                 approval_gates = plan_summary.get("approval_gates", [])
                 if approval_gates:
-                    # Create tasks for each gate and mark them approval_required
-                    for gate in approval_gates[:3] if isinstance(approval_gates, list) else []:
-                        try:
+                    try:
+                        from app.org.approval_chain import (
+                            ApprovalChain,
+                            get_approval_engine,
+                        )
+                        from app.org.events import get_org_event_publisher
+
+                        _engine = get_approval_engine()
+                        _publisher = get_org_event_publisher()
+                        _notif = getattr(getattr(_app, "state", None), "notification_service", None)
+
+                        for gate in (
+                            approval_gates[:3] if isinstance(approval_gates, list) else []
+                        ):
                             gate_title = (
                                 str(gate)
                                 if isinstance(gate, str)
                                 else str(gate.get("type", "approval"))
                             )
+                            # G-06: Ask ApprovalChainEngine whether this gate matches a chain.
+                            _chain: ApprovalChain | None = None
+                            _req = None
+                            try:
+                                _chain = await _engine.check_requires_approval(
+                                    gate_title,
+                                    {"org_id": org_id, "mission_id": str(mission.id)},
+                                    org,
+                                )
+                            except Exception as _ce_exc:
+                                _chain = None
+                                _log.warning(
+                                    "org.approval_chain_check_failed",
+                                    error=str(_ce_exc)[:100],
+                                )
+
                             task = await self.create_task(
                                 org_id=org_id,
                                 mission_id=str(mission.id),
                                 title=f"Approval gate: {gate_title}",
-                                description=f"This mission requires approval for: {gate_title}",
-                                task_type="approval_gate",
+                                objective=f"This mission requires approval for: {gate_title}",
+                                why=gate_title,
+                                risk_level=getattr(_chain, "risk_threshold", "high")
+                                if _chain
+                                else "high",
                                 metadata={
-                                    "gate": gate if isinstance(gate, dict) else {"type": gate_title}
+                                    "gate": gate if isinstance(gate, dict) else {"type": gate_title},
+                                    "task_kind": "approval_gate",
                                 },
                             )
                             # G-22: Set task status to approval_required
                             await self.update_task_status(str(task.id), "approval_required")
-                        except Exception as gate_exc:
-                            _log.warning("org.approval_gate_task_failed", error=str(gate_exc)[:100])
+
+                            # Record req id on the task for the approve/reject path.
+                            if _chain is not None:
+                                try:
+                                    _req = await _engine.create_approval_request(
+                                        chain=_chain,
+                                        action_detail=gate_title,
+                                        mission_id=str(mission.id),
+                                        agent_id=None,
+                                        tenant_id=self._tenant_id,
+                                        org_id=org_id,
+                                    )
+                                    await self.update_task_status(
+                                        str(task.id),
+                                        "approval_required",
+                                        outputs=[
+                                            {
+                                                "approval_request_id": _req.request_id,
+                                                "chain_id": _chain.id,
+                                            }
+                                        ],
+                                    )
+                                except Exception as _ar_exc:
+                                    _log.warning(
+                                        "org.approval_request_create_failed",
+                                        error=str(_ar_exc)[:100],
+                                    )
+
+                            # G-19/G-29: Publish org.approval.requested event + notify.
+                            try:
+                                await _publisher.publish(
+                                    event_type="org.approval.requested",
+                                    org_id=org_id,
+                                    tenant_id=self._tenant_id,
+                                    payload={
+                                        "mission_id": str(mission.id),
+                                        "task_id": str(task.id),
+                                        "gate": gate_title,
+                                        "risk": getattr(_chain, "risk_threshold", "high")
+                                        if _chain
+                                        else "high",
+                                    },
+                                )
+                            except Exception as _ev_exc:
+                                _log.warning(
+                                    "org.approval_event_publish_failed",
+                                    error=str(_ev_exc)[:100],
+                                )
+
+                            if _notif is not None:
+                                try:
+                                    await _notif.notify_approval_required(
+                                        request_id=getattr(_req, "request_id", str(task.id))
+                                        if _chain
+                                        else str(task.id),
+                                        goal_id=str(mission.id),
+                                        action=gate_title,
+                                        risk_level=getattr(_chain, "risk_threshold", "high")
+                                        if _chain
+                                        else "high",
+                                        tenant_id=self._tenant_id,
+                                    )
+                                except Exception as _n_exc:
+                                    _log.warning(
+                                        "org.approval_notify_failed",
+                                        error=str(_n_exc)[:100],
+                                    )
+
+                            span.set_attribute("approval_gates", gate_title)
+                    except Exception as _gate_outer:
+                        _log.warning(
+                            "org.approval_gate_wiring_failed",
+                            error=str(_gate_outer)[:120],
+                        )
 
                 # Execution context injected into every AgentGraph call:
                 # The graph's run() reads these as initial_context / org attributes.

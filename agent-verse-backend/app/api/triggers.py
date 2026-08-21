@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -505,9 +506,7 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
             valid = await verifier.verify(body_bytes, sig_header, secret)
             if not valid:
                 continue
-        try:
+        with contextlib.suppress(Exception):
             await dispatcher.dispatch(spec, enriched, tenant_ctx)
-        except Exception:
-            pass
 
     return {"status": "accepted", "webhook_type": webhook_type}

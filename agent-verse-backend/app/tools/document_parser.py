@@ -104,7 +104,7 @@ class DocumentParserTool:
 
                 reader = PdfReader(io.BytesIO(data))
                 pages = []
-                for i, page in enumerate(reader.pages[:_MAX_PAGES]):
+                for _i, page in enumerate(reader.pages[:_MAX_PAGES]):
                     pages.append(page.extract_text() or "")
                 text = "\n\n".join(pages)
                 trunc = len(reader.pages) > _MAX_PAGES
@@ -128,7 +128,7 @@ class DocumentParserTool:
 
         reader = pypdf.PdfReader(io.BytesIO(data))
         pages = []
-        for i, page in enumerate(reader.pages[:_MAX_PAGES]):
+        for _i, page in enumerate(reader.pages[:_MAX_PAGES]):
             pages.append(page.extract_text() or "")
         text = "\n\n".join(pages)
         trunc = len(reader.pages) > _MAX_PAGES

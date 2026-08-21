@@ -69,7 +69,7 @@ class RSSConnector(BaseConnector):
         new_cursor = cursor or ""
 
         for entry in feed.entries[:max_entries]:
-            entry_id = entry.get("id") or entry.get("link") or str(uuid.uuid4())
+            entry.get("id") or entry.get("link") or str(uuid.uuid4())
             published = entry.get("published") or entry.get("updated") or ""
             # Skip if already processed
             if cursor and published and published <= cursor:

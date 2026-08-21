@@ -49,7 +49,6 @@ JURISDICTION_TO_LANG: dict[str, str] = {
     "saudi arabia": "ar",
     "arabia": "ar",
     "egypt": "ar",
-    "egypt": "ar",
 }
 
 _TEMPLATES: dict[str, str] = {

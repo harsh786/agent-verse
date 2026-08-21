@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class GuardrailLayer(str, Enum):
+class GuardrailLayer(StrEnum):
     GOAL = "goal"
     PLAN = "plan"
     STEP = "step"
@@ -19,7 +19,7 @@ class GuardrailLayer(str, Enum):
     GRAPH_EXTRACT = "graph_extract"
 
 
-class GuardrailAction(str, Enum):
+class GuardrailAction(StrEnum):
     LOG = "log"
     WARN = "warn"
     REDACT = "redact"
@@ -28,7 +28,7 @@ class GuardrailAction(str, Enum):
     QUARANTINE = "quarantine"
 
 
-class ViolationCategory(str, Enum):
+class ViolationCategory(StrEnum):
     PII = "pii"
     PHI = "phi"
     PCI = "pci"
@@ -43,7 +43,7 @@ class ViolationCategory(str, Enum):
     UNSAFE_ADVICE = "unsafe_advice"
 
 
-class ComplianceBundle(str, Enum):
+class ComplianceBundle(StrEnum):
     GDPR = "gdpr"
     SOC2 = "soc2"
     HIPAA = "hipaa"

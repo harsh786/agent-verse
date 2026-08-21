@@ -13,6 +13,7 @@ cannot see each other's prompt variants (fixes module-level global leakage).
 
 from __future__ import annotations
 
+import contextlib
 import random
 import statistics
 import uuid
@@ -152,10 +153,8 @@ class PromptOptimizer:
         """Publish cache invalidation to other replicas."""
         if getattr(self, "_redis", None) is None:
             return
-        try:
+        with contextlib.suppress(Exception):
             await self._redis.publish("prompt_variant_invalidate", "reload")
-        except Exception:
-            pass
 
     async def persist_variant(self, variant: PromptVariant, tenant_id: str, db: Any) -> None:
         """Persist a variant to the prompt_variants table."""

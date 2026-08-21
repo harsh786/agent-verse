@@ -176,12 +176,12 @@ class GuardrailsEngine:
     def _check_pii(self, content: str, categories: list) -> dict[str, Any]:
         matches = []
         for pattern, label in _PII_PATTERNS:
-            for m in re.finditer(pattern, content):
+            for _m in re.finditer(pattern, content):
                 matches.append({"match": "***REDACTED***", "type": label})
         # Also check secrets
         if ViolationCategory.SECRETS in categories or not categories:
             for pattern, label in _SECRET_PATTERNS:
-                for m in re.finditer(pattern, content):
+                for _m in re.finditer(pattern, content):
                     matches.append({"match": "***SECRET***", "type": label})
         return {"triggered": len(matches) > 0, "matches": matches, "category": "pii"}
 

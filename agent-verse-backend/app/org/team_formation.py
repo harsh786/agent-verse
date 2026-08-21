@@ -588,9 +588,7 @@ class TeamFormationEngine:
         if monthly_budget > 0 and manifest.estimated_cost_usd > monthly_budget * 0.10:
             return True
         autonomy = int(getattr(org, "autonomy_level", 3) or 3)
-        if autonomy < 2:
-            return True
-        return False
+        return autonomy < 2
 
     def to_team_creation_requests(self, manifest: TeamManifest) -> list[dict[str, Any]]:
         """Convert manifest to DB-ready operation dicts."""

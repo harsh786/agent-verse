@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import logging
 import os
 import time
@@ -1496,10 +1497,8 @@ async def import_openapi_connector(request: Request, body: OpenAPIImportRequest)
         for tool in tools:
             tool["connector_id"] = server_id
             tool["tenant_id"] = tenant_ctx.tenant_id
-        try:
+        with contextlib.suppress(Exception):
             await persist_tools(tools, db, tenant_ctx.tenant_id)
-        except Exception:
-            pass
 
     return {
         "server_id": server_id,
@@ -1574,10 +1573,8 @@ async def search_capabilities(request: Request, q: str = Query(...)) -> dict:
 
     all_tools: list = []
     if mcp_client is not None:
-        try:
+        with contextlib.suppress(Exception):
             all_tools = await mcp_client.discover_all_tools(tenant_ctx=tenant_ctx)
-        except Exception:
-            pass
 
     from app.mcp.capability_search import CapabilitySearch
 
@@ -1669,10 +1666,8 @@ async def missing_capabilities(request: Request, goal: str = Query(...)) -> dict
 
     available_tools: list = []
     if mcp_client is not None:
-        try:
+        with contextlib.suppress(Exception):
             available_tools = await mcp_client.discover_all_tools(tenant_ctx=tenant_ctx)
-        except Exception:
-            pass
 
     available_names = {getattr(t, "name", "") for t in available_tools}
 

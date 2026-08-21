@@ -15,7 +15,7 @@ Usage:
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Any
 
 import structlog
@@ -23,7 +23,7 @@ import structlog
 _log = structlog.get_logger(__name__)
 
 
-class PluginType(str, Enum):
+class PluginType(StrEnum):
     MODEL = "model"
     TOOL = "tool"
     MEMORY = "memory"

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class NodeType(str, Enum):
+class NodeType(StrEnum):
     DOCUMENT = "document"
     CHUNK = "chunk"
     ENTITY = "entity"
@@ -20,7 +20,7 @@ class NodeType(str, Enum):
     WORKFLOW = "workflow"
 
 
-class EdgeType(str, Enum):
+class EdgeType(StrEnum):
     MENTIONS = "mentions"
     SUPPORTS = "supports"
     CONTRADICTS = "contradicts"

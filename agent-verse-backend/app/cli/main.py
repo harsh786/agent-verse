@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -88,10 +89,8 @@ def login(
     config_path = config_dir / "config.json"
     config = {}
     if config_path.exists():
-        try:
+        with contextlib.suppress(Exception):
             config = json.loads(config_path.read_text())
-        except Exception:
-            pass
     config["api_key"] = api_key
     config["base_url"] = base_url
     config_path.write_text(json.dumps(config, indent=2))

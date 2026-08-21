@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from opentelemetry import trace
@@ -36,7 +36,7 @@ _tracer = trace.get_tracer(__name__)
 # ── PART 18: Org RBAC ─────────────────────────────────────────────────────────
 
 
-class OrgRole(str, Enum):
+class OrgRole(StrEnum):
     ORG_ADMIN = "org_admin"  # full access to org
     DEPT_ADMIN = "dept_admin"  # full access to specific department
     TEAM_LEAD = "team_lead"  # manages a team

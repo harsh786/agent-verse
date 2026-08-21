@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-class ExperimentType(str, enum.Enum):
+class ExperimentType(enum.StrEnum):
     PLANNER_PROMPT = "planner_prompt"
     EXECUTOR_PROMPT = "executor_prompt"
     VERIFIER_PROMPT = "verifier_prompt"

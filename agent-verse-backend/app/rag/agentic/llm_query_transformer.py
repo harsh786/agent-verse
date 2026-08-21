@@ -10,6 +10,7 @@ transform   : Apply all three strategies and deduplicate the output set.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from typing import TYPE_CHECKING, Literal
 
@@ -125,17 +126,11 @@ class LLMQueryTransformer:
                     queries.append(q)
 
         await _add([query])
-        try:
+        with contextlib.suppress(Exception):
             await _add(await self.step_back(query))
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             await _add(await self.decompose(query))
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             await _add(await self.rewrite(query))
-        except Exception:
-            pass
 
         return queries or [query]

@@ -130,7 +130,7 @@ class UniversalArgumentResolver:
             return arguments
 
         properties: dict[str, Any] = tool_schema.get("properties") or {}
-        required: list[str] = tool_schema.get("required") or []
+        tool_schema.get("required") or []
 
         if not properties:
             return arguments  # No schema to resolve against
@@ -209,7 +209,7 @@ class UniversalArgumentResolver:
         """
         expected_type = param_def.get("type")
         if expected_type == "string":
-            for key, val in args.items():
+            for _key, val in args.items():
                 if isinstance(val, dict) and param in val:
                     return val[param]
                 if isinstance(val, dict):

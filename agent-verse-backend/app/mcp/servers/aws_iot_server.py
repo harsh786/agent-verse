@@ -152,7 +152,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
             }
             if "shadow_name" in arguments:
                 kwargs["shadowName"] = arguments["shadow_name"]
-            result = iot_data_client.update_thing_shadow(**kwargs)
+            iot_data_client.update_thing_shadow(**kwargs)
             return {"updated": True, "thing_name": arguments["thing_name"]}
 
         if tool_name == "aws_iot_list_topic_rules":
@@ -166,7 +166,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
             return iot_client.list_topic_rules(**kwargs)
 
         if tool_name == "aws_iot_publish_message":
-            result = iot_data_client.publish(
+            iot_data_client.publish(
                 topic=arguments["topic"],
                 qos=arguments.get("qos", 0),
                 payload=json.dumps(arguments["payload"]).encode(),

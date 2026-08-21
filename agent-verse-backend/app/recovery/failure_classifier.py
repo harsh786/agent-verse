@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 
 
-class FailureClass(str, enum.Enum):
+class FailureClass(enum.StrEnum):
     AUTH_FAILURE = "auth_failure"
     MISSING_CREDENTIAL = "missing_credential"
     TOOL_UNAVAILABLE = "tool_unavailable"

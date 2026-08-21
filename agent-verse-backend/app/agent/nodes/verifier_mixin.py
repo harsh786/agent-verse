@@ -29,6 +29,8 @@ except ImportError:
     guardrails_engine = None  # type: ignore[assignment]
     GuardrailLayer = None  # type: ignore[assignment]
 
+import contextlib
+
 from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
 from app.agent.nodes._helpers import (
     _build_verifier_summary,
@@ -61,10 +63,8 @@ class VerifierMixin:
         # Resolve verifier model via model_router when available (Bug 3 fix)
         _verify_model = ""
         if self._model_router is not None:
-            try:
+            with contextlib.suppress(Exception):
                 _verify_model = self._model_router.model_for("verification") or ""
-            except Exception:
-                pass
         # ── LLM Response Cache for verifier ───────────────────────────────────
         _llm_rc = getattr(self, "_llm_response_cache", None)
         _verify_cached = False
@@ -592,17 +592,13 @@ class VerifierMixin:
                     _eval_scorecard = agent_state.context.get("eval_scorecard", {})
                     _eval_score: float | None = None
                     if hasattr(_eval_scorecard, "average_score"):
-                        try:
+                        with contextlib.suppress(Exception):
                             _eval_score = float(_eval_scorecard.average_score())
-                        except Exception:
-                            pass
                     elif isinstance(_eval_scorecard, dict):
                         _eval_score_raw = _eval_scorecard.get("average_score")
                         if _eval_score_raw is not None:
-                            try:
+                            with contextlib.suppress(Exception):
                                 _eval_score = float(_eval_score_raw)
-                            except Exception:
-                                pass
                     if _eval_score is not None:
                         import asyncio as _asyncio
 

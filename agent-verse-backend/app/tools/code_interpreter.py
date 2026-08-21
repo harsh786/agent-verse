@@ -17,6 +17,7 @@ Supported languages:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import tempfile
 from dataclasses import dataclass
@@ -215,10 +216,8 @@ class CodeInterpreter:
                 execution_time_ms=elapsed,
             )
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 os.unlink(tmp_path)
-            except Exception:
-                pass
 
     async def _execute_subprocess_fallback(
         self,
@@ -295,10 +294,8 @@ class CodeInterpreter:
                     execution_time_ms=(time.monotonic() - t0) * 1000,
                 )
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 os.unlink(tmpfile)
-            except Exception:
-                pass
 
 
 def get_interpreter(timeout: int = 30) -> CodeInterpreter:

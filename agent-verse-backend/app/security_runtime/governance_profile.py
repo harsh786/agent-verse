@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from app.tenancy.context import TenantContext
 
 
-class GovernanceBundle(str, enum.Enum):
+class GovernanceBundle(enum.StrEnum):
     FREE = "free"
     ENTERPRISE = "enterprise"
     REGULATED = "regulated"

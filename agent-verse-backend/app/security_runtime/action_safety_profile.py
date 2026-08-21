@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-class ActionSafetyLevel(str, enum.Enum):
+class ActionSafetyLevel(enum.StrEnum):
     SAFE = "safe"
     LOG_ONLY = "log_only"
     HITL_REQUIRED = "hitl"

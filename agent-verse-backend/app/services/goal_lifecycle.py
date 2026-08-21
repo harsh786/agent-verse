@@ -6,10 +6,10 @@ Handles state transitions: submit → planning → executing → verifying → c
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class GoalTransition(str, Enum):
+class GoalTransition(StrEnum):
     """Valid goal state transitions."""
 
     SUBMIT = "submit"

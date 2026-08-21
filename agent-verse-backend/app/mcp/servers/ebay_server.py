@@ -225,7 +225,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
 
             elif tool_name == "ebay_get_selling_stats":
-                metric_keys = arguments.get(
+                arguments.get(
                     "metric_keys", ["TRANSACTION", "LISTING_IMPRESSION_TOTAL"]
                 )
                 r = await client.get(

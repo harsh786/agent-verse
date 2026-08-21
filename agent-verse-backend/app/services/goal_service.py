@@ -231,7 +231,7 @@ def _make_agent_loop() -> Any:
 
     from app.agent.graph import AgentGraph
     from app.intelligence.guardrails import GuardrailChecker
-    from app.reliability.dedup import DeduplicationCache
+    from app.reliability.dedup import DeduplicationCache as _DedupCache
     from app.reliability.result_processor import ResultProcessor
     from app.reliability.rollback import RollbackEngine
 
@@ -244,7 +244,7 @@ def _make_agent_loop() -> Any:
             executor=executor,
             verifier=verifier,
             result_processor=ResultProcessor(),
-            dedup_cache=DeduplicationCache(),
+            dedup_cache=_DedupCache(),
             rollback_engine=RollbackEngine(),
             guardrail_checker=GuardrailChecker(),
             cost_tracker=None,
@@ -272,7 +272,7 @@ def _fake_provider() -> Any:
     )
 
 
-def _build_dedup_cache(redis: Any) -> DeduplicationCache | Any:
+def _build_dedup_cache(redis: Any) -> Any:
     """Build the best available dedup cache: Redis-backed when Redis is available."""
     from app.reliability.dedup import DeduplicationCache as _DedupCache
 
@@ -469,10 +469,8 @@ class GoalService:
                                         except Exception:
                                             dead.append(q)
                                     for q in dead:
-                                        try:
+                                        with suppress(Exception):
                                             record.subscribers.remove(q)
-                                        except Exception:
-                                            pass
                                     # Send end-of-stream sentinel on terminal events
                                     _TERMINAL_BRIDGE = {
                                         "goal_complete",
@@ -483,10 +481,8 @@ class GoalService:
                                     }
                                     if event_type in _TERMINAL_BRIDGE:
                                         for q in list(record.subscribers):
-                                            try:
+                                            with suppress(Exception):
                                                 q.put_nowait(_SENTINEL)
-                                            except Exception:
-                                                pass
                                         # Update record status
                                         from app.agent.state import GoalStatus as _GS
 
@@ -885,58 +881,58 @@ class GoalService:
         _enable_self_consistency = bool(_agent_config.get("enable_self_consistency", False))
         _enable_tree_of_thoughts = bool(_agent_config.get("enable_tree_of_thoughts", False))
         _enable_peer_review = bool(_agent_config.get("enable_peer_review", False))
-        graph_services = dict(
-            planner=provider,
-            executor=provider,
-            verifier=provider,
-            max_iterations=_max_iterations,
-            audit_log=audit_log,
-            cost_controller=cost_controller,
-            hitl_gateway=hitl_gateway,
-            knowledge_store=knowledge_store,
-            retrieval_gateway=retrieval_gateway,
-            long_term_memory=long_term_memory,
-            mcp_client=mcp_client,
-            eval_runner=eval_runner,
-            result_processor=ResultProcessor(),
-            dedup_cache=_build_dedup_cache(getattr(self, "_redis", None)),
-            rollback_engine=RollbackEngine(),
-            guardrail_checker=GuardrailChecker(),
-            policy_engine=policy_engine,
+        graph_services = {
+            "planner": provider,
+            "executor": provider,
+            "verifier": provider,
+            "max_iterations": _max_iterations,
+            "audit_log": audit_log,
+            "cost_controller": cost_controller,
+            "hitl_gateway": hitl_gateway,
+            "knowledge_store": knowledge_store,
+            "retrieval_gateway": retrieval_gateway,
+            "long_term_memory": long_term_memory,
+            "mcp_client": mcp_client,
+            "eval_runner": eval_runner,
+            "result_processor": ResultProcessor(),
+            "dedup_cache": _build_dedup_cache(getattr(self, "_redis", None)),
+            "rollback_engine": RollbackEngine(),
+            "guardrail_checker": GuardrailChecker(),
+            "policy_engine": policy_engine,
             # Phase 22: per-connector circuit breakers
-            circuit_breakers=_circuit_breakers,
+            "circuit_breakers": _circuit_breakers,
             # Execution memory (H-3)
-            exec_memory=exec_memory,
+            "exec_memory": exec_memory,
             # RAG / intelligence services
-            embedder=_embedder,
-            semantic_cache=_semantic_cache,
-            llm_response_cache=getattr(app_state, "llm_response_cache", None),
-            model_router=_model_router,
+            "embedder": _embedder,
+            "semantic_cache": _semantic_cache,
+            "llm_response_cache": getattr(app_state, "llm_response_cache", None),
+            "model_router": _model_router,
             # Distributed per-tenant concurrency bulkhead
-            bulkhead_registry=_bulkhead_registry,
+            "bulkhead_registry": _bulkhead_registry,
             # Agent feature flags (H-4: loaded from agent record when available)
-            enable_cot=_agent_config.get("enable_cot", False),
-            enable_reflection=_agent_config.get("enable_reflection", False),
-            enable_goal_tree=_agent_config.get("enable_goal_tree", False),
-            autonomy_mode=_agent_config.get("autonomy_mode", "bounded-autonomous"),
+            "enable_cot": _agent_config.get("enable_cot", False),
+            "enable_reflection": _agent_config.get("enable_reflection", False),
+            "enable_goal_tree": _agent_config.get("enable_goal_tree", False),
+            "autonomy_mode": _agent_config.get("autonomy_mode", "bounded-autonomous"),
             # N1: pattern flags passed at construction so _build() includes them in the graph
-            enable_self_refine=_enable_self_refine,
-            enable_self_consistency=_enable_self_consistency,
-            enable_tree_of_thoughts=_enable_tree_of_thoughts,
-            enable_peer_review=_enable_peer_review,
+            "enable_self_refine": _enable_self_refine,
+            "enable_self_consistency": _enable_self_consistency,
+            "enable_tree_of_thoughts": _enable_tree_of_thoughts,
+            "enable_peer_review": _enable_peer_review,
             # Use RedisSaver when available for cross-replica state persistence (Fix 7)
-            checkpointer=_resolve_checkpointer(app_state),
+            "checkpointer": _resolve_checkpointer(app_state),
             # H-1: real token-cost tracker
-            cost_tracker=getattr(app_state, "cost_tracker", None),
+            "cost_tracker": getattr(app_state, "cost_tracker", None),
             # Phase 3 services — grounding, consensus, synthesis, calibration
-            grounding_checker=_grounding_checker,
-            answer_synthesizer=_answer_synthesizer,
-            calibration_store=_calibration_store,
-            consensus_verifier=_consensus_verifier,
-            tool_reliability_store=getattr(app_state, "tool_reliability_store", None),
-            episodic_memory=getattr(app_state, "episodic_memory", None),
-            procedural_memory=getattr(app_state, "procedural_memory", None),
-        )
+            "grounding_checker": _grounding_checker,
+            "answer_synthesizer": _answer_synthesizer,
+            "calibration_store": _calibration_store,
+            "consensus_verifier": _consensus_verifier,
+            "tool_reliability_store": getattr(app_state, "tool_reliability_store", None),
+            "episodic_memory": getattr(app_state, "episodic_memory", None),
+            "procedural_memory": getattr(app_state, "procedural_memory", None),
+        }
         if runtime_profile is not None:
             from app.orchestration.graph_factory import GraphFactory
 
@@ -1604,13 +1600,11 @@ class GoalService:
         # Also publish terminal events to the broader platform channel used by
         # other subscribers (notification service, billing hooks, etc.).
         if etype in {"goal_complete", "goal_failed"} and self._redis and tenant_ctx:
-            try:
+            with suppress(Exception):
                 await self._redis.publish(
                     f"platform_events:{tenant_ctx.tenant_id}",
                     json.dumps(sanitized_event),
                 )
-            except Exception:
-                pass
         # Push event to every live subscriber queue, pruning dead ones on all
         # non-ephemeral events so they don't accumulate until goal completion.
         _dead: list[asyncio.Queue[dict[str, Any] | None]] = []

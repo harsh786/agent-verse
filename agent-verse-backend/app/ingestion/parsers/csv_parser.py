@@ -73,7 +73,7 @@ class ExcelParser:
                 for row in rows[1:1001]:
                     items = [
                         f"{h}: {v}"
-                        for h, v in zip(headers, row)
+                        for h, v in zip(headers, row, strict=False)
                         if v is not None and str(v).strip()
                     ]
                     if items:

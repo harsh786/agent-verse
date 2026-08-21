@@ -141,9 +141,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "limit": arguments.get("limit", 25),
                     "offset": arguments.get("offset", 0),
                 }
-                if status := arguments.get("status", "all"):
-                    if status != "all":
-                        params["status"] = status
+                if (status := arguments.get("status", "all")) and status != "all":
+                    params["status"] = status
                 if "sort_by" in arguments:
                     params["sort_by"] = arguments["sort_by"]
                 r = await c.get("/pages", params=params)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging as _logging
 import secrets
@@ -414,10 +415,8 @@ async def collab_websocket(websocket: WebSocket, session_id: str) -> None:
     }
     for other_ws in list(_ws_connections[session_id]):
         if other_ws is not websocket:
-            try:
+            with contextlib.suppress(Exception):
                 await other_ws.send_json(presence_join)
-            except Exception:
-                pass
 
     try:
         while True:
@@ -475,10 +474,8 @@ async def collab_websocket(websocket: WebSocket, session_id: str) -> None:
             "participants": leave_count,
         }
         for other_ws in list(_ws_connections.get(session_id, [])):
-            try:
+            with contextlib.suppress(Exception):
                 await other_ws.send_json(presence_leave)
-            except Exception:
-                pass
 
 
 class DelegationRequest(BaseModel):
@@ -829,10 +826,8 @@ async def yjs_crdt_sync(websocket: WebSocket, room_id: str) -> None:
     # Send existing document snapshot to new peer so they get full history.
     snapshot = await _crdt_manager.load_snapshot(room_id)
     if snapshot:
-        try:
+        with contextlib.suppress(Exception):
             await websocket.send_bytes(snapshot)
-        except Exception:
-            pass
 
     await _crdt_manager.join(room_id, websocket)
 

@@ -9,6 +9,7 @@ Environment:
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import Any
 
@@ -188,10 +189,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 if match_filter := arguments.get("match"):
                     import re
 
-                    try:
+                    with contextlib.suppress(re.error):
                         metrics = [m for m in metrics if re.search(match_filter, m)]
-                    except re.error:
-                        pass
                 return {"metrics": metrics, "count": len(metrics)}
 
             elif tool_name == "prometheus_get_labels":
@@ -233,9 +232,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "prometheus_get_targets":
                 params = {}
-                if state := arguments.get("state", "any"):
-                    if state != "any":
-                        params["state"] = state
+                if (state := arguments.get("state", "any")) and state != "any":
+                    params["state"] = state
                 resp = await client.get(f"{api_base}/targets", params=params)
                 resp.raise_for_status()
                 data = resp.json()

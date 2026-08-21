@@ -7,6 +7,7 @@ Reduces hallucination and improves accuracy for high-stakes decisions.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -57,10 +58,8 @@ class DebateOrchestrator:
 
         async def emit(event: dict) -> None:
             if event_callback:
-                try:
+                with contextlib.suppress(Exception):
                     await event_callback(event)
-                except Exception:
-                    pass
 
         agent_ids = [f"agent_{i + 1}" for i in range(self._n_agents)]
 

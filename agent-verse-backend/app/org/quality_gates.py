@@ -21,7 +21,7 @@ Thresholds:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from opentelemetry import trace
@@ -32,7 +32,7 @@ _log = get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
 
-class GateResult(str, Enum):
+class GateResult(StrEnum):
     PASS = "pass"
     FAIL = "fail"
     SKIP = "skip"

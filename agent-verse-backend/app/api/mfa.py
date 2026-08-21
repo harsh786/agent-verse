@@ -20,6 +20,7 @@ Storage:
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import io
 import secrets
@@ -79,10 +80,8 @@ async def _check_rate_limit_global(tenant_id: str, endpoint: str, request: Any =
     # Try Redis first (global rate limiting across replicas)
     redis = None
     if request is not None:
-        try:
+        with contextlib.suppress(Exception):
             redis = getattr(request.app.state, "_redis", None)
-        except Exception:
-            pass
 
     if redis is not None:
         try:
@@ -137,10 +136,8 @@ async def _check_totp_replay(tenant_id: str, code: str, request: Any = None) -> 
     """
     redis = None
     if request is not None:
-        try:
+        with contextlib.suppress(Exception):
             redis = getattr(request.app.state, "_redis", None)
-        except Exception:
-            pass
 
     if redis is not None:
         try:

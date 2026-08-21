@@ -11,21 +11,21 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-class Complexity(str, enum.Enum):
+class Complexity(enum.StrEnum):
     SIMPLE = "simple"
     MEDIUM = "medium"
     COMPLEX = "complex"
     EXPERT = "expert"
 
 
-class RiskLevel(str, enum.Enum):
+class RiskLevel(enum.StrEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
 
 
-class Domain(str, enum.Enum):
+class Domain(enum.StrEnum):
     TECHNICAL = "technical"
     CREATIVE = "creative"
     ANALYTICAL = "analytical"

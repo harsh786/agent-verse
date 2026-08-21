@@ -3,7 +3,7 @@ from __future__ import annotations
 import enum
 
 
-class FilesystemMode(str, enum.Enum):
+class FilesystemMode(enum.StrEnum):
     READ_ONLY = "read_only"
     WORKSPACE = "workspace"
     EPHEMERAL = "ephemeral"

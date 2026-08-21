@@ -174,7 +174,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 if "points_possible" in arguments:
                     payload["assignment[points_possible]"] = arguments["points_possible"]
                 if "submission_types" in arguments:
-                    for i, st in enumerate(arguments["submission_types"]):
+                    for _i, st in enumerate(arguments["submission_types"]):
                         payload["assignment[submission_types][]"] = st
                 r = await client.post(
                     f"{base_url}/courses/{course_id}/assignments",

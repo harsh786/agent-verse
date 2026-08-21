@@ -17,6 +17,7 @@ goal twice (e.g. from double-click, retry button, or CI pipelines).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 from typing import Any
 
@@ -95,10 +96,8 @@ class GoalDeduplicator:
         """Delete the dedup key so future identical goals can be submitted."""
         key = _dedup_key(tenant_id, goal)
         if self._redis is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._redis.delete(key)
-            except Exception:
-                pass
         self._mem.pop(key, None)
 
 

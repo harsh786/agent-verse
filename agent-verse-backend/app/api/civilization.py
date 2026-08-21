@@ -9,6 +9,7 @@ All endpoints:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import uuid
 from datetime import UTC, datetime
@@ -811,10 +812,8 @@ async def get_replay(
 
     since_dt = None
     if since:
-        try:
+        with contextlib.suppress(Exception):
             since_dt = datetime.fromisoformat(since)
-        except Exception:
-            pass
 
     events = await get_events_since(
         civilization_id=civ_id,
@@ -1077,7 +1076,5 @@ async def civilization_ws(websocket: WebSocket, civ_id: str) -> None:
     except Exception as exc:
         logger.warning("civilization_ws_error", error=str(exc))
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await websocket.close()
-        except Exception:
-            pass

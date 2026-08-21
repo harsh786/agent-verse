@@ -114,16 +114,13 @@ class KnowledgeAccessPolicy:
             return True
 
         # Default: internal accessible to all departments
-        if collection_id == "all_internal" or sensitivity == "internal":
-            return True
-
-        return False
+        return bool(collection_id == "all_internal" or sensitivity == "internal")
 
     def get_allowed_collections(self, agent_dept_id: str) -> list[str]:
         """Return all collection IDs accessible to a department."""
         base = self.DEPT_COLLECTIONS.get(agent_dept_id, ["all_internal"])
         # Always include public
-        return list(set(base + ["all_public"]))
+        return list({*base, "all_public"})
 
     def _get_collection_owner(self, collection_id: str) -> str | None:
         """Map a collection to its owning department."""

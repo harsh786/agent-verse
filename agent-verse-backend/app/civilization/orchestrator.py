@@ -407,7 +407,7 @@ class CivilizationOrchestrator:
             member_ids = {m["agent_id"] for m in members}
 
             for row in rows:
-                agent_id, avg_score, cnt = row
+                agent_id, avg_score, _cnt = row
                 if agent_id in member_ids and avg_score is not None:
                     await self._society.update_reputation(
                         agent_id=agent_id, new_score=float(avg_score)
