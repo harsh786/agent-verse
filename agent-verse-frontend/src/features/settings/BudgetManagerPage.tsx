@@ -358,7 +358,7 @@ export function BudgetManagerPage(): JSX.Element {
             <button
               onClick={() => saveMutation.mutate()}
               disabled={saveMutation.isPending}
-              className="flex items-center gap-2 px-4 py-2 bg-[#00D4FF] text-[#00D4FF]-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-50"
+              className="flex items-center gap-2 px-4 py-2 bg-[#00D4FF] text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-50"
             >
               <Save className="h-4 w-4" />
               {saveMutation.isPending ? "Saving…" : "Save Changes"}

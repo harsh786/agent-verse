@@ -635,7 +635,7 @@ export function TrainingExportPage() {
                 data-testid="btn-export"
                 onClick={() => exportMutation.mutate()}
                 disabled={exportMutation.isPending}
-                className="flex items-center gap-2 px-4 py-2 bg-primary text-[#00D4FF]-foreground rounded-md text-sm disabled:opacity-50 hover:bg-primary/90 transition-colors"
+                className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm disabled:opacity-50 hover:bg-primary/90 transition-colors"
               >
                 {exportMutation.isPending ? (
                   <><Loader2 className="h-4 w-4 animate-spin" /> Exporting…</>

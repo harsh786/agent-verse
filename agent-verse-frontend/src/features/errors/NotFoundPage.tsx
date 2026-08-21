@@ -21,7 +21,7 @@ export default function NotFoundPage() {
       <div className="flex gap-3">
         <Link
           to="/dashboard"
-          className="flex items-center gap-2 px-4 py-2 bg-[#00D4FF] text-[#00D4FF]-foreground rounded-lg hover:opacity-90 transition-opacity"
+          className="flex items-center gap-2 px-4 py-2 bg-[#00D4FF] text-primary-foreground rounded-lg hover:opacity-90 transition-opacity"
         >
           <Home className="h-4 w-4" />
           Go to Dashboard

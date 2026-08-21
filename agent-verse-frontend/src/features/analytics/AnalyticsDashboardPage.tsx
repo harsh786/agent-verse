@@ -301,7 +301,7 @@ export function AnalyticsDashboardPage() {
               key={p}
               onClick={() => setDays(p)}
               aria-pressed={days === p}
-              className={`px-3 py-1.5 text-sm transition-colors ${days === p ? 'bg-[#00D4FF] text-[#00D4FF]-foreground' : 'hover:bg-muted'}`}
+              className={`px-3 py-1.5 text-sm transition-colors ${days === p ? 'bg-[#00D4FF] text-primary-foreground' : 'hover:bg-muted'}`}
             >
               {p}d
             </button>

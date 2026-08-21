@@ -86,7 +86,7 @@ function CivilizationList() {
           {/* Create civilization button */}
           <button
             onClick={() => setShowNewCivModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-[#00D4FF] text-[#00D4FF]-foreground text-sm font-medium rounded-lg hover:opacity-90 transition-opacity"
+            className="flex items-center gap-2 px-4 py-2 bg-[#00D4FF] text-primary-foreground text-sm font-medium rounded-lg hover:opacity-90 transition-opacity"
             aria-label="Create a new civilization"
           >
             <Plus className="h-4 w-4" />
@@ -306,7 +306,7 @@ function CivilizationList() {
                   }
                 }}
                 disabled={!newCivForm.name.trim()}
-                className="flex-1 py-2.5 bg-primary text-[#00D4FF]-foreground font-medium rounded-lg hover:opacity-90 disabled:opacity-50"
+                className="flex-1 py-2.5 bg-primary text-primary-foreground font-medium rounded-lg hover:opacity-90 disabled:opacity-50"
               >
                 Create Civilization
               </button>

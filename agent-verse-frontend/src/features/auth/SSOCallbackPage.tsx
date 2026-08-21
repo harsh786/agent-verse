@@ -218,7 +218,7 @@ export function SSOCallbackPage() {
               </p>
               <button
                 onClick={() => navigate("/auth", { replace: true })}
-                className="mt-2 px-6 py-2 bg-[#00D4FF] text-[#00D4FF]-foreground text-sm font-medium rounded-md hover:opacity-90 transition-opacity"
+                className="mt-2 px-6 py-2 bg-[#00D4FF] text-primary-foreground text-sm font-medium rounded-md hover:opacity-90 transition-opacity"
               >
                 Back to Sign In
               </button>

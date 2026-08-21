@@ -67,7 +67,7 @@ function CredentialsTab({ agentId }: { agentId: string }) {
         <h3 className="text-sm font-semibold text-foreground">Agent Credentials</h3>
         <button
           onClick={() => setIssuing(true)}
-          className="px-3 py-1.5 text-xs bg-[#00D4FF] text-[#00D4FF]-foreground rounded-md hover:opacity-90 transition-opacity"
+          className="px-3 py-1.5 text-xs bg-[#00D4FF] text-primary-foreground rounded-md hover:opacity-90 transition-opacity"
         >
           Issue Credential
         </button>
@@ -93,7 +93,7 @@ function CredentialsTab({ agentId }: { agentId: string }) {
                 )
               }
               disabled={issueMutation.isPending}
-              className="px-3 py-1 text-xs bg-primary text-[#00D4FF]-foreground rounded disabled:opacity-50"
+              className="px-3 py-1 text-xs bg-primary text-primary-foreground rounded disabled:opacity-50"
             >
               {issueMutation.isPending ? 'Issuing…' : 'Issue'}
             </button>

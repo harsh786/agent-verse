@@ -52,7 +52,7 @@ function HealthTab({ connectorId, connector }: { connectorId: string; connector:
         <button
           onClick={() => testMutation.mutate()}
           disabled={testMutation.isPending}
-          className="flex items-center gap-2 px-3 py-1.5 bg-[#00D4FF] text-[#00D4FF]-foreground text-sm rounded-lg hover:opacity-90 disabled:opacity-50"
+          className="flex items-center gap-2 px-3 py-1.5 bg-[#00D4FF] text-primary-foreground text-sm rounded-lg hover:opacity-90 disabled:opacity-50"
         >
           {testMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
           {testMutation.isPending ? 'Testing…' : 'Test Connection'}
