@@ -97,6 +97,7 @@ async def get_tts() -> TTSProvider:
         except ImportError as exc:
             # Auto-fallback: try kokoro, then browser
             log.warning("voice.tts.fallback provider=%s error=%s", provider_name, exc)
+            _fallback_exc: BaseException | None = None
             for fallback in ("kokoro", "browser"):
                 if fallback == provider_name:
                     continue
@@ -105,10 +106,13 @@ async def get_tts() -> TTSProvider:
                     _tts_instance = cls()
                     log.info("voice.tts.fallback_loaded provider=%s", fallback)
                     break
-                except ImportError as _b904_exc:
+                except ImportError as fallback_exc:
+                    _fallback_exc = fallback_exc
                     continue
             if _tts_instance is None:
-                raise RuntimeError(f"No TTS provider could be loaded (tried {provider_name})") from _b904_exc  # noqa: E501
+                raise RuntimeError(
+                    f"No TTS provider could be loaded (tried {provider_name})"
+                ) from (_fallback_exc if _fallback_exc is not None else exc)
         return _tts_instance
 
 
