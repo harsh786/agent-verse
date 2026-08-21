@@ -14,6 +14,7 @@ The fake runner DOES validate the full isolation contract:
   - Events forwarded through the same callback chain with isolation metadata
   - asyncio.CancelledError caught and surfaced as a structured result
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -95,7 +96,8 @@ class FakeRunner(BaseRunner):
         if not verify_envelope(envelope):
             logger.warning(
                 "fake_runner_hmac_failed goal_id=%s attempt=%s",
-                envelope.goal_id, envelope.attempt_id,
+                envelope.goal_id,
+                envelope.attempt_id,
             )
             return ExecutionResult(
                 goal_id=envelope.goal_id,
@@ -141,11 +143,13 @@ class FakeRunner(BaseRunner):
         if envelope.dry_run:
             if forwarding_callback is not None:
                 await forwarding_callback({"type": "goal_started", "goal": envelope.goal_text})
-                await forwarding_callback({
-                    "type": "dry_run_preview",
-                    "message": "Dry run completed without executing tools or writing changes.",
-                    "would_execute": False,
-                })
+                await forwarding_callback(
+                    {
+                        "type": "dry_run_preview",
+                        "message": "Dry run completed without executing tools or writing changes.",
+                        "would_execute": False,
+                    }
+                )
                 await forwarding_callback({"type": "goal_complete"})
             return ExecutionResult(
                 goal_id=envelope.goal_id,
@@ -163,6 +167,7 @@ class FakeRunner(BaseRunner):
 
         # --- Build tenant context with real plan tier (G-36) ---
         from app.tenancy.context import PlanTier, TenantContext
+
         plan_str = str((envelope.agent_config or {}).get("plan", "professional"))
         plan_tier = PlanTier.PROFESSIONAL
         with contextlib.suppress(ValueError, TypeError):
@@ -204,6 +209,7 @@ class FakeRunner(BaseRunner):
             )
 
         from app.agent.state import GoalStatus
+
         return ExecutionResult(
             goal_id=envelope.goal_id,
             tenant_id=envelope.tenant_id,

@@ -4,6 +4,7 @@ Environment variables:
   PIPEDRIVE_API_TOKEN: Pipedrive personal API token
   PIPEDRIVE_COMPANY_DOMAIN: Your Pipedrive subdomain (e.g. mycompany)
 """
+
 from __future__ import annotations
 
 import os
@@ -219,11 +220,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "pipedrive_create_person":
                 body = {
                     "name": arguments["name"],
-                    **{
-                        k: arguments[k]
-                        for k in ("email", "phone", "org_id")
-                        if k in arguments
-                    },
+                    **{k: arguments[k] for k in ("email", "phone", "org_id") if k in arguments},
                 }
                 r = await c.post(f"{base}/persons", params=_params(), json=body)
                 r.raise_for_status()

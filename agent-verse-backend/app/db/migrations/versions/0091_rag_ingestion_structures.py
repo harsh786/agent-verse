@@ -20,14 +20,18 @@ _DIMENSIONS = (768, 1024, 1536, 3072)
 
 def _create_index_concurrently(index_name: str, statement: str) -> None:
     """Retry an interrupted concurrent build without replacing a valid index."""
-    is_valid = op.get_bind().execute(
-        sa.text(
-            "SELECT index.indisvalid FROM pg_index AS index "
-            "JOIN pg_class AS relation ON relation.oid = index.indexrelid "
-            "WHERE relation.relname = :index_name"
-        ),
-        {"index_name": index_name},
-    ).scalar_one_or_none()
+    is_valid = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT index.indisvalid FROM pg_index AS index "
+                "JOIN pg_class AS relation ON relation.oid = index.indexrelid "
+                "WHERE relation.relname = :index_name"
+            ),
+            {"index_name": index_name},
+        )
+        .scalar_one_or_none()
+    )
     if is_valid is False:
         op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {index_name}")
     op.execute(statement)
@@ -43,9 +47,7 @@ def upgrade() -> None:
         "ADD CONSTRAINT ck_knowledge_collections_embedding_dim "
         "CHECK (embedding_dim IN (768, 1024, 1536, 3072))"
     )
-    op.execute(
-        "DROP POLICY IF EXISTS knowledge_collections_isolation ON knowledge_collections"
-    )
+    op.execute("DROP POLICY IF EXISTS knowledge_collections_isolation ON knowledge_collections")
     op.execute(
         "CREATE POLICY knowledge_collections_isolation ON knowledge_collections "
         "USING (tenant_id = current_setting('app.tenant_id', TRUE)) "
@@ -84,8 +86,7 @@ def upgrade() -> None:
     table = "knowledge_chunks_3072"
     op.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS parent_chunk_id TEXT")
     op.execute(
-        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
-        "chunk_level VARCHAR(10) DEFAULT 'leaf'"
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS chunk_level VARCHAR(10) DEFAULT 'leaf'"
     )
     op.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS window_start INTEGER")
     op.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS window_end INTEGER")
@@ -142,20 +143,13 @@ def downgrade() -> None:
         for dimension in _DIMENSIONS:
             table = f"knowledge_chunks_{dimension}"
             op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS idx_{table}_fts")
-            op.execute(
-                f"DROP INDEX CONCURRENTLY IF EXISTS idx_{table}_strategy_metadata"
-            )
+            op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS idx_{table}_strategy_metadata")
             op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS idx_{table}_metadata")
             op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS idx_{table}_proposition")
             op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS idx_{table}_hierarchy")
             op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS idx_{table}_window_id")
-        op.execute(
-            "DROP INDEX CONCURRENTLY IF EXISTS "
-            "idx_knowledge_chunks_3072_vector_halfvec"
-        )
-        op.execute(
-            "DROP INDEX CONCURRENTLY IF EXISTS ix_knowledge_chunks_3072_parent_chunk_id"
-        )
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_knowledge_chunks_3072_vector_halfvec")
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS ix_knowledge_chunks_3072_parent_chunk_id")
 
     for dimension in _DIMENSIONS:
         table = f"knowledge_chunks_{dimension}"
@@ -179,9 +173,7 @@ def downgrade() -> None:
         "ALTER TABLE knowledge_collections "
         "DROP CONSTRAINT IF EXISTS ck_knowledge_collections_embedding_dim"
     )
-    op.execute(
-        "DROP POLICY IF EXISTS knowledge_collections_isolation ON knowledge_collections"
-    )
+    op.execute("DROP POLICY IF EXISTS knowledge_collections_isolation ON knowledge_collections")
     op.execute(
         "CREATE POLICY knowledge_collections_isolation ON knowledge_collections "
         "USING (tenant_id = current_setting('app.tenant_id', TRUE))"

@@ -3,6 +3,7 @@
 Environment:
   RAMP_ACCESS_TOKEN: Ramp OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -22,7 +23,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "start": {"type": "integer", "description": "Start Unix timestamp for transactions"},
+                "start": {
+                    "type": "integer",
+                    "description": "Start Unix timestamp for transactions",
+                },
                 "end": {"type": "integer", "description": "End Unix timestamp for transactions"},
                 "page_size": {"type": "integer", "description": "Transactions per page"},
                 "start_cursor": {"type": "string", "description": "Pagination cursor"},
@@ -80,7 +84,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "reimbursement_id": {"type": "string", "description": "ID of the reimbursement to approve"},
+                "reimbursement_id": {
+                    "type": "string",
+                    "description": "ID of the reimbursement to approve",
+                },
                 "action": {"type": "string", "description": "Action to take: approve or decline"},
                 "comment": {"type": "string", "description": "Optional approval comment"},
             },

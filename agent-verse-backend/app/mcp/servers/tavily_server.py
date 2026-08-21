@@ -3,6 +3,7 @@
 Environment:
   TAVILY_API_KEY: Tavily API key (tvly-...)
 """
+
 from __future__ import annotations
 
 import os
@@ -91,7 +92,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Question to answer"},
-                "search_depth": {"type": "string", "enum": ["basic", "advanced"], "default": "advanced"},
+                "search_depth": {
+                    "type": "string",
+                    "enum": ["basic", "advanced"],
+                    "default": "advanced",
+                },
                 "topic": {"type": "string", "enum": ["general", "news"], "default": "general"},
             },
             "required": ["query"],

@@ -12,6 +12,7 @@ application layer if network isolation is required.
 Automatic cleanup after each session and timeout enforcement (default 30s
 per action) are in place.
 """
+
 from __future__ import annotations
 
 import base64
@@ -25,9 +26,12 @@ logger = get_logger(__name__)
 _PLAYWRIGHT_AVAILABLE = False
 try:
     from playwright.async_api import Browser, Page, async_playwright
+
     _PLAYWRIGHT_AVAILABLE = True
 except ImportError:
-    logger.warning("Playwright not installed. Browser agent disabled. Run: playwright install chromium")
+    logger.warning(
+        "Playwright not installed. Browser agent disabled. Run: playwright install chromium"
+    )
 
 
 @dataclass
@@ -72,7 +76,9 @@ class BrowserAgent:
     async def take_screenshot(self, url: str) -> BrowserResult:
         """Navigate to URL and return a base64-encoded screenshot."""
         if not _PLAYWRIGHT_AVAILABLE:
-            return BrowserResult(success=False, action="screenshot", error="Playwright not installed")
+            return BrowserResult(
+                success=False, action="screenshot", error="Playwright not installed"
+            )
 
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=self._headless)
@@ -99,7 +105,9 @@ class BrowserAgent:
     async def extract_text(self, url: str, selector: str = "body") -> BrowserResult:
         """Extract visible text from a URL."""
         if not _PLAYWRIGHT_AVAILABLE:
-            return BrowserResult(success=False, action="extract_text", error="Playwright not installed")
+            return BrowserResult(
+                success=False, action="extract_text", error="Playwright not installed"
+            )
 
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=self._headless)
@@ -186,7 +194,9 @@ class BrowserAgent:
 
             req = CompletionRequest(
                 messages=[
-                    Message(role="system", content="You are a web page analyzer. Describe what you see."),
+                    Message(
+                        role="system", content="You are a web page analyzer. Describe what you see."
+                    ),
                     Message(
                         role="user",
                         content=question,

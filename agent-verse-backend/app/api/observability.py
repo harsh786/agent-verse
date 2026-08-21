@@ -1,4 +1,5 @@
 """Observability API — real-time logs, SSE log stream, and structured metrics."""
+
 from __future__ import annotations
 
 import asyncio
@@ -79,9 +80,7 @@ class StructuredLogStore:
                 key = self.STREAM_KEY.format(tenant_id=tenant_id)
                 # Redis Streams require string values; drop empty strings to save space
                 fields = {k: v for k, v in entry.items() if v}
-                await self._redis.xadd(
-                    key, fields, maxlen=self.MAX_STREAM_LEN, approximate=True
-                )
+                await self._redis.xadd(key, fields, maxlen=self.MAX_STREAM_LEN, approximate=True)
                 return
             except Exception as exc:
                 _obs_log.debug("Redis log emit failed: %s", exc)
@@ -128,9 +127,7 @@ class StructuredLogStore:
             buf = [e for e in buf if e.get("level") == level.lower()]
         return buf[:limit]
 
-    async def stream_new_since(
-        self, tenant_id: str, last_id: str = "$"
-    ) -> list[dict[str, Any]]:
+    async def stream_new_since(self, tenant_id: str, last_id: str = "$") -> list[dict[str, Any]]:
         """Non-blocking read of entries newer than *last_id* (for SSE).
 
         Uses ``XREAD BLOCK 2000`` so the coroutine yields control every 2 s
@@ -154,9 +151,7 @@ class StructuredLogStore:
                                 for k, v in fields.items()
                             }
                             log["_stream_id"] = (
-                                stream_id.decode()
-                                if isinstance(stream_id, bytes)
-                                else stream_id
+                                stream_id.decode() if isinstance(stream_id, bytes) else stream_id
                             )
                             logs.append(log)
                 return logs
@@ -199,9 +194,7 @@ async def list_logs(
                 for goal in goals[:20]:  # last 20 goals
                     goal_id = goal.get("id") or goal.get("goal_id", "")
                     try:
-                        events = await goal_svc.get_events(
-                            goal_id=goal_id, tenant_ctx=tenant
-                        )
+                        events = await goal_svc.get_events(goal_id=goal_id, tenant_ctx=tenant)
                         for evt in events[-10:]:  # last 10 events per goal
                             evt_type = evt.get("type", "")
                             level_val = (
@@ -214,8 +207,7 @@ async def list_logs(
                             logs.append(
                                 {
                                     "id": f"{goal_id}_{evt.get('ts', '')}",
-                                    "timestamp": evt.get("ts")
-                                    or datetime.now(UTC).isoformat(),
+                                    "timestamp": evt.get("ts") or datetime.now(UTC).isoformat(),
                                     "level": level_val,
                                     "message": _evt_to_message(evt),
                                     "source": evt_type,
@@ -235,9 +227,7 @@ async def list_logs(
             logs = [
                 log
                 for log in logs
-                if datetime.fromisoformat(
-                    log.get("timestamp", "").rstrip("Z")
-                ).replace(tzinfo=UTC)
+                if datetime.fromisoformat(log.get("timestamp", "").rstrip("Z")).replace(tzinfo=UTC)
                 >= since_dt
             ]
         except Exception:
@@ -511,17 +501,15 @@ async def get_timeseries(
             if record.tenant_id != tenant.tenant_id:
                 continue
             try:
-                created = _dt.datetime.fromisoformat(
-                    record.created_at.rstrip("Z")
-                ).replace(tzinfo=_dt.UTC)
+                created = _dt.datetime.fromisoformat(record.created_at.rstrip("Z")).replace(
+                    tzinfo=_dt.UTC
+                )
             except Exception:
                 continue
 
             if since:
                 try:
-                    since_dt = _dt.datetime.fromisoformat(since.rstrip("Z")).replace(
-                        tzinfo=_dt.UTC
-                    )
+                    since_dt = _dt.datetime.fromisoformat(since.rstrip("Z")).replace(tzinfo=_dt.UTC)
                     if created < since_dt:
                         continue
                 except Exception:
@@ -529,9 +517,7 @@ async def get_timeseries(
 
             if until:
                 try:
-                    until_dt = _dt.datetime.fromisoformat(until.rstrip("Z")).replace(
-                        tzinfo=_dt.UTC
-                    )
+                    until_dt = _dt.datetime.fromisoformat(until.rstrip("Z")).replace(tzinfo=_dt.UTC)
                     if created > until_dt:
                         continue
                 except Exception:
@@ -573,9 +559,7 @@ async def get_timeseries(
                     "failed": data["failed"],
                 }
             )
-            result["cost_per_hour"].append(
-                {"ts": ts, "cost_usd": round(data["cost"], 4)}
-            )
+            result["cost_per_hour"].append({"ts": ts, "cost_usd": round(data["cost"], 4)})
 
         return result
 
@@ -593,9 +577,7 @@ async def get_timeseries(
             else now - _dt.timedelta(hours=24)
         )
         until_dt = (
-            _dt.datetime.fromisoformat(until.rstrip("Z")).replace(tzinfo=_dt.UTC)
-            if until
-            else now
+            _dt.datetime.fromisoformat(until.rstrip("Z")).replace(tzinfo=_dt.UTC) if until else now
         )
 
         async with db() as session:
@@ -651,8 +633,7 @@ async def get_timeseries(
             ).fetchall()
 
             result["cost_per_hour"] = [
-                {"ts": r[0].isoformat(), "cost_usd": round(float(r[1] or 0), 4)}
-                for r in cost_rows
+                {"ts": r[0].isoformat(), "cost_usd": round(float(r[1] or 0), 4)} for r in cost_rows
             ]
 
             # Latency (p50 / p95) per time bucket

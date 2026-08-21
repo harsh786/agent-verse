@@ -6,7 +6,7 @@ import re
 from typing import Any, Protocol
 
 _TOOL_EVENT_MAX_LENGTH = 1000
-_EXECUTOR_CONTEXT_MAX_LENGTH = 5000   # LLM context for executor — richer than SSE events
+_EXECUTOR_CONTEXT_MAX_LENGTH = 5000  # LLM context for executor — richer than SSE events
 _TOOL_EVENT_TRUNCATION_MARKER = "...[truncated]"
 _SENSITIVE_KV_PATTERN = re.compile(
     r"(?i)(['\"]?\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|secret|password|passwd|pwd|token)"
@@ -27,9 +27,7 @@ def redact_sensitive_text(value: object) -> str:
     """Return *value* as text with common credentials redacted."""
     text = "" if value is None else str(value)
     text = _SENSITIVE_KV_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
-    text = _AUTHORIZATION_HEADER_PATTERN.sub(
-        lambda match: f"{match.group(1)}[REDACTED]", text
-    )
+    text = _AUTHORIZATION_HEADER_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
     return _BASIC_TOKEN_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
 
 
@@ -63,18 +61,14 @@ def sanitize_tool_event_value(
     return sanitize_tool_raw_output(value, result_processor=result_processor)
 
 
-def sanitize_event_value(
-    value: Any, *, result_processor: ResultProcessor | None = None
-) -> Any:
+def sanitize_event_value(value: Any, *, result_processor: ResultProcessor | None = None) -> Any:
     if isinstance(value, str):
         return sanitize_tool_raw_output(value, result_processor=result_processor)
     if isinstance(value, dict):
         return {
             sanitize_tool_raw_output(key, result_processor=result_processor)
             if isinstance(key, str)
-            else key: sanitize_event_value(
-                nested_value, result_processor=result_processor
-            )
+            else key: sanitize_event_value(nested_value, result_processor=result_processor)
             for key, nested_value in value.items()
         }
     if isinstance(value, list):

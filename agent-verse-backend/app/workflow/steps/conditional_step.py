@@ -1,4 +1,5 @@
 """ConditionalStepNode — evaluates expressions to choose next branch."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -33,9 +34,7 @@ class ConditionalStepNode:
                 continue  # default is fallthrough — only used if no other branch matched
 
             # Resolve {{...}} in the condition expression first
-            resolved_condition = str(
-                self.ctx.resolve(branch.condition, state)
-            )
+            resolved_condition = str(self.ctx.resolve(branch.condition, state))
 
             try:
                 if _engine.evaluate(resolved_condition):

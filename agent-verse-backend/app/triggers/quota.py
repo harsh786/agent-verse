@@ -1,11 +1,12 @@
 """Trigger quota enforcement — checked at CREATE time."""
+
 from __future__ import annotations
 
 PLAN_MAX_TRIGGERS: dict[str, int] = {
-    "free":         5,
-    "starter":      25,
+    "free": 5,
+    "starter": 25,
     "professional": 200,
-    "enterprise":   999_999,
+    "enterprise": 999_999,
 }
 
 

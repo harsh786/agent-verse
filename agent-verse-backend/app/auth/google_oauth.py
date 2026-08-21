@@ -4,6 +4,7 @@ Endpoints:
   GET /auth/google/login  → redirect to Google with PKCE
   GET /auth/google/callback → exchange code, upsert user, mint JWT
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -45,6 +46,7 @@ async def _pkce_store_set(state: str, data: dict[str, Any], redis: Any = None) -
     if redis is not None:
         import contextlib
         import json as _json
+
         with contextlib.suppress(Exception):
             await redis.set(_pkce_redis_key(state), _json.dumps(data), ex=300)
     _pkce_store[state] = data
@@ -54,6 +56,7 @@ async def _pkce_store_pop(state: str, redis: Any = None) -> dict[str, Any] | Non
     """Retrieve-and-delete PKCE state from Redis or in-memory fallback."""
     if redis is not None:
         import json as _json
+
         try:
             raw = await redis.get(_pkce_redis_key(state))
             if raw:
@@ -67,6 +70,7 @@ async def _pkce_store_pop(state: str, redis: Any = None) -> dict[str, Any] | Non
 def _generate_pkce() -> tuple[str, str]:
     """Generate code_verifier and code_challenge for PKCE."""
     import base64
+
     verifier = secrets.token_urlsafe(64)
     challenge = hashlib.sha256(verifier.encode()).digest()
     challenge_b64 = base64.urlsafe_b64encode(challenge).rstrip(b"=").decode()
@@ -112,14 +116,17 @@ async def google_callback(
 
     # Exchange code for tokens
     async with httpx.AsyncClient(timeout=15) as client:
-        token_resp = await client.post(_GOOGLE_TOKEN_URL, data={
-            "client_id": _CLIENT_ID,
-            "client_secret": _CLIENT_SECRET,
-            "code": code,
-            "redirect_uri": _REDIRECT_URI,
-            "grant_type": "authorization_code",
-            "code_verifier": pkce["verifier"],
-        })
+        token_resp = await client.post(
+            _GOOGLE_TOKEN_URL,
+            data={
+                "client_id": _CLIENT_ID,
+                "client_secret": _CLIENT_SECRET,
+                "code": code,
+                "redirect_uri": _REDIRECT_URI,
+                "grant_type": "authorization_code",
+                "code_verifier": pkce["verifier"],
+            },
+        )
 
     if token_resp.status_code != 200:
         logger.warning("google_token_exchange_failed", status=token_resp.status_code)
@@ -157,6 +164,7 @@ async def google_callback(
         if db_factory is not None:
             try:
                 from app.auth.user_service import upsert_google_user
+
                 user_id, tenant_id = await upsert_google_user(
                     db_factory=db_factory,
                     email=email,
@@ -170,6 +178,7 @@ async def google_callback(
     # Mint AgentVerse JWT
     try:
         from app.auth.jwt_service import mint_jwt
+
         jwt_token = mint_jwt(
             user_id=user_id or google_sub,
             email=email,
@@ -179,9 +188,11 @@ async def google_callback(
     except Exception as exc:
         logger.warning("jwt_mint_failed", error=str(exc)[:80])
         # Return basic info without JWT if JWT service not configured
-        return JSONResponse({
-            "user_id": user_id or google_sub,
-            "email": email,
-            "tenant_id": tenant_id,
-            "note": "JWT service not configured",
-        })
+        return JSONResponse(
+            {
+                "user_id": user_id or google_sub,
+                "email": email,
+                "tenant_id": tenant_id,
+                "note": "JWT service not configured",
+            }
+        )

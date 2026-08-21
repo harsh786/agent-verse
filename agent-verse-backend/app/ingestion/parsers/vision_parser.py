@@ -8,6 +8,7 @@ Supports two modes:
    calls when no provider is injected.  The ``prefer_provider`` string
    controls the attempt order.
 """
+
 from __future__ import annotations
 
 import base64
@@ -29,13 +30,15 @@ class VisionParseResult:
 
     def to_chunks(self) -> list[dict[str, Any]]:
         content = self.description or f"[Image: {self.source_name}]"
-        return [{
-            "content": content,
-            "chunk_index": 0,
-            "source_name": self.source_name,
-            "content_type": "image",
-            "model_used": self.model_used,
-        }]
+        return [
+            {
+                "content": content,
+                "chunk_index": 0,
+                "source_name": self.source_name,
+                "content_type": "image",
+                "model_used": self.model_used,
+            }
+        ]
 
 
 def _detect_image_mime(image_bytes: bytes) -> str:
@@ -100,11 +103,7 @@ class VisionParser:
                 )
 
         # ── Legacy SDK path: try providers in preference order via dispatch ───
-        providers = (
-            ["openai", "anthropic"]
-            if self._prefer == "openai"
-            else ["anthropic", "openai"]
-        )
+        providers = ["openai", "anthropic"] if self._prefer == "openai" else ["anthropic", "openai"]
         last_error = ""
         for provider_name in providers:
             describe_fn = self._sdk_dispatch.get(provider_name)
@@ -158,30 +157,51 @@ class VisionParser:
 
     async def _describe_with_openai(self, b64_image: str, mime_type: str, prompt: str) -> str:
         import openai  # type: ignore[import]
+
         client = openai.AsyncOpenAI()
         response = await client.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {
-                    "url": f"data:{mime_type};base64,{b64_image}", "detail": "auto",
-                }},
-            ]}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{b64_image}",
+                                "detail": "auto",
+                            },
+                        },
+                    ],
+                }
+            ],
             max_tokens=500,
         )
         return response.choices[0].message.content or ""
 
     async def _describe_with_anthropic(self, b64_image: str, mime_type: str, prompt: str) -> str:
         import anthropic  # type: ignore[import]
+
         client = anthropic.AsyncAnthropic()
         response = await client.messages.create(
             model="claude-3-5-sonnet-20241022",
             max_tokens=500,
-            messages=[{"role": "user", "content": [
-                {"type": "image", "source": {
-                    "type": "base64", "media_type": mime_type, "data": b64_image,
-                }},
-                {"type": "text", "text": prompt},
-            ]}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": mime_type,
+                                "data": b64_image,
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
         )
         return response.content[0].text if response.content else ""

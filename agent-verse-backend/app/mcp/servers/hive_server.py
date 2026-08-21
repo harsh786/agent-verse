@@ -4,6 +4,7 @@ Environment:
   HIVE_API_KEY: Hive API key
   HIVE_USER_ID: Hive user ID
 """
+
 from __future__ import annotations
 
 import os
@@ -40,7 +41,11 @@ TOOL_DEFINITIONS = [
                 "project_id": {"type": "string"},
                 "title": {"type": "string"},
                 "description": {"type": "string"},
-                "assignees": {"type": "array", "items": {"type": "string"}, "description": "User IDs"},
+                "assignees": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "User IDs",
+                },
                 "due_date": {"type": "string", "description": "ISO 8601 datetime"},
                 "priority": {"type": "string", "enum": ["none", "low", "medium", "high", "urgent"]},
             },

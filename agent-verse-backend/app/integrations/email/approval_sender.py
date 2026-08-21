@@ -2,12 +2,12 @@
 
 P1.3: Generates HTML email with clickable Approve/Reject buttons and HMAC-signed URLs.
 """
+
 from __future__ import annotations
 
 import hashlib
 import hmac as _hmac
 import os
-from typing import Any
 
 from app.observability.logging import get_logger
 
@@ -43,9 +43,10 @@ async def send_approval_email(
     Returns True on success, False on failure (import error or SMTP error).
     """
     try:
-        import aiosmtplib
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
+
+        import aiosmtplib
 
         approve_sig = _sign(request_id, "approve")
         reject_sig = _sign(request_id, "reject")

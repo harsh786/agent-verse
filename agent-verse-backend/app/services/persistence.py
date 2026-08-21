@@ -4,6 +4,7 @@ Design: always use the in-memory services (fast, testable), and additionally
 attempt to persist to PostgreSQL in the background. Failure to persist is
 logged but never raises to the caller (in-memory is source of truth for now).
 """
+
 from __future__ import annotations
 
 import logging

@@ -4,6 +4,7 @@ Revision ID: 0087_orchestration_tables
 Revises: 0086_runtime_profile_fields
 Create Date: 2026-07-08
 """
+
 from __future__ import annotations
 
 import sqlalchemy as sa

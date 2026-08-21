@@ -6,6 +6,7 @@ Detects statistical anomalies in LLM outputs that may indicate:
 - Credential leakage (API keys, tokens in output)
 - Unusual repetition (sign of prompt injection loop)
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -14,23 +15,25 @@ from typing import Any
 
 try:
     from app.observability.logging import get_logger
+
     logger = get_logger(__name__)
 except Exception:
     import logging
+
     logger = logging.getLogger(__name__)  # type: ignore[assignment]
 
 _SECRET_PATTERNS = [
-    re.compile(r"(sk|pk|rk)_[a-zA-Z0-9_]{20,}"),     # Stripe/generic keys
+    re.compile(r"(sk|pk|rk)_[a-zA-Z0-9_]{20,}"),  # Stripe/generic keys
     re.compile(r"(?i)api[_-]?key\s*[=:]\s*[\"']?[a-zA-Z0-9_\-]{20,}"),
-    re.compile(r"ghp_[a-zA-Z0-9]{36}"),               # GitHub tokens
-    re.compile(r"AKIA[A-Z0-9]{16}"),                  # AWS keys
-    re.compile(r"(?i)bearer\s+[a-zA-Z0-9._\-]{30,}"), # Bearer tokens
+    re.compile(r"ghp_[a-zA-Z0-9]{36}"),  # GitHub tokens
+    re.compile(r"AKIA[A-Z0-9]{16}"),  # AWS keys
+    re.compile(r"(?i)bearer\s+[a-zA-Z0-9._\-]{30,}"),  # Bearer tokens
     re.compile(r"(?i)password\s*[=:]\s*[\"']?[^\s\"']{8,}"),  # Passwords
     re.compile(r"-----BEGIN\s+(?:RSA\s+)?(?:EC\s+)?PRIVATE\s+KEY-----"),  # Private keys
 ]
 
 _MAX_NORMAL_OUTPUT_CHARS = 50000  # 50KB is suspicious
-_MAX_REPETITION_RATIO = 0.7      # if 70%+ of output is repeated content
+_MAX_REPETITION_RATIO = 0.7  # if 70%+ of output is repeated content
 
 
 def scan_output_for_anomalies(

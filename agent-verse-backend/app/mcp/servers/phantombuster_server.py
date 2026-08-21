@@ -3,6 +3,7 @@
 Environment:
   PHANTOMBUSTER_API_KEY: PhantomBuster API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -35,7 +36,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "agent_id": {"type": "string", "description": "ID of the agent to launch"},
                 "arguments": {"type": "object", "description": "Input arguments for the agent"},
-                "save_argument": {"type": "boolean", "description": "Whether to save the argument for future launches"},
+                "save_argument": {
+                    "type": "boolean",
+                    "description": "Whether to save the argument for future launches",
+                },
             },
             "required": ["agent_id"],
         },
@@ -47,7 +51,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "agent_id": {"type": "string", "description": "ID of the agent"},
-                "container_id": {"type": "string", "description": "Specific container/execution ID"},
+                "container_id": {
+                    "type": "string",
+                    "description": "Specific container/execution ID",
+                },
             },
             "required": ["agent_id"],
         },
@@ -58,7 +65,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "category": {"type": "string", "description": "Category filter (e.g. linkedin, twitter)"},
+                "category": {
+                    "type": "string",
+                    "description": "Category filter (e.g. linkedin, twitter)",
+                },
                 "limit": {"type": "integer", "description": "Maximum results"},
             },
         },
@@ -118,7 +128,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 params: dict[str, Any] = {"id": arguments["agent_id"]}
                 if "container_id" in arguments:
                     params["containerId"] = arguments["container_id"]
-                r = await client.get(f"{BASE_URL}/containers/fetch-output", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/containers/fetch-output", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -132,7 +144,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 params = {"id": arguments["agent_id"]}
                 if "format" in arguments:
                     params["format"] = arguments["format"]
-                r = await client.get(f"{BASE_URL}/agents/fetch-output", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/agents/fetch-output", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

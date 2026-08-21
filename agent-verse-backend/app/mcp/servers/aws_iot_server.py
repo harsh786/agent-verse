@@ -5,12 +5,11 @@ Environment:
   AWS_SECRET_ACCESS_KEY: AWS secret access key
   AWS_REGION: AWS region (e.g. us-east-1)
 """
+
 from __future__ import annotations
 
 import os
 from typing import Any
-
-import httpx
 
 from app.observability.logging import get_logger
 
@@ -29,7 +28,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "max_results": {"type": "integer", "description": "Maximum number of Things to return"},
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of Things to return",
+                },
                 "next_token": {"type": "string", "description": "Pagination token"},
                 "thing_type_name": {"type": "string", "description": "Filter by Thing type name"},
             },
@@ -54,7 +56,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "thing_name": {"type": "string", "description": "Name of the IoT Thing"},
                 "desired_state": {"type": "object", "description": "Desired state key-value pairs"},
-                "shadow_name": {"type": "string", "description": "Named shadow (optional, omit for classic shadow)"},
+                "shadow_name": {
+                    "type": "string",
+                    "description": "Named shadow (optional, omit for classic shadow)",
+                },
             },
             "required": ["thing_name", "desired_state"],
         },
@@ -100,6 +105,7 @@ TOOL_DEFINITIONS = [
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
     import json
+
     access_key = os.getenv("AWS_ACCESS_KEY_ID", "")
     secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "")
     region = os.getenv("AWS_REGION", "us-east-1")

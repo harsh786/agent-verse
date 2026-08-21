@@ -15,6 +15,7 @@ Algorithm:
   4. Check ISSUP + ISUSE
   5. Return response with critique metadata
 """
+
 from __future__ import annotations
 
 import json
@@ -104,9 +105,7 @@ class CritiqueDecision:
             if any(not isinstance(payload.get(field), bool) for field in bool_fields):
                 raise TypeError("critique boolean fields must be booleans")
             raw_confidence = payload.get("confidence")
-            if isinstance(raw_confidence, bool) or not isinstance(
-                raw_confidence, int | float
-            ):
+            if isinstance(raw_confidence, bool) or not isinstance(raw_confidence, int | float):
                 raise TypeError("critique confidence must be numeric")
             confidence = float(raw_confidence)
             if not 0.0 <= confidence <= 1.0:
@@ -153,9 +152,7 @@ class SelfRAGRuntimeAdapter(SelfRAGRuntimeContract):
         )
 
         if context is None or context.llm is None or context.llm.provider is None:
-            raise RetrievalStrategyExecutionError(
-                self.strategy.value, "resolved LLM is required"
-            )
+            raise RetrievalStrategyExecutionError(self.strategy.value, "resolved LLM is required")
 
         provider = context.llm.provider
         model = context.llm.model
@@ -209,10 +206,7 @@ class SelfRAGRuntimeAdapter(SelfRAGRuntimeContract):
                             Message(role="system", content=_GENERATE_WITH_CONTEXT),
                             Message(
                                 role="user",
-                                content=(
-                                    f"Context:\n{context_text}\n\n"
-                                    f"Question: {request.query}"
-                                ),
+                                content=(f"Context:\n{context_text}\n\nQuestion: {request.query}"),
                             ),
                         ],
                         model=model,
@@ -255,9 +249,7 @@ class SelfRAGRuntimeAdapter(SelfRAGRuntimeContract):
 
         terminal_critique = critiques[-1] if critiques else None
         is_grounded = bool(
-            terminal_critique
-            and terminal_critique.support
-            and terminal_critique.usefulness
+            terminal_critique and terminal_critique.support and terminal_critique.usefulness
         )
         result = _canonical_result(request, self.strategy, retained, evidence)
         result = result.model_copy(update={"answer": answer, "grounded": is_grounded})
@@ -304,6 +296,7 @@ class SelfRAGPattern(RAGPattern):
     def is_compatible(self, goal_properties: Any) -> bool:
         try:
             from app.core.config import get_settings
+
             if not get_settings().enable_self_rag:
                 return False
         except Exception:
@@ -350,15 +343,21 @@ class SelfRAGPattern(RAGPattern):
         """Execute Self-RAG with critique tokens. Returns answer string."""
         try:
             from app.observability.logging import get_logger
+
             get_logger(__name__).info("self_rag_started", query=query[:60])
         except Exception:
             pass
         result = await self.execute_with_critique(
-            query=query, provider=provider,
-            retrieve_fn=retrieve_fn, max_tokens=max_tokens, model=model, strict=strict,
+            query=query,
+            provider=provider,
+            retrieve_fn=retrieve_fn,
+            max_tokens=max_tokens,
+            model=model,
+            strict=strict,
         )
         try:
             from app.observability.logging import get_logger
+
             get_logger(__name__).info("self_rag_completed", result_len=len(result.answer))
         except Exception:
             pass
@@ -380,6 +379,7 @@ class SelfRAGPattern(RAGPattern):
         # Circuit breaker setup
         try:
             from app.reliability.circuit_breaker import CircuitBreaker
+
             _cb_key = f"pattern_{self.pattern_id}"
             if _cb_key not in self._circuit_breakers:
                 self._circuit_breakers[_cb_key] = CircuitBreaker(
@@ -472,6 +472,7 @@ class SelfRAGPattern(RAGPattern):
         breaker: Any = None,
     ) -> bool:
         from app.providers.base import CompletionRequest, Message
+
         resp = await self._complete_with_breaker(
             provider=provider,
             request=CompletionRequest(
@@ -513,6 +514,7 @@ class SelfRAGPattern(RAGPattern):
         breaker: Any = None,
     ) -> dict[str, Any]:
         from app.providers.base import CompletionRequest, Message
+
         resp = await self._complete_with_breaker(
             provider=provider,
             request=CompletionRequest(

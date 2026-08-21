@@ -4,6 +4,7 @@ Environment:
   ECWID_SECRET_TOKEN: Ecwid store secret API token
   ECWID_STORE_ID: Ecwid numeric store ID
 """
+
 from __future__ import annotations
 
 import os
@@ -22,10 +23,20 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "Search keyword for product name/description"},
+                "keyword": {
+                    "type": "string",
+                    "description": "Search keyword for product name/description",
+                },
                 "enabled": {"type": "boolean", "description": "Filter by enabled/disabled status"},
-                "in_stock": {"type": "boolean", "description": "Filter to show only in-stock products"},
-                "limit": {"type": "integer", "description": "Number of products to return (max 100)", "default": 20},
+                "in_stock": {
+                    "type": "boolean",
+                    "description": "Filter to show only in-stock products",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of products to return (max 100)",
+                    "default": 20,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
         },
@@ -41,7 +52,11 @@ TOOL_DEFINITIONS = [
                 "description": {"type": "string", "description": "Product HTML description"},
                 "sku": {"type": "string", "description": "Product SKU"},
                 "quantity": {"type": "integer", "description": "Stock quantity"},
-                "enabled": {"type": "boolean", "description": "Whether the product is enabled/visible", "default": True},
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether the product is enabled/visible",
+                    "default": True,
+                },
             },
             "required": ["name", "price"],
         },
@@ -68,9 +83,19 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "payment_status": {"type": "string", "description": "Filter by payment status: AWAITING_PAYMENT, PAID, CANCELLED, REFUNDED"},
-                "fulfillment_status": {"type": "string", "description": "Filter by fulfillment: AWAITING_PROCESSING, PROCESSING, SHIPPED, DELIVERED, RETURNED"},
-                "limit": {"type": "integer", "description": "Number of orders to return (max 100)", "default": 20},
+                "payment_status": {
+                    "type": "string",
+                    "description": "Filter by payment status: AWAITING_PAYMENT, PAID, CANCELLED, REFUNDED",
+                },
+                "fulfillment_status": {
+                    "type": "string",
+                    "description": "Filter by fulfillment: AWAITING_PROCESSING, PROCESSING, SHIPPED, DELIVERED, RETURNED",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of orders to return (max 100)",
+                    "default": 20,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
         },
@@ -82,8 +107,14 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "order_id": {"type": "string", "description": "Ecwid order ID (orderNumber)"},
-                "payment_status": {"type": "string", "description": "New payment status: AWAITING_PAYMENT, PAID, CANCELLED, REFUNDED"},
-                "fulfillment_status": {"type": "string", "description": "New fulfillment status: AWAITING_PROCESSING, PROCESSING, SHIPPED, DELIVERED"},
+                "payment_status": {
+                    "type": "string",
+                    "description": "New payment status: AWAITING_PAYMENT, PAID, CANCELLED, REFUNDED",
+                },
+                "fulfillment_status": {
+                    "type": "string",
+                    "description": "New fulfillment status: AWAITING_PROCESSING, PROCESSING, SHIPPED, DELIVERED",
+                },
                 "tracking_number": {"type": "string", "description": "Shipping tracking number"},
             },
             "required": ["order_id"],

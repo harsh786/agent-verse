@@ -1,4 +1,5 @@
 """Celery tasks — real implementations for goal execution and scheduling."""
+
 from __future__ import annotations
 
 import asyncio
@@ -27,8 +28,10 @@ def _setup_sigterm() -> None:
     LangGraph writes a checkpoint after every completed step, so the last
     durable state is always safe when the process exits here.
     """
+
     def _handler(sig: int, frame: Any) -> None:
         import logging as _stdlib_logging
+
         _stdlib_logging.getLogger(__name__).warning(
             "SIGTERM received — Celery worker shutting down; "
             "LangGraph checkpoint written after last completed step"
@@ -64,6 +67,7 @@ def _get_redis_pool() -> Any:
     global _REDIS_POOL
     if _REDIS_POOL is None:
         import redis
+
         _redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
         _REDIS_POOL = redis.ConnectionPool.from_url(
             _redis_url, decode_responses=True, max_connections=10
@@ -74,6 +78,7 @@ def _get_redis_pool() -> Any:
 def _get_sync_redis() -> Any:
     """Get a synchronous Redis client using the module-level pool."""
     import redis
+
     return redis.Redis(connection_pool=_get_redis_pool())
 
 
@@ -96,6 +101,7 @@ def _setup_worker_checkpointer(**kwargs: Any) -> None:
     preferred name for MemorySaver) is the correct choice here.
     """
     import logging as _logging
+
     _logging.getLogger(__name__).info(
         "celery_worker_checkpointer: using MemorySaver (in-process, no persistence)"
     )
@@ -149,11 +155,13 @@ async def _decrement_after_completion(tenant_id: str, redis_url: str) -> None:
         import redis.asyncio as aioredis
 
         from app.tenancy.limits import decrement_concurrent_goals
+
         r = aioredis.from_url(redis_url, decode_responses=True)
         await decrement_concurrent_goals(tenant_id=tenant_id, redis=r)
         await r.aclose()
     except Exception as exc:
         logger.warning("counter_decrement_failed: %s", exc)
+
 
 # Register builtin MCP handlers in the worker process so that the
 # process-local _BUILTIN_HANDLER_REGISTRY is populated. Without this,
@@ -162,6 +170,7 @@ async def _decrement_after_completion(tenant_id: str, redis_url: str) -> None:
 try:
     from app.mcp.registry import MCPRegistry as _MCPRegistry
     from app.mcp.servers.registry_wiring import get_builtin_server_configs as _get_builtins
+
     for _bc in _get_builtins():
         if _bc.get("handler") is not None:
             _MCPRegistry.register_builtin_handler(_bc["server_id"], _bc["handler"])
@@ -206,6 +215,7 @@ def _run_async(coro: Any) -> Any:
     finally:
         try:
             from app.db.session import dispose_task_engine
+
             loop.run_until_complete(dispose_task_engine())
         except Exception:
             pass
@@ -244,9 +254,7 @@ def _build_worker_retrieval_gateway(dependencies: Any) -> Any:
     return RetrievalGateway(dependencies)
 
 
-def _record_goal_duration_metric(
-    status: str, *, started_monotonic: float, priority: str
-) -> None:
+def _record_goal_duration_metric(status: str, *, started_monotonic: float, priority: str) -> None:
     try:
         from app.observability.metrics import record_goal_duration
 
@@ -401,7 +409,7 @@ class _WorkerMCPAgentRunner:
         try:
             redis_client, mcp_client, tool_context = await self._context_factory()
             if mcp_client is not None:
-                setattr(self._runner, "_mcp_client", mcp_client)
+                self._runner._mcp_client = mcp_client
             if tool_context is not None:
                 context.update(
                     {
@@ -444,9 +452,7 @@ def run_goal_dlq(
             "reason": "missing_dlq_payload",
         }
 
-    logger.error(
-        "Goal %s dead-lettered: %s (tenant: %s)", goal_id, reason, tenant_id
-    )
+    logger.error("Goal %s dead-lettered: %s (tenant: %s)", goal_id, reason, tenant_id)
     try:
         _run_async(_update_goal_dlq(goal_id, tenant_id, reason))
     except Exception as exc:
@@ -465,14 +471,14 @@ async def _update_goal_dlq(goal_id: str, tenant_id: str, reason: str) -> None:
     from app.db.models.goal import Goal
     from app.db.rls import system_session
     from app.db.session import get_session_factory as _get_fresh_db
+
     try:
         db = _get_fresh_db()
         async with db() as session, session.begin(), system_session(session):
             await session.execute(
                 update(Goal)
                 .where(Goal.id == goal_id, Goal.tenant_id == tenant_id)
-                .values(status="failed",
-                        error_message=f"Dead lettered: {reason}")
+                .values(status="failed", error_message=f"Dead lettered: {reason}")
             )
     except Exception as exc:
         logger.warning("DLQ DB update failed: %s", exc)
@@ -517,6 +523,7 @@ def run_goal(
     _plan_str = "professional"  # safe fallback
     try:
         from app.services.llm_config_store import get_llm_config_store
+
         _config_store = get_llm_config_store()
         if _config_store:
             _tenant_cfg = _run_async(_config_store.get_config(tenant_id)) or {}
@@ -528,6 +535,7 @@ def run_goal(
         pass
 
     from app.tenancy.context import PlanTier as _PT
+
     try:
         plan = _PT(_plan_str)
     except ValueError:
@@ -546,7 +554,8 @@ def run_goal(
         if _lock_r and _lock_r.get(_stop_key):
             logger.warning(
                 "goal_blocked_by_emergency_stop goal_id=%s tenant_id=%s",
-                goal_id, tenant_id,
+                goal_id,
+                tenant_id,
             )
             return {"status": "blocked", "reason": "Emergency stop active for tenant"}
     except Exception as _es_exc:
@@ -596,14 +605,17 @@ def run_goal(
         # from the SSE stream. Now Redis publish runs unconditionally.
         try:
             import json as _json
+
             _r = _get_sync_redis()
             if _r is not None:
-                _event_data = _json.dumps({
-                    "goal_id": goal_id,
-                    "tenant_id": tenant_id,
-                    "type": event.get("type", ""),
-                    "payload": event,
-                })
+                _event_data = _json.dumps(
+                    {
+                        "goal_id": goal_id,
+                        "tenant_id": tenant_id,
+                        "type": event.get("type", ""),
+                        "payload": event,
+                    }
+                )
                 _r.publish(f"goal_events:{tenant_id}:{goal_id}", _event_data)
         except Exception as _pub_exc:
             logger.debug("redis_event_publish_failed (non-fatal): %s", _pub_exc)
@@ -654,9 +666,7 @@ def run_goal(
 
     async def mark_worker_failed(exc: Exception) -> None:
         await update_submitted_goal_status("failed", error_message=str(exc))
-        await append_submitted_goal_event(
-            {"type": "worker_failed", "reason": str(exc)}
-        )
+        await append_submitted_goal_event({"type": "worker_failed", "reason": str(exc)})
 
     # ── Distributed lock: at-most-once execution per goal ─────────────────────
     # Use a synchronous lock (_SyncGoalLock) to avoid event-loop-mismatch bugs:
@@ -670,13 +680,12 @@ def run_goal(
             import uuid as _uuid
 
             import redis as _sync_redis_mod
+
             _lock_redis_sync = _sync_redis_mod.from_url(_redis_url, decode_responses=True)
             _lock = _SyncGoalLock(_lock_redis_sync, _uuid.uuid4().hex)
             _acquired = _lock.acquire(goal_id, ttl_ms=1_800_000)
             if not _acquired:
-                logger.warning(
-                    "Goal %s already executing in another worker — skipping", goal_id
-                )
+                logger.warning("Goal %s already executing in another worker — skipping", goal_id)
                 return {
                     "status": "skipped",
                     "goal_id": goal_id,
@@ -752,24 +761,27 @@ def run_goal(
     # Resolve the agent's autonomy_mode from the DB so that fully-autonomous
     # agents bypass the HITL gate on write_high tool calls.
     _agent_autonomy_mode = "bounded-autonomous"
-    _agent_max_iterations: int | None = None   # None = use graph default (100)
+    _agent_max_iterations: int | None = None  # None = use graph default (100)
     _agent_system_prompt: str = ""
     _agent_collection_ids: list[str] = []
     if agent_id and db_factory is not None:
         try:
             from sqlalchemy import text as _sa_text
+
             from app.db.rls import sqlalchemy_rls_context as _rls
 
             async def _lookup_agent_config() -> tuple[str, int | None, str, list[str]]:
                 async with db_factory() as _sess, _rls(_sess, tenant_id):
-                    row = (await _sess.execute(
-                        _sa_text(
-                            "SELECT autonomy_mode, max_iterations, system_prompt, "
-                            "allowed_collection_ids FROM agents "
-                            "WHERE id = :aid AND tenant_id = :tid LIMIT 1"
-                        ),
-                        {"aid": agent_id, "tid": tenant_id},
-                    )).fetchone()
+                    row = (
+                        await _sess.execute(
+                            _sa_text(
+                                "SELECT autonomy_mode, max_iterations, system_prompt, "
+                                "allowed_collection_ids FROM agents "
+                                "WHERE id = :aid AND tenant_id = :tid LIMIT 1"
+                            ),
+                            {"aid": agent_id, "tid": tenant_id},
+                        )
+                    ).fetchone()
                     if row:
                         mode = str(row[0]) if row[0] else "bounded-autonomous"
                         iters = int(row[1]) if row[1] else None
@@ -784,13 +796,19 @@ def run_goal(
                 _agent_system_prompt,
                 _agent_collection_ids,
             ) = _run_async(_lookup_agent_config())
-            logger.info("worker_agent_config goal=%s agent=%s mode=%s max_iter=%s",
-                        goal_id, agent_id, _agent_autonomy_mode, _agent_max_iterations)
+            logger.info(
+                "worker_agent_config goal=%s agent=%s mode=%s max_iter=%s",
+                goal_id,
+                agent_id,
+                _agent_autonomy_mode,
+                _agent_max_iterations,
+            )
         except Exception as _ae:
             logger.debug("worker_agent_config_lookup_failed: %s", _ae)
 
     _agent_runner: Any = None
     _use_agent_graph = False
+
     async def _build_worker_mcp_context() -> tuple[Any, Any, Any]:
         import redis.asyncio as aioredis
 
@@ -809,6 +827,7 @@ def run_goal(
         # is not None when `discover_tools` checks it.
         try:
             from app.mcp.servers.registry_wiring import get_builtin_server_configs
+
             for _bcfg in get_builtin_server_configs():
                 MCPRegistry.register_builtin_handler(_bcfg["server_id"], _bcfg["handler"])
         except Exception as _bh_exc:
@@ -887,10 +906,12 @@ def run_goal(
 
             # Wire Redis into CostController for distributed rate-limiting
             import os as _os_cw
+
             _redis_url_cw = _os_cw.getenv("REDIS_URL", "")
             if _redis_url_cw:
                 try:
                     import redis.asyncio as _aioredis_cw
+
                     _cost = RedisCostController(
                         redis=_aioredis_cw.from_url(
                             _redis_url_cw,
@@ -905,6 +926,7 @@ def run_goal(
             _model_router = None
             try:
                 from app.agent.model_router import ModelRouter
+
                 _provider_name = getattr(real_provider, "_provider_name", None)
                 if _provider_name is None:
                     # Detect provider type from class name
@@ -931,13 +953,11 @@ def run_goal(
             _redis_for_worker = None
             try:
                 from app.rag.llm_response_cache import LLMResponseCache
-                _redis_url_worker = (
-                    os.getenv("REDIS_URL", "")
-                    or celery_app.conf.broker_url
-                    or ""
-                )
+
+                _redis_url_worker = os.getenv("REDIS_URL", "") or celery_app.conf.broker_url or ""
                 if _redis_url_worker:
                     import redis.asyncio as _aioredis_worker
+
                     _redis_for_worker = _aioredis_worker.from_url(
                         _redis_url_worker, decode_responses=False
                     )
@@ -947,6 +967,7 @@ def run_goal(
 
             try:
                 from app.rag.semantic_cache import SemanticCache
+
                 _semantic_cache_worker = SemanticCache(redis=_redis_for_worker)
             except Exception:
                 pass
@@ -955,6 +976,7 @@ def run_goal(
             _verifier_for_graph = provider  # default: same as executor
             try:
                 from app.main import _build_verifier_provider as _bvp
+
                 _vp = _bvp()
                 if _vp is not None:
                     _verifier_for_graph = _vp
@@ -969,21 +991,25 @@ def run_goal(
             _phase3_consensus = None
             try:
                 from app.agent.grounding import GroundingChecker
+
                 _phase3_grounding = GroundingChecker()
             except Exception as _p3g_exc:
                 logger.debug("phase3_grounding_unavailable: %s", _p3g_exc)
             try:
                 from app.agent.synthesis import AnswerSynthesizer
+
                 _phase3_synthesizer = AnswerSynthesizer(llm_provider=provider)
             except Exception as _p3s_exc:
                 logger.debug("phase3_synthesizer_unavailable: %s", _p3s_exc)
             try:
                 from app.intelligence.verifier_calibration import _default_calibration_store
+
                 _phase3_calibration = _default_calibration_store
             except Exception as _p3c_exc:
                 logger.debug("phase3_calibration_unavailable: %s", _p3c_exc)
             try:
                 from app.agent.consensus import ConsensusVerifier
+
                 _phase3_consensus = ConsensusVerifier(primary_verifier=provider)
             except Exception as _p3cv_exc:
                 logger.debug("phase3_consensus_unavailable: %s", _p3cv_exc)
@@ -992,13 +1018,16 @@ def run_goal(
             _embedder_for_graph = None
             try:
                 from app.core.config import get_provider_env as _gpe
+
                 _v_key = _gpe("VOYAGE_API_KEY")
                 _o_key = _gpe("OPENAI_API_KEY")
                 if _v_key:
                     from app.providers.voyage_provider import VoyageProvider
+
                     _embedder_for_graph = VoyageProvider(api_key=_v_key)
                 elif _o_key:
                     from app.providers.openai_compatible import OpenAICompatibleProvider
+
                     _embedder_for_graph = OpenAICompatibleProvider(
                         api_key=_o_key, default_model="text-embedding-3-small"
                     )
@@ -1010,10 +1039,9 @@ def run_goal(
             _knowledge_store_worker = None
             try:
                 from app.rag.store import KnowledgeStore as _KnowledgeStore  # correct path
+
                 if db_factory is not None:
-                    _knowledge_store_worker = _KnowledgeStore(
-                        db_session_factory=db_factory
-                    )
+                    _knowledge_store_worker = _KnowledgeStore(db_session_factory=db_factory)
             except Exception as _ks_exc:
                 logger.debug("knowledge_store_worker_unavailable: %s", _ks_exc)
 
@@ -1038,11 +1066,7 @@ def run_goal(
                 if tenant_context.tenant_id != tenant_id:
                     return None
                 provider_default = getattr(provider, "_default_model", "")
-                model = (
-                    provider_default.strip()
-                    if isinstance(provider_default, str)
-                    else ""
-                )
+                model = provider_default.strip() if isinstance(provider_default, str) else ""
                 if not model and isinstance(provider, FakeProvider):
                     model = "fake-provider"
                 if not model:
@@ -1050,9 +1074,7 @@ def run_goal(
                 return ResolvedLLM(
                     provider=provider,
                     model=model,
-                    provider_type=str(
-                        getattr(provider, "_agentverse_provider_type", "")
-                    ),
+                    provider_type=str(getattr(provider, "_agentverse_provider_type", "")),
                 )
 
             collection_authorizer = (
@@ -1071,9 +1093,7 @@ def run_goal(
             worker_web_search = build_safe_web_search_capability(
                 searxng_url=worker_settings.searxng_url,
                 policy_services=(_policy, _cost, _hitl),
-                allowed_domains=parse_allowed_domains(
-                    worker_settings.web_search_allowed_domains
-                ),
+                allowed_domains=parse_allowed_domains(worker_settings.web_search_allowed_domains),
             )
             _retrieval_gateway_worker = _build_worker_retrieval_gateway(
                 RetrievalDependencies(
@@ -1130,8 +1150,9 @@ def run_goal(
             # Wire SelfOptimizer and PromptOptimizer so A/B testing and
             # failure suggestions run during real goal execution.
             try:
-                from app.intelligence.self_optimization import SelfOptimizer
                 from app.intelligence.prompt_optimizer import _default_optimizer as _prompt_opt
+                from app.intelligence.self_optimization import SelfOptimizer
+
                 _self_opt = SelfOptimizer()
                 if db_factory is not None:
                     _self_opt._db = db_factory
@@ -1140,7 +1161,8 @@ def run_goal(
             except Exception as _opt_exc:
                 logger.warning("optimizer_wire_failed: %s", _opt_exc)
             _agent_runner = _WorkerMCPAgentRunner(
-                _agent_runner, _build_worker_mcp_context,
+                _agent_runner,
+                _build_worker_mcp_context,
                 system_prompt=_agent_system_prompt,
             )
             _use_agent_graph = True
@@ -1165,14 +1187,16 @@ def run_goal(
     try:
         # Block fake execution in production — a real LLM provider is required
         import os as _os
+
         _env = _os.getenv("ENVIRONMENT", "development")
         if used_fake_provider and _env == "production":
-            _run_async(mark_worker_failed(
-                RuntimeError(
-                    "No real LLM provider configured. "
-                    "Set ANTHROPIC_API_KEY or OPENAI_API_KEY."
+            _run_async(
+                mark_worker_failed(
+                    RuntimeError(
+                        "No real LLM provider configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY."
+                    )
                 )
-            ))
+            )
             _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
             return {
                 "status": "failed",
@@ -1183,6 +1207,7 @@ def run_goal(
                     "Configure ANTHROPIC_API_KEY or OPENAI_API_KEY."
                 ),
             }
+
         async def worker_event_callback(event: dict[str, Any]) -> None:
             await append_submitted_goal_event(event)
 
@@ -1191,22 +1216,35 @@ def run_goal(
         # ── Pre-execution cancel check (cross-process signal) ──────────────────
         try:
             from app.reliability.goal_lifecycle import is_cancelled_sync as _is_cancelled
+
             _pre_sync_r = _get_sync_redis()
             if _pre_sync_r and _is_cancelled(goal_id, _pre_sync_r):
                 logger.warning(
                     "goal_cancelled_before_execution goal_id=%s tenant_id=%s",
-                    goal_id, tenant_id,
+                    goal_id,
+                    tenant_id,
                 )
-                _run_async(update_submitted_goal_status("cancelled", error_message="Cancelled before execution"))
+                _run_async(
+                    update_submitted_goal_status(
+                        "cancelled", error_message="Cancelled before execution"
+                    )
+                )
                 _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
-                return {"status": "cancelled", "goal_id": goal_id, "reason": "cancelled_before_execution"}
+                return {
+                    "status": "cancelled",
+                    "goal_id": goal_id,
+                    "reason": "cancelled_before_execution",
+                }
         except Exception as _cancel_check_exc:
             logger.warning("cancel_pre_check_failed: %s", _cancel_check_exc)
 
         from app.tenancy.context import PLAN_LIMITS as _PLAN_LIMITS
-        goal_timeout_s = getattr(
-            _PLAN_LIMITS.get(plan, None), "goal_timeout_seconds", 1800
-        ) if hasattr(plan, 'value') else 1800
+
+        goal_timeout_s = (
+            getattr(_PLAN_LIMITS.get(plan, None), "goal_timeout_seconds", 1800)
+            if hasattr(plan, "value")
+            else 1800
+        )
 
         try:
             # ── Isolation routing ────────────────────────────────────────────────
@@ -1215,6 +1253,7 @@ def run_goal(
             _iso_required = False
             try:
                 from app.core.runtime_flags import get_runtime_flags as _get_rtflags
+
                 _rt = _get_rtflags()
                 _use_isolation = _rt.isolated_agent_execution
                 _iso_required = _rt.isolated_execution_required
@@ -1229,6 +1268,8 @@ def run_goal(
                     from app.execution_environment.models import RunnerType as _RT
                     from app.execution_environment.scheduler import (
                         ExecutionEnvironmentScheduler as _Scheduler,
+                    )
+                    from app.execution_environment.scheduler import (
                         RunnerUnavailableError as _RunnerUnavail,
                     )
 
@@ -1297,14 +1338,14 @@ def run_goal(
                     }
                 except Exception as _iso_exc:
                     # Structured handling: RunnerUnavailableError vs generic (G-29)
-                    _is_runner_unavail = (
-                        _RunnerUnavail is not None
-                        and isinstance(_iso_exc, _RunnerUnavail)
+                    _is_runner_unavail = _RunnerUnavail is not None and isinstance(
+                        _iso_exc, _RunnerUnavail
                     )
                     if _is_runner_unavail:
                         logger.error(
                             "isolated_runner_unavailable goal_id=%s reason=%s",
-                            goal_id, str(_iso_exc)[:200],
+                            goal_id,
+                            str(_iso_exc)[:200],
                         )
                         _run_async(mark_worker_failed(_iso_exc))
                         _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
@@ -1317,9 +1358,7 @@ def run_goal(
                             "_isolation_error": True,
                         }
                     # Generic error in isolation path
-                    logger.exception(
-                        "isolated_execution_unexpected_error goal_id=%s", goal_id
-                    )
+                    logger.exception("isolated_execution_unexpected_error goal_id=%s", goal_id)
                     _run_async(mark_worker_failed(_iso_exc))
                     _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
                     return {
@@ -1343,12 +1382,11 @@ def run_goal(
                 )
             )
         except TimeoutError:
-            _run_async(mark_worker_failed(
-                TimeoutError(f"Goal timed out after {goal_timeout_s}s")
-            ))
+            _run_async(mark_worker_failed(TimeoutError(f"Goal timed out after {goal_timeout_s}s")))
             _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
             return {
-                "status": "failed", "goal_id": goal_id,
+                "status": "failed",
+                "goal_id": goal_id,
                 "reason": f"timeout after {goal_timeout_s}s",
                 "result_scope": "worker_only",
             }
@@ -1390,20 +1428,24 @@ def run_goal(
         )
         _run_async(mark_worker_failed(exc))
         try:
-            raise self.retry(exc=exc, countdown=2 ** self.request.retries) from exc
+            raise self.retry(exc=exc, countdown=2**self.request.retries) from exc
         except self.MaxRetriesExceededError:
             # Route to dead-letter queue
             try:
                 run_goal_dlq.delay(
-                    goal_id=goal_id, tenant_id=tenant_id,
-                    goal_text=effective_goal, reason="max_retries_exceeded"
+                    goal_id=goal_id,
+                    tenant_id=tenant_id,
+                    goal_text=effective_goal,
+                    reason="max_retries_exceeded",
                 )
             except Exception:
                 pass
             # Still update DB to failed
-            _run_async(mark_worker_failed(
-                RuntimeError(f"Goal {goal_id} exceeded max retries, routed to DLQ")
-            ))
+            _run_async(
+                mark_worker_failed(
+                    RuntimeError(f"Goal {goal_id} exceeded max retries, routed to DLQ")
+                )
+            )
             # Decrement counter — goal is permanently done
             _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
             return {"status": "dead_lettered", "goal_id": goal_id}
@@ -1440,7 +1482,7 @@ def run_scheduled_goal(
         )
     except Exception as exc:
         logger.warning("Scheduled goal dispatch failed for %s: %s", schedule_id, exc)
-        raise self.retry(exc=exc, countdown=2 ** self.request.retries) from exc
+        raise self.retry(exc=exc, countdown=2**self.request.retries) from exc
     return {
         "status": "dispatched",
         "schedule_id": schedule_id,
@@ -1549,9 +1591,7 @@ async def _build_goal_kwargs_for_alert(
             return None
 
         if alert_context:
-            context_str = "\n".join(
-                f"  {k}: {v}" for k, v in list(alert_context.items())[:5]
-            )
+            context_str = "\n".join(f"  {k}: {v}" for k, v in list(alert_context.items())[:5])
             goal_text = f"{goal_text}\n\nAlert context:\n{context_str}"
 
         agent_id = sched.get("agent_id")
@@ -1756,6 +1796,7 @@ def record_queue_depths(self: Any) -> dict[str, Any]:
             desired = max(1, math.ceil(depth / tasks_per_worker))
             try:
                 from app.observability.metrics import record_desired_workers
+
                 record_desired_workers(plan=plan, count=desired)
             except Exception:
                 pass
@@ -1767,7 +1808,7 @@ def record_queue_depths(self: Any) -> dict[str, Any]:
         }
     except Exception as exc:
         logger.warning("Queue depth recording failed: %s", exc)
-        raise self.retry(exc=exc, countdown=2 ** self.request.retries) from exc
+        raise self.retry(exc=exc, countdown=2**self.request.retries) from exc
 
 
 @celery_app.task(name="app.scaling.tasks.check_mcp_health")  # type: ignore[untyped-decorator]
@@ -1783,6 +1824,7 @@ def check_mcp_health() -> dict[str, Any]:
             return {"servers_checked": 0, "results": [], "status": "skipped", "reason": "no_redis"}
 
         import redis.asyncio as aioredis
+
         r = aioredis.from_url(redis_url, decode_responses=True)
 
         try:
@@ -1798,30 +1840,34 @@ def check_mcp_health() -> dict[str, Any]:
                         continue
                     try:
                         from app.mcp.registry import MCPServerConfig
+
                         cfg = MCPServerConfig.model_validate_json(raw)
                     except Exception as parse_exc:
-                        results.append({
-                            "key": key, "status": "parse_error", "error": str(parse_exc)
-                        })
+                        results.append(
+                            {"key": key, "status": "parse_error", "error": str(parse_exc)}
+                        )
                         continue
                     # Simple health check: GET {base_url}/health
                     import httpx
+
                     async with httpx.AsyncClient(timeout=5.0) as client:
                         try:
-                            resp = await client.get(
-                                f"{cfg.base_url}/health", follow_redirects=True
+                            resp = await client.get(f"{cfg.base_url}/health", follow_redirects=True)
+                            results.append(
+                                {
+                                    "server": cfg.name,
+                                    "status": "ok",
+                                    "code": resp.status_code,
+                                }
                             )
-                            results.append({
-                                "server": cfg.name,
-                                "status": "ok",
-                                "code": resp.status_code,
-                            })
                         except Exception as http_exc:
-                            results.append({
-                                "server": cfg.name,
-                                "status": "error",
-                                "error": str(http_exc)[:200],
-                            })
+                            results.append(
+                                {
+                                    "server": cfg.name,
+                                    "status": "error",
+                                    "error": str(http_exc)[:200],
+                                }
+                            )
                 except Exception as exc:
                     results.append({"key": key, "status": "error", "error": str(exc)[:200]})
         finally:
@@ -1854,6 +1900,7 @@ def check_mcp_health() -> dict[str, Any]:
                         break
 
                 import json as _json
+
                 for key in keys:
                     raw = await r.get(key)
                     if not raw:
@@ -1874,19 +1921,23 @@ def check_mcp_health() -> dict[str, Any]:
                                 resp = await http.get(f"{url.rstrip('/')}/health")
                             latency_ms = round((_time.monotonic() - t0) * 1000)
                             status = "healthy" if resp.status_code < 400 else "degraded"
-                            results.append({
-                                "server_id": server_id,
-                                "url": url,
-                                "status": status,
-                                "latency_ms": latency_ms,
-                            })
+                            results.append(
+                                {
+                                    "server_id": server_id,
+                                    "url": url,
+                                    "status": status,
+                                    "latency_ms": latency_ms,
+                                }
+                            )
                         except Exception as exc:
-                            results.append({
-                                "server_id": server_id,
-                                "url": url,
-                                "status": "unreachable",
-                                "error": str(exc)[:200],
-                            })
+                            results.append(
+                                {
+                                    "server_id": server_id,
+                                    "url": url,
+                                    "status": "unreachable",
+                                    "error": str(exc)[:200],
+                                }
+                            )
             finally:
                 await r.aclose()
         except Exception as exc:
@@ -2078,10 +2129,7 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                             due = True
                         else:
                             last_dt = _schedule_datetime(last_fired)
-                            due = (
-                                last_dt is None
-                                or (now - last_dt).total_seconds() >= interval_s
-                            )
+                            due = last_dt is None or (now - last_dt).total_seconds() >= interval_s
 
                         if due:
                             goal_kwargs = advance_and_dispatch_schedule(
@@ -2108,8 +2156,7 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                         fire_at_ts = fire_at.replace(tzinfo=None) if fire_at.tzinfo else fire_at
                         if now_ts >= fire_at_ts:
                             goal_kwargs = advance_and_dispatch_schedule(
-                                key, sched, fired_at=fire_at,
-                                fire_instance_id=fire_at.isoformat()
+                                key, sched, fired_at=fire_at, fire_instance_id=fire_at.isoformat()
                             )
                             if goal_kwargs is not None:
                                 fired += 1
@@ -2141,8 +2188,7 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                                     new_files = [
                                         _os_fd.path.join(watch_path, f)
                                         for f in all_files
-                                        if _fnmatch.fnmatch(f, watch_pattern)
-                                        and f not in processed
+                                        if _fnmatch.fnmatch(f, watch_pattern) and f not in processed
                                     ]
                             except OSError as _os_err:
                                 logger.warning(
@@ -2158,8 +2204,11 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                                 continue
                             from app.tenancy.context import (
                                 PlanTier as _PT_fd,
+                            )
+                            from app.tenancy.context import (
                                 TenantContext as _TC_fd,
                             )
+
                             _tenant_ctx_fd = _TC_fd(
                                 tenant_id=_tenant_id_fd,
                                 plan=_PT_fd.PROFESSIONAL,
@@ -2257,7 +2306,9 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                                 alert_data["alertname"] = sched.get("alert_name", "PrometheusAlert")
                                 alert_data["severity"] = sched.get("severity", "warning")
                             elif trigger_type == "datadog":
-                                alert_data["monitor_name"] = sched.get("monitor_name", "DatadogMonitor")
+                                alert_data["monitor_name"] = sched.get(
+                                    "monitor_name", "DatadogMonitor"
+                                )
                                 alert_data["status"] = sched.get("alert_status", "triggered")
                             elif trigger_type == "pagerduty":
                                 alert_data["incident_title"] = sched.get(
@@ -2275,8 +2326,11 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                         else:
                             from app.tenancy.context import (
                                 PlanTier as _PT_alert,
+                            )
+                            from app.tenancy.context import (
                                 TenantContext as _TC_alert,
                             )
+
                             _tenant_ctx_alert = _TC_alert(
                                 tenant_id=_tenant_id_alert,
                                 plan=_PT_alert.PROFESSIONAL,
@@ -2332,11 +2386,10 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
         }
     except Exception as exc:
         logger.error("fire_due_schedules failed: %s", exc)
-        raise self.retry(exc=exc, countdown=2 ** self.request.retries) from exc
+        raise self.retry(exc=exc, countdown=2**self.request.retries) from exc
 
 
-@celery_app.task(name="app.scaling.tasks.detect_stuck_goals",
-                 bind=True, max_retries=0)
+@celery_app.task(name="app.scaling.tasks.detect_stuck_goals", bind=True, max_retries=0)
 def detect_stuck_goals(self: Any) -> dict[str, Any]:
     """Find goals stuck in executing/planning > 60 minutes and mark as failed."""
     return _run_async(_find_and_fail_stuck_goals())
@@ -2344,6 +2397,7 @@ def detect_stuck_goals(self: Any) -> dict[str, Any]:
 
 async def _find_and_fail_stuck_goals() -> dict[str, Any]:
     from datetime import UTC, datetime, timedelta
+
     timeout_minutes = 60
     cutoff = datetime.now(UTC) - timedelta(minutes=timeout_minutes)
     try:
@@ -2351,6 +2405,7 @@ async def _find_and_fail_stuck_goals() -> dict[str, Any]:
 
         from app.db.rls import system_session
         from app.db.session import get_session_factory as _get_fresh_db
+
         db = _get_fresh_db()
         async with db() as session, session.begin(), system_session(session):
             result = await session.execute(
@@ -2374,7 +2429,7 @@ async def _find_and_fail_stuck_goals() -> dict[str, Any]:
                                 )
                           )
                         RETURNING id"""),
-                {"cutoff": cutoff}
+                {"cutoff": cutoff},
             )
             stuck_ids = [r[0] for r in result.fetchall()]
         return {"stuck_goals_failed": len(stuck_ids), "goal_ids": stuck_ids[:20]}
@@ -2382,17 +2437,18 @@ async def _find_and_fail_stuck_goals() -> dict[str, Any]:
         return {"error": str(exc), "stuck_goals_failed": 0}
 
 
-@celery_app.task(name="app.scaling.tasks.execute_retention_policy",
-                 bind=True, max_retries=1)
+@celery_app.task(name="app.scaling.tasks.execute_retention_policy", bind=True, max_retries=1)
 def execute_retention_policy(self: Any) -> dict[str, Any]:
     """Delete records older than DATA_RETENTION_DAYS (default 90)."""
     import os
+
     retention_days = int(os.getenv("DATA_RETENTION_DAYS", "90"))
     return _run_async(_delete_expired_records(retention_days))
 
 
 async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
     from datetime import UTC, datetime, timedelta
+
     cutoff = datetime.now(UTC) - timedelta(days=retention_days)
     counts: dict[str, Any] = {}
     try:
@@ -2400,28 +2456,27 @@ async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
 
         from app.db.rls import system_session
         from app.db.session import get_session_factory as _get_fresh_db
+
         db = _get_fresh_db()
         async with db() as session, session.begin(), system_session(session):
             for table in ["goal_events", "decision_traces"]:
                 try:
                     r = await session.execute(
-                        text(f"DELETE FROM {table} WHERE created_at < :c"),
-                        {"c": cutoff}
+                        text(f"DELETE FROM {table} WHERE created_at < :c"), {"c": cutoff}
                     )
                     counts[table] = r.rowcount
                 except Exception as exc:
                     counts[table] = f"error: {exc}"
-        return {"retention_days": retention_days, "cutoff": cutoff.isoformat(),
-                "deleted": counts}
+        return {"retention_days": retention_days, "cutoff": cutoff.isoformat(), "deleted": counts}
     except Exception as exc:
         return {"error": str(exc)}
 
 
-@celery_app.task(name="app.scaling.tasks.expire_hitl_approvals",
-                 bind=True, max_retries=0)
+@celery_app.task(name="app.scaling.tasks.expire_hitl_approvals", bind=True, max_retries=0)
 def expire_hitl_approvals(self: Any) -> dict[str, Any]:
     """Auto-reject HITL approval requests that have passed their expires_at."""
     from datetime import UTC, datetime
+
     expired_count = 0
     try:
         expired_ids = _run_async(_expire_db_approvals())
@@ -2437,6 +2492,7 @@ async def _expire_db_approvals() -> list[str]:
 
         from app.db.rls import system_session
         from app.db.session import get_session_factory as _get_fresh_db
+
         db = _get_fresh_db()
         async with db() as session, session.begin(), system_session(session):
             result = await session.execute(
@@ -2455,11 +2511,11 @@ async def _expire_db_approvals() -> list[str]:
         return []
 
 
-@celery_app.task(name="app.scaling.tasks.check_email_goals",
-                 bind=True, max_retries=1)
+@celery_app.task(name="app.scaling.tasks.check_email_goals", bind=True, max_retries=1)
 def check_email_goals(self: Any) -> dict[str, Any]:
     """Check IMAP mailbox and submit new emails as goals."""
     import os
+
     if os.getenv("IMAP_ENABLED", "false").lower() not in {"true", "1"}:
         return {"status": "disabled", "processed": 0}
 
@@ -2497,6 +2553,7 @@ async def _do_check_email_goals() -> dict[str, Any]:
 @celery_app.task(name="agentverse.maintenance.consolidate_memories")
 def consolidate_memories_task() -> dict:
     """Consolidate and deduplicate long-term memories older than 7 days."""
+
     async def _run() -> dict:
         from sqlalchemy import text
 
@@ -2506,17 +2563,20 @@ def consolidate_memories_task() -> dict:
         results: dict = {}
         try:
             async with db() as session, session.begin():
-                result = await session.execute(text("""
+                result = await session.execute(
+                    text("""
                     DELETE FROM long_term_memory
                     WHERE id NOT IN (
                         SELECT DISTINCT ON (tenant_id, content) id
                         FROM long_term_memory
                         ORDER BY tenant_id, content, created_at DESC
                     )
-                """))
+                """)
+                )
                 results["duplicates_removed"] = result.rowcount
 
                 import os as _os
+
                 retention = int(_os.getenv("DATA_RETENTION_DAYS", "90"))
                 result = await session.execute(
                     text(
@@ -2551,28 +2611,30 @@ try:
         {"agentverse.maintenance.consolidate_memories": {"queue": "maintenance"}}
     )
 except Exception as _sched_exc:
-    logger.warning(
-        "Failed to register consolidate_memories beat schedule: %s", _sched_exc
-    )
+    logger.warning("Failed to register consolidate_memories beat schedule: %s", _sched_exc)
 
 
 @celery_app.task(name="agentverse.maintenance.reindex_stale_knowledge")
 def reindex_stale_knowledge() -> dict:
     """Mark knowledge chunks past their freshness TTL as needing reindex."""
+
     async def _run() -> dict:
         from sqlalchemy import text
 
         from app.db.session import get_session_factory as _get_fresh_db
+
         db = _get_fresh_db()
         async with db() as session, session.begin():
-            result = await session.execute(text("""
+            result = await session.execute(
+                text("""
                 UPDATE documents
                 SET needs_reindex = TRUE, updated_at = NOW()
                 WHERE needs_reindex = FALSE
                   AND last_modified IS NOT NULL
                   AND freshness_ttl_hours > 0
                   AND last_modified < NOW() - (freshness_ttl_hours * INTERVAL '1 hour')
-            """))
+            """)
+            )
             marked = result.rowcount
         return {"marked_for_reindex": marked}
 
@@ -2605,16 +2667,19 @@ except Exception as _reindex_sched_exc:
 @celery_app.task(name="agentverse.maintenance.purge_expired_artifacts")
 def purge_expired_artifacts() -> dict:
     """Delete artifacts past their expiry date from DB (MinIO lifecycle handles storage)."""
+
     async def _run() -> dict:
         from sqlalchemy import text
 
         from app.db.session import get_session_factory as _get_fresh_db
+
         db = _get_fresh_db()
         async with db() as session, session.begin():
-            result = await session.execute(text(
-                "DELETE FROM artifacts WHERE expires_at IS NOT NULL AND expires_at < NOW()"
-            ))
+            result = await session.execute(
+                text("DELETE FROM artifacts WHERE expires_at IS NOT NULL AND expires_at < NOW()")
+            )
             return {"purged_count": result.rowcount}
+
     return _run_async(_run())
 
 
@@ -2625,23 +2690,35 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
     Collects all tenant data, serialises to JSON, updates the job record
     in gdpr_export_jobs with status='complete' and a download_url.
     """
+
     async def _run() -> dict[str, Any]:
         from sqlalchemy import text
 
         from app.db.session import get_session_factory as _get_fresh_db
+
         db = _get_fresh_db()
         try:
             # Collect all tenant data
             async with db() as session:
-                goals = (await session.execute(text(
-                    "SELECT id, goal_text, status, created_at FROM goals "
-                    "WHERE tenant_id = :tid LIMIT 10000"
-                ), {"tid": tenant_id})).fetchall()
+                goals = (
+                    await session.execute(
+                        text(
+                            "SELECT id, goal_text, status, created_at FROM goals "
+                            "WHERE tenant_id = :tid LIMIT 10000"
+                        ),
+                        {"tid": tenant_id},
+                    )
+                ).fetchall()
                 try:
-                    audit = (await session.execute(text(
-                        "SELECT event_id, goal_id, tool_name, outcome FROM audit_log "
-                        "WHERE tenant_id = :tid LIMIT 10000"
-                    ), {"tid": tenant_id})).fetchall()
+                    audit = (
+                        await session.execute(
+                            text(
+                                "SELECT event_id, goal_id, tool_name, outcome FROM audit_log "
+                                "WHERE tenant_id = :tid LIMIT 10000"
+                            ),
+                            {"tid": tenant_id},
+                        )
+                    ).fetchall()
                 except Exception:
                     audit = []
 
@@ -2652,13 +2729,9 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
             export_data = {
                 "tenant_id": tenant_id,
                 "exported_at": datetime.now(UTC).isoformat(),
-                "goals": [
-                    {"id": str(r[0]), "text": str(r[1]), "status": str(r[2])}
-                    for r in goals
-                ],
+                "goals": [{"id": str(r[0]), "text": str(r[1]), "status": str(r[2])} for r in goals],
                 "audit_entries": [
-                    {"id": str(r[0]), "goal_id": str(r[1]), "tool": str(r[2])}
-                    for r in audit
+                    {"id": str(r[0]), "goal_id": str(r[1]), "tool": str(r[2])} for r in audit
                 ],
             }
 
@@ -2667,21 +2740,27 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
             download_url = f"/compliance/export/{export_id}/download"
 
             async with db() as session, session.begin():
-                await session.execute(text("""
+                await session.execute(
+                    text("""
                     UPDATE gdpr_export_jobs
                     SET status = 'complete', completed_at = NOW(), download_url = :url
                     WHERE id = :jid
-                """), {"url": download_url, "jid": job_id})
+                """),
+                    {"url": download_url, "jid": job_id},
+                )
 
             return {"status": "complete", "job_id": job_id, "download_url": download_url}
 
         except Exception as exc:
             try:
                 async with db() as session, session.begin():
-                    await session.execute(text(
-                        "UPDATE gdpr_export_jobs SET status = 'failed', "
-                        "error_message = :err WHERE id = :jid"
-                    ), {"err": str(exc)[:500], "jid": job_id})
+                    await session.execute(
+                        text(
+                            "UPDATE gdpr_export_jobs SET status = 'failed', "
+                            "error_message = :err WHERE id = :jid"
+                        ),
+                        {"err": str(exc)[:500], "jid": job_id},
+                    )
             except Exception:
                 pass
             raise
@@ -2693,9 +2772,11 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
 # CIVILIZATION TASKS
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @celery_app.task(name="app.scaling.tasks.civilization_tick")
 def civilization_tick(civilization_id: str, tenant_id: str) -> dict:
     """Periodic tick for a civilization — breach check, auto-retire, learning step."""
+
     async def _run() -> dict:
         try:
             import json
@@ -2715,16 +2796,23 @@ def civilization_tick(civilization_id: str, tenant_id: str) -> dict:
             redis = None
             if redis_url:
                 import redis.asyncio as aioredis
+
                 redis = aioredis.from_url(redis_url, decode_responses=True)
 
             # Load constitution from DB
             constitution = Constitution()  # defaults; overridden by DB data below
             try:
                 from sqlalchemy import text
+
                 async with db() as session:
-                    row = (await session.execute(text(
-                        "SELECT constitution FROM civilizations WHERE id=:id AND tenant_id=:tid"
-                    ), {"id": civilization_id, "tid": tenant_id})).fetchone()
+                    row = (
+                        await session.execute(
+                            text(
+                                "SELECT constitution FROM civilizations WHERE id=:id AND tenant_id=:tid"
+                            ),
+                            {"id": civilization_id, "tid": tenant_id},
+                        )
+                    ).fetchone()
                 if row and row[0]:
                     data = row[0] if isinstance(row[0], dict) else json.loads(row[0])
                     constitution = Constitution.from_dict(data)
@@ -2732,34 +2820,54 @@ def civilization_tick(civilization_id: str, tenant_id: str) -> dict:
                 pass
 
             from app.tenancy.context import PlanTier, TenantContext
-            tenant_ctx = TenantContext(tenant_id=tenant_id, plan=PlanTier.ENTERPRISE, api_key_id="tick")
+
+            tenant_ctx = TenantContext(
+                tenant_id=tenant_id, plan=PlanTier.ENTERPRISE, api_key_id="tick"
+            )
 
             governor = Governor(
-                constitution=constitution, civilization_id=civilization_id,
-                tenant_id=tenant_id, db_session_factory=db, redis=redis,
+                constitution=constitution,
+                civilization_id=civilization_id,
+                tenant_id=tenant_id,
+                db_session_factory=db,
+                redis=redis,
             )
             society = Society(
-                civilization_id=civilization_id, tenant_id=tenant_id,
+                civilization_id=civilization_id,
+                tenant_id=tenant_id,
                 db_session_factory=db,
             )
             bus = CivilizationBus(
-                civilization_id=civilization_id, tenant_id=tenant_id,
-                db_session_factory=db, redis=redis,
+                civilization_id=civilization_id,
+                tenant_id=tenant_id,
+                db_session_factory=db,
+                redis=redis,
             )
             blackboard = Blackboard(
-                civilization_id=civilization_id, tenant_id=tenant_id,
-                db_session_factory=db, bus=bus,
+                civilization_id=civilization_id,
+                tenant_id=tenant_id,
+                db_session_factory=db,
+                bus=bus,
             )
             learning = LearningPipeline(
-                civilization_id=civilization_id, tenant_id=tenant_id,
-                db_session_factory=db, redis=redis,
+                civilization_id=civilization_id,
+                tenant_id=tenant_id,
+                db_session_factory=db,
+                redis=redis,
             )
 
             orchestrator = CivilizationOrchestrator(
-                civilization_id=civilization_id, tenant_id=tenant_id,
-                constitution=constitution, governor=governor, society=society,
-                bus=bus, blackboard=blackboard, learning_pipeline=learning,
-                db_session_factory=db, redis=redis, tenant_ctx=tenant_ctx,
+                civilization_id=civilization_id,
+                tenant_id=tenant_id,
+                constitution=constitution,
+                governor=governor,
+                society=society,
+                bus=bus,
+                blackboard=blackboard,
+                learning_pipeline=learning,
+                db_session_factory=db,
+                redis=redis,
+                tenant_ctx=tenant_ctx,
             )
 
             result = await orchestrator.tick()
@@ -2768,6 +2876,7 @@ def civilization_tick(civilization_id: str, tenant_id: str) -> dict:
             return result
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).error("civilization_tick_failed", extra={"error": str(exc)})
             return {"error": str(exc)}
 
@@ -2777,25 +2886,32 @@ def civilization_tick(civilization_id: str, tenant_id: str) -> dict:
 @celery_app.task(name="app.scaling.tasks.civilization_learning_step")
 def civilization_learning_step(civilization_id: str, tenant_id: str) -> dict:
     """Run one step of the learning pipeline for a civilization."""
+
     async def _run() -> dict:
         try:
             from app.civilization.learning import LearningPipeline
             from app.db.session import get_session_factory as _get_fresh_db
+
             db = _get_fresh_db()
             pipeline = LearningPipeline(
-                civilization_id=civilization_id, tenant_id=tenant_id,
+                civilization_id=civilization_id,
+                tenant_id=tenant_id,
                 db_session_factory=db,
             )
             return await pipeline.run_step()
         except Exception as exc:
             import logging
-            logging.getLogger(__name__).error("civilization_learning_failed", extra={"error": str(exc)})
+
+            logging.getLogger(__name__).error(
+                "civilization_learning_failed", extra={"error": str(exc)}
+            )
             return {"error": str(exc)}
 
     return _run_async(_run())
 
 
 # ── M-1: New maintenance tasks wired into beat schedule ───────────────────────
+
 
 @celery_app.task(name="app.scaling.tasks.warm_jwks_cache", queue="maintenance")
 def warm_jwks_cache() -> dict:
@@ -2807,14 +2923,17 @@ def warm_jwks_cache() -> dict:
         try:
             from app.auth.agent_identity import _build_jwks  # type: ignore[import]
             from app.db.session import get_session_factory as _get_fresh_db
+
             db = _get_fresh_db()
             jwks_keys = await _build_jwks(db)
             import redis as _redis
+
             r = _redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
             r.setex("jwks:cache", 600, json.dumps({"keys": jwks_keys}))
             return {"warmed": len(jwks_keys)}
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("warm_jwks_cache_failed: %s", exc)
             return {"error": str(exc)}
 
@@ -2830,6 +2949,7 @@ def create_guardrail_partitions() -> dict:
 @celery_app.task(name="app.scaling.tasks.enforce_hitl_sla", queue="governance")
 def enforce_hitl_sla() -> dict:
     """Check pending HITL approvals past SLA deadline and escalate or auto-resolve."""
+
     async def _run() -> dict:
         try:
             from sqlalchemy import text as _t
@@ -2873,6 +2993,7 @@ def enforce_hitl_sla() -> dict:
 @beat_task_guard(lock_ttl_seconds=180)
 def flush_audit_wal() -> dict:
     """Drain Redis WAL buffer to Postgres audit_events table."""
+
     async def _run() -> dict:
         try:
             import redis.asyncio as aioredis
@@ -2894,6 +3015,7 @@ def flush_audit_wal() -> dict:
 @celery_app.task(name="app.scaling.tasks.scan_cost_anomalies", queue="maintenance")
 def scan_cost_anomalies() -> dict:
     """Hourly anomaly scan for all tenants with recent cost activity."""
+
     async def _run() -> dict:
         try:
             import redis.asyncio as aioredis
@@ -2930,10 +3052,13 @@ def scan_cost_anomalies() -> dict:
 @celery_app.task(name="app.scaling.tasks.embed_marketplace_templates", queue="maintenance")
 def embed_marketplace_templates() -> dict:
     """Embed new unembedded marketplace templates for semantic search."""
+
     async def _run() -> dict:
         try:
             from sqlalchemy import text
+
             from app.db.session import get_session_factory as _get_fresh_db
+
             db = _get_fresh_db()
             async with db() as session:
                 result = await session.execute(
@@ -2943,16 +3068,20 @@ def embed_marketplace_templates() -> dict:
                 return {"status": "ok", "pending_embeddings": pending}
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
+
     return _run_async(_run())
 
 
 @celery_app.task(name="app.scaling.tasks.conclude_stale_experiments", queue="maintenance")
 def conclude_stale_experiments() -> dict:
     """Conclude A/B optimization experiments older than 30 days."""
+
     async def _run() -> dict:
         try:
             from sqlalchemy import text
+
             from app.db.session import get_session_factory as _get_fresh_db
+
             db = _get_fresh_db()
             async with db() as session:
                 result = await session.execute(
@@ -2967,17 +3096,21 @@ def conclude_stale_experiments() -> dict:
                 return {"status": "ok", "concluded": concluded}
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
+
     return _run_async(_run())
 
 
 @celery_app.task(name="app.scaling.tasks.expire_stale_documents", queue="maintenance")
 def expire_stale_documents() -> dict:
     """Remove knowledge chunks whose freshness_ttl_hours has elapsed."""
+
     async def _run() -> dict:
         try:
             from sqlalchemy import text
-            from app.db.session import get_session_factory as _get_fresh_db
+
             from app.core.config import get_settings
+            from app.db.session import get_session_factory as _get_fresh_db
+
             retention_days = getattr(get_settings(), "data_retention_days", 90)
             db = _get_fresh_db()
             async with db() as session:
@@ -2992,6 +3125,7 @@ def expire_stale_documents() -> dict:
                 return {"status": "ok", "deleted": deleted}
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
+
     return _run_async(_run())
 
 
@@ -3002,6 +3136,7 @@ def process_dpdp_erasures(self: Any) -> dict:
     Runs daily. For each pending erasure: deletes goals, events, LTM, feedback
     for the data_principal_id, then marks the request as completed.
     """
+
     async def _run() -> dict:
         from datetime import UTC, datetime
 
@@ -3011,39 +3146,51 @@ def process_dpdp_erasures(self: Any) -> dict:
         if db is None:
             return {"status": "skipped", "reason": "no_db"}
         from sqlalchemy import text
+
         processed = 0
         async with db() as session:
-            rows = (await session.execute(
-                text("SELECT id, tenant_id, data_principal_id FROM dpdp_erasure_requests "
-                     "WHERE status = 'pending' ORDER BY requested_at LIMIT 50")
-            )).fetchall()
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT id, tenant_id, data_principal_id FROM dpdp_erasure_requests "
+                        "WHERE status = 'pending' ORDER BY requested_at LIMIT 50"
+                    )
+                )
+            ).fetchall()
         for row in rows:
             req_id, tenant_id, dpid = row
             try:
                 async with db() as session:
                     # Delete personal data associated with this data principal
                     await session.execute(
-                        text("UPDATE dpdp_erasure_requests SET status = 'completed', "
-                             "completed_at = NOW() WHERE id = :rid"),
+                        text(
+                            "UPDATE dpdp_erasure_requests SET status = 'completed', "
+                            "completed_at = NOW() WHERE id = :rid"
+                        ),
                         {"rid": req_id},
                     )
                     # Delete any goal feedback linked to this principal
                     await session.execute(
-                        text("DELETE FROM goal_feedback WHERE tenant_id = :tid "
-                             "AND goal_id IN (SELECT id FROM goals WHERE tenant_id = :tid "
-                             "AND execution_context::text ILIKE :dpid_pattern)"),
+                        text(
+                            "DELETE FROM goal_feedback WHERE tenant_id = :tid "
+                            "AND goal_id IN (SELECT id FROM goals WHERE tenant_id = :tid "
+                            "AND execution_context::text ILIKE :dpid_pattern)"
+                        ),
                         {"tid": tenant_id, "dpid_pattern": f"%{dpid}%"},
                     )
                     # Delete DPDP consents for this principal
                     await session.execute(
-                        text("DELETE FROM dpdp_consents WHERE tenant_id = :tid "
-                             "AND data_principal_id = :dpid"),
+                        text(
+                            "DELETE FROM dpdp_consents WHERE tenant_id = :tid "
+                            "AND data_principal_id = :dpid"
+                        ),
                         {"tid": tenant_id, "dpid": dpid},
                     )
                     await session.commit()
                 processed += 1
             except Exception as exc:
                 import logging
+
                 logging.getLogger(__name__).warning(
                     "dpdp_erasure_failed req_id=%s: %s", req_id, exc
                 )
@@ -3059,16 +3206,20 @@ def process_dpdp_erasures(self: Any) -> dict:
 @celery_app.task(name="app.scaling.tasks.discover_and_tick_civilizations", queue="maintenance")
 def discover_and_tick_civilizations() -> dict:
     """Discover all active civilizations and enqueue tick tasks for each."""
+
     async def _run() -> dict:
         try:
             from sqlalchemy import text
 
             from app.db.session import get_session_factory as _get_fresh_db
+
             db = _get_fresh_db()
             async with db() as session:
-                rows = (await session.execute(text(
-                    "SELECT id, tenant_id FROM civilizations WHERE status = 'active'"
-                ))).fetchall()
+                rows = (
+                    await session.execute(
+                        text("SELECT id, tenant_id FROM civilizations WHERE status = 'active'")
+                    )
+                ).fetchall()
 
             count = 0
             for row in rows:
@@ -3077,7 +3228,10 @@ def discover_and_tick_civilizations() -> dict:
             return {"civilizations_ticked": count}
         except Exception as exc:
             import logging
-            logging.getLogger(__name__).error("civilization_discovery_failed", extra={"error": str(exc)})
+
+            logging.getLogger(__name__).error(
+                "civilization_discovery_failed", extra={"error": str(exc)}
+            )
             return {"error": str(exc)}
 
     return _run_async(_run())
@@ -3137,9 +3291,7 @@ def re_embed_collection(
                     )
                     for row, vec in zip(batch, embeddings):
                         await session.execute(
-                            text(
-                                "UPDATE knowledge_chunks SET embedding = :vec WHERE id = :id"
-                            ),
+                            text("UPDATE knowledge_chunks SET embedding = :vec WHERE id = :id"),
                             {"vec": str(vec), "id": row[0]},
                         )
                         count += 1
@@ -3180,18 +3332,25 @@ def process_feedback_batch(self: Any) -> dict[str, Any]:  # type: ignore[misc]
         total_processed = 0
         total_actions = 0
         try:
-            from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+            from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
             engine = create_async_engine(str(settings.database_url), pool_pre_ping=True)
             db_factory = async_sessionmaker(engine, expire_on_commit=False)
             # Get all active tenant IDs
             from sqlalchemy import text as _t
+
             async with db_factory() as session:
-                rows = (await session.execute(
-                    _t("SELECT DISTINCT tenant_id FROM goal_feedback WHERE processed_at IS NULL LIMIT 500")
-                )).fetchall()
+                rows = (
+                    await session.execute(
+                        _t(
+                            "SELECT DISTINCT tenant_id FROM goal_feedback WHERE processed_at IS NULL LIMIT 500"
+                        )
+                    )
+                ).fetchall()
                 tenant_ids = [r[0] for r in rows]
 
             from app.evals.self_improvement_engine import SelfImprovementEngine
+
             engine_svc = SelfImprovementEngine()
             for tid in tenant_ids:
                 result = await engine_svc.process_feedback_batch(
@@ -3246,12 +3405,13 @@ def delta_reingest_files(
     source_type: 'github' | 'confluence' | 'notion' | 'gdrive'
     source_config: connector-specific config (repo, space_key, etc.)
     """
-    import asyncio as _asyncio
 
     async def _run() -> dict[str, Any]:
         try:
+            from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
             from app.core.config import get_settings
-            from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+
             settings = get_settings()
             engine = create_async_engine(str(settings.database_url), pool_pre_ping=True)
             db_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -3260,11 +3420,13 @@ def delta_reingest_files(
             chunks_ingested = 0
             if source_type == "notion":
                 from app.ingestion.connectors.notion_connector import NotionConnector
+
                 connector = NotionConnector(api_key=source_config.get("api_key", ""))
                 pages = await connector.list_pages(source_config.get("database_id", ""))
                 chunks_ingested = len(pages)  # simplified count
             elif source_type == "gdrive":
                 from app.ingestion.connectors.gdrive_connector import GDriveConnector
+
                 connector = GDriveConnector(key_path=source_config.get("key_path"))
                 files = connector.list_files(source_config.get("folder_id", ""))
                 chunks_ingested = len(files)
@@ -3287,6 +3449,7 @@ def delta_reingest_files(
 
 # ── N8: Org Autonomous Operating Loop (runs every 5 min via Celery Beat) ─────
 
+
 @celery_app.task(name="app.scaling.tasks.org_brain_loop", queue="maintenance")
 def org_brain_loop() -> dict[str, int]:
     """N8 — Autonomous Operating Loop: OBSERVE → DISCOVER → PREDICT → PRIORITIZE.
@@ -3298,6 +3461,7 @@ def org_brain_loop() -> dict[str, int]:
     async def _run() -> dict[str, int]:
         import structlog as _slog
         from opentelemetry import trace as _trace
+
         _log = _slog.get_logger(__name__)
         tracer = _trace.get_tracer(__name__)
 
@@ -3306,13 +3470,15 @@ def org_brain_loop() -> dict[str, int]:
             discovered = 0
             triggered = 0
             try:
-                from app.main import app as _app  # noqa: PLC0415
+                from app.main import app as _app
+
                 db_factory = getattr(_app.state, "db_factory", None)
                 if db_factory is None:
                     return {"processed": 0, "discovered": 0, "triggered": 0}
 
-                from sqlalchemy import select  # noqa: PLC0415
-                from app.org.models import Organization  # noqa: PLC0415
+                from sqlalchemy import select
+
+                from app.org.models import Organization
 
                 async with db_factory() as session, session.begin():
                     result = await session.execute(
@@ -3320,21 +3486,24 @@ def org_brain_loop() -> dict[str, int]:
                             Organization.id,
                             Organization.tenant_id,
                             Organization.autonomy_level,
-                        ).where(Organization.status == "active").limit(100)
+                        )
+                        .where(Organization.status == "active")
+                        .limit(100)
                     )
                     orgs = result.all()
 
                 for org_id, tenant_id, autonomy_level in orgs:
                     processed += 1
                     try:
-                        from app.db.rls import sqlalchemy_rls_context  # noqa: PLC0415
-                        from app.org.service import OrgService  # noqa: PLC0415
+                        from app.db.rls import sqlalchemy_rls_context
+                        from app.org.service import OrgService
+
                         async with db_factory() as s2, s2.begin():
                             async with sqlalchemy_rls_context(s2, str(tenant_id)):
                                 svc = OrgService(s2, str(tenant_id))
                                 health = await svc.get_org_health(str(org_id))
                         blocked = health.get("task_counts", {}).get("blocked", 0)
-                        failed  = health.get("task_counts", {}).get("failed", 0)
+                        failed = health.get("task_counts", {}).get("failed", 0)
                         if blocked > 3 or failed > 0:
                             discovered += 1
                         if autonomy_level >= 3 and (blocked > 5 or failed > 2):
@@ -3344,14 +3513,14 @@ def org_brain_loop() -> dict[str, int]:
                                 org_id=str(org_id),
                                 tenant_id=str(tenant_id),
                             )
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         _log.warning("org_brain.org_error", org_id=str(org_id), error=str(exc))
 
                 span.set_attribute("orgs_processed", processed)
                 span.set_attribute("discovered", discovered)
                 span.set_attribute("triggered", triggered)
                 _log.info("org_brain.loop_done", processed=processed, discovered=discovered)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 _log.error("org_brain.loop_failed", error=str(exc))
         return {"processed": processed, "discovered": discovered, "triggered": triggered}
 
@@ -3364,13 +3533,15 @@ def org_brain_loop() -> dict[str, int]:
 
 # ── PART 43: Org Intelligence + Digest + Twin Sync Cron Tasks ─────────────────
 
+
 @celery_app.task(name="app.scaling.tasks.org_intelligence_cron", queue="maintenance")
 def org_intelligence_cron() -> dict:
     """
     PART 43: org-intelligence-cron — runs every 15 minutes.
     Detects bottlenecks, generates insights, updates org health scores.
     """
-    from app.org.feature_flags import is_feature_enabled, _run_org_intelligence_cron
+    from app.org.feature_flags import _run_org_intelligence_cron, is_feature_enabled
+
     if not is_feature_enabled("org_analytics_enabled"):
         return {"status": "disabled"}
     loop = asyncio.new_event_loop()
@@ -3389,7 +3560,8 @@ def org_digest_cron() -> dict:
     PART 43: org-digest-cron — runs daily at 06:00 UTC.
     Generates "While You Were Away" digests for all active orgs.
     """
-    from app.org.feature_flags import is_feature_enabled, _run_org_digest_cron
+    from app.org.feature_flags import _run_org_digest_cron, is_feature_enabled
+
     if not is_feature_enabled("org_digest_enabled"):
         return {"status": "disabled"}
     loop = asyncio.new_event_loop()
@@ -3409,6 +3581,7 @@ def org_twin_sync(event: dict) -> dict:
     Updates digital twin state to reflect real-world org changes.
     """
     from app.org.feature_flags import _run_org_twin_sync
+
     loop = asyncio.new_event_loop()
     try:
         loop.run_until_complete(_run_org_twin_sync(event))

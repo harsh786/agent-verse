@@ -25,6 +25,7 @@ Savings
   - Tool call latency: 200ms–5s → <5ms on cache hit
   - No cost on cache hit (no external API call)
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -63,8 +64,8 @@ _WRITE_PATTERNS = re.compile(
 )
 
 # Default TTLs in seconds
-_TTL_READ = 300      # 5 minutes for read-only tools
-_TTL_STATIC = 3600   # 1 hour for static config
+_TTL_READ = 300  # 5 minutes for read-only tools
+_TTL_STATIC = 3600  # 1 hour for static config
 _TTL_EXPENSIVE = 1800  # 30 minutes for expensive computes
 
 
@@ -179,11 +180,16 @@ class ToolResultCache:
         # L2 Redis
         if self._redis is not None:
             try:
-                data = zlib.compress(json.dumps({
-                    "result": result,
-                    "tool": tool_name,
-                    "ts": int(time.time()),
-                }, default=str).encode())
+                data = zlib.compress(
+                    json.dumps(
+                        {
+                            "result": result,
+                            "tool": tool_name,
+                            "ts": int(time.time()),
+                        },
+                        default=str,
+                    ).encode()
+                )
                 await self._redis.set(f"{_PREFIX}{tenant_id}:{key}", data, ex=ttl)
                 self._inc(tenant_id, "stored")
             except Exception as exc:
@@ -247,10 +253,15 @@ class ToolResultCache:
         if self._redis is not None:
             key = self._make_key(server_id, tool_name, arguments, tenant_id)
             try:
-                data = zlib.compress(json.dumps({
-                    "result": result,
-                    "ts": int(time.time()),
-                }, default=str).encode())
+                data = zlib.compress(
+                    json.dumps(
+                        {
+                            "result": result,
+                            "ts": int(time.time()),
+                        },
+                        default=str,
+                    ).encode()
+                )
                 await self._redis.set(f"{_PREFIX}stale:{tenant_id}:{key}", data, ex=86400)
             except Exception:
                 pass
@@ -263,9 +274,7 @@ class ToolResultCache:
             "hit_rate": round(s["hits"] / total, 4) if total > 0 else 0.0,
         }
 
-    async def invalidate_writes(
-        self, tool_name: str, tenant_id: str, server_id: str = ""
-    ) -> None:
+    async def invalidate_writes(self, tool_name: str, tenant_id: str, server_id: str = "") -> None:
         """
         Invalidate cached results for related read tools after a write.
         e.g. after jira_create_issue → invalidate jira_search_issues cache.
@@ -285,9 +294,7 @@ class ToolResultCache:
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _make_key(
-        server_id: str, tool_name: str, arguments: dict[str, Any], tenant_id: str
-    ) -> str:
+    def _make_key(server_id: str, tool_name: str, arguments: dict[str, Any], tenant_id: str) -> str:
         try:
             args_str = json.dumps(arguments, sort_keys=True, default=str)
         except Exception:
@@ -307,7 +314,11 @@ class ToolResultCache:
     def _get_stats(self, tenant_id: str) -> dict[str, int]:
         if tenant_id not in self._stats:
             self._stats[tenant_id] = {
-                "hits": 0, "misses": 0, "l1_hits": 0, "l2_hits": 0, "stored": 0
+                "hits": 0,
+                "misses": 0,
+                "l1_hits": 0,
+                "l2_hits": 0,
+                "stored": 0,
             }
         return self._stats[tenant_id]
 

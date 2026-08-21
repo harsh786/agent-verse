@@ -12,6 +12,7 @@ Usage:
   from app.org.plugins.registry import plugin_registry
   plugin_registry.register(MyToolPlugin())
 """
+
 from __future__ import annotations
 
 from enum import Enum
@@ -23,12 +24,12 @@ _log = structlog.get_logger(__name__)
 
 
 class PluginType(str, Enum):
-    MODEL      = "model"
-    TOOL       = "tool"
-    MEMORY     = "memory"
-    KNOWLEDGE  = "knowledge"
-    EVALUATOR  = "evaluator"
-    POLICY     = "policy"
+    MODEL = "model"
+    TOOL = "tool"
+    MEMORY = "memory"
+    KNOWLEDGE = "knowledge"
+    EVALUATOR = "evaluator"
+    POLICY = "policy"
 
 
 class AgentVersePlugin:
@@ -40,26 +41,27 @@ class AgentVersePlugin:
     description: str = ""
     permissions: list[str] = []
     audit: bool = True
-    sandbox: str = "restricted"   # restricted | isolated | trusted
+    sandbox: str = "restricted"  # restricted | isolated | trusted
 
     def health_check(self) -> bool:
         return True
 
     def metadata(self) -> dict[str, Any]:
         return {
-            "name":        self.name,
-            "version":     self.version,
-            "type":        self.plugin_type.value,
+            "name": self.name,
+            "version": self.version,
+            "type": self.plugin_type.value,
             "description": self.description,
             "permissions": self.permissions,
-            "audit":       self.audit,
-            "sandbox":     self.sandbox,
-            "healthy":     self.health_check(),
+            "audit": self.audit,
+            "sandbox": self.sandbox,
+            "healthy": self.health_check(),
         }
 
 
 class ModelPlugin(AgentVersePlugin):
     """Add a new LLM provider."""
+
     plugin_type = PluginType.MODEL
 
     async def complete(self, messages: list[dict], config: dict) -> str:
@@ -74,6 +76,7 @@ class ModelPlugin(AgentVersePlugin):
 
 class ToolPlugin(AgentVersePlugin):
     """Add a new tool/action."""
+
     plugin_type = PluginType.TOOL
 
     schema: dict[str, Any] = {}
@@ -85,6 +88,7 @@ class ToolPlugin(AgentVersePlugin):
 
 class MemoryPlugin(AgentVersePlugin):
     """Add a new memory backend."""
+
     plugin_type = PluginType.MEMORY
 
     async def store(self, entry: dict) -> str:
@@ -96,6 +100,7 @@ class MemoryPlugin(AgentVersePlugin):
 
 class KnowledgePlugin(AgentVersePlugin):
     """Add a new knowledge source connector."""
+
     plugin_type = PluginType.KNOWLEDGE
 
     async def index(self, source: dict) -> dict[str, Any]:
@@ -107,6 +112,7 @@ class KnowledgePlugin(AgentVersePlugin):
 
 class EvaluatorPlugin(AgentVersePlugin):
     """Add a custom evaluator."""
+
     plugin_type = PluginType.EVALUATOR
 
     async def evaluate(self, output: str, context: dict) -> dict[str, Any]:
@@ -115,6 +121,7 @@ class EvaluatorPlugin(AgentVersePlugin):
 
 class PolicyPlugin(AgentVersePlugin):
     """Add a custom governance policy."""
+
     plugin_type = PluginType.POLICY
 
     async def check(self, action: dict, context: dict) -> dict[str, Any]:
@@ -122,12 +129,12 @@ class PolicyPlugin(AgentVersePlugin):
 
 
 __all__ = [
-    "PluginType",
     "AgentVersePlugin",
-    "ModelPlugin",
-    "ToolPlugin",
-    "MemoryPlugin",
-    "KnowledgePlugin",
     "EvaluatorPlugin",
+    "KnowledgePlugin",
+    "MemoryPlugin",
+    "ModelPlugin",
+    "PluginType",
     "PolicyPlugin",
+    "ToolPlugin",
 ]

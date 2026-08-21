@@ -1,4 +1,5 @@
 """Create all Agent Civilization tables with RLS and indexes."""
+
 from alembic import op
 
 revision = "0045"
@@ -7,7 +8,9 @@ branch_labels = None
 depends_on = None
 
 TABLES = [
-    ("civilizations", """
+    (
+        "civilizations",
+        """
         CREATE TABLE IF NOT EXISTS civilizations (
             id         TEXT PRIMARY KEY,
             tenant_id  TEXT NOT NULL,
@@ -17,8 +20,11 @@ TABLES = [
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
-    """),
-    ("civilization_agents", """
+    """,
+    ),
+    (
+        "civilization_agents",
+        """
         CREATE TABLE IF NOT EXISTS civilization_agents (
             id               TEXT PRIMARY KEY,
             civilization_id  TEXT NOT NULL REFERENCES civilizations(id) ON DELETE CASCADE,
@@ -36,8 +42,11 @@ TABLES = [
             last_active_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             UNIQUE(civilization_id, agent_id)
         )
-    """),
-    ("spawn_requests", """
+    """,
+    ),
+    (
+        "spawn_requests",
+        """
         CREATE TABLE IF NOT EXISTS spawn_requests (
             id                    TEXT PRIMARY KEY,
             civilization_id       TEXT NOT NULL REFERENCES civilizations(id) ON DELETE CASCADE,
@@ -51,8 +60,11 @@ TABLES = [
             created_agent_id      TEXT,
             created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
-    """),
-    ("blackboard_entries", """
+    """,
+    ),
+    (
+        "blackboard_entries",
+        """
         CREATE TABLE IF NOT EXISTS blackboard_entries (
             id               TEXT PRIMARY KEY,
             civilization_id  TEXT NOT NULL REFERENCES civilizations(id) ON DELETE CASCADE,
@@ -65,8 +77,11 @@ TABLES = [
             version          INT NOT NULL DEFAULT 1,
             created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
-    """),
-    ("bus_messages", """
+    """,
+    ),
+    (
+        "bus_messages",
+        """
         CREATE TABLE IF NOT EXISTS bus_messages (
             id               TEXT PRIMARY KEY,
             civilization_id  TEXT NOT NULL REFERENCES civilizations(id) ON DELETE CASCADE,
@@ -76,8 +91,11 @@ TABLES = [
             payload          JSONB NOT NULL DEFAULT '{}',
             ts               TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
-    """),
-    ("civilization_learnings", """
+    """,
+    ),
+    (
+        "civilization_learnings",
+        """
         CREATE TABLE IF NOT EXISTS civilization_learnings (
             id                   TEXT PRIMARY KEY,
             civilization_id      TEXT NOT NULL REFERENCES civilizations(id) ON DELETE CASCADE,
@@ -90,8 +108,11 @@ TABLES = [
             created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             decided_at           TIMESTAMPTZ
         )
-    """),
-    ("civilization_events", """
+    """,
+    ),
+    (
+        "civilization_events",
+        """
         CREATE TABLE IF NOT EXISTS civilization_events (
             id               TEXT PRIMARY KEY,
             civilization_id  TEXT NOT NULL REFERENCES civilizations(id) ON DELETE CASCADE,
@@ -100,7 +121,8 @@ TABLES = [
             payload          JSONB NOT NULL DEFAULT '{}',
             ts               TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
-    """),
+    """,
+    ),
 ]
 
 INDEXES = [

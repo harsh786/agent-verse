@@ -1,70 +1,18 @@
 """Mixin extracted from app.agent.graph — zero semantic changes."""
+
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import json
-import re
-import time
-import uuid
-from collections.abc import Awaitable, Callable
-from typing import Any, TypedDict
-
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, START, StateGraph
-
-from app.agent.prompts import (
-    CHAIN_OF_THOUGHT_SYSTEM,
-    EXECUTOR_SYSTEM,
-    PLANNER_SYSTEM,
-    REFLECTION_SYSTEM,
-    STRUCTURED_PLANNER_SYSTEM,
-    VERIFIER_SYSTEM,
-)
-from app.agent.sanitization import (
-    _EXECUTOR_CONTEXT_MAX_LENGTH,
-    sanitize_event,
-    sanitize_event_value,
-    sanitize_tool_event_value,
-    sanitize_tool_raw_output,
-)
-from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus, SubGoal
-from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_arguments
-from app.agent.tool_risk import classify_tool_risk
-from app.governance.audit import AuditEvent, AuditLog
-from app.governance.cost import CostController
-from app.governance.hitl import ApprovalStatus, HITLGateway
-from app.governance.permissions import ActionLevel, PermissionMatrix
-from app.governance.policies import PolicyEngine, PolicyResult
-from app.intelligence.eval_runner import EvalRunner
-from app.intelligence.explainability import DecisionTrace
-from app.intelligence.guardrails import GuardrailChecker
-from app.memory.execution import ExecutionMemory
-from app.memory.long_term import LongTermMemoryStore
+from app.agent.state import AgentState, GoalStatus
 from app.observability.metrics import (
-    record_approval_wait,
-    record_goal_completed,
     record_goal_failed,
-    record_plan_duration,
-    record_tool_call,
-    record_verify_duration,
-    track_tool_call,
 )
-from app.pipeline.steps import smart_context_fetch
-from app.providers.base import CompletionRequest, LLMProvider, Message, ToolDefinition
-from app.providers.circuit_breaker import call_with_circuit_breaker
-from app.rag.contracts import RAGExecutionResult, RAGStrategy, resolve_rag_strategy
-from app.rag.store import KnowledgeStore
-from app.reliability.circuit_breaker import CircuitBreaker
-from app.reliability.dedup import DeduplicationCache
-from app.reliability.result_processor import ResultProcessor
-from app.reliability.rollback import RollbackEngine
 from app.tenancy.context import TenantContext
 
 # Guardrails 2.0 integration
 try:
     from app.guardrails_v2.engine import guardrails_engine
     from app.guardrails_v2.models import GuardrailLayer
+
     _GUARDRAILS_AVAILABLE = True
 except ImportError:
     _GUARDRAILS_AVAILABLE = False
@@ -73,16 +21,6 @@ except ImportError:
 
 from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
 
-
-from app.agent.nodes._helpers import (
-    _is_high_risk_step,
-    _is_ungrounded_status,
-    _build_verifier_summary,
-    _parse_json,
-    _parse_verifier_response,
-    _extract_tool_name as _extract_tool_name_fn,
-    _extract_scope_value,
-)
 
 class RoutingMixin:
     """Mixin: _max_reflection_rounds, _route, _route_after_execute."""
@@ -118,8 +56,7 @@ class RoutingMixin:
         if not _v_retry:
             agent_state.status = GoalStatus.FAILED
             agent_state.error_message = (
-                agent_state.verification_feedback
-                or "Goal permanently failed: cannot be retried."
+                agent_state.verification_feedback or "Goal permanently failed: cannot be retried."
             )
             record_goal_failed(tenant_id=agent_state.tenant_ctx.tenant_id)
             return "max_iter"
@@ -148,11 +85,13 @@ class RoutingMixin:
                 # node pick it up at start of next iteration via event_callback.
                 agent_state.context["_pending_events"] = agent_state.context.get(
                     "_pending_events", []
-                ) + [{
-                    "type": "stuck_loop_detected",
-                    "goal_id": agent_state.goal_id,
-                    "message": "3 consecutive step failures — forcing replan",
-                }]
+                ) + [
+                    {
+                        "type": "stuck_loop_detected",
+                        "goal_id": agent_state.goal_id,
+                        "message": "3 consecutive step failures — forcing replan",
+                    }
+                ]
                 return "replan"
         except Exception:
             pass  # never crash routing
@@ -196,7 +135,9 @@ class RoutingMixin:
         if self._autonomy_mode == "supervised" and self._hitl_gateway is not None:
             tenant_ctx: TenantContext | None = state.get("tenant_ctx")
             if tenant_ctx is not None:
-                pending = self._hitl_gateway.list_pending(tenant_ctx=tenant_ctx, goal_id=agent_state.goal_id)
+                pending = self._hitl_gateway.list_pending(
+                    tenant_ctx=tenant_ctx, goal_id=agent_state.goal_id
+                )
                 if pending:
                     agent_state.status = GoalStatus.WAITING_HUMAN
                     return "waiting_human"
@@ -204,12 +145,15 @@ class RoutingMixin:
         # Context-gap detection (doc-2 §9.3) — route to rag_remediate before replanning
         try:
             from app.rag.agentic.context_gap_detector import ContextGapDetector
+
             _gap_detector = ContextGapDetector()
             _remediation_count = agent_state.context.get("remediation_count", 0)
-            if (agent_state.context.get("allow_rag_remediation", False)
-                    and not agent_state.verification_success
-                    and _gap_detector.has_gap(agent_state.verification_feedback or "")
-                    and _remediation_count < 2):
+            if (
+                agent_state.context.get("allow_rag_remediation", False)
+                and not agent_state.verification_success
+                and _gap_detector.has_gap(agent_state.verification_feedback or "")
+                and _remediation_count < 2
+            ):
                 return "rag_remediate"
         except Exception:
             pass  # never crash routing
@@ -218,9 +162,7 @@ class RoutingMixin:
         # result is itself sufficient evidence to enter the bounded reflection
         # path even when the verifier omitted explanatory text.
         if self._enable_reflection:
-            reflection_attempts = int(
-                agent_state.context.get("reflection_attempts", 0)
-            )
+            reflection_attempts = int(agent_state.context.get("reflection_attempts", 0))
             if reflection_attempts < self._max_reflection_rounds():
                 return "reflect"
             evidence = {
@@ -248,4 +190,3 @@ class RoutingMixin:
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
-

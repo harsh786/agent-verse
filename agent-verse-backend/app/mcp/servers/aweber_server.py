@@ -3,6 +3,7 @@
 Environment:
   AWEBER_ACCESS_TOKEN: OAuth2 access token from AWeber developer portal
 """
+
 from __future__ import annotations
 
 import os
@@ -33,7 +34,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "account_id": {"type": "string", "description": "AWeber account ID"},
                 "list_id": {"type": "string", "description": "AWeber list ID"},
-                "page_size": {"type": "integer", "description": "Number of subscribers per page", "default": 100},
+                "page_size": {
+                    "type": "integer",
+                    "description": "Number of subscribers per page",
+                    "default": 100,
+                },
             },
             "required": ["account_id", "list_id"],
         },
@@ -48,7 +53,11 @@ TOOL_DEFINITIONS = [
                 "list_id": {"type": "string", "description": "AWeber list ID"},
                 "email": {"type": "string", "description": "Subscriber email address"},
                 "name": {"type": "string", "description": "Subscriber full name"},
-                "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags to apply to subscriber"},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tags to apply to subscriber",
+                },
             },
             "required": ["account_id", "list_id", "email"],
         },
@@ -163,7 +172,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "lists": [
-                        {"id": lst.get("id"), "name": lst.get("name"), "total_subscribers": lst.get("total_subscribers")}
+                        {
+                            "id": lst.get("id"),
+                            "name": lst.get("name"),
+                            "total_subscribers": lst.get("total_subscribers"),
+                        }
                         for lst in data.get("entries", [])
                     ]
                 }

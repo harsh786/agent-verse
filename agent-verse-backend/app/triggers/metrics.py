@@ -1,4 +1,5 @@
 """Prometheus metrics for the trigger framework."""
+
 from __future__ import annotations
 
 try:
@@ -49,13 +50,14 @@ except ImportError:
     class _Noop:
         def labels(self, **_: object) -> _Noop:
             return self
+
         def inc(self, *_: object) -> None: ...
         def observe(self, *_: object) -> None: ...
         def set(self, *_: object) -> None: ...
 
-    TRIGGER_FIRED_TOTAL = _Noop()         # type: ignore[assignment]
-    TRIGGER_FIRE_LATENCY = _Noop()        # type: ignore[assignment]
+    TRIGGER_FIRED_TOTAL = _Noop()  # type: ignore[assignment]
+    TRIGGER_FIRE_LATENCY = _Noop()  # type: ignore[assignment]
     TRIGGER_GOAL_CREATED_TOTAL = _Noop()  # type: ignore[assignment]
-    TRIGGER_CIRCUIT_STATE = _Noop()       # type: ignore[assignment]
-    TRIGGER_DLQ_DEPTH = _Noop()           # type: ignore[assignment]
+    TRIGGER_CIRCUIT_STATE = _Noop()  # type: ignore[assignment]
+    TRIGGER_DLQ_DEPTH = _Noop()  # type: ignore[assignment]
     TRIGGER_RATE_LIMIT_DROPS_TOTAL = _Noop()  # type: ignore[assignment]

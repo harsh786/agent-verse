@@ -3,6 +3,7 @@
 Environment:
   FILESTACK_API_KEY: Filestack API key
 """
+
 from __future__ import annotations
 
 import os
@@ -146,7 +147,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "filestack_list_files":
                 path = arguments.get("path", "/")
                 r = await c.get(
-                    f"https://cloud.filestackcontent.com/folder/list",
+                    "https://cloud.filestackcontent.com/folder/list",
                     params={
                         "apikey": api_key,
                         "path": path,
@@ -181,7 +182,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "store": {"location": arguments.get("store_location", "s3")},
                 }
                 r = await c.post(
-                    f"https://cloud.filestackcontent.com/store",
+                    "https://cloud.filestackcontent.com/store",
                     params={"apikey": api_key},
                     json=body,
                 )

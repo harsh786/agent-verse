@@ -5,6 +5,7 @@ Environment variables:
   DOCKER_HUB_USERNAME: Docker Hub username (for Hub operations)
   DOCKER_HUB_PASSWORD: Docker Hub password or access token
 """
+
 from __future__ import annotations
 
 import os
@@ -25,8 +26,15 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "all": {"type": "boolean", "default": False, "description": "Include stopped containers"},
-                "filters": {"type": "object", "description": "Docker filters (e.g. {status: running})"},
+                "all": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Include stopped containers",
+                },
+                "filters": {
+                    "type": "object",
+                    "description": "Docker filters (e.g. {status: running})",
+                },
             },
         },
     },
@@ -48,7 +56,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "container_id": {"type": "string"},
-                "tail": {"type": "string", "default": "100", "description": "Number of lines (or 'all')"},
+                "tail": {
+                    "type": "string",
+                    "default": "100",
+                    "description": "Number of lines (or 'all')",
+                },
                 "timestamps": {"type": "boolean", "default": False},
             },
             "required": ["container_id"],
@@ -70,7 +82,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "image": {"type": "string", "description": "Image name with optional tag (e.g. nginx:latest)"},
+                "image": {
+                    "type": "string",
+                    "description": "Image name with optional tag (e.g. nginx:latest)",
+                },
             },
             "required": ["image"],
         },
@@ -93,7 +108,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "repository": {"type": "string", "description": "Image repository (e.g. library/nginx or org/repo)"},
+                "repository": {
+                    "type": "string",
+                    "description": "Image repository (e.g. library/nginx or org/repo)",
+                },
                 "page_size": {"type": "integer", "default": 20},
             },
             "required": ["repository"],
@@ -133,7 +151,7 @@ async def _docker_request(
     docker_host = _docker_unix_socket()
 
     if docker_host.startswith("unix://"):
-        socket_path = docker_host[len("unix://"):]
+        socket_path = docker_host[len("unix://") :]
         transport = httpx.AsyncHTTPTransport(uds=socket_path)
         base = "http://localhost"
     else:
@@ -157,7 +175,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
@@ -170,6 +191,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             params["all"] = "true"
         if arguments.get("filters"):
             import json as _json
+
             params["filters"] = _json.dumps(arguments["filters"])
         try:
             data = await _docker_request("GET", "/containers/json", params=params)
@@ -223,8 +245,10 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
                 raw = data.encode("latin-1")
                 while i < len(raw):
                     if i + 8 <= len(raw):
-                        length = int.from_bytes(raw[i + 4:i + 8], "big")
-                        cleaned.append(raw[i + 8:i + 8 + length].decode("utf-8", errors="replace"))
+                        length = int.from_bytes(raw[i + 4 : i + 8], "big")
+                        cleaned.append(
+                            raw[i + 8 : i + 8 + length].decode("utf-8", errors="replace")
+                        )
                         i += 8 + length
                     else:
                         break
@@ -238,6 +262,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             params = {}
             if arguments.get("filters"):
                 import json as _json
+
                 params["filters"] = _json.dumps(arguments["filters"])
             data = await _docker_request("GET", "/images/json", params=params)
             return {
@@ -263,7 +288,8 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             else:
                 from_image, tag = image, "latest"
             data = await _docker_request(
-                "POST", "/images/create",
+                "POST",
+                "/images/create",
                 params={"fromImage": from_image, "tag": tag},
             )
             return {"pulled": True, "image": image, "output": str(data)[:500]}

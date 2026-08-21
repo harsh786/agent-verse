@@ -3,6 +3,7 @@
 Environment:
   MAILERLITE_API_KEY: MailerLite API key
 """
+
 from __future__ import annotations
 
 import os

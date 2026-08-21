@@ -3,6 +3,7 @@
 Environment:
   GLEAM_API_KEY: Gleam.io API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -24,7 +25,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "page": {"type": "integer", "description": "Page number"},
                 "per_page": {"type": "integer", "description": "Campaigns per page"},
-                "type": {"type": "string", "description": "Campaign type: competition, reward, gallery"},
+                "type": {
+                    "type": "string",
+                    "description": "Campaign type: competition, reward, gallery",
+                },
             },
         },
     },
@@ -108,7 +112,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "gleam_get_campaign_entries":
                 campaign_id = arguments["campaign_id"]
-                params = {k: v for k, v in arguments.items() if k != "campaign_id" and v is not None}
+                params = {
+                    k: v for k, v in arguments.items() if k != "campaign_id" and v is not None
+                }
                 r = await client.get(
                     f"{BASE_URL}/campaigns/{campaign_id}/entries",
                     headers=headers,

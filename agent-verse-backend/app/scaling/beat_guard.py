@@ -3,6 +3,7 @@
 Wrap sensitive Celery beat tasks with a distributed lock so they
 never run concurrently across replicas or if the previous run hasn't finished.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -24,10 +25,12 @@ def beat_task_guard(lock_ttl_seconds: int = 300):
         def fire_due_schedules():
             ...
     """
+
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             from app.scaling.celery_app import celery_app
+
             redis_url = celery_app.conf.broker_url or ""
             lock_key = f"beat_guard:{func.__name__}"
 
@@ -36,6 +39,7 @@ def beat_task_guard(lock_ttl_seconds: int = 300):
 
             try:
                 import redis as _redis
+
                 r = _redis.from_url(redis_url, decode_responses=True)
                 acquired = r.set(lock_key, "1", ex=lock_ttl_seconds, nx=True)
                 if not acquired:
@@ -49,5 +53,7 @@ def beat_task_guard(lock_ttl_seconds: int = 300):
             except Exception as exc:
                 logger.warning("beat_guard_error", task=func.__name__, error=str(exc)[:80])
                 return func(*args, **kwargs)  # run anyway on guard failure
+
         return wrapper
+
     return decorator

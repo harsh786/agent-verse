@@ -4,6 +4,7 @@ Environment:
   LIGHTSPEED_ACCESS_TOKEN: Lightspeed OAuth2 access token
   LIGHTSPEED_ACCOUNT_ID: Lightspeed account ID (numeric)
 """
+
 from __future__ import annotations
 
 import os
@@ -24,7 +25,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "search": {"type": "string", "description": "Search by description or system SKU"},
                 "category_id": {"type": "integer", "description": "Filter by category ID"},
-                "limit": {"type": "integer", "description": "Number of items to return (max 100)", "default": 20},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of items to return (max 100)",
+                    "default": 20,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
         },
@@ -35,9 +40,15 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "register_id": {"type": "integer", "description": "Register ID to assign the sale to"},
+                "register_id": {
+                    "type": "integer",
+                    "description": "Register ID to assign the sale to",
+                },
                 "employee_id": {"type": "integer", "description": "Employee ID creating the sale"},
-                "customer_id": {"type": "integer", "description": "Customer ID to associate with the sale"},
+                "customer_id": {
+                    "type": "integer",
+                    "description": "Customer ID to associate with the sale",
+                },
                 "sale_lines": {
                     "type": "array",
                     "items": {
@@ -61,9 +72,16 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "completed": {"type": "boolean", "description": "Filter by completed status"},
-                "date_from": {"type": "string", "description": "Start date filter in ISO 8601 format"},
+                "date_from": {
+                    "type": "string",
+                    "description": "Start date filter in ISO 8601 format",
+                },
                 "date_to": {"type": "string", "description": "End date filter in ISO 8601 format"},
-                "limit": {"type": "integer", "description": "Number of sales to return (max 100)", "default": 20},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of sales to return (max 100)",
+                    "default": 20,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
         },
@@ -77,7 +95,11 @@ TOOL_DEFINITIONS = [
                 "first_name": {"type": "string", "description": "Filter by first name"},
                 "last_name": {"type": "string", "description": "Filter by last name"},
                 "email": {"type": "string", "description": "Filter by email address"},
-                "limit": {"type": "integer", "description": "Number of customers to return (max 100)", "default": 20},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of customers to return (max 100)",
+                    "default": 20,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
         },
@@ -103,9 +125,19 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "item_id": {"type": "integer", "description": "Specific item ID to check inventory"},
-                "shop_id": {"type": "integer", "description": "Shop/location ID to filter inventory"},
-                "limit": {"type": "integer", "description": "Number of inventory records to return", "default": 20},
+                "item_id": {
+                    "type": "integer",
+                    "description": "Specific item ID to check inventory",
+                },
+                "shop_id": {
+                    "type": "integer",
+                    "description": "Shop/location ID to filter inventory",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of inventory records to return",
+                    "default": 20,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
         },
@@ -151,7 +183,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                             "item_id": i.get("itemID"),
                             "description": i.get("description"),
                             "sku": i.get("systemSku"),
-                            "price": i.get("Prices", {}).get("ItemPrice", [{}])[0].get("amount") if i.get("Prices") else None,
+                            "price": i.get("Prices", {}).get("ItemPrice", [{}])[0].get("amount")
+                            if i.get("Prices")
+                            else None,
                         }
                         for i in items
                     ],
@@ -180,7 +214,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                             "unitQuantity": line.get("quantity", 1),
                             "unitPrice": line.get("unit_price"),
                         }
-                        await client.post(f"{base}/SaleLine.json", headers=headers, json={"SaleLine": line_payload})
+                        await client.post(
+                            f"{base}/SaleLine.json",
+                            headers=headers,
+                            json={"SaleLine": line_payload},
+                        )
                 return {"sale_id": sale_id, "completed": sale.get("completed")}
 
             elif tool_name == "lightspeed_list_sales":
@@ -234,7 +272,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                             "customer_id": c.get("customerID"),
                             "first_name": c.get("firstName"),
                             "last_name": c.get("lastName"),
-                            "email": c.get("Contact", {}).get("email") if isinstance(c.get("Contact"), dict) else None,
+                            "email": c.get("Contact", {}).get("email")
+                            if isinstance(c.get("Contact"), dict)
+                            else None,
                         }
                         for c in customers
                     ],
@@ -255,11 +295,17 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     contact["phone"] = arguments["phone"]
                 if contact:
                     payload["Contact"] = contact
-                r = await client.post(f"{base}/Customer.json", headers=headers, json={"Customer": payload})
+                r = await client.post(
+                    f"{base}/Customer.json", headers=headers, json={"Customer": payload}
+                )
                 r.raise_for_status()
                 data = r.json()
                 c = data.get("Customer", {})
-                return {"customer_id": c.get("customerID"), "first_name": c.get("firstName"), "last_name": c.get("lastName")}
+                return {
+                    "customer_id": c.get("customerID"),
+                    "first_name": c.get("firstName"),
+                    "last_name": c.get("lastName"),
+                }
 
             elif tool_name == "lightspeed_get_inventory":
                 params = {

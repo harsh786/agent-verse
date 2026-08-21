@@ -266,18 +266,10 @@ class FineTunedInferenceProvider(Protocol):
 
 
 class RAFTRepository(Protocol):
-    async def load_chunks(
-        self, tenant_id: str, collection_id: str
-    ) -> list[PersistedRAFTChunk]: ...
-    async def save_dataset(
-        self, tenant_id: str, record: RAFTDatasetRecord
-    ) -> None: ...
-    async def get_dataset(
-        self, tenant_id: str, dataset_id: str
-    ) -> RAFTDatasetRecord | None: ...
-    async def save_confirmation(
-        self, tenant_id: str, grant: _ConfirmationGrant
-    ) -> None: ...
+    async def load_chunks(self, tenant_id: str, collection_id: str) -> list[PersistedRAFTChunk]: ...
+    async def save_dataset(self, tenant_id: str, record: RAFTDatasetRecord) -> None: ...
+    async def get_dataset(self, tenant_id: str, dataset_id: str) -> RAFTDatasetRecord | None: ...
+    async def save_confirmation(self, tenant_id: str, grant: _ConfirmationGrant) -> None: ...
     async def consume_confirmation(
         self, tenant_id: str, token_hash: str
     ) -> _ConfirmationGrant | None: ...
@@ -331,23 +323,17 @@ class InMemoryRAFTRepository:
     ) -> None:
         self._chunks[(tenant_id, collection_id)] = list(chunks)
 
-    async def load_chunks(
-        self, tenant_id: str, collection_id: str
-    ) -> list[PersistedRAFTChunk]:
+    async def load_chunks(self, tenant_id: str, collection_id: str) -> list[PersistedRAFTChunk]:
         return list(self._chunks.get((tenant_id, collection_id), []))
 
     async def save_dataset(self, tenant_id: str, record: RAFTDatasetRecord) -> None:
         _require_matching_tenant(tenant_id, record.tenant_id)
         self._datasets[(tenant_id, record.dataset_id)] = record
 
-    async def get_dataset(
-        self, tenant_id: str, dataset_id: str
-    ) -> RAFTDatasetRecord | None:
+    async def get_dataset(self, tenant_id: str, dataset_id: str) -> RAFTDatasetRecord | None:
         return self._datasets.get((tenant_id, dataset_id))
 
-    async def save_confirmation(
-        self, tenant_id: str, grant: _ConfirmationGrant
-    ) -> None:
+    async def save_confirmation(self, tenant_id: str, grant: _ConfirmationGrant) -> None:
         _require_matching_tenant(tenant_id, grant.tenant_id)
         self._confirmations[(tenant_id, grant.token_hash)] = grant
 
@@ -541,7 +527,7 @@ class RAFTService:
                     expires_at=expires_at,
                 ),
                 expires_at=expires_at,
-            )
+            ),
         )
         return RAFTCostPreview(
             dataset_id=dataset_id,
@@ -564,9 +550,9 @@ class RAFTService:
         dataset = await self._require_dataset(tenant, dataset_id)
         provider = self._require_provider(provider_id)
         token_hash = _token_hash(confirmation_token)
-        job_id = hashlib.sha256(
-            f"raft-job:{tenant.tenant_id}:{token_hash}".encode()
-        ).hexdigest()[:32]
+        job_id = hashlib.sha256(f"raft-job:{tenant.tenant_id}:{token_hash}".encode()).hexdigest()[
+            :32
+        ]
         compatibility_key = _compatibility_key(
             dataset=dataset,
             provider_id=provider_id,
@@ -591,9 +577,7 @@ class RAFTService:
             pending_job,
         )
         if job is None:
-            raise ConfirmationRequiredError(
-                "A fresh matching cost confirmation token is required"
-            )
+            raise ConfirmationRequiredError("A fresh matching cost confirmation token is required")
         should_submit = False
         if job.status == "pending":
             claimed = await self._repository.transition_job(
@@ -686,25 +670,19 @@ class RAFTService:
             ),
         )
 
-    async def get_job(
-        self, tenant: TenantContext, job_id: str
-    ) -> RAFTJobRecord:
+    async def get_job(self, tenant: TenantContext, job_id: str) -> RAFTJobRecord:
         job = await self._repository.get_job(tenant.tenant_id, job_id)
         if job is None:
             raise RAFTNotFoundError("RAFT job not found")
         return job
 
-    async def refresh_job(
-        self, tenant: TenantContext, job_id: str
-    ) -> RAFTJobRecord:
+    async def refresh_job(self, tenant: TenantContext, job_id: str) -> RAFTJobRecord:
         job = await self.get_job(tenant, job_id)
         if job.status in _TERMINAL_STATUSES:
             return job
         if not job.provider_job_id:
             raise RAFTError("RAFT job has not been submitted")
-        state = await self._require_provider(job.provider_id).status(
-            job.provider_job_id
-        )
+        state = await self._require_provider(job.provider_id).status(job.provider_job_id)
         updated = replace(
             job,
             status=state.status,
@@ -714,9 +692,7 @@ class RAFTService:
         )
         return await self._transition(tenant.tenant_id, updated)
 
-    async def evaluate_job(
-        self, tenant: TenantContext, job_id: str
-    ) -> RAFTJobRecord:
+    async def evaluate_job(self, tenant: TenantContext, job_id: str) -> RAFTJobRecord:
         job = await self.get_job(tenant, job_id)
         if job.status != "completed" or not job.fine_tuned_model:
             raise RAFTModelUnavailableError("RAFT job has no completed model to evaluate")
@@ -743,9 +719,7 @@ class RAFTService:
             compatibility_key,
         )
         if job is None:
-            raise RAFTModelUnavailableError(
-                "A completed compatible RAFT model is required"
-            )
+            raise RAFTModelUnavailableError("A completed compatible RAFT model is required")
         return job
 
     async def has_completed_model(
@@ -774,9 +748,7 @@ class RAFTService:
         """Select the newest completed model after exact local compatibility filters."""
         if provider_id is not None:
             provider = self._inference_providers.get(provider_id)
-            if provider is None or (
-                capability is not None and provider.capability != capability
-            ):
+            if provider is None or (capability is not None and provider.capability != capability):
                 return None
             provider_ids = frozenset({provider_id})
         else:
@@ -799,8 +771,7 @@ class RAFTService:
             (
                 job
                 for job in candidates
-                if self._inference_providers[job.provider_id].capability
-                == job.capability
+                if self._inference_providers[job.provider_id].capability == job.capability
             ),
             None,
         )
@@ -836,11 +807,7 @@ class RAFTService:
         evidence: tuple[str, ...],
     ) -> str:
         provider = self._inference_providers.get(job.provider_id)
-        if (
-            provider is None
-            or provider.capability != job.capability
-            or not job.fine_tuned_model
-        ):
+        if provider is None or provider.capability != job.capability or not job.fine_tuned_model:
             raise RAFTModelUnavailableError("RAFT inference capability is unavailable")
         answer = await provider.infer(
             query=query,
@@ -868,9 +835,7 @@ class RAFTService:
             raise RAFTConcurrentUpdateError("RAFT job was updated concurrently")
         return persisted
 
-    async def _require_dataset(
-        self, tenant: TenantContext, dataset_id: str
-    ) -> RAFTDatasetRecord:
+    async def _require_dataset(self, tenant: TenantContext, dataset_id: str) -> RAFTDatasetRecord:
         dataset = await self._repository.get_dataset(tenant.tenant_id, dataset_id)
         if dataset is None:
             raise RAFTNotFoundError("RAFT dataset not found")
@@ -914,13 +879,10 @@ def _build_dataset(
         candidates = [
             item
             for item in usable
-            if item.chunk_id != chunk.chunk_id
-            and (item.document_id in test_documents) is is_test
+            if item.chunk_id != chunk.chunk_id and (item.document_id in test_documents) is is_test
         ]
         if len(candidates) < config.distractors_per_example:
-            raise ValueError(
-                "Each RAFT split must contain enough chunks for its distractors"
-            )
+            raise ValueError("Each RAFT split must contain enough chunks for its distractors")
         distractors = rng.sample(candidates, config.distractors_per_example)
         question = str(chunk.metadata["question"]).strip()
         answer = str(chunk.metadata["answer"]).strip()
@@ -967,13 +929,9 @@ def _validate_examples(examples: list[RAFTExample]) -> list[str]:
         errors.append("test split is empty")
     for example in examples:
         if not example.question.strip() or not example.answer.strip():
-            errors.append(
-                f"example {example.example_id} has an empty question or answer"
-            )
+            errors.append(f"example {example.example_id} has an empty question or answer")
         if example.oracle_chunk_id in example.distractor_chunk_ids:
-            errors.append(
-                f"example {example.example_id} includes its oracle as a distractor"
-            )
+            errors.append(f"example {example.example_id} includes its oracle as a distractor")
         if len(set(example.distractor_chunk_ids)) != len(example.distractor_chunk_ids):
             errors.append(f"example {example.example_id} has duplicate distractors")
     return errors
@@ -1043,14 +1001,10 @@ def _dataset_content_fingerprint(
             "schema_version": _RAFT_DATASET_ARTIFACT_SCHEMA_VERSION,
             "generation_config": asdict(config),
             "training_records": [
-                example.to_json_record()
-                for example in examples
-                if example.split == "train"
+                example.to_json_record() for example in examples if example.split == "train"
             ],
             "test_records": [
-                example.to_json_record()
-                for example in examples
-                if example.split == "test"
+                example.to_json_record() for example in examples if example.split == "test"
             ],
         },
         sort_keys=True,
@@ -1110,9 +1064,7 @@ def _require_exact_job_retry(
     )
     cost = existing.estimated_cost
     expected_digest = (
-        _job_confirmation_digest(token_hash, pending, cost)
-        if cost is not None
-        else ""
+        _job_confirmation_digest(token_hash, pending, cost) if cost is not None else ""
     )
     if (
         immutable_existing != immutable_pending
@@ -1166,20 +1118,11 @@ def _require_legal_transition(
         and updated.fine_tuned_model != current.fine_tuned_model
     ):
         raise RAFTError("RAFT fine-tuned model cannot change")
-    if (
-        current.provider_job_id is not None
-        and updated.provider_job_id != current.provider_job_id
-    ):
+    if current.provider_job_id is not None and updated.provider_job_id != current.provider_job_id:
         raise RAFTError("RAFT provider job identity cannot change")
     if updated.estimated_cost != current.estimated_cost:
         raise RAFTError("RAFT confirmed cost cannot change")
 
 
-__all__ = [
-    name
-    for name in globals()
-    if name.startswith("RAFT") or name.startswith("FineTune")
-]
-__all__.extend(
-    ["ConfirmationRequiredError", "InMemoryRAFTRepository", "PersistedRAFTChunk"]
-)
+__all__ = [name for name in globals() if name.startswith("RAFT") or name.startswith("FineTune")]
+__all__.extend(["ConfirmationRequiredError", "InMemoryRAFTRepository", "PersistedRAFTChunk"])

@@ -5,6 +5,7 @@ Environment:
   AWS_SECRET_ACCESS_KEY: AWS secret key
   AWS_REGION:            AWS region (default: us-east-1)
 """
+
 from __future__ import annotations
 
 import asyncio

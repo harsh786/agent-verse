@@ -1,4 +1,5 @@
 """JSON/JSONL parser — schema-aware flattening for structured data."""
+
 from __future__ import annotations
 
 import json

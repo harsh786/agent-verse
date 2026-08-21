@@ -1,4 +1,5 @@
 """Add tool_reliability_memory table for per-tool success/failure tracking."""
+
 from alembic import op
 
 revision = "0037"
@@ -20,8 +21,7 @@ def upgrade() -> None:
         )
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_tool_rel_tenant "
-        "ON tool_reliability_memory (tenant_id)"
+        "CREATE INDEX IF NOT EXISTS ix_tool_rel_tenant ON tool_reliability_memory (tenant_id)"
     )
 
 

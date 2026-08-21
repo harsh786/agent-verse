@@ -3,6 +3,7 @@
 Environment:
   RINGCENTRAL_ACCESS_TOKEN: RingCentral OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -31,10 +32,21 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "account_id": {"type": "string", "description": "RingCentral account ID (use ~ for current account)", "default": "~"},
-                "extension_id": {"type": "string", "description": "Extension ID to send from (use ~ for current)", "default": "~"},
+                "account_id": {
+                    "type": "string",
+                    "description": "RingCentral account ID (use ~ for current account)",
+                    "default": "~",
+                },
+                "extension_id": {
+                    "type": "string",
+                    "description": "Extension ID to send from (use ~ for current)",
+                    "default": "~",
+                },
                 "to": {"type": "string", "description": "Recipient phone number in E.164 format"},
-                "from_number": {"type": "string", "description": "Sender phone number (must be enabled for SMS)"},
+                "from_number": {
+                    "type": "string",
+                    "description": "Sender phone number (must be enabled for SMS)",
+                },
                 "text": {"type": "string", "description": "SMS message body"},
             },
             "required": ["to", "from_number", "text"],
@@ -48,7 +60,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "account_id": {"type": "string", "description": "Account ID", "default": "~"},
                 "extension_id": {"type": "string", "description": "Extension ID", "default": "~"},
-                "message_type": {"type": "string", "description": "Filter by type: SMS, Fax, VoiceMail, InboundFax"},
+                "message_type": {
+                    "type": "string",
+                    "description": "Filter by type: SMS, Fax, VoiceMail, InboundFax",
+                },
                 "per_page": {"type": "integer", "description": "Messages per page", "default": 100},
             },
         },
@@ -63,7 +78,11 @@ TOOL_DEFINITIONS = [
                 "extension_id": {"type": "string", "description": "Extension ID", "default": "~"},
                 "to": {"type": "string", "description": "Phone number to dial"},
                 "from_number": {"type": "string", "description": "Caller ID phone number"},
-                "play_prompt": {"type": "boolean", "description": "Play a connecting prompt before bridging", "default": True},
+                "play_prompt": {
+                    "type": "boolean",
+                    "description": "Play a connecting prompt before bridging",
+                    "default": True,
+                },
             },
             "required": ["to", "from_number"],
         },
@@ -76,7 +95,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "account_id": {"type": "string", "description": "Account ID", "default": "~"},
                 "extension_id": {"type": "string", "description": "Extension ID", "default": "~"},
-                "direction": {"type": "string", "description": "Filter by direction: Inbound, Outbound"},
+                "direction": {
+                    "type": "string",
+                    "description": "Filter by direction: Inbound, Outbound",
+                },
                 "type": {"type": "string", "description": "Filter by call type: Voice, Fax"},
                 "per_page": {"type": "integer", "description": "Records per page", "default": 100},
             },
@@ -88,7 +110,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "account_id": {"type": "string", "description": "Account ID (use ~ for current)", "default": "~"},
+                "account_id": {
+                    "type": "string",
+                    "description": "Account ID (use ~ for current)",
+                    "default": "~",
+                },
             },
         },
     },
@@ -99,8 +125,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "account_id": {"type": "string", "description": "Account ID", "default": "~"},
-                "extension_type": {"type": "string", "description": "Filter by type: User, Department, Announcement, etc."},
-                "per_page": {"type": "integer", "description": "Extensions per page", "default": 100},
+                "extension_type": {
+                    "type": "string",
+                    "description": "Filter by type: User, Department, Announcement, etc.",
+                },
+                "per_page": {
+                    "type": "integer",
+                    "description": "Extensions per page",
+                    "default": 100,
+                },
             },
         },
     },
@@ -142,7 +175,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "messages": [
-                        {"id": m.get("id"), "type": m.get("type"), "direction": m.get("direction"), "status": m.get("messageStatus")}
+                        {
+                            "id": m.get("id"),
+                            "type": m.get("type"),
+                            "direction": m.get("direction"),
+                            "status": m.get("messageStatus"),
+                        }
                         for m in data.get("records", [])
                     ],
                     "paging": data.get("paging", {}),
@@ -176,7 +214,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "records": [
-                        {"id": c.get("id"), "direction": c.get("direction"), "duration": c.get("duration"), "startTime": c.get("startTime")}
+                        {
+                            "id": c.get("id"),
+                            "direction": c.get("direction"),
+                            "duration": c.get("duration"),
+                            "startTime": c.get("startTime"),
+                        }
                         for c in data.get("records", [])
                     ]
                 }
@@ -202,7 +245,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "extensions": [
-                        {"id": e.get("id"), "name": e.get("name"), "type": e.get("type"), "extensionNumber": e.get("extensionNumber")}
+                        {
+                            "id": e.get("id"),
+                            "name": e.get("name"),
+                            "type": e.get("type"),
+                            "extensionNumber": e.get("extensionNumber"),
+                        }
                         for e in data.get("records", [])
                     ]
                 }

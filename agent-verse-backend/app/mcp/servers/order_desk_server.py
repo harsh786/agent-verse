@@ -4,6 +4,7 @@ Environment:
   ORDER_DESK_STORE_ID: Order Desk store ID
   ORDER_DESK_API_KEY: Order Desk API key from Store Settings > Integration
 """
+
 from __future__ import annotations
 
 import os
@@ -24,10 +25,17 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "fulfillment_status": {"type": "string", "description": "Filter by fulfillment status"},
+                "fulfillment_status": {
+                    "type": "string",
+                    "description": "Filter by fulfillment status",
+                },
                 "payment_status": {"type": "string", "description": "Filter by payment status"},
                 "source_name": {"type": "string", "description": "Filter by order source name"},
-                "limit": {"type": "integer", "description": "Number of orders to return (max 200)", "default": 20},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of orders to return (max 200)",
+                    "default": 20,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
         },
@@ -42,7 +50,10 @@ TOOL_DEFINITIONS = [
                 "fulfillment_status": {"type": "string", "description": "New fulfillment status"},
                 "payment_status": {"type": "string", "description": "New payment status"},
                 "folder_name": {"type": "string", "description": "Move order to this folder"},
-                "custom_data": {"type": "object", "description": "Custom key-value data for the order"},
+                "custom_data": {
+                    "type": "object",
+                    "description": "Custom key-value data for the order",
+                },
             },
             "required": ["order_id"],
         },
@@ -55,7 +66,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "name": {"type": "string", "description": "Filter by inventory item name"},
                 "code": {"type": "string", "description": "Filter by item code/SKU"},
-                "limit": {"type": "integer", "description": "Number of items to return (max 200)", "default": 20},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of items to return (max 200)",
+                    "default": 20,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
         },
@@ -82,7 +97,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "order_id": {"type": "string", "description": "Filter shipments by order ID"},
                 "carrier": {"type": "string", "description": "Filter by carrier name"},
-                "limit": {"type": "integer", "description": "Number of shipments to return", "default": 20},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of shipments to return",
+                    "default": 20,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
         },
@@ -97,7 +116,11 @@ TOOL_DEFINITIONS = [
                 "carrier": {"type": "string", "description": "Shipping carrier name"},
                 "tracking_number": {"type": "string", "description": "Shipment tracking number"},
                 "tracking_url": {"type": "string", "description": "Full tracking URL"},
-                "send_notification": {"type": "boolean", "description": "Send shipping notification to customer", "default": True},
+                "send_notification": {
+                    "type": "boolean",
+                    "description": "Send shipping notification to customer",
+                    "default": True,
+                },
             },
             "required": ["order_id", "carrier", "tracking_number"],
         },

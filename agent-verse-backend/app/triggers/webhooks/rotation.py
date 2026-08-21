@@ -1,4 +1,5 @@
 """Webhook secret rotation — supports manual and scheduled rotation."""
+
 from __future__ import annotations
 
 import logging

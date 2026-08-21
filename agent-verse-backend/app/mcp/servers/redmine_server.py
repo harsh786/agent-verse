@@ -4,6 +4,7 @@ Environment:
   REDMINE_API_KEY: Redmine API access key
   REDMINE_URL:     Base URL of Redmine instance (e.g. https://redmine.example.com)
 """
+
 from __future__ import annotations
 
 import os
@@ -87,7 +88,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "integer", "description": "0=anonymous, 1=active, 2=registered, 3=locked", "default": 1},
+                "status": {
+                    "type": "integer",
+                    "description": "0=anonymous, 1=active, 2=registered, 3=locked",
+                    "default": 1,
+                },
                 "limit": {"type": "integer", "default": 25},
             },
         },
@@ -141,7 +146,14 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "project_id": arguments["project_id"],
                     "subject": arguments["subject"],
                 }
-                for field in ("description", "tracker_id", "status_id", "priority_id", "assigned_to_id", "due_date"):
+                for field in (
+                    "description",
+                    "tracker_id",
+                    "status_id",
+                    "priority_id",
+                    "assigned_to_id",
+                    "due_date",
+                ):
                     if v := arguments.get(field):
                         issue[field] = v
                 r = await c.post(f"{base_url}/issues.json", json={"issue": issue})
@@ -151,7 +163,14 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "redmine_update_issue":
                 iid = arguments["issue_id"]
                 issue = {}
-                for field in ("subject", "description", "status_id", "priority_id", "assigned_to_id", "notes"):
+                for field in (
+                    "subject",
+                    "description",
+                    "status_id",
+                    "priority_id",
+                    "assigned_to_id",
+                    "notes",
+                ):
                     if v := arguments.get(field):
                         issue[field] = v
                 r = await c.put(f"{base_url}/issues/{iid}.json", json={"issue": issue})

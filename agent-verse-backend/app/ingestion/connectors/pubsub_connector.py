@@ -3,6 +3,7 @@
 Streaming: pull subscription, acknowledges messages after indexing.
 Cursor: subscription name (stateless — GCP manages offset).
 """
+
 from __future__ import annotations
 
 import json
@@ -29,9 +30,11 @@ class PubSubConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             from google.cloud import pubsub_v1  # type: ignore[import-not-found]
+
             cc = config.connection_config
             project = cc.get("project", "")
             sub_name = cc.get("subscription", "")
@@ -39,7 +42,9 @@ class PubSubConnector(BaseConnector):
             full_sub = f"projects/{project}/subscriptions/{sub_name}"
             subscriber.get_subscription(subscription=full_sub)
             latency = (time.perf_counter() - t0) * 1000
-            return ConnectionHealth(ok=True, latency_ms=latency, metadata={"project": project, "subscription": sub_name})
+            return ConnectionHealth(
+                ok=True, latency_ms=latency, metadata={"project": project, "subscription": sub_name}
+            )
         except ImportError:
             return ConnectionHealth(ok=False, error="google-cloud-pubsub not installed")
         except Exception as exc:
@@ -49,12 +54,15 @@ class PubSubConnector(BaseConnector):
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
+
         try:
             from google.cloud import pubsub_v1  # type: ignore[import-not-found]
         except ImportError:
-            _log.error("google-cloud-pubsub not installed"); return
+            _log.error("google-cloud-pubsub not installed")
+            return
 
         import asyncio
+
         cc = config.connection_config
         project = cc.get("project", "")
         sub_name = cc.get("subscription", "")
@@ -83,13 +91,22 @@ class PubSubConnector(BaseConnector):
             try:
                 text = json.dumps(json.loads(data))
             except Exception:
-                text = data.decode("utf-8", errors="replace") if isinstance(data, bytes) else str(data)
+                text = (
+                    data.decode("utf-8", errors="replace") if isinstance(data, bytes) else str(data)
+                )
 
             doc = RawDocument(
                 doc_id=str(uuid.uuid4()),
-                source_id=config.source_id, tenant_id=config.tenant_id,
+                source_id=config.source_id,
+                tenant_id=config.tenant_id,
                 source_url=f"pubsub://{project}/{sub_name}/{msg_id}",
-                content=text.encode(), content_type="application/json" if text.startswith("{") else "text/plain",
-                metadata={"project": project, "subscription": sub_name, "message_id": msg_id, **attrs},
+                content=text.encode(),
+                content_type="application/json" if text.startswith("{") else "text/plain",
+                metadata={
+                    "project": project,
+                    "subscription": sub_name,
+                    "message_id": msg_id,
+                    **attrs,
+                },
             )
             yield doc, new_cursor

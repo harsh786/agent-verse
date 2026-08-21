@@ -1,4 +1,5 @@
 """OCR field validators: format checking, checksum validation, date normalization."""
+
 from __future__ import annotations
 
 import re
@@ -62,9 +63,7 @@ def mask_aadhaar(value: str) -> str:
 
 # ── GSTIN Validation ──────────────────────────────────────────────────────────
 
-_GSTIN_PATTERN = re.compile(
-    r"^\d{2}[A-Z]{5}\d{4}[A-Z][A-Z\d]Z[A-Z\d]$"
-)
+_GSTIN_PATTERN = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z][A-Z\d]Z[A-Z\d]$")
 
 _GSTIN_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 

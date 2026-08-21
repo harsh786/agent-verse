@@ -1,4 +1,5 @@
 """Native tool execution endpoints."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -25,9 +26,7 @@ class ExecuteCodeResponse(BaseModel):
 
 
 @router.post("/execute-code", response_model=ExecuteCodeResponse)
-async def execute_code(
-    request: Request, body: ExecuteCodeRequest
-) -> ExecuteCodeResponse:
+async def execute_code(request: Request, body: ExecuteCodeRequest) -> ExecuteCodeResponse:
     """Execute code in a sandboxed Docker container.
 
     Supported languages: python, javascript, bash.
@@ -60,6 +59,7 @@ async def execute_code(
 
 
 # ── File Operations ───────────────────────────────────────────────────────────
+
 
 class FileWriteRequest(BaseModel):
     content: str = ""
@@ -96,9 +96,7 @@ async def read_file(request: Request, path: str) -> dict[str, Any]:
 
 
 @router.post("/files/{path:path}", status_code=201)
-async def write_file(
-    request: Request, path: str, body: FileWriteRequest
-) -> dict[str, Any]:
+async def write_file(request: Request, path: str, body: FileWriteRequest) -> dict[str, Any]:
     """Write a file to the tenant's workspace."""
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
@@ -128,6 +126,7 @@ async def delete_file(request: Request, path: str) -> None:
 
 
 # ── Email ─────────────────────────────────────────────────────────────────────
+
 
 class SendEmailRequest(BaseModel):
     to: str | list[str]

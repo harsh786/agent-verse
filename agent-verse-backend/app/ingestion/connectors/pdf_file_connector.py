@@ -1,4 +1,5 @@
 """PDF/DOCX file connectors — wrap existing parsers in BaseConnector."""
+
 from __future__ import annotations
 
 import logging
@@ -36,6 +37,7 @@ class PDFFileConnector(BaseConnector):
         for url in urls:
             try:
                 import httpx
+
                 async with httpx.AsyncClient(timeout=60) as c:
                     r = await c.get(url)
                     r.raise_for_status()
@@ -72,6 +74,7 @@ class DOCXFileConnector(BaseConnector):
         for url in urls:
             try:
                 import httpx
+
                 async with httpx.AsyncClient(timeout=60) as c:
                     r = await c.get(url)
                     r.raise_for_status()

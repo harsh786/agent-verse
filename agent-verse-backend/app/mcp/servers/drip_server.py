@@ -3,6 +3,7 @@
 Environment:
   DRIP_API_TOKEN: Drip API token from Settings > User Info > API Token
 """
+
 from __future__ import annotations
 
 import os
@@ -32,8 +33,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "account_id": {"type": "string", "description": "Drip account ID"},
-                "status": {"type": "string", "description": "Filter by status: active, unsubscribed, do_not_contact, removed"},
-                "per_page": {"type": "integer", "description": "Results per page (max 1000)", "default": 100},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: active, unsubscribed, do_not_contact, removed",
+                },
+                "per_page": {
+                    "type": "integer",
+                    "description": "Results per page (max 1000)",
+                    "default": 100,
+                },
             },
             "required": ["account_id"],
         },
@@ -86,7 +94,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "account_id": {"type": "string", "description": "Drip account ID"},
-                "status": {"type": "string", "description": "Filter by status: draft, active, paused"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: draft, active, paused",
+                },
             },
             "required": ["account_id"],
         },

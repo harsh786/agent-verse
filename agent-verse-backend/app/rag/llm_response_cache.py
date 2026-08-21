@@ -24,6 +24,7 @@ Savings (typical):
     - Planner call cost: ~$0.01-0.03 saved per cache hit
     - Latency: 500ms-3s -> <5ms on cache hit
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -70,9 +71,9 @@ class LLMResponseCache:
     def __init__(
         self,
         redis: Any = None,
-        planning_ttl: int = 1800,   # 30 minutes
-        verify_ttl: int = 3600,     # 1 hour
-        max_local: int = 512,       # max per-tenant L1 entries
+        planning_ttl: int = 1800,  # 30 minutes
+        verify_ttl: int = 3600,  # 1 hour
+        max_local: int = 512,  # max per-tenant L1 entries
     ) -> None:
         self._redis = redis
         self._planning_ttl = planning_ttl
@@ -114,9 +115,11 @@ class LLMResponseCache:
                     data = json.loads(zlib.decompress(raw))
                     content = cast(str, data["content"])
                     # Promote to L1
-                    self._l1_put(tenant_id, key, LLMCacheEntry(
-                        content=content, model=model, cached_at=time.monotonic()
-                    ))
+                    self._l1_put(
+                        tenant_id,
+                        key,
+                        LLMCacheEntry(content=content, model=model, cached_at=time.monotonic()),
+                    )
                     self._inc(tenant_id, "l2_hits")
                     self._inc(tenant_id, "hits")
                     logger.debug("llm_cache_l2_hit", tenant=tenant_id, task=task_type)
@@ -147,11 +150,15 @@ class LLMResponseCache:
         if self._redis is not None:
             ttl = self._planning_ttl if task_type == "planning" else self._verify_ttl
             try:
-                data = zlib.compress(json.dumps({
-                    "content": response,
-                    "model": model,
-                    "ts": int(time.time()),
-                }).encode())
+                data = zlib.compress(
+                    json.dumps(
+                        {
+                            "content": response,
+                            "model": model,
+                            "ts": int(time.time()),
+                        }
+                    ).encode()
+                )
                 await self._redis.set(f"{_PREFIX}{tenant_id}:{key}", data, ex=ttl)
             except Exception as exc:
                 logger.debug("llm_cache_set_error", error=str(exc)[:80])
@@ -184,9 +191,9 @@ class LLMResponseCache:
 
     @staticmethod
     def _make_key(system: str, user: str, model: str) -> str:
-        h = hashlib.sha256(
-            (model + "\x00" + system + "\x00" + user).encode("utf-8")
-        ).hexdigest()[:32]
+        h = hashlib.sha256((model + "\x00" + system + "\x00" + user).encode("utf-8")).hexdigest()[
+            :32
+        ]
         return h
 
     def _l1_put(self, tenant_id: str, key: str, entry: LLMCacheEntry) -> None:

@@ -6,6 +6,7 @@ Modes:
   * scenario:     Run against a predefined input fixture and assert outputs.
   * replay:       Re-run from a specific failed step using checkpointed state.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -69,7 +70,8 @@ class MockToolAdapter:
             },
             "http": {"status_code": 200, "body": {"mocked": True}},
             "hitl": {
-                "action": "approved", "reviewer": "test-user",
+                "action": "approved",
+                "reviewer": "test-user",
                 "note": "auto-approved in test",
             },
             "parallel": {},
@@ -125,9 +127,7 @@ class WorkflowTestRunner:
         # Check expected status
         failures: list[str] = []
         if result.status != scenario.expected_status:
-            failures.append(
-                f"Expected status {scenario.expected_status!r}, got {result.status!r}"
-            )
+            failures.append(f"Expected status {scenario.expected_status!r}, got {result.status!r}")
 
         # Check expected outputs
         for key, expected in scenario.expected_outputs.items():
@@ -186,12 +186,14 @@ class WorkflowTestRunner:
         for step in definition.steps:
             mock_out = adapter.mock_output(step.id, step.type)
             state["step_outputs"][step.id] = mock_out  # type: ignore[index]
-            steps_log.append({
-                "step_id": step.id,
-                "step_type": step.type,
-                "output": mock_out,
-                "status": "completed",
-            })
+            steps_log.append(
+                {
+                    "step_id": step.id,
+                    "step_type": step.type,
+                    "output": mock_out,
+                    "status": "completed",
+                }
+            )
 
         return steps_log
 

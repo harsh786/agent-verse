@@ -1,4 +1,5 @@
 """Base ChannelAdapter — abstract interface for all channel adapters."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -13,13 +14,17 @@ class ChannelAdapter(ABC):
     channel_name: str = "base"
 
     @abstractmethod
-    async def normalize(self, raw_payload: dict[str, Any], tenant_id: str, org_id: str) -> OrgCommand:
+    async def normalize(
+        self, raw_payload: dict[str, Any], tenant_id: str, org_id: str
+    ) -> OrgCommand:
         """Convert channel-specific payload to a normalized OrgCommand."""
 
     @abstractmethod
     def format_response(self, response: OrgResponse) -> Any:
         """Convert OrgResponse to channel-specific format."""
 
-    async def verify_auth(self, request_headers: dict[str, str], raw_payload: dict[str, Any]) -> bool:
+    async def verify_auth(
+        self, request_headers: dict[str, str], raw_payload: dict[str, Any]
+    ) -> bool:
         """Verify channel-specific authentication. Override per channel."""
         return True

@@ -4,6 +4,7 @@ Tokenizer — tiktoken-backed token counter with byte-length fallback.
 Provides accurate token counts for prompt compression decisions.
 Never breaks the pipeline on import failures (tiktoken is optional).
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -25,6 +26,7 @@ class Tokenizer:
         self._fallback = False
         try:
             import tiktoken
+
             self._enc = tiktoken.get_encoding(model)
             logger.debug("tokenizer_tiktoken_loaded", model=model)
         except Exception as e:

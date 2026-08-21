@@ -4,6 +4,7 @@ Environment variables:
   BITBUCKET_USERNAME:     Bitbucket account username
   BITBUCKET_APP_PASSWORD: App password (not your login password)
 """
+
 from __future__ import annotations
 
 import base64
@@ -140,14 +141,19 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
 
 
 async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    async with httpx.AsyncClient(base_url=_API_BASE, headers=_auth_header(), timeout=30.0) as client:
+    async with httpx.AsyncClient(
+        base_url=_API_BASE, headers=_auth_header(), timeout=30.0
+    ) as client:
         if tool_name == "bitbucket_list_repos":
             workspace = arguments["workspace"]
             params: dict[str, Any] = {

@@ -3,10 +3,13 @@
 Provides step-by-step reconstruction of a completed goal's execution
 timeline from persisted goal_events in the database.
 """
+
 from __future__ import annotations
 
 from typing import Any
-from fastapi import APIRouter, HTTPException, Request, Query
+
+from fastapi import APIRouter, HTTPException, Query, Request
+
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -38,67 +41,85 @@ async def replay_goal(
 
     try:
         from sqlalchemy import text
+
         async with db() as session:
             # Verify goal exists and belongs to tenant
-            goal_row = (await session.execute(
-                text("SELECT id, goal_text, status, created_at, completed_at FROM goals WHERE id=:gid AND tenant_id=:tid"),
-                {"gid": goal_id, "tid": tenant_ctx.tenant_id}
-            )).fetchone()
+            goal_row = (
+                await session.execute(
+                    text(
+                        "SELECT id, goal_text, status, created_at, completed_at FROM goals WHERE id=:gid AND tenant_id=:tid"
+                    ),
+                    {"gid": goal_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchone()
 
             if goal_row is None:
                 raise HTTPException(404, f"Goal {goal_id} not found")
 
             # Load all goal events in chronological order
-            events = (await session.execute(
-                text("""
+            events = (
+                await session.execute(
+                    text("""
                     SELECT sequence, event_type, payload, created_at
                     FROM goal_events
                     WHERE goal_id=:gid AND tenant_id=:tid
                     ORDER BY sequence ASC
                 """),
-                {"gid": goal_id, "tid": tenant_ctx.tenant_id}
-            )).fetchall()
+                    {"gid": goal_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchall()
 
             # Load goal steps
-            steps = (await session.execute(
-                text("""
+            steps = (
+                await session.execute(
+                    text("""
                     SELECT step_index, description, status, output, error, tool_calls, created_at
                     FROM goal_steps
                     WHERE goal_id=:gid AND tenant_id=:tid
                     ORDER BY step_index ASC
                 """),
-                {"gid": goal_id, "tid": tenant_ctx.tenant_id}
-            )).fetchall()
+                    {"gid": goal_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchall()
 
             # Load decision traces
-            traces = (await session.execute(
-                text("""
+            traces = (
+                await session.execute(
+                    text("""
                     SELECT action, reasoning, confidence, evidence, created_at
                     FROM decision_traces
                     WHERE goal_id=:gid AND tenant_id=:tid
                     ORDER BY created_at ASC
                 """),
-                {"gid": goal_id, "tid": tenant_ctx.tenant_id}
-            )).fetchall()
+                    {"gid": goal_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchall()
 
             # Load eval results
-            evals = (await session.execute(
-                text("SELECT scores, average_score, created_at FROM evaluations WHERE goal_id=:gid AND tenant_id=:tid"),
-                {"gid": goal_id, "tid": tenant_ctx.tenant_id}
-            )).fetchall()
+            evals = (
+                await session.execute(
+                    text(
+                        "SELECT scores, average_score, created_at FROM evaluations WHERE goal_id=:gid AND tenant_id=:tid"
+                    ),
+                    {"gid": goal_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchall()
 
         # Build timeline
         timeline = []
 
         # Add plan creation event
-        timeline.append({
-            "type": "goal_created",
-            "ts": goal_row[3].isoformat() if goal_row[3] else "",
-            "data": {"goal_text": goal_row[1], "status": goal_row[2]},
-        })
+        timeline.append(
+            {
+                "type": "goal_created",
+                "ts": goal_row[3].isoformat() if goal_row[3] else "",
+                "data": {"goal_text": goal_row[1], "status": goal_row[2]},
+            }
+        )
 
         # Add goal events
         import json as _json
+
         for seq, etype, payload, created_at in events:
             event_data = payload if isinstance(payload, dict) else _json.loads(payload or "{}")
 
@@ -110,12 +131,14 @@ async def replay_goal(
                 event_data.pop("tool_calls", None)
                 event_data.pop("tool_result", None)
 
-            timeline.append({
-                "type": etype,
-                "sequence": seq,
-                "ts": created_at.isoformat() if created_at else "",
-                "data": event_data,
-            })
+            timeline.append(
+                {
+                    "type": etype,
+                    "sequence": seq,
+                    "ts": created_at.isoformat() if created_at else "",
+                    "data": event_data,
+                }
+            )
 
         # Add step summaries
         step_summaries = []
@@ -149,11 +172,13 @@ async def replay_goal(
         # Add eval results
         eval_summaries = []
         for scores, avg_score, created_at in evals:
-            eval_summaries.append({
-                "scores": scores if isinstance(scores, dict) else _json.loads(scores or "{}"),
-                "average_score": float(avg_score or 0),
-                "ts": created_at.isoformat() if created_at else "",
-            })
+            eval_summaries.append(
+                {
+                    "scores": scores if isinstance(scores, dict) else _json.loads(scores or "{}"),
+                    "average_score": float(avg_score or 0),
+                    "ts": created_at.isoformat() if created_at else "",
+                }
+            )
 
         return {
             "goal_id": goal_id,
@@ -191,6 +216,7 @@ def _require_tenant(request: Request) -> Any:
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
         from fastapi import HTTPException, status
+
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
     return ctx
 
@@ -200,6 +226,7 @@ def _get_db(request: Request) -> Any:
     if db is None:
         try:
             from app.db.session import get_session_factory
+
             db = get_session_factory()
         except Exception:
             pass

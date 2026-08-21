@@ -12,6 +12,7 @@ from app.rag.contracts import RAGStrategy, resolve_rag_strategy
 # Legacy static workflow types (used by build_static_workflow / goal_service)
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class _StaticWorkflowStep:
     step_id: str
@@ -65,6 +66,7 @@ def build_static_workflow(goal: str) -> StructuredPlan:
 # New DAG-capable workflow types (used by WorkflowPlanner / WorkflowExecutor)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class WorkflowStep:
     id: str
@@ -73,7 +75,7 @@ class WorkflowStep:
     depends_on: list[str] = field(default_factory=list)
     can_parallel: bool = True
     estimated_minutes: int = 1
-    status: str = "pending"   # pending|running|complete|failed
+    status: str = "pending"  # pending|running|complete|failed
     result: str = ""
     error: str = ""
     config: dict[str, Any] = field(default_factory=dict)
@@ -90,9 +92,7 @@ class WorkflowPlan:
         for i, raw_step in enumerate(data.get("steps", [])):
             step = dict(raw_step)
             if step.get("tool") == "rag":
-                requested_strategy_id = str(
-                    step.get("strategy", RAGStrategy.HYBRID.value)
-                )
+                requested_strategy_id = str(step.get("strategy", RAGStrategy.HYBRID.value))
                 step["requested_strategy_id"] = requested_strategy_id
                 step["strategy"] = resolve_rag_strategy(requested_strategy_id).value
             steps.append(
@@ -135,6 +135,7 @@ class WorkflowPlan:
 # ---------------------------------------------------------------------------
 # LLM-based WorkflowPlanner
 # ---------------------------------------------------------------------------
+
 
 class WorkflowPlanner:
     """LLM-based workflow DAG planner.
@@ -199,13 +200,15 @@ Return ONLY the JSON, no other text."""
             from app.providers.base import CompletionRequest, Message
 
             model = getattr(self._provider, "_default_model", "")
-            resp = await self._provider.complete(CompletionRequest(
-                messages=[Message(role="user", content=prompt)],
-                model=model,
-                max_tokens=1500,
-            ))
+            resp = await self._provider.complete(
+                CompletionRequest(
+                    messages=[Message(role="user", content=prompt)],
+                    model=model,
+                    max_tokens=1500,
+                )
+            )
             text = resp.content.strip()
-            json_match = re.search(r'\{.*\}', text, re.DOTALL)
+            json_match = re.search(r"\{.*\}", text, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
                 legacy_plan = WorkflowPlan.from_dict(data, goal=goal)
@@ -225,6 +228,7 @@ Return ONLY the JSON, no other text."""
                 ).validate()
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("workflow_planner_llm_failed: %s", exc)
 
         return self._heuristic_plan(goal)
@@ -232,12 +236,14 @@ Return ONLY the JSON, no other text."""
     def _heuristic_plan(self, goal: str) -> StructuredPlan:
         """Fallback heuristic plan when LLM unavailable."""
         return StructuredPlan(
-            steps=[StructuredStep(
-                id="s1",
-                description=goal,
-                tool=None,
-                depends_on=[],
-                can_parallel=False,
-                estimated_minutes=5,
-            )]
+            steps=[
+                StructuredStep(
+                    id="s1",
+                    description=goal,
+                    tool=None,
+                    depends_on=[],
+                    can_parallel=False,
+                    estimated_minutes=5,
+                )
+            ]
         ).validate()

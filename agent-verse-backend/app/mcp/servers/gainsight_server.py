@@ -3,6 +3,7 @@
 Environment variables:
   GAINSIGHT_ACCESS_KEY: Gainsight API access key
 """
+
 from __future__ import annotations
 
 import os
@@ -76,7 +77,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "account_id": {"type": "string", "description": "Account GSID to associate the CTA with"},
+                "account_id": {
+                    "type": "string",
+                    "description": "Account GSID to associate the CTA with",
+                },
                 "name": {"type": "string", "description": "CTA name/title"},
                 "reason": {"type": "string", "description": "Reason for creating the CTA"},
                 "type": {
@@ -102,7 +106,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "account_id": {"type": "string", "description": "Account GSID"},
-                "scorecard_id": {"type": "string", "description": "Specific scorecard ID (optional)"},
+                "scorecard_id": {
+                    "type": "string",
+                    "description": "Specific scorecard ID (optional)",
+                },
             },
             "required": ["account_id"],
         },

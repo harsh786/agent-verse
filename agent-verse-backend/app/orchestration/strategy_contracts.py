@@ -18,9 +18,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
-SEMANTIC_PRERELEASE_IDENTIFIER = (
-    r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
-)
+SEMANTIC_PRERELEASE_IDENTIFIER = r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
 SEMANTIC_VERSION_PATTERN = (
     r"^(0|[1-9][0-9]*)\."
     r"(0|[1-9][0-9]*)\."
@@ -85,10 +83,7 @@ def _normalize_counter_mapping(value: object) -> object:
         return value
     if not all(isinstance(key, str) for key in value):
         raise ValueError("trace counter keys must be strings")
-    return tuple(
-        {"key": key, "value": item}
-        for key, item in sorted(value.items())
-    )
+    return tuple({"key": key, "value": item} for key, item in sorted(value.items()))
 
 
 NonEmptyString = Annotated[str, Field(min_length=1)]

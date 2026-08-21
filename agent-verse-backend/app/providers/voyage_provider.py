@@ -87,9 +87,7 @@ class VoyageProvider:
             return []
         embeddings: list[list[float]] = []
         for index in range(0, len(texts), 96):
-            embeddings.extend(
-                await self._embed_texts(texts[index : index + 96], "document")
-            )
+            embeddings.extend(await self._embed_texts(texts[index : index + 96], "document"))
         return embeddings
 
     async def aclose(self) -> None:
@@ -109,9 +107,7 @@ class LocalEmbedProvider:
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:
-            raise ImportError(
-                "Install 'sentence-transformers' to use LocalEmbedProvider"
-            ) from exc
+            raise ImportError("Install 'sentence-transformers' to use LocalEmbedProvider") from exc
         self._model = SentenceTransformer(model_name)
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
@@ -123,9 +119,7 @@ class LocalEmbedProvider:
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         import asyncio
 
-        embeddings = await asyncio.to_thread(
-            lambda: self._model.encode(request.texts).tolist()
-        )
+        embeddings = await asyncio.to_thread(lambda: self._model.encode(request.texts).tolist())
         return EmbedResponse(embeddings=embeddings)
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:

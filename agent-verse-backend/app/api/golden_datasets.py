@@ -1,4 +1,5 @@
 """Golden Dataset management API."""
+
 from __future__ import annotations
 
 import uuid
@@ -46,9 +47,7 @@ async def create_golden_dataset(body: DatasetCreateRequest, request: Request) ->
 
 
 @router.post("/{dataset_id}/items")
-async def add_golden_item(
-    dataset_id: str, body: DatasetItemRequest, request: Request
-) -> dict:
+async def add_golden_item(dataset_id: str, body: DatasetItemRequest, request: Request) -> dict:
     """Add a goal result to a golden dataset (promote to golden)."""
     tenant_ctx = getattr(request.state, "tenant", None)
     if tenant_ctx is None:

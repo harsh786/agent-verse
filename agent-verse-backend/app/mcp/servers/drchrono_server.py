@@ -3,6 +3,7 @@
 Environment:
   DRCHRONO_ACCESS_TOKEN: DrChrono OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -52,7 +53,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "patient": {"type": "integer", "description": "Filter by patient ID"},
                 "doctor": {"type": "integer", "description": "Filter by doctor ID"},
-                "date_range": {"type": "string", "description": "Date range in format YYYY-MM-DD/YYYY-MM-DD"},
+                "date_range": {
+                    "type": "string",
+                    "description": "Date range in format YYYY-MM-DD/YYYY-MM-DD",
+                },
                 "page": {"type": "integer", "description": "Page number"},
             },
         },
@@ -66,7 +70,10 @@ TOOL_DEFINITIONS = [
                 "patient": {"type": "integer", "description": "Patient ID"},
                 "doctor": {"type": "integer", "description": "Doctor ID"},
                 "office": {"type": "integer", "description": "Office/location ID"},
-                "scheduled_time": {"type": "string", "description": "Appointment time in ISO 8601 format"},
+                "scheduled_time": {
+                    "type": "string",
+                    "description": "Appointment time in ISO 8601 format",
+                },
                 "duration": {"type": "integer", "description": "Duration in minutes"},
                 "exam_room": {"type": "integer", "description": "Exam room number"},
             },
@@ -148,7 +155,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "drchrono_list_clinical_notes":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/clinical_note_templates", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/clinical_note_templates", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

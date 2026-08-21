@@ -3,6 +3,7 @@
 Environment:
   CAMPAIGN_MONITOR_API_KEY: Campaign Monitor API key from Account Settings
 """
+
 from __future__ import annotations
 
 import os
@@ -30,7 +31,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "list_id": {"type": "string", "description": "Campaign Monitor list ID"},
                 "page": {"type": "integer", "description": "Page number (1-based)", "default": 1},
-                "page_size": {"type": "integer", "description": "Subscribers per page (max 1000)", "default": 100},
+                "page_size": {
+                    "type": "integer",
+                    "description": "Subscribers per page (max 1000)",
+                    "default": 100,
+                },
             },
             "required": ["list_id"],
         },
@@ -44,7 +49,11 @@ TOOL_DEFINITIONS = [
                 "list_id": {"type": "string", "description": "Campaign Monitor list ID"},
                 "email": {"type": "string", "description": "Subscriber email address"},
                 "name": {"type": "string", "description": "Subscriber full name"},
-                "resubscribe": {"type": "boolean", "description": "Resubscribe if previously unsubscribed", "default": True},
+                "resubscribe": {
+                    "type": "boolean",
+                    "description": "Resubscribe if previously unsubscribed",
+                    "default": True,
+                },
             },
             "required": ["list_id", "email"],
         },
@@ -62,9 +71,22 @@ TOOL_DEFINITIONS = [
                 "from_email": {"type": "string", "description": "Sender email address"},
                 "reply_to": {"type": "string", "description": "Reply-to email address"},
                 "html_url": {"type": "string", "description": "URL of HTML email content"},
-                "list_ids": {"type": "array", "items": {"type": "string"}, "description": "List IDs to send to"},
+                "list_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List IDs to send to",
+                },
             },
-            "required": ["client_id", "name", "subject", "from_name", "from_email", "reply_to", "html_url", "list_ids"],
+            "required": [
+                "client_id",
+                "name",
+                "subject",
+                "from_name",
+                "from_email",
+                "reply_to",
+                "html_url",
+                "list_ids",
+            ],
         },
     },
     {
@@ -74,8 +96,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "campaign_id": {"type": "string", "description": "Campaign Monitor campaign ID"},
-                "confirmation_email": {"type": "string", "description": "Email to receive send confirmation"},
-                "send_date": {"type": "string", "description": "ISO 8601 scheduled date (use 'Immediately' for instant send)", "default": "Immediately"},
+                "confirmation_email": {
+                    "type": "string",
+                    "description": "Email to receive send confirmation",
+                },
+                "send_date": {
+                    "type": "string",
+                    "description": "ISO 8601 scheduled date (use 'Immediately' for instant send)",
+                    "default": "Immediately",
+                },
             },
             "required": ["campaign_id", "confirmation_email"],
         },
@@ -124,7 +153,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "subscribers": [
-                        {"email": s.get("EmailAddress"), "name": s.get("Name"), "date": s.get("Date")}
+                        {
+                            "email": s.get("EmailAddress"),
+                            "name": s.get("Name"),
+                            "date": s.get("Date"),
+                        }
                         for s in data.get("Results", [])
                     ],
                     "total_count": data.get("TotalNumberOfRecords", 0),

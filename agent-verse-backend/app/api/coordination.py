@@ -83,9 +83,7 @@ async def create_coordination_session(
 ) -> Any:
     del idempotency_key
     result = await create_session(request, body)
-    response.headers["Location"] = (
-        f"/api/v1/coordination/sessions/{result['session_id']}"
-    )
+    response.headers["Location"] = f"/api/v1/coordination/sessions/{result['session_id']}"
     return result
 
 

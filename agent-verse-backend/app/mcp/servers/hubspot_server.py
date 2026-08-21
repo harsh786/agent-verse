@@ -3,6 +3,7 @@
 Environment variables:
   HUBSPOT_API_KEY: Private App Token (Bearer)
 """
+
 from __future__ import annotations
 
 import os
@@ -195,9 +196,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "HUBSPOT_API_KEY not configured"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=HUBSPOT_BASE, headers=_headers(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=HUBSPOT_BASE, headers=_headers(), timeout=30.0) as c:
             if tool_name == "hubspot_list_contacts":
                 params: dict[str, Any] = {"limit": arguments.get("limit", 20)}
                 if props := arguments.get("properties"):
@@ -308,7 +307,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 if q := arguments.get("query"):
                     search_body["query"] = q
                 if filters := arguments.get("filters"):
-                    search_body["filterGroups"] = [{"filters": f} if isinstance(f, list) else f for f in filters]
+                    search_body["filterGroups"] = [
+                        {"filters": f} if isinstance(f, list) else f for f in filters
+                    ]
                 r = await c.post(f"/crm/v3/objects/{obj}/search", json=search_body)
                 r.raise_for_status()
                 return r.json()

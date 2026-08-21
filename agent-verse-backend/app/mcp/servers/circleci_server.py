@@ -4,6 +4,7 @@ Environment variables:
   CIRCLECI_TOKEN: CircleCI personal API token
   CIRCLECI_ORG_SLUG: Default org slug, e.g. 'gh/myorg' (used when project_slug omits org)
 """
+
 from __future__ import annotations
 
 import os
@@ -182,9 +183,7 @@ async def call_tool(
                     params["branch"] = arguments["branch"]
                 if arguments.get("page_token"):
                     params["page-token"] = arguments["page_token"]
-                resp = await client.get(
-                    f"/project/{project_slug}/pipeline", params=params
-                )
+                resp = await client.get(f"/project/{project_slug}/pipeline", params=params)
                 resp.raise_for_status()
                 data = resp.json()
                 return {
@@ -228,9 +227,7 @@ async def call_tool(
                     payload["tag"] = arguments["tag"]
                 if arguments.get("parameters"):
                     payload["parameters"] = arguments["parameters"]
-                resp = await client.post(
-                    f"/project/{project_slug}/pipeline", json=payload
-                )
+                resp = await client.post(f"/project/{project_slug}/pipeline", json=payload)
                 resp.raise_for_status()
                 data = resp.json()
                 return {
@@ -245,9 +242,7 @@ async def call_tool(
                 params = {}
                 if arguments.get("page_token"):
                     params["page-token"] = arguments["page_token"]
-                resp = await client.get(
-                    f"/pipeline/{pipeline_id}/workflow", params=params
-                )
+                resp = await client.get(f"/pipeline/{pipeline_id}/workflow", params=params)
                 resp.raise_for_status()
                 data = resp.json()
                 return {
@@ -333,9 +328,7 @@ async def call_tool(
             elif tool_name == "circleci_get_job_artifacts":
                 project_slug = arguments["project_slug"]
                 job_number = arguments["job_number"]
-                resp = await client.get(
-                    f"/project/{project_slug}/{job_number}/artifacts"
-                )
+                resp = await client.get(f"/project/{project_slug}/{job_number}/artifacts")
                 resp.raise_for_status()
                 data = resp.json()
                 return {

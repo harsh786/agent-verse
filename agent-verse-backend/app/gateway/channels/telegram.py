@@ -11,12 +11,11 @@ Handles:
 Setup: TELEGRAM_BOT_TOKEN env var must be set.
 Webhook URL: POST /v1/gateway/{org_id}/telegram/webhook
 """
+
 from __future__ import annotations
 
-import hashlib
 import hmac
 import os
-import time
 import uuid
 from typing import Any
 
@@ -25,7 +24,7 @@ import structlog
 from opentelemetry import trace
 
 from app.gateway.channels.base import ChannelAdapter
-from app.gateway.command import CommandFile, OrgCommand, OrgResponse, ResponseAction
+from app.gateway.command import CommandFile, OrgCommand, OrgResponse
 
 _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -43,7 +42,10 @@ class TelegramChannelAdapter(ChannelAdapter):
         self._api_base = f"{TELEGRAM_API_BASE}{self._token}"
 
     async def normalize(
-        self, raw_payload: dict[str, Any], tenant_id: str, org_id: str,
+        self,
+        raw_payload: dict[str, Any],
+        tenant_id: str,
+        org_id: str,
     ) -> OrgCommand:
         with _tracer.start_as_current_span("telegram.normalize") as span:
             update = raw_payload
@@ -64,19 +66,23 @@ class TelegramChannelAdapter(ChannelAdapter):
 
                 # Handle file attachments
                 if doc := message.get("document"):
-                    files.append(CommandFile(
-                        filename=doc.get("file_name", "file"),
-                        content_type=doc.get("mime_type", "application/octet-stream"),
-                        url=await self._get_file_url(doc.get("file_id", "")),
-                    ))
+                    files.append(
+                        CommandFile(
+                            filename=doc.get("file_name", "file"),
+                            content_type=doc.get("mime_type", "application/octet-stream"),
+                            url=await self._get_file_url(doc.get("file_id", "")),
+                        )
+                    )
                 elif photos := message.get("photo"):
                     # Largest photo
                     photo = max(photos, key=lambda p: p.get("file_size", 0))
-                    files.append(CommandFile(
-                        filename="photo.jpg",
-                        content_type="image/jpeg",
-                        url=await self._get_file_url(photo.get("file_id", "")),
-                    ))
+                    files.append(
+                        CommandFile(
+                            filename="photo.jpg",
+                            content_type="image/jpeg",
+                            url=await self._get_file_url(photo.get("file_id", "")),
+                        )
+                    )
 
                 span.set_attribute("chat_id", chat_id)
                 span.set_attribute("text_length", len(text))
@@ -128,10 +134,12 @@ class TelegramChannelAdapter(ChannelAdapter):
                 emoji = {"approve": "✅", "reject": "❌", "view": "📋", "ask": "❓"}.get(
                     action.action_type, "🔹"
                 )
-                row.append({
-                    "text": f"{emoji} {action.label}",
-                    "callback_data": action.action_id,
-                })
+                row.append(
+                    {
+                        "text": f"{emoji} {action.label}",
+                        "callback_data": action.action_id,
+                    }
+                )
             buttons.append(row)
 
         payload: dict[str, Any] = {
@@ -143,7 +151,9 @@ class TelegramChannelAdapter(ChannelAdapter):
         return payload
 
     async def send_message(
-        self, chat_id: str, response: OrgResponse,
+        self,
+        chat_id: str,
+        response: OrgResponse,
     ) -> dict[str, Any] | None:
         """Send formatted response to a Telegram chat."""
         if not self._token:
@@ -176,7 +186,9 @@ class TelegramChannelAdapter(ChannelAdapter):
         return None
 
     async def verify_auth(
-        self, request_headers: dict[str, str], raw_payload: dict[str, Any],
+        self,
+        request_headers: dict[str, str],
+        raw_payload: dict[str, Any],
     ) -> bool:
         """Verify Telegram webhook secret token header."""
         secret_token = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")

@@ -3,6 +3,7 @@
 Revision ID: 0020
 Revises: 0019
 """
+
 from __future__ import annotations
 
 import sqlalchemy as sa
@@ -48,9 +49,7 @@ def upgrade() -> None:
         ),
     )
     op.create_index("ix_tool_cap_tenant", "tool_capabilities", ["tenant_id"])
-    op.create_index(
-        "ix_tool_cap_connector", "tool_capabilities", ["connector_id"]
-    )
+    op.create_index("ix_tool_cap_connector", "tool_capabilities", ["connector_id"])
 
 
 def downgrade() -> None:

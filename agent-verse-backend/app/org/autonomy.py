@@ -19,13 +19,12 @@ Hard limits at ALL autonomy levels (never auto):
   - Press releases / public communications
   - Mass PII bulk operations
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any
 
-import structlog
 from fastapi import HTTPException, status
 from opentelemetry import trace
 
@@ -36,31 +35,34 @@ _tracer = trace.get_tracer(__name__)
 
 
 class AutonomyLevel(IntEnum):
-    L0_OBSERVE          = 0
-    L1_RECOMMEND        = 1
-    L2_SUPERVISED       = 2
-    L3_STANDARD         = 3
-    L4_AUTONOMOUS       = 4
-    L5_MISSION          = 5
+    L0_OBSERVE = 0
+    L1_RECOMMEND = 1
+    L2_SUPERVISED = 2
+    L3_STANDARD = 3
+    L4_AUTONOMOUS = 4
+    L5_MISSION = 5
 
 
 # ── Hard limits — NEVER auto-execute at any autonomy level ────────────────────
 
-HARD_LIMITS: frozenset[str] = frozenset({
-    "production_infra_destruction",
-    "mass_customer_data_deletion",
-    "external_financial_transfer_gt_10k",
-    "binding_legal_agreements",
-    "press_releases",
-    "public_communications",
-    "mass_pii_bulk_operations",
-    "database_schema_modification",
-})
+HARD_LIMITS: frozenset[str] = frozenset(
+    {
+        "production_infra_destruction",
+        "mass_customer_data_deletion",
+        "external_financial_transfer_gt_10k",
+        "binding_legal_agreements",
+        "press_releases",
+        "public_communications",
+        "mass_pii_bulk_operations",
+        "database_schema_modification",
+    }
+)
 
 
 @dataclass
 class AutonomyLevelConfig:
     """Detailed config for a single autonomy level."""
+
     level: AutonomyLevel
     label: str
     description: str
@@ -157,8 +159,8 @@ AUTONOMY_CONFIGS: dict[int, AutonomyLevelConfig] = {
         can_execute_write=True,
         can_send_external=True,
         can_deploy=True,
-        approval_required_for=[],   # hard limits always apply
-        blocked_actions=[           # hard limits
+        approval_required_for=[],  # hard limits always apply
+        blocked_actions=[  # hard limits
             "production_infra_destruction",
             "mass_customer_data_deletion",
             "external_financial_transfer_gt_10k",
@@ -180,7 +182,7 @@ class AutonomyEnforcer:
     """
 
     def __init__(self) -> None:
-        self._overrides: dict[str, int] = {}    # "org_id:dept_id:action" → level
+        self._overrides: dict[str, int] = {}  # "org_id:dept_id:action" → level
 
     def resolve_level(
         self,
@@ -225,7 +227,11 @@ class AutonomyEnforcer:
                     if raise_on_block:
                         raise HTTPException(
                             status_code=status.HTTP_403_FORBIDDEN,
-                            detail={"type": "autonomy-hard-limit", "title": "Action blocked", "detail": reason},
+                            detail={
+                                "type": "autonomy-hard-limit",
+                                "title": "Action blocked",
+                                "detail": reason,
+                            },
                         )
                     return False, reason
 
@@ -239,7 +245,11 @@ class AutonomyEnforcer:
                     if raise_on_block:
                         raise HTTPException(
                             status_code=status.HTTP_403_FORBIDDEN,
-                            detail={"type": "autonomy-blocked", "title": "Action blocked", "detail": reason},
+                            detail={
+                                "type": "autonomy-blocked",
+                                "title": "Action blocked",
+                                "detail": reason,
+                            },
                         )
                     return False, reason
 

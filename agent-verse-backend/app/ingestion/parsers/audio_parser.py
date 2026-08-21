@@ -1,4 +1,5 @@
 """AudioParser — transcribes audio using OpenAI Whisper API with timestamp chunking."""
+
 from __future__ import annotations
 
 import io
@@ -24,9 +25,17 @@ class AudioParseResult:
     def to_chunks(self, chunk_duration_seconds: float = 60.0) -> list[dict[str, Any]]:
         if not self.segments:
             return (
-                [{"content": self.transcript, "chunk_index": 0, "start_time": "00:00:00",
-                  "source_name": self.source_name, "content_type": "audio"}]
-                if self.transcript else []
+                [
+                    {
+                        "content": self.transcript,
+                        "chunk_index": 0,
+                        "start_time": "00:00:00",
+                        "source_name": self.source_name,
+                        "content_type": "audio",
+                    }
+                ]
+                if self.transcript
+                else []
             )
         chunks: list[dict[str, Any]] = []
         window_start = self.segments[0].start
@@ -34,28 +43,32 @@ class AudioParseResult:
         chunk_idx = 0
         for seg in self.segments:
             if seg.start - window_start >= chunk_duration_seconds and window_texts:
-                chunks.append({
-                    "content": " ".join(window_texts),
-                    "chunk_index": chunk_idx,
-                    "start_time": _fmt(window_start),
-                    "end_time": _fmt(seg.start),
-                    "source_name": self.source_name,
-                    "content_type": "audio",
-                })
+                chunks.append(
+                    {
+                        "content": " ".join(window_texts),
+                        "chunk_index": chunk_idx,
+                        "start_time": _fmt(window_start),
+                        "end_time": _fmt(seg.start),
+                        "source_name": self.source_name,
+                        "content_type": "audio",
+                    }
+                )
                 chunk_idx += 1
                 window_start = seg.start
                 window_texts = [seg.text]
             else:
                 window_texts.append(seg.text)
         if window_texts:
-            chunks.append({
-                "content": " ".join(window_texts),
-                "chunk_index": chunk_idx,
-                "start_time": _fmt(window_start),
-                "end_time": _fmt(self.segments[-1].end) if self.segments else "unknown",
-                "source_name": self.source_name,
-                "content_type": "audio",
-            })
+            chunks.append(
+                {
+                    "content": " ".join(window_texts),
+                    "chunk_index": chunk_idx,
+                    "start_time": _fmt(window_start),
+                    "end_time": _fmt(self.segments[-1].end) if self.segments else "unknown",
+                    "source_name": self.source_name,
+                    "content_type": "audio",
+                }
+            )
         return chunks
 
 
@@ -82,8 +95,7 @@ class AudioParser:
             transcription = await self._transcribe_with_whisper(audio_bytes, source_name, mime_type)
             raw_segments = getattr(transcription, "segments", None) or []
             segments = [
-                AudioSegment(start=seg.start, end=seg.end, text=seg.text)
-                for seg in raw_segments
+                AudioSegment(start=seg.start, end=seg.end, text=seg.text) for seg in raw_segments
             ]
             return AudioParseResult(
                 source_name=source_name,
@@ -98,6 +110,7 @@ class AudioParser:
         self, audio_bytes: bytes, filename: str, mime_type: str
     ) -> Any:
         import openai  # type: ignore[import]
+
         client = openai.AsyncOpenAI()
         audio_file = io.BytesIO(audio_bytes)
         audio_file.name = filename  # type: ignore[attr-defined]
@@ -111,6 +124,7 @@ class AudioParser:
     async def parse_file_path(self, file_path: str) -> AudioParseResult:
         try:
             import os
+
             with open(file_path, "rb") as f:
                 audio_bytes = f.read()
             source_name = os.path.basename(file_path)

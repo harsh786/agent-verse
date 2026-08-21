@@ -1,7 +1,9 @@
 """Guardrails 2.0 data models."""
+
 from __future__ import annotations
-from enum import Enum
+
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 
@@ -53,6 +55,7 @@ class ComplianceBundle(str, Enum):
 @dataclass
 class GuardrailRule:
     """A single guardrail rule."""
+
     rule_id: str
     tenant_id: str
     name: str
@@ -70,6 +73,7 @@ class GuardrailRule:
 @dataclass
 class GuardrailViolation:
     """A guardrail violation record."""
+
     violation_id: str
     tenant_id: str
     rule_id: str

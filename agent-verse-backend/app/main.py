@@ -41,78 +41,11 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.billing import router as billing_router
-from app.api.builder import router as builder_router
-from app.observability.cost_breakdown_api import router as cost_breakdown_api_router
-from app.api.a2a import router as a2a_router
-from app.chat.router import router as chat_router
-from app.chat.service import ChatService as _ChatService
-from app.api.agent_directory import router as agent_directory_router
-from app.api.solutions import router as solutions_router
-from app.api.admin import router as admin_router
 from app.api.agents import AgentStore
-from app.api.agents import router as agents_router
-from app.api.analytics import router as analytics_router
-from app.api.artifacts import router as artifacts_router
-from app.api.auth import router as auth_router
-from app.api.civilization import router as civilization_router
-from app.api.collab import router as collab_router
-from app.api.connectors import router as connectors_router
-from app.api.coordination import router as coordination_router
-from app.api.coordination_auction import router as coordination_auction_router
-from app.api.coordination_camel import router as coordination_camel_router
-from app.api.coordination_generative import router as coordination_generative_router
-from app.api.coordination_group_chat import router as coordination_group_chat_router
-from app.api.coordination_handoffs import router as coordination_handoffs_router
-from app.api.coordination_magentic import router as coordination_magentic_router
-from app.api.coordination_moa import router as coordination_moa_router
-from app.api.coordination_swarm import router as coordination_swarm_router
-from app.api.coordination_transcript import router as coordination_transcript_router
-from app.api.costs import router as costs_router
-from app.api.enterprise import (
-    compliance_router,
-    intelligence_router,
-    marketplace_router,
-    scim_router,
-)
-from app.api.enterprise import (
-    router as enterprise_router,
-)
-from app.api.goals import router as goals_router
-from app.api.strategies import router as strategies_router
-from app.api.governance import router as governance_router
-from app.api.guardrails import router as guardrails_router
-from app.api.insights import router as insights_router
-from app.api.observability import router as observability_router
-from app.api.integrations import router as integrations_router
-from app.api.knowledge import router as knowledge_router
-from app.api.memory import router as memory_router
-from app.api.perception import router as perception_router
-from app.api.replay import router as replay_router
-from app.api.rpa import router as rpa_router
-from app.api.schedules import (
-    events_router,
-    nl_router,
-    webhooks_router,
-)
-from app.api.schedules import (
-    router as schedules_router,
-)
-from app.api.triggers import router as triggers_router  # NEW: full trigger CRUD
-from app.api.system import router as system_router
-from app.api.templates import router as templates_router
 from app.api.templates import template_store as _template_store
-from app.api.tenants import router as tenants_router
-from app.api.tools import router as tools_router
-from app.api.training_export import router as training_export_router
-from app.api.golden_datasets import router as golden_datasets_router
-from app.api.lab import router as lab_router
-from app.api.skills import router as skills_router
 from app.api.workflows import _WorkflowStore as WorkflowStore
-from app.api.workflows import router as workflows_router
 from app.auth.agent_identity import AgentIdentityService
 from app.auth.scope_enforcement import ScopeEnforcementMiddleware
-from app.auth.google_oauth import router as google_oauth_router
 from app.collab.store import CollaborationStore
 from app.core.config import Settings, get_settings
 from app.core.errors import InternalError, PlatformError
@@ -134,6 +67,7 @@ from app.intelligence.guardrail_engine import GuardrailEngine as GuardrailEngine
 from app.intelligence.meta_agent import MetaAgentPlanner
 from app.intelligence.self_optimization import SelfOptimizer
 from app.intelligence.self_optimizer_v2 import SelfOptimizerV2
+from app.main_services import get_service_health  # noqa: F401
 from app.mcp.client import MCPClient
 from app.mcp.oauth import OAuthFlowManager
 from app.mcp.registry import MCPRegistry
@@ -171,13 +105,12 @@ from app.services.event_store import EventStore
 from app.services.goal_queue import CeleryGoalTaskQueue
 from app.services.goal_service import GoalService
 from app.services.notification_service import NotificationService
-from app.services.usage_service import UsageService
 from app.services.tenant_service import TenantService
+from app.services.usage_service import UsageService
 from app.tenancy.context import TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 from app.triggers.nl_scheduler import NLScheduler
 from app.triggers.store import ScheduleStore
-from app.main_services import get_service_health  # noqa: F401
 
 logger = get_logger(__name__)
 
@@ -211,11 +144,13 @@ def _resolve_provider_for_app(settings: Settings) -> Any:
                 "Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real goal execution."
             ),
         )
-        return FakeProvider(responses=[
-            '{"steps": ["Complete the requested task"]}',
-            "Task executed successfully",
-            '{"success": true, "reason": "Goal achieved"}',
-        ])
+        return FakeProvider(
+            responses=[
+                '{"steps": ["Complete the requested task"]}',
+                "Task executed successfully",
+                '{"success": true, "reason": "Goal achieved"}',
+            ]
+        )
 
     return _app_provider
 
@@ -232,6 +167,7 @@ def _build_verifier_provider(settings: Any = None) -> Any:
     used OpenAI, having Anthropic verify reduces hallucinated success rates.
     """
     import os
+
     from app.core.config import get_provider_env
 
     verifier_key = os.getenv("VERIFIER_API_KEY", "")
@@ -243,6 +179,7 @@ def _build_verifier_provider(settings: Any = None) -> Any:
         if verifier_key.startswith("sk-ant-"):
             try:
                 from app.providers.anthropic_provider import AnthropicProvider
+
                 logger.info("verifier_provider_anthropic_dedicated_key")
                 return AnthropicProvider(api_key=verifier_key)
             except Exception as exc:
@@ -250,6 +187,7 @@ def _build_verifier_provider(settings: Any = None) -> Any:
         else:
             try:
                 from app.providers.openai_compatible import OpenAICompatibleProvider
+
                 logger.info("verifier_provider_openai_dedicated_key")
                 return OpenAICompatibleProvider(api_key=verifier_key)
             except Exception as exc:
@@ -259,6 +197,7 @@ def _build_verifier_provider(settings: Any = None) -> Any:
     if openai_key and anthropic_key:
         try:
             from app.providers.anthropic_provider import AnthropicProvider
+
             logger.info("verifier_provider_anthropic_cross_model")
             return AnthropicProvider(api_key=anthropic_key)
         except Exception as exc:
@@ -277,6 +216,7 @@ def _build_verifier_provider(settings: Any = None) -> Any:
 
 
 # ── Minimal in-memory Redis fallback (used when pools are not started) ─────────
+
 
 class _FakeRedis:
     """Thread/async-safe dict-backed Redis stub — for tests and no-pool mode.
@@ -308,6 +248,7 @@ class _FakeRedis:
 
     def _is_expired(self, key: str) -> bool:
         import time
+
         exp = self._ttl.get(key)
         return exp is not None and time.monotonic() > exp
 
@@ -322,6 +263,7 @@ class _FakeRedis:
         self._d[key] = value
         if ex is not None:
             import time
+
             self._ttl[key] = time.monotonic() + ex
 
     async def delete(self, key: str) -> int:
@@ -347,9 +289,7 @@ class _FakeRedis:
             zset.update(mapping)
             return added
 
-    async def zremrangebyscore(
-        self, key: str, min_score: float, max_score: float
-    ) -> int:
+    async def zremrangebyscore(self, key: str, min_score: float, max_score: float) -> int:
         async with self._get_lock():
             if self._is_expired(key):
                 self._z.pop(key, None)
@@ -376,12 +316,14 @@ class _FakeRedis:
 
     async def expire(self, key: str, seconds: int) -> bool:
         import time
+
         self._ttl[key] = time.monotonic() + seconds
         return key in self._d or key in self._z
 
     async def expireat(self, key: str, timestamp: int) -> bool:
         """Set expiry as an absolute Unix timestamp."""
         import time
+
         self._ttl[key] = float(timestamp) - time.time() + time.monotonic()
         return key in self._d or key in self._z
 
@@ -393,7 +335,7 @@ class _FakeRedis:
             self._d[key] = str(new_val)
             return new_val
 
-    def register_script(self, script: str) -> "_FakeLuaScript":
+    def register_script(self, script: str) -> _FakeLuaScript:
         """Return a fake Lua script executor that simulates the atomic check-and-increment."""
         return _FakeLuaScript(self, script)
 
@@ -401,7 +343,7 @@ class _FakeRedis:
 class _FakeLuaScript:
     """Simulates the _ATOMIC_INCREMENT_SCRIPT Lua behaviour for tests."""
 
-    def __init__(self, redis: "_FakeRedis", script: str) -> None:
+    def __init__(self, redis: _FakeRedis, script: str) -> None:
         self._redis = redis
         self._script = script
 
@@ -415,7 +357,7 @@ class _FakeLuaScript:
         import time as _time
 
         async with self._redis._get_lock():
-            if len(keys) == 2:  # noqa: PLR2004 — new goal+daily format
+            if len(keys) == 2:
                 # args: cost, goal_limit, daily_limit, goal_expiry, daily_expiry
                 goal_key, daily_key = keys[0], keys[1]
                 cost = float(args[0])
@@ -458,6 +400,7 @@ class _FakeLuaScript:
 
 # ── error handlers ─────────────────────────────────────────────────────────────
 
+
 def _register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(PlatformError)
     async def _platform_error_handler(_: Request, exc: PlatformError) -> JSONResponse:
@@ -475,6 +418,7 @@ def _register_error_handlers(app: FastAPI) -> None:
 
 # ── factory ────────────────────────────────────────────────────────────────────
 
+
 def create_app(
     settings: Settings | None = None,
     health_checks: Sequence[HealthCheck] | None = None,
@@ -490,6 +434,7 @@ def create_app(
 
     # Allow env var to enable manage_pools when uvicorn calls create_app() with no args
     import os as _os_mp
+
     if not manage_pools and _os_mp.getenv("MANAGE_POOLS", "").lower() in ("1", "true", "yes"):
         manage_pools = True
 
@@ -505,10 +450,12 @@ def create_app(
     # C6: Use the declarative provider registry directly; fall back to wrapper on error
     try:
         from app.providers.registry import resolve_provider as _resolve_provider_registry
+
         _app_provider = _resolve_provider_registry()
         # Production safety guard: refuse FakeProvider in production
         if isinstance(_app_provider, FakeProvider):
             import os as _os
+
             if _os.getenv("ENVIRONMENT", "development").lower() == "production":
                 raise RuntimeError(
                     "FATAL: No LLM provider configured for production. "
@@ -519,11 +466,13 @@ def create_app(
                 "fake_provider_active_dev_only",
                 message="FakeProvider active — set ANTHROPIC_API_KEY or OPENAI_API_KEY.",
             )
-            _app_provider = FakeProvider(responses=[
-                '{"steps": ["Complete the requested task"]}',
-                "Task executed successfully",
-                '{"success": true, "reason": "Goal achieved"}',
-            ])
+            _app_provider = FakeProvider(
+                responses=[
+                    '{"steps": ["Complete the requested task"]}',
+                    "Task executed successfully",
+                    '{"success": true, "reason": "Goal achieved"}',
+                ]
+            )
         logger.info("provider_resolved_via_registry")
     except Exception as _reg_exc:
         logger.warning("provider_registry_failed_fallback", error=str(_reg_exc)[:60])
@@ -535,9 +484,10 @@ def create_app(
     _semantic_cache = SemanticCache()
     # Ingestion framework — LAW-01: single pipeline path
     try:
-        from app.ingestion.pipeline import IngestionPipeline
-        from app.ingestion.job_tracker import IngestionJobTracker
         from app.ingestion.connector_registry import load_all_connectors
+        from app.ingestion.job_tracker import IngestionJobTracker
+        from app.ingestion.pipeline import IngestionPipeline
+
         load_all_connectors()
         _ingestion_pipeline = IngestionPipeline(
             knowledge_store=_knowledge_store,
@@ -546,12 +496,14 @@ def create_app(
         _ingestion_job_tracker = IngestionJobTracker()
     except Exception as _ing_exc:
         import logging as _lg
+
         _lg.getLogger(__name__).warning("ingestion_framework_init_error: %s", _ing_exc)
         _ingestion_pipeline = None
         _ingestion_job_tracker = None
     # In-memory ToolResultCache (upgraded with Redis in lifespan)
     try:
         from app.mcp.tool_cache import ToolResultCache
+
         _tool_cache_inmem = ToolResultCache()
     except Exception:
         _tool_cache_inmem = None
@@ -590,6 +542,7 @@ def create_app(
     # OpenAICompatibleProvider if OPENAI_API_KEY set,
     # LocalEmbedProvider if SENTENCE_TRANSFORMERS_MODEL set, else None.
     import os
+
     _embedder: Any = None
     from app.core.config import get_provider_env
 
@@ -599,12 +552,14 @@ def create_app(
     if _voyage_key:
         try:
             from app.providers.voyage_provider import VoyageProvider
+
             _embedder = VoyageProvider(api_key=_voyage_key)
         except Exception:
             pass
     elif _openai_key:
         try:
             from app.providers.openai_compatible import OpenAICompatibleProvider
+
             _embedder = OpenAICompatibleProvider(
                 api_key=_openai_key, default_model="text-embedding-3-small"
             )
@@ -613,12 +568,14 @@ def create_app(
     elif get_provider_env("GOOGLE_API_KEY"):
         try:
             from app.providers.gemini_provider import GeminiProvider
+
             _embedder = GeminiProvider(api_key=get_provider_env("GOOGLE_API_KEY"))
         except Exception:
             pass
     elif os.getenv("SENTENCE_TRANSFORMERS_MODEL", ""):
         try:
             from app.providers.voyage_provider import LocalEmbedProvider
+
             _embedder = LocalEmbedProvider(
                 model_name=os.getenv("SENTENCE_TRANSFORMERS_MODEL", "all-MiniLM-L6-v2")
             )
@@ -632,6 +589,7 @@ def create_app(
 
     # Wire ModelRouter: selects optimal model per task type based on available provider
     from app.agent.model_router import ModelRouter
+
     try:
         _mr_provider = "openai" if _openai_key else ("anthropic" if _anthropic_key else "anthropic")
         _model_router: Any = ModelRouter(provider_name=_mr_provider)
@@ -649,17 +607,13 @@ def create_app(
         if config_store is not None:
             tenant_config = await config_store.get_config(tenant_context.tenant_id)
         if tenant_config is None:
-            tenant_config = getattr(app.state, "_llm_configs", {}).get(
-                tenant_context.tenant_id
-            )
+            tenant_config = getattr(app.state, "_llm_configs", {}).get(tenant_context.tenant_id)
 
         if tenant_config is not None:
             encrypted_key = str(tenant_config.get("encrypted_key") or "")
             provider_name = str(tenant_config.get("provider") or "")
             configured_model = str(
-                tenant_config.get("model")
-                or tenant_config.get("default_model")
-                or ""
+                tenant_config.get("model") or tenant_config.get("default_model") or ""
             ).strip()
             if not encrypted_key or not provider_name:
                 return None
@@ -705,9 +659,7 @@ def create_app(
         return ResolvedLLM(
             provider=_app_provider,
             model=model,
-            provider_type=str(
-                getattr(_app_provider, "_agentverse_provider_type", "")
-            ),
+            provider_type=str(getattr(_app_provider, "_agentverse_provider_type", "")),
         )
 
     _web_search_capability = build_safe_web_search_capability(
@@ -734,16 +686,12 @@ def create_app(
             policy_services=(_policy_engine, _cost, _hitl),
             cost_controller=_cost,
             collection_authorizer=KnowledgeStoreCollectionAuthorizer(_knowledge_store),
-            strategy_capabilities=core_strategy_capabilities(
-                _rag_adapter_configuration
-            ),
+            strategy_capabilities=core_strategy_capabilities(_rag_adapter_configuration),
             raft_service=_raft_service,
             colbert_checkpoint=settings.colbert_checkpoint,
         )
     )
-    _retrieval_gateways_to_close: dict[int, object] = {
-        id(_retrieval_gateway): _retrieval_gateway
-    }
+    _retrieval_gateways_to_close: dict[int, object] = {id(_retrieval_gateway): _retrieval_gateway}
 
     from app.rpa.executor import RPAExecutor
     from app.rpa.session import RPASessionStore
@@ -768,9 +716,7 @@ def create_app(
     from app.perception.browser_agent import BrowserAgent
     from app.perception.page_analyzer import PageAnalyzer
 
-    _browser_agent = BrowserAgent(
-        vision_provider=_embedder if _supports_vision else None
-    )
+    _browser_agent = BrowserAgent(vision_provider=_embedder if _supports_vision else None)
     _page_analyzer = PageAnalyzer(browser_agent=_browser_agent)
 
     _task_queue = CeleryGoalTaskQueue() if manage_pools and settings.redis_url else None
@@ -837,9 +783,11 @@ def create_app(
                 app.state.mcp_client = _make_mcp_client(app.state.mcp_registry)
                 # Re-wire MCP client into tool inverse registry with the real Redis-backed client
                 from app.reliability.tool_inverses import set_mcp_client as _set_inv_mcp
+
                 _set_inv_mcp(app.state.mcp_client)
                 # Wire Redis-backed CostController for cross-replica budget accuracy
                 from app.governance.cost import RedisCostController
+
                 _redis_cost_ctrl = RedisCostController(redis=real_redis)
                 app.state.redis_cost_controller = _redis_cost_ctrl
                 # Upgrade CostTracker to use real Redis
@@ -852,6 +800,7 @@ def create_app(
                 app.state._rate_limiter_redis = real_redis
                 # Wire LLM config store so Celery workers can read tenant configs.
                 from app.services.llm_config_store import LLMConfigStore, set_llm_config_store
+
                 _llm_store = LLMConfigStore(redis_client=real_redis)
                 set_llm_config_store(_llm_store)
                 app.state.llm_config_store = _llm_store
@@ -861,6 +810,7 @@ def create_app(
                 # Sync RedisSaver.from_conn_string() similarly returns a sync context manager.
                 try:
                     from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+
                     _raw_cm = AsyncRedisSaver.from_conn_string(str(settings.redis_url))
                     if hasattr(_raw_cm, "__aenter__"):
                         # Newer library: async context manager — enter it to get the saver
@@ -878,6 +828,7 @@ def create_app(
                     # Fall back to sync RedisSaver
                     try:
                         from langgraph.checkpoint.redis import RedisSaver
+
                         _raw_sync_cm = RedisSaver.from_conn_string(str(settings.redis_url))
                         if hasattr(_raw_sync_cm, "__enter__"):
                             _sync_saver = _raw_sync_cm.__enter__()
@@ -889,6 +840,7 @@ def create_app(
                     except (ImportError, Exception) as _exc2:
                         logger.warning("redis_saver_unavailable", error=str(_exc2))
                         from langgraph.checkpoint.memory import MemorySaver
+
                         app.state.langgraph_checkpointer = MemorySaver()
                         logger.warning("using_memory_saver_checkpointer_no_persistence")
             else:
@@ -914,13 +866,12 @@ def create_app(
                             LLMConfigStore,
                             set_llm_config_store,
                         )
+
                         _llm_store = LLMConfigStore(redis_client=_direct_redis)
                         set_llm_config_store(_llm_store)
                         app.state.llm_config_store = _llm_store
                     except Exception as exc:
-                        logger.warning(
-                            "Could not connect to Redis for rate limiter: %s", exc
-                        )
+                        logger.warning("Could not connect to Redis for rate limiter: %s", exc)
 
             # Wire DB session factory into services so they persist to PostgreSQL.
             from app.db.session import get_session_factory
@@ -931,9 +882,7 @@ def create_app(
             from app.coordination.service import CoordinationService
             from app.coordination.store import CoordinationStore
 
-            app.state.coordination_service = CoordinationService(
-                CoordinationStore(db_factory)
-            )
+            app.state.coordination_service = CoordinationService(CoordinationStore(db_factory))
             from app.coordination.auction.repository import (
                 PostgresAuctionRepository,
                 PostgresSealedBidInbox,
@@ -973,12 +922,8 @@ def create_app(
             app.state.coordination_session_authorizer = DatabaseSessionAuthorizer(
                 lambda: db_factory
             )
-            app.state.coordination_replay = SequenceReplay(
-                PostgresReplayRepository(db_factory)
-            )
-            app.state.progress_ledger_repository = PostgresProgressLedgerRepository(
-                db_factory
-            )
+            app.state.coordination_replay = SequenceReplay(PostgresReplayRepository(db_factory))
+            app.state.progress_ledger_repository = PostgresProgressLedgerRepository(db_factory)
             app.state.moa_repository = PostgresMoARepository(db_factory)
             from app.routing_runtime.decision_store import PostgresDecisionStore
             from app.routing_runtime.embedding_router import (
@@ -1002,9 +947,7 @@ def create_app(
             app.state.memory_repository = PostgresMemoryRepository(db_factory)
             from app.memory.reflexion import ReflexionService
 
-            app.state.reflexion_service = ReflexionService(
-                repository=app.state.memory_repository
-            )
+            app.state.reflexion_service = ReflexionService(repository=app.state.memory_repository)
             from app.intelligence.improvement_action_executor import (
                 ImprovementActionExecutor,
             )
@@ -1078,6 +1021,7 @@ def create_app(
             # Wire ToolReliabilityStore for cross-restart tool reliability data
             try:
                 from app.memory.tool_reliability import ToolReliabilityStore
+
                 _tool_reliability = ToolReliabilityStore(db_session_factory=db_factory)
                 app.state.tool_reliability_store = _tool_reliability
                 logger.info("tool_reliability_store_wired")
@@ -1093,15 +1037,20 @@ def create_app(
                         _em_rows = None
                         async with db_factory() as _em_sess:
                             from sqlalchemy import text as _t
-                            _em_rows = (await _em_sess.execute(
-                                _t("SELECT DISTINCT tenant_id FROM execution_memory LIMIT 50")
-                            )).fetchall()
+
+                            _em_rows = (
+                                await _em_sess.execute(
+                                    _t("SELECT DISTINCT tenant_id FROM execution_memory LIMIT 50")
+                                )
+                            ).fetchall()
                         if _em_rows:
                             for (_em_tid,) in _em_rows:
                                 await _exec_memory.load_from_db(tenant_id=_em_tid, db=db_factory)
                         logger.info("execution_memory_hydrated", tenant_count=len(_em_rows or []))
                     except Exception as _em_inner_err:
-                        logger.warning("execution_memory_hydration_failed", error=str(_em_inner_err))
+                        logger.warning(
+                            "execution_memory_hydration_failed", error=str(_em_inner_err)
+                        )
 
                 _em_asyncio.create_task(_hydrate_exec_memory())
             except Exception as _em_exc:
@@ -1162,6 +1111,7 @@ def create_app(
 
             # Wire DB into TemplateStore
             from app.api.templates import template_store as _tmpl_store_ref
+
             _tmpl_store_ref.set_db(db_factory)
             logger.info("template_store_db_wired")
 
@@ -1181,9 +1131,10 @@ def create_app(
                 await _notif_svc.sync_from_db()
                 logger.info("notification_service_db_wired")
 
-             # Wire DB into MFAStore for persistent TOTP secret + recovery-code storage
+            # Wire DB into MFAStore for persistent TOTP secret + recovery-code storage
             try:
-                from app.api.mfa import _mfa_db_store as _mfa_store_ref  # noqa: PLC0415
+                from app.api.mfa import _mfa_db_store as _mfa_store_ref
+
                 _mfa_store_ref.set_db(db_factory)
                 logger.info("mfa_db_store_wired")
             except Exception as _mfa_exc:
@@ -1192,7 +1143,8 @@ def create_app(
             # Wire DB into KnowledgeGraphStore for persistent node/edge storage
             _graph_capability = None
             try:
-                from app.knowledge_graph.store import kg_store as _kg_store  # noqa: PLC0415
+                from app.knowledge_graph.store import kg_store as _kg_store
+
                 _kg_store.set_db(db_factory)
                 _graph_capability = TenantScopedGraphCapabilityAdapter()
                 logger.info("knowledge_graph_db_wired")
@@ -1216,9 +1168,7 @@ def create_app(
                     ),
                     cost_controller=getattr(app.state, "redis_cost_controller", _cost),
                     collection_authorizer=SQLCollectionAuthorizer(),
-                    strategy_capabilities=core_strategy_capabilities(
-                        _rag_adapter_configuration
-                    ),
+                    strategy_capabilities=core_strategy_capabilities(_rag_adapter_configuration),
                     raft_service=RAFTService(
                         repository=SQLRAFTRepository(db_factory),
                         providers={},
@@ -1234,6 +1184,7 @@ def create_app(
             # Wire DB into reflexion wirer singleton for cross-process persistence
             try:
                 from app.agent.reflexion_wirer import get_reflexion_wirer as _get_rw
+
                 _rw = _get_rw(db_factory=db_factory)
                 app.state.reflexion_wirer = _rw
                 # Make the store itself aware of the factory so lazy recall() hydration works.
@@ -1245,7 +1196,10 @@ def create_app(
 
             # Wire DB into VerifierCalibrationStore for cross-restart calibration
             try:
-                from app.intelligence.verifier_calibration import _default_calibration_store as _cal_store
+                from app.intelligence.verifier_calibration import (
+                    _default_calibration_store as _cal_store,
+                )
+
                 _cal_store._db = db_factory
                 app.state.calibration_store = _cal_store
                 logger.info("verifier_calibration_store_wired")
@@ -1255,8 +1209,10 @@ def create_app(
             # Wire DB into ABTestingEngine + hydrate historical results
             try:
                 from app.optimization.ab_testing import ab_testing_engine as _ab_engine
+
                 _ab_engine._db_factory = db_factory
                 import asyncio as _ab_asyncio
+
                 _ab_asyncio.create_task(_ab_engine.load_from_db(db_factory=db_factory))
                 logger.info("ab_testing_engine_wired")
             except Exception as _ab_exc:
@@ -1266,6 +1222,7 @@ def create_app(
             try:
                 from app.memory.episodic import EpisodicMemoryStore
                 from app.memory.procedural import ProceduralMemoryStore
+
                 _episodic_memory = EpisodicMemoryStore(
                     db_factory=db_factory,
                     embedder=app.state.embedder if hasattr(app.state, "embedder") else None,
@@ -1280,6 +1237,7 @@ def create_app(
             # Load governance policies from DB into PolicyEngine (H2 fix)
             try:
                 from sqlalchemy import text as _sql_text
+
                 async with db_factory() as _pol_session:
                     _pol_result = await _pol_session.execute(
                         _sql_text(
@@ -1289,6 +1247,7 @@ def create_app(
                     )
                     _pol_rows = _pol_result.fetchall()
                 from app.governance.policies import Policy as _PolicyClass
+
                 for _row in _pol_rows:
                     _pname, _ptenant, _ppattern, _paction, _pdesc = _row
                     _denied = [_ppattern] if _paction == "deny" else []
@@ -1359,6 +1318,7 @@ def create_app(
                     # Wire ToolResultCache (created fresh with Redis backend)
                     try:
                         from app.mcp.tool_cache import ToolResultCache as _TRC
+
                         _tool_cache = _TRC(redis=redis_for_runtime)
                         _mcp._tool_cache = _tool_cache
                         app.state.tool_cache = _tool_cache
@@ -1384,6 +1344,7 @@ def create_app(
                 # SemanticCache: wire pgvector ANN backend for O(log n) L2 lookup.
                 try:
                     from app.rag.vector_cache_backend import select_cache_backend as _scb_select
+
                     _sem_cache_backend = await _scb_select(
                         db_factory=db_factory,
                         redis=redis_for_runtime,
@@ -1398,6 +1359,7 @@ def create_app(
                 # GoalDeduplicator: wire Redis for cross-replica dedup.
                 try:
                     from app.services.dedup import _default_deduplicator as _goal_dedup
+
                     _goal_dedup._redis = redis_for_runtime
                     logger.info("goal_deduplicator_redis_wired")
                 except Exception as _gd_exc:
@@ -1406,6 +1368,7 @@ def create_app(
                 # LLMResponseCache: wire Redis for cross-replica LLM cache.
                 try:
                     from app.rag.llm_response_cache import LLMResponseCache as _LLMRC
+
                     _llm_rc = _LLMRC(redis=redis_for_runtime)
                     app.state.llm_response_cache = _llm_rc
                     logger.info("llm_response_cache_wired")
@@ -1415,6 +1378,7 @@ def create_app(
                 # ── PromptOptimizer: wire Redis for cross-replica cache invalidation ──
                 try:
                     from app.intelligence.prompt_optimizer import _default_optimizer as _opt
+
                     _opt.set_redis(redis_for_runtime)
                     app.state.prompt_optimizer = _opt
                 except Exception as _opt_exc:
@@ -1423,6 +1387,7 @@ def create_app(
                 # ── RedisBulkheadRegistry: distributed per-tenant concurrency ──────
                 try:
                     from app.reliability.bulkhead import RedisBulkheadRegistry
+
                     _bulkhead_registry = RedisBulkheadRegistry(
                         redis=redis_for_runtime,
                         default_max_concurrent=20,
@@ -1435,6 +1400,7 @@ def create_app(
                 # ── Policy pub/sub: propagate policy changes to all replicas ────────
                 try:
                     from app.governance.policies import start_policy_subscriber
+
                     app.state._policy_pubsub_redis = redis_for_runtime
                     app.state._policy_pubsub_task = start_policy_subscriber(
                         redis_url=str(settings.redis_url),
@@ -1448,6 +1414,7 @@ def create_app(
                 # ── IdempotencyStore: prevent duplicate goal submissions ────────────
                 try:
                     from app.reliability.idempotency import IdempotencyStore as _IdempotencyStore
+
                     _idem_store = _IdempotencyStore(redis=redis_for_runtime)
                     app.state.idempotency_store = _idem_store
                     logger.info("idempotency_store_wired")
@@ -1462,12 +1429,14 @@ def create_app(
                 # ── AuditV3: wire DB+Redis backed audit chain ────────────────────────
                 try:
                     import asyncio as _asyncio_wal
+
                     from app.governance.audit_v3 import (
                         AuditFlusher as _AuditFlusher,
                     )
                     from app.governance.audit_v3 import (
                         AuditWriter as _AuditWriter,
                     )
+
                     _audit_writer = _AuditWriter(redis=redis_for_runtime)
                     app.state.audit_writer = _audit_writer
                     _audit_flusher = _AuditFlusher(redis=redis_for_runtime, db_factory=db_factory)
@@ -1483,6 +1452,7 @@ def create_app(
                 # ── CRDT manager: wire Redis for multi-process Yjs sync ───────────────
                 try:
                     from app.api.collab import _crdt_manager
+
                     _crdt_manager.set_redis(redis_for_runtime)
                     app.state._redis = redis_for_runtime
                     logger.info("crdt_manager_redis_wired")
@@ -1492,6 +1462,7 @@ def create_app(
                 # ── Observability log store: wire Redis Streams backend ───────────────
                 try:
                     from app.api.observability import log_store as _obs_log_store
+
                     _obs_log_store.set_redis(redis_for_runtime)
                     logger.info("observability_log_store_wired_to_redis")
                 except Exception as _obs_exc:
@@ -1500,6 +1471,7 @@ def create_app(
             # ── PromptOptimizer: load variants from DB (all replicas on startup) ──
             try:
                 from app.intelligence.prompt_optimizer import _default_optimizer as _opt_db
+
                 loaded_variants = await _opt_db.load_from_db(db_factory)
                 logger.info("prompt_variants_loaded_from_db", count=loaded_variants)
             except Exception as _pv_exc:
@@ -1528,6 +1500,7 @@ def create_app(
             # ── H-3: Seed RBAC scope definitions from declarative registry ───────
             try:
                 from app.auth.scope_seeder import seed_builtin_scopes
+
                 await seed_builtin_scopes(db_factory)
                 logger.info("scope_seeder_complete")
             except Exception as _seed_exc:
@@ -1539,6 +1512,7 @@ def create_app(
                     import asyncio as _asyncio_cw
 
                     from app.auth.cache_warmer import warm_permission_cache
+
                     _asyncio_cw.create_task(
                         warm_permission_cache(redis=redis_for_runtime, db_factory=db_factory)
                     )
@@ -1549,6 +1523,7 @@ def create_app(
             # ── H-4: Wire SIEM adapter if configured ──────────────────────────────
             try:
                 import os as _os_siem
+
                 _siem_adapter = None
                 if _os_siem.getenv("SIEM_TYPE") or settings.siem_type:
                     from app.governance.siem_adapters import (
@@ -1556,6 +1531,7 @@ def create_app(
                         SIEMType,
                         build_siem_adapter,
                     )
+
                     _siem_type_str = _os_siem.getenv("SIEM_TYPE") or settings.siem_type
                     try:
                         _siem_cfg = SIEMConfig(
@@ -1579,6 +1555,7 @@ def create_app(
             # ── H-5: Wire LegalHoldManager with DB + Redis ────────────────────────
             try:
                 from app.governance.legal_holds import LegalHoldManager
+
                 _lhm = LegalHoldManager(redis=redis_for_runtime, db_factory=db_factory)
                 app.state.legal_hold_manager = _lhm
                 logger.info("legal_hold_manager_wired")
@@ -1588,11 +1565,11 @@ def create_app(
             # Orchestration persistence: hydrate tool trust from DB (always-on, no flag gate)
             try:
                 from app.services.orchestration_persistence import OrchestrationPersistence
+
                 _orch_persistence = OrchestrationPersistence(db=db_factory)
                 import asyncio as _asyncio
-                _asyncio.create_task(
-                    _orch_persistence.load_tool_trust_from_db("*", db=db_factory)
-                )
+
+                _asyncio.create_task(_orch_persistence.load_tool_trust_from_db("*", db=db_factory))
                 app.state.orchestration_persistence = _orch_persistence
                 logger.info("orchestration_persistence_hydration_started")
             except Exception as _orch_exc:
@@ -1603,9 +1580,7 @@ def create_app(
             finally:
                 await close_retrieval_gateways()
                 await close_process_rerankers()
-                _repo_tasks = list(
-                    getattr(app.state, "repository_ingestion_tasks", set())
-                )
+                _repo_tasks = list(getattr(app.state, "repository_ingestion_tasks", set()))
                 for _repo_task in _repo_tasks:
                     _repo_task.cancel()
                 if _repo_tasks:
@@ -1615,6 +1590,7 @@ def create_app(
                 if _ps_task := getattr(app.state, "_policy_pubsub_task", None):
                     _ps_task.cancel()
                     import contextlib
+
                     with contextlib.suppress(Exception):
                         await _ps_task
                 await active.shutdown()
@@ -1629,11 +1605,14 @@ def create_app(
         if getattr(settings, "voice_enabled", True):
             try:
                 import asyncio as _voice_asyncio
+
                 from app.voice.providers import warmup_providers as _voice_warmup
+
                 _voice_asyncio.create_task(_voice_warmup())
                 logger.info("voice_providers_warmup_scheduled")
                 # D-6: Start proactive voice alert manager
                 from app.voice.alerts import VoiceAlertManager as _VAM
+
                 _alert_mgr = _VAM(redis=getattr(app.state, "redis", None))
                 await _alert_mgr.start()
                 app.state.voice_alert_manager = _alert_mgr
@@ -1658,6 +1637,7 @@ def create_app(
 
     # Wire MCP client into tool inverse registry so rollback inverses can execute real API calls
     from app.reliability.tool_inverses import set_mcp_client as _set_inverse_mcp_client
+
     _set_inverse_mcp_client(_mcp_client)
 
     # ── Bind all services to app.state ────────────────────────────────────────
@@ -1742,9 +1722,7 @@ def create_app(
             lambda: getattr(app.state, "db_session_factory", None)
         ),
     )
-    app.state.coordination_session_authorizer = InMemorySessionAuthorizer(
-        _coordination_store
-    )
+    app.state.coordination_session_authorizer = InMemorySessionAuthorizer(_coordination_store)
     app.state.progress_ledger_repository = InMemoryProgressLedgerRepository()
     app.state.moa_repository = InMemoryMoARepository()
     app.state.camel_repository = InMemoryCamelRepository()
@@ -1765,6 +1743,7 @@ def create_app(
     # ── Phase 3: Agent Router (auto-routes goals when agent_id is omitted) ────
     try:
         from app.agent.router import AgentRouter
+
         _agent_router = AgentRouter(
             agent_store=_agent_store,
             llm_provider=_app_provider,
@@ -1778,6 +1757,7 @@ def create_app(
     try:
         from app.agent.tool_selector import ToolSelector
         from app.mcp.capability_search import CapabilitySearch
+
         _capability_search = CapabilitySearch(embedder=_embedder)
         _tool_selector = ToolSelector(capability_search=_capability_search)
         app.state.tool_selector = _tool_selector
@@ -1822,6 +1802,7 @@ def create_app(
     app.state.self_optimizer_v2 = _self_optimizer_v2
     # PromptOptimizer: always set in-memory default (upgraded with Redis in lifespan)
     from app.intelligence.prompt_optimizer import _default_optimizer as _prompt_optimizer_default
+
     app.state.prompt_optimizer = _prompt_optimizer_default
     # Enterprise
     app.state.compliance_controller = _compliance_controller
@@ -1866,6 +1847,7 @@ def create_app(
 
         # workflow_service: wraps workflow_store with full router-compatible interface
         from app.workflow.service import WorkflowService as _WorkflowService
+
         app.state.workflow_service = _WorkflowService(app.state.workflow_store)
         app.state.workflow_runner = _wf_runner
         app.state.workflow_compiler = _wf_compiler
@@ -1874,6 +1856,7 @@ def create_app(
         app.state.template_store_we = _system_template_store  # workflow engine templates
     except Exception as _wfe:
         import logging as _log
+
         _log.getLogger(__name__).warning("workflow_engine_state_init_failed: %s", _wfe)
 
     # ── Middleware (order matters — outermost wraps last) ─────────────────────
@@ -1916,6 +1899,7 @@ def create_app(
     try:
         from app.core.runtime_flags import get_runtime_flags as _get_rtflags
         from app.execution_environment.scheduler import ExecutionEnvironmentScheduler
+
         _iso_flags = _get_rtflags()
         app.state.execution_scheduler = ExecutionEnvironmentScheduler.from_flags(
             isolated_execution_local_runner=_iso_flags.isolated_execution_local_runner,
@@ -1923,6 +1907,7 @@ def create_app(
         )
     except Exception as _iso_init_exc:
         import logging as _iso_log
+
         _iso_log.getLogger(__name__).error(
             "execution_scheduler_init_failed: %s — using default FakeRunner scheduler",
             _iso_init_exc,
@@ -1931,7 +1916,10 @@ def create_app(
         # isolated execution attempts fail with a structured RunnerUnavailableError
         # instead of an AttributeError on None.
         try:
-            from app.execution_environment.scheduler import ExecutionEnvironmentScheduler as _ESFallback
+            from app.execution_environment.scheduler import (
+                ExecutionEnvironmentScheduler as _ESFallback,
+            )
+
             app.state.execution_scheduler = _ESFallback()
         except Exception:
             app.state.execution_scheduler = None  # last resort
@@ -1942,8 +1930,8 @@ def create_app(
     # ── Routers ────────────────────────────────────────────────────────────
     # All router imports and include_router() calls are in app/bootstrap/routers.py
     from app.bootstrap.routers import register_routers
-    register_routers(app, settings, logger)
 
+    register_routers(app, settings, logger)
 
     configure_tracing(settings.service_name, settings.otel_exporter_otlp_endpoint)
 

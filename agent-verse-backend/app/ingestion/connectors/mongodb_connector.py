@@ -3,6 +3,7 @@
 Cursor: last document's _id (ObjectId as string) for incremental fetch.
 Supports: MongoDB Atlas, self-hosted, and DocumentDB-compatible.
 """
+
 from __future__ import annotations
 
 import logging
@@ -47,12 +48,15 @@ class MongoDBConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             from pymongo import MongoClient  # type: ignore[import-not-found]
+
             cc = config.connection_config
             client = MongoClient(
-                cc.get("uri") or f"mongodb://{cc.get('username', '')}:{cc.get('password', '')}@{cc.get('host', 'localhost')}:{cc.get('port', 27017)}/",
+                cc.get("uri")
+                or f"mongodb://{cc.get('username', '')}:{cc.get('password', '')}@{cc.get('host', 'localhost')}:{cc.get('port', 27017)}/",
                 serverSelectionTimeoutMS=5000,
             )
             client.admin.command("ping")
@@ -67,15 +71,21 @@ class MongoDBConnector(BaseConnector):
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
+
         try:
             from bson import ObjectId  # type: ignore[import-not-found]
             from pymongo import MongoClient  # type: ignore[import-not-found]
         except ImportError:
-            _log.error("pymongo not installed"); return
+            _log.error("pymongo not installed")
+            return
 
         import asyncio
+
         cc = config.connection_config
-        uri = cc.get("uri") or f"mongodb://{cc.get('username', '')}:{cc.get('password', '')}@{cc.get('host', 'localhost')}:{cc.get('port', 27017)}/"
+        uri = (
+            cc.get("uri")
+            or f"mongodb://{cc.get('username', '')}:{cc.get('password', '')}@{cc.get('host', 'localhost')}:{cc.get('port', 27017)}/"
+        )
         db_name = cc.get("database", "")
         collection_name = cc.get("collection", "")
         batch_size = int(cc.get("batch_size", 500))
@@ -107,9 +117,11 @@ class MongoDBConnector(BaseConnector):
             text = _flatten_doc(doc)
             raw_doc = RawDocument(
                 doc_id=str(uuid.uuid4()),
-                source_id=config.source_id, tenant_id=config.tenant_id,
+                source_id=config.source_id,
+                tenant_id=config.tenant_id,
                 source_url=f"mongodb://{cc.get('host')}/{db_name}/{collection_name}/{doc.get('_id')}",
-                content=text.encode(), content_type="text/plain",
+                content=text.encode(),
+                content_type="text/plain",
                 metadata={"collection": collection_name, "_id": doc.get("_id")},
             )
             yield raw_doc, new_cursor

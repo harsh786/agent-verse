@@ -9,6 +9,7 @@ Strategy:
 This combines the precision of small-chunk retrieval with the
 context richness of large-chunk generation.
 """
+
 from __future__ import annotations
 
 import re
@@ -40,7 +41,7 @@ class ParentChildChunker:
     def __init__(
         self,
         parent_chunk_size: int = 1500,  # ~500 tokens
-        child_chunk_size: int = 400,    # ~130 tokens
+        child_chunk_size: int = 400,  # ~130 tokens
         child_overlap: int = 50,
     ) -> None:
         self._parent_size = parent_chunk_size

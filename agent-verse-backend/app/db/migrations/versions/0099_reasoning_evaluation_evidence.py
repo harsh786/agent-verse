@@ -19,9 +19,7 @@ depends_on = None
 def upgrade() -> None:
     evaluation_columns = (
         sa.Column("primary_strategy_id", sa.Text(), nullable=False, server_default="unknown"),
-        sa.Column(
-            "primary_strategy_version", sa.Text(), nullable=False, server_default="unknown"
-        ),
+        sa.Column("primary_strategy_version", sa.Text(), nullable=False, server_default="unknown"),
         sa.Column(
             "auxiliary_strategy_versions",
             postgresql.JSONB(),
@@ -31,9 +29,7 @@ def upgrade() -> None:
         sa.Column("profile_id", sa.Text(), nullable=False, server_default="unknown"),
         sa.Column("profile_version", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("strategy_execution_id", sa.Text(), nullable=True),
-        sa.Column(
-            "evaluator_version", sa.Text(), nullable=False, server_default="eval-runner-v1"
-        ),
+        sa.Column("evaluator_version", sa.Text(), nullable=False, server_default="eval-runner-v1"),
         sa.Column(
             "evidence_completeness",
             postgresql.JSONB(),
@@ -64,9 +60,7 @@ def upgrade() -> None:
     scorecard_columns = (
         sa.Column("profile_version", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("primary_strategy_id", sa.Text(), nullable=False, server_default="unknown"),
-        sa.Column(
-            "primary_strategy_version", sa.Text(), nullable=False, server_default="unknown"
-        ),
+        sa.Column("primary_strategy_version", sa.Text(), nullable=False, server_default="unknown"),
         sa.Column(
             "auxiliary_strategy_versions",
             postgresql.JSONB(),
@@ -84,7 +78,7 @@ def upgrade() -> None:
             "dimension_status",
             postgresql.JSONB(),
             nullable=False,
-            server_default=sa.text("'{\"legacy\": \"legacy_unknown\"}'::jsonb"),
+            server_default=sa.text('\'{"legacy": "legacy_unknown"}\'::jsonb'),
         ),
         sa.Column(
             "evidence_references",
@@ -124,11 +118,17 @@ def upgrade() -> None:
         sa.Column("evaluator_version", sa.Text(), nullable=False),
         sa.Column("dataset_version", sa.Text(), nullable=False, server_default="default-v1"),
         sa.Column("evidence", postgresql.JSONB(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False,
-                  server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.UniqueConstraint(
-            "tenant_id", "goal_id", "strategy_id", "strategy_version",
-            "profile_version", "evaluator_version", name="uq_regression_case_versioned",
+            "tenant_id",
+            "goal_id",
+            "strategy_id",
+            "strategy_version",
+            "profile_version",
+            "evaluator_version",
+            name="uq_regression_case_versioned",
         ),
     )
     op.create_index(
@@ -222,20 +222,32 @@ def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS regression_baselines")
     op.drop_table("regression_cases")
     op.drop_index("ix_eval_scorecards_tenant_strategy_created", table_name="eval_scorecards")
-    op.drop_constraint(
-        "uq_eval_scorecards_versioned_execution", "eval_scorecards", type_="unique"
-    )
+    op.drop_constraint("uq_eval_scorecards_versioned_execution", "eval_scorecards", type_="unique")
     for name in (
-        "correlation_id", "coverage", "evidence_references", "dimension_status",
-        "evaluator_version", "strategy_execution_id", "auxiliary_strategy_versions",
-        "primary_strategy_version", "primary_strategy_id", "profile_version",
+        "correlation_id",
+        "coverage",
+        "evidence_references",
+        "dimension_status",
+        "evaluator_version",
+        "strategy_execution_id",
+        "auxiliary_strategy_versions",
+        "primary_strategy_version",
+        "primary_strategy_id",
+        "profile_version",
     ):
         op.drop_column("eval_scorecards", name)
     op.drop_index("ix_evaluations_tenant_strategy_created", table_name="evaluations")
     op.drop_constraint("uq_evaluations_versioned_execution", "evaluations", type_="unique")
     for name in (
-        "causation_id", "correlation_id", "evidence_completeness", "evaluator_version",
-        "strategy_execution_id", "profile_version", "profile_id",
-        "auxiliary_strategy_versions", "primary_strategy_version", "primary_strategy_id",
+        "causation_id",
+        "correlation_id",
+        "evidence_completeness",
+        "evaluator_version",
+        "strategy_execution_id",
+        "profile_version",
+        "profile_id",
+        "auxiliary_strategy_versions",
+        "primary_strategy_version",
+        "primary_strategy_id",
     ):
         op.drop_column("evaluations", name)

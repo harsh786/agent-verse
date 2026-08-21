@@ -39,18 +39,14 @@ class KnowledgeCollection(Base):
         ),
     )
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
     domain: Mapped[str | None] = mapped_column(Text, nullable=True)
-    embedder: Mapped[str] = mapped_column(
-        Text, nullable=False, default="voyage-4-large"
-    )
+    embedder: Mapped[str] = mapped_column(Text, nullable=False, default="voyage-4-large")
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False, default=768)
     chunk_size: Mapped[int] = mapped_column(Integer, nullable=False, default=512)
     chunk_overlap: Mapped[int] = mapped_column(Integer, nullable=False, default=64)
@@ -82,9 +78,7 @@ class Document(Base):
 
     __tablename__ = "documents"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     collection_id: Mapped[str] = mapped_column(
         String(32),
         ForeignKey("knowledge_collections.id", ondelete="CASCADE"),
@@ -171,9 +165,7 @@ class ExecutionMemory(Base):
 
     __tablename__ = "execution_memory"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     goal_text: Mapped[str] = mapped_column(Text, nullable=False)
     plan: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
@@ -188,14 +180,10 @@ class LongTermMemory(Base):
 
     __tablename__ = "long_term_memory"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    source_goal_id: Mapped[str | None] = mapped_column(
-        String(32), nullable=True, default=""
-    )
+    source_goal_id: Mapped[str | None] = mapped_column(String(32), nullable=True, default="")
     memory_type: Mapped[str | None] = mapped_column(
         String(50), nullable=True, default="success_pattern"
     )
@@ -211,18 +199,16 @@ class MemoryConflict(Base):
 
     __tablename__ = "memory_conflicts"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("tenants.id", ondelete="CASCADE"),
-        nullable=False, index=True,
+        String(32),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     memory_id_a: Mapped[str] = mapped_column(String(32), nullable=False)
     memory_id_b: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    conflict_type: Mapped[str] = mapped_column(
-        String(50), nullable=False, default="contradiction"
-    )
+    conflict_type: Mapped[str] = mapped_column(String(50), nullable=False, default="contradiction")
     description: Mapped[str] = mapped_column(Text, nullable=False)
     resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     resolution: Mapped[str | None] = mapped_column(Text, nullable=True)

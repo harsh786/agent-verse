@@ -1,7 +1,9 @@
 """QoSTrace — observability trace for scheduling decisions."""
+
 from __future__ import annotations
+
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from app.qos.priority_policy import QueuePriority

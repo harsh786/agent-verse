@@ -4,6 +4,7 @@ Environment variables:
   SQUARE_ACCESS_TOKEN: Square OAuth2 access token or personal access token
   SQUARE_SANDBOX:      'true' (default) or 'false' for production
 """
+
 from __future__ import annotations
 
 import os
@@ -25,7 +26,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "limit": {"type": "integer", "default": 20},
                 "cursor": {"type": "string", "description": "Pagination cursor"},
-                "sort_field": {"type": "string", "enum": ["DEFAULT", "CREATED_AT"], "default": "DEFAULT"},
+                "sort_field": {
+                    "type": "string",
+                    "enum": ["DEFAULT", "CREATED_AT"],
+                    "default": "DEFAULT",
+                },
             },
         },
     },
@@ -50,8 +55,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "source_id": {"type": "string", "description": "Payment source (card nonce or card-on-file ID)"},
-                "amount": {"type": "integer", "description": "Amount in smallest currency unit (cents for USD)"},
+                "source_id": {
+                    "type": "string",
+                    "description": "Payment source (card nonce or card-on-file ID)",
+                },
+                "amount": {
+                    "type": "integer",
+                    "description": "Amount in smallest currency unit (cents for USD)",
+                },
                 "currency": {"type": "string", "default": "USD"},
                 "customer_id": {"type": "string"},
                 "note": {"type": "string"},
@@ -80,7 +91,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "payment_id": {"type": "string"},
-                "amount": {"type": "integer", "description": "Amount to refund; omit for full refund"},
+                "amount": {
+                    "type": "integer",
+                    "description": "Amount to refund; omit for full refund",
+                },
                 "currency": {"type": "string", "default": "USD"},
                 "reason": {"type": "string"},
             },
@@ -250,8 +264,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "locations": [
-                        {"id": loc["id"], "name": loc.get("name", ""),
-                         "status": loc.get("status", ""), "country": loc.get("country", "")}
+                        {
+                            "id": loc["id"],
+                            "name": loc.get("name", ""),
+                            "status": loc.get("status", ""),
+                            "country": loc.get("country", ""),
+                        }
                         for loc in data.get("locations", [])
                     ]
                 }

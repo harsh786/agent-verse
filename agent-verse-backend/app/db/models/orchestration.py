@@ -7,6 +7,7 @@ Tables:
   ab_test_results          — A/B experiment arm results
   reflexion_lessons        — persistent failure lessons per tenant
 """
+
 from __future__ import annotations
 
 import uuid
@@ -23,9 +24,7 @@ from app.db.models import Base
 class EvalScorecard(Base):
     __tablename__ = "eval_scorecards"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     goal_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     tenant_id: Mapped[str] = mapped_column(
         String(32),
@@ -34,18 +33,12 @@ class EvalScorecard(Base):
         index=True,
     )
     overall_score: Mapped[float] = mapped_column(Float, nullable=False)
-    scores: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, nullable=False, server_default="'{}'"
-    )
-    improvement_suggestions: Mapped[list[str] | None] = mapped_column(
-        JSONB, nullable=True
-    )
+    scores: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default="'{}'")
+    improvement_suggestions: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     profile_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     profile_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     primary_strategy_id: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
-    primary_strategy_version: Mapped[str] = mapped_column(
-        Text, nullable=False, default="unknown"
-    )
+    primary_strategy_version: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
     auxiliary_strategy_versions: Mapped[dict[str, str]] = mapped_column(
         JSONB, nullable=False, default=dict
     )
@@ -53,12 +46,8 @@ class EvalScorecard(Base):
     evaluator_version: Mapped[str] = mapped_column(
         Text, nullable=False, default="runtime-scorecard-v2"
     )
-    dimension_status: Mapped[dict[str, str]] = mapped_column(
-        JSONB, nullable=False, default=dict
-    )
-    evidence_references: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, nullable=False, default=dict
-    )
+    dimension_status: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False, default=dict)
+    evidence_references: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     coverage: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     correlation_id: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
@@ -122,9 +111,7 @@ class ReasoningPromotionDecision(Base):
 class ToolTrustRecord(Base):
     __tablename__ = "tool_trust_records"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tool_name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     tenant_id: Mapped[str] = mapped_column(
         String(32),
@@ -144,9 +131,7 @@ class ToolTrustRecord(Base):
 class SelfImprovementAction(Base):
     __tablename__ = "self_improvement_actions"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     goal_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     tenant_id: Mapped[str] = mapped_column(
         String(32),
@@ -156,9 +141,7 @@ class SelfImprovementAction(Base):
     )
     action_type: Mapped[str] = mapped_column(String(100), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
-    action_metadata: Mapped[dict[str, Any] | None] = mapped_column(
-        "metadata", JSONB, nullable=True
-    )
+    action_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -167,9 +150,7 @@ class SelfImprovementAction(Base):
 class ABTestResult(Base):
     __tablename__ = "ab_test_results"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     goal_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     tenant_id: Mapped[str] = mapped_column(
         String(32),
@@ -177,9 +158,7 @@ class ABTestResult(Base):
         nullable=False,
         index=True,
     )
-    experiment_type: Mapped[str] = mapped_column(
-        String(100), nullable=False, index=True
-    )
+    experiment_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     arm_id: Mapped[str] = mapped_column(String(100), nullable=False)
     score: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -190,9 +169,7 @@ class ABTestResult(Base):
 class ReflexionLesson(Base):
     __tablename__ = "reflexion_lessons"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
         String(32),
         ForeignKey("tenants.id", ondelete="CASCADE"),
@@ -201,9 +178,7 @@ class ReflexionLesson(Base):
     )
     lesson: Mapped[str] = mapped_column(Text, nullable=False)
     source_goal_id: Mapped[str] = mapped_column(String(32), nullable=False)
-    failure_class: Mapped[str] = mapped_column(
-        String(100), nullable=False, default="unknown"
-    )
+    failure_class: Mapped[str] = mapped_column(String(100), nullable=False, default="unknown")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -212,9 +187,7 @@ class ReflexionLesson(Base):
 class StrategyCertificationEvidence(Base):
     __tablename__ = "strategy_certification_evidence"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
         String(32),
         ForeignKey("tenants.id", ondelete="CASCADE"),

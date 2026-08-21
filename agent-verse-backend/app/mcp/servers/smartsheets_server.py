@@ -3,6 +3,7 @@
 Environment:
   SMARTSHEET_ACCESS_TOKEN: Smartsheet API access token
 """
+
 from __future__ import annotations
 
 import os

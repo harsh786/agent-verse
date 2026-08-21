@@ -12,6 +12,7 @@ Endpoints:
   POST   /approvals/delegate-all       "On leave" → delegate all pending to user
   GET    /approvals/stream             SSE stream of inbox events
 """
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
@@ -124,9 +125,7 @@ async def get_approval(request_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.post("/{request_id}/decide", status_code=status.HTTP_200_OK)
-async def decide_approval(
-    request_id: str, body: DecideRequest, request: Request
-) -> dict[str, Any]:
+async def decide_approval(request_id: str, body: DecideRequest, request: Request) -> dict[str, Any]:
     """Submit a reviewer decision."""
     svc = _svc(request)
     user_id = _user_id(request)
@@ -162,9 +161,7 @@ async def delegate_approval(
 
 
 @router.post("/{request_id}/escalate", status_code=status.HTTP_200_OK)
-async def escalate_approval(
-    request_id: str, request: Request
-) -> dict[str, Any]:
+async def escalate_approval(request_id: str, request: Request) -> dict[str, Any]:
     svc = _svc(request)
     user_id = _user_id(request)
     try:
@@ -201,9 +198,7 @@ async def magic_link_decide(
     svc = _svc(request)
     payload = await svc.consume_magic_link(token)
     if payload is None:
-        raise HTTPException(
-            status_code=410, detail="Magic link expired or already used"
-        )
+        raise HTTPException(status_code=410, detail="Magic link expired or already used")
 
     request_id = payload.get("request_id", "")
     user_id = "magic_link"
@@ -253,6 +248,7 @@ async def stream_approvals(request: Request) -> StreamingResponse:
     async def event_gen() -> AsyncGenerator[str, None]:
         import asyncio
         import json as _json
+
         # Poll every 5 seconds for new pending requests
         seen: set[str] = set()
         for _ in range(60):  # max 5 min stream

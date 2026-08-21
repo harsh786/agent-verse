@@ -3,6 +3,7 @@
 Environment:
   CLOUDFLARE_API_TOKEN: Cloudflare API token with appropriate permissions
 """
+
 from __future__ import annotations
 
 import os
@@ -227,8 +228,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "workers": [
-                        {"id": w.get("id"), "etag": w.get("etag")}
-                        for w in data.get("result", [])
+                        {"id": w.get("id"), "etag": w.get("etag")} for w in data.get("result", [])
                     ]
                 }
 

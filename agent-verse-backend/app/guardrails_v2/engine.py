@@ -1,10 +1,13 @@
 """Guardrails 2.0 evaluation engine."""
+
 from __future__ import annotations
-import re
-import logging
-import uuid
+
 import datetime
+import logging
+import re
+import uuid
 from typing import Any
+
 from app.guardrails_v2.models import (
     GuardrailAction,
     GuardrailLayer,
@@ -17,30 +20,30 @@ _log = logging.getLogger(__name__)
 
 # Simple pattern sets for deterministic checks
 _PII_PATTERNS = [
-    (r'\b\d{3}-\d{2}-\d{4}\b', 'SSN'),
-    (r'\b4[0-9]{12}(?:[0-9]{3})?\b', 'Visa card'),
-    (r'\b5[1-5][0-9]{14}\b', 'Mastercard'),
-    (r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', 'Email'),
-    (r'\b(?:\+1)?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b', 'Phone'),
+    (r"\b\d{3}-\d{2}-\d{4}\b", "SSN"),
+    (r"\b4[0-9]{12}(?:[0-9]{3})?\b", "Visa card"),
+    (r"\b5[1-5][0-9]{14}\b", "Mastercard"),
+    (r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "Email"),
+    (r"\b(?:\+1)?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b", "Phone"),
 ]
 
 _SECRET_PATTERNS = [
-    (r'sk-[a-zA-Z0-9]{20,}', 'OpenAI API key'),
-    (r'sk-ant-[a-zA-Z0-9]{20,}', 'Anthropic API key'),
-    (r'ghp_[a-zA-Z0-9]{36}', 'GitHub token'),
-    (r'AIza[0-9A-Za-z-_]{35}', 'Google API key'),
-    (r'(?i)password\s*[=:]\s*["\']?[\w!@#$%^&*]+', 'Password in text'),
+    (r"sk-[a-zA-Z0-9]{20,}", "OpenAI API key"),
+    (r"sk-ant-[a-zA-Z0-9]{20,}", "Anthropic API key"),
+    (r"ghp_[a-zA-Z0-9]{36}", "GitHub token"),
+    (r"AIza[0-9A-Za-z-_]{35}", "Google API key"),
+    (r'(?i)password\s*[=:]\s*["\']?[\w!@#$%^&*]+', "Password in text"),
 ]
 
 _INJECTION_PATTERNS = [
-    r'ignore\s+previous\s+instructions',
-    r'disregard\s+(all\s+)?previous',
-    r'forget\s+(everything|all)',
-    r'you\s+are\s+now\s+',
-    r'pretend\s+(you\s+are|to\s+be)',
-    r'act\s+as\s+',
-    r'jailbreak',
-    r'dan\s+mode',
+    r"ignore\s+previous\s+instructions",
+    r"disregard\s+(all\s+)?previous",
+    r"forget\s+(everything|all)",
+    r"you\s+are\s+now\s+",
+    r"pretend\s+(you\s+are|to\s+be)",
+    r"act\s+as\s+",
+    r"jailbreak",
+    r"dan\s+mode",
 ]
 
 
@@ -98,7 +101,7 @@ class GuardrailsEngine:
                     severity=rule.severity,
                     goal_id=goal_id,
                     step_description=step_description,
-                    created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    created_at=datetime.datetime.now(datetime.UTC).isoformat(),
                 )
                 violations.append(violation)
                 self._violations.setdefault(tenant_id, []).append(violation)
@@ -140,13 +143,15 @@ class GuardrailsEngine:
         for rule in rules:
             result = await self._evaluate_rule(rule, content)
             if result["triggered"]:
-                would_trigger.append({
-                    "rule_name": rule.name,
-                    "action": rule.action.value,
-                    "category": result.get("category", "unknown"),
-                    "severity": rule.severity,
-                    "matches": result.get("matches", []),
-                })
+                would_trigger.append(
+                    {
+                        "rule_name": rule.name,
+                        "action": rule.action.value,
+                        "category": result.get("category", "unknown"),
+                        "severity": rule.severity,
+                        "matches": result.get("matches", []),
+                    }
+                )
 
         return {
             "would_block": any(w["action"] == "block" for w in would_trigger),
@@ -207,14 +212,15 @@ class GuardrailsEngine:
             return {"triggered": False, "matches": [], "category": "toxicity"}
         try:
             from app.providers.base import CompletionRequest, Message
-            prompt = (
-                f"Is this text toxic? Answer only yes or no.\n\nText: {content[:200]}"
+
+            prompt = f"Is this text toxic? Answer only yes or no.\n\nText: {content[:200]}"
+            resp = await self._provider.complete(
+                CompletionRequest(
+                    messages=[Message(role="user", content=prompt)],
+                    model="",
+                    max_tokens=5,
+                )
             )
-            resp = await self._provider.complete(CompletionRequest(
-                messages=[Message(role="user", content=prompt)],
-                model="",
-                max_tokens=5,
-            ))
             is_toxic = "yes" in resp.content.lower()
             return {"triggered": is_toxic, "matches": [], "category": "toxicity"}
         except Exception:

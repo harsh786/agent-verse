@@ -4,6 +4,7 @@ Environment variables:
   OKTA_BASE_URL: Okta tenant base URL, e.g. https://dev-123456.okta.com
   OKTA_API_TOKEN: Okta SSWS API token
 """
+
 from __future__ import annotations
 
 import os
@@ -190,9 +191,7 @@ async def call_tool(
         return {"error": "OKTA_API_TOKEN not configured"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=base_url, headers=_headers(), timeout=30.0
-        ) as client:
+        async with httpx.AsyncClient(base_url=base_url, headers=_headers(), timeout=30.0) as client:
             if tool_name == "okta_list_users":
                 params: dict[str, Any] = {"limit": arguments.get("limit", 50)}
                 if arguments.get("search"):
@@ -251,9 +250,7 @@ async def call_tool(
 
                 payload: dict[str, Any] = {"profile": profile}
                 if arguments.get("password"):
-                    payload["credentials"] = {
-                        "password": {"value": arguments["password"]}
-                    }
+                    payload["credentials"] = {"password": {"value": arguments["password"]}}
                 if arguments.get("group_ids"):
                     payload["groupIds"] = arguments["group_ids"]
 
@@ -278,9 +275,7 @@ async def call_tool(
                 ]:
                     if src in arguments:
                         profile[dst] = arguments[src]
-                resp = await client.post(
-                    f"/api/v1/users/{user_id}", json={"profile": profile}
-                )
+                resp = await client.post(f"/api/v1/users/{user_id}", json={"profile": profile})
                 resp.raise_for_status()
                 u = resp.json()
                 return {
@@ -292,9 +287,7 @@ async def call_tool(
 
             elif tool_name == "okta_deactivate_user":
                 user_id = arguments["user_id"]
-                resp = await client.post(
-                    f"/api/v1/users/{user_id}/lifecycle/deactivate"
-                )
+                resp = await client.post(f"/api/v1/users/{user_id}/lifecycle/deactivate")
                 resp.raise_for_status()
                 return {"deactivated": True, "user_id": user_id}
 

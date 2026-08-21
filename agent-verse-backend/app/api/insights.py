@@ -8,6 +8,7 @@ Endpoints:
     GET  /insights/agent-health/{agent_id}  — 6-axis health radar data
     GET  /insights/benchmarks  — anonymized platform benchmarks
 """
+
 from __future__ import annotations
 
 import re
@@ -29,6 +30,7 @@ def _require_tenant(request: Request) -> TenantContext:
 
 
 # ── Pre-run Cost & Time Estimator ────────────────────────────────────────────
+
 
 class EstimateRequest(BaseModel):
     goal: str = Field(..., min_length=1, max_length=10_000)
@@ -60,7 +62,8 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
             # Embed the goal text
             embedding = await embedder.embed(body.goal)
             if embedding:
-                from sqlalchemy import text as _t  # noqa: PLC0415
+                from sqlalchemy import text as _t
+
                 async with db_factory() as session:
                     await session.execute(
                         _t("SELECT set_config('app.tenant_id', :tid, true)"),
@@ -70,8 +73,9 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
                     # fall back to recency-ordered query if pgvector is absent.
                     vector_str = "[" + ",".join(str(x) for x in embedding) + "]"
                     try:
-                        rows = (await session.execute(
-                            _t("""
+                        rows = (
+                            await session.execute(
+                                _t("""
                                 SELECT cost_usd, duration_s, iterations, status,
                                        1 - (embedding <=> :vec::vector) AS similarity
                                 FROM goals
@@ -82,12 +86,14 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
                                 ORDER BY embedding <=> :vec::vector
                                 LIMIT 20
                             """),
-                            {"tid": tenant.tenant_id, "vec": vector_str},
-                        )).fetchall()
+                                {"tid": tenant.tenant_id, "vec": vector_str},
+                            )
+                        ).fetchall()
                     except Exception:
                         # pgvector extension unavailable or no embedding column
-                        rows = (await session.execute(
-                            _t("""
+                        rows = (
+                            await session.execute(
+                                _t("""
                                 SELECT cost_usd, duration_s, iterations, status,
                                        1.0 AS similarity
                                 FROM goals
@@ -97,8 +103,9 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
                                 ORDER BY created_at DESC
                                 LIMIT 50
                             """),
-                            {"tid": tenant.tenant_id},
-                        )).fetchall()
+                                {"tid": tenant.tenant_id},
+                            )
+                        ).fetchall()
 
                     if rows:
                         completed = [r for r in rows if r[3] == "complete"]
@@ -109,6 +116,7 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
 
                         if all_costs:
                             import statistics
+
                             result = {
                                 "estimated_cost_usd": {
                                     "min": round(min(all_costs), 4),
@@ -118,8 +126,7 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
                                 "estimated_duration_s": {
                                     "min": int(min(all_durations)) if all_durations else 15,
                                     "mean": (
-                                        int(statistics.mean(all_durations))
-                                        if all_durations else 45
+                                        int(statistics.mean(all_durations)) if all_durations else 45
                                     ),
                                     "max": int(max(all_durations)) if all_durations else 120,
                                 },
@@ -131,8 +138,10 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
                                 "success_probability": round(success_rate, 3),
                                 "similar_goals_count": len(rows),
                                 "confidence": (
-                                    "high" if len(rows) >= 10
-                                    else "medium" if len(rows) >= 3
+                                    "high"
+                                    if len(rows) >= 10
+                                    else "medium"
+                                    if len(rows) >= 3
                                     else "low"
                                 ),
                                 "based_on": "historical_data",
@@ -145,6 +154,7 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
 
 # ── Execution Graph ───────────────────────────────────────────────────────────
 
+
 @router.get("/graph/{goal_id}")
 async def get_execution_graph(goal_id: str, request: Request) -> dict[str, Any]:
     """Return the goal execution as a graph of tool calls and data flows."""
@@ -156,9 +166,7 @@ async def get_execution_graph(goal_id: str, request: Request) -> dict[str, Any]:
     # Load goal events.  get_events() has a DB fallback so it works even after
     # a server restart or when the goal was run by a Celery worker.
     try:
-        events: list[dict[str, Any]] = await goal_svc.get_events(
-            goal_id=goal_id, tenant_ctx=tenant
-        )
+        events: list[dict[str, Any]] = await goal_svc.get_events(goal_id=goal_id, tenant_ctx=tenant)
     except Exception:
         events = []
 
@@ -187,19 +195,23 @@ async def get_execution_graph(goal_id: str, request: Request) -> dict[str, Any]:
             for step_label in steps[:20]:
                 step_counter += 1
                 node_id = f"plan_step_{step_counter}"
-                nodes.append({
-                    "id": node_id,
-                    "type": "step",
-                    "label": str(step_label)[:60],
-                    "data": {"status": "planned", "description": str(step_label)},
-                })
+                nodes.append(
+                    {
+                        "id": node_id,
+                        "type": "step",
+                        "label": str(step_label)[:60],
+                        "data": {"status": "planned", "description": str(step_label)},
+                    }
+                )
                 edges.append({"id": f"e_{prev_id}_{node_id}", "source": prev_id, "target": node_id})
                 prev_id = node_id
 
         # ── Individual step events ────────────────────────────────────────────
         elif evt_type in ("step_start", "step_started"):
             step_label = (
-                evt.get("step") or payload.get("step") or payload.get("description")
+                evt.get("step")
+                or payload.get("step")
+                or payload.get("description")
                 or f"Step {step_counter + 1}"
             )
             dedup_key = f"step__{str(step_label)[:40]}"
@@ -207,65 +219,85 @@ async def get_execution_graph(goal_id: str, request: Request) -> dict[str, Any]:
                 step_counter += 1
                 node_id = f"step_{step_counter}"
                 node_ids.add(dedup_key)
-                nodes.append({
-                    "id": node_id,
-                    "type": "step",
-                    "label": str(step_label)[:60],
-                    "data": {"status": "running", "description": str(step_label)},
-                })
+                nodes.append(
+                    {
+                        "id": node_id,
+                        "type": "step",
+                        "label": str(step_label)[:60],
+                        "data": {"status": "running", "description": str(step_label)},
+                    }
+                )
                 edges.append({"id": f"e_{prev_id}_{node_id}", "source": prev_id, "target": node_id})
                 prev_id = node_id
 
         # ── Tool call events (actual event type is tool_call_complete) ────────
         elif evt_type in ("tool_call", "tool_result", "tool_call_complete", "tool_call_failed"):
             tool_name = (
-                evt.get("tool_name") or evt.get("tool")
-                or payload.get("tool_name") or payload.get("name")
+                evt.get("tool_name")
+                or evt.get("tool")
+                or payload.get("tool_name")
+                or payload.get("name")
                 or "tool"
             )
             tool_counter[tool_name] = tool_counter.get(tool_name, 0) + 1
-            node_id = f"tool_{tool_name.replace('.', '_').replace('/', '_')}_{tool_counter[tool_name]}"
+            node_id = (
+                f"tool_{tool_name.replace('.', '_').replace('/', '_')}_{tool_counter[tool_name]}"
+            )
             if node_id not in node_ids:
                 success = evt.get("success", evt_type != "tool_call_failed")
                 # Extract output preview (first 120 chars)
                 raw_output = (
-                    evt.get("output") or evt.get("result")
-                    or payload.get("output") or payload.get("result") or ""
+                    evt.get("output")
+                    or evt.get("result")
+                    or payload.get("output")
+                    or payload.get("result")
+                    or ""
                 )
                 output_preview = str(raw_output)[:120] if raw_output else ""
-                nodes.append({
-                    "id": node_id,
-                    "type": "tool",
-                    "label": str(tool_name)[:40],
-                    "data": {
-                        "tool_name": tool_name,
-                        "server_id": evt.get("server_id") or payload.get("server_id"),
-                        "status": "success" if success else "failed",
-                        "output_preview": output_preview,
-                        "duration_ms": evt.get("duration_ms"),
-                        "error": evt.get("error") if not success else None,
-                    },
-                })
+                nodes.append(
+                    {
+                        "id": node_id,
+                        "type": "tool",
+                        "label": str(tool_name)[:40],
+                        "data": {
+                            "tool_name": tool_name,
+                            "server_id": evt.get("server_id") or payload.get("server_id"),
+                            "status": "success" if success else "failed",
+                            "output_preview": output_preview,
+                            "duration_ms": evt.get("duration_ms"),
+                            "error": evt.get("error") if not success else None,
+                        },
+                    }
+                )
                 node_ids.add(node_id)
                 edges.append({"id": f"e_{prev_id}_{node_id}", "source": prev_id, "target": node_id})
                 prev_id = node_id
 
         # ── Terminal events ───────────────────────────────────────────────────
-        elif evt_type in ("goal_complete", "goal_failed", "goal_cancelled",
-                          "worker_complete", "worker_failed"):
+        elif evt_type in (
+            "goal_complete",
+            "goal_failed",
+            "goal_cancelled",
+            "worker_complete",
+            "worker_failed",
+        ):
             end_id = "end"
             if end_id not in node_ids:
                 label = (
-                    "Complete" if evt_type in ("goal_complete", "worker_complete")
-                    else "Failed" if evt_type in ("goal_failed", "worker_failed")
+                    "Complete"
+                    if evt_type in ("goal_complete", "worker_complete")
+                    else "Failed"
+                    if evt_type in ("goal_failed", "worker_failed")
                     else "Cancelled"
                 )
-                nodes.append({
-                    "id": end_id,
-                    "type": "end" if label != "Failed" else "failed",
-                    "label": label,
-                    "data": {"status": evt_type},
-                })
+                nodes.append(
+                    {
+                        "id": end_id,
+                        "type": "end" if label != "Failed" else "failed",
+                        "label": label,
+                        "data": {"status": evt_type},
+                    }
+                )
                 node_ids.add(end_id)
             edges.append({"id": f"e_{prev_id}_end", "source": prev_id, "target": "end"})
 
@@ -283,6 +315,7 @@ async def get_execution_graph(goal_id: str, request: Request) -> dict[str, Any]:
 
 
 # ── Failure Analysis ──────────────────────────────────────────────────────────
+
 
 @router.get("/analysis/{goal_id}")
 async def analyze_failure(goal_id: str, request: Request) -> dict[str, Any]:
@@ -322,6 +355,7 @@ async def analyze_failure(goal_id: str, request: Request) -> dict[str, Any]:
     if provider is not None and verification:
         try:
             from app.providers.base import CompletionRequest, Message
+
             prompt = (
                 f"An AI agent failed to complete a goal. Analyze and suggest fixes.\n\n"
                 f"{failure_context}\n\n"
@@ -332,12 +366,15 @@ async def analyze_failure(goal_id: str, request: Request) -> dict[str, Any]:
                 "Reply in this exact JSON format:\n"
                 '{"failure_reason": "...", "suggestions": [...]}'
             )
-            resp = await provider.complete(CompletionRequest(
-                messages=[Message(role="user", content=prompt)],
-                model="",
-                max_tokens=500,
-            ))
+            resp = await provider.complete(
+                CompletionRequest(
+                    messages=[Message(role="user", content=prompt)],
+                    model="",
+                    max_tokens=500,
+                )
+            )
             import json as _json
+
             parsed = _json.loads(resp.content.strip())
             failure_reason = parsed.get("failure_reason", failure_reason)
             suggestions = parsed.get("suggestions", [])[:5]
@@ -348,18 +385,47 @@ async def analyze_failure(goal_id: str, request: Request) -> dict[str, Any]:
     if not suggestions:
         text_lower = (verification + goal_text).lower()
         if "rate limit" in text_lower or "429" in text_lower:
-            suggestions.append({"action": "Rate limit", "description": "Add retry delays between API calls. Use exponential backoff."})
+            suggestions.append(
+                {
+                    "action": "Rate limit",
+                    "description": "Add retry delays between API calls. Use exponential backoff.",
+                }
+            )
         if "timeout" in text_lower or "timed out" in text_lower:
-            suggestions.append({"action": "Timeout", "description": "Increase the SLA budget or break the goal into smaller sub-goals."})
+            suggestions.append(
+                {
+                    "action": "Timeout",
+                    "description": "Increase the SLA budget or break the goal into smaller sub-goals.",
+                }
+            )
         if "permission" in text_lower or "unauthorized" in text_lower or "403" in text_lower:
-            suggestions.append({"action": "Permissions", "description": "Check that the connector has the required OAuth scopes."})
+            suggestions.append(
+                {
+                    "action": "Permissions",
+                    "description": "Check that the connector has the required OAuth scopes.",
+                }
+            )
         if "not found" in text_lower or "404" in text_lower:
-            suggestions.append({"action": "Missing resource", "description": "Verify the resource exists and the identifier is correct."})
+            suggestions.append(
+                {
+                    "action": "Missing resource",
+                    "description": "Verify the resource exists and the identifier is correct.",
+                }
+            )
         if not suggestions:
             suggestions = [
-                {"action": "Rephrase goal", "description": "Try rephrasing with more specific instructions."},
-                {"action": "Check connectors", "description": "Verify all required MCP connectors are registered and authenticated."},
-                {"action": "Dry run", "description": "Use dry_run=true to test the plan without executing tools."},
+                {
+                    "action": "Rephrase goal",
+                    "description": "Try rephrasing with more specific instructions.",
+                },
+                {
+                    "action": "Check connectors",
+                    "description": "Verify all required MCP connectors are registered and authenticated.",
+                },
+                {
+                    "action": "Dry run",
+                    "description": "Use dry_run=true to test the plan without executing tools.",
+                },
             ]
 
     return {
@@ -374,6 +440,7 @@ async def analyze_failure(goal_id: str, request: Request) -> dict[str, Any]:
 
 
 # ── Natural Language Query ────────────────────────────────────────────────────
+
 
 class NLQueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=500)
@@ -397,7 +464,8 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
     provider = getattr(request.app.state, "_app_provider", None)
     if provider is not None:
         try:
-            from app.providers.base import CompletionRequest, Message  # noqa: PLC0415
+            from app.providers.base import CompletionRequest, Message
+
             parse_prompt = (
                 "Parse this natural language query about AI agent goals "
                 "into structured filters.\n\n"
@@ -412,12 +480,15 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
                 '- "goals about deployment this week"'
                 ' \u2192 {"days": 7, "search": "deploy"}\n'
             )
-            resp = await provider.complete(CompletionRequest(
-                messages=[Message(role="user", content=parse_prompt)],
-                model="",
-                max_tokens=150,
-            ))
-            import json as _json  # noqa: PLC0415
+            resp = await provider.complete(
+                CompletionRequest(
+                    messages=[Message(role="user", content=parse_prompt)],
+                    model="",
+                    max_tokens=150,
+                )
+            )
+            import json as _json
+
             parsed = _json.loads(resp.content.strip())
             days = int(parsed.get("days", 30))
             status_filter = parsed.get("status") or None
@@ -461,6 +532,7 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
 
     # Apply filters
     import datetime as _dt
+
     cutoff = _dt.datetime.now(_dt.UTC) - _dt.timedelta(days=days)
     results = []
     for g in all_goals:
@@ -469,6 +541,7 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
         if created:
             try:
                 from dateutil.parser import parse as _parse
+
                 if _parse(created).replace(tzinfo=_dt.UTC) < cutoff:
                     continue
             except Exception:
@@ -483,7 +556,7 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
                 continue
         results.append(g)
 
-    results = results[:body.limit]
+    results = results[: body.limit]
     return {
         "results": results,
         "total": len(results),
@@ -497,6 +570,7 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
 
 
 # ── Agent Health Radar ────────────────────────────────────────────────────────
+
 
 @router.get("/agent-health/{agent_id}")
 async def get_agent_health(agent_id: str, request: Request) -> dict[str, Any]:
@@ -522,12 +596,16 @@ async def get_agent_health(agent_id: str, request: Request) -> dict[str, Any]:
     if db_factory is not None:
         try:
             from sqlalchemy import text as _t
+
             async with db_factory() as session:
-                await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant.tenant_id})
+                await session.execute(
+                    _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant.tenant_id}
+                )
 
                 # Query goals for this specific agent
-                goals_row = (await session.execute(
-                    _t("""
+                goals_row = (
+                    await session.execute(
+                        _t("""
                         SELECT
                             COUNT(*) as total,
                             SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) as completed,
@@ -539,8 +617,9 @@ async def get_agent_health(agent_id: str, request: Request) -> dict[str, Any]:
                         WHERE tenant_id = :tid
                           AND agent_id = :aid
                     """),
-                    {"tid": tenant.tenant_id, "aid": agent_id},
-                )).fetchone()
+                        {"tid": tenant.tenant_id, "aid": agent_id},
+                    )
+                ).fetchone()
 
                 if goals_row and goals_row[0] and int(goals_row[0]) > 0:
                     total = int(goals_row[0])
@@ -552,15 +631,22 @@ async def get_agent_health(agent_id: str, request: Request) -> dict[str, Any]:
 
                     # Speed: inverse of avg_duration (faster = higher score)
                     # Normalize: 0s = 1.0, 60s = 0.5, 300s = 0.1
-                    speed = max(0.0, min(1.0, 1.0 / (1.0 + avg_duration / 60.0))) if avg_duration > 0 else 0.7
+                    speed = (
+                        max(0.0, min(1.0, 1.0 / (1.0 + avg_duration / 60.0)))
+                        if avg_duration > 0
+                        else 0.7
+                    )
 
                     # Cost efficiency: inverse of avg_cost (cheaper = more efficient)
                     # Normalize: $0 = 1.0, $0.10 = 0.5, $1.00 = 0.1
-                    cost_efficiency = max(0.0, min(1.0, 1.0 / (1.0 + avg_cost / 0.05))) if avg_cost > 0 else 0.7
+                    cost_efficiency = (
+                        max(0.0, min(1.0, 1.0 / (1.0 + avg_cost / 0.05))) if avg_cost > 0 else 0.7
+                    )
 
                     # Try to get eval scores for this agent
-                    eval_row = (await session.execute(
-                        _t("""
+                    eval_row = (
+                        await session.execute(
+                            _t("""
                             SELECT
                                 COUNT(*) as total,
                                 AVG(score_task_completion) as accuracy,
@@ -570,8 +656,9 @@ async def get_agent_health(agent_id: str, request: Request) -> dict[str, Any]:
                             WHERE e.tenant_id = :tid
                               AND g.agent_id = :aid
                         """),
-                        {"tid": tenant.tenant_id, "aid": agent_id},
-                    )).fetchone()
+                            {"tid": tenant.tenant_id, "aid": agent_id},
+                        )
+                    ).fetchone()
 
                     accuracy = float(eval_row[1] or 0.7) if eval_row and eval_row[0] else 0.7
                     coherence = float(eval_row[2] or 0.7) if eval_row and eval_row[0] else 0.7
@@ -591,16 +678,18 @@ async def get_agent_health(agent_id: str, request: Request) -> dict[str, Any]:
 
                     # Refine tool_coverage using actual distinct tools from execution_context
                     try:
-                        tool_rows = (await session.execute(
-                            _t("""
+                        tool_rows = (
+                            await session.execute(
+                                _t("""
                                 SELECT COUNT(DISTINCT (execution_context->>'last_tool_used')) AS unique_tools
                                 FROM goals
                                 WHERE tenant_id = :tid
                                   AND agent_id = :aid
                                   AND execution_context->>'last_tool_used' IS NOT NULL
                             """),
-                            {"tid": tenant.tenant_id, "aid": agent_id},
-                        )).fetchone()
+                                {"tid": tenant.tenant_id, "aid": agent_id},
+                            )
+                        ).fetchone()
                         if tool_rows and tool_rows[0]:
                             unique_tools = int(tool_rows[0])
                             # 10+ unique tools = 1.0, 0 = 0.0
@@ -608,13 +697,14 @@ async def get_agent_health(agent_id: str, request: Request) -> dict[str, Any]:
                     except Exception:
                         pass
                     health["tool_coverage"] = round(tool_coverage, 3)
-        except Exception as exc:
+        except Exception:
             pass  # Return defaults on any DB error
 
     return {"agent_id": agent_id, "health": health, "sample_size": sample_size}
 
 
 # ── Platform Benchmarks ───────────────────────────────────────────────────────
+
 
 @router.get("/benchmarks")
 async def get_benchmarks(request: Request) -> dict[str, Any]:
@@ -631,10 +721,12 @@ async def get_benchmarks(request: Request) -> dict[str, Any]:
         if db is not None:
             try:
                 from sqlalchemy import text as _t
+
                 async with db() as session:
                     # Cross-tenant aggregate (anonymized)
-                    row = (await session.execute(
-                        _t("""
+                    row = (
+                        await session.execute(
+                            _t("""
                             SELECT
                                 COUNT(*) as total,
                                 AVG(CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as success_rate,
@@ -652,10 +744,10 @@ async def get_benchmarks(request: Request) -> dict[str, Any]:
                             FROM goals
                             WHERE status IN ('complete', 'failed')
                               AND cost_usd IS NOT NULL
-                        """
-                        ),
-                        {},
-                    )).fetchone()
+                        """),
+                            {},
+                        )
+                    ).fetchone()
 
                     if row and row[0] and int(row[0]) >= 10:
                         real_data = True
@@ -681,7 +773,9 @@ async def get_benchmarks(request: Request) -> dict[str, Any]:
                                 },
                                 "p90": {
                                     "success_rate": round(float(row[12] or 0), 3),
-                                    "cost_usd": round(float(row[8] or 0), 4),  # p90 cost > p75 > p50 (correct order)
+                                    "cost_usd": round(
+                                        float(row[8] or 0), 4
+                                    ),  # p90 cost > p75 > p50 (correct order)
                                 },
                             },
                             "sample_count": int(row[0]),

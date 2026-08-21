@@ -18,9 +18,9 @@ if TYPE_CHECKING:
 
 
 class Intent(enum.StrEnum):
-    QA = "QA"           # Question answering — stream LLM response directly
-    GOAL = "GOAL"       # Agent goal execution via LangGraph loop
-    CLARIFY = "CLARIFY" # Need more info before acting
+    QA = "QA"  # Question answering — stream LLM response directly
+    GOAL = "GOAL"  # Agent goal execution via LangGraph loop
+    CLARIFY = "CLARIFY"  # Need more info before acting
     SCHEDULE = "SCHEDULE"  # Schedule a recurring / delayed goal
 
 
@@ -38,30 +38,89 @@ _SCHEDULE_PATTERNS: list[re.Pattern[str]] = [
 
 _GOAL_VERBS: frozenset[str] = frozenset(
     [
-        "deploy", "run", "execute", "create", "build", "fix", "delete",
-        "update", "migrate", "install", "generate", "write", "send",
-        "set up", "setup", "configure", "start", "stop", "restart",
-        "debug", "refactor", "test", "scan", "analyse", "analyze",
-        "optimise", "optimize", "automate", "publish", "release",
-        "rollback", "backup", "clone", "fork", "merge", "checkout",
-        "compile", "lint", "format", "dockerize", "containerize",
-        "provision", "scale", "monitor", "alert", "notify",
+        "deploy",
+        "run",
+        "execute",
+        "create",
+        "build",
+        "fix",
+        "delete",
+        "update",
+        "migrate",
+        "install",
+        "generate",
+        "write",
+        "send",
+        "set up",
+        "setup",
+        "configure",
+        "start",
+        "stop",
+        "restart",
+        "debug",
+        "refactor",
+        "test",
+        "scan",
+        "analyse",
+        "analyze",
+        "optimise",
+        "optimize",
+        "automate",
+        "publish",
+        "release",
+        "rollback",
+        "backup",
+        "clone",
+        "fork",
+        "merge",
+        "checkout",
+        "compile",
+        "lint",
+        "format",
+        "dockerize",
+        "containerize",
+        "provision",
+        "scale",
+        "monitor",
+        "alert",
+        "notify",
     ]
 )
 
 _QA_STARTERS: frozenset[str] = frozenset(
     [
-        "what", "how", "why", "explain", "describe", "show me",
-        "tell me", "can you", "could you", "summarize", "summarise",
-        "list", "give me", "define", "help me understand", "clarify",
-        "difference between", "compare", "is it", "are there",
-        "does", "did", "when was", "where is", "who is", "which",
+        "what",
+        "how",
+        "why",
+        "explain",
+        "describe",
+        "show me",
+        "tell me",
+        "can you",
+        "could you",
+        "summarize",
+        "summarise",
+        "list",
+        "give me",
+        "define",
+        "help me understand",
+        "clarify",
+        "difference between",
+        "compare",
+        "is it",
+        "are there",
+        "does",
+        "did",
+        "when was",
+        "where is",
+        "who is",
+        "which",
     ]
 )
 
 _UNDERSPECIFIED_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"\bit\b", re.I),            # "deploy it"
-    re.compile(r"\bthis\b", re.I),          # "fix this"
+    re.compile(r"\bit\b", re.I),  # "deploy it"
+    re.compile(r"\bthis\b", re.I),  # "fix this"
     re.compile(r"\bsomething\b", re.I),
     re.compile(r"\bsomewhere\b", re.I),
     re.compile(r"\bsomeone\b", re.I),
@@ -79,7 +138,7 @@ class ClarifyRequest:
 class ScheduleConfirmation:
     goal_text: str
     cron_expression: str
-    human_schedule: str       # "every day at 9 AM"
+    human_schedule: str  # "every day at 9 AM"
     next_run_iso: str | None = None
 
 
@@ -156,8 +215,7 @@ class IntentRouter:
     def _has_file_context(self, history: list[dict[str, str]]) -> bool:
         for turn in history[-5:]:
             if turn.get("role") == "user" and (
-                "#file:" in turn.get("content", "")
-                or "@" in turn.get("content", "")
+                "#file:" in turn.get("content", "") or "@" in turn.get("content", "")
             ):
                 return True
         return False
@@ -204,6 +262,7 @@ class IntentRouter:
     ) -> ScheduleConfirmation:
         """Parse a natural-language schedule expression and return a confirmation."""
         import re as _re
+
         cron = "0 9 * * *"  # sensible default: daily at 9 AM
         human = "every day at 9 AM"
 
@@ -215,9 +274,15 @@ class IntentRouter:
             if ampm and ampm.lower() == "pm" and hour != 12:
                 hour += 12
             day_map = {
-                "monday": 1, "tuesday": 2, "wednesday": 3, "thursday": 4,
-                "friday": 5, "saturday": 6, "sunday": 0,
-                "day": "*", "morning": "*",
+                "monday": 1,
+                "tuesday": 2,
+                "wednesday": 3,
+                "thursday": 4,
+                "friday": 5,
+                "saturday": 6,
+                "sunday": 0,
+                "day": "*",
+                "morning": "*",
             }
             dow = day_map.get(day_word.lower(), "*")
             cron = f"{minute} {hour} * * {dow}"

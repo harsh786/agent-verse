@@ -4,6 +4,7 @@ Follows the MCP (Model Context Protocol) spec:
 - GET /tools -> returns list of available tools
 - POST /tools/{tool_name} -> executes a tool with given arguments
 """
+
 from __future__ import annotations
 
 import base64
@@ -137,9 +138,7 @@ class MCPClient:
         self._secret_resolver = cast(
             "SecretResolver", secret_resolver or resolve_connector_secret_ref
         )
-        self._secret_resolver_accepts_tenant = self._accepts_tenant_context(
-            self._secret_resolver
-        )
+        self._secret_resolver_accepts_tenant = self._accepts_tenant_context(self._secret_resolver)
         # Circuit breaker support — wired externally by setting _redis
         self._circuit_breakers: dict[str, Any] = {}
         self._redis: Any = redis
@@ -180,6 +179,7 @@ class MCPClient:
             if self._redis is not None:
                 try:
                     from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
+
                     self._circuit_breakers[cb_key] = RedisCircuitBreaker(
                         redis_client=self._redis,
                         tenant_id=tenant_id,
@@ -191,15 +191,14 @@ class MCPClient:
                     return None
             else:
                 from app.reliability.circuit_breaker import CircuitBreaker
+
                 self._circuit_breakers[cb_key] = CircuitBreaker(
                     failure_threshold=5,
                     cooldown_seconds=60.0,
                 )
         return self._circuit_breakers[cb_key]
 
-    async def _resolve_auth_value(
-        self, value: Any, tenant_ctx: TenantContext | None
-    ) -> str:
+    async def _resolve_auth_value(self, value: Any, tenant_ctx: TenantContext | None) -> str:
         if is_connector_secret_ref(value):
             resolved = (
                 self._secret_resolver(value, tenant_ctx)
@@ -257,6 +256,7 @@ class MCPClient:
     ) -> list[ToolDefinition]:
         """Discover available tools on a registered MCP server."""
         from opentelemetry import trace as _trace
+
         _tracer = _trace.get_tracer(__name__)
         with _tracer.start_as_current_span("mcp.discover_tools") as span:
             span.set_attribute("server_id", server_id)
@@ -292,8 +292,9 @@ class MCPClient:
         if cfg.builtin_handler is None:
             try:
                 from app.mcp.registry import MCPRegistry as _MCPReg
+
                 _restored = (
-                    _MCPReg.get_builtin_handler(server_id)       # e.g. 'builtin-jira'
+                    _MCPReg.get_builtin_handler(server_id)  # e.g. 'builtin-jira'
                     or _MCPReg.get_builtin_handler(cfg.server_id)  # UUID fallback
                 )
                 if _restored is not None:
@@ -307,7 +308,9 @@ class MCPClient:
                 ToolDefinition(
                     name=str(t.get("name", "")),
                     description=str(t.get("description", "")),
-                    input_schema=t.get("parameters", t.get("inputSchema", t.get("input_schema", {}))),
+                    input_schema=t.get(
+                        "parameters", t.get("inputSchema", t.get("input_schema", {}))
+                    ),
                     server_id=server_id,
                     server_name=cfg.name,
                 )
@@ -321,6 +324,7 @@ class MCPClient:
             # the planner gets a complete tool list (not an empty one).
             try:
                 from app.mcp.servers import registry_wiring as _rw
+
                 for _bcfg in _rw.get_builtin_server_configs():
                     if _bcfg.get("server_id") == server_id:
                         _tool_defs = _bcfg.get("tool_definitions", [])
@@ -328,7 +332,9 @@ class MCPClient:
                             ToolDefinition(
                                 name=str(t.get("name", "")),
                                 description=str(t.get("description", "")),
-                                input_schema=t.get("parameters", t.get("inputSchema", t.get("input_schema", {}))),
+                                input_schema=t.get(
+                                    "parameters", t.get("inputSchema", t.get("input_schema", {}))
+                                ),
                                 server_id=server_id,
                                 server_name=cfg.name,
                             )
@@ -362,9 +368,7 @@ class MCPClient:
                 )
             ]
 
-        headers = await self._build_auth_headers(
-            cfg, tenant_ctx=tenant_ctx, server_id=server_id
-        )
+        headers = await self._build_auth_headers(cfg, tenant_ctx=tenant_ctx, server_id=server_id)
         is_mcp_endpoint = _is_mcp_endpoint(cfg.url)
         if is_mcp_endpoint:
             headers["Accept"] = "application/json, text/event-stream"
@@ -455,6 +459,7 @@ class MCPClient:
             # process and at context-build time in Celery workers (Fix 2).
             try:
                 from app.mcp.registry import MCPRegistry as _MCPReg
+
                 handler = _MCPReg.get_builtin_handler(server.server_id)
             except Exception:
                 pass
@@ -480,7 +485,9 @@ class MCPClient:
                 resolved: dict[str, str] = {}
                 for k, v in credentials.items():
                     # Check for BOTH vault://connectors/ and secret://connector/ formats
-                    if isinstance(v, str) and (v.startswith("secret://") or is_connector_secret_ref(v)):
+                    if isinstance(v, str) and (
+                        v.startswith("secret://") or is_connector_secret_ref(v)
+                    ):
                         # Try in-memory store first (vault://connectors/ format)
                         plain = resolve_connector_secret_ref(v)
                         if not plain and self._secret_resolver is not None:
@@ -553,9 +560,7 @@ class MCPClient:
                 if http_method == "GET":
                     resp = await client.get(url, params=arguments, headers=headers)
                 else:
-                    resp = await client.request(
-                        http_method, url, json=arguments, headers=headers
-                    )
+                    resp = await client.request(http_method, url, json=arguments, headers=headers)
                 resp.raise_for_status()
                 body = resp.json()
                 # H1 Fix: HTTP 200 with {"error": "..."} body must be treated as failure
@@ -597,9 +602,7 @@ class MCPClient:
                 server_id=server_id,
             )
 
-        headers = await self._build_auth_headers(
-            server, tenant_ctx=tenant_ctx, server_id=server_id
-        )
+        headers = await self._build_auth_headers(server, tenant_ctx=tenant_ctx, server_id=server_id)
         default_fields = [
             "summary",
             "status",
@@ -689,14 +692,14 @@ class MCPClient:
         if cfg.builtin_handler is None:
             try:
                 from app.mcp.registry import MCPRegistry as _MCPReg
+
                 # The config's server_id may be a UUID (the key under which the user's
                 # registration is stored) while the builtin handler is registered under
                 # the canonical builtin server_id (e.g. 'builtin-jira').
                 # Try cfg.server_id first, then fall back to the original server_id arg.
-                _restored = (
-                    _MCPReg.get_builtin_handler(cfg.server_id)
-                    or _MCPReg.get_builtin_handler(server_id)
-                )
+                _restored = _MCPReg.get_builtin_handler(
+                    cfg.server_id
+                ) or _MCPReg.get_builtin_handler(server_id)
                 if _restored is not None:
                     cfg = cfg.model_copy(update={"builtin_handler": _restored})
                     logger.info(
@@ -749,7 +752,9 @@ class MCPClient:
             try:
                 assert_public_url(_request_url, context=f"MCP server {server_id}")
             except SSRFError as exc:
-                logger.warning("ssrf_guard_blocked_mcp: server_id=%s, error=%s", server_id, str(exc))
+                logger.warning(
+                    "ssrf_guard_blocked_mcp: server_id=%s, error=%s", server_id, str(exc)
+                )
                 return ToolCallResult(
                     tool_name=tool_name,
                     success=False,
@@ -770,9 +775,7 @@ class MCPClient:
             )
 
         # 4. Normal MCP/HTTP dispatch
-        headers = await self._build_auth_headers(
-            cfg, tenant_ctx=tenant_ctx, server_id=server_id
-        )
+        headers = await self._build_auth_headers(cfg, tenant_ctx=tenant_ctx, server_id=server_id)
         headers["Content-Type"] = "application/json"
         using_jsonrpc = _is_mcp_endpoint(cfg.url)
         if using_jsonrpc:
@@ -806,12 +809,8 @@ class MCPClient:
                 )
             resp.raise_for_status()
             payload = _response_json(resp)
-            is_jsonrpc_response = (
-                using_jsonrpc
-                or (
-                    isinstance(payload, dict)
-                    and payload.get("jsonrpc") == "2.0"
-                )
+            is_jsonrpc_response = using_jsonrpc or (
+                isinstance(payload, dict) and payload.get("jsonrpc") == "2.0"
             )
             if is_jsonrpc_response and isinstance(payload, dict) and "error" in payload:
                 error = payload["error"]
@@ -931,10 +930,7 @@ class MCPClient:
                 for server in await self._registry.list_all(tenant_ctx=tenant_ctx):
                     if server.tool_definitions:
                         for tdef in server.tool_definitions:
-                            if (
-                                tdef.get("name") == tool_name
-                                or tdef.get("tool_name") == tool_name
-                            ):
+                            if tdef.get("name") == tool_name or tdef.get("tool_name") == tool_name:
                                 return await self._dispatch_openapi_tool(
                                     server=server,
                                     tool_def=tdef,
@@ -956,6 +952,7 @@ class MCPClient:
         # first call so the LLM's parameter name variations are fixed upstream.
         try:
             from app.mcp.tool_intelligence import get_healer, get_resolver
+
             _resolver = get_resolver()
             _healer = get_healer(getattr(self, "_provider", None))
 
@@ -963,7 +960,7 @@ class MCPClient:
             # Source A: cfg.tool_definitions (builtin + OpenAPI servers)
             # Source B: live discover_tools() call (external MCP servers)
             _tool_schema: dict | None = None
-            for _tdef in (cfg.tool_definitions or []):
+            for _tdef in cfg.tool_definitions or []:
                 if _tdef.get("name") == tool_name:
                     _tool_schema = (
                         _tdef.get("parameters")
@@ -977,7 +974,9 @@ class MCPClient:
             # Only do live discover_tools() for non-MCP-endpoint servers (e.g. REST APIs)
             # to avoid extra network round-trips for JSON-RPC MCP endpoints which handle
             # tool listing separately from tool calling.
-            if not _tool_schema and not _is_mcp_endpoint(getattr(cfg, "url", "") or getattr(cfg, "base_url", "") or ""):
+            if not _tool_schema and not _is_mcp_endpoint(
+                getattr(cfg, "url", "") or getattr(cfg, "base_url", "") or ""
+            ):
                 try:
                     # Check per-session schema cache first
                     _cache_key = f"{server_id}:{tenant_ctx.tenant_id}"
@@ -1024,6 +1023,7 @@ class MCPClient:
         # Exfiltration guard for write tools
         try:
             from app.agent.exfil_guard import check_tool_args_for_exfil
+
             _blocked, _reason = check_tool_args_for_exfil(
                 tool_name, arguments, tenant_id=_tenant_id
             )
@@ -1039,14 +1039,13 @@ class MCPClient:
             pass  # exfil guard must never block execution on error
 
         try:
-            result = await self._call_tool_impl(
-                cfg, server_id, tool_name, arguments, tenant_ctx
-            )
+            result = await self._call_tool_impl(cfg, server_id, tool_name, arguments, tenant_ctx)
 
             # Store successful result in tool cache (with stale backup)
             if result.success and _tc is not None:
                 try:
                     from app.mcp.tool_cache import classify_tool
+
                     if classify_tool(tool_name) == "write":
                         # Write tool succeeded — invalidate cached reads for this server
                         await _tc.invalidate_writes(
@@ -1068,8 +1067,7 @@ class MCPClient:
 
             # ── Self-healing: retry if argument error ──────────────────────────
             if (
-                not result.success
-                and _healer.is_argument_error(result.error)  # type: ignore[union-attr]
+                not result.success and _healer.is_argument_error(result.error)  # type: ignore[union-attr]
             ):
                 try:
                     logger.info(
@@ -1100,8 +1098,12 @@ class MCPClient:
             try:
                 _db = getattr(self, "_db", None)
                 await self._update_tool_stats(
-                    server_id, tool_name, _tenant_id,
-                    success=result.success, latency_ms=_latency_ms, db=_db
+                    server_id,
+                    tool_name,
+                    _tenant_id,
+                    success=result.success,
+                    latency_ms=_latency_ms,
+                    db=_db,
                 )
             except Exception:
                 pass
@@ -1116,8 +1118,7 @@ class MCPClient:
             try:
                 _db = getattr(self, "_db", None)
                 await self._update_tool_stats(
-                    server_id, tool_name, _tenant_id,
-                    success=False, latency_ms=_latency_ms, db=_db
+                    server_id, tool_name, _tenant_id, success=False, latency_ms=_latency_ms, db=_db
                 )
             except Exception:
                 pass
@@ -1135,8 +1136,7 @@ class MCPClient:
             try:
                 _db = getattr(self, "_db", None)
                 await self._update_tool_stats(
-                    server_id, tool_name, _tenant_id,
-                    success=False, latency_ms=_latency_ms, db=_db
+                    server_id, tool_name, _tenant_id, success=False, latency_ms=_latency_ms, db=_db
                 )
             except Exception:
                 pass
@@ -1148,8 +1148,13 @@ class MCPClient:
             )
 
     async def _update_tool_stats(
-        self, server_id: str, tool_name: str, tenant_id: str,
-        success: bool, latency_ms: float, db: Any = None
+        self,
+        server_id: str,
+        tool_name: str,
+        tenant_id: str,
+        success: bool,
+        latency_ms: float,
+        db: Any = None,
     ) -> None:
         """Update tool reliability statistics in tool_capabilities table."""
         if db is None:
@@ -1161,7 +1166,8 @@ class MCPClient:
                 ", error_count = error_count + 1" if not success else ""
             )
             async with db() as session, session.begin():
-                await session.execute(text(f"""
+                await session.execute(
+                    text(f"""
                     UPDATE tool_capabilities
                     SET {col_success},
                         avg_latency_ms = (avg_latency_ms * call_count + :lat) / (call_count + 1),
@@ -1171,12 +1177,16 @@ class MCPClient:
                             ELSE 1.0 END,
                         updated_at = NOW()
                     WHERE tenant_id = :tid AND connector_id = :cid AND tool_name = :tool
-                """), {
-                    "lat": latency_ms, "tid": tenant_id, "cid": server_id,
-                    "tool": tool_name,
-                    "status": "healthy" if success else "degraded",
-                    "inc": 1 if success else 0,
-                })
+                """),
+                    {
+                        "lat": latency_ms,
+                        "tid": tenant_id,
+                        "cid": server_id,
+                        "tool": tool_name,
+                        "status": "healthy" if success else "degraded",
+                        "inc": 1 if success else 0,
+                    },
+                )
         except Exception as exc:
             logging.getLogger(__name__).debug("tool_stats_update_failed: %s", exc)
 

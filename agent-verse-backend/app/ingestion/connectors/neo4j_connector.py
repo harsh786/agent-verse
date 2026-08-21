@@ -3,6 +3,7 @@
 Cursor: last node's lastModified property or internal ID.
 Exports nodes and relationships as structured text for embedding.
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,9 +28,11 @@ class Neo4jConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             from neo4j import GraphDatabase  # type: ignore[import-not-found]
+
             cc = config.connection_config
             with GraphDatabase.driver(
                 cc.get("uri", "bolt://localhost:7687"),
@@ -47,12 +50,15 @@ class Neo4jConnector(BaseConnector):
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
+
         try:
             from neo4j import GraphDatabase  # type: ignore[import-not-found]
         except ImportError:
-            _log.error("neo4j not installed"); return
+            _log.error("neo4j not installed")
+            return
 
         import asyncio
+
         cc = config.connection_config
         neo4j_uri = cc.get("uri", "bolt://localhost:7687")
         auth = (cc.get("username", "neo4j"), cc.get("password", ""))
@@ -99,9 +105,11 @@ class Neo4jConnector(BaseConnector):
 
             doc = RawDocument(
                 doc_id=str(uuid.uuid4()),
-                source_id=config.source_id, tenant_id=config.tenant_id,
+                source_id=config.source_id,
+                tenant_id=config.tenant_id,
                 source_url=f"neo4j://{neo4j_uri}/node/{node.get('_id', uuid.uuid4())}",
-                content=text.encode(), content_type="text/plain",
+                content=text.encode(),
+                content_type="text/plain",
                 metadata={"labels": labels_str, "id": node.get("_id")},
             )
             yield doc, new_cursor

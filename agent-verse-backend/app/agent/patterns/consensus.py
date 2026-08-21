@@ -1,4 +1,5 @@
 """Consensus verification pattern adapter."""
+
 from __future__ import annotations
 
 from app.agent.patterns.base import AgentPattern, PatternState

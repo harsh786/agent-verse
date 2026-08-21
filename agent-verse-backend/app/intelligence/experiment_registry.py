@@ -10,6 +10,7 @@ Single control plane for ALL self-improvement experiments:
 Enforces: one active experiment per (tenant_id, agent_id) at a time.
 All experiments go through: proposed → offline-eval → live A/B → promoted/rolled_back.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -20,14 +21,16 @@ from app.observability.logging import get_logger
 logger = get_logger(__name__)
 
 # Valid experiment statuses
-_VALID_STATUSES = frozenset({
-    "proposed",
-    "offline_eval",
-    "live_ab",
-    "promoted",
-    "rolled_back",
-    "inconclusive",
-})
+_VALID_STATUSES = frozenset(
+    {
+        "proposed",
+        "offline_eval",
+        "live_ab",
+        "promoted",
+        "rolled_back",
+        "inconclusive",
+    }
+)
 
 # Minimum sample size before making promotion decisions
 MIN_SAMPLES_PER_ARM = 20
@@ -194,8 +197,7 @@ class ExperimentRegistry:
         return [
             e
             for e in self._experiments.values()
-            if e["tenant_id"] == tenant_id
-            and (status is None or e["status"] == status)
+            if e["tenant_id"] == tenant_id and (status is None or e["status"] == status)
         ]
 
     @staticmethod

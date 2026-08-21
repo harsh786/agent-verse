@@ -4,12 +4,12 @@ Handles: slash commands, @mention commands, app_home, interactive components.
 Setup: SLACK_BOT_TOKEN + SLACK_SIGNING_SECRET env vars.
 Webhook: POST /v1/gateway/{org_id}/slack/events
 """
+
 from __future__ import annotations
 
 import hashlib
 import hmac
 import os
-import time
 import uuid
 from typing import Any
 
@@ -18,7 +18,7 @@ import structlog
 from opentelemetry import trace
 
 from app.gateway.channels.base import ChannelAdapter
-from app.gateway.command import OrgCommand, OrgResponse, ResponseAction
+from app.gateway.command import OrgCommand, OrgResponse
 
 _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -38,7 +38,10 @@ class SlackChannelAdapter(ChannelAdapter):
         self._signing_secret = signing_secret or os.getenv("SLACK_SIGNING_SECRET", "")
 
     async def normalize(
-        self, raw_payload: dict[str, Any], tenant_id: str, org_id: str,
+        self,
+        raw_payload: dict[str, Any],
+        tenant_id: str,
+        org_id: str,
     ) -> OrgCommand:
         with _tracer.start_as_current_span("slack.normalize"):
             command_id = str(uuid.uuid4())
@@ -95,18 +98,22 @@ class SlackChannelAdapter(ChannelAdapter):
         if response.actions:
             elements: list[dict[str, Any]] = []
             for action in response.actions[:5]:
-                elements.append({
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": action.label},
-                    "action_id": action.action_id,
-                    "value": action.action_id,
-                    "style": "primary" if action.action_type == "approve" else "default",
-                })
+                elements.append(
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": action.label},
+                        "action_id": action.action_id,
+                        "value": action.action_id,
+                        "style": "primary" if action.action_type == "approve" else "default",
+                    }
+                )
             blocks.append({"type": "actions", "elements": elements})
         return {"blocks": blocks, "text": response.text[:150]}
 
     async def post_message(
-        self, channel: str, response: OrgResponse,
+        self,
+        channel: str,
+        response: OrgResponse,
     ) -> dict[str, Any] | None:
         if not self._token:
             return None
@@ -125,7 +132,9 @@ class SlackChannelAdapter(ChannelAdapter):
             return None
 
     async def verify_auth(
-        self, request_headers: dict[str, str], raw_payload: dict[str, Any],
+        self,
+        request_headers: dict[str, str],
+        raw_payload: dict[str, Any],
     ) -> bool:
         if not self._signing_secret:
             return True
@@ -133,9 +142,12 @@ class SlackChannelAdapter(ChannelAdapter):
         signature = request_headers.get("x-slack-signature", "")
         body = str(raw_payload)
         sig_base = f"v0:{timestamp}:{body}"
-        computed = "v0=" + hmac.new(
-            self._signing_secret.encode(),
-            sig_base.encode(),
-            hashlib.sha256,
-        ).hexdigest()
+        computed = (
+            "v0="
+            + hmac.new(
+                self._signing_secret.encode(),
+                sig_base.encode(),
+                hashlib.sha256,
+            ).hexdigest()
+        )
         return hmac.compare_digest(computed, signature)

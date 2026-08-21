@@ -3,6 +3,7 @@
 Environment variables:
   BOX_ACCESS_TOKEN: Box OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -24,7 +25,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "folder_id": {"type": "string", "default": "0", "description": "Folder ID (use '0' for root)"},
+                "folder_id": {
+                    "type": "string",
+                    "default": "0",
+                    "description": "Folder ID (use '0' for root)",
+                },
                 "limit": {"type": "integer", "default": 100},
                 "offset": {"type": "integer", "default": 0},
                 "fields": {"type": "string", "default": "id,name,type,size,modified_at"},
@@ -38,7 +43,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "file_id": {"type": "string"},
-                "fields": {"type": "string", "default": "id,name,type,size,modified_at,parent,created_by"},
+                "fields": {
+                    "type": "string",
+                    "default": "id,name,type,size,modified_at,parent,created_by",
+                },
             },
             "required": ["file_id"],
         },
@@ -98,7 +106,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
-                "type": {"type": "string", "enum": ["file", "folder", "web_link"], "default": "file"},
+                "type": {
+                    "type": "string",
+                    "enum": ["file", "folder", "web_link"],
+                    "default": "file",
+                },
                 "limit": {"type": "integer", "default": 20},
                 "offset": {"type": "integer", "default": 0},
                 "ancestor_folder_ids": {
@@ -178,7 +190,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "box_get_file":
                 fid = arguments["file_id"]
-                params = {"fields": arguments.get("fields", "id,name,type,size,modified_at,parent,created_by")}
+                params = {
+                    "fields": arguments.get(
+                        "fields", "id,name,type,size,modified_at,parent,created_by"
+                    )
+                }
                 r = await c.get(f"{BOX_BASE}/files/{fid}", headers=hdrs, params=params)
                 r.raise_for_status()
                 return r.json()

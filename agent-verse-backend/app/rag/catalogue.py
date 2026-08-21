@@ -39,27 +39,22 @@ class ReadinessContext:
     """Immutable shared facts evaluated without retrieval or external calls."""
 
     facts: Mapping[RAGRuntimeDependency, ReadinessFact]
-    strategy_facts: Mapping[
-        RAGStrategy, Mapping[RAGRuntimeDependency, ReadinessFact]
-    ] = field(default_factory=dict)
+    strategy_facts: Mapping[RAGStrategy, Mapping[RAGRuntimeDependency, ReadinessFact]] = field(
+        default_factory=dict
+    )
     adapter_facts: Mapping[RAGStrategy, ReadinessFact] = field(default_factory=dict)
 
     @classmethod
     def all_available(cls) -> ReadinessContext:
         return cls(
             MappingProxyType(
-                {
-                    dependency: ReadinessFact(True, "ready")
-                    for dependency in RAGRuntimeDependency
-                }
+                {dependency: ReadinessFact(True, "ready") for dependency in RAGRuntimeDependency}
             )
         )
 
     @property
     def available_dependencies(self) -> frozenset[RAGRuntimeDependency]:
-        return frozenset(
-            dependency for dependency, fact in self.facts.items() if fact.available
-        )
+        return frozenset(dependency for dependency, fact in self.facts.items() if fact.available)
 
     def with_fact(
         self,
@@ -186,9 +181,7 @@ class RAGCapabilityCatalogueEntry:
 _DB_EMBED = (RAGRuntimeDependency.DATABASE, RAGRuntimeDependency.EMBEDDER)
 _DB_EMBED_PROVIDER = (*_DB_EMBED, RAGRuntimeDependency.PROVIDER)
 
-RAG_CAPABILITY_CATALOGUE: Mapping[
-    RAGStrategy, RAGCapabilityCatalogueEntry
-] = MappingProxyType(
+RAG_CAPABILITY_CATALOGUE: Mapping[RAGStrategy, RAGCapabilityCatalogueEntry] = MappingProxyType(
     {
         RAGStrategy.NAIVE: RAGCapabilityCatalogueEntry(
             RAGStrategy.NAIVE, "app.rag.contracts:NaiveRAGRuntimeAdapter", _DB_EMBED
@@ -291,9 +284,7 @@ class _LazyRuntimeCapabilities(Mapping[RAGStrategy, type[RAGRuntimeAdapter]]):
         return len(RAG_CAPABILITY_CATALOGUE)
 
 
-RAG_RUNTIME_CAPABILITIES: Mapping[RAGStrategy, type[RAGRuntimeAdapter]] = (
-    _LazyRuntimeCapabilities()
-)
+RAG_RUNTIME_CAPABILITIES: Mapping[RAGStrategy, type[RAGRuntimeAdapter]] = _LazyRuntimeCapabilities()
 
 
 __all__ = [

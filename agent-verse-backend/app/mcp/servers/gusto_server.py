@@ -3,6 +3,7 @@
 Environment:
   GUSTO_ACCESS_TOKEN: Gusto OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -24,7 +25,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "company_id": {"type": "string", "description": "Gusto company UUID or ID"},
-                "terminated": {"type": "boolean", "default": False, "description": "Include terminated employees"},
+                "terminated": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Include terminated employees",
+                },
                 "page": {"type": "integer", "default": 1},
                 "per": {"type": "integer", "default": 25},
             },

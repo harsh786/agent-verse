@@ -1,4 +1,5 @@
 """Page analyzer — extract structured data from web pages using BrowserAgent + LLM."""
+
 from __future__ import annotations
 
 import logging
@@ -71,14 +72,12 @@ class PageAnalyzer:
 
         return analysis
 
-    async def analyze_multiple(
-        self, urls: list[str], question: str = ""
-    ) -> list[PageAnalysis]:
+    async def analyze_multiple(self, urls: list[str], question: str = "") -> list[PageAnalysis]:
         """Analyze multiple URLs concurrently."""
         import asyncio
+
         tasks = [
-            self.analyze_url(url, question=question or "What is on this page?")
-            for url in urls
+            self.analyze_url(url, question=question or "What is on this page?") for url in urls
         ]
         return await asyncio.gather(*tasks, return_exceptions=False)
 

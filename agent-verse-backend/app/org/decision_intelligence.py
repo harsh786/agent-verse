@@ -8,6 +8,7 @@ Versioning Strategy (SUPP-L):
     Tracks version history of: org config, blueprints, capabilities,
     policy sets. Enables rollback and change audit.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -25,23 +26,24 @@ _tracer = trace.get_tracer(__name__)
 
 # ── SUPP-J: Decision Intelligence ────────────────────────────────────────────
 
+
 @dataclass
 class DecisionRecord:
     """A recorded autonomous decision with quality metadata."""
 
-    decision_id:     str
-    org_id:          str
-    tenant_id:       str
-    decision_type:   str   # 'mission_create' | 'team_form' | 'capability_assign' etc.
-    description:     str
-    rationale:       str
-    confidence:      float   # 0-1
-    autonomy_level:  int     # the L level that authorized this decision
-    outcome:         str = "pending"  # pending | accepted | rejected | succeeded | failed
-    quality_score:   float = 0.0
-    made_at:         str = ""
-    resolved_at:     str = ""
-    metadata:        dict[str, Any] = field(default_factory=dict)
+    decision_id: str
+    org_id: str
+    tenant_id: str
+    decision_type: str  # 'mission_create' | 'team_form' | 'capability_assign' etc.
+    description: str
+    rationale: str
+    confidence: float  # 0-1
+    autonomy_level: int  # the L level that authorized this decision
+    outcome: str = "pending"  # pending | accepted | rejected | succeeded | failed
+    quality_score: float = 0.0
+    made_at: str = ""
+    resolved_at: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.made_at:
@@ -88,11 +90,18 @@ class DecisionIntelligence:
                 if outcome in ("accepted", "succeeded"):
                     rec.quality_score = rec.confidence
                 elif outcome in ("rejected", "failed"):
-                    rec.quality_score = 1.0 - rec.confidence  # inverse: confident but failed = low quality  # noqa: E501
+                    rec.quality_score = (
+                        1.0 - rec.confidence
+                    )  # inverse: confident but failed = low quality
                 else:
                     rec.quality_score = 0.5
 
-                _log.info("decision.resolved", decision_id=decision_id, outcome=outcome, quality=rec.quality_score)  # noqa: E501
+                _log.info(
+                    "decision.resolved",
+                    decision_id=decision_id,
+                    outcome=outcome,
+                    quality=rec.quality_score,
+                )
                 return rec
         return None
 
@@ -107,7 +116,9 @@ class DecisionIntelligence:
         avg_qual = sum(r.quality_score for r in resolved) / len(resolved) if resolved else 0.0
 
         # Identify high-confidence failures (calibration issue)
-        hc_failures = [r for r in resolved if r.confidence > 0.8 and r.outcome in ("rejected", "failed")]  # noqa: E501
+        hc_failures = [
+            r for r in resolved if r.confidence > 0.8 and r.outcome in ("rejected", "failed")
+        ]
 
         return {
             "total": len(records),
@@ -138,20 +149,21 @@ class DecisionIntelligence:
 
 # ── SUPP-L: Versioning Strategy ───────────────────────────────────────────────
 
+
 @dataclass
 class VersionRecord:
     """A point-in-time snapshot of a versioned entity."""
 
-    version_id:    str
-    entity_type:   str   # 'org_config' | 'blueprint' | 'capability_set' | 'policy_set'
-    entity_id:     str
-    tenant_id:     str
-    version_num:   int
-    content_hash:  str
-    snapshot:      dict[str, Any]
-    changed_by:    str = "system"
+    version_id: str
+    entity_type: str  # 'org_config' | 'blueprint' | 'capability_set' | 'policy_set'
+    entity_id: str
+    tenant_id: str
+    version_num: int
+    content_hash: str
+    snapshot: dict[str, Any]
+    changed_by: str = "system"
     change_reason: str = ""
-    created_at:    str = ""
+    created_at: str = ""
 
     def __post_init__(self) -> None:
         if not self.created_at:
@@ -196,6 +208,7 @@ class VersionStore:
             version_num = len(existing) + 1
 
             from uuid import uuid4
+
             rec = VersionRecord(
                 version_id=str(uuid4()),
                 entity_type=entity_type,
@@ -211,12 +224,12 @@ class VersionStore:
             self._versions[key] = existing
 
             span.set_attribute("version_num", version_num)
-            _log.info("version.saved", entity_type=entity_type, entity_id=entity_id, version=version_num)  # noqa: E501
+            _log.info(
+                "version.saved", entity_type=entity_type, entity_id=entity_id, version=version_num
+            )
             return rec
 
-    def history(
-        self, entity_type: str, entity_id: str, limit: int = 20
-    ) -> list[dict[str, Any]]:
+    def history(self, entity_type: str, entity_id: str, limit: int = 20) -> list[dict[str, Any]]:
         """Return version history newest-first."""
         key = self._key(entity_type, entity_id)
         records = self._versions.get(key, [])
@@ -263,16 +276,14 @@ class VersionStore:
             change_reason=f"Rollback to version {to_version}",
         )
 
-    def diff(
-        self, entity_type: str, entity_id: str, v_from: int, v_to: int
-    ) -> dict[str, Any]:
+    def diff(self, entity_type: str, entity_id: str, v_from: int, v_to: int) -> dict[str, Any]:
         """Return a simple diff between two versions."""
         r_from = self.get_version(entity_type, entity_id, v_from)
-        r_to   = self.get_version(entity_type, entity_id, v_to)
+        r_to = self.get_version(entity_type, entity_id, v_to)
         if not r_from or not r_to:
             return {"error": "Version(s) not found"}
 
-        added   = {k: v for k, v in r_to.snapshot.items() if k not in r_from.snapshot}
+        added = {k: v for k, v in r_to.snapshot.items() if k not in r_from.snapshot}
         removed = {k: v for k, v in r_from.snapshot.items() if k not in r_to.snapshot}
         changed = {
             k: {"from": r_from.snapshot[k], "to": r_to.snapshot[k]}
@@ -282,8 +293,8 @@ class VersionStore:
 
         return {
             "from_version": v_from,
-            "to_version":   v_to,
-            "added":   added,
+            "to_version": v_to,
+            "added": added,
             "removed": removed,
             "changed": changed,
             "unchanged_count": len(r_from.snapshot) - len(removed) - len(changed),
@@ -293,8 +304,12 @@ class VersionStore:
 # ── Singletons ────────────────────────────────────────────────────────────────
 
 _decision_intelligence = DecisionIntelligence()
-_version_store         = VersionStore()
+_version_store = VersionStore()
 
 
-def get_decision_intelligence() -> DecisionIntelligence: return _decision_intelligence
-def get_version_store()         -> VersionStore:          return _version_store
+def get_decision_intelligence() -> DecisionIntelligence:
+    return _decision_intelligence
+
+
+def get_version_store() -> VersionStore:
+    return _version_store

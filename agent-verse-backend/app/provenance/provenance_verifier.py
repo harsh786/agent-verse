@@ -1,5 +1,7 @@
 """ProvenanceVerifier — verifies claims against supporting sources."""
+
 from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -7,7 +9,7 @@ if TYPE_CHECKING:
 
 
 class ProvenanceVerifier:
-    def verify(self, record: "ProvenanceRecord") -> str:
+    def verify(self, record: ProvenanceRecord) -> str:
         """Returns: supported | unsupported | contradicted | unknown."""
         if not record.supporting_sources:
             return "unknown"
@@ -17,5 +19,5 @@ class ProvenanceVerifier:
             return "unknown"
         return "unsupported"
 
-    def verify_batch(self, records: "list[ProvenanceRecord]") -> dict[str, str]:
+    def verify_batch(self, records: list[ProvenanceRecord]) -> dict[str, str]:
         return {r.claim_id: self.verify(r) for r in records}

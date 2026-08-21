@@ -4,6 +4,7 @@ Environment variables:
   ASANA_ACCESS_TOKEN: Personal access token or OAuth access token
   ASANA_WORKSPACE_GID: Default workspace GID (numeric string)
 """
+
 from __future__ import annotations
 
 import os
@@ -64,7 +65,10 @@ TOOL_DEFINITIONS = [
                 "project_gid": {"type": "string", "description": "Project to add the task to"},
                 "assignee": {"type": "string", "description": "Assignee user GID or 'me'"},
                 "due_on": {"type": "string", "description": "Due date in YYYY-MM-DD format"},
-                "workspace": {"type": "string", "description": "Workspace GID (uses env default if omitted)"},
+                "workspace": {
+                    "type": "string",
+                    "description": "Workspace GID (uses env default if omitted)",
+                },
                 "parent": {"type": "string", "description": "Parent task GID for subtasks"},
             },
             "required": ["name"],
@@ -159,7 +163,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
@@ -178,7 +185,9 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
         if tool_name == "asana_list_tasks":
             params: dict[str, Any] = {
                 "project": arguments["project_gid"],
-                "opt_fields": arguments.get("opt_fields", "name,completed,due_on,assignee.name,notes"),
+                "opt_fields": arguments.get(
+                    "opt_fields", "name,completed,due_on,assignee.name,notes"
+                ),
             }
             if arguments.get("completed_since"):
                 params["completed_since"] = arguments["completed_since"]

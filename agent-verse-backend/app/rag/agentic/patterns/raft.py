@@ -87,9 +87,7 @@ class RAFTRAGRuntimeAdapter(RAFTRAGRuntimeContract):
         embedding = await _embed_text(context, request.query, self.strategy)
         evidence: list[dict[str, Any]] = []
         retrieval_filters = {
-            key: value
-            for key, value in request.filters.items()
-            if not key.startswith("raft_")
+            key: value for key, value in request.filters.items() if not key.startswith("raft_")
         }
         retrieval_request = request.model_copy(update={"filters": retrieval_filters})
         retrieval_context = replace(context, filters=retrieval_filters)

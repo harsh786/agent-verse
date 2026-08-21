@@ -3,6 +3,7 @@
 Environment variables:
   LINEAR_API_KEY: Linear personal API key
 """
+
 from __future__ import annotations
 
 import os
@@ -25,12 +26,19 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "team_id": {"type": "string", "description": "Filter by team ID"},
                 "assignee_id": {"type": "string", "description": "Filter by assignee user ID"},
-                "state": {"type": "string", "description": "Filter by state name (e.g. Todo, In Progress, Done)"},
+                "state": {
+                    "type": "string",
+                    "description": "Filter by state name (e.g. Todo, In Progress, Done)",
+                },
                 "priority": {
                     "type": "integer",
                     "description": "Filter by priority (0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low)",
                 },
-                "first": {"type": "integer", "default": 50, "description": "Max number of issues to return"},
+                "first": {
+                    "type": "integer",
+                    "default": 50,
+                    "description": "Max number of issues to return",
+                },
             },
         },
     },
@@ -52,7 +60,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
-                "team_id": {"type": "string", "description": "Team ID where the issue will be created"},
+                "team_id": {
+                    "type": "string",
+                    "description": "Team ID where the issue will be created",
+                },
                 "description": {"type": "string", "default": ""},
                 "priority": {
                     "type": "integer",
@@ -141,7 +152,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
@@ -330,12 +344,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
                 {"teamId": arguments["team_id"], "first": arguments.get("first", 50)},
                 token,
             )
-            projects = (
-                result.get("data", {})
-                .get("team", {})
-                .get("projects", {})
-                .get("nodes", [])
-            )
+            projects = result.get("data", {}).get("team", {}).get("projects", {}).get("nodes", [])
         else:
             query = """
             query ListProjects($first: Int) {

@@ -3,6 +3,7 @@
 Environment:
   EGOI_API_KEY: E-goi API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -38,7 +39,11 @@ TOOL_DEFINITIONS = [
                 "first_name": {"type": "string", "description": "First name"},
                 "last_name": {"type": "string", "description": "Last name"},
                 "phone": {"type": "string", "description": "Phone number"},
-                "tags": {"type": "array", "description": "Tags to assign", "items": {"type": "integer"}},
+                "tags": {
+                    "type": "array",
+                    "description": "Tags to assign",
+                    "items": {"type": "integer"},
+                },
             },
             "required": ["list_id", "email"],
         },

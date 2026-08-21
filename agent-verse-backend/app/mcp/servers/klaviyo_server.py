@@ -3,6 +3,7 @@
 Environment:
   KLAVIYO_API_KEY: Private API key (starts with pk_)
 """
+
 from __future__ import annotations
 
 import os
@@ -94,7 +95,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "event_name": {"type": "string", "description": "Event metric name, e.g. 'Placed Order'"},
+                "event_name": {
+                    "type": "string",
+                    "description": "Event metric name, e.g. 'Placed Order'",
+                },
                 "profile_email": {"type": "string"},
                 "properties": {"type": "object", "description": "Event properties"},
                 "value": {"type": "number", "description": "Optional monetary value"},
@@ -134,9 +138,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "KLAVIYO_API_KEY not configured"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=KLAVIYO_BASE, headers=_headers(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=KLAVIYO_BASE, headers=_headers(), timeout=30.0) as c:
             if tool_name == "klaviyo_list_profiles":
                 params: dict[str, Any] = {
                     "page[size]": arguments.get("page_size", 20),
@@ -164,9 +166,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                         attrs[field] = arguments[field]
                 if "properties" in arguments:
                     attrs["properties"] = arguments["properties"]
-                payload: dict[str, Any] = {
-                    "data": {"type": "profile", "attributes": attrs}
-                }
+                payload: dict[str, Any] = {"data": {"type": "profile", "attributes": attrs}}
                 r = await c.post("/profiles/", json=payload)
                 r.raise_for_status()
                 data = r.json()
@@ -210,10 +210,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "klaviyo_add_to_list":
                 payload = {
-                    "data": [
-                        {"type": "profile", "id": pid}
-                        for pid in arguments["profile_ids"]
-                    ]
+                    "data": [{"type": "profile", "id": pid} for pid in arguments["profile_ids"]]
                 }
                 r = await c.post(
                     f"/lists/{arguments['list_id']}/relationships/profiles/", json=payload
@@ -225,7 +222,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "data": {
                         "type": "event",
                         "attributes": {
-                            "metric": {"data": {"type": "metric", "attributes": {"name": arguments["event_name"]}}},
+                            "metric": {
+                                "data": {
+                                    "type": "metric",
+                                    "attributes": {"name": arguments["event_name"]},
+                                }
+                            },
                             "profile": {
                                 "data": {
                                     "type": "profile",

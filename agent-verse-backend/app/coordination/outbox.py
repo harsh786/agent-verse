@@ -30,17 +30,13 @@ class OutboxRepository(Protocol):
 
     async def mark_published(self, record_id: str, message_id: str) -> None: ...
 
-    async def mark_retry(
-        self, record_id: str, attempt: int, delay: float, error: str
-    ) -> None: ...
+    async def mark_retry(self, record_id: str, attempt: int, delay: float, error: str) -> None: ...
 
     async def dead_letter(self, record_id: str, error: str) -> None: ...
 
 
 class StreamPublisher(Protocol):
-    async def publish(
-        self, tenant_id: str, session_id: str, envelope: dict[str, Any]
-    ) -> str: ...
+    async def publish(self, tenant_id: str, session_id: str, envelope: dict[str, Any]) -> str: ...
 
 
 def retry_delay_seconds(
@@ -129,22 +125,26 @@ class PostgresOutboxRepository:
             sqlalchemy_rls_context(db, self._tenant_id),
         ):
             rows = (
-                await db.execute(
-                    select(table)
-                    .where(
-                        or_(
-                            and_(table.c.state == "pending", table.c.available_at <= now),
-                            and_(
-                                table.c.state == "claimed",
-                                table.c.claimed_at <= stale_before,
-                            ),
+                (
+                    await db.execute(
+                        select(table)
+                        .where(
+                            or_(
+                                and_(table.c.state == "pending", table.c.available_at <= now),
+                                and_(
+                                    table.c.state == "claimed",
+                                    table.c.claimed_at <= stale_before,
+                                ),
+                            )
                         )
+                        .order_by(table.c.available_at, table.c.created_at)
+                        .limit(limit)
+                        .with_for_update(skip_locked=True)
                     )
-                    .order_by(table.c.available_at, table.c.created_at)
-                    .limit(limit)
-                    .with_for_update(skip_locked=True)
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
             if rows:
                 await db.execute(
                     update(table)
@@ -177,9 +177,7 @@ class PostgresOutboxRepository:
             claim_owner="",
         )
 
-    async def mark_retry(
-        self, record_id: str, attempt: int, delay: float, error: str
-    ) -> None:
+    async def mark_retry(self, record_id: str, attempt: int, delay: float, error: str) -> None:
         await self._update(
             record_id,
             state="pending",
@@ -199,10 +197,10 @@ class PostgresOutboxRepository:
             sqlalchemy_rls_context(db, self._tenant_id),
         ):
             row = (
-                await db.execute(
-                    select(outbox).where(outbox.c.id == record_id).with_for_update()
-                )
-            ).mappings().one()
+                (await db.execute(select(outbox).where(outbox.c.id == record_id).with_for_update()))
+                .mappings()
+                .one()
+            )
             await db.execute(
                 insert(dead).values(
                     id=hashlib.sha256(f"dead:{record_id}".encode()).hexdigest()[:32],

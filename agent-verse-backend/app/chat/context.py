@@ -17,7 +17,7 @@ from typing import Any
 
 @dataclass
 class Turn:
-    role: str       # "user" | "assistant" | "system"
+    role: str  # "user" | "assistant" | "system"
     content: str
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -95,9 +95,7 @@ class ConversationContext:
         """Prepend top memories as a system turn."""
         if not memories:
             return turns
-        memory_text = "Relevant long-term memories:\n" + "\n".join(
-            f"- {m}" for m in memories[:3]
-        )
+        memory_text = "Relevant long-term memories:\n" + "\n".join(f"- {m}" for m in memories[:3])
         return [{"role": "system", "content": memory_text}, *turns]
 
     def inject_system_prompt(

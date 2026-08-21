@@ -3,6 +3,7 @@
 Each solution is a packaged deployment: agents + knowledge schemas + eval suite
 + guardrail bundle. Install atomically.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -74,8 +75,7 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
         "name": "E-Commerce AI Operations",
         "domain": "e_commerce",
         "description": (
-            "Automate catalog management, order exception handling, and customer "
-            "review responses."
+            "Automate catalog management, order exception handling, and customer review responses."
         ),
         "version": "1.0.0",
         "agents_config": [
@@ -346,7 +346,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Government Knowledge Base", "description": "Regulations, policies, and service guides"},
+            {
+                "name": "Government Knowledge Base",
+                "description": "Regulations, policies, and service guides",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -417,7 +420,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Healthcare Knowledge Base", "description": "Clinical protocols, drug formulary, ICD codes"},
+            {
+                "name": "Healthcare Knowledge Base",
+                "description": "Clinical protocols, drug formulary, ICD codes",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -452,7 +458,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "HR Knowledge Base", "description": "Policies, job descriptions, onboarding checklists"},
+            {
+                "name": "HR Knowledge Base",
+                "description": "Policies, job descriptions, onboarding checklists",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -489,7 +498,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "DevOps Knowledge Base", "description": "Runbooks, infra topology, cost baselines"},
+            {
+                "name": "DevOps Knowledge Base",
+                "description": "Runbooks, infra topology, cost baselines",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -525,7 +537,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Sales Knowledge Base", "description": "Playbooks, ICP profiles, competitor battlecards"},
+            {
+                "name": "Sales Knowledge Base",
+                "description": "Playbooks, ICP profiles, competitor battlecards",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -562,7 +577,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "GST & Tax Knowledge Base", "description": "GST rates, return calendars, tax circulars"},
+            {
+                "name": "GST & Tax Knowledge Base",
+                "description": "GST rates, return calendars, tax circulars",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -598,7 +616,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Invoicing Knowledge Base", "description": "Payment terms, vendor master, expense policies"},
+            {
+                "name": "Invoicing Knowledge Base",
+                "description": "Payment terms, vendor master, expense policies",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -634,7 +655,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Real Estate Knowledge Base", "description": "Market data, lease templates, local regulations"},
+            {
+                "name": "Real Estate Knowledge Base",
+                "description": "Market data, lease templates, local regulations",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -670,7 +694,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Marketing Knowledge Base", "description": "Brand guidelines, campaign history, audience personas"},
+            {
+                "name": "Marketing Knowledge Base",
+                "description": "Brand guidelines, campaign history, audience personas",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -706,7 +733,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Cybersecurity Knowledge Base", "description": "Asset inventory, security policies, threat model"},
+            {
+                "name": "Cybersecurity Knowledge Base",
+                "description": "Asset inventory, security policies, threat model",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -743,7 +773,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Logistics Knowledge Base", "description": "Supplier contracts, reorder policies, carrier SLAs"},
+            {
+                "name": "Logistics Knowledge Base",
+                "description": "Supplier contracts, reorder policies, carrier SLAs",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -779,7 +812,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Insurance Knowledge Base", "description": "Policy terms, claims procedures, compliance rules"},
+            {
+                "name": "Insurance Knowledge Base",
+                "description": "Policy terms, claims procedures, compliance rules",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -814,7 +850,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Support Knowledge Base", "description": "Product FAQs, troubleshooting guides, escalation policies"},
+            {
+                "name": "Support Knowledge Base",
+                "description": "Product FAQs, troubleshooting guides, escalation policies",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -851,7 +890,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Manufacturing Knowledge Base", "description": "SOPs, quality standards, equipment specs"},
+            {
+                "name": "Manufacturing Knowledge Base",
+                "description": "SOPs, quality standards, equipment specs",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -887,7 +929,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Agriculture Knowledge Base", "description": "Crop calendars, pest guides, market price benchmarks"},
+            {
+                "name": "Agriculture Knowledge Base",
+                "description": "Crop calendars, pest guides, market price benchmarks",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -923,7 +968,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Hospitality Knowledge Base", "description": "Property info, service catalogue, guest policies"},
+            {
+                "name": "Hospitality Knowledge Base",
+                "description": "Property info, service catalogue, guest policies",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -959,7 +1007,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Media Knowledge Base", "description": "Editorial style guide, content calendar, audience data"},
+            {
+                "name": "Media Knowledge Base",
+                "description": "Editorial style guide, content calendar, audience data",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -995,7 +1046,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Pharma Knowledge Base", "description": "Regulatory guidelines, product dossiers, safety database"},
+            {
+                "name": "Pharma Knowledge Base",
+                "description": "Regulatory guidelines, product dossiers, safety database",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -1032,7 +1086,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Telecom Knowledge Base", "description": "Network topology, SLA agreements, tariff plans"},
+            {
+                "name": "Telecom Knowledge Base",
+                "description": "Network topology, SLA agreements, tariff plans",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -1068,7 +1125,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Construction Knowledge Base", "description": "Building codes, safety standards, project specs"},
+            {
+                "name": "Construction Knowledge Base",
+                "description": "Building codes, safety standards, project specs",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -1105,7 +1165,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Restaurant Knowledge Base", "description": "Recipes, supplier list, compliance checklists"},
+            {
+                "name": "Restaurant Knowledge Base",
+                "description": "Recipes, supplier list, compliance checklists",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -1140,7 +1203,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Recruitment Knowledge Base", "description": "Job descriptions, competency frameworks, offer templates"},
+            {
+                "name": "Recruitment Knowledge Base",
+                "description": "Job descriptions, competency frameworks, offer templates",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -1176,7 +1242,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Energy Knowledge Base", "description": "Grid topology, regulatory requirements, maintenance history"},
+            {
+                "name": "Energy Knowledge Base",
+                "description": "Grid topology, regulatory requirements, maintenance history",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -1213,7 +1282,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Automotive Knowledge Base", "description": "Parts catalogue, warranty terms, service manuals"},
+            {
+                "name": "Automotive Knowledge Base",
+                "description": "Parts catalogue, warranty terms, service manuals",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -1250,7 +1322,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Nonprofit Knowledge Base", "description": "Grant requirements, impact metrics, donor history"},
+            {
+                "name": "Nonprofit Knowledge Base",
+                "description": "Grant requirements, impact metrics, donor history",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -1286,7 +1361,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Events Knowledge Base", "description": "Event templates, vendor contacts, compliance checklists"},
+            {
+                "name": "Events Knowledge Base",
+                "description": "Event templates, vendor contacts, compliance checklists",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -1319,11 +1397,17 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
                 "skill_ids": ["skill-structured-reporting", "skill-summarize-compress"],
                 "system_prompt": "Prepare quarterly client review packs: portfolio performance, asset allocation, goal progress, and market commentary. Personalise for each client's objectives and risk profile.",
                 "connectors": ["database_query", "google_sheets", "email"],
-                "trigger_config": {"trigger_type": "schedule", "cron_expression": "0 8 1 1,4,7,10 *"},
+                "trigger_config": {
+                    "trigger_type": "schedule",
+                    "cron_expression": "0 8 1 1,4,7,10 *",
+                },
             },
         ],
         "knowledge_recipes": [
-            {"name": "Wealth Management Knowledge Base", "description": "Investment policy statements, product catalogue, regulatory rules"},
+            {
+                "name": "Wealth Management Knowledge Base",
+                "description": "Investment policy statements, product catalogue, regulatory rules",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -1359,7 +1443,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Fashion Knowledge Base", "description": "Brand guidelines, supplier catalogue, sizing standards"},
+            {
+                "name": "Fashion Knowledge Base",
+                "description": "Brand guidelines, supplier catalogue, sizing standards",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",
@@ -1395,7 +1482,10 @@ DOMAIN_SOLUTIONS: list[dict[str, Any]] = [
             },
         ],
         "knowledge_recipes": [
-            {"name": "Architecture Knowledge Base", "description": "Building codes, specification library, supplier database"},
+            {
+                "name": "Architecture Knowledge Base",
+                "description": "Building codes, specification library, supplier database",
+            },
         ],
         "onboarding_steps": [
             "Connect required integrations",

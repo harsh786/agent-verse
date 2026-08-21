@@ -5,6 +5,7 @@ All endpoints:
 - Feature-flagged (503 if civilization_enabled=False)
 - Use PlatformError envelope for errors
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,11 +14,11 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from app.db.rls import sqlalchemy_rls_context as _rls_ctx
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app.db.rls import sqlalchemy_rls_context as _rls_ctx
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -27,11 +28,13 @@ router = APIRouter(prefix="/civilizations", tags=["civilization"])
 
 # ── Error helpers ───────────────────────────────────────────────────────────
 
+
 def _civilization_not_found(civ_id: str) -> HTTPException:
     return HTTPException(status_code=404, detail=f"Civilization {civ_id} not found")
 
 
 # ── Guards ─────────────────────────────────────────────────────────────────
+
 
 def _require_tenant(request: Request) -> Any:
     ctx = getattr(request.state, "tenant", None)
@@ -54,6 +57,7 @@ def _get_db(request: Request) -> Any:
     if db is None:
         try:
             from app.db.session import get_session_factory
+
             db = get_session_factory()
         except Exception:
             pass
@@ -61,6 +65,7 @@ def _get_db(request: Request) -> Any:
 
 
 # ── Request models ──────────────────────────────────────────────────────────
+
 
 class CreateCivilizationRequest(BaseModel):
     name: str
@@ -83,22 +88,22 @@ class ControlRequest(BaseModel):
 
 # ── Helpers to build orchestrator ──────────────────────────────────────────
 
+
 def _build_orchestrator(
     civilization_id: str, tenant_id: str, constitution_data: dict, request: Request
 ) -> Any:
     """Build a CivilizationOrchestrator with all dependencies from app.state."""
-    from app.civilization.models import Constitution
-    from app.civilization.governor import Governor
-    from app.civilization.society import Society
-    from app.civilization.bus import CivilizationBus
     from app.civilization.blackboard import Blackboard
+    from app.civilization.bus import CivilizationBus
+    from app.civilization.governor import Governor
     from app.civilization.learning import LearningPipeline
+    from app.civilization.models import Constitution
     from app.civilization.orchestrator import CivilizationOrchestrator
+    from app.civilization.society import Society
 
     db = _get_db(request)
-    redis = (
-        getattr(request.app.state, "_policy_pubsub_redis", None)
-        or getattr(request.app.state, "_rate_limiter_redis", None)
+    redis = getattr(request.app.state, "_policy_pubsub_redis", None) or getattr(
+        request.app.state, "_rate_limiter_redis", None
     )
 
     constitution = Constitution.from_dict(constitution_data)
@@ -152,6 +157,7 @@ def _build_orchestrator(
         provider = getattr(request.app.state, "_app_provider", None)
         if provider is not None:
             from app.agent.debate import DebateOrchestrator
+
             debate_orch = DebateOrchestrator(provider=provider)
     except Exception:
         pass
@@ -162,6 +168,7 @@ def _build_orchestrator(
         provider = getattr(request.app.state, "_app_provider", None)
         if provider is not None:
             from app.agent.supervisor import SupervisorAgent
+
             goal_svc = getattr(request.app.state, "goal_service", None)
             supervisor = SupervisorAgent(
                 planner_provider=provider,
@@ -190,6 +197,7 @@ def _build_orchestrator(
 
 # ── CRUD Endpoints ──────────────────────────────────────────────────────────
 
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_civilization(request: Request, body: CreateCivilizationRequest) -> dict:
     """Create a new civilization for this tenant."""
@@ -201,9 +209,11 @@ async def create_civilization(request: Request, body: CreateCivilizationRequest)
 
     civ_id = uuid.uuid4().hex
     from app.civilization.models import Constitution
+
     constitution = Constitution.from_dict(body.constitution)
 
     from sqlalchemy import text
+
     try:
         async with db() as session, session.begin(), _rls_ctx(session, tenant_ctx.tenant_id):
             await session.execute(
@@ -369,6 +379,7 @@ async def update_constitution(
 
 # ── Member management ──────────────────────────────────────────────────────────
 
+
 class AddMemberRequest(BaseModel):
     agent_id: str
     role: str = "worker"
@@ -376,9 +387,7 @@ class AddMemberRequest(BaseModel):
 
 
 @router.post("/{civ_id}/members", status_code=status.HTTP_201_CREATED)
-async def add_civilization_member(
-    request: Request, civ_id: str, body: AddMemberRequest
-) -> dict:
+async def add_civilization_member(request: Request, civ_id: str, body: AddMemberRequest) -> dict:
     """Add an existing agent as a member of this civilization."""
     _require_feature_enabled(request)
     tenant_ctx = _require_tenant(request)
@@ -389,6 +398,7 @@ async def add_civilization_member(
     # Verify civilization exists for this tenant
     try:
         from sqlalchemy import text
+
         async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id):
             civ_row = (
                 await session.execute(
@@ -412,9 +422,11 @@ async def add_civilization_member(
 
     # Insert into civilization_agents (upsert on conflict)
     import uuid as _uuid
+
     member_id = _uuid.uuid4().hex
     try:
         from sqlalchemy import text
+
         async with db() as session:
             await session.execute(
                 text("""
@@ -466,6 +478,7 @@ async def list_civilization_members(request: Request, civ_id: str) -> list[dict]
 
     try:
         from sqlalchemy import text
+
         async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id):
             rows = (
                 await session.execute(
@@ -509,9 +522,7 @@ async def list_civilization_members(request: Request, civ_id: str) -> list[dict]
 
 
 @router.delete("/{civ_id}/members/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_civilization_member(
-    request: Request, civ_id: str, agent_id: str
-) -> None:
+async def remove_civilization_member(request: Request, civ_id: str, agent_id: str) -> None:
     """Remove (retire) an agent from the civilization."""
     _require_feature_enabled(request)
     tenant_ctx = _require_tenant(request)
@@ -521,6 +532,7 @@ async def remove_civilization_member(
 
     try:
         from sqlalchemy import text
+
         async with db() as session:
             await session.execute(
                 text("""
@@ -575,6 +587,7 @@ async def submit_goal(request: Request, civ_id: str, body: SubmitGoalRequest) ->
 
 
 # ── Graph + Inspector endpoints ─────────────────────────────────────────────
+
 
 @router.get("/{civ_id}/graph")
 async def get_society_graph(request: Request, civ_id: str) -> dict:
@@ -658,9 +671,7 @@ async def get_agent_inspector(request: Request, civ_id: str, agent_id: str) -> d
             config = await agent_store.get_async(agent_id, tenant_ctx=tenant_ctx)
             if config:
                 agent_config = {
-                    k: v
-                    for k, v in config.items()
-                    if k not in ("agent_id", "tenant_id")
+                    k: v for k, v in config.items() if k not in ("agent_id", "tenant_id")
                 }
         except Exception:
             pass
@@ -817,6 +828,7 @@ async def get_replay(
 
 # ── Control endpoints ────────────────────────────────────────────────────────
 
+
 @router.post("/{civ_id}/controls/{action}")
 async def control_civilization(
     request: Request,
@@ -836,25 +848,19 @@ async def control_civilization(
         async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id):
             row = (
                 await session.execute(
-                    text(
-                        "SELECT constitution FROM civilizations "
-                        "WHERE id=:id AND tenant_id=:tid"
-                    ),
+                    text("SELECT constitution FROM civilizations WHERE id=:id AND tenant_id=:tid"),
                     {"id": civ_id, "tid": tenant_ctx.tenant_id},
                 )
             ).fetchone()
-        constitution_data = (
-            row[0] if row and isinstance(row[0], dict) else {}
-        ) if row else {}
+        constitution_data = (row[0] if row and isinstance(row[0], dict) else {}) if row else {}
     except Exception:
         pass
 
-    from app.civilization.models import Constitution
     from app.civilization.governor import Governor
+    from app.civilization.models import Constitution
 
-    redis = (
-        getattr(request.app.state, "_policy_pubsub_redis", None)
-        or getattr(request.app.state, "_rate_limiter_redis", None)
+    redis = getattr(request.app.state, "_policy_pubsub_redis", None) or getattr(
+        request.app.state, "_rate_limiter_redis", None
     )
     governor = Governor(
         constitution=Constitution.from_dict(constitution_data),
@@ -877,15 +883,23 @@ async def control_civilization(
             constitution_data["spawn_rate_limit_per_min"] = int(rate)
             try:
                 from sqlalchemy import text
-                async with db() as session, session.begin(), _rls_ctx(session, tenant_ctx.tenant_id):
-                    await session.execute(text(
-                        "UPDATE civilizations SET constitution=cast(:c as jsonb), updated_at=NOW() "
-                        "WHERE id=:id AND tenant_id=:tid"
-                    ), {
-                        "c": json.dumps(constitution_data),
-                        "id": civ_id,
-                        "tid": tenant_ctx.tenant_id,
-                    })
+
+                async with (
+                    db() as session,
+                    session.begin(),
+                    _rls_ctx(session, tenant_ctx.tenant_id),
+                ):
+                    await session.execute(
+                        text(
+                            "UPDATE civilizations SET constitution=cast(:c as jsonb), updated_at=NOW() "
+                            "WHERE id=:id AND tenant_id=:tid"
+                        ),
+                        {
+                            "c": json.dumps(constitution_data),
+                            "id": civ_id,
+                            "tid": tenant_ctx.tenant_id,
+                        },
+                    )
             except Exception:
                 pass
         return {"status": "ok", "action": action, "spawn_rate_limit_per_min": rate}
@@ -896,7 +910,11 @@ async def control_civilization(
             try:
                 from sqlalchemy import text
 
-                async with db() as session, session.begin(), _rls_ctx(session, tenant_ctx.tenant_id):
+                async with (
+                    db() as session,
+                    session.begin(),
+                    _rls_ctx(session, tenant_ctx.tenant_id),
+                ):
                     await session.execute(
                         text(
                             "UPDATE civilizations "
@@ -925,13 +943,12 @@ async def kill_agent(request: Request, civ_id: str, agent_id: str) -> dict:
     _require_feature_enabled(request)
     tenant_ctx = _require_tenant(request)
     db = _get_db(request)
-    redis = (
-        getattr(request.app.state, "_policy_pubsub_redis", None)
-        or getattr(request.app.state, "_rate_limiter_redis", None)
+    redis = getattr(request.app.state, "_policy_pubsub_redis", None) or getattr(
+        request.app.state, "_rate_limiter_redis", None
     )
 
-    from app.civilization.models import Constitution
     from app.civilization.governor import Governor
+    from app.civilization.models import Constitution
 
     governor = Governor(
         constitution=Constitution(),
@@ -945,6 +962,7 @@ async def kill_agent(request: Request, civ_id: str, agent_id: str) -> dict:
 
 
 # ── SSE streaming ────────────────────────────────────────────────────────────
+
 
 @router.get("/{civ_id}/stream")
 async def stream_civilization(request: Request, civ_id: str) -> StreamingResponse:
@@ -1013,6 +1031,7 @@ class _nullctx:
 
 # ── WebSocket ────────────────────────────────────────────────────────────────
 
+
 @router.websocket("/{civ_id}/ws")
 async def civilization_ws(websocket: WebSocket, civ_id: str) -> None:
     """Live graph updates via WebSocket (pub/sub fan-out)."""
@@ -1051,7 +1070,7 @@ async def civilization_ws(websocket: WebSocket, civ_id: str) -> None:
             while True:
                 try:
                     await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     await websocket.send_text(json.dumps({"type": "ping"}))
     except WebSocketDisconnect:
         pass

@@ -11,6 +11,7 @@ select top-k, and render three tiers:
 Falls back to full list when total tools < min_tools_for_retrieval (15).
 RPA tools excluded unless goal/agent signals browser work.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -23,19 +24,29 @@ logger = get_logger(__name__)
 
 @dataclass
 class ToolSelection:
-    selected: list[Any]       # ToolRef — full schema tier
-    signature: list[Any]      # ToolRef — one-line tier
-    names_only: list[Any]     # ToolRef — name+desc tier
+    selected: list[Any]  # ToolRef — full schema tier
+    signature: list[Any]  # ToolRef — one-line tier
+    names_only: list[Any]  # ToolRef — name+desc tier
     rpa_included: bool = False
 
     def all_tools(self) -> list[Any]:
         return self.selected + self.signature + self.names_only
 
 
-_RPA_KEYWORDS = frozenset({
-    "navigate", "browser", "screenshot", "click", "scrape",
-    "fill form", "download page", "open url", "web page", "website"
-})
+_RPA_KEYWORDS = frozenset(
+    {
+        "navigate",
+        "browser",
+        "screenshot",
+        "click",
+        "scrape",
+        "fill form",
+        "download page",
+        "open url",
+        "web page",
+        "website",
+    }
+)
 
 
 def _needs_rpa(goal: str, agent_capabilities: set[str] | None = None) -> bool:
@@ -50,8 +61,8 @@ class ToolSelector:
     def __init__(
         self,
         *,
-        capability_search: Any,              # CapabilitySearch instance
-        reliability: Any | None = None,      # ToolReliabilityStore | None
+        capability_search: Any,  # CapabilitySearch instance
+        reliability: Any | None = None,  # ToolReliabilityStore | None
         top_k: int = 12,
         signature_k: int = 20,
         min_tools_for_retrieval: int = 15,
@@ -66,7 +77,7 @@ class ToolSelector:
         self,
         *,
         goal: str,
-        tools: list[Any],            # list[ToolRef]
+        tools: list[Any],  # list[ToolRef]
         tenant_ctx: Any,
         agent_capabilities: set[str] | None = None,
     ) -> ToolSelection:

@@ -6,6 +6,7 @@ Environment:
 
 Auth: HTTP Basic (api_key:secret_key)
 """
+
 from __future__ import annotations
 
 import os
@@ -63,7 +64,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "cohort_id": {"type": "string"},
-                "props": {"type": "integer", "default": 0, "description": "Include user properties (1=yes)"},
+                "props": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Include user properties (1=yes)",
+                },
                 "csv": {"type": "boolean", "default": False, "description": "Return as CSV"},
             },
             "required": ["cohort_id"],
@@ -75,8 +80,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "start": {"type": "string", "description": "Start datetime (YYYYMMDDTHH, e.g. 20230101T00)"},
-                "end": {"type": "string", "description": "End datetime (YYYYMMDDTHH, e.g. 20230101T23)"},
+                "start": {
+                    "type": "string",
+                    "description": "Start datetime (YYYYMMDDTHH, e.g. 20230101T00)",
+                },
+                "end": {
+                    "type": "string",
+                    "description": "End datetime (YYYYMMDDTHH, e.g. 20230101T23)",
+                },
             },
             "required": ["start", "end"],
         },
@@ -88,7 +99,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "user_id": {"type": "string", "description": "User ID"},
-                "amplitude_id": {"type": "integer", "description": "Amplitude user ID (alternative to user_id)"},
+                "amplitude_id": {
+                    "type": "integer",
+                    "description": "Amplitude user ID (alternative to user_id)",
+                },
                 "get_events": {"type": "boolean", "default": True},
                 "limit": {"type": "integer", "default": 1000},
             },
@@ -125,6 +139,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             if tool_name == "amplitude_query_events":
                 import json as _json
+
                 params: dict[str, Any] = {
                     "e": _json.dumps(arguments["event"]),
                     "start": arguments["start"],

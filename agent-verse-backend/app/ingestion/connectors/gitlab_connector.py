@@ -3,6 +3,7 @@
 Mirrors the GitHubConnector interface for GitLab's REST API.
 Cursor: last event/updated timestamp.
 """
+
 from __future__ import annotations
 
 import logging
@@ -30,6 +31,7 @@ class GitLabConnector(BaseConnector):
         import time
 
         import httpx
+
         t0 = time.perf_counter()
         try:
             cc = config.connection_config
@@ -42,7 +44,8 @@ class GitLabConnector(BaseConnector):
                 user = r.json()
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
-                ok=True, latency_ms=latency,
+                ok=True,
+                latency_ms=latency,
                 metadata={"user": user.get("username"), "name": user.get("name")},
             )
         except Exception as exc:
@@ -73,17 +76,25 @@ class GitLabConnector(BaseConnector):
                     url: str | None = f"{base}/api/v4/projects/{project_id}/issues"
                     while url:
                         r = await client.get(url, params=params, headers=headers)
-                        if not r.is_success: break
+                        if not r.is_success:
+                            break
                         for issue in r.json():
                             updated = issue.get("updated_at", "")
                             new_cursor = max(new_cursor, updated)
                             text = f"# [{issue.get('iid')}] {issue.get('title')}\n\nStatus: {issue.get('state')}\nUpdated: {updated}\n\n{issue.get('description') or ''}"
                             doc = RawDocument(
                                 doc_id=str(uuid.uuid4()),
-                                source_id=config.source_id, tenant_id=config.tenant_id,
-                                source_type="gitlab", source_url=issue.get("web_url", ""),
-                                content=text.encode(), content_type="text/plain",
-                                metadata={"iid": issue.get("iid"), "state": issue.get("state"), "type": "issue"},
+                                source_id=config.source_id,
+                                tenant_id=config.tenant_id,
+                                source_type="gitlab",
+                                source_url=issue.get("web_url", ""),
+                                content=text.encode(),
+                                content_type="text/plain",
+                                metadata={
+                                    "iid": issue.get("iid"),
+                                    "state": issue.get("state"),
+                                    "type": "issue",
+                                },
                             )
                             yield doc, new_cursor
                         next_link = r.links.get("next", {}).get("url")
@@ -98,17 +109,25 @@ class GitLabConnector(BaseConnector):
                     url = f"{base}/api/v4/projects/{project_id}/merge_requests"
                     while url:
                         r = await client.get(url, params=params, headers=headers)
-                        if not r.is_success: break
+                        if not r.is_success:
+                            break
                         for mr in r.json():
                             updated = mr.get("updated_at", "")
                             new_cursor = max(new_cursor, updated)
                             text = f"# MR !{mr.get('iid')}: {mr.get('title')}\n\nStatus: {mr.get('state')}\nBranch: {mr.get('source_branch')} → {mr.get('target_branch')}\n\n{mr.get('description') or ''}"
                             doc = RawDocument(
                                 doc_id=str(uuid.uuid4()),
-                                source_id=config.source_id, tenant_id=config.tenant_id,
-                                source_type="gitlab", source_url=mr.get("web_url", ""),
-                                content=text.encode(), content_type="text/plain",
-                                metadata={"iid": mr.get("iid"), "state": mr.get("state"), "type": "merge_request"},
+                                source_id=config.source_id,
+                                tenant_id=config.tenant_id,
+                                source_type="gitlab",
+                                source_url=mr.get("web_url", ""),
+                                content=text.encode(),
+                                content_type="text/plain",
+                                metadata={
+                                    "iid": mr.get("iid"),
+                                    "state": mr.get("state"),
+                                    "type": "merge_request",
+                                },
                             )
                             yield doc, new_cursor
                         next_link = r.links.get("next", {}).get("url")

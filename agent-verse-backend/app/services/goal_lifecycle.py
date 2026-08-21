@@ -3,6 +3,7 @@
 Documents the intended decomposition of GoalService.
 Handles state transitions: submit → planning → executing → verifying → complete/failed
 """
+
 from __future__ import annotations
 
 from enum import Enum

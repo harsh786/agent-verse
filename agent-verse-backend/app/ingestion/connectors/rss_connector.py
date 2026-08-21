@@ -3,6 +3,7 @@
 Cursor: pubDate/updated of the latest fetched entry (RFC 2822 / ISO 8601).
 Supports: any RSS 2.0, Atom 1.0, or RDF feed URL.
 """
+
 from __future__ import annotations
 
 import logging
@@ -28,20 +29,25 @@ class RSSConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             import feedparser  # type: ignore[import-not-found]
+
             url = config.connection_config.get("url", "")
             feed = feedparser.parse(url)
             if feed.bozo and not feed.entries:
                 raise ValueError(str(feed.bozo_exception))
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
-                ok=True, latency_ms=latency,
+                ok=True,
+                latency_ms=latency,
                 metadata={"title": feed.feed.get("title"), "entries": len(feed.entries)},
             )
         except ImportError:
-            return ConnectionHealth(ok=False, error="feedparser not installed — pip install feedparser")
+            return ConnectionHealth(
+                ok=False, error="feedparser not installed — pip install feedparser"
+            )
         except Exception as exc:
             return ConnectionHealth(ok=False, error=str(exc))
 
@@ -49,10 +55,12 @@ class RSSConnector(BaseConnector):
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
+
         try:
             import feedparser  # type: ignore[import-not-found]
         except ImportError:
-            _log.error("feedparser not installed"); return
+            _log.error("feedparser not installed")
+            return
 
         url = config.connection_config.get("url", "")
         max_entries = int(config.connection_config.get("max_entries", 200))

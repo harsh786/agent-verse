@@ -41,9 +41,7 @@ class InMemoryProgressLedgerRepository:
                 )
             if revision.version != current + 1:
                 raise ValueError("ledger revision version must be contiguous")
-            accepted = revision.model_copy(
-                update={"predecessor_version": current or None}
-            )
+            accepted = revision.model_copy(update={"predecessor_version": current or None})
             history.append(accepted)
             self._commands[command] = accepted
             return accepted
@@ -88,14 +86,18 @@ class PostgresProgressLedgerRepository:
             sqlalchemy_rls_context(db, revision.tenant_id),
         ):
             current_row = (
-                await db.execute(
-                    select(table)
-                    .where(table.c.session_id == revision.session_id)
-                    .order_by(table.c.version.desc())
-                    .limit(1)
-                    .with_for_update()
+                (
+                    await db.execute(
+                        select(table)
+                        .where(table.c.session_id == revision.session_id)
+                        .order_by(table.c.version.desc())
+                        .limit(1)
+                        .with_for_update()
+                    )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if current_row is not None:
                 current = _revision_from_row(current_row)
                 if current.idempotency_key == revision.idempotency_key:
@@ -105,14 +107,11 @@ class PostgresProgressLedgerRepository:
                 current_version = 0
             if current_version != expected_predecessor_version:
                 raise OptimisticConflictError(
-                    f"expected predecessor {expected_predecessor_version}, "
-                    f"found {current_version}"
+                    f"expected predecessor {expected_predecessor_version}, found {current_version}"
                 )
             if revision.version != current_version + 1:
                 raise ValueError("ledger revision version must be contiguous")
-            accepted = revision.model_copy(
-                update={"predecessor_version": current_version or None}
-            )
+            accepted = revision.model_copy(update={"predecessor_version": current_version or None})
             await db.execute(
                 insert(table).values(
                     id=uuid.uuid5(
@@ -138,13 +137,17 @@ class PostgresProgressLedgerRepository:
             sqlalchemy_rls_context(db, tenant_id),
         ):
             row = (
-                await db.execute(
-                    select(table)
-                    .where(table.c.session_id == session_id)
-                    .order_by(table.c.version.desc())
-                    .limit(1)
+                (
+                    await db.execute(
+                        select(table)
+                        .where(table.c.session_id == session_id)
+                        .order_by(table.c.version.desc())
+                        .limit(1)
+                    )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             return _revision_from_row(row) if row is not None else None
 
     async def revisions(

@@ -1,4 +1,5 @@
 """WaitStepNode — timer-based or event-gate pause."""
+
 from __future__ import annotations
 
 import asyncio

@@ -5,6 +5,7 @@ Environment variables:
   BASECAMP_ACCESS_TOKEN: OAuth 2.0 access token or personal access token
   BASECAMP_USER_AGENT: App identifier required by Basecamp API policy
 """
+
 from __future__ import annotations
 
 import os
@@ -158,7 +159,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
@@ -267,9 +271,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
         elif tool_name == "basecamp_complete_todo":
             project_id = arguments["project_id"]
             todo_id = arguments["todo_id"]
-            resp = await client.post(
-                f"/buckets/{project_id}/todos/{todo_id}/completion.json"
-            )
+            resp = await client.post(f"/buckets/{project_id}/todos/{todo_id}/completion.json")
             resp.raise_for_status()
             return {"todo_id": todo_id, "completed": True}
 

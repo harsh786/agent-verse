@@ -2,6 +2,7 @@
 
 Pure functions extracted from app.agent.graph — zero semantic changes.
 """
+
 from __future__ import annotations
 
 import json
@@ -34,17 +35,23 @@ def _build_verifier_summary(steps: list) -> str:  # type: ignore[type-arg]
         parts = [f"- {getattr(s, 'description', '?')}: {getattr(s, 'output', '')}"]
         if getattr(s, "status", None) is not None:
             from app.agent.state import StepStatus as _SS
+
             if s.status == _SS.UNGROUNDED:
-                parts.append("  [UNGROUNDED CLAIM] Step output contains claims not found in tool outputs")
+                parts.append(
+                    "  [UNGROUNDED CLAIM] Step output contains claims not found in tool outputs"
+                )
         for tc in getattr(s, "tool_calls", []) or []:
             if not (tc.get("success", True)):
-                parts.append(f"  [TOOL FAILED] {tc.get('tool_name', '?')}: {tc.get('error', 'unknown error')}")
+                parts.append(
+                    f"  [TOOL FAILED] {tc.get('tool_name', '?')}: {tc.get('error', 'unknown error')}"
+                )
         if getattr(s, "error", None):
             parts.append(f"  [STEP ERROR] {s.error}")
         return "\n".join(parts)
 
     failed = [
-        s for s in steps
+        s
+        for s in steps
         if getattr(s, "error", None)
         or any(not tc.get("success", True) for tc in (getattr(s, "tool_calls", []) or []))
         or (getattr(s, "status", None) is not None and _is_ungrounded_status(s.status))

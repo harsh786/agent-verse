@@ -3,6 +3,7 @@
 In-memory deque for hot path; async DB persistence via record_async()
 to the `reflexion_lessons` table (migration 0087).
 """
+
 from __future__ import annotations
 
 import uuid
@@ -30,11 +31,13 @@ class ReflexionStore:
         """Record lesson in-memory (always succeeds, no DB)."""
         if tenant_id not in self._lessons:
             self._lessons[tenant_id] = deque(maxlen=self._max)
-        self._lessons[tenant_id].append({
-            "lesson": lesson,
-            "source_goal_id": source_goal_id,
-            "failure_class": failure_class,
-        })
+        self._lessons[tenant_id].append(
+            {
+                "lesson": lesson,
+                "source_goal_id": source_goal_id,
+                "failure_class": failure_class,
+            }
+        )
 
     def recall(self, *, tenant_id: str, limit: int = 10) -> list[dict[str, Any]]:
         """Recall recent failure lessons. Triggers lazy DB hydration on first miss."""
@@ -45,6 +48,7 @@ class ReflexionStore:
             self._hydrated_tenants.add(tenant_id)  # mark immediately to prevent re-entry
             try:
                 import asyncio
+
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     # Schedule hydration asynchronously (best-effort)
@@ -77,13 +81,16 @@ class ReflexionStore:
         """Record lesson in-memory AND persist to Postgres reflexion_lessons table."""
         # Always write to memory first
         self.record(
-            tenant_id=tenant_id, lesson=lesson,
-            source_goal_id=source_goal_id, failure_class=failure_class,
+            tenant_id=tenant_id,
+            lesson=lesson,
+            source_goal_id=source_goal_id,
+            failure_class=failure_class,
         )
         if db_factory is None:
             return
         try:
             from sqlalchemy import text
+
             lesson_id = uuid.uuid4().hex
             async with db_factory() as session, session.begin():
                 await session.execute(
@@ -105,9 +112,8 @@ class ReflexionStore:
         except Exception as exc:
             try:
                 from app.observability.logging import get_logger
-                get_logger(__name__).warning(
-                    "reflexion_lesson_db_persist_failed", error=str(exc)
-                )
+
+                get_logger(__name__).warning("reflexion_lesson_db_persist_failed", error=str(exc))
             except Exception:
                 pass
 
@@ -123,6 +129,7 @@ class ReflexionStore:
             return
         try:
             from sqlalchemy import text
+
             async with db_factory() as session:
                 rows = (
                     await session.execute(
@@ -138,14 +145,15 @@ class ReflexionStore:
                 ).fetchall()
                 for row in reversed(rows):
                     self.record(
-                        tenant_id=row[0], lesson=row[1],
-                        source_goal_id=row[2], failure_class=row[3],
+                        tenant_id=row[0],
+                        lesson=row[1],
+                        source_goal_id=row[2],
+                        failure_class=row[3],
                     )
         except Exception as exc:
             try:
                 from app.observability.logging import get_logger
-                get_logger(__name__).warning(
-                    "reflexion_lesson_load_from_db_failed", error=str(exc)
-                )
+
+                get_logger(__name__).warning("reflexion_lesson_load_from_db_failed", error=str(exc))
             except Exception:
                 pass

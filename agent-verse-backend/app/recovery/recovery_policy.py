@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 import enum
+
 from app.recovery.failure_classifier import FailureClass, FailureResult
 
 

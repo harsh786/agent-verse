@@ -3,6 +3,7 @@
 Environment:
   TEACHABLE_API_KEY: Teachable API key from Settings > Integrations
 """
+
 from __future__ import annotations
 
 import os
@@ -23,8 +24,16 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "page": {"type": "integer", "description": "Page number for pagination", "default": 1},
-                "per": {"type": "integer", "description": "Number of results per page (max 50)", "default": 20},
+                "page": {
+                    "type": "integer",
+                    "description": "Page number for pagination",
+                    "default": 1,
+                },
+                "per": {
+                    "type": "integer",
+                    "description": "Number of results per page (max 50)",
+                    "default": 20,
+                },
             },
         },
     },
@@ -36,7 +45,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "email": {"type": "string", "description": "Filter users by email address"},
                 "page": {"type": "integer", "description": "Page number", "default": 1},
-                "per": {"type": "integer", "description": "Number of results per page (max 50)", "default": 20},
+                "per": {
+                    "type": "integer",
+                    "description": "Number of results per page (max 50)",
+                    "default": 20,
+                },
             },
         },
     },
@@ -70,9 +83,16 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "course_id": {"type": "integer", "description": "Teachable course ID to list coupons for"},
+                "course_id": {
+                    "type": "integer",
+                    "description": "Teachable course ID to list coupons for",
+                },
                 "page": {"type": "integer", "description": "Page number", "default": 1},
-                "per": {"type": "integer", "description": "Number of results per page", "default": 20},
+                "per": {
+                    "type": "integer",
+                    "description": "Number of results per page",
+                    "default": 20,
+                },
             },
             "required": ["course_id"],
         },
@@ -86,9 +106,18 @@ TOOL_DEFINITIONS = [
                 "course_id": {"type": "integer", "description": "Teachable course ID"},
                 "name": {"type": "string", "description": "Coupon display name"},
                 "code": {"type": "string", "description": "Coupon code (unique)"},
-                "discount_type": {"type": "string", "description": "Discount type: percent or amount"},
-                "amount_off": {"type": "integer", "description": "Discount amount (percentage or cents)"},
-                "max_uses": {"type": "integer", "description": "Maximum number of times coupon can be used"},
+                "discount_type": {
+                    "type": "string",
+                    "description": "Discount type: percent or amount",
+                },
+                "amount_off": {
+                    "type": "integer",
+                    "description": "Discount amount (percentage or cents)",
+                },
+                "max_uses": {
+                    "type": "integer",
+                    "description": "Maximum number of times coupon can be used",
+                },
             },
             "required": ["course_id", "name", "code", "discount_type", "amount_off"],
         },

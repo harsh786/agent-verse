@@ -1,4 +1,5 @@
 """IngestionOrchestrator — routes content to the right parser, chunker, and store."""
+
 from __future__ import annotations
 
 import hashlib
@@ -62,6 +63,7 @@ class IngestionOrchestrator:
         """Filter out low-quality chunks using QualityChecker."""
         try:
             from app.ingestion.quality_checks import QualityChecker
+
             checker = QualityChecker(min_length=20)
             filtered = [c for c in chunks if checker.check(c).passed]
             # Always return at least something if all chunks fail quality
@@ -84,11 +86,11 @@ class IngestionOrchestrator:
         if effective_strategy == "parent_child":
             try:
                 from app.rag.parent_child_chunker import ParentChildChunker
+
                 pc_chunker = ParentChildChunker()
                 parent_chunks = pc_chunker.chunk(content)
                 texts: list[str] = [
-                    cc.content for pc in parent_chunks for cc in pc.children
-                    if cc.content.strip()
+                    cc.content for pc in parent_chunks for cc in pc.children if cc.content.strip()
                 ]
                 if texts:
                     return texts
@@ -99,6 +101,7 @@ class IngestionOrchestrator:
         if effective_strategy == "sentence_window":
             try:
                 from app.rag.sentence_window import SentenceWindowChunker
+
                 sw = SentenceWindowChunker()
                 sw_chunks = sw.chunk(content)
                 texts = [c.content for c in sw_chunks if c.content.strip()]
@@ -111,6 +114,7 @@ class IngestionOrchestrator:
         if effective_strategy == "fixed":
             try:
                 from app.rag.chunker import SemanticChunker as RagChunker
+
                 chunker_fixed = RagChunker(strategy="fixed")
                 texts = [c.content for c in chunker_fixed.chunk(content) if c.content.strip()]
                 if texts:
@@ -121,6 +125,7 @@ class IngestionOrchestrator:
         # --- Standard dispatch via chunker registry ---
         try:
             from app.ingestion.chunkers import get_chunker_for_strategy
+
             chunker = get_chunker_for_strategy(effective_strategy)
             if chunker is not None:
                 chunks = chunker.chunk(content)
@@ -134,6 +139,7 @@ class IngestionOrchestrator:
         except Exception as _chunk_exc:
             try:
                 from app.observability.logging import get_logger
+
                 get_logger(__name__).warning(
                     "ingestion_chunker_dispatch_failed",
                     error=str(_chunk_exc)[:80],
@@ -143,12 +149,15 @@ class IngestionOrchestrator:
         # Fallback: paragraph split
         if ct is not None:
             from app.ingestion.content_classifier import ContentType
+
             if ct == ContentType.CODE:
                 import re
+
                 blocks = re.split(r"(?m)^(?=def |class |function |const |let )", content)
                 return [b.strip() for b in blocks if b.strip()] or [content]
             if ct in (ContentType.HTML, ContentType.WEB_PAGE):
                 import re
+
                 text = re.sub(r"<[^>]+>", " ", content).strip()
                 return [text] if text else [content]
         paras = [p.strip() for p in content.split("\n\n") if p.strip()]
@@ -159,6 +168,7 @@ class IngestionOrchestrator:
         raw = self._chunk(content, ct)
         try:
             from app.ingestion.quality_checks import QualityChecker
+
             checker = QualityChecker(min_length=20)
             filtered = [c for c in raw if checker.check(c).passed]
             return filtered if filtered else raw
@@ -190,6 +200,7 @@ class IngestionOrchestrator:
         # 1b. Select embedding model policy for this content type
         try:
             from app.embedding.orchestrator import EmbeddingOrchestrator
+
             _emb_orch = EmbeddingOrchestrator()
             _emb_policy = _emb_orch.select(content_type=detected, tenant_ctx=tenant_ctx)
             # Store selected policy in metadata for downstream use
@@ -213,9 +224,7 @@ class IngestionOrchestrator:
             and self._rag_indexing_config.strategies
             and not any(chunk.strip() for chunk in chunks_text)
         ):
-            raise EmptyIndexedContentError(
-                "Indexed content produced no indexable chunks"
-            )
+            raise EmptyIndexedContentError("Indexed content produced no indexable chunks")
         if dry_run:
             return IngestionResult(
                 ingestion_id=uuid.uuid4().hex,
@@ -234,23 +243,16 @@ class IngestionOrchestrator:
 
         store_is_in_memory = getattr(self._kb, "_db", None) is None
         if store_is_in_memory and not in_memory_only:
-            raise RuntimeError(
-                "An in-memory knowledge store requires in_memory_only=True"
-            )
+            raise RuntimeError("An in-memory knowledge store requires in_memory_only=True")
 
         document_id = uuid.uuid4().hex
-        if (
-            self._rag_indexing_config is not None
-            and self._rag_indexing_config.strategies
-        ):
+        if self._rag_indexing_config is not None and self._rag_indexing_config.strategies:
             if in_memory_only:
                 raise ValueError("Indexed ingestion does not support in_memory_only")
             if not source_identity.strip():
                 raise ValueError("Indexed ingestion requires source_identity")
             if self._embedder is None:
-                raise RuntimeError(
-                    "Configured RAG indexing requires LLM and embedding providers"
-                )
+                raise RuntimeError("Configured RAG indexing requires LLM and embedding providers")
             from app.rag.indexing import RAGIndexingPipeline
 
             identity_scope = "\x1f".join(

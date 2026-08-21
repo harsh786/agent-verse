@@ -8,6 +8,7 @@ Wraps each step execution with a child span containing:
 
 No-ops silently when OTEL is not configured.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -26,6 +27,7 @@ _log = get_logger(__name__)
 def _get_tracer() -> Any | None:
     try:
         from opentelemetry import trace
+
         return trace.get_tracer("agentverse.workflow")
     except Exception:
         return None

@@ -1,4 +1,5 @@
 """OCR document extraction API."""
+
 from __future__ import annotations
 
 import asyncio
@@ -49,7 +50,7 @@ class OcrResponse(BaseModel):
 )
 async def extract_document(
     request: Request,
-    file: UploadFile | None = File(None),  # noqa: B008
+    file: UploadFile | None = File(None),
 ) -> OcrResponse:
     """Extract text and structured fields from an image or PDF document.
 

@@ -151,10 +151,7 @@ class InMemoryCancellationRepository:
         if session.checkpoint is None:
             raise IncompatibleCheckpointError("no compatible checkpoint is available")
         checkpoint_adapter, checkpoint_schema, reference = session.checkpoint
-        if (
-            checkpoint_adapter != adapter_version
-            or checkpoint_schema != state_schema_version
-        ):
+        if checkpoint_adapter != adapter_version or checkpoint_schema != state_schema_version:
             raise IncompatibleCheckpointError("checkpoint adapter/schema mismatch")
         session.attempt += 1
         session.state = "active"
@@ -184,9 +181,7 @@ class PostgresCancellationRepository:
         events = COORDINATION_TABLES["coordination_events"]
         outbox = COORDINATION_TABLES["coordination_outbox"]
         now = datetime.now(UTC)
-        event_id = uuid.uuid5(
-            uuid.NAMESPACE_URL, f"{tenant_id}:{session_id}:cancel"
-        ).hex
+        event_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{tenant_id}:{session_id}:cancel").hex
 
         async with (
             self._sessions() as db,
@@ -194,18 +189,20 @@ class PostgresCancellationRepository:
             sqlalchemy_rls_context(db, tenant_id),
         ):
             session = (
-                await db.execute(
-                    select(sessions).where(sessions.c.id == session_id).with_for_update()
+                (
+                    await db.execute(
+                        select(sessions).where(sessions.c.id == session_id).with_for_update()
+                    )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if session is None:
                 raise KeyError(f"coordination session not found: {session_id}")
 
             if session["state"] == "cancelled":
                 persisted = (
-                    await db.execute(
-                        select(events.c.payload).where(events.c.id == event_id)
-                    )
+                    await db.execute(select(events.c.payload).where(events.c.id == event_id))
                 ).scalar_one_or_none()
                 if persisted is None:
                     raise RuntimeError(
@@ -217,9 +214,7 @@ class PostgresCancellationRepository:
                         session_id=session_id,
                         reason=str(persisted["reason"]),
                         cancelled_children=tuple(persisted["cancelled_children"]),
-                        invalidated_work_items=tuple(
-                            persisted["invalidated_work_items"]
-                        ),
+                        invalidated_work_items=tuple(persisted["invalidated_work_items"]),
                     ),
                     False,
                 )
@@ -240,9 +235,7 @@ class PostgresCancellationRepository:
             claim_rows = (
                 await db.execute(
                     select(claims.c.id, claims.c.work_item_id, claims.c.fencing_token)
-                    .select_from(
-                        claims.join(work_items, claims.c.work_item_id == work_items.c.id)
-                    )
+                    .select_from(claims.join(work_items, claims.c.work_item_id == work_items.c.id))
                     .where(
                         work_items.c.session_id == session_id,
                         claims.c.state == "active",
@@ -259,9 +252,7 @@ class PostgresCancellationRepository:
                 invalidated_work_items=invalidated,
             )
             if session["state"] in {"completed", "failed"}:
-                raise ResumeRejectedError(
-                    f"terminal session cannot cancel: {session['state']}"
-                )
+                raise ResumeRejectedError(f"terminal session cannot cancel: {session['state']}")
 
             await db.execute(
                 update(executions)
@@ -381,32 +372,38 @@ class PostgresCancellationRepository:
             sqlalchemy_rls_context(db, tenant_id),
         ):
             session = (
-                await db.execute(
-                    select(sessions).where(sessions.c.id == session_id).with_for_update()
+                (
+                    await db.execute(
+                        select(sessions).where(sessions.c.id == session_id).with_for_update()
+                    )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if session is None:
                 raise KeyError(f"coordination session not found: {session_id}")
             if session["state"] in {"completed", "failed"}:
-                raise ResumeRejectedError(
-                    f"terminal session cannot resume: {session['state']}"
-                )
+                raise ResumeRejectedError(f"terminal session cannot resume: {session['state']}")
             if session["state"] != "cancelled":
                 raise ResumeRejectedError(f"session is not cancelled: {session['state']}")
 
             checkpoint = (
-                await db.execute(
-                    select(checkpoints, executions)
-                    .select_from(
-                        checkpoints.join(
-                            executions, checkpoints.c.execution_id == executions.c.id
+                (
+                    await db.execute(
+                        select(checkpoints, executions)
+                        .select_from(
+                            checkpoints.join(
+                                executions, checkpoints.c.execution_id == executions.c.id
+                            )
                         )
+                        .where(checkpoints.c.session_id == session_id)
+                        .order_by(checkpoints.c.sequence.desc())
+                        .limit(1)
                     )
-                    .where(checkpoints.c.session_id == session_id)
-                    .order_by(checkpoints.c.sequence.desc())
-                    .limit(1)
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if checkpoint is None:
                 raise IncompatibleCheckpointError("no compatible checkpoint is available")
             if (
@@ -470,12 +467,8 @@ class CancellationCoordinator:
         self._repository = repository
         self._wakeup = wakeup
 
-    async def cancel(
-        self, tenant_id: str, session_id: str, *, reason: str
-    ) -> CancellationResult:
-        result, created = await self._repository.cancel(
-            tenant_id, session_id, reason=reason
-        )
+    async def cancel(self, tenant_id: str, session_id: str, *, reason: str) -> CancellationResult:
+        result, created = await self._repository.cancel(tenant_id, session_id, reason=reason)
         if created and self._wakeup is not None:
             await self._wakeup(session_id)
         return result

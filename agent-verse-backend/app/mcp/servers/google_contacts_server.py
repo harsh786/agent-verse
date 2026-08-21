@@ -3,6 +3,7 @@
 Environment:
   GOOGLE_ACCESS_TOKEN: OAuth2 access token with contacts.readwrite scope
 """
+
 from __future__ import annotations
 
 import os
@@ -22,9 +23,18 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "page_size": {"type": "integer", "description": "Number of contacts per page (max 1000)"},
-                "page_token": {"type": "string", "description": "Pagination token from previous response"},
-                "person_fields": {"type": "string", "description": "Comma-separated list of fields (e.g. names,emailAddresses,phoneNumbers)"},
+                "page_size": {
+                    "type": "integer",
+                    "description": "Number of contacts per page (max 1000)",
+                },
+                "page_token": {
+                    "type": "string",
+                    "description": "Pagination token from previous response",
+                },
+                "person_fields": {
+                    "type": "string",
+                    "description": "Comma-separated list of fields (e.g. names,emailAddresses,phoneNumbers)",
+                },
             },
         },
     },
@@ -49,7 +59,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "resource_name": {"type": "string", "description": "Contact resource name (e.g. people/c1234567)"},
+                "resource_name": {
+                    "type": "string",
+                    "description": "Contact resource name (e.g. people/c1234567)",
+                },
                 "given_name": {"type": "string", "description": "Updated first name"},
                 "family_name": {"type": "string", "description": "Updated last name"},
                 "email": {"type": "string", "description": "Updated email address"},
@@ -65,7 +78,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "resource_name": {"type": "string", "description": "Contact resource name (e.g. people/c1234567)"},
+                "resource_name": {
+                    "type": "string",
+                    "description": "Contact resource name (e.g. people/c1234567)",
+                },
             },
             "required": ["resource_name"],
         },
@@ -78,7 +94,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "query": {"type": "string", "description": "Search query string"},
                 "page_size": {"type": "integer", "description": "Maximum number of results"},
-                "read_mask": {"type": "string", "description": "Fields to return (default: names,emailAddresses)"},
+                "read_mask": {
+                    "type": "string",
+                    "description": "Fields to return (default: names,emailAddresses)",
+                },
             },
             "required": ["query"],
         },
@@ -89,7 +108,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "resource_name": {"type": "string", "description": "Contact resource name (e.g. people/c1234567)"},
+                "resource_name": {
+                    "type": "string",
+                    "description": "Contact resource name (e.g. people/c1234567)",
+                },
                 "person_fields": {"type": "string", "description": "Fields to include in response"},
             },
             "required": ["resource_name"],
@@ -108,13 +130,17 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
         try:
             if tool_name == "google_contacts_list_contacts":
                 params: dict[str, Any] = {
-                    "personFields": arguments.get("person_fields", "names,emailAddresses,phoneNumbers"),
+                    "personFields": arguments.get(
+                        "person_fields", "names,emailAddresses,phoneNumbers"
+                    ),
                 }
                 if "page_size" in arguments:
                     params["pageSize"] = arguments["page_size"]
                 if "page_token" in arguments:
                     params["pageToken"] = arguments["page_token"]
-                r = await client.get(f"{BASE_URL}/people/me/connections", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/people/me/connections", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -133,7 +159,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     payload["phoneNumbers"] = [{"value": arguments["phone"]}]
                 if "organization" in arguments:
                     payload["organizations"] = [{"name": arguments["organization"]}]
-                r = await client.post(f"{BASE_URL}/people:createContact", headers=headers, json=payload)
+                r = await client.post(
+                    f"{BASE_URL}/people:createContact", headers=headers, json=payload
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -153,7 +181,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     payload["emailAddresses"] = [{"value": arguments["email"]}]
                 if "phone" in arguments:
                     payload["phoneNumbers"] = [{"value": arguments["phone"]}]
-                update_fields = ",".join(k for k in ["names", "emailAddresses", "phoneNumbers"] if k in payload)
+                update_fields = ",".join(
+                    k for k in ["names", "emailAddresses", "phoneNumbers"] if k in payload
+                )
                 r = await client.patch(
                     f"{BASE_URL}/{resource_name}:updateContact",
                     headers=headers,
@@ -179,13 +209,19 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 }
                 if "page_size" in arguments:
                     params["pageSize"] = arguments["page_size"]
-                r = await client.get(f"{BASE_URL}/people:searchContacts", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/people:searchContacts", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
             if tool_name == "google_contacts_get_contact":
                 resource_name = arguments["resource_name"]
-                params = {"personFields": arguments.get("person_fields", "names,emailAddresses,phoneNumbers")}
+                params = {
+                    "personFields": arguments.get(
+                        "person_fields", "names,emailAddresses,phoneNumbers"
+                    )
+                }
                 r = await client.get(f"{BASE_URL}/{resource_name}", headers=headers, params=params)
                 r.raise_for_status()
                 return r.json()

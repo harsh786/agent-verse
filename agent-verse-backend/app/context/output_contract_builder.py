@@ -1,5 +1,7 @@
 """OutputContractBuilder — builds output format contract for executor responses."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 
 
@@ -11,14 +13,37 @@ class OutputSchema:
     instructions: str = ""
 
 
-_JSON_SIGNALS = frozenset({
-    "json", "table", "csv", "structured", "data", "dict", "array",
-    "output as", "return as", "format as", "fields:", "columns:",
-})
-_MARKDOWN_SIGNALS = frozenset({
-    "report", "document", "readme", "markdown", "formatted", "write a",
-    "create a document", "draft", "article", "essay", "summary",
-})
+_JSON_SIGNALS = frozenset(
+    {
+        "json",
+        "table",
+        "csv",
+        "structured",
+        "data",
+        "dict",
+        "array",
+        "output as",
+        "return as",
+        "format as",
+        "fields:",
+        "columns:",
+    }
+)
+_MARKDOWN_SIGNALS = frozenset(
+    {
+        "report",
+        "document",
+        "readme",
+        "markdown",
+        "formatted",
+        "write a",
+        "create a document",
+        "draft",
+        "article",
+        "essay",
+        "summary",
+    }
+)
 
 
 class OutputContractBuilder:
@@ -64,9 +89,7 @@ class OutputContractBuilder:
                 "and ```code``` blocks for code snippets."
             )
         elif output_format == "text":
-            instructions = (
-                "Provide a clear, concise response. Be specific and actionable."
-            )
+            instructions = "Provide a clear, concise response. Be specific and actionable."
 
         return OutputSchema(
             output_format=output_format,

@@ -5,6 +5,7 @@ Environment:
   PLAID_SECRET: Plaid secret key for the selected environment
   PLAID_ACCESS_TOKEN: Plaid access token for a linked Item
 """
+
 from __future__ import annotations
 
 import os
@@ -45,7 +46,10 @@ TOOL_DEFINITIONS = [
                     "description": "Filter by specific account IDs",
                     "items": {"type": "string"},
                 },
-                "count": {"type": "integer", "description": "Number of transactions to return (max 500)"},
+                "count": {
+                    "type": "integer",
+                    "description": "Number of transactions to return (max 500)",
+                },
                 "offset": {"type": "integer", "description": "Pagination offset"},
             },
             "required": ["start_date", "end_date"],
@@ -100,7 +104,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "user_id": {"type": "string", "description": "Your application's user ID"},
-                "client_name": {"type": "string", "description": "Name of your application shown in Plaid Link"},
+                "client_name": {
+                    "type": "string",
+                    "description": "Name of your application shown in Plaid Link",
+                },
                 "products": {
                     "type": "array",
                     "description": "Plaid products to request: transactions, auth, identity, etc.",
@@ -111,7 +118,10 @@ TOOL_DEFINITIONS = [
                     "description": "Country codes (e.g. US, GB, CA)",
                     "items": {"type": "string"},
                 },
-                "language": {"type": "string", "description": "Language for Plaid Link UI (e.g. en)"},
+                "language": {
+                    "type": "string",
+                    "description": "Language for Plaid Link UI (e.g. en)",
+                },
             },
             "required": ["user_id", "client_name"],
         },
@@ -170,7 +180,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 payload = {**base_payload, "access_token": access_token}
                 if "account_ids" in arguments:
                     payload["options"] = {"account_ids": arguments["account_ids"]}
-                r = await client.post(f"{BASE_URL}/accounts/balance/get", headers=headers, json=payload)
+                r = await client.post(
+                    f"{BASE_URL}/accounts/balance/get", headers=headers, json=payload
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -190,7 +202,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 payload = {**base_payload, "access_token": access_token}
                 if "account_ids" in arguments:
                     payload["options"] = {"account_ids": arguments["account_ids"]}
-                r = await client.post(f"{BASE_URL}/investments/holdings/get", headers=headers, json=payload)
+                r = await client.post(
+                    f"{BASE_URL}/investments/holdings/get", headers=headers, json=payload
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -203,7 +217,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     "country_codes": arguments.get("country_codes", ["US"]),
                     "language": arguments.get("language", "en"),
                 }
-                r = await client.post(f"{BASE_URL}/link/token/create", headers=headers, json=payload)
+                r = await client.post(
+                    f"{BASE_URL}/link/token/create", headers=headers, json=payload
+                )
                 r.raise_for_status()
                 return r.json()
 

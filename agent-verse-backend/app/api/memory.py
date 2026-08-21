@@ -1,4 +1,5 @@
 """Memory management REST API."""
+
 from __future__ import annotations
 
 import uuid
@@ -26,11 +27,11 @@ def _get_db(request: Request) -> Any:
     if db is None:
         try:
             from app.db.session import get_session_factory
+
             db = get_session_factory()
         except Exception:
             pass
     return db
-
 
 
 class CreateMemoryRequest(BaseModel):
@@ -50,6 +51,7 @@ async def create_memory(request: Request, body: CreateMemoryRequest) -> dict:
     if db is not None:
         try:
             from sqlalchemy import text
+
             async with db() as session, session.begin():
                 await session.execute(
                     text("""
@@ -76,6 +78,7 @@ async def create_memory(request: Request, body: CreateMemoryRequest) -> dict:
             }
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("create_memory_db_failed: %s", exc)
 
     # In-memory fallback
@@ -86,10 +89,15 @@ async def create_memory(request: Request, body: CreateMemoryRequest) -> dict:
             if tenant_ctx.tenant_id not in raw:
                 raw[tenant_ctx.tenant_id] = []
             from types import SimpleNamespace
+
             mem_obj = SimpleNamespace(
-                id=memory_id, memory_id=memory_id,
-                content=body.content, memory_type=body.memory_type,
-                confidence=body.confidence, tags=body.tags, created_at="",
+                id=memory_id,
+                memory_id=memory_id,
+                content=body.content,
+                memory_type=body.memory_type,
+                confidence=body.confidence,
+                tags=body.tags,
+                created_at="",
                 tenant_id=tenant_ctx.tenant_id,
             )
             raw[tenant_ctx.tenant_id].append(mem_obj)
@@ -118,6 +126,7 @@ async def list_memories(
     if db is not None:
         try:
             from sqlalchemy import text
+
             sql = "SELECT id, content, memory_type, confidence, tags, created_at FROM long_term_memory WHERE tenant_id=:tid"
             params: dict[str, Any] = {"tid": tenant_ctx.tenant_id}
             if memory_type:
@@ -128,13 +137,18 @@ async def list_memories(
                 rows = (await session.execute(text(sql), params)).fetchall()
             return [
                 {
-                    "id": r[0], "content": r[1], "memory_type": r[2],
-                    "confidence": r[3], "tags": r[4] or [], "created_at": r[5].isoformat() if r[5] else ""
+                    "id": r[0],
+                    "content": r[1],
+                    "memory_type": r[2],
+                    "confidence": r[3],
+                    "tags": r[4] or [],
+                    "created_at": r[5].isoformat() if r[5] else "",
                 }
                 for r in rows
             ]
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("list_memories_db_failed: %s", exc)
 
     # In-memory fallback — _memories is dict[tenant_id, list[LongTermMemory]]
@@ -142,7 +156,9 @@ async def list_memories(
         raw = getattr(ltm, "_memories", {})
         tenant_memories: list = raw.get(tenant_ctx.tenant_id, []) if isinstance(raw, dict) else []
         if memory_type:
-            tenant_memories = [m for m in tenant_memories if getattr(m, "memory_type", "") == memory_type]
+            tenant_memories = [
+                m for m in tenant_memories if getattr(m, "memory_type", "") == memory_type
+            ]
         return [
             {
                 "id": getattr(m, "id", getattr(m, "memory_id", "")),
@@ -183,10 +199,14 @@ async def recall_memories(
     return {
         "query": q,
         "results": [
-            {"content": getattr(m, "content", str(m)), "confidence": getattr(m, "confidence", 0.8),
-             "memory_type": getattr(m, "memory_type", ""), "source": getattr(m, "source_goal_id", "")}
+            {
+                "content": getattr(m, "content", str(m)),
+                "confidence": getattr(m, "confidence", 0.8),
+                "memory_type": getattr(m, "memory_type", ""),
+                "source": getattr(m, "source_goal_id", ""),
+            }
             for m in memories
-        ]
+        ],
     }
 
 
@@ -220,9 +240,11 @@ async def list_execution_memories(request: Request) -> list[dict[str, Any]]:
         return []
     memories = exec_mem._memories.get(tenant.tenant_id, [])
     return [
-        {"goal_text": m.get("goal_text", "")[:200],
-         "success": m.get("success", False),
-         "recorded_at": m.get("recorded_at", "")}
+        {
+            "goal_text": m.get("goal_text", "")[:200],
+            "success": m.get("success", False),
+            "recorded_at": m.get("recorded_at", ""),
+        }
         for m in memories[-50:]  # Cap at 50
     ]
 
@@ -236,10 +258,11 @@ async def delete_memory_by_id(request: Request, memory_id: str) -> dict:
     if db is not None:
         try:
             from sqlalchemy import text
+
             async with db() as session, session.begin():
                 result = await session.execute(
                     text("DELETE FROM long_term_memory WHERE id=:id AND tenant_id=:tid"),
-                    {"id": memory_id, "tid": tenant_ctx.tenant_id}
+                    {"id": memory_id, "tid": tenant_ctx.tenant_id},
                 )
                 if result.rowcount == 0:
                     raise HTTPException(404, f"Memory {memory_id} not found")
@@ -248,6 +271,7 @@ async def delete_memory_by_id(request: Request, memory_id: str) -> dict:
             raise
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("delete_memory_db_failed: %s", exc)
 
     # Fallback to in-memory store
@@ -277,6 +301,7 @@ async def get_tool_reliability(request: Request) -> list[dict]:
     """Get per-tool reliability stats (tools with poor success rates) for this tenant."""
     tenant_ctx = _require_tenant(request)
     from app.memory.tool_reliability import ToolReliabilityStore
+
     store = ToolReliabilityStore(db_session_factory=_get_db(request))
     return await store.get_unreliable_tools(tenant_id=tenant_ctx.tenant_id, min_calls=3)
 
@@ -290,6 +315,7 @@ async def clear_all_memories(request: Request) -> None:
     if db is not None:
         try:
             from sqlalchemy import text
+
             async with db() as session, session.begin():
                 await session.execute(
                     text("DELETE FROM long_term_memory WHERE tenant_id=:tid"),
@@ -298,6 +324,7 @@ async def clear_all_memories(request: Request) -> None:
             return
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("clear_all_memories_db_failed: %s", exc)
 
     # In-memory fallback

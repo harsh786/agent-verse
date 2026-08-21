@@ -1,5 +1,7 @@
 """Agent Runtime 2.0 - formalized roles and execution models."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -35,6 +37,7 @@ class RiskLevel(str, Enum):
 @dataclass
 class PlanStep:
     """A typed step in an execution plan."""
+
     step_id: str
     description: str
     role: AgentRole = AgentRole.EXECUTOR
@@ -56,6 +59,7 @@ class PlanStep:
 @dataclass
 class AgentExecutionPlan:
     """A typed execution plan for an agent run."""
+
     plan_id: str
     goal_id: str
     tenant_id: str
@@ -70,6 +74,7 @@ class AgentExecutionPlan:
 @dataclass
 class AgentRunTrace:
     """Complete execution trace for an agent run."""
+
     trace_id: str
     goal_id: str
     tenant_id: str
@@ -81,14 +86,15 @@ class AgentRunTrace:
     success: bool = False
     error: str | None = None
     model_selections: list[dict[str, Any]] = field(default_factory=list)
-    runtime_profile_id: str | None = None   # GoalRuntimeProfile.profile_id
+    runtime_profile_id: str | None = None  # GoalRuntimeProfile.profile_id
     patterns_used: list[str] = field(default_factory=list)  # active agent patterns
-    rag_strategy_used: str = ""             # RAG strategy selected
+    rag_strategy_used: str = ""  # RAG strategy selected
 
 
 @dataclass
 class SubagentTask:
     """A task assigned to a subagent."""
+
     task_id: str
     parent_goal_id: str
     child_goal_id: str | None = None

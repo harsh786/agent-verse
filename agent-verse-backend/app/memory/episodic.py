@@ -8,11 +8,12 @@ Episodic memory captures WHAT HAPPENED during past goal executions:
 
 At planning time, the agent recalls similar past episodes to inform its approach.
 """
+
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.agent.state import AgentState
@@ -22,12 +23,13 @@ if TYPE_CHECKING:
 @dataclass
 class Episode:
     """A single past experience."""
+
     episode_id: str
     tenant_id: str
     goal_id: str
     goal_text: str
     action_summary: str
-    outcome: str               # "success" | "failed" | "partial"
+    outcome: str  # "success" | "failed" | "partial"
     lessons: str
     quality_score: float = 0.5
     steps_count: int = 0
@@ -56,16 +58,19 @@ class EpisodicMemoryStore:
     async def record(
         self,
         *,
-        state: "AgentState",
-        tenant_ctx: "TenantContext",
+        state: AgentState,
+        tenant_ctx: TenantContext,
         quality_score: float = 0.5,
     ) -> None:
         """Record a goal execution as an episode. Called on goal completion."""
         from app.agent.state import GoalStatus
+
         outcome = (
-            "success" if state.status == GoalStatus.COMPLETE else
-            "partial" if state.status == GoalStatus.WAITING_HUMAN else
-            "failed"
+            "success"
+            if state.status == GoalStatus.COMPLETE
+            else "partial"
+            if state.status == GoalStatus.WAITING_HUMAN
+            else "failed"
         )
         # Extract action summary from steps
         action_parts = []
@@ -78,7 +83,7 @@ class EpisodicMemoryStore:
         # Extract tools used
         tools_used: list[str] = []
         for step in state.steps:
-            for tc in (getattr(step, "tool_calls", None) or []):
+            for tc in getattr(step, "tool_calls", None) or []:
                 if isinstance(tc, dict):
                     tn = tc.get("tool_name", "")
                     if tn and tn not in tools_used:
@@ -104,6 +109,7 @@ class EpisodicMemoryStore:
         if self._embedder is not None:
             try:
                 from app.providers.base import EmbedRequest
+
                 resp = await self._embedder.embed(EmbedRequest(texts=[state.goal[:200]]))
                 if resp.embeddings:
                     episode.embedding = resp.embeddings[0]
@@ -119,9 +125,12 @@ class EpisodicMemoryStore:
         if self._db is not None:
             try:
                 import json
+
                 from sqlalchemy import text
+
                 async with self._db() as session, session.begin():
-                    await session.execute(text("""
+                    await session.execute(
+                        text("""
                         INSERT INTO episodic_memories
                             (id, tenant_id, goal_id, goal_text, action_summary,
                              outcome, lessons, embedding, quality_score,
@@ -130,22 +139,27 @@ class EpisodicMemoryStore:
                             (:id, :tenant_id, :goal_id, :goal_text, :action_summary,
                              :outcome, :lessons, :embedding::jsonb, :quality_score,
                              :steps_count, :tools_used::jsonb, NOW())
-                    """), {
-                        "id": episode.episode_id,
-                        "tenant_id": tenant_ctx.tenant_id,
-                        "goal_id": state.goal_id,
-                        "goal_text": episode.goal_text,
-                        "action_summary": action_summary,
-                        "outcome": outcome,
-                        "lessons": lessons,
-                        "embedding": json.dumps(episode.embedding) if episode.embedding else "null",
-                        "quality_score": quality_score,
-                        "steps_count": len(state.steps),
-                        "tools_used": json.dumps(tools_used[:10]),
-                    })
+                    """),
+                        {
+                            "id": episode.episode_id,
+                            "tenant_id": tenant_ctx.tenant_id,
+                            "goal_id": state.goal_id,
+                            "goal_text": episode.goal_text,
+                            "action_summary": action_summary,
+                            "outcome": outcome,
+                            "lessons": lessons,
+                            "embedding": json.dumps(episode.embedding)
+                            if episode.embedding
+                            else "null",
+                            "quality_score": quality_score,
+                            "steps_count": len(state.steps),
+                            "tools_used": json.dumps(tools_used[:10]),
+                        },
+                    )
             except Exception as exc:
                 try:
                     from app.observability.logging import get_logger
+
                     get_logger(__name__).warning("episodic_memory_persist_failed", error=str(exc))
                 except Exception:
                     pass
@@ -163,7 +177,9 @@ class EpisodicMemoryStore:
         if self._db is not None:
             try:
                 return await self._recall_from_db(
-                    goal=goal, tenant_id=tenant_id, limit=limit,
+                    goal=goal,
+                    tenant_id=tenant_id,
+                    limit=limit,
                     outcome_filter=outcome_filter,
                 )
             except Exception:
@@ -175,33 +191,36 @@ class EpisodicMemoryStore:
             episodes = [e for e in episodes if e.outcome == outcome_filter]
         # Simple keyword relevance
         query_words = set(goal.lower().split())
-        scored = [
-            (sum(1 for w in query_words if w in e.goal_text.lower()), e)
-            for e in episodes
-        ]
+        scored = [(sum(1 for w in query_words if w in e.goal_text.lower()), e) for e in episodes]
         scored.sort(key=lambda x: x[0], reverse=True)
         return [e for _, e in scored[:limit]]
 
     async def _recall_from_db(
-        self, *, goal: str, tenant_id: str, limit: int,
-        outcome_filter: str | None
+        self, *, goal: str, tenant_id: str, limit: int, outcome_filter: str | None
     ) -> list[Episode]:
-        from sqlalchemy import text
         import json
+
+        from sqlalchemy import text
+
         where_outcome = "AND outcome = :outcome" if outcome_filter else ""
         async with self._db() as session:
-            rows = (await session.execute(text(f"""
+            rows = (
+                await session.execute(
+                    text(f"""
                 SELECT id, goal_id, goal_text, action_summary, outcome,
                        lessons, quality_score, steps_count, tools_used
                 FROM episodic_memories
                 WHERE tenant_id = :tenant_id {where_outcome}
                 ORDER BY quality_score DESC, created_at DESC
                 LIMIT :limit
-            """), {
-                "tenant_id": tenant_id,
-                "limit": limit * 3,
-                **({"outcome": outcome_filter} if outcome_filter else {}),
-            })).fetchall()
+            """),
+                    {
+                        "tenant_id": tenant_id,
+                        "limit": limit * 3,
+                        **({"outcome": outcome_filter} if outcome_filter else {}),
+                    },
+                )
+            ).fetchall()
         # Keyword filter
         query_words = set(goal.lower().split())
         episodes = []

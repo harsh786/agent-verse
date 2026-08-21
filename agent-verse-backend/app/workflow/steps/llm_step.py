@@ -1,4 +1,5 @@
 """LLMStepNode — LLM completion with optional RAG retrieval."""
+
 from __future__ import annotations
 
 import time
@@ -62,6 +63,7 @@ class LLMStepNode:
             output = {"result": f"[FakeProvider: {self.step.id}]", "confidence": 1.0}
         else:
             from app.providers.base import CompletionRequest, Message
+
             req = CompletionRequest(
                 messages=[
                     Message(
@@ -76,14 +78,15 @@ class LLMStepNode:
             )
             response = await self.llm_provider.complete(req)
             raw_text = response.content.strip()
-            tokens_in  = getattr(response, "prompt_tokens", 0)
+            tokens_in = getattr(response, "prompt_tokens", 0)
             tokens_out = getattr(response, "completion_tokens", 0)
-            cost_usd   = getattr(response, "cost_usd", 0.0)
+            cost_usd = getattr(response, "cost_usd", 0.0)
 
             # Parse JSON from response
             import json
             import re
-            json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+
+            json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
             if json_match:
                 try:
                     output = json.loads(json_match.group())

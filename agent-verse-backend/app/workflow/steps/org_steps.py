@@ -8,9 +8,9 @@ Four new step types for org workflows:
 
 These are additive — they extend the existing 12 step types.
 """
+
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
@@ -38,17 +38,17 @@ class DepartmentHandoffStep:
         context_resolver: Any,
         **services: Any,
     ) -> None:
-        self._step     = step
-        self._ctx      = context_resolver
+        self._step = step
+        self._ctx = context_resolver
         self._services = services
 
     async def execute(self, state: WorkflowState) -> dict[str, Any]:
         with _tracer.start_as_current_span("step.department_handoff") as span:
             config = self._step.config or {}
-            target_dept      = config.get("target_department", "")
+            target_dept = config.get("target_department", "")
             requires_approval = config.get("requires_approval", False)
-            approval_roles   = config.get("approval_roles", [])
-            artifact_key     = config.get("artifact_key", "output")
+            approval_roles = config.get("approval_roles", [])
+            artifact_key = config.get("artifact_key", "output")
 
             span.set_attribute("target_dept", target_dept)
             span.set_attribute("requires_approval", requires_approval)
@@ -57,16 +57,16 @@ class DepartmentHandoffStep:
             artifact = state.vars.get(artifact_key) or state.step_outputs.get(self._step.id, {})
 
             result: dict[str, Any] = {
-                "handoff_to":   target_dept,
-                "artifact":     artifact,
-                "timestamp":    datetime.now(UTC).isoformat(),
-                "step_id":      self._step.id,
+                "handoff_to": target_dept,
+                "artifact": artifact,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "step_id": self._step.id,
             }
 
             if requires_approval:
                 # Signal that HITL approval is needed before handoff completes
                 result["approval_pending"] = True
-                result["approval_roles"]   = approval_roles
+                result["approval_roles"] = approval_roles
                 _log.info(
                     "workflow.department_handoff.pending_approval",
                     target_dept=target_dept,
@@ -96,17 +96,17 @@ class CrossTeamReviewStep:
         context_resolver: Any,
         **services: Any,
     ) -> None:
-        self._step     = step
-        self._ctx      = context_resolver
+        self._step = step
+        self._ctx = context_resolver
         self._services = services
 
     async def execute(self, state: WorkflowState) -> dict[str, Any]:
         with _tracer.start_as_current_span("step.cross_team_review") as span:
-            config           = self._step.config or {}
-            reviewer_role    = config.get("reviewer_role", "qa_engineer")
-            reviewer_dept    = config.get("reviewer_department", "qa")
-            review_criteria  = config.get("review_criteria", [])
-            content_key      = config.get("content_key", "output")
+            config = self._step.config or {}
+            reviewer_role = config.get("reviewer_role", "qa_engineer")
+            reviewer_dept = config.get("reviewer_department", "qa")
+            review_criteria = config.get("review_criteria", [])
+            content_key = config.get("content_key", "output")
 
             span.set_attribute("reviewer_role", reviewer_role)
             span.set_attribute("reviewer_dept", reviewer_dept)
@@ -117,11 +117,11 @@ class CrossTeamReviewStep:
             # For now: record review request and return pending
             result: dict[str, Any] = {
                 "review_requested_for": reviewer_role,
-                "reviewer_department":  reviewer_dept,
-                "review_criteria":      review_criteria,
-                "content_to_review":    str(content)[:500],
-                "review_status":        "pending",
-                "timestamp":            datetime.now(UTC).isoformat(),
+                "reviewer_department": reviewer_dept,
+                "review_criteria": review_criteria,
+                "content_to_review": str(content)[:500],
+                "review_status": "pending",
+                "timestamp": datetime.now(UTC).isoformat(),
             }
 
             _log.info(
@@ -150,18 +150,18 @@ class OrgDecisionStep:
         context_resolver: Any,
         **services: Any,
     ) -> None:
-        self._step     = step
-        self._ctx      = context_resolver
+        self._step = step
+        self._ctx = context_resolver
         self._services = services
 
     async def execute(self, state: WorkflowState) -> dict[str, Any]:
         with _tracer.start_as_current_span("step.org_decision") as span:
             config = self._step.config or {}
-            problem         = config.get("problem", "")
-            options         = config.get("options", [])
-            evidence_keys   = config.get("evidence_sources", [])
+            problem = config.get("problem", "")
+            options = config.get("options", [])
+            evidence_keys = config.get("evidence_sources", [])
             escalation_path = config.get("escalation_path", "manager")
-            decision_owner  = config.get("decision_owner", "agent")
+            decision_owner = config.get("decision_owner", "agent")
 
             span.set_attribute("problem_len", len(problem))
 
@@ -175,14 +175,14 @@ class OrgDecisionStep:
             chosen = options[0] if options else "proceed"
 
             result: dict[str, Any] = {
-                "problem":       problem,
-                "options":       options,
-                "evidence":      evidence,
+                "problem": problem,
+                "options": options,
+                "evidence": evidence,
                 "chosen_option": chosen,
                 "decision_owner": decision_owner,
                 "escalation_path": escalation_path,
-                "confidence":    0.75,
-                "timestamp":     datetime.now(UTC).isoformat(),
+                "confidence": 0.75,
+                "timestamp": datetime.now(UTC).isoformat(),
                 "requires_human_approval": decision_owner == "human",
             }
 
@@ -212,16 +212,16 @@ class ParallelDepartmentStep:
         context_resolver: Any,
         **services: Any,
     ) -> None:
-        self._step     = step
-        self._ctx      = context_resolver
+        self._step = step
+        self._ctx = context_resolver
         self._services = services
 
     async def execute(self, state: WorkflowState) -> dict[str, Any]:
         with _tracer.start_as_current_span("step.parallel_departments") as span:
-            config         = self._step.config or {}
-            departments    = config.get("departments", [])
+            config = self._step.config or {}
+            departments = config.get("departments", [])
             merge_strategy = config.get("merge_strategy", "all_required")
-            timeout_hours  = config.get("timeout_hours", 4.0)
+            timeout_hours = config.get("timeout_hours", 4.0)
 
             span.set_attribute("dept_count", len(departments))
             span.set_attribute("merge_strategy", merge_strategy)
@@ -240,12 +240,12 @@ class ParallelDepartmentStep:
                 dept_tasks[dept] = task_id
 
             result: dict[str, Any] = {
-                "departments":    departments,
+                "departments": departments,
                 "merge_strategy": merge_strategy,
-                "timeout_hours":  timeout_hours,
-                "dept_tasks":     dept_tasks,
-                "status":         "running",
-                "started_at":     datetime.now(UTC).isoformat(),
+                "timeout_hours": timeout_hours,
+                "dept_tasks": dept_tasks,
+                "status": "running",
+                "started_at": datetime.now(UTC).isoformat(),
             }
 
             return {
@@ -257,8 +257,8 @@ class ParallelDepartmentStep:
 # ── Step registry entry ───────────────────────────────────────────────────────
 
 ORG_STEP_TYPES: dict[str, type] = {
-    "department_handoff":   DepartmentHandoffStep,
-    "cross_team_review":    CrossTeamReviewStep,
-    "org_decision":         OrgDecisionStep,
+    "department_handoff": DepartmentHandoffStep,
+    "cross_team_review": CrossTeamReviewStep,
+    "org_decision": OrgDecisionStep,
     "parallel_departments": ParallelDepartmentStep,
 }

@@ -10,6 +10,7 @@ Returns a ``TriggerDefinition`` or raises ``NLTriggerParseError`` if parsing
 fails.  Caches resolved definitions in Redis to avoid repeated LLM calls for
 identical descriptions.
 """
+
 from __future__ import annotations
 
 import json
@@ -137,6 +138,7 @@ class NLTriggerResolver:
         prompt = _PROMPT.format(description=description)
         try:
             from app.providers.base import CompletionRequest, Message
+
             req = CompletionRequest(
                 messages=[Message(role="user", content=prompt)],
                 model="gpt-4o",

@@ -43,10 +43,14 @@ def generate_agent_keypair() -> tuple[str, str]:
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     ).decode()
-    public_pem = private_key.public_key().public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode()
+    public_pem = (
+        private_key.public_key()
+        .public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
     return private_pem, public_pem
 
 
@@ -165,9 +169,7 @@ async def _build_jwks(db_factory: Any) -> list[dict[str, Any]]:
 
                 def _to_base64url(n: int) -> str:
                     length = (n.bit_length() + 7) // 8
-                    return base64.urlsafe_b64encode(
-                        n.to_bytes(length, "big")
-                    ).rstrip(b"=").decode()
+                    return base64.urlsafe_b64encode(n.to_bytes(length, "big")).rstrip(b"=").decode()
 
                 keys.append(
                     {
@@ -250,9 +252,7 @@ class AgentIdentityService:
         vault_ref: str | None = None
         if self._vault is not None:
             with contextlib.suppress(Exception):
-                vault_ref = await self._vault.store(
-                    f"agent_key:{credential_id}", private_pem
-                )
+                vault_ref = await self._vault.store(f"agent_key:{credential_id}", private_pem)
 
         if self._db is not None:
             async with self._db() as session:
@@ -326,9 +326,7 @@ class AgentIdentityService:
 
         return revoked
 
-    async def issue_agent_jwt(
-        self, agent_id: str, key_id: str, tenant_id: str
-    ) -> str | None:
+    async def issue_agent_jwt(self, agent_id: str, key_id: str, tenant_id: str) -> str | None:
         """Exchange a service key for a short-lived RS256 JWT.
 
         Returns the signed JWT string, or None if the key is not found / revoked /
@@ -379,9 +377,7 @@ class AgentIdentityService:
             domain_context=domain_context or "general",
         )
 
-    async def list_credentials(
-        self, agent_id: str, tenant_id: str
-    ) -> list[dict[str, Any]]:
+    async def list_credentials(self, agent_id: str, tenant_id: str) -> list[dict[str, Any]]:
         """List all credentials for an agent. Private keys are never returned."""
         if self._db is None:
             return []

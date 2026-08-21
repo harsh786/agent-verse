@@ -6,6 +6,7 @@ Supports:
   - Handle bidirectional WebSocket tool calls
   - Reconnection with exponential backoff
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,8 +17,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_RECONNECT_BASE = 1.0    # seconds
-_RECONNECT_MAX = 60.0    # seconds
+_RECONNECT_BASE = 1.0  # seconds
+_RECONNECT_MAX = 60.0  # seconds
 _RECONNECT_JITTER = 0.1
 
 
@@ -51,14 +52,12 @@ class MCPWebSocketClient:
 
     # ── Connection management ──────────────────────────────────────────────────
 
-    async def connect(self) -> "MCPWebSocketClient":
+    async def connect(self) -> MCPWebSocketClient:
         """Open WebSocket connection. Returns self for use as async context manager."""
         try:
             import websockets  # type: ignore[import-untyped]
         except ImportError:
-            raise RuntimeError(
-                "websockets is not installed. Install with: pip install websockets"
-            )
+            raise RuntimeError("websockets is not installed. Install with: pip install websockets")
 
         headers = {}
         if self._auth_token:
@@ -78,7 +77,7 @@ class MCPWebSocketClient:
             await self._ws.close()
             self._ws = None
 
-    async def __aenter__(self) -> "MCPWebSocketClient":
+    async def __aenter__(self) -> MCPWebSocketClient:
         return await self.connect()
 
     async def __aexit__(self, *_: object) -> None:
@@ -127,7 +126,7 @@ class MCPWebSocketClient:
                     break
                 reconnects += 1
                 delay = min(
-                    _RECONNECT_BASE * (2 ** reconnects) + _RECONNECT_JITTER,
+                    _RECONNECT_BASE * (2**reconnects) + _RECONNECT_JITTER,
                     _RECONNECT_MAX,
                 )
                 logger.info(
@@ -166,21 +165,21 @@ class MCPWebSocketClient:
         self._pending[msg_id] = future
 
         await self._ws.send(  # type: ignore[union-attr]
-            json.dumps({
-                "id": msg_id,
-                "type": "call_tool",
-                "tool": tool_name,
-                "arguments": arguments,
-            })
+            json.dumps(
+                {
+                    "id": msg_id,
+                    "type": "call_tool",
+                    "tool": tool_name,
+                    "arguments": arguments,
+                }
+            )
         )
 
         try:
             return await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(msg_id, None)
-            raise TimeoutError(
-                f"WebSocket tool call '{tool_name}' timed out after {timeout}s"
-            )
+            raise TimeoutError(f"WebSocket tool call '{tool_name}' timed out after {timeout}s")
 
     # ── Streaming subscriptions ────────────────────────────────────────────────
 
@@ -204,12 +203,14 @@ class MCPWebSocketClient:
 
         self._msg_id += 1
         await self._ws.send(  # type: ignore[union-attr]
-            json.dumps({
-                "id": str(self._msg_id),
-                "type": "subscribe",
-                "channel": channel,
-                "params": params or {},
-            })
+            json.dumps(
+                {
+                    "id": str(self._msg_id),
+                    "type": "subscribe",
+                    "channel": channel,
+                    "params": params or {},
+                }
+            )
         )
 
         try:
@@ -223,11 +224,13 @@ class MCPWebSocketClient:
             try:
                 self._msg_id += 1
                 await self._ws.send(  # type: ignore[union-attr]
-                    json.dumps({
-                        "id": str(self._msg_id),
-                        "type": "unsubscribe",
-                        "channel": channel,
-                    })
+                    json.dumps(
+                        {
+                            "id": str(self._msg_id),
+                            "type": "unsubscribe",
+                            "channel": channel,
+                        }
+                    )
                 )
             except Exception:
                 pass

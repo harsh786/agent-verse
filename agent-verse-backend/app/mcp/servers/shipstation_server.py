@@ -4,6 +4,7 @@ Environment:
   SHIPSTATION_API_KEY: ShipStation API key from Account Settings > API Settings
   SHIPSTATION_API_SECRET: ShipStation API secret
 """
+
 from __future__ import annotations
 
 import base64
@@ -25,10 +26,21 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "order_status": {"type": "string", "description": "Filter by status: awaiting_payment, awaiting_shipment, shipped, on_hold, cancelled"},
+                "order_status": {
+                    "type": "string",
+                    "description": "Filter by status: awaiting_payment, awaiting_shipment, shipped, on_hold, cancelled",
+                },
                 "store_id": {"type": "integer", "description": "Filter by ShipStation store ID"},
-                "page": {"type": "integer", "description": "Page number for pagination", "default": 1},
-                "page_size": {"type": "integer", "description": "Number of orders per page (max 500)", "default": 25},
+                "page": {
+                    "type": "integer",
+                    "description": "Page number for pagination",
+                    "default": 1,
+                },
+                "page_size": {
+                    "type": "integer",
+                    "description": "Number of orders per page (max 500)",
+                    "default": 25,
+                },
             },
         },
     },
@@ -39,9 +51,18 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "order_id": {"type": "integer", "description": "ShipStation order ID"},
-                "carrier_code": {"type": "string", "description": "Carrier code e.g. stamps_com, fedex, ups"},
-                "service_code": {"type": "string", "description": "Service code e.g. usps_first_class_mail"},
-                "package_code": {"type": "string", "description": "Package code e.g. package, large_envelope_or_flat"},
+                "carrier_code": {
+                    "type": "string",
+                    "description": "Carrier code e.g. stamps_com, fedex, ups",
+                },
+                "service_code": {
+                    "type": "string",
+                    "description": "Service code e.g. usps_first_class_mail",
+                },
+                "package_code": {
+                    "type": "string",
+                    "description": "Package code e.g. package, large_envelope_or_flat",
+                },
                 "weight": {
                     "type": "object",
                     "properties": {
@@ -50,7 +71,10 @@ TOOL_DEFINITIONS = [
                     },
                     "description": "Shipment weight",
                 },
-                "tracking_number": {"type": "string", "description": "Pre-existing tracking number"},
+                "tracking_number": {
+                    "type": "string",
+                    "description": "Pre-existing tracking number",
+                },
             },
             "required": ["order_id", "carrier_code", "service_code"],
         },
@@ -72,7 +96,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "show_inactive": {"type": "boolean", "description": "Include inactive stores", "default": False},
+                "show_inactive": {
+                    "type": "boolean",
+                    "description": "Include inactive stores",
+                    "default": False,
+                },
             },
         },
     },
@@ -91,10 +119,16 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "order_id": {"type": "integer", "description": "ShipStation order ID"},
-                "carrier_code": {"type": "string", "description": "Carrier code e.g. stamps_com, fedex, ups"},
+                "carrier_code": {
+                    "type": "string",
+                    "description": "Carrier code e.g. stamps_com, fedex, ups",
+                },
                 "service_code": {"type": "string", "description": "Service code for the carrier"},
                 "package_code": {"type": "string", "description": "Package type code"},
-                "confirmation": {"type": "string", "description": "Confirmation type: none, delivery, signature, adult_signature"},
+                "confirmation": {
+                    "type": "string",
+                    "description": "Confirmation type: none, delivery, signature, adult_signature",
+                },
                 "ship_date": {"type": "string", "description": "Ship date in YYYY-MM-DD format"},
                 "weight": {
                     "type": "object",
@@ -103,7 +137,11 @@ TOOL_DEFINITIONS = [
                         "units": {"type": "string"},
                     },
                 },
-                "test_label": {"type": "boolean", "description": "Create a test label (no charge)", "default": False},
+                "test_label": {
+                    "type": "boolean",
+                    "description": "Create a test label (no charge)",
+                    "default": False,
+                },
             },
             "required": ["order_id", "carrier_code", "service_code"],
         },
@@ -175,7 +213,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     payload["weight"] = arguments["weight"]
                 if "tracking_number" in arguments:
                     payload["trackingNumber"] = arguments["tracking_number"]
-                r = await client.post(f"{BASE}/shipments/createlabel", headers=headers, json=payload)
+                r = await client.post(
+                    f"{BASE}/shipments/createlabel", headers=headers, json=payload
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -212,11 +252,15 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
                 for field in ("package_code", "confirmation", "ship_date", "weight"):
                     if field in arguments:
-                        camel = "packageCode" if field == "package_code" else (
-                            "shipDate" if field == "ship_date" else field
+                        camel = (
+                            "packageCode"
+                            if field == "package_code"
+                            else ("shipDate" if field == "ship_date" else field)
                         )
                         payload[camel] = arguments[field]
-                r = await client.post(f"{BASE}/orders/createlabelfororder", headers=headers, json=payload)
+                r = await client.post(
+                    f"{BASE}/orders/createlabelfororder", headers=headers, json=payload
+                )
                 r.raise_for_status()
                 return r.json()
 

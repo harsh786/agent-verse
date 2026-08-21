@@ -1,4 +1,5 @@
 """OAuth flow manager — handles authorization code + PKCE flows for MCP connectors."""
+
 from __future__ import annotations
 
 import base64
@@ -83,11 +84,13 @@ class OAuthFlowManager:
     def _cleanup_expired_flows(self) -> None:
         """Remove OAuth state tokens older than 10 minutes."""
         now = time.time()
-        expired = [k for k, v in self._pending_flows.items() if now - v.created_at > _OAUTH_STATE_TTL]
+        expired = [
+            k for k, v in self._pending_flows.items() if now - v.created_at > _OAUTH_STATE_TTL
+        ]
         for k in expired:
             del self._pending_flows[k]
 
-    def get_pending_flow(self, state: str) -> "OAuthState | None":
+    def get_pending_flow(self, state: str) -> OAuthState | None:
         """Get and validate a pending OAuth flow by state token."""
         self._cleanup_expired_flows()  # cleanup on every access
         flow = self._pending_flows.get(state)
@@ -144,6 +147,7 @@ class OAuthFlowManager:
                 data = resp.json()
         except httpx.HTTPStatusError as exc:
             import logging
+
             logging.getLogger(__name__).warning(
                 "OAuth token exchange failed: %s %s",
                 exc.response.status_code,
@@ -152,12 +156,12 @@ class OAuthFlowManager:
             return None
         except (httpx.ConnectError, httpx.TimeoutException):
             import logging
-            logging.getLogger(__name__).error(
-                "OAuth token endpoint unreachable: %s", token_url
-            )
+
+            logging.getLogger(__name__).error("OAuth token endpoint unreachable: %s", token_url)
             return None
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).error("OAuth exchange unexpected error: %s", exc)
             return None
 
@@ -209,9 +213,7 @@ class OAuthFlowManager:
     ) -> OAuthToken | None:
         """Refresh an expired access token."""
         # Resolve tenant_id from either tenant_ctx or the explicit keyword
-        resolved_tenant_id = (
-            getattr(tenant_ctx, "tenant_id", "") if tenant_ctx else tenant_id
-        )
+        resolved_tenant_id = getattr(tenant_ctx, "tenant_id", "") if tenant_ctx else tenant_id
         # Use the provided token, or look it up from internal store
         existing = token or self._tokens.get((resolved_tenant_id, server_id))
         if existing is None or not existing.refresh_token:
@@ -239,6 +241,7 @@ class OAuthFlowManager:
                 data = resp.json()
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).error("Token refresh failed: %s", exc)
             return None  # Don't silently return stale token
 
@@ -251,9 +254,7 @@ class OAuthFlowManager:
         self._tokens[(resolved_tenant_id, server_id)] = new_token
         return new_token
 
-    async def _persist_token_to_db(
-        self, tenant_id: str, server_id: str, token: OAuthToken
-    ) -> None:
+    async def _persist_token_to_db(self, tenant_id: str, server_id: str, token: OAuthToken) -> None:
         """Persist an OAuth token to the database for cross-restart recovery."""
         if self._db_session_factory is None:
             return
@@ -313,11 +314,7 @@ class OAuthFlowManager:
             for row in rows:
                 access = self._decrypt_token(row[2])
                 refresh = self._decrypt_token(row[3]) if row[3] else ""
-                expires_in = int(
-                    (
-                        row[4].replace(tzinfo=UTC) - datetime.now(UTC)
-                    ).total_seconds()
-                )
+                expires_in = int((row[4].replace(tzinfo=UTC) - datetime.now(UTC)).total_seconds())
                 token = OAuthToken(
                     access_token=access,
                     refresh_token=refresh or None,  # type: ignore[arg-type]

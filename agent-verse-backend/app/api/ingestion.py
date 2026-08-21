@@ -17,6 +17,7 @@
   GET                   /api/v1/ingestion/quota           Tenant quota
   GET                   /api/v1/ingestion/cost            Cost breakdown
 """
+
 from __future__ import annotations
 
 import uuid
@@ -25,13 +26,14 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.ingestion.source_config import PipelineResult, SourceConfig, SourceFamily
+from app.ingestion.source_config import SourceConfig, SourceFamily
 
 router = APIRouter(prefix="/sources", tags=["ingestion"])
 documents_router = APIRouter(prefix="/ingestion", tags=["ingestion"])
 
 
 # ── Dependency helpers ────────────────────────────────────────────────────────
+
 
 def _require_tenant(request: Request) -> Any:
     ctx = getattr(request.state, "tenant", None)
@@ -49,6 +51,7 @@ def _get_tracker(request: Request) -> Any:
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
+
 
 class CreateSourceRequest(BaseModel):
     name: str = Field(..., min_length=1)
@@ -89,12 +92,14 @@ _SOURCES: dict[str, SourceConfig] = {}
 
 def _serialize_source(s: SourceConfig) -> dict:
     import dataclasses
+
     d = dataclasses.asdict(s)
     d["family"] = s.family.value if hasattr(s.family, "value") else str(s.family)
     return d
 
 
 # ── Sources CRUD ──────────────────────────────────────────────────────────────
+
 
 @router.get("", response_model=list[dict])
 async def list_sources(request: Request) -> list[dict]:
@@ -166,6 +171,7 @@ async def delete_source(source_id: str, request: Request) -> None:
 
 # ── Health check ──────────────────────────────────────────────────────────────
 
+
 @router.get("/{source_id}/health", response_model=dict)
 async def health_check(source_id: str, request: Request) -> dict:
     """Test connection to the source (LAW-21: health probe per connector)."""
@@ -176,6 +182,7 @@ async def health_check(source_id: str, request: Request) -> dict:
 
     try:
         from app.ingestion.connector_registry import get_connector
+
         connector_cls = get_connector(source.source_type)
         connector = connector_cls()
         health = await connector.validate_connection(source)
@@ -192,6 +199,7 @@ async def health_check(source_id: str, request: Request) -> dict:
 
 
 # ── Sync control ──────────────────────────────────────────────────────────────
+
 
 @router.post("/{source_id}/sync", response_model=dict, status_code=202)
 async def trigger_sync(
@@ -234,19 +242,23 @@ async def sync_status(source_id: str, request: Request) -> dict:
         return {"status": "never_synced"}
     latest = max(jobs, key=lambda j: j.created_at)
     import dataclasses
+
     return dataclasses.asdict(latest)
 
 
 # ── Source catalogue ──────────────────────────────────────────────────────────
 
+
 @router.get("/catalogue", response_model=list[dict], include_in_schema=True)
 async def get_catalogue(request: Request) -> list[dict]:
     """Return all registered connector types for the UI source picker."""
     from app.ingestion.connector_registry import get_connector_metadata
+
     return get_connector_metadata()
 
 
 # ── Preview (dry-run) ─────────────────────────────────────────────────────────
+
 
 @router.post("/{source_id}/preview", response_model=dict)
 async def preview_source(source_id: str, request: Request) -> dict:
@@ -261,7 +273,7 @@ async def preview_source(source_id: str, request: Request) -> dict:
         return {"error": "Ingestion pipeline not configured"}
 
     from app.ingestion.connector_registry import get_connector
-    from app.ingestion.source_config import RawDocument
+
     pipeline._dry_run = True
     results: list[dict] = []
     try:
@@ -272,12 +284,14 @@ async def preview_source(source_id: str, request: Request) -> dict:
             if count >= 5:
                 break
             result = await pipeline.ingest(raw_doc, source)
-            results.append({
-                "doc_id": result.doc_id,
-                "status": result.status,
-                "chunks_would_create": result.chunks_created,
-                "tokens_estimate": result.tokens_consumed,
-            })
+            results.append(
+                {
+                    "doc_id": result.doc_id,
+                    "status": result.status,
+                    "chunks_would_create": result.chunks_created,
+                    "tokens_estimate": result.tokens_consumed,
+                }
+            )
             count += 1
     except Exception as exc:
         return {"error": str(exc), "docs_previewed": len(results)}
@@ -288,6 +302,7 @@ async def preview_source(source_id: str, request: Request) -> dict:
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
+
 
 @router.get("/{source_id}/stats", response_model=dict)
 async def source_stats(source_id: str, request: Request) -> dict:
@@ -305,6 +320,7 @@ async def source_stats(source_id: str, request: Request) -> dict:
 
 
 # ── Documents ─────────────────────────────────────────────────────────────────
+
 
 @documents_router.get("/documents", response_model=list[dict])
 async def list_documents(request: Request, source_id: str = "", limit: int = 50) -> list[dict]:
@@ -341,6 +357,7 @@ async def list_dlq(request: Request) -> list[dict]:
 
 # ── Background sync task ──────────────────────────────────────────────────────
 
+
 async def _run_sync(
     source: SourceConfig,
     pipeline: Any,
@@ -349,11 +366,13 @@ async def _run_sync(
 ) -> None:
     """Background task: run incremental sync for a source."""
     import logging
+
     _log = logging.getLogger(__name__)
     job = await tracker.create_job(source, job_id=job_id, triggered_by="manual")
 
     try:
         from app.ingestion.connector_registry import get_connector
+
         connector_cls = get_connector(source.source_type)
         connector = connector_cls()
 

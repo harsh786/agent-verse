@@ -1,7 +1,9 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
+
 from app.qos.priority_policy import QueuePriority
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 _QUEUE_MAP: dict[PlanTier, str] = {
     PlanTier.ENTERPRISE: "goals.enterprise",

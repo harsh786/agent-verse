@@ -3,6 +3,7 @@
 MinIO is already in the AgentVerse infra (infra/docker-compose.yml).
 Reuses S3Connector logic with MinIO-specific defaults.
 """
+
 from __future__ import annotations
 
 from app.ingestion.connector_registry import register

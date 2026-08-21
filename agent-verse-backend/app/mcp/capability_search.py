@@ -3,6 +3,7 @@
 Falls back to keyword matching when no embedder is configured.
 When an embedder is available, uses cosine similarity over cached embeddings.
 """
+
 from __future__ import annotations
 
 import math
@@ -141,9 +142,7 @@ class CapabilitySearch:
             return []
 
         if self._embedder is not None:
-            return await self._search_semantic(
-                query, resolved, top_k=top_k, threshold=threshold
-            )
+            return await self._search_semantic(query, resolved, top_k=top_k, threshold=threshold)
         return self._search_keyword(query, resolved, top_k=top_k, threshold=threshold)
 
     def _search_keyword(
@@ -188,9 +187,7 @@ class CapabilitySearch:
             return self._search_keyword(query, tools, top_k=top_k, threshold=threshold)
 
         # Embed all tool descriptors in one batch
-        tool_texts = [
-            f"{t.get('name', '')} {t.get('description', '')}" for t in tools
-        ]
+        tool_texts = [f"{t.get('name', '')} {t.get('description', '')}" for t in tools]
         t_resp = await self._embedder.embed(EmbedRequest(texts=tool_texts))
 
         matches: list[ToolMatch] = []

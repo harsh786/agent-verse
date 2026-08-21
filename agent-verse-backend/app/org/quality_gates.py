@@ -17,14 +17,13 @@ Thresholds:
   < 0.75 → human review
   < 0.60 → rejection
 """
+
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-import structlog
 from opentelemetry import trace
 
 from app.observability.logging import get_logger
@@ -34,9 +33,9 @@ _tracer = trace.get_tracer(__name__)
 
 
 class GateResult(str, Enum):
-    PASS    = "pass"
-    FAIL    = "fail"
-    SKIP    = "skip"
+    PASS = "pass"
+    FAIL = "fail"
+    SKIP = "skip"
     PENDING = "pending"
 
 
@@ -54,9 +53,10 @@ class GateOutcome:
 @dataclass
 class QualityScore:
     """Full quality evaluation result from all gates."""
+
     final_score: float = 0.0
     gates: list[GateOutcome] = field(default_factory=list)
-    decision: str = "pending"   # auto_approve | promote | human_review | reject
+    decision: str = "pending"  # auto_approve | promote | human_review | reject
     notes: list[str] = field(default_factory=list)
 
     def decision_for_score(self) -> str:
@@ -72,17 +72,17 @@ class QualityScore:
 # ── Gate weights (must sum to 1.0) ────────────────────────────────────────────
 
 GATE_WEIGHTS = {
-    1: 0.10,   # self_check
-    2: 0.20,   # deterministic
-    3: 0.40,   # specialized_evaluator
-    4: 0.20,   # peer_review
-    5: 0.10,   # policy_check
+    1: 0.10,  # self_check
+    2: 0.20,  # deterministic
+    3: 0.40,  # specialized_evaluator
+    4: 0.20,  # peer_review
+    5: 0.10,  # policy_check
 }
 
 GATE_SLA = {
-    "urgent":      15 * 60,    # 15 minutes in seconds
-    "standard":    4 * 3600,   # 4 hours
-    "non_urgent":  24 * 3600,  # 24 hours
+    "urgent": 15 * 60,  # 15 minutes in seconds
+    "standard": 4 * 3600,  # 4 hours
+    "non_urgent": 24 * 3600,  # 24 hours
 }
 
 
@@ -101,12 +101,12 @@ class QualityGateSystem:
         run_policy_check: bool = True,
         require_human_approval: bool = False,
     ) -> None:
-        self._run_self_check   = run_self_check
+        self._run_self_check = run_self_check
         self._run_deterministic = run_deterministic
-        self._run_evaluator    = run_evaluator
-        self._run_peer_review  = run_peer_review
+        self._run_evaluator = run_evaluator
+        self._run_peer_review = run_peer_review
         self._run_policy_check = run_policy_check
-        self._require_human    = require_human_approval
+        self._require_human = require_human_approval
 
     async def evaluate(self, output: str, context: dict[str, Any]) -> QualityScore:
         """Run all configured quality gates and return composite score."""
@@ -193,7 +193,14 @@ class QualityGateSystem:
         except Exception as e:
             details = f"Self-check error: {e}"
 
-        return GateOutcome(1, "agent_self_check", GateResult.PASS if score > 0.5 else GateResult.FAIL, score, details, cost_usd=0.01)
+        return GateOutcome(
+            1,
+            "agent_self_check",
+            GateResult.PASS if score > 0.5 else GateResult.FAIL,
+            score,
+            details,
+            cost_usd=0.01,
+        )
 
     async def _run_gate_2(self, output: str, context: dict) -> GateOutcome:
         """Gate 2: Deterministic validation — schema/type/syntax."""
@@ -211,6 +218,7 @@ class QualityGateSystem:
                 details = "No clear code structure found"
         elif output_type == "json":
             import json
+
             try:
                 json.loads(output)
                 score = 1.0
@@ -241,26 +249,39 @@ class QualityGateSystem:
             score = 0.80
             details = "Detailed output (may need conciseness review)"
 
-        return GateOutcome(3, "specialized_evaluator", GateResult.PASS if score > 0.5 else GateResult.FAIL, score, details, cost_usd=0.08)
+        return GateOutcome(
+            3,
+            "specialized_evaluator",
+            GateResult.PASS if score > 0.5 else GateResult.FAIL,
+            score,
+            details,
+            cost_usd=0.08,
+        )
 
     async def _run_gate_4(self, output: str, context: dict) -> GateOutcome:
         """Gate 4: Peer review (requires another agent)."""
         # TODO: spawn peer reviewer agent
-        return GateOutcome(4, "peer_review", GateResult.SKIP, 0.0, "Peer review deferred", cost_usd=0.0)
+        return GateOutcome(
+            4, "peer_review", GateResult.SKIP, 0.0, "Peer review deferred", cost_usd=0.0
+        )
 
     async def _run_gate_5(self, output: str, context: dict) -> GateOutcome:
         """Gate 5: Policy check — no PII, no policy violations."""
         # Basic PII heuristics
         import re
+
         pii_patterns = [
-            r"\b\d{3}-\d{2}-\d{4}\b",        # SSN
-            r"\b4[0-9]{12}(?:[0-9]{3})?\b",   # Visa
+            r"\b\d{3}-\d{2}-\d{4}\b",  # SSN
+            r"\b4[0-9]{12}(?:[0-9]{3})?\b",  # Visa
             r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",  # Email
         ]
         for pattern in pii_patterns:
             if re.search(pattern, output):
                 return GateOutcome(
-                    5, "policy_check", GateResult.FAIL, 0.0,
+                    5,
+                    "policy_check",
+                    GateResult.FAIL,
+                    0.0,
                     "PII detected in output — blocked by policy",
                 )
         return GateOutcome(5, "policy_check", GateResult.PASS, 1.0, "Policy check passed")

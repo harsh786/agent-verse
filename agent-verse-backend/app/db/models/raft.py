@@ -84,8 +84,7 @@ class RAFTFineTuneJob(Base):
             "dataset_id",
         ),
         CheckConstraint(
-            "status IN ('pending', 'reconciling', 'submitted', 'running', "
-            "'completed', 'failed')",
+            "status IN ('pending', 'reconciling', 'submitted', 'running', 'completed', 'failed')",
             name="ck_raft_jobs_status",
         ),
         CheckConstraint("version >= 0", name="ck_raft_jobs_version_nonnegative"),
@@ -111,8 +110,7 @@ class RAFTFineTuneJob(Base):
             name="ck_raft_jobs_completed_model",
         ),
         CheckConstraint(
-            "status NOT IN ('submitted', 'running', 'completed') "
-            "OR provider_job_id IS NOT NULL",
+            "status NOT IN ('submitted', 'running', 'completed') OR provider_job_id IS NOT NULL",
             name="ck_raft_jobs_provider_identity",
         ),
     )
@@ -129,19 +127,13 @@ class RAFTFineTuneJob(Base):
         nullable=False,
         index=True,
     )
-    collection_id: Mapped[str] = mapped_column(
-        String(32), nullable=False, index=True
-    )
+    collection_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     provider_id: Mapped[str] = mapped_column(String(64), nullable=False)
     base_model: Mapped[str] = mapped_column(String(200), nullable=False)
     capability: Mapped[str] = mapped_column(String(100), nullable=False)
-    compatibility_key: Mapped[str] = mapped_column(
-        String(64), nullable=False, index=True
-    )
+    compatibility_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
-    confirmation_digest: Mapped[str] = mapped_column(
-        String(64), nullable=False, unique=True
-    )
+    confirmation_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     version: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
     provider_job_id: Mapped[str | None] = mapped_column(String(200))
     fine_tuned_model: Mapped[str | None] = mapped_column(String(200))

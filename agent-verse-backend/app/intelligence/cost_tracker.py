@@ -26,25 +26,25 @@ logger = get_logger(__name__)
 
 MODEL_PRICING: dict[str, dict[str, float]] = {
     # Anthropic
-    "claude-opus-4":           {"input": 15.0,   "output": 75.0},
-    "claude-opus-4-8":         {"input": 15.0,   "output": 75.0},
-    "claude-sonnet-4-5":       {"input":  3.0,   "output": 15.0},
-    "claude-haiku-3-5":        {"input":  0.80,  "output":  4.0},
-    "claude-3-haiku-20240307": {"input":  0.25,  "output":  1.25},
+    "claude-opus-4": {"input": 15.0, "output": 75.0},
+    "claude-opus-4-8": {"input": 15.0, "output": 75.0},
+    "claude-sonnet-4-5": {"input": 3.0, "output": 15.0},
+    "claude-haiku-3-5": {"input": 0.80, "output": 4.0},
+    "claude-3-haiku-20240307": {"input": 0.25, "output": 1.25},
     # OpenAI
-    "gpt-5.2":                 {"input": 10.0,   "output": 40.0},
-    "gpt-5.2-pro":             {"input": 20.0,   "output": 80.0},
-    "gpt-4.5-preview":         {"input":  7.5,   "output": 22.5},
-    "gpt-4o":                  {"input":  2.5,   "output": 10.0},
-    "gpt-4o-mini":             {"input":  0.15,  "output":  0.60},
-    "o1-preview":              {"input": 15.0,   "output": 60.0},
-    "o1-mini":                 {"input":  3.0,   "output": 12.0},
-    "gpt-4-turbo":             {"input": 10.0,   "output": 30.0},
+    "gpt-5.2": {"input": 10.0, "output": 40.0},
+    "gpt-5.2-pro": {"input": 20.0, "output": 80.0},
+    "gpt-4.5-preview": {"input": 7.5, "output": 22.5},
+    "gpt-4o": {"input": 2.5, "output": 10.0},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "o1-preview": {"input": 15.0, "output": 60.0},
+    "o1-mini": {"input": 3.0, "output": 12.0},
+    "gpt-4-turbo": {"input": 10.0, "output": 30.0},
     # Gemini
-    "gemini-2.0-flash":        {"input":  0.075, "output":  0.30},
-    "gemini-2.0-pro":          {"input":  3.5,   "output": 10.50},
-    "gemini-1.5-pro":          {"input":  1.25,  "output":  5.0},
-    "gemini-1.5-flash":        {"input":  0.075, "output":  0.30},
+    "gemini-2.0-flash": {"input": 0.075, "output": 0.30},
+    "gemini-2.0-pro": {"input": 3.5, "output": 10.50},
+    "gemini-1.5-pro": {"input": 1.25, "output": 5.0},
+    "gemini-1.5-flash": {"input": 0.075, "output": 0.30},
 }
 
 # Default fallback pricing when model is unknown
@@ -70,9 +70,7 @@ def calculate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> fl
         logger.warning("model_pricing_miss", model=model)
         pricing = _FALLBACK_PRICING
 
-    return (
-        prompt_tokens * pricing["input"] + completion_tokens * pricing["output"]
-    ) / 1_000_000
+    return (prompt_tokens * pricing["input"] + completion_tokens * pricing["output"]) / 1_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +82,7 @@ def calculate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> fl
 class CostAnomaly:
     tenant_id: str
     agent_id: str | None
-    anomaly_type: str               # 'spike' | 'sustained_high' | 'budget_exceed'
+    anomaly_type: str  # 'spike' | 'sustained_high' | 'budget_exceed'
     cost_actual_usd: float
     cost_baseline_usd: float
     sigma_deviation: float
@@ -152,6 +150,7 @@ class CostTracker:
             return BudgetLimits()
         try:
             from sqlalchemy import text as _t
+
             async with self._db() as session:
                 row = (
                     await session.execute(
@@ -175,9 +174,7 @@ class CostTracker:
     # Budget status — READ ONLY (Amendment 6.4)
     # ------------------------------------------------------------------
 
-    async def get_budget_status(
-        self, tenant_id: str, goal_id: str | None = None
-    ) -> dict[str, Any]:
+    async def get_budget_status(self, tenant_id: str, goal_id: str | None = None) -> dict[str, Any]:
         """Pure READ operation — never modifies Redis counters.
 
         This is the safe method to call from prediction endpoints and dashboards.
@@ -188,9 +185,7 @@ class CostTracker:
 
         if self._redis is not None:
             daily_spent = float(await self._redis.get(daily_key) or 0)
-            goal_spent = (
-                float(await self._redis.get(goal_key) or 0) if goal_key else 0.0
-            )
+            goal_spent = float(await self._redis.get(goal_key) or 0) if goal_key else 0.0
         else:
             daily_spent = 0.0
             goal_spent = 0.0
@@ -228,9 +223,7 @@ class CostTracker:
         """
         cost_usd = calculate_cost(model, prompt_tokens, completion_tokens)
         tenant_id: str = (
-            tenant_ctx.tenant_id
-            if hasattr(tenant_ctx, "tenant_id")
-            else str(tenant_ctx)
+            tenant_ctx.tenant_id if hasattr(tenant_ctx, "tenant_id") else str(tenant_ctx)
         )
 
         # 1. Increment Redis counters (atomic INCRBYFLOAT)
@@ -249,6 +242,7 @@ class CostTracker:
         if self._db is not None:
             try:
                 from sqlalchemy import text as _t
+
                 async with self._db() as session:
                     await session.execute(
                         _t(
@@ -266,9 +260,7 @@ class CostTracker:
                             "pt": prompt_tokens,
                             "ct": completion_tokens,
                             "cost": cost_usd,
-                            "tags": json.dumps(
-                                {"role": role, "iteration": iteration}
-                            ),
+                            "tags": json.dumps({"role": role, "iteration": iteration}),
                         },
                     )
                     await session.commit()
@@ -441,6 +433,7 @@ class CostTracker:
         if self._db is not None and agent_id:
             try:
                 from sqlalchemy import text as _t
+
                 async with self._db() as session:
                     row = (
                         await session.execute(
@@ -508,6 +501,7 @@ class CostTracker:
             return []
         try:
             from sqlalchemy import text as _t
+
             async with self._db() as session:
                 rows = (
                     await session.execute(
@@ -557,6 +551,7 @@ class CostTracker:
             return []
         try:
             from sqlalchemy import text as _t
+
             async with self._db() as session:
                 rows = (
                     await session.execute(
@@ -608,6 +603,7 @@ class CostTracker:
             return []
         try:
             from sqlalchemy import text as _t
+
             async with self._db() as session:
                 rows = (
                     await session.execute(
@@ -672,9 +668,15 @@ class CostTracker:
         Returns projected_monthly_usd, daily_avg_usd, days_of_data, confidence.
         """
         if self._db is None:
-            return {"projected_monthly_usd": 0.0, "daily_avg_usd": 0.0, "days_of_data": 0, "confidence": "low"}
+            return {
+                "projected_monthly_usd": 0.0,
+                "daily_avg_usd": 0.0,
+                "days_of_data": 0,
+                "confidence": "low",
+            }
         try:
             from sqlalchemy import text as _t
+
             async with self._db() as session:
                 rows = (
                     await session.execute(
@@ -694,7 +696,12 @@ class CostTracker:
                 ).fetchall()
 
             if not rows:
-                return {"projected_monthly_usd": 0.0, "daily_avg_usd": 0.0, "days_of_data": 0, "confidence": "low"}
+                return {
+                    "projected_monthly_usd": 0.0,
+                    "daily_avg_usd": 0.0,
+                    "days_of_data": 0,
+                    "confidence": "low",
+                }
 
             costs = [float(r[1] or 0) for r in rows]
             n = len(costs)
@@ -721,4 +728,9 @@ class CostTracker:
             }
         except Exception as exc:
             logger.warning("projected_monthly_failed", error=str(exc))
-            return {"projected_monthly_usd": 0.0, "daily_avg_usd": 0.0, "days_of_data": 0, "confidence": "low"}
+            return {
+                "projected_monthly_usd": 0.0,
+                "daily_avg_usd": 0.0,
+                "days_of_data": 0,
+                "confidence": "low",
+            }

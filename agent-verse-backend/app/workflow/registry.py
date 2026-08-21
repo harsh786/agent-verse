@@ -22,6 +22,7 @@ Third-party code can register custom step types:
 The Visual Builder's tool palette and the YAML validator both read from
 this registry. Custom step types appear automatically in the builder.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -72,8 +73,7 @@ class StepTypeRegistry:
         """Get a step node class by type name."""
         if step_type not in cls._registry:
             raise UnknownStepTypeError(
-                f"Unknown step type: {step_type!r}. "
-                f"Available: {sorted(cls._registry.keys())}"
+                f"Unknown step type: {step_type!r}. Available: {sorted(cls._registry.keys())}"
             )
         return cls._registry[step_type]
 
@@ -103,6 +103,7 @@ class StepTypeRegistry:
 # Register all 14 built-in step types at module load time
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _register_built_ins() -> None:
     """Import and register all built-in step nodes."""
     # Deferred imports to avoid circular deps at module load
@@ -122,48 +123,206 @@ def _register_built_ins() -> None:
     from app.workflow.steps.wait_step import WaitStepNode
 
     _builtins = [
-        ("tool",         ToolStepNode,
-         StepTypeMeta("tool", "MCP Tool", "Tools", "tool", {}, {},
-            "Call any registered MCP tool", color="#DBEAFE")),
-        ("llm",          LLMStepNode,
-         StepTypeMeta("llm", "LLM Prompt", "AI", "brain", {}, {},
-            "LLM completion with optional RAG", color="#F3E8FF")),
-        ("rag",          RAGStepNode,
-         StepTypeMeta("rag", "RAG Retrieval", "AI", "book", {}, {},
-            "Knowledge base retrieval + LLM", color="#FFF7ED")),
-        ("http",         HTTPStepNode,
-         StepTypeMeta("http", "HTTP Request", "Network", "globe", {}, {},
-            "Authenticated HTTP call to external API", color="#E0E7FF")),
-        ("hitl",         HITLStepNode,
-         StepTypeMeta("hitl", "Human Review", "Control", "user", {}, {},
-            "Human-in-the-loop approval gate", color="#FEE2E2", node_shape="rect")),
-        ("parallel",     ParallelStepNode,
-         StepTypeMeta("parallel", "Parallel", "Flow", "fork", {}, {},
-            "Run branches concurrently", color="#CCFBF1", node_shape="fork")),
-        ("conditional",  ConditionalStepNode,
-         StepTypeMeta("conditional", "Condition", "Flow", "diamond", {}, {},
-            "Route based on expression", color="#FEF9C3", node_shape="diamond")),
-        ("foreach",      ForeachStepNode,
-         StepTypeMeta("foreach", "For Each", "Flow", "repeat", {}, {},
-            "Iterate over a list", color="#FCE7F3")),
-        ("transform",    TransformStepNode,
-         StepTypeMeta("transform", "Transform", "Data", "shuffle", {}, {},
-            "Pure data mapping / reshape", color="#F0FDF4")),
-        ("sub_workflow", SubWorkflowStepNode,
-         StepTypeMeta("sub_workflow", "Sub-Workflow", "Flow", "nested", {}, {},
-            "Call another workflow as a step", color="#F8FAFC")),
-        ("wait",         WaitStepNode,
-         StepTypeMeta("wait", "Wait", "Control", "clock", {}, {},
-            "Pause for duration or event", color="#F1F5F9", node_shape="clock")),
-        ("code",         CodeStepNode,
-         StepTypeMeta("code", "Code", "Dev", "code", {}, {},
-            "Run sandboxed Python or JavaScript", color="#FDF4FF")),
-        ("set_variable", SetVariableStepNode,
-         StepTypeMeta("set_variable", "Set Variable", "Data", "variable", {}, {},
-            "Write a mutable workflow variable", color="#FFFBEB")),
-        ("emit_event",   EmitEventStepNode,
-         StepTypeMeta("emit_event", "Emit Event", "Integration", "broadcast", {}, {},
-            "Publish a Redis event to other workflows", color="#F0F9FF")),
+        (
+            "tool",
+            ToolStepNode,
+            StepTypeMeta(
+                "tool",
+                "MCP Tool",
+                "Tools",
+                "tool",
+                {},
+                {},
+                "Call any registered MCP tool",
+                color="#DBEAFE",
+            ),
+        ),
+        (
+            "llm",
+            LLMStepNode,
+            StepTypeMeta(
+                "llm",
+                "LLM Prompt",
+                "AI",
+                "brain",
+                {},
+                {},
+                "LLM completion with optional RAG",
+                color="#F3E8FF",
+            ),
+        ),
+        (
+            "rag",
+            RAGStepNode,
+            StepTypeMeta(
+                "rag",
+                "RAG Retrieval",
+                "AI",
+                "book",
+                {},
+                {},
+                "Knowledge base retrieval + LLM",
+                color="#FFF7ED",
+            ),
+        ),
+        (
+            "http",
+            HTTPStepNode,
+            StepTypeMeta(
+                "http",
+                "HTTP Request",
+                "Network",
+                "globe",
+                {},
+                {},
+                "Authenticated HTTP call to external API",
+                color="#E0E7FF",
+            ),
+        ),
+        (
+            "hitl",
+            HITLStepNode,
+            StepTypeMeta(
+                "hitl",
+                "Human Review",
+                "Control",
+                "user",
+                {},
+                {},
+                "Human-in-the-loop approval gate",
+                color="#FEE2E2",
+                node_shape="rect",
+            ),
+        ),
+        (
+            "parallel",
+            ParallelStepNode,
+            StepTypeMeta(
+                "parallel",
+                "Parallel",
+                "Flow",
+                "fork",
+                {},
+                {},
+                "Run branches concurrently",
+                color="#CCFBF1",
+                node_shape="fork",
+            ),
+        ),
+        (
+            "conditional",
+            ConditionalStepNode,
+            StepTypeMeta(
+                "conditional",
+                "Condition",
+                "Flow",
+                "diamond",
+                {},
+                {},
+                "Route based on expression",
+                color="#FEF9C3",
+                node_shape="diamond",
+            ),
+        ),
+        (
+            "foreach",
+            ForeachStepNode,
+            StepTypeMeta(
+                "foreach",
+                "For Each",
+                "Flow",
+                "repeat",
+                {},
+                {},
+                "Iterate over a list",
+                color="#FCE7F3",
+            ),
+        ),
+        (
+            "transform",
+            TransformStepNode,
+            StepTypeMeta(
+                "transform",
+                "Transform",
+                "Data",
+                "shuffle",
+                {},
+                {},
+                "Pure data mapping / reshape",
+                color="#F0FDF4",
+            ),
+        ),
+        (
+            "sub_workflow",
+            SubWorkflowStepNode,
+            StepTypeMeta(
+                "sub_workflow",
+                "Sub-Workflow",
+                "Flow",
+                "nested",
+                {},
+                {},
+                "Call another workflow as a step",
+                color="#F8FAFC",
+            ),
+        ),
+        (
+            "wait",
+            WaitStepNode,
+            StepTypeMeta(
+                "wait",
+                "Wait",
+                "Control",
+                "clock",
+                {},
+                {},
+                "Pause for duration or event",
+                color="#F1F5F9",
+                node_shape="clock",
+            ),
+        ),
+        (
+            "code",
+            CodeStepNode,
+            StepTypeMeta(
+                "code",
+                "Code",
+                "Dev",
+                "code",
+                {},
+                {},
+                "Run sandboxed Python or JavaScript",
+                color="#FDF4FF",
+            ),
+        ),
+        (
+            "set_variable",
+            SetVariableStepNode,
+            StepTypeMeta(
+                "set_variable",
+                "Set Variable",
+                "Data",
+                "variable",
+                {},
+                {},
+                "Write a mutable workflow variable",
+                color="#FFFBEB",
+            ),
+        ),
+        (
+            "emit_event",
+            EmitEventStepNode,
+            StepTypeMeta(
+                "emit_event",
+                "Emit Event",
+                "Integration",
+                "broadcast",
+                {},
+                {},
+                "Publish a Redis event to other workflows",
+                color="#F0F9FF",
+            ),
+        ),
     ]
 
     for step_type, node_class, meta in _builtins:

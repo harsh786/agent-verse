@@ -46,26 +46,26 @@ class ScheduleStore:
     @staticmethod
     def _redis_payload(rec: dict[str, Any], tenant_id: str) -> dict[str, Any]:
         spec = rec["spec"]
-        return _strip_secret_redis_fields({
-            "schedule_id": rec["schedule_id"],
-            "tenant_id": tenant_id,
-            "goal_id": rec["goal_id"],
-            "agent_id": rec.get("agent_id", ""),
-            "goal_template": rec.get("goal_template", ""),
-            "trigger_type": spec.trigger_type.value,
-            "cron_expression": spec.cron_expression or "",
-            "timezone": spec.timezone or "UTC",
-            "interval_seconds": spec.interval_seconds or 0,
-            "event_channel": spec.event_channel or "",
-            "fire_at_iso": spec.fire_at_iso or "",
-            "condition": spec.condition or "",
-            "description": spec.description or "",
-            "paused": bool(rec.get("paused", False)),
-        })
+        return _strip_secret_redis_fields(
+            {
+                "schedule_id": rec["schedule_id"],
+                "tenant_id": tenant_id,
+                "goal_id": rec["goal_id"],
+                "agent_id": rec.get("agent_id", ""),
+                "goal_template": rec.get("goal_template", ""),
+                "trigger_type": spec.trigger_type.value,
+                "cron_expression": spec.cron_expression or "",
+                "timezone": spec.timezone or "UTC",
+                "interval_seconds": spec.interval_seconds or 0,
+                "event_channel": spec.event_channel or "",
+                "fire_at_iso": spec.fire_at_iso or "",
+                "condition": spec.condition or "",
+                "description": spec.description or "",
+                "paused": bool(rec.get("paused", False)),
+            }
+        )
 
-    async def _await_redis_call(
-        self, awaitable: Awaitable[Any], *, strict: bool = False
-    ) -> None:
+    async def _await_redis_call(self, awaitable: Awaitable[Any], *, strict: bool = False) -> None:
         try:
             await awaitable
         except Exception as exc:
@@ -210,9 +210,7 @@ class ScheduleStore:
             await self._write_redis_schedule_async(tenant_ctx.tenant_id, rec, strict=True)
         except Exception:
             if db_created:
-                await self._db_delete_schedule(
-                    sched_id, tenant_ctx.tenant_id, strict=True
-                )
+                await self._db_delete_schedule(sched_id, tenant_ctx.tenant_id, strict=True)
             raise
         self._data[(tenant_ctx.tenant_id, sched_id)] = rec
         return sched_id
@@ -265,15 +263,9 @@ class ScheduleStore:
         return self._data.get((tenant_ctx.tenant_id, schedule_id))
 
     def list_all(self, *, tenant_ctx: TenantContext) -> list[dict[str, Any]]:
-        return [
-            rec
-            for (tid, _), rec in self._data.items()
-            if tid == tenant_ctx.tenant_id
-        ]
+        return [rec for (tid, _), rec in self._data.items() if tid == tenant_ctx.tenant_id]
 
-    def find_by_type(
-        self, trigger_type: str, *, tenant_id: str
-    ) -> list[dict[str, Any]]:
+    def find_by_type(self, trigger_type: str, *, tenant_id: str) -> list[dict[str, Any]]:
         """Return all enabled triggers of a given type for a tenant (in-memory)."""
         result = []
         for (tid, _), rec in self._data.items():
@@ -315,9 +307,7 @@ class ScheduleStore:
         if self._db is not None:
             try:
                 loop = asyncio.get_running_loop()
-                task = loop.create_task(
-                    self._db_delete_schedule(schedule_id, tenant_ctx.tenant_id)
-                )
+                task = loop.create_task(self._db_delete_schedule(schedule_id, tenant_ctx.tenant_id))
                 self._db_tasks.add(task)
                 task.add_done_callback(self._db_tasks.discard)
             except RuntimeError:
@@ -329,12 +319,8 @@ class ScheduleStore:
         if key not in self._data:
             return False
         if self._db is not None:
-            await self._db_delete_schedule(
-                schedule_id, tenant_ctx.tenant_id, strict=True
-            )
-        await self._delete_redis_schedule_async(
-            tenant_ctx.tenant_id, schedule_id, strict=True
-        )
+            await self._db_delete_schedule(schedule_id, tenant_ctx.tenant_id, strict=True)
+        await self._delete_redis_schedule_async(tenant_ctx.tenant_id, schedule_id, strict=True)
         del self._data[key]
         return True
 
@@ -374,9 +360,7 @@ class ScheduleStore:
                 pass
         return True
 
-    async def _db_update_paused(
-        self, schedule_id: str, tenant_id: str, paused: bool
-    ) -> None:
+    async def _db_update_paused(self, schedule_id: str, tenant_id: str, paused: bool) -> None:
         if self._db is None:
             return
         try:

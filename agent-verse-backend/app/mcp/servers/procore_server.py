@@ -3,6 +3,7 @@
 Environment:
   PROCORE_ACCESS_TOKEN: Procore OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -178,7 +179,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "procore_get_project_budget":
                 pid = arguments["project_id"]
-                r = await c.get(f"{BASE}/projects/{pid}/budget_line_items", params={"project_id": pid})
+                r = await c.get(
+                    f"{BASE}/projects/{pid}/budget_line_items", params={"project_id": pid}
+                )
                 r.raise_for_status()
                 return r.json()
 

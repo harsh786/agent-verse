@@ -23,14 +23,10 @@ class Workflow(Base):
 
     __tablename__ = "workflows"
 
-    id: Mapped[str] = mapped_column(
-        Text, primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: str(uuid.uuid4()))
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[str] = mapped_column(
-        Text, nullable=False, default="", server_default=""
-    )
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     definition: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'")
     )

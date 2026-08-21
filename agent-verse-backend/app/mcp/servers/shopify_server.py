@@ -4,6 +4,7 @@ Environment:
   SHOPIFY_STORE_URL:     Store domain, e.g. 'mystore.myshopify.com'
   SHOPIFY_ACCESS_TOKEN:  Admin API access token
 """
+
 from __future__ import annotations
 
 import os
@@ -67,7 +68,11 @@ TOOL_DEFINITIONS = [
                 "body_html": {"type": "string", "description": "Product description in HTML"},
                 "vendor": {"type": "string"},
                 "product_type": {"type": "string"},
-                "status": {"type": "string", "enum": ["active", "draft", "archived"], "default": "draft"},
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "draft", "archived"],
+                    "default": "draft",
+                },
                 "tags": {"type": "string", "description": "Comma-separated tags"},
                 "variants": {
                     "type": "array",
@@ -219,7 +224,15 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "shopify_create_product":
                 product: dict[str, Any] = {"title": arguments["title"]}
-                for key in ["body_html", "vendor", "product_type", "status", "tags", "variants", "images"]:
+                for key in [
+                    "body_html",
+                    "vendor",
+                    "product_type",
+                    "status",
+                    "tags",
+                    "variants",
+                    "images",
+                ]:
                     if v := arguments.get(key):
                         product[key] = v
                 r = await c.post(f"{base}/products.json", json={"product": product})
@@ -238,7 +251,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "shopify_list_orders":
                 params = {"limit": arguments.get("limit", 50)}
-                for key in ["status", "financial_status", "fulfillment_status", "created_at_min", "created_at_max"]:
+                for key in [
+                    "status",
+                    "financial_status",
+                    "fulfillment_status",
+                    "created_at_min",
+                    "created_at_max",
+                ]:
                     if v := arguments.get(key):
                         params[key] = v
                 r = await c.get(f"{base}/orders.json", params=params)
@@ -261,7 +280,15 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "shopify_create_customer":
                 customer: dict[str, Any] = {"email": arguments["email"]}
-                for key in ["first_name", "last_name", "phone", "tags", "note", "accepts_marketing", "addresses"]:
+                for key in [
+                    "first_name",
+                    "last_name",
+                    "phone",
+                    "tags",
+                    "note",
+                    "accepts_marketing",
+                    "addresses",
+                ]:
                     if v := arguments.get(key) is not None and arguments.get(key):
                         customer[key] = arguments[key]
                 r = await c.post(f"{base}/customers.json", json={"customer": customer})

@@ -8,6 +8,7 @@ Supports:
 Authentication: expects a pre-built ``google.oauth2.credentials.Credentials``
 object or a service-account JSON key path via ``key_path``.
 """
+
 from __future__ import annotations
 
 import io
@@ -24,14 +25,16 @@ class GDriveConnector:
         "application/vnd.google-apps.presentation": "text/plain",
     }
     # MIME types we can download directly
-    _DIRECT_DOWNLOAD_MIMES: frozenset[str] = frozenset({
-        "text/plain",
-        "text/markdown",
-        "text/csv",
-        "text/html",
-        "application/json",
-        "application/pdf",
-    })
+    _DIRECT_DOWNLOAD_MIMES: frozenset[str] = frozenset(
+        {
+            "text/plain",
+            "text/markdown",
+            "text/csv",
+            "text/html",
+            "application/json",
+            "application/pdf",
+        }
+    )
 
     def __init__(
         self,

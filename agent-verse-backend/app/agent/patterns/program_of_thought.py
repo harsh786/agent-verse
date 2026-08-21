@@ -98,9 +98,7 @@ class ProgramOfThoughtRuntime:
             state = state.model_copy(update={"phase": ProgramOfThoughtPhase.EXECUTING})
             await self._save(state)
             try:
-                observation = await self._tool.execute(
-                    invocation=invocation, workload=workload
-                )
+                observation = await self._tool.execute(invocation=invocation, workload=workload)
             except Exception:
                 failed = state.model_copy(update={"phase": ProgramOfThoughtPhase.FAILED})
                 await self._save(failed)

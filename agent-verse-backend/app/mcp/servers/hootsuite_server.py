@@ -3,6 +3,7 @@
 Environment:
   HOOTSUITE_ACCESS_TOKEN: Hootsuite OAuth2 access token from developer portal
 """
+
 from __future__ import annotations
 
 import os
@@ -37,7 +38,10 @@ TOOL_DEFINITIONS = [
                     "items": {"type": "string"},
                     "description": "List of Hootsuite social profile IDs to post to",
                 },
-                "scheduled_send_time": {"type": "string", "description": "ISO 8601 datetime to send the post"},
+                "scheduled_send_time": {
+                    "type": "string",
+                    "description": "ISO 8601 datetime to send the post",
+                },
                 "media_urls": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -53,10 +57,18 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "state": {"type": "string", "description": "Post state: SCHEDULED, SENT, FAILED", "default": "SCHEDULED"},
+                "state": {
+                    "type": "string",
+                    "description": "Post state: SCHEDULED, SENT, FAILED",
+                    "default": "SCHEDULED",
+                },
                 "start_time": {"type": "string", "description": "ISO 8601 start of time range"},
                 "end_time": {"type": "string", "description": "ISO 8601 end of time range"},
-                "limit": {"type": "integer", "description": "Number of posts to return (max 50)", "default": 20},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of posts to return (max 50)",
+                    "default": 20,
+                },
             },
         },
     },
@@ -66,13 +78,19 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "social_profile_id": {"type": "string", "description": "Hootsuite social profile ID"},
+                "social_profile_id": {
+                    "type": "string",
+                    "description": "Hootsuite social profile ID",
+                },
                 "metrics": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Metric names e.g. TOTAL_REACH, TOTAL_IMPRESSIONS, TOTAL_ENGAGEMENTS",
                 },
-                "start_time": {"type": "string", "description": "ISO 8601 start of analytics period"},
+                "start_time": {
+                    "type": "string",
+                    "description": "ISO 8601 start of analytics period",
+                },
                 "end_time": {"type": "string", "description": "ISO 8601 end of analytics period"},
             },
             "required": ["social_profile_id", "metrics", "start_time", "end_time"],
@@ -210,10 +228,15 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                         payload["scheduledSendTime"] = message["scheduled_send_time"]
                     r = await client.post(f"{BASE}/messages", headers=headers, json=payload)
                     if r.status_code in (200, 201):
-                        results.append({"status": "success", "id": r.json().get("data", {}).get("id")})
+                        results.append(
+                            {"status": "success", "id": r.json().get("data", {}).get("id")}
+                        )
                     else:
                         results.append({"status": "error", "code": r.status_code})
-                return {"scheduled": len([x for x in results if x["status"] == "success"]), "results": results}
+                return {
+                    "scheduled": len([x for x in results if x["status"] == "success"]),
+                    "results": results,
+                }
 
             return {"error": f"Unknown tool: {tool_name}"}
 

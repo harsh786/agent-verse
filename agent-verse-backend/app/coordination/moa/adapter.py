@@ -24,8 +24,14 @@ class MoAExecutionState(BaseModel):
     session_id: str
     execution_id: str
     phase: Literal[
-        "admitted", "layer_dispatching", "layer_collecting", "layer_aggregating",
-        "synthesizing", "completed", "failed", "cancelled"
+        "admitted",
+        "layer_dispatching",
+        "layer_collecting",
+        "layer_aggregating",
+        "synthesizing",
+        "completed",
+        "failed",
+        "cancelled",
     ] = "admitted"
     completed_layers: int = Field(default=0, ge=0)
     aggregate_references: tuple[str, ...] = ()
@@ -86,7 +92,7 @@ class MoARuntime:
             await self._checkpoints.save(state)
         by_deployment = {item.deployment_id: item for item in candidates}
         prior_ids: tuple[str, ...] = ()
-        for layer_plan in plan.layers[state.completed_layers:]:
+        for layer_plan in plan.layers[state.completed_layers :]:
             if cancelled is not None and cancelled.is_set():
                 state = state.model_copy(
                     update={"phase": "cancelled", "terminal_reason": "cancelled"}
@@ -165,19 +171,14 @@ class MoARuntime:
                     quality_score=int(raw.get("quality_score", 0)),
                     attempt=1,
                     idempotency_key=(
-                        f"{execution_id}:{current_layer.layer_index}:"
-                        f"{candidate.deployment_id}:1"
+                        f"{execution_id}:{current_layer.layer_index}:{candidate.deployment_id}:1"
                     ),
                 )
 
             proposals = tuple(
-                await asyncio.gather(
-                    *(run(by_deployment[item]) for item in layer.deployment_ids)
-                )
+                await asyncio.gather(*(run(by_deployment[item]) for item in layer.deployment_ids))
             )
-            stored = tuple(
-                [await self._repository.save_proposal(item) for item in proposals]
-            )
+            stored = tuple([await self._repository.save_proposal(item) for item in proposals])
             cost = state.total_cost_usd + sum(item.cost_usd for item in stored)
             if cost > maximum_cost_usd:
                 state = state.model_copy(
@@ -208,14 +209,10 @@ class MoARuntime:
                 )
                 await self._checkpoints.save(state)
                 return state
-            aggregation_input = build_aggregation_input(
-                stored, maximum_characters=16_000
-            )
+            aggregation_input = build_aggregation_input(stored, maximum_characters=16_000)
             state = state.model_copy(update={"phase": "layer_aggregating"})
             await self._checkpoints.save(state)
-            raw_aggregate = dict(
-                await invoke(aggregate, layer.layer_index, aggregation_input)
-            )
+            raw_aggregate = dict(await invoke(aggregate, layer.layer_index, aggregation_input))
             aggregate_reference = str(raw_aggregate["aggregate_reference"])
             output = str(raw_aggregate["safe_output"])
             state = state.model_copy(

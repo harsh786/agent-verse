@@ -4,6 +4,7 @@ Queries completed missions, pending approvals, blocked tasks, budget alerts,
 and org decisions since the user's last visit, then synthesises a structured
 digest with actionable items and insights.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -36,15 +37,16 @@ _CACHE_TTL_SECONDS: int = 300
 #  Domain objects
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class DigestItem:
-    category: str        # "completed" | "in_progress" | "needs_attention" | "insight"
+    category: str  # "completed" | "in_progress" | "needs_attention" | "insight"
     title: str
     summary: str
-    icon: str            # emoji
-    priority: int        # 1=highest
+    icon: str  # emoji
+    priority: int  # 1=highest
     action_required: bool
-    action_type: str | None   # "approve" | "review" | "decide"
+    action_type: str | None  # "approve" | "review" | "decide"
     related_id: str | None
     cost_usd: float | None
     duration_str: str | None  # "4h 23m"
@@ -77,6 +79,7 @@ class WhileYouWereAwayDigest:
 #  Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _fmt_duration(seconds: float) -> str:
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
@@ -86,6 +89,7 @@ def _fmt_duration(seconds: float) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 #  Cache
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class DigestCache:
     """In-memory (+ optional Redis) cache with TTL."""
@@ -120,6 +124,7 @@ class DigestCache:
 # ─────────────────────────────────────────────────────────────────────────────
 #  Generator
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class DigestGenerator:
     """Generates 'While You Were Away' digest by querying org events and state."""
@@ -174,9 +179,7 @@ class DigestGenerator:
             insights: list[DigestItem] = _safe(5, [])
             stats: dict[str, int] = _safe(6, {})
 
-            total_cost = sum(
-                (i.cost_usd or 0.0) for i in completed_missions + completed_tasks
-            )
+            total_cost = sum((i.cost_usd or 0.0) for i in completed_missions + completed_tasks)
 
             digest = WhileYouWereAwayDigest(
                 org_id=org_id,
@@ -211,18 +214,23 @@ class DigestGenerator:
     # ── Section queries ────────────────────────────────────────────────────
 
     async def _completed_missions(
-        self, org_id: str, tenant_id: str, since: datetime,
+        self,
+        org_id: str,
+        tenant_id: str,
+        since: datetime,
     ) -> list[DigestItem]:
         with _tracer.start_as_current_span("digest._completed_missions"):
             try:
                 res = await self._s.execute(
                     select(OrgMission)
-                    .where(and_(
-                        OrgMission.tenant_id == tenant_id,
-                        OrgMission.org_id == org_id,
-                        OrgMission.status == "completed",
-                        OrgMission.updated_at >= since,
-                    ))
+                    .where(
+                        and_(
+                            OrgMission.tenant_id == tenant_id,
+                            OrgMission.org_id == org_id,
+                            OrgMission.status == "completed",
+                            OrgMission.updated_at >= since,
+                        )
+                    )
                     .order_by(OrgMission.updated_at.desc())
                     .limit(20)
                 )
@@ -233,33 +241,43 @@ class DigestGenerator:
                     duration = None
                     if started and m.updated_at:
                         duration = _fmt_duration((m.updated_at - started).total_seconds())
-                    items.append(DigestItem(
-                        category="completed",
-                        title=str(getattr(m, "title", "Mission")),
-                        summary=f"Mission completed: {getattr(m, 'title', 'Mission')}",
-                        icon="✅", priority=2, action_required=False,
-                        action_type=None, related_id=str(m.id),
-                        cost_usd=float(raw_cost) if raw_cost is not None else None,
-                        duration_str=duration,
-                    ))
+                    items.append(
+                        DigestItem(
+                            category="completed",
+                            title=str(getattr(m, "title", "Mission")),
+                            summary=f"Mission completed: {getattr(m, 'title', 'Mission')}",
+                            icon="✅",
+                            priority=2,
+                            action_required=False,
+                            action_type=None,
+                            related_id=str(m.id),
+                            cost_usd=float(raw_cost) if raw_cost is not None else None,
+                            duration_str=duration,
+                        )
+                    )
                 return items
             except Exception as exc:
                 _log.warning("digest._completed_missions.failed", error=str(exc))
                 return []
 
     async def _completed_tasks(
-        self, org_id: str, tenant_id: str, since: datetime,
+        self,
+        org_id: str,
+        tenant_id: str,
+        since: datetime,
     ) -> list[DigestItem]:
         with _tracer.start_as_current_span("digest._completed_tasks"):
             try:
                 res = await self._s.execute(
                     select(OrgTask)
-                    .where(and_(
-                        OrgTask.tenant_id == tenant_id,
-                        OrgTask.org_id == org_id,
-                        OrgTask.status == "completed",
-                        OrgTask.updated_at >= since,
-                    ))
+                    .where(
+                        and_(
+                            OrgTask.tenant_id == tenant_id,
+                            OrgTask.org_id == org_id,
+                            OrgTask.status == "completed",
+                            OrgTask.updated_at >= since,
+                        )
+                    )
                     .order_by(OrgTask.updated_at.desc())
                     .limit(50)
                 )
@@ -268,9 +286,13 @@ class DigestGenerator:
                         category="completed",
                         title=str(getattr(t, "title", "Task")),
                         summary=f"Task completed: {getattr(t, 'title', 'Task')}",
-                        icon="✔️", priority=3, action_required=False,
-                        action_type=None, related_id=str(t.id),
-                        cost_usd=None, duration_str=None,
+                        icon="✔️",
+                        priority=3,
+                        action_required=False,
+                        action_type=None,
+                        related_id=str(t.id),
+                        cost_usd=None,
+                        duration_str=None,
                     )
                     for t in res.scalars().all()
                 ]
@@ -283,26 +305,33 @@ class DigestGenerator:
             try:
                 res = await self._s.execute(
                     select(OrgEvent)
-                    .where(and_(
-                        OrgEvent.tenant_id == tenant_id,
-                        OrgEvent.org_id == org_id,
-                        OrgEvent.event_type == "org.approval.requested",
-                    ))
+                    .where(
+                        and_(
+                            OrgEvent.tenant_id == tenant_id,
+                            OrgEvent.org_id == org_id,
+                            OrgEvent.event_type == "org.approval.requested",
+                        )
+                    )
                     .order_by(OrgEvent.created_at.desc())
                     .limit(20)
                 )
                 items: list[DigestItem] = []
                 for ev in res.scalars().all():
                     payload: dict[str, Any] = getattr(ev, "payload", None) or {}
-                    items.append(DigestItem(
-                        category="needs_attention",
-                        title=payload.get("title", "Approval needed"),
-                        summary=payload.get("description", "Action requires your approval"),
-                        icon="⏳", priority=1, action_required=True,
-                        action_type="approve",
-                        related_id=payload.get("approval_id") or str(ev.id),
-                        cost_usd=None, duration_str=None,
-                    ))
+                    items.append(
+                        DigestItem(
+                            category="needs_attention",
+                            title=payload.get("title", "Approval needed"),
+                            summary=payload.get("description", "Action requires your approval"),
+                            icon="⏳",
+                            priority=1,
+                            action_required=True,
+                            action_type="approve",
+                            related_id=payload.get("approval_id") or str(ev.id),
+                            cost_usd=None,
+                            duration_str=None,
+                        )
+                    )
                 return items
             except Exception as exc:
                 _log.warning("digest._pending_approvals.failed", error=str(exc))
@@ -313,11 +342,13 @@ class DigestGenerator:
             try:
                 res = await self._s.execute(
                     select(OrgTask)
-                    .where(and_(
-                        OrgTask.tenant_id == tenant_id,
-                        OrgTask.org_id == org_id,
-                        OrgTask.status == "blocked",
-                    ))
+                    .where(
+                        and_(
+                            OrgTask.tenant_id == tenant_id,
+                            OrgTask.org_id == org_id,
+                            OrgTask.status == "blocked",
+                        )
+                    )
                     .order_by(OrgTask.updated_at.desc())
                     .limit(20)
                 )
@@ -326,9 +357,13 @@ class DigestGenerator:
                         category="needs_attention",
                         title=str(getattr(t, "title", "Task")),
                         summary=f"Blocked: {getattr(t, 'title', 'Task')}",
-                        icon="🚫", priority=1, action_required=True,
-                        action_type="review", related_id=str(t.id),
-                        cost_usd=None, duration_str=None,
+                        icon="🚫",
+                        priority=1,
+                        action_required=True,
+                        action_type="review",
+                        related_id=str(t.id),
+                        cost_usd=None,
+                        duration_str=None,
                     )
                     for t in res.scalars().all()
                 ]
@@ -341,33 +376,45 @@ class DigestGenerator:
             try:
                 res = await self._s.execute(
                     select(OrgEvent)
-                    .where(and_(
-                        OrgEvent.tenant_id == tenant_id,
-                        OrgEvent.org_id == org_id,
-                        OrgEvent.event_type.like("org.budget.%"),  # type: ignore[operator]
-                    ))
+                    .where(
+                        and_(
+                            OrgEvent.tenant_id == tenant_id,
+                            OrgEvent.org_id == org_id,
+                            OrgEvent.event_type.like("org.budget.%"),  # type: ignore[operator]
+                        )
+                    )
                     .order_by(OrgEvent.created_at.desc())
                     .limit(10)
                 )
                 items: list[DigestItem] = []
                 for ev in res.scalars().all():
                     payload: dict[str, Any] = getattr(ev, "payload", None) or {}
-                    items.append(DigestItem(
-                        category="needs_attention",
-                        title=payload.get("title", "Budget alert"),
-                        summary=payload.get("description", "Budget threshold reached"),
-                        icon="💰", priority=1, action_required=True,
-                        action_type="review", related_id=str(ev.id),
-                        cost_usd=(float(payload["cost_usd"]) if "cost_usd" in payload else None),
-                        duration_str=None,
-                    ))
+                    items.append(
+                        DigestItem(
+                            category="needs_attention",
+                            title=payload.get("title", "Budget alert"),
+                            summary=payload.get("description", "Budget threshold reached"),
+                            icon="💰",
+                            priority=1,
+                            action_required=True,
+                            action_type="review",
+                            related_id=str(ev.id),
+                            cost_usd=(
+                                float(payload["cost_usd"]) if "cost_usd" in payload else None
+                            ),
+                            duration_str=None,
+                        )
+                    )
                 return items
             except Exception as exc:
                 _log.warning("digest._budget_alerts.failed", error=str(exc))
                 return []
 
     async def _insights(
-        self, org_id: str, tenant_id: str, since: datetime,
+        self,
+        org_id: str,
+        tenant_id: str,
+        since: datetime,
     ) -> list[DigestItem]:
         with _tracer.start_as_current_span("digest._insights"):
             try:
@@ -376,16 +423,18 @@ class DigestGenerator:
                 # Bottleneck: 3+ tasks blocked in one dept
                 rows = await self._s.execute(
                     select(
-                        OrgTask.department_id,   # type: ignore[attr-defined]
+                        OrgTask.department_id,  # type: ignore[attr-defined]
                         func.count(OrgTask.id).label("cnt"),
                     )
-                    .where(and_(
-                        OrgTask.tenant_id == tenant_id,
-                        OrgTask.org_id == org_id,
-                        OrgTask.status == "blocked",
-                        OrgTask.department_id.is_not(None),  # type: ignore[union-attr]
-                    ))
-                    .group_by(OrgTask.department_id)   # type: ignore[attr-defined]
+                    .where(
+                        and_(
+                            OrgTask.tenant_id == tenant_id,
+                            OrgTask.org_id == org_id,
+                            OrgTask.status == "blocked",
+                            OrgTask.department_id.is_not(None),  # type: ignore[union-attr]
+                        )
+                    )
+                    .group_by(OrgTask.department_id)  # type: ignore[attr-defined]
                     .having(func.count(OrgTask.id) >= 3)
                 )
                 for row in rows.all():
@@ -400,34 +449,48 @@ class DigestGenerator:
                         )
                     )
                     dept_name = name_row.scalar_one_or_none() or f"Dept {dept_id[:8]}"
-                    insights.append(DigestItem(
-                        category="insight",
-                        title=f"Bottleneck in {dept_name}",
-                        summary=f"{cnt} tasks blocked in {dept_name}. Review dependencies.",
-                        icon="⚠️", priority=2, action_required=True,
-                        action_type="review", related_id=dept_id,
-                        cost_usd=None, duration_str=None,
-                    ))
+                    insights.append(
+                        DigestItem(
+                            category="insight",
+                            title=f"Bottleneck in {dept_name}",
+                            summary=f"{cnt} tasks blocked in {dept_name}. Review dependencies.",
+                            icon="⚠️",
+                            priority=2,
+                            action_required=True,
+                            action_type="review",
+                            related_id=dept_id,
+                            cost_usd=None,
+                            duration_str=None,
+                        )
+                    )
 
                 # High velocity
                 cnt_row = await self._s.execute(
-                    select(func.count(OrgMission.id)).where(and_(
-                        OrgMission.tenant_id == tenant_id,
-                        OrgMission.org_id == org_id,
-                        OrgMission.status == "completed",
-                        OrgMission.updated_at >= since,
-                    ))
+                    select(func.count(OrgMission.id)).where(
+                        and_(
+                            OrgMission.tenant_id == tenant_id,
+                            OrgMission.org_id == org_id,
+                            OrgMission.status == "completed",
+                            OrgMission.updated_at >= since,
+                        )
+                    )
                 )
                 completed_count = cnt_row.scalar_one_or_none() or 0
                 if completed_count >= 5:
-                    insights.append(DigestItem(
-                        category="insight",
-                        title="High productivity period",
-                        summary=f"{completed_count} missions completed — exceptional performance.",
-                        icon="🚀", priority=3, action_required=False,
-                        action_type=None, related_id=None,
-                        cost_usd=None, duration_str=None,
-                    ))
+                    insights.append(
+                        DigestItem(
+                            category="insight",
+                            title="High productivity period",
+                            summary=f"{completed_count} missions completed — exceptional performance.",
+                            icon="🚀",
+                            priority=3,
+                            action_required=False,
+                            action_type=None,
+                            related_id=None,
+                            cost_usd=None,
+                            duration_str=None,
+                        )
+                    )
 
                 return insights
             except Exception as exc:
@@ -435,32 +498,41 @@ class DigestGenerator:
                 return []
 
     async def _stats(
-        self, org_id: str, tenant_id: str, since: datetime,
+        self,
+        org_id: str,
+        tenant_id: str,
+        since: datetime,
     ) -> dict[str, int]:
         with _tracer.start_as_current_span("digest._stats"):
             try:
                 c_res, s_res, d_res = await asyncio.gather(
                     self._s.execute(
-                        select(func.count(OrgMission.id)).where(and_(
-                            OrgMission.tenant_id == tenant_id,
-                            OrgMission.org_id == org_id,
-                            OrgMission.status == "completed",
-                            OrgMission.updated_at >= since,
-                        ))
+                        select(func.count(OrgMission.id)).where(
+                            and_(
+                                OrgMission.tenant_id == tenant_id,
+                                OrgMission.org_id == org_id,
+                                OrgMission.status == "completed",
+                                OrgMission.updated_at >= since,
+                            )
+                        )
                     ),
                     self._s.execute(
-                        select(func.count(OrgMission.id)).where(and_(
-                            OrgMission.tenant_id == tenant_id,
-                            OrgMission.org_id == org_id,
-                            OrgMission.created_at >= since,
-                        ))
+                        select(func.count(OrgMission.id)).where(
+                            and_(
+                                OrgMission.tenant_id == tenant_id,
+                                OrgMission.org_id == org_id,
+                                OrgMission.created_at >= since,
+                            )
+                        )
                     ),
                     self._s.execute(
-                        select(func.count(OrgDecision.id)).where(and_(
-                            OrgDecision.tenant_id == tenant_id,
-                            OrgDecision.org_id == org_id,
-                            OrgDecision.created_at >= since,
-                        ))
+                        select(func.count(OrgDecision.id)).where(
+                            and_(
+                                OrgDecision.tenant_id == tenant_id,
+                                OrgDecision.org_id == org_id,
+                                OrgDecision.created_at >= since,
+                            )
+                        )
                     ),
                 )
                 return {
@@ -471,13 +543,18 @@ class DigestGenerator:
                 }
             except Exception as exc:
                 _log.warning("digest._stats.failed", error=str(exc))
-                return {"missions_completed": 0, "missions_started": 0,
-                        "agents_active": 0, "decisions_made": 0}
+                return {
+                    "missions_completed": 0,
+                    "missions_started": 0,
+                    "agents_active": 0,
+                    "decisions_made": 0,
+                }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Summary builder
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _build_summary(digest: WhileYouWereAwayDigest) -> str:
     since_str = digest.since.strftime("%H:%M")
@@ -500,15 +577,21 @@ def _build_summary(digest: WhileYouWereAwayDigest) -> str:
     if digest.total_cost_usd > 0:
         parts.append(f"${digest.total_cost_usd:.2f} spent")
 
-    return "No significant activity while you were away." if len(parts) == 1 else ". ".join(parts) + "."
+    return (
+        "No significant activity while you were away."
+        if len(parts) == 1
+        else ". ".join(parts) + "."
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Factory
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def get_digest_generator(
-    session: AsyncSession, redis: Any | None = None,
+    session: AsyncSession,
+    redis: Any | None = None,
 ) -> DigestGenerator:
     """Return a DigestGenerator bound to the given session."""
     return DigestGenerator(session=session, redis=redis)

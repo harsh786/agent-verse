@@ -6,6 +6,7 @@ steps and tool outputs that support each factual claim.
 
 Runs in a new `_node_synthesize` graph node added after success.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -20,8 +21,8 @@ logger = get_logger(__name__)
 class Citation:
     """A single citation linking a claim to its evidence source."""
 
-    text: str           # the cited text snippet (≤200 chars)
-    source: str         # "step_N_tool_name" or "step_N"
+    text: str  # the cited text snippet (≤200 chars)
+    source: str  # "step_N_tool_name" or "step_N"
     step_index: int
     tool_name: str = ""
     confidence: float = 1.0
@@ -76,14 +77,16 @@ class AnswerSynthesizer:
                 tool_name = getattr(first_tc, "tool_name", "")
                 if not tool_name and isinstance(first_tc, dict):
                     tool_name = first_tc.get("tool_name", "")
-            provenance.append({
-                "step_index": i,
-                "step_description": getattr(
-                    step, "step", getattr(step, "description", f"Step {i+1}")
-                ),
-                "tool_name": tool_name,
-                "output_excerpt": output[:200],
-            })
+            provenance.append(
+                {
+                    "step_index": i,
+                    "step_description": getattr(
+                        step, "step", getattr(step, "description", f"Step {i + 1}")
+                    ),
+                    "tool_name": tool_name,
+                    "output_excerpt": output[:200],
+                }
+            )
 
         if self._llm is not None:
             try:
@@ -103,7 +106,7 @@ class AnswerSynthesizer:
         from app.providers.base import CompletionRequest, Message
 
         step_summaries = "\n".join(
-            f"Step {p['step_index']+1} [{p['tool_name'] or 'llm'}]: {p['output_excerpt']}"
+            f"Step {p['step_index'] + 1} [{p['tool_name'] or 'llm'}]: {p['output_excerpt']}"
             for p in provenance
         )
 
@@ -128,16 +131,18 @@ class AnswerSynthesizer:
 
         # Extract citations from [Step N] patterns
         citations = []
-        for m in re.finditer(r'\[Step (\d+)\]', resp.content):
+        for m in re.finditer(r"\[Step (\d+)\]", resp.content):
             step_idx = int(m.group(1)) - 1
             if 0 <= step_idx < len(provenance):
                 p = provenance[step_idx]
-                citations.append(Citation(
-                    text=p["output_excerpt"][:150],
-                    source=f"step_{step_idx + 1}_{p['tool_name'] or 'llm'}",
-                    step_index=step_idx,
-                    tool_name=p["tool_name"],
-                ))
+                citations.append(
+                    Citation(
+                        text=p["output_excerpt"][:150],
+                        source=f"step_{step_idx + 1}_{p['tool_name'] or 'llm'}",
+                        step_index=step_idx,
+                        tool_name=p["tool_name"],
+                    )
+                )
 
         return CitedAnswer(
             answer=resp.content,
@@ -158,12 +163,14 @@ class AnswerSynthesizer:
             output = p["output_excerpt"]
             if output:
                 parts.append(f"Step {step_num} [{tool}]: {output}")
-                citations.append(Citation(
-                    text=output[:150],
-                    source=f"step_{step_num}_{tool}",
-                    step_index=p["step_index"],
-                    tool_name=p["tool_name"],
-                ))
+                citations.append(
+                    Citation(
+                        text=output[:150],
+                        source=f"step_{step_num}_{tool}",
+                        step_index=p["step_index"],
+                        tool_name=p["tool_name"],
+                    )
+                )
 
         return CitedAnswer(
             answer="\n".join(parts),

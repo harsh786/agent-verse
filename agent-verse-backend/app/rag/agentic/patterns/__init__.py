@@ -1,4 +1,5 @@
 """RAG pattern adapters exposed by the agentic retrieval package."""
+
 from __future__ import annotations
 
 from app.rag.agentic.patterns.adaptive import AdaptiveRAGPattern

@@ -76,14 +76,14 @@ class Settings(BaseSettings):
     voyage_api_key: str = ""
 
     # --- Ollama local inference -----------------------------------------------
-    ollama_base_url: str = ""          # e.g. http://localhost:11434
+    ollama_base_url: str = ""  # e.g. http://localhost:11434
     ollama_default_model: str = "qwen3.8:latest"
     ollama_embed_model: str = "qwen3-embedding:latest"
     ollama_ocr_model: str = "glm-ocr:latest"
     ollama_auto_pull: bool = False
 
     # --- Embedding vector dimension (must match the embed model) --------------
-    embedding_dim: int = 2048          # qwen3-embedding uses 2048-d vectors
+    embedding_dim: int = 2048  # qwen3-embedding uses 2048-d vectors
 
     # --- default model names per task type (override via env vars) ---
     default_planning_model: str = "qwen3.8:latest"
@@ -99,22 +99,22 @@ class Settings(BaseSettings):
 
     # --- Voice OS configuration ---------------------------------------------------
     # --- Public URL (for magic links in approval notifications) ---
-    public_base_url:          str        = "http://localhost:5173"
+    public_base_url: str = "http://localhost:5173"
 
     # --- Voice OS configuration ---
-    voice_enabled:            bool       = True
-    voice_device:             str        = "cpu"           # "cpu" | "cuda"
-    voice_stt_provider:       str        = "faster_whisper"
-    voice_tts_provider:       str        = "kokoro"        # kokoro | omnivoice | elevenlabs | openai_tts | azure_tts
-    voice_stt_model:          str        = "large-v3-turbo"
-    voice_tts_model:          str        = "k2-fsa/OmniVoice"
-    model_cache_dir:          str        = "/app/models"
-    voice_persona_bucket:     str        = "agentverse-voice-personas"
-    voice_greeting_cache_ttl: int        = 300
-    voice_max_audio_mb:       int        = 25
-    s3_endpoint_url:          str | None = None
-    s3_access_key:            str | None = None
-    s3_secret_key:            str | None = None
+    voice_enabled: bool = True
+    voice_device: str = "cpu"  # "cpu" | "cuda"
+    voice_stt_provider: str = "faster_whisper"
+    voice_tts_provider: str = "kokoro"  # kokoro | omnivoice | elevenlabs | openai_tts | azure_tts
+    voice_stt_model: str = "large-v3-turbo"
+    voice_tts_model: str = "k2-fsa/OmniVoice"
+    model_cache_dir: str = "/app/models"
+    voice_persona_bucket: str = "agentverse-voice-personas"
+    voice_greeting_cache_ttl: int = 300
+    voice_max_audio_mb: int = 25
+    s3_endpoint_url: str | None = None
+    s3_access_key: str | None = None
+    s3_secret_key: str | None = None
 
     # --- feature flags ---
     civilization_enabled: bool = False
@@ -127,8 +127,8 @@ class Settings(BaseSettings):
     # If False, fall back to in-process execution when the runner is unavailable.
     isolated_execution_required: bool = False
     # Runner back-ends (both default off; at most one should be True at a time)
-    isolated_execution_local_runner: bool = False        # subprocess runner
-    isolated_execution_kubernetes_runner: bool = False   # Kubernetes Job runner
+    isolated_execution_local_runner: bool = False  # subprocess runner
+    isolated_execution_kubernetes_runner: bool = False  # Kubernetes Job runner
 
     # Advanced RAG pattern feature flags
     enable_raptor: bool = True
@@ -199,7 +199,7 @@ class Settings(BaseSettings):
     )
 
     # --- SIEM Integration ---
-    siem_type: str = ""   # "splunk" | "elasticsearch" | "datadog" | "cef" | "leef" | "webhook"
+    siem_type: str = ""  # "splunk" | "elasticsearch" | "datadog" | "cef" | "leef" | "webhook"
     siem_endpoint: str = ""
     siem_token: str = ""
     siem_api_key: str = ""
@@ -234,7 +234,7 @@ class Settings(BaseSettings):
     )
 
     # --- India compliance (DPDP/GST) ---
-    seller_gstin: str = "27AAAAA0000A1Z5"   # placeholder — override in production
+    seller_gstin: str = "27AAAAA0000A1Z5"  # placeholder — override in production
     seller_name: str = "AgentVerse Technologies Pvt Ltd"
     dpo_name: str = "Data Protection Officer"
     dpo_email: str = "dpo@agentverse.ai"

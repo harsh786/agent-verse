@@ -8,16 +8,14 @@ CLASS 5: CATASTROPHIC   → human always required
 
 Includes OrgDLQ (Dead Letter Queue) for unrecoverable events.
 """
+
 from __future__ import annotations
 
 import asyncio
-import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
-
-import structlog
 
 from app.observability.logging import get_logger
 
@@ -25,11 +23,11 @@ _log = get_logger(__name__)
 
 
 class FailureClass(int, Enum):
-    TRANSIENT     = 1   # retry
-    DEGRADED      = 2   # fallback
-    BLOCKED       = 3   # escalation
-    FATAL         = 4   # recovery / queue
-    CATASTROPHIC  = 5   # human always required
+    TRANSIENT = 1  # retry
+    DEGRADED = 2  # fallback
+    BLOCKED = 3  # escalation
+    FATAL = 4  # recovery / queue
+    CATASTROPHIC = 5  # human always required
 
 
 @dataclass
@@ -56,7 +54,7 @@ class DLQEntry:
     event: FailureEvent
     reason: str
     retry_count: int = 0
-    status: str = "pending"    # pending | retrying | dismissed
+    status: str = "pending"  # pending | retrying | dismissed
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     last_retry_at: datetime | None = None
 
@@ -65,34 +63,64 @@ class FailureClassifier:
     """Classify failures into the 5-class taxonomy."""
 
     # Transient error patterns
-    TRANSIENT_ERRORS = frozenset({
-        "timeout", "connection_reset", "rate_limit", "503", "502", "429",
-        "network_error", "dns_error", "temporary_failure",
-    })
+    TRANSIENT_ERRORS = frozenset(
+        {
+            "timeout",
+            "connection_reset",
+            "rate_limit",
+            "503",
+            "502",
+            "429",
+            "network_error",
+            "dns_error",
+            "temporary_failure",
+        }
+    )
 
     # Degraded error patterns
-    DEGRADED_ERRORS = frozenset({
-        "quality_below_threshold", "model_partial_failure", "tool_unreliable",
-        "context_overflow", "knowledge_empty",
-    })
+    DEGRADED_ERRORS = frozenset(
+        {
+            "quality_below_threshold",
+            "model_partial_failure",
+            "tool_unreliable",
+            "context_overflow",
+            "knowledge_empty",
+        }
+    )
 
     # Blocked patterns
-    BLOCKED_PATTERNS = frozenset({
-        "approval_timeout", "budget_exceeded", "policy_violation",
-        "circular_dependency", "missing_permission",
-    })
+    BLOCKED_PATTERNS = frozenset(
+        {
+            "approval_timeout",
+            "budget_exceeded",
+            "policy_violation",
+            "circular_dependency",
+            "missing_permission",
+        }
+    )
 
     # Fatal patterns
-    FATAL_PATTERNS = frozenset({
-        "infinite_loop", "task_poisoned", "all_providers_down",
-        "max_retries_exceeded", "deadlock_detected",
-    })
+    FATAL_PATTERNS = frozenset(
+        {
+            "infinite_loop",
+            "task_poisoned",
+            "all_providers_down",
+            "max_retries_exceeded",
+            "deadlock_detected",
+        }
+    )
 
     # Catastrophic patterns — NEVER auto-recover
-    CATASTROPHIC_PATTERNS = frozenset({
-        "data_corruption", "security_breach", "financial_unauthorized",
-        "compliance_violation", "pii_bulk_operation", "prod_infra_destruction",
-    })
+    CATASTROPHIC_PATTERNS = frozenset(
+        {
+            "data_corruption",
+            "security_breach",
+            "financial_unauthorized",
+            "compliance_violation",
+            "pii_bulk_operation",
+            "prod_infra_destruction",
+        }
+    )
 
     def classify(self, error_type: str, context: dict[str, Any]) -> FailureClass:
         err_lower = error_type.lower()
@@ -133,22 +161,24 @@ class OrgFailureManager:
       CLASS 5 (CATASTROPHIC): stop + human always required
     """
 
-    HARD_LIMITS = frozenset({
-        "production_infra_destruction",
-        "mass_customer_data_deletion",
-        "external_financial_transfer_gt_10k",
-        "binding_legal_agreements",
-        "press_releases",
-        "mass_pii_bulk_operations",
-    })
+    HARD_LIMITS = frozenset(
+        {
+            "production_infra_destruction",
+            "mass_customer_data_deletion",
+            "external_financial_transfer_gt_10k",
+            "binding_legal_agreements",
+            "press_releases",
+            "mass_pii_bulk_operations",
+        }
+    )
 
     def __init__(
         self,
         notification_router: Any | None = None,
-        dlq: "OrgDLQ | None" = None,
+        dlq: OrgDLQ | None = None,
     ) -> None:
         self._notify = notification_router
-        self._dlq    = dlq or OrgDLQ()
+        self._dlq = dlq or OrgDLQ()
         self._classifier = FailureClassifier()
 
     async def handle(self, failure: FailureEvent) -> str:
@@ -177,7 +207,9 @@ class OrgFailureManager:
 
     async def _handle_transient(self, failure: FailureEvent) -> str:
         if failure.retry_count < failure.max_retries:
-            delay = failure.backoff_seconds[min(failure.retry_count, len(failure.backoff_seconds) - 1)]
+            delay = failure.backoff_seconds[
+                min(failure.retry_count, len(failure.backoff_seconds) - 1)
+            ]
             _log.info(
                 "failure_manager.retry",
                 failure_id=failure.failure_id,
@@ -199,7 +231,11 @@ class OrgFailureManager:
         # Notify human, pause mission
         if self._notify:
             try:
-                from app.gateway.notification_router import OutboundNotification, NotificationSeverity
+                from app.gateway.notification_router import (
+                    NotificationSeverity,
+                    OutboundNotification,
+                )
+
                 notif = OutboundNotification(
                     org_id=failure.org_id,
                     event_type="org.mission.blocked",
@@ -218,7 +254,11 @@ class OrgFailureManager:
         await self._dlq.write(failure.failure_id, failure, "fatal_failure_max_retries")
         if self._notify:
             try:
-                from app.gateway.notification_router import OutboundNotification, NotificationSeverity
+                from app.gateway.notification_router import (
+                    NotificationSeverity,
+                    OutboundNotification,
+                )
+
                 notif = OutboundNotification(
                     org_id=failure.org_id,
                     event_type="org.anomaly.detected",
@@ -268,6 +308,7 @@ class OrgDLQ:
         retry_count: int = 0,
     ) -> DLQEntry:
         import uuid
+
         entry = DLQEntry(
             entry_id=entry_id or str(uuid.uuid4()),
             event=event,
@@ -280,7 +321,8 @@ class OrgDLQ:
 
     async def list(self, org_id: str, status: str = "pending") -> list[DLQEntry]:
         return [
-            e for e in self._entries.values()
+            e
+            for e in self._entries.values()
             if e.event.org_id == org_id and (status == "all" or e.status == status)
         ]
 

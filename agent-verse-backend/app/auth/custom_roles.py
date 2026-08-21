@@ -16,6 +16,7 @@ Custom role example:
   inherits: "viewer"
   extra_scopes: ["goals:write", "templates:read"]
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -26,45 +27,100 @@ logger = get_logger(__name__)
 
 # Base role definitions (scope sets)
 _BASE_ROLE_SCOPES: dict[str, frozenset[str]] = {
-    "viewer": frozenset({
-        "goals:read", "agents:read", "templates:read",
-        "knowledge:read", "memory:read", "costs:read",
-    }),
-    "operator": frozenset({
-        "goals:read", "goals:write", "goals:stream",
-        "agents:read", "agents:run",
-        "templates:read", "templates:use",
-        "knowledge:read", "memory:read", "costs:read",
-        "tools:read", "tools:use",
-    }),
-    "builder": frozenset({
-        "goals:read", "goals:write", "goals:stream",
-        "agents:read", "agents:write", "agents:run",
-        "templates:read", "templates:write", "templates:use",
-        "knowledge:read", "knowledge:write",
-        "memory:read", "memory:write",
-        "costs:read", "tools:read", "tools:use",
-        "skills:read", "skills:write",
-        "workflows:read", "workflows:write",
-    }),
-    "admin": frozenset({
-        "goals:read", "goals:write", "goals:stream", "goals:admin",
-        "agents:read", "agents:write", "agents:run", "agents:admin",
-        "templates:read", "templates:write", "templates:use", "templates:admin",
-        "knowledge:read", "knowledge:write", "knowledge:admin",
-        "memory:read", "memory:write",
-        "costs:read", "costs:admin",
-        "tools:read", "tools:use", "tools:admin",
-        "connectors:read", "connectors:write",
-        "users:read", "users:invite",
-        "policies:read", "policies:write",
-        "skills:read", "skills:write", "skills:admin",
-        "workflows:read", "workflows:write", "workflows:admin",
-        "audit:read",
-    }),
-    "owner": frozenset({
-        "*",  # wildcard — all scopes
-    }),
+    "viewer": frozenset(
+        {
+            "goals:read",
+            "agents:read",
+            "templates:read",
+            "knowledge:read",
+            "memory:read",
+            "costs:read",
+        }
+    ),
+    "operator": frozenset(
+        {
+            "goals:read",
+            "goals:write",
+            "goals:stream",
+            "agents:read",
+            "agents:run",
+            "templates:read",
+            "templates:use",
+            "knowledge:read",
+            "memory:read",
+            "costs:read",
+            "tools:read",
+            "tools:use",
+        }
+    ),
+    "builder": frozenset(
+        {
+            "goals:read",
+            "goals:write",
+            "goals:stream",
+            "agents:read",
+            "agents:write",
+            "agents:run",
+            "templates:read",
+            "templates:write",
+            "templates:use",
+            "knowledge:read",
+            "knowledge:write",
+            "memory:read",
+            "memory:write",
+            "costs:read",
+            "tools:read",
+            "tools:use",
+            "skills:read",
+            "skills:write",
+            "workflows:read",
+            "workflows:write",
+        }
+    ),
+    "admin": frozenset(
+        {
+            "goals:read",
+            "goals:write",
+            "goals:stream",
+            "goals:admin",
+            "agents:read",
+            "agents:write",
+            "agents:run",
+            "agents:admin",
+            "templates:read",
+            "templates:write",
+            "templates:use",
+            "templates:admin",
+            "knowledge:read",
+            "knowledge:write",
+            "knowledge:admin",
+            "memory:read",
+            "memory:write",
+            "costs:read",
+            "costs:admin",
+            "tools:read",
+            "tools:use",
+            "tools:admin",
+            "connectors:read",
+            "connectors:write",
+            "users:read",
+            "users:invite",
+            "policies:read",
+            "policies:write",
+            "skills:read",
+            "skills:write",
+            "skills:admin",
+            "workflows:read",
+            "workflows:write",
+            "workflows:admin",
+            "audit:read",
+        }
+    ),
+    "owner": frozenset(
+        {
+            "*",  # wildcard — all scopes
+        }
+    ),
 }
 
 

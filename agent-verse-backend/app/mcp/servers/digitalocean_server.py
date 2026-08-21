@@ -3,6 +3,7 @@
 Environment variables:
   DIGITALOCEAN_TOKEN: DigitalOcean personal access token
 """
+
 from __future__ import annotations
 
 import os
@@ -38,7 +39,10 @@ TOOL_DEFINITIONS = [
                 "name": {"type": "string"},
                 "region": {"type": "string", "description": "Region slug (e.g. nyc3, fra1)"},
                 "size": {"type": "string", "description": "Droplet size slug (e.g. s-1vcpu-1gb)"},
-                "image": {"type": "string", "description": "Image slug or ID (e.g. ubuntu-22-04-x64)"},
+                "image": {
+                    "type": "string",
+                    "description": "Image slug or ID (e.g. ubuntu-22-04-x64)",
+                },
                 "ssh_keys": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -141,7 +145,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
@@ -171,7 +178,11 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
                         "memory": d.get("memory"),
                         "disk": d.get("disk"),
                         "ip_address": next(
-                            (n["ip_address"] for n in d.get("networks", {}).get("v4", []) if n.get("type") == "public"),
+                            (
+                                n["ip_address"]
+                                for n in d.get("networks", {}).get("v4", [])
+                                if n.get("type") == "public"
+                            ),
                             None,
                         ),
                         "tags": d.get("tags", []),

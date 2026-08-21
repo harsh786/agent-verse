@@ -5,6 +5,7 @@ Environment variables:
   GOOGLE_ADS_DEVELOPER_TOKEN:  Developer token (required for Ads API)
   GOOGLE_ADS_CUSTOMER_ID:      Default customer/account ID (without dashes)
 """
+
 from __future__ import annotations
 
 import os
@@ -62,7 +63,14 @@ TOOL_DEFINITIONS = [
                 "customer_id": {"type": "string"},
                 "date_range": {
                     "type": "string",
-                    "enum": ["TODAY", "YESTERDAY", "LAST_7_DAYS", "LAST_30_DAYS", "THIS_MONTH", "LAST_MONTH"],
+                    "enum": [
+                        "TODAY",
+                        "YESTERDAY",
+                        "LAST_7_DAYS",
+                        "LAST_30_DAYS",
+                        "THIS_MONTH",
+                        "LAST_MONTH",
+                    ],
                     "default": "LAST_30_DAYS",
                 },
                 "campaign_ids": {
@@ -89,7 +97,13 @@ TOOL_DEFINITIONS = [
                 },
                 "bidding_strategy_type": {
                     "type": "string",
-                    "enum": ["MANUAL_CPC", "TARGET_CPA", "TARGET_ROAS", "MAXIMIZE_CLICKS", "MAXIMIZE_CONVERSIONS"],
+                    "enum": [
+                        "MANUAL_CPC",
+                        "TARGET_CPA",
+                        "TARGET_ROAS",
+                        "MAXIMIZE_CLICKS",
+                        "MAXIMIZE_CONVERSIONS",
+                    ],
                     "default": "MANUAL_CPC",
                 },
                 "budget_amount_micros": {
@@ -155,9 +169,7 @@ def _headers() -> dict[str, str]:
     }
 
 
-async def _gaql_search(
-    c: httpx.AsyncClient, customer_id: str, query: str
-) -> dict[str, Any]:
+async def _gaql_search(c: httpx.AsyncClient, customer_id: str, query: str) -> dict[str, Any]:
     r = await c.post(
         f"{ADS_BASE}/customers/{customer_id}/googleAds:search",
         headers=_headers(),

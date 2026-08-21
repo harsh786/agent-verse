@@ -13,6 +13,7 @@ Dead Letter Queue:
   - Admin can retry or dismiss
   - Status: pending | delivered | failed | dead
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -25,7 +26,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-import structlog
 
 from app.observability.logging import get_logger
 
@@ -40,6 +40,7 @@ DELIVERY_TIMEOUT_SECONDS = 10.0
 @dataclass
 class WebhookConfig:
     """A registered outbound webhook."""
+
     webhook_id: str
     tenant_id: str
     org_id: str
@@ -54,6 +55,7 @@ class WebhookConfig:
 @dataclass
 class WebhookDelivery:
     """Per spec QA7 — a single webhook delivery attempt."""
+
     delivery_id: str
     webhook_id: str
     event_type: str
@@ -68,7 +70,7 @@ class WebhookDelivery:
     backoff_seconds: list[int] = field(default_factory=lambda: list(BACKOFF_SCHEDULE))
 
     # Status
-    status: str = "pending"       # pending | delivered | failed | dead
+    status: str = "pending"  # pending | delivered | failed | dead
     last_response_code: int | None = None
     last_error: str | None = None
     delivered_at: datetime | None = None
@@ -77,9 +79,7 @@ class WebhookDelivery:
     def sign_payload(self) -> str:
         """Compute HMAC-SHA256 signature for payload."""
         body = json.dumps(self.payload, sort_keys=True, ensure_ascii=False)
-        return "sha256=" + hmac.new(
-            self.secret.encode(), body.encode(), hashlib.sha256
-        ).hexdigest()
+        return "sha256=" + hmac.new(self.secret.encode(), body.encode(), hashlib.sha256).hexdigest()
 
     @property
     def is_dead(self) -> bool:
@@ -102,11 +102,11 @@ class WebhookDeliverySystem:
     """
 
     def __init__(self, redis_client: Any | None = None) -> None:
-        self._redis     = redis_client
-        self._http      = httpx.AsyncClient(timeout=DELIVERY_TIMEOUT_SECONDS)
-        self._pending:  dict[str, WebhookDelivery] = {}
-        self._dlq:      list[WebhookDelivery]       = []
-        self._webhooks: dict[str, WebhookConfig]    = {}
+        self._redis = redis_client
+        self._http = httpx.AsyncClient(timeout=DELIVERY_TIMEOUT_SECONDS)
+        self._pending: dict[str, WebhookDelivery] = {}
+        self._dlq: list[WebhookDelivery] = []
+        self._webhooks: dict[str, WebhookConfig] = {}
 
     async def register_webhook(
         self,
@@ -119,6 +119,7 @@ class WebhookDeliverySystem:
     ) -> WebhookConfig:
         """Register a new outbound webhook."""
         import secrets as _secrets
+
         wh = WebhookConfig(
             webhook_id=str(uuid.uuid4()),
             tenant_id=tenant_id,
@@ -145,7 +146,7 @@ class WebhookDeliverySystem:
         Returns a WebhookDelivery that will be retried until success or DLQ.
         """
         wh = self._webhooks.get(webhook_id)
-        delivery_url    = url    or (wh.url    if wh else "")
+        delivery_url = url or (wh.url if wh else "")
         delivery_secret = secret or (wh.secret if wh else "")
 
         delivery = WebhookDelivery(
@@ -155,8 +156,8 @@ class WebhookDeliverySystem:
             payload={
                 **payload,
                 "_delivery_id": str(uuid.uuid4()),  # idempotency key
-                "_event_type":  event_type,
-                "_timestamp":   datetime.now(UTC).isoformat(),
+                "_event_type": event_type,
+                "_timestamp": datetime.now(UTC).isoformat(),
             },
             url=delivery_url,
             secret=delivery_secret,
@@ -170,7 +171,7 @@ class WebhookDeliverySystem:
     async def _attempt_delivery(self, delivery: WebhookDelivery) -> bool:
         """Attempt one delivery. Returns True on success."""
         if not delivery.url:
-            delivery.status    = "failed"
+            delivery.status = "failed"
             delivery.last_error = "No URL configured"
             return False
 
@@ -183,18 +184,18 @@ class WebhookDeliverySystem:
                 delivery.url,
                 content=body.encode(),
                 headers={
-                    "Content-Type":       "application/json",
-                    "X-Delivery-ID":      delivery.delivery_id,
-                    "X-Event-Type":       delivery.event_type,
-                    "X-Timestamp":        datetime.now(UTC).isoformat(),
-                    "X-Signature":        sig,
+                    "Content-Type": "application/json",
+                    "X-Delivery-ID": delivery.delivery_id,
+                    "X-Event-Type": delivery.event_type,
+                    "X-Timestamp": datetime.now(UTC).isoformat(),
+                    "X-Signature": sig,
                 },
                 timeout=DELIVERY_TIMEOUT_SECONDS,
             )
             delivery.last_response_code = resp.status_code
 
             if 200 <= resp.status_code < 300:
-                delivery.status       = "delivered"
+                delivery.status = "delivered"
                 delivery.delivered_at = datetime.now(UTC)
                 del self._pending[delivery.delivery_id]
                 _log.info(
@@ -229,7 +230,9 @@ class WebhookDeliverySystem:
             )
             return False
 
-        delay = delivery.backoff_seconds[min(delivery.attempts - 1, len(delivery.backoff_seconds) - 1)]
+        delay = delivery.backoff_seconds[
+            min(delivery.attempts - 1, len(delivery.backoff_seconds) - 1)
+        ]
         _log.info(
             "webhook.retry_scheduled",
             delivery_id=delivery.delivery_id,
@@ -258,7 +261,7 @@ class WebhookDeliverySystem:
         for i, d in enumerate(self._dlq):
             if d.delivery_id == delivery_id:
                 self._dlq.pop(i)
-                d.status   = "pending"
+                d.status = "pending"
                 d.attempts = 0
                 self._pending[d.delivery_id] = d
                 await self._attempt_delivery(d)
@@ -275,8 +278,8 @@ class WebhookDeliverySystem:
     def get_stats(self, tenant_id: str | None = None) -> dict[str, int]:
         """Delivery statistics."""
         return {
-            "pending":   len(self._pending),
-            "dead":      len(self._dlq),
+            "pending": len(self._pending),
+            "dead": len(self._dlq),
         }
 
     async def close(self) -> None:

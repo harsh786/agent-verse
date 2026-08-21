@@ -1,9 +1,13 @@
 from __future__ import annotations
+
 import re
 
 _CRITICAL = [
     (re.compile(r"\b(delete|drop|truncate|wipe|purge|destroy)\b", re.I), "destructive operation"),
-    (re.compile(r"\b(production|prod)\b.*\b(deploy|delete|migrate|drop)\b", re.I), "production mutation"),
+    (
+        re.compile(r"\b(production|prod)\b.*\b(deploy|delete|migrate|drop)\b", re.I),
+        "production mutation",
+    ),
     (re.compile(r"\bcharge\b|\btransfer funds\b|\bpayment\b", re.I), "financial operation"),
 ]
 _HIGH = [

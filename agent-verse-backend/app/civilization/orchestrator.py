@@ -3,9 +3,9 @@
 The ONLY component that enqueues agent Celery tasks.
 Ticks the society, checks breaches, emits events, manages the lifecycle.
 """
+
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -140,9 +140,7 @@ class CivilizationOrchestrator:
         elif mode == "multi_agent" and self._supervisor is not None:
             # SupervisorAgent decomposes and dispatches in parallel
             try:
-                result = await self._supervisor.run(
-                    goal=goal, tenant_ctx=self._tenant_ctx
-                )
+                result = await self._supervisor.run(goal=goal, tenant_ctx=self._tenant_ctx)
                 return {
                     "status": "accepted",
                     "mode": "multi_agent",
@@ -159,7 +157,7 @@ class CivilizationOrchestrator:
         if self._blackboard is not None:
             try:
                 blackboard_context = await self._blackboard.query(
-                    topic=None,       # all topics
+                    topic=None,  # all topics
                     min_confidence=0.65,
                     limit=5,
                 )
@@ -293,6 +291,7 @@ class CivilizationOrchestrator:
         # GAP 4: Record debate metric
         try:
             from app.civilization.metrics import civ_debates_total
+
             civ_debates_total().labels(tenant_id=self._tenant_id).inc()
         except Exception:
             pass
@@ -341,6 +340,7 @@ class CivilizationOrchestrator:
         # 4. Record active agent count in Prometheus (GAP 4)
         try:
             from app.civilization.metrics import record_agents_active
+
             metrics_data = await self._society.get_metrics()
             record_agents_active(
                 tenant_id=self._tenant_id,
@@ -370,9 +370,7 @@ class CivilizationOrchestrator:
             "society": society_metrics,
             "lineage": lineage,
             "constitution": (
-                self._constitution.to_dict()
-                if hasattr(self._constitution, "to_dict")
-                else {}
+                self._constitution.to_dict() if hasattr(self._constitution, "to_dict") else {}
             ),
         }
 
@@ -387,9 +385,12 @@ class CivilizationOrchestrator:
         updated = 0
         try:
             from sqlalchemy import text
+
             # Get recent eval scores per agent (last 24h)
             async with self._db() as session:
-                rows = (await session.execute(text("""
+                rows = (
+                    await session.execute(
+                        text("""
                     SELECT g.agent_id, AVG(e.average_score) as avg_score, COUNT(*) as cnt
                     FROM evaluations e
                     JOIN goals g ON e.goal_id = g.id
@@ -397,7 +398,10 @@ class CivilizationOrchestrator:
                       AND e.created_at > NOW() - INTERVAL '24 hours'
                       AND g.agent_id IS NOT NULL
                     GROUP BY g.agent_id
-                """), {"tid": self._tenant_id})).fetchall()
+                """),
+                        {"tid": self._tenant_id},
+                    )
+                ).fetchall()
 
             members = await self._society.load_members()
             member_ids = {m["agent_id"] for m in members}

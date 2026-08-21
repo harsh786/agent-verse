@@ -129,10 +129,7 @@ class MinimalCitationVerifier:
                 or not isinstance(parsed["supported"], bool)
                 or parsed["reason"] not in {"entailed", "not_entailed"}
                 or (parsed["supported"] is True and parsed["reason"] != "entailed")
-                or (
-                    parsed["supported"] is False
-                    and parsed["reason"] != "not_entailed"
-                )
+                or (parsed["supported"] is False and parsed["reason"] != "not_entailed")
             ):
                 raise ValueError("Invalid entailment response")
         except RetrievalStrategyExecutionError:
@@ -159,8 +156,7 @@ class MinimalCitationVerifier:
                 continue
             checked += 1
             if not references or any(
-                reference < 1 or reference > len(citations)
-                for reference in references
+                reference < 1 or reference > len(citations) for reference in references
             ):
                 unsupported.append(claim)
                 reasons.append("invalid_citation")
@@ -243,9 +239,7 @@ class RAGRetriever:
         if not synthesize:
             return result
         budget_context = cast(_BudgetContext | None, result._budget_context)
-        post_retrieval_cost_start = (
-            budget_context.event_count if budget_context is not None else 0
-        )
+        post_retrieval_cost_start = budget_context.event_count if budget_context is not None else 0
         answer = result.answer
         if not answer and result.citations:
             answer = await self.synthesize(
@@ -306,9 +300,7 @@ class RAGRetriever:
                     action="citation_verification",
                     status="complete",
                     detail={
-                        "unsupported_claims": list(
-                            verification.unsupported_claims
-                        ),
+                        "unsupported_claims": list(verification.unsupported_claims),
                         "reason": str(getattr(verification, "reason", "unsupported")),
                     },
                 )

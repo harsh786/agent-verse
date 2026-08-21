@@ -68,4 +68,3 @@ def authorize_handoff(command: HandoffCommand, *, now: datetime | None = None) -
     current_time = now or datetime.now(UTC)
     if command.expires_at <= current_time:
         raise PermissionError("handoff command has expired")
-

@@ -4,6 +4,7 @@ Environment:
   LOGGLY_API_TOKEN:  Loggly API token (for search/retrieval)
   LOGGLY_ACCOUNT:    Loggly subdomain (e.g. mycompany → mycompany.loggly.com)
 """
+
 from __future__ import annotations
 
 import os

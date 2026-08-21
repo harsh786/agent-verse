@@ -14,6 +14,7 @@ This migration:
   - Backfills all existing keys to roles=["admin"] (single-tenant dev setup
     where every existing key is the owner's initial key)
 """
+
 from alembic import op
 
 revision = "0070"

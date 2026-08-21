@@ -23,14 +23,18 @@ _RLS_BACKFILL_TABLES = (
 
 
 def _create_index_concurrently(index_name: str, statement: str) -> None:
-    is_valid = op.get_bind().execute(
-        sa.text(
-            "SELECT index.indisvalid FROM pg_index AS index "
-            "JOIN pg_class AS relation ON relation.oid = index.indexrelid "
-            "WHERE relation.relname = :index_name"
-        ),
-        {"index_name": index_name},
-    ).scalar_one_or_none()
+    is_valid = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT index.indisvalid FROM pg_index AS index "
+                "JOIN pg_class AS relation ON relation.oid = index.indexrelid "
+                "WHERE relation.relname = :index_name"
+            ),
+            {"index_name": index_name},
+        )
+        .scalar_one_or_none()
+    )
     if is_valid is False:
         op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {index_name}")
     op.execute(statement)
@@ -46,9 +50,7 @@ def upgrade() -> None:
     op.execute(
         "ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ"
     )
-    op.execute(
-        "ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ"
-    )
+    op.execute("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ")
     op.execute("""
         UPDATE knowledge_documents
         SET job_source_hash = encode(digest(convert_to(source_url, 'UTF8'), 'sha256'), 'hex')
@@ -63,8 +65,7 @@ def upgrade() -> None:
           AND status = 'running'
     """)
     op.execute(
-        "ALTER TABLE knowledge_documents "
-        "DROP CONSTRAINT IF EXISTS uq_knowledge_documents_job_scope"
+        "ALTER TABLE knowledge_documents DROP CONSTRAINT IF EXISTS uq_knowledge_documents_job_scope"
     )
     op.execute(
         "ALTER TABLE knowledge_documents "
@@ -112,8 +113,7 @@ def upgrade() -> None:
         $$ LANGUAGE plpgsql
     """)
     op.execute(
-        "DROP TRIGGER IF EXISTS trg_repository_ingestion_job_transition "
-        "ON knowledge_documents"
+        "DROP TRIGGER IF EXISTS trg_repository_ingestion_job_transition ON knowledge_documents"
     )
     op.execute("""
         CREATE TRIGGER trg_repository_ingestion_job_transition
@@ -161,10 +161,7 @@ def upgrade() -> None:
             "AND job.domain_metadata->>'record_type' = 'ingestion_job' "
             "AND chunk.metadata->>'repo_url' = job.source_url)"
         )
-        op.execute(
-            f"ALTER TABLE {table} "
-            f"DROP CONSTRAINT IF EXISTS fk_{table}_ingestion_job_scope"
-        )
+        op.execute(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS fk_{table}_ingestion_job_scope")
         op.execute(
             f"ALTER TABLE {table} ADD CONSTRAINT fk_{table}_ingestion_job_scope "
             "FOREIGN KEY (ingestion_job_id, tenant_id, collection_id) "
@@ -204,8 +201,7 @@ def downgrade() -> None:
     with op.get_context().autocommit_block():
         for dimension in _DIMENSIONS:
             op.execute(
-                "DROP INDEX CONCURRENTLY IF EXISTS "
-                f"idx_knowledge_chunks_{dimension}_ingestion_job"
+                f"DROP INDEX CONCURRENTLY IF EXISTS idx_knowledge_chunks_{dimension}_ingestion_job"
             )
         op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_knowledge_documents_job_lease")
 
@@ -216,8 +212,7 @@ def downgrade() -> None:
         op.execute(f"ALTER TABLE {table} DROP COLUMN IF EXISTS ingestion_job_id")
     op.execute("DROP FUNCTION IF EXISTS enforce_repository_chunk_job_integrity()")
     op.execute(
-        "DROP TRIGGER IF EXISTS trg_repository_ingestion_job_transition "
-        "ON knowledge_documents"
+        "DROP TRIGGER IF EXISTS trg_repository_ingestion_job_transition ON knowledge_documents"
     )
     op.execute("DROP FUNCTION IF EXISTS enforce_repository_ingestion_job_transition()")
     op.execute(

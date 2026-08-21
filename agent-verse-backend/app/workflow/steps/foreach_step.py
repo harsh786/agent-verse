@@ -1,4 +1,5 @@
 """ForeachStepNode — iterates over a list, runs body steps per item."""
+
 from __future__ import annotations
 
 import asyncio
@@ -40,7 +41,7 @@ class ForeachStepNode:
 
         # Process in batches of max_concurrency
         for batch_start in range(0, total, max_conc):
-            batch = items[batch_start: batch_start + max_conc]
+            batch = items[batch_start : batch_start + max_conc]
             batch_tasks = []
 
             for i, item in enumerate(batch):
@@ -69,9 +70,7 @@ class ForeachStepNode:
                         error=str(result),
                     )
                     if self.step.on_item_failure == "abort":
-                        raise RuntimeError(
-                            f"foreach step {self.step.id!r} aborted: {result}"
-                        )
+                        raise RuntimeError(f"foreach step {self.step.id!r} aborted: {result}")
                     collected.append({"_error": str(result)})
                 else:
                     # Extract the last body step's output

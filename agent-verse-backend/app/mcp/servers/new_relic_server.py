@@ -4,6 +4,7 @@ Environment:
   NEW_RELIC_API_KEY:    New Relic User API key (NRAK-...)
   NEW_RELIC_ACCOUNT_ID: Account ID (numeric)
 """
+
 from __future__ import annotations
 
 import os
@@ -120,7 +121,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             hdrs = _api_headers(api_key)
 
             if tool_name == "newrelic_nrql_query":
-                acct_id = arguments.get("account_id") or (int(account_id_str) if account_id_str else None)
+                acct_id = arguments.get("account_id") or (
+                    int(account_id_str) if account_id_str else None
+                )
                 if not acct_id:
                     return {"error": "NEW_RELIC_ACCOUNT_ID not configured"}
                 query = """
@@ -151,12 +154,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = resp.json()
                 if "errors" in data:
                     return {"error": data["errors"]}
-                nrql_data = (
-                    data.get("data", {})
-                    .get("actor", {})
-                    .get("account", {})
-                    .get("nrql", {})
-                )
+                nrql_data = data.get("data", {}).get("actor", {}).get("account", {}).get("nrql", {})
                 return {
                     "results": nrql_data.get("results", []),
                     "performance": nrql_data.get("performanceStats"),
@@ -172,7 +170,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = resp.json()
                 return {
                     "policies": [
-                        {"id": p["id"], "name": p["name"], "incident_preference": p.get("incident_preference")}
+                        {
+                            "id": p["id"],
+                            "name": p["name"],
+                            "incident_preference": p.get("incident_preference"),
+                        }
                         for p in data.get("policies", [])
                     ]
                 }
@@ -260,11 +262,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = resp.json()
                 if "errors" in data:
                     return {"error": data["errors"]}
-                search = (
-                    data.get("data", {})
-                    .get("actor", {})
-                    .get("entitySearch", {})
-                )
+                search = data.get("data", {}).get("actor", {}).get("entitySearch", {})
                 return {
                     "entities": search.get("results", {}).get("entities", []),
                     "count": search.get("count", 0),

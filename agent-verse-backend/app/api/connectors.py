@@ -48,9 +48,9 @@ def _get_builtin_handler_for_name(connector_name: str):
     if _BUILTIN_HANDLER_CACHE is None:
         try:
             from app.mcp.servers.registry_wiring import get_builtin_server_configs
+
             _BUILTIN_HANDLER_CACHE = {
-                cfg["name"].lower(): cfg["handler"]
-                for cfg in get_builtin_server_configs()
+                cfg["name"].lower(): cfg["handler"] for cfg in get_builtin_server_configs()
             }
         except Exception:
             _BUILTIN_HANDLER_CACHE = {}
@@ -74,7 +74,9 @@ def _require_tenant(request: Request) -> Any:
 
 
 def _registry(request: Request) -> Any:
-    from app.api._deps import get_mcp_registry as _gmr; return _gmr(request)
+    from app.api._deps import get_mcp_registry as _gmr
+
+    return _gmr(request)
 
 
 def _is_production() -> bool:
@@ -108,11 +110,7 @@ def _connector_secret_store(
     production_safe = bool(
         getattr(request.app.state, "connector_secret_store_is_production_safe", False)
     ) or bool(getattr(store, "production_safe", False))
-    if (
-        needs_secret_storage
-        and _is_production()
-        and not production_safe
-    ):
+    if needs_secret_storage and _is_production() and not production_safe:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
@@ -188,9 +186,7 @@ def _is_mcp_endpoint(url: str) -> bool:
 
 def _mask_auth_config(auth_config: dict[str, Any]) -> dict[str, Any]:
     return {
-        key: _REDACTED
-        if _is_sensitive_auth_key(key) or is_connector_secret_ref(value)
-        else value
+        key: _REDACTED if _is_sensitive_auth_key(key) or is_connector_secret_ref(value) else value
         for key, value in auth_config.items()
     }
 
@@ -233,9 +229,9 @@ def _public_connector(server_id: str, cfg: MCPServerConfig) -> dict[str, Any]:
     # Expose whether this connector has a native builtin Python handler
     # so the frontend can show the ⚡ Built-in badge on registered connectors.
     from app.mcp.registry import MCPRegistry as _MCPReg
+
     data["has_builtin"] = (
-        cfg.builtin_handler is not None
-        or _MCPReg.get_builtin_handler(server_id) is not None
+        cfg.builtin_handler is not None or _MCPReg.get_builtin_handler(server_id) is not None
     )
     return {"server_id": server_id, **data}
 
@@ -291,20 +287,22 @@ async def list_catalog(request: Request) -> list[dict]:
             }
             for f in spec.auth_fields
         ]
-        result.append({
-            "name": spec.name,
-            "display_name": spec.display_name or spec.name.replace("_", " ").title(),
-            "description": spec.description,
-            "auth_type": spec.auth_type,
-            "default_url": spec.default_url,
-            "icon": spec.icon,
-            "category": spec.category,
-            "auth_fields": fields,
-            "has_builtin": bool(spec.builtin_server_id),
-            "builtin_server_id": spec.builtin_server_id,
-            "is_configured": spec.name.lower() in configured_names,
-            "connector_type": spec.name,
-        })
+        result.append(
+            {
+                "name": spec.name,
+                "display_name": spec.display_name or spec.name.replace("_", " ").title(),
+                "description": spec.description,
+                "auth_type": spec.auth_type,
+                "default_url": spec.default_url,
+                "icon": spec.icon,
+                "category": spec.category,
+                "auth_fields": fields,
+                "has_builtin": bool(spec.builtin_server_id),
+                "builtin_server_id": spec.builtin_server_id,
+                "is_configured": spec.name.lower() in configured_names,
+                "connector_type": spec.name,
+            }
+        )
     return result
 
 
@@ -324,9 +322,7 @@ async def list_connectors(request: Request) -> list[dict[str, Any]]:
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def register_connector(
-    request: Request, body: RegisterConnectorRequest
-) -> dict[str, Any]:
+async def register_connector(request: Request, body: RegisterConnectorRequest) -> dict[str, Any]:
     tenant_ctx = _require_tenant(request)
     # SSRF guard: reject private/loopback/cloud-metadata URLs at registration time.
     if body.url and body.url != "builtin://":
@@ -484,7 +480,11 @@ async def _test_github(cfg: Any, started: float, server_id: str) -> dict[str, An
     # - Official MCP endpoint  → validate against https://api.github.com
     # - github.com REST API    → already correct
     # - GitHub Enterprise URL  → use <ghes>/api/v3
-    if not configured_url or "githubcopilot.com" in configured_url or configured_url == "https://api.github.com":
+    if (
+        not configured_url
+        or "githubcopilot.com" in configured_url
+        or configured_url == "https://api.github.com"
+    ):
         rest_base = "https://api.github.com"
     elif configured_url.endswith("/api/v3") or configured_url.endswith("/api/v3/"):
         rest_base = configured_url.rstrip("/")
@@ -516,14 +516,19 @@ async def _test_github(cfg: Any, started: float, server_id: str) -> dict[str, An
             if scopes:
                 detail += f" · scopes: {scopes}"
             return {
-                "server_id": server_id, "reachable": True, "status": "passed",
-                "latency_ms": latency_ms, "detail": detail,
+                "server_id": server_id,
+                "reachable": True,
+                "status": "passed",
+                "latency_ms": latency_ms,
+                "detail": detail,
                 "mcp_url": "https://api.githubcopilot.com/mcp/",
             }
 
         if resp.status_code == 401:
             return {
-                "server_id": server_id, "reachable": False, "status": "failed",
+                "server_id": server_id,
+                "reachable": False,
+                "status": "failed",
                 "error": (
                     "Invalid token — GitHub returned 401 Unauthorized.\n"
                     "Check your Personal Access Token at github.com/settings/tokens."
@@ -533,7 +538,9 @@ async def _test_github(cfg: Any, started: float, server_id: str) -> dict[str, An
 
         if resp.status_code == 403:
             return {
-                "server_id": server_id, "reachable": False, "status": "failed",
+                "server_id": server_id,
+                "reachable": False,
+                "status": "failed",
                 "error": (
                     "Token lacks required scopes — GitHub returned 403 Forbidden.\n"
                     "Add the 'repo' and 'read:org' scopes at github.com/settings/tokens."
@@ -542,21 +549,28 @@ async def _test_github(cfg: Any, started: float, server_id: str) -> dict[str, An
             }
 
         return {
-            "server_id": server_id, "reachable": False, "status": "failed",
+            "server_id": server_id,
+            "reachable": False,
+            "status": "failed",
             "error": f"GitHub API returned HTTP {resp.status_code}",
             "latency_ms": latency_ms,
         }
 
     except httpx.ConnectError:
         return {
-            "server_id": server_id, "reachable": False, "status": "failed",
+            "server_id": server_id,
+            "reachable": False,
+            "status": "failed",
             "error": "Cannot reach api.github.com — check your network connection.",
             "latency_ms": round((time.time() - started) * 1000),
         }
     except Exception as exc:
         return {
-            "server_id": server_id, "reachable": False, "status": "failed",
-            "error": str(exc), "latency_ms": round((time.time() - started) * 1000),
+            "server_id": server_id,
+            "reachable": False,
+            "status": "failed",
+            "error": str(exc),
+            "latency_ms": round((time.time() - started) * 1000),
         }
 
 
@@ -565,12 +579,18 @@ async def _test_jira(cfg: Any, started: float, server_id: str) -> dict[str, Any]
     email = _get_cred(cfg, "email", "username", "user")
     base = (cfg.url or cfg.base_url or "").rstrip("/")
     if not base:
-        return {"server_id": server_id, "reachable": False, "status": "failed",
-                "error": "Jira base URL not configured.", "latency_ms": 0}
+        return {
+            "server_id": server_id,
+            "reachable": False,
+            "status": "failed",
+            "error": "Jira base URL not configured.",
+            "latency_ms": 0,
+        }
     try:
         headers: dict[str, str] = {"Accept": "application/json"}
         if email and token:
             import base64 as _b64
+
             cred = _b64.b64encode(f"{email}:{token}".encode()).decode()
             headers["Authorization"] = f"Basic {cred}"
         elif token:
@@ -580,17 +600,36 @@ async def _test_jira(cfg: Any, started: float, server_id: str) -> dict[str, Any]
         latency_ms = round((time.time() - started) * 1000)
         if resp.status_code == 200:
             data = resp.json()
-            return {"server_id": server_id, "reachable": True, "status": "passed",
-                    "latency_ms": latency_ms,
-                    "detail": f"Authenticated as {data.get('displayName', data.get('emailAddress', '?'))}"}
+            return {
+                "server_id": server_id,
+                "reachable": True,
+                "status": "passed",
+                "latency_ms": latency_ms,
+                "detail": f"Authenticated as {data.get('displayName', data.get('emailAddress', '?'))}",
+            }
         if resp.status_code == 401:
-            return {"server_id": server_id, "reachable": False, "status": "failed",
-                    "error": "Invalid credentials — check email and API token.", "latency_ms": latency_ms}
-        return {"server_id": server_id, "reachable": False, "status": "failed",
-                "error": f"Jira returned HTTP {resp.status_code}", "latency_ms": latency_ms}
+            return {
+                "server_id": server_id,
+                "reachable": False,
+                "status": "failed",
+                "error": "Invalid credentials — check email and API token.",
+                "latency_ms": latency_ms,
+            }
+        return {
+            "server_id": server_id,
+            "reachable": False,
+            "status": "failed",
+            "error": f"Jira returned HTTP {resp.status_code}",
+            "latency_ms": latency_ms,
+        }
     except Exception as exc:
-        return {"server_id": server_id, "reachable": False, "status": "failed",
-                "error": str(exc), "latency_ms": round((time.time() - started) * 1000)}
+        return {
+            "server_id": server_id,
+            "reachable": False,
+            "status": "failed",
+            "error": str(exc),
+            "latency_ms": round((time.time() - started) * 1000),
+        }
 
 
 async def _test_slack(cfg: Any, started: float, server_id: str) -> dict[str, Any]:
@@ -605,16 +644,35 @@ async def _test_slack(cfg: Any, started: float, server_id: str) -> dict[str, Any
         if resp.status_code == 200:
             data = resp.json()
             if data.get("ok"):
-                return {"server_id": server_id, "reachable": True, "status": "passed",
-                        "latency_ms": latency_ms,
-                        "detail": f"Connected as {data.get('user', '?')} in {data.get('team', '?')}"}
-            return {"server_id": server_id, "reachable": False, "status": "failed",
-                    "error": data.get("error", "auth.test returned ok=false"), "latency_ms": latency_ms}
-        return {"server_id": server_id, "reachable": False, "status": "failed",
-                "error": f"Slack returned HTTP {resp.status_code}", "latency_ms": latency_ms}
+                return {
+                    "server_id": server_id,
+                    "reachable": True,
+                    "status": "passed",
+                    "latency_ms": latency_ms,
+                    "detail": f"Connected as {data.get('user', '?')} in {data.get('team', '?')}",
+                }
+            return {
+                "server_id": server_id,
+                "reachable": False,
+                "status": "failed",
+                "error": data.get("error", "auth.test returned ok=false"),
+                "latency_ms": latency_ms,
+            }
+        return {
+            "server_id": server_id,
+            "reachable": False,
+            "status": "failed",
+            "error": f"Slack returned HTTP {resp.status_code}",
+            "latency_ms": latency_ms,
+        }
     except Exception as exc:
-        return {"server_id": server_id, "reachable": False, "status": "failed",
-                "error": str(exc), "latency_ms": round((time.time() - started) * 1000)}
+        return {
+            "server_id": server_id,
+            "reachable": False,
+            "status": "failed",
+            "error": str(exc),
+            "latency_ms": round((time.time() - started) * 1000),
+        }
 
 
 async def _test_stripe(cfg: Any, started: float, server_id: str) -> dict[str, Any]:
@@ -628,16 +686,36 @@ async def _test_stripe(cfg: Any, started: float, server_id: str) -> dict[str, An
         latency_ms = round((time.time() - started) * 1000)
         if resp.status_code == 200:
             data = resp.json()
-            return {"server_id": server_id, "reachable": True, "status": "passed",
-                    "latency_ms": latency_ms, "detail": f"Account: {data.get('id', '?')}"}
+            return {
+                "server_id": server_id,
+                "reachable": True,
+                "status": "passed",
+                "latency_ms": latency_ms,
+                "detail": f"Account: {data.get('id', '?')}",
+            }
         if resp.status_code == 401:
-            return {"server_id": server_id, "reachable": False, "status": "failed",
-                    "error": "Invalid Stripe API key.", "latency_ms": latency_ms}
-        return {"server_id": server_id, "reachable": False, "status": "failed",
-                "error": f"Stripe returned HTTP {resp.status_code}", "latency_ms": latency_ms}
+            return {
+                "server_id": server_id,
+                "reachable": False,
+                "status": "failed",
+                "error": "Invalid Stripe API key.",
+                "latency_ms": latency_ms,
+            }
+        return {
+            "server_id": server_id,
+            "reachable": False,
+            "status": "failed",
+            "error": f"Stripe returned HTTP {resp.status_code}",
+            "latency_ms": latency_ms,
+        }
     except Exception as exc:
-        return {"server_id": server_id, "reachable": False, "status": "failed",
-                "error": str(exc), "latency_ms": round((time.time() - started) * 1000)}
+        return {
+            "server_id": server_id,
+            "reachable": False,
+            "status": "failed",
+            "error": str(exc),
+            "latency_ms": round((time.time() - started) * 1000),
+        }
 
 
 async def _test_gitlab(cfg: Any, started: float, server_id: str) -> dict[str, Any]:
@@ -652,16 +730,36 @@ async def _test_gitlab(cfg: Any, started: float, server_id: str) -> dict[str, An
         latency_ms = round((time.time() - started) * 1000)
         if resp.status_code == 200:
             data = resp.json()
-            return {"server_id": server_id, "reachable": True, "status": "passed",
-                    "latency_ms": latency_ms, "detail": f"Authenticated as @{data.get('username', '?')}"}
+            return {
+                "server_id": server_id,
+                "reachable": True,
+                "status": "passed",
+                "latency_ms": latency_ms,
+                "detail": f"Authenticated as @{data.get('username', '?')}",
+            }
         if resp.status_code == 401:
-            return {"server_id": server_id, "reachable": False, "status": "failed",
-                    "error": "Invalid GitLab token.", "latency_ms": latency_ms}
-        return {"server_id": server_id, "reachable": False, "status": "failed",
-                "error": f"GitLab returned HTTP {resp.status_code}", "latency_ms": latency_ms}
+            return {
+                "server_id": server_id,
+                "reachable": False,
+                "status": "failed",
+                "error": "Invalid GitLab token.",
+                "latency_ms": latency_ms,
+            }
+        return {
+            "server_id": server_id,
+            "reachable": False,
+            "status": "failed",
+            "error": f"GitLab returned HTTP {resp.status_code}",
+            "latency_ms": latency_ms,
+        }
     except Exception as exc:
-        return {"server_id": server_id, "reachable": False, "status": "failed",
-                "error": str(exc), "latency_ms": round((time.time() - started) * 1000)}
+        return {
+            "server_id": server_id,
+            "reachable": False,
+            "status": "failed",
+            "error": str(exc),
+            "latency_ms": round((time.time() - started) * 1000),
+        }
 
 
 # Map connector name → direct REST test function
@@ -724,6 +822,7 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
     mcp_client = getattr(request.app.state, "mcp_client", None)
     if mcp_client is None:
         from app.mcp.client import MCPClient
+
         mcp_client = MCPClient(registry=registry)
 
     test_entry = _CONNECTOR_TEST_TOOLS.get(connector_name)
@@ -820,11 +919,14 @@ async def get_connector_health_history(
 
         from app.db.models.mcp import ConnectorHealthSnapshot
         from app.db.rls import sqlalchemy_rls_context
+
         async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
             result = await session.execute(
                 select(ConnectorHealthSnapshot)
-                .where(ConnectorHealthSnapshot.server_id == server_id,
-                       ConnectorHealthSnapshot.tenant_id == tenant.tenant_id)
+                .where(
+                    ConnectorHealthSnapshot.server_id == server_id,
+                    ConnectorHealthSnapshot.tenant_id == tenant.tenant_id,
+                )
                 .order_by(ConnectorHealthSnapshot.checked_at.desc())
                 .limit(limit)
             )
@@ -902,52 +1004,59 @@ async def start_oauth_popup(request: Request, body: OAuthStartBody) -> dict[str,
     oauth_urls: dict[str, str] = {
         "github": (
             "https://github.com/login/oauth/authorize?"
-            + urllib.parse.urlencode({
-                "client_id": _client_id("GITHUB_CLIENT_ID"),
-                "scope": "repo,read:org",
-                "state": state,
-                "redirect_uri": redirect_uri,
-            })
+            + urllib.parse.urlencode(
+                {
+                    "client_id": _client_id("GITHUB_CLIENT_ID"),
+                    "scope": "repo,read:org",
+                    "state": state,
+                    "redirect_uri": redirect_uri,
+                }
+            )
         ),
         "slack": (
             "https://slack.com/oauth/v2/authorize?"
-            + urllib.parse.urlencode({
-                "client_id": _client_id("SLACK_CLIENT_ID"),
-                "scope": "channels:read,chat:write",
-                "state": state,
-                "redirect_uri": redirect_uri,
-            })
+            + urllib.parse.urlencode(
+                {
+                    "client_id": _client_id("SLACK_CLIENT_ID"),
+                    "scope": "channels:read,chat:write",
+                    "state": state,
+                    "redirect_uri": redirect_uri,
+                }
+            )
         ),
         "google": (
             "https://accounts.google.com/o/oauth2/v2/auth?"
-            + urllib.parse.urlencode({
-                "client_id": _client_id("GOOGLE_CLIENT_ID"),
-                "response_type": "code",
-                "scope": "email profile",
-                "state": state,
-                "redirect_uri": redirect_uri,
-            })
+            + urllib.parse.urlencode(
+                {
+                    "client_id": _client_id("GOOGLE_CLIENT_ID"),
+                    "response_type": "code",
+                    "scope": "email profile",
+                    "state": state,
+                    "redirect_uri": redirect_uri,
+                }
+            )
         ),
         "jira": (
             "https://auth.atlassian.com/authorize?"
-            + urllib.parse.urlencode({
-                "audience": "api.atlassian.com",
-                "client_id": _client_id("JIRA_CLIENT_ID"),
-                "scope": "read:jira-work",
-                "state": state,
-                "redirect_uri": redirect_uri,
-                "response_type": "code",
-                "prompt": "consent",
-            })
+            + urllib.parse.urlencode(
+                {
+                    "audience": "api.atlassian.com",
+                    "client_id": _client_id("JIRA_CLIENT_ID"),
+                    "scope": "read:jira-work",
+                    "state": state,
+                    "redirect_uri": redirect_uri,
+                    "response_type": "code",
+                    "prompt": "consent",
+                }
+            )
         ),
     }
 
     auth_url = oauth_urls.get(connector_name)
     if not auth_url:
         # Generic placeholder so the popup flow still works for unknown connectors
-        auth_url = (
-            "https://example.com/oauth?"
-            + urllib.parse.urlencode({"state": state, "redirect_uri": redirect_uri})
+        auth_url = "https://example.com/oauth?" + urllib.parse.urlencode(
+            {"state": state, "redirect_uri": redirect_uri}
         )
 
     return {"auth_url": auth_url, "state": state}
@@ -1013,7 +1122,8 @@ async def complete_oauth_popup(request: Request, body: OAuthCallbackBody) -> dic
     reg = getattr(request.app.state, "mcp_registry", None)
     if reg is not None:
         try:
-            from app.mcp.registry import MCPServerConfig  # noqa: PLC0415
+            from app.mcp.registry import MCPServerConfig
+
             cfg = MCPServerConfig(
                 name=f"{connector_name} (OAuth)",
                 url=f"https://api.{connector_name}.com",
@@ -1077,8 +1187,7 @@ async def oauth_start(request: Request, server_id: str) -> dict[str, Any]:
     authorize_url = cfg.auth_config.get("authorize_url", "")
     client_id = cfg.auth_config.get("client_id", "")
     redirect_uri = (
-        str(request.base_url).rstrip("/")
-        + f"/connectors/oauth/callback?server_id={server_id}"
+        str(request.base_url).rstrip("/") + f"/connectors/oauth/callback?server_id={server_id}"
     )
 
     if authorize_url and client_id:
@@ -1233,14 +1342,16 @@ async def get_connector_usage(
             db = getattr(goal_svc, "_db", None)
             if db:
                 from sqlalchemy import text as _t
+
                 cid_pattern = f"%{connector_id}%"
                 async with db() as session:
                     await session.execute(
                         _t("SELECT set_config('app.tenant_id', :tid, true)"),
                         {"tid": tenant.tenant_id},
                     )
-                    rows = (await session.execute(
-                        _t("""
+                    rows = (
+                        await session.execute(
+                            _t("""
                             SELECT id, goal_text, status, created_at, cost_usd
                             FROM goals
                             WHERE tenant_id = :tid
@@ -1248,22 +1359,25 @@ async def get_connector_usage(
                             ORDER BY created_at DESC
                             LIMIT :limit
                         """),
-                        {
-                            "tid": tenant.tenant_id,
-                            "cid_pattern": cid_pattern,
-                            "limit": limit,
-                        },
-                    )).fetchall()
-                    count_row = (await session.execute(
-                        _t(
-                            "SELECT COUNT(*), "
-                            "SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END) "
-                            "FROM goals "
-                            "WHERE tenant_id=:tid "
-                            "AND execution_context->>'connector_ids' LIKE :cid_pattern"
-                        ),
-                        {"tid": tenant.tenant_id, "cid_pattern": cid_pattern},
-                    )).fetchone()
+                            {
+                                "tid": tenant.tenant_id,
+                                "cid_pattern": cid_pattern,
+                                "limit": limit,
+                            },
+                        )
+                    ).fetchall()
+                    count_row = (
+                        await session.execute(
+                            _t(
+                                "SELECT COUNT(*), "
+                                "SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END) "
+                                "FROM goals "
+                                "WHERE tenant_id=:tid "
+                                "AND execution_context->>'connector_ids' LIKE :cid_pattern"
+                            ),
+                            {"tid": tenant.tenant_id, "cid_pattern": cid_pattern},
+                        )
+                    ).fetchone()
                     if count_row:
                         total = int(count_row[0] or 0)
                         success_count = int(count_row[1] or 0)
@@ -1282,20 +1396,15 @@ async def get_connector_usage(
                 resp = await goal_svc.list_goals(tenant_ctx=tenant)
                 all_goals = resp.get("goals", []) if isinstance(resp, dict) else []
                 matched = [
-                    g for g in all_goals
-                    if connector_id in str(g.get("execution_context", {}))
+                    g for g in all_goals if connector_id in str(g.get("execution_context", {}))
                 ]
                 total = len(matched)
-                success_count = sum(
-                    1 for g in matched if g.get("status") == "complete"
-                )
+                success_count = sum(1 for g in matched if g.get("status") == "complete")
                 goals = matched[:limit]
         except Exception:
             pass
 
-    success_rate = (
-        round(success_count / max(total, 1) * 100, 1) if total > 0 else None
-    )
+    success_rate = round(success_count / max(total, 1) * 100, 1) if total > 0 else None
     return {
         "goals": goals,
         "total": total,
@@ -1319,6 +1428,7 @@ async def unregister_connector(request: Request, server_id: str) -> None:
 
 # ── OpenAPI auto-import ───────────────────────────────────────────────────────
 
+
 class OpenAPIImportRequest(BaseModel):
     openapi_spec: str
     base_url: str
@@ -1329,9 +1439,7 @@ class OpenAPIImportRequest(BaseModel):
 
 
 @router.post("/import-openapi", status_code=status.HTTP_201_CREATED)
-async def import_openapi_connector(
-    request: Request, body: OpenAPIImportRequest
-) -> dict[str, Any]:
+async def import_openapi_connector(request: Request, body: OpenAPIImportRequest) -> dict[str, Any]:
     """Import an OpenAPI 3.x spec and register it as a connector with extracted tools."""
     tenant_ctx = _require_tenant(request)
 
@@ -1346,6 +1454,7 @@ async def import_openapi_connector(
         ) from exc
 
     import uuid
+
     placeholder_id = uuid.uuid4().hex
     tools = extract_tools_from_spec(
         spec, connector_id=placeholder_id, tenant_id=tenant_ctx.tenant_id
@@ -1353,16 +1462,20 @@ async def import_openapi_connector(
 
     # Normalise auth_type to a known Literal (default to bearer for unknown types)
     _VALID_AUTH_TYPES = {
-        "bearer", "api_key", "oauth_ac", "oauth_cc", "pkce",
-        "basic", "custom_header", "mtls", "hmac",
+        "bearer",
+        "api_key",
+        "oauth_ac",
+        "oauth_cc",
+        "pkce",
+        "basic",
+        "custom_header",
+        "mtls",
+        "hmac",
     }
     safe_auth_type: Any = body.auth_type if body.auth_type in _VALID_AUTH_TYPES else "bearer"
 
     connector_name = body.name or (spec.get("info", {}).get("title") or "Imported API")
-    connector_desc = (
-        body.description
-        or f"Auto-imported from OpenAPI spec ({len(tools)} endpoints)"
-    )
+    connector_desc = body.description or f"Auto-imported from OpenAPI spec ({len(tools)} endpoints)"
 
     cfg = MCPServerConfig(
         name=connector_name,
@@ -1379,6 +1492,7 @@ async def import_openapi_connector(
     db = getattr(request.app.state, "db_session_factory", None)
     if db and tools:
         from app.mcp.openapi_importer import persist_tools
+
         for tool in tools:
             tool["connector_id"] = server_id
             tool["tenant_id"] = tenant_ctx.tenant_id
@@ -1405,24 +1519,25 @@ async def list_capabilities(request: Request, q: str = "") -> list[dict]:
     db = getattr(request.app.state, "db_session_factory", None)
     if db is None:
         from app.db.session import get_session_factory
+
         db = get_session_factory()
     try:
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
-        async with db() as session:
-            async with sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
-                sql = (
-                    "SELECT tool_name, connector_id, description, risk_level, "
-                    "health_status, success_rate, avg_latency_ms "
-                    "FROM tool_capabilities WHERE tenant_id = :tid"
-                )
-                params: dict = {"tid": tenant_ctx.tenant_id}
-                if q:
-                    sql += " AND (tool_name ILIKE :q OR description ILIKE :q)"
-                    params["q"] = f"%{q}%"
-                result = await session.execute(text(sql), params)
-                rows = result.fetchall()
+
+        async with db() as session, sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
+            sql = (
+                "SELECT tool_name, connector_id, description, risk_level, "
+                "health_status, success_rate, avg_latency_ms "
+                "FROM tool_capabilities WHERE tenant_id = :tid"
+            )
+            params: dict = {"tid": tenant_ctx.tenant_id}
+            if q:
+                sql += " AND (tool_name ILIKE :q OR description ILIKE :q)"
+                params["q"] = f"%{q}%"
+            result = await session.execute(text(sql), params)
+            rows = result.fetchall()
         return [
             {
                 "tool_name": r[0],
@@ -1438,6 +1553,7 @@ async def list_capabilities(request: Request, q: str = "") -> list[dict]:
     except Exception:
         # Fall back to catalog when DB unavailable
         from app.mcp.catalog import CONNECTOR_CATALOG
+
         return [
             {
                 "tool_name": c.name,
@@ -1464,6 +1580,7 @@ async def search_capabilities(request: Request, q: str = Query(...)) -> dict:
             pass
 
     from app.mcp.capability_search import CapabilitySearch
+
     embedder = getattr(request.app.state, "embedder", None)
     search = CapabilitySearch(tools=all_tools, embedder=embedder)
     results = await search.search(q, top_k=10)
@@ -1482,15 +1599,14 @@ async def discover_connector_tools(request: Request, server_id: str) -> dict:
         raise HTTPException(503, "MCP client not available")
 
     try:
-        tools = await mcp_client.discover_tools(
-            server_id=server_id, tenant_ctx=tenant_ctx
-        )
+        tools = await mcp_client.discover_tools(server_id=server_id, tenant_ctx=tenant_ctx)
     except Exception as exc:
         raise HTTPException(500, f"Discovery failed: {exc}")
 
     db = getattr(request.app.state, "db_session_factory", None)
     if db is None:
         from app.db.session import get_session_factory
+
         db = get_session_factory()
 
     saved = 0
@@ -1500,6 +1616,7 @@ async def discover_connector_tools(request: Request, server_id: str) -> dict:
             import uuid
 
             from sqlalchemy import text
+
             async with db() as session, session.begin():
                 for tool in tools:
                     await session.execute(
@@ -1527,18 +1644,15 @@ async def discover_connector_tools(request: Request, server_id: str) -> dict:
                             "cid": server_id,
                             "name": getattr(tool, "name", str(tool)),
                             "desc": getattr(tool, "description", ""),
-                            "schema": json.dumps(
-                                getattr(tool, "input_schema", {})
-                            ),
+                            "schema": json.dumps(getattr(tool, "input_schema", {})),
                             "risk": getattr(tool, "risk_level", "low"),
                         },
                     )
                     saved += 1
         except Exception as exc:
             import logging
-            logging.getLogger(__name__).warning(
-                "tool_capability_persist_failed: %s", exc
-            )
+
+            logging.getLogger(__name__).warning("tool_capability_persist_failed: %s", exc)
 
     return {
         "server_id": server_id,
@@ -1548,9 +1662,7 @@ async def discover_connector_tools(request: Request, server_id: str) -> dict:
 
 
 @router.get("/capabilities/missing")
-async def missing_capabilities(
-    request: Request, goal: str = Query(...)
-) -> dict:
+async def missing_capabilities(request: Request, goal: str = Query(...)) -> dict:
     """Identify capabilities needed for a goal but not yet available."""
     tenant_ctx = _require_tenant(request)
     mcp_client = getattr(request.app.state, "mcp_client", None)
@@ -1558,9 +1670,7 @@ async def missing_capabilities(
     available_tools: list = []
     if mcp_client is not None:
         try:
-            available_tools = await mcp_client.discover_all_tools(
-                tenant_ctx=tenant_ctx
-            )
+            available_tools = await mcp_client.discover_all_tools(tenant_ctx=tenant_ctx)
         except Exception:
             pass
 
@@ -1577,8 +1687,7 @@ async def missing_capabilities(
                         "connector": spec.name,
                         "category": "integration",
                         "install_hint": (
-                            f"Register the {spec.name} connector "
-                            "to enable this capability"
+                            f"Register the {spec.name} connector to enable this capability"
                         ),
                     }
                 )

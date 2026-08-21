@@ -4,6 +4,7 @@ Environment:
   AMADEUS_CLIENT_ID: Amadeus API client ID
   AMADEUS_CLIENT_SECRET: Amadeus API client secret
 """
+
 from __future__ import annotations
 
 import os
@@ -24,13 +25,31 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "origin_location_code": {"type": "string", "description": "IATA code of departure airport (e.g. JFK)"},
-                "destination_location_code": {"type": "string", "description": "IATA code of arrival airport (e.g. LAX)"},
-                "departure_date": {"type": "string", "description": "Departure date in YYYY-MM-DD format"},
-                "return_date": {"type": "string", "description": "Return date for round trips (YYYY-MM-DD)"},
+                "origin_location_code": {
+                    "type": "string",
+                    "description": "IATA code of departure airport (e.g. JFK)",
+                },
+                "destination_location_code": {
+                    "type": "string",
+                    "description": "IATA code of arrival airport (e.g. LAX)",
+                },
+                "departure_date": {
+                    "type": "string",
+                    "description": "Departure date in YYYY-MM-DD format",
+                },
+                "return_date": {
+                    "type": "string",
+                    "description": "Return date for round trips (YYYY-MM-DD)",
+                },
                 "adults": {"type": "integer", "description": "Number of adult travelers"},
-                "max_results": {"type": "integer", "description": "Maximum flight offers to return"},
-                "currency_code": {"type": "string", "description": "Currency for pricing (e.g. USD)"},
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum flight offers to return",
+                },
+                "currency_code": {
+                    "type": "string",
+                    "description": "Currency for pricing (e.g. USD)",
+                },
             },
             "required": ["origin_location_code", "destination_location_code", "departure_date"],
         },
@@ -41,7 +60,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "city_code": {"type": "string", "description": "IATA city code (e.g. PAR for Paris)"},
+                "city_code": {
+                    "type": "string",
+                    "description": "IATA city code (e.g. PAR for Paris)",
+                },
                 "check_in_date": {"type": "string", "description": "Check-in date in YYYY-MM-DD"},
                 "check_out_date": {"type": "string", "description": "Check-out date in YYYY-MM-DD"},
                 "adults": {"type": "integer", "description": "Number of adult guests"},
@@ -61,9 +83,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "origin_iata_code": {"type": "string", "description": "Origin airport IATA code"},
-                "destination_iata_code": {"type": "string", "description": "Destination airport IATA code"},
+                "destination_iata_code": {
+                    "type": "string",
+                    "description": "Destination airport IATA code",
+                },
                 "departure_date": {"type": "string", "description": "Departure date YYYY-MM-DD"},
-                "one_way": {"type": "boolean", "description": "True for one-way, false for round-trip"},
+                "one_way": {
+                    "type": "boolean",
+                    "description": "True for one-way, false for round-trip",
+                },
             },
             "required": ["origin_iata_code", "destination_iata_code", "departure_date"],
         },
@@ -74,7 +102,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "flight_offer": {"type": "object", "description": "Flight offer object from search results"},
+                "flight_offer": {
+                    "type": "object",
+                    "description": "Flight offer object from search results",
+                },
                 "traveler_info": {
                     "type": "array",
                     "description": "Traveler details (name, DOB, passport, contact)",
@@ -116,7 +147,11 @@ async def _get_token(client: httpx.AsyncClient) -> str:
     client_secret = os.getenv("AMADEUS_CLIENT_SECRET", "")
     r = await client.post(
         AUTH_URL,
-        data={"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret},
+        data={
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+        },
     )
     r.raise_for_status()
     return r.json()["access_token"]
@@ -146,7 +181,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     params["max"] = arguments["max_results"]
                 if "currency_code" in arguments:
                     params["currencyCode"] = arguments["currency_code"]
-                r = await client.get(f"{BASE_URL}/shopping/flight-offers", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/shopping/flight-offers", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -160,7 +197,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     params["adults"] = arguments["adults"]
                 if "ratings" in arguments:
                     params["ratings"] = ",".join(str(r) for r in arguments["ratings"])
-                r = await client.get(f"{BASE_URL}/shopping/hotel-offers", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/shopping/hotel-offers", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

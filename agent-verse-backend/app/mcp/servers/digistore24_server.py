@@ -3,6 +3,7 @@
 Environment:
   DIGISTORE24_API_KEY: Digistore24 API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -58,9 +59,15 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "product_id": {"type": "string", "description": "Product ID to create affiliate link for"},
+                "product_id": {
+                    "type": "string",
+                    "description": "Product ID to create affiliate link for",
+                },
                 "affiliate_id": {"type": "string", "description": "Your affiliate ID"},
-                "campaign": {"type": "string", "description": "Optional campaign tracking parameter"},
+                "campaign": {
+                    "type": "string",
+                    "description": "Optional campaign tracking parameter",
+                },
             },
             "required": ["product_id", "affiliate_id"],
         },
@@ -98,6 +105,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
     async with httpx.AsyncClient(timeout=30) as client:
         try:
+
             def _url(method: str) -> str:
                 return f"{BASE_URL}/{api_key}/json/{method}"
 

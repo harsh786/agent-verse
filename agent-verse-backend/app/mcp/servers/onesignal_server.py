@@ -4,6 +4,7 @@ Environment:
   ONESIGNAL_API_KEY: OneSignal REST API key from Settings > Keys & IDs
   ONESIGNAL_APP_ID: OneSignal application ID from Settings > Keys & IDs
 """
+
 from __future__ import annotations
 
 import os
@@ -32,12 +33,32 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "headings": {"type": "object", "description": "Notification title by language, e.g. {\"en\": \"Hello\"}"},
-                "contents": {"type": "object", "description": "Notification body by language, e.g. {\"en\": \"World\"}"},
-                "included_segments": {"type": "array", "items": {"type": "string"}, "description": "Audience segments to target, e.g. [\"All\"]"},
-                "include_player_ids": {"type": "array", "items": {"type": "string"}, "description": "Specific device player IDs to target"},
-                "data": {"type": "object", "description": "Custom key-value data payload for the notification"},
-                "url": {"type": "string", "description": "URL to open when notification is clicked"},
+                "headings": {
+                    "type": "object",
+                    "description": 'Notification title by language, e.g. {"en": "Hello"}',
+                },
+                "contents": {
+                    "type": "object",
+                    "description": 'Notification body by language, e.g. {"en": "World"}',
+                },
+                "included_segments": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": 'Audience segments to target, e.g. ["All"]',
+                },
+                "include_player_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Specific device player IDs to target",
+                },
+                "data": {
+                    "type": "object",
+                    "description": "Custom key-value data payload for the notification",
+                },
+                "url": {
+                    "type": "string",
+                    "description": "URL to open when notification is clicked",
+                },
             },
             "required": ["contents"],
         },
@@ -48,7 +69,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "description": "Max devices to return (max 300)", "default": 300},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max devices to return (max 300)",
+                    "default": 300,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
         },
@@ -70,7 +95,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "notification_id": {"type": "string", "description": "OneSignal notification ID to cancel"},
+                "notification_id": {
+                    "type": "string",
+                    "description": "OneSignal notification ID to cancel",
+                },
             },
             "required": ["notification_id"],
         },
@@ -93,7 +121,7 @@ TOOL_DEFINITIONS = [
                 "filters": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "Segment filter rules, e.g. [{\"field\": \"tag\", \"key\": \"level\", \"relation\": \">\", \"value\": \"10\"}]",
+                    "description": 'Segment filter rules, e.g. [{"field": "tag", "key": "level", "relation": ">", "value": "10"}]',
                 },
             },
             "required": ["name", "filters"],
@@ -145,7 +173,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "players": [
-                        {"id": p.get("id"), "device_type": p.get("device_type"), "last_active": p.get("last_active")}
+                        {
+                            "id": p.get("id"),
+                            "device_type": p.get("device_type"),
+                            "last_active": p.get("last_active"),
+                        }
                         for p in data.get("players", [])
                     ],
                     "total_count": data.get("total_count", 0),

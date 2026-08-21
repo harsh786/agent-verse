@@ -14,10 +14,12 @@ Exposes org capabilities as MCP tools:
 MCP endpoint: WS /v1/mcp/{org_id}
 Auth: Bearer {api_key}
 """
+
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any
 
 import structlog
 from opentelemetry import trace
@@ -46,10 +48,15 @@ ORG_MCP_TOOLS: list[MCPTool] = [
         description="Ask the AI organization anything in natural language. Returns an answer based on current org state, memory, and knowledge.",
         input_schema={
             "type": "object",
-            "properties": {"question": {"type": "string", "description": "Natural language question"}},
+            "properties": {
+                "question": {"type": "string", "description": "Natural language question"}
+            },
             "required": ["question"],
         },
-        output_schema={"type": "object", "properties": {"answer": {"type": "string"}, "confidence": {"type": "number"}}},
+        output_schema={
+            "type": "object",
+            "properties": {"answer": {"type": "string"}, "confidence": {"type": "number"}},
+        },
         rate_limit_per_hour=200,
         requires_scope="orgs:read",
     ),
@@ -64,7 +71,10 @@ ORG_MCP_TOOLS: list[MCPTool] = [
             },
             "required": ["description"],
         },
-        output_schema={"type": "object", "properties": {"mission_id": {"type": "string"}, "status": {"type": "string"}}},
+        output_schema={
+            "type": "object",
+            "properties": {"mission_id": {"type": "string"}, "status": {"type": "string"}},
+        },
         rate_limit_per_hour=10,
         requires_scope="missions:write",
     ),
@@ -81,7 +91,12 @@ ORG_MCP_TOOLS: list[MCPTool] = [
         description="List missions with optional status filter.",
         input_schema={
             "type": "object",
-            "properties": {"status": {"type": "string", "enum": ["active", "completed", "failed", "queued", "all"]}},
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "completed", "failed", "queued", "all"],
+                }
+            },
         },
         output_schema={"type": "object", "properties": {"missions": {"type": "array"}}},
         rate_limit_per_hour=200,
@@ -114,7 +129,7 @@ ORG_MCP_TOOLS: list[MCPTool] = [
             "type": "object",
             "properties": {
                 "approval_id": {"type": "string"},
-                "comment":     {"type": "string"},
+                "comment": {"type": "string"},
             },
             "required": ["approval_id"],
         },
@@ -172,13 +187,13 @@ class OrgMCPServer:
         app_state: Any | None = None,
         tenant_id: str | None = None,
     ) -> None:
-        self.org_id   = org_id
+        self.org_id = org_id
         self._api_key = api_key
-        self._tools   = {t.name: t for t in ORG_MCP_TOOLS}
+        self._tools = {t.name: t for t in ORG_MCP_TOOLS}
         # ── Live service references ───────────────────────────────────────
         # Resolved lazily from app_state so server construction is always fast.
-        self._app_state  = app_state
-        self._tenant_id  = tenant_id or "system"
+        self._app_state = app_state
+        self._tenant_id = tenant_id or "system"
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -188,6 +203,7 @@ class OrgMCPServer:
             return getattr(self._app_state, "goal_service", None)
         try:
             from app.main import app as _app  # type: ignore[attr-defined]
+
             return getattr(getattr(_app, "state", None), "goal_service", None)
         except Exception:
             return None
@@ -197,6 +213,7 @@ class OrgMCPServer:
             return getattr(self._app_state, "knowledge_store", None)
         try:
             from app.main import app as _app  # type: ignore[attr-defined]
+
             return getattr(getattr(_app, "state", None), "knowledge_store", None)
         except Exception:
             return None
@@ -206,11 +223,12 @@ class OrgMCPServer:
             return getattr(self._app_state, "long_term_memory", None)
         try:
             from app.main import app as _app  # type: ignore[attr-defined]
+
             return getattr(getattr(_app, "state", None), "long_term_memory", None)
         except Exception:
             return None
 
-    async def _get_org_service_ctx(self) -> "tuple[Any, Any] | None":
+    async def _get_org_service_ctx(self) -> tuple[Any, Any] | None:
         """Return (OrgService, session) backed by a real DB session.
 
         Caller **must** use as an async context manager or explicitly close
@@ -222,6 +240,7 @@ class OrgMCPServer:
         try:
             from app.db.session import get_session_factory
             from app.org.service import OrgService as _OrgService
+
             session_factory = get_session_factory()
             session = session_factory()
             svc = _OrgService(session=session, tenant_id=self._tenant_id)
@@ -236,7 +255,7 @@ class OrgMCPServer:
         """Return tool definitions in MCP format."""
         return [
             {
-                "name":        tool.name,
+                "name": tool.name,
                 "description": tool.description,
                 "inputSchema": tool.input_schema,
             }
@@ -330,6 +349,7 @@ class OrgMCPServer:
             if goal_service is not None:
                 try:
                     from app.tenancy.context import PlanTier, TenantContext
+
                     tenant_ctx = TenantContext(
                         tenant_id=self._tenant_id,
                         plan=PlanTier.PROFESSIONAL,
@@ -352,7 +372,7 @@ class OrgMCPServer:
                     span.set_attribute("goal_id", result.get("goal_id", ""))
                     return (
                         f"[Mission submitted — goal_id={result.get('goal_id')}]\n"
-                        f"The agent is processing your question: \"{question}\"\n"
+                        f'The agent is processing your question: "{question}"\n'
                         f"Check mission status or stream events for the answer."
                     )
                 except Exception as exc:
@@ -382,6 +402,7 @@ class OrgMCPServer:
                 goal_service = self._get_goal_service()
                 if goal_service:
                     from app.tenancy.context import PlanTier, TenantContext
+
                     tc = TenantContext(
                         tenant_id=self._tenant_id,
                         plan=PlanTier.PROFESSIONAL,
@@ -395,12 +416,16 @@ class OrgMCPServer:
                         workflow_mode="single_agent",
                         execution_context={"org_id": self.org_id, "source": "mcp"},
                     )
-                    return {"mission_id": result.get("goal_id"), "status": result.get("status", "queued")}
+                    return {
+                        "mission_id": result.get("goal_id"),
+                        "status": result.get("status", "queued"),
+                    }
                 return {"error": "no_backend_available", "mission_id": None, "status": "failed"}
 
             svc, session = ctx_pair
             try:
                 from app.tenancy.context import PlanTier, TenantContext
+
                 tc = TenantContext(
                     tenant_id=self._tenant_id,
                     plan=PlanTier.PROFESSIONAL,
@@ -556,6 +581,7 @@ class OrgMCPServer:
             # Route to HITL gateway if available
             try:
                 from app.main import app as _app  # type: ignore[attr-defined]
+
                 hitl = getattr(getattr(_app, "state", None), "hitl_gateway", None)
                 if hitl is not None and hasattr(hitl, "approve"):
                     result = await hitl.approve(
@@ -600,6 +626,7 @@ class OrgMCPServer:
             # Fallback: dept memory search
             try:
                 from app.memory.dept_memory import DepartmentMemory
+
                 dm = DepartmentMemory()
                 mem_entries = await dm.retrieve(self.org_id, query, top_k=top_k)
                 results = [
@@ -661,7 +688,7 @@ class OrgMCPServer:
             "mcpServers": {
                 f"agentverse-{self.org_id[:8]}": {
                     "command": "npx",
-                    "args":    ["-y", "@agentverse/mcp-proxy"],
+                    "args": ["-y", "@agentverse/mcp-proxy"],
                     "env": {
                         "AGENTVERSE_ORG_URL": server_url,
                         "AGENTVERSE_API_KEY": "<your-api-key>",

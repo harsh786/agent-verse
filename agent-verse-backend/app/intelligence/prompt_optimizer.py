@@ -20,17 +20,17 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class PromptVariant:
     variant_id: str
     name: str
     prompt_text: str
-    prompt_key: str          # e.g. "system_prompt", "planner_prompt"
+    prompt_key: str  # e.g. "system_prompt", "planner_prompt"
     is_active: bool = False
     is_control: bool = False
     run_count: int = 0
@@ -78,6 +78,7 @@ class PromptOptimizer:
         """
         if db is None:
             import logging as _log
+
             _log.getLogger(__name__).warning(
                 "prompt_variant_no_db_in_memory_only variant_id=%s tenant_id=%s "
                 "will_be_lost_on_restart=True",
@@ -89,6 +90,7 @@ class PromptOptimizer:
             self._active.setdefault(tenant_id, {})[variant.prompt_key] = variant.variant_id
         if db is not None:
             import asyncio
+
             try:
                 loop = asyncio.get_running_loop()
                 task = loop.create_task(self.persist_variant(variant, tenant_id, db))
@@ -129,6 +131,7 @@ class PromptOptimizer:
         # Persist to DB if available (fire-and-forget)
         if db is not None:
             import asyncio
+
             try:
                 loop = asyncio.get_running_loop()
                 loop.create_task(self.persist_variant(variant, tenant_id, db))
@@ -160,8 +163,10 @@ class PromptOptimizer:
             return
         try:
             from sqlalchemy import text
+
             async with db() as session, session.begin():
-                await session.execute(text("""
+                await session.execute(
+                    text("""
                     INSERT INTO prompt_variants
                         (id, tenant_id, prompt_key, variant_name, prompt_text, is_control,
                          win_count, loss_count, is_active, created_at, updated_at)
@@ -173,16 +178,19 @@ class PromptOptimizer:
                         is_control  = EXCLUDED.is_control,
                         is_active   = TRUE,
                         updated_at  = NOW()
-                """), {
-                    "id": variant.variant_id,
-                    "tid": tenant_id,
-                    "key": variant.prompt_key,
-                    "name": variant.name,
-                    "text": variant.prompt_text,
-                    "ctrl": variant.is_control,
-                })
+                """),
+                    {
+                        "id": variant.variant_id,
+                        "tid": tenant_id,
+                        "key": variant.prompt_key,
+                        "name": variant.name,
+                        "text": variant.prompt_text,
+                        "ctrl": variant.is_control,
+                    },
+                )
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("prompt_variant_persist_failed: %s", exc)
 
     async def persist_outcome(self, variant_id: str, won: bool, db: Any) -> None:
@@ -191,14 +199,18 @@ class PromptOptimizer:
             return
         try:
             from sqlalchemy import text
+
             col = "win_count" if won else "loss_count"
             async with db() as session, session.begin():
                 await session.execute(
-                    text(f"UPDATE prompt_variants SET {col} = {col} + 1, updated_at = NOW() WHERE id = :id"),
-                    {"id": variant_id}
+                    text(
+                        f"UPDATE prompt_variants SET {col} = {col} + 1, updated_at = NOW() WHERE id = :id"
+                    ),
+                    {"id": variant_id},
                 )
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("prompt_outcome_persist_failed: %s", exc)
 
     async def load_from_db(self, db: Any) -> int:
@@ -211,14 +223,19 @@ class PromptOptimizer:
             return 0
         try:
             from sqlalchemy import text
+
             async with db() as session:
-                rows = (await session.execute(text("""
+                rows = (
+                    await session.execute(
+                        text("""
                     SELECT id, tenant_id, prompt_key, variant_name, prompt_text,
                            is_control, win_count, loss_count
                     FROM prompt_variants
                     WHERE is_active = TRUE
                     ORDER BY tenant_id, prompt_key, is_control DESC
-                """))).fetchall()
+                """)
+                    )
+                ).fetchall()
 
             # Clear and rebuild from DB
             self._variants.clear()
@@ -239,16 +256,16 @@ class PromptOptimizer:
                 self._variants.setdefault(tid, {})[vid] = v
 
             from app.observability.logging import get_logger
+
             get_logger(__name__).info("prompt_variants_loaded", count=len(rows))
             return len(rows)
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("prompt_variants_load_failed: %s", exc)
             return 0
 
-    def select_variant(
-        self, prompt_key: str, *, tenant_id: str = "global"
-    ) -> PromptVariant | None:
+    def select_variant(self, prompt_key: str, *, tenant_id: str = "global") -> PromptVariant | None:
         """Select which prompt variant to use for this request.
 
         Returns the active (control) variant 70% of the time,
@@ -285,9 +302,7 @@ class PromptOptimizer:
     # Promotion
     # ------------------------------------------------------------------
 
-    def maybe_promote(
-        self, prompt_key: str, *, tenant_id: str = "global"
-    ) -> PromptVariant | None:
+    def maybe_promote(self, prompt_key: str, *, tenant_id: str = "global") -> PromptVariant | None:
         """Check if a challenger variant should be promoted.
 
         Returns the newly promoted variant if promotion occurred, else None.
@@ -313,9 +328,7 @@ class PromptOptimizer:
         for challenger in challengers:
             if challenger.run_count < self._min_runs:
                 continue
-            ch_score = (
-                statistics.mean(challenger.eval_scores) if challenger.eval_scores else 0.0
-            )
+            ch_score = statistics.mean(challenger.eval_scores) if challenger.eval_scores else 0.0
             if ch_score > best_score and self._is_significant(
                 control.eval_scores, challenger.eval_scores
             ):
@@ -340,6 +353,7 @@ class PromptOptimizer:
             return False
         try:
             from scipy import stats  # type: ignore[import]
+
             _u, p_value = stats.mannwhitneyu(
                 challenger_scores, control_scores, alternative="greater"
             )
@@ -352,9 +366,7 @@ class PromptOptimizer:
     # Reporting
     # ------------------------------------------------------------------
 
-    def get_report(
-        self, prompt_key: str, *, tenant_id: str = "global"
-    ) -> dict[str, Any]:
+    def get_report(self, prompt_key: str, *, tenant_id: str = "global") -> dict[str, Any]:
         """Return a summary report for all variants of a prompt key."""
         tenant_variants = self._variants.get(tenant_id, {})
         key_variants = [v for v in tenant_variants.values() if v.prompt_key == prompt_key]
@@ -396,6 +408,7 @@ class PromptOptimizer:
         """
         try:
             from app.context.prompt_variant_selector import PromptVariantSelector
+
             # Collect all variant IDs registered under this key (across all tenants)
             pool: list[str] = []
             for tenant_variants in self._variants.values():

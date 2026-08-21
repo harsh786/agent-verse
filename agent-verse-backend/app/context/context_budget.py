@@ -1,7 +1,8 @@
 """ContextBudget — enforces token limits on retrieved context."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 # Approximate: 1 token ≈ 4 characters

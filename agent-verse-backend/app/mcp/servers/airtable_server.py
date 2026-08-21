@@ -4,6 +4,7 @@ Environment variables:
   AIRTABLE_API_KEY: Airtable personal access token
   AIRTABLE_BASE_ID: Default Airtable base ID (can be overridden per call)
 """
+
 from __future__ import annotations
 
 import os
@@ -25,12 +26,25 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "table_name": {"type": "string", "description": "Table name or ID"},
-                "base_id": {"type": "string", "description": "Base ID (overrides AIRTABLE_BASE_ID env var)"},
-                "filter_formula": {"type": "string", "description": "Airtable formula for filtering, e.g. \"{Status}='Active'\""},
-                "max_records": {"type": "integer", "description": "Max records to return", "default": 100},
+                "base_id": {
+                    "type": "string",
+                    "description": "Base ID (overrides AIRTABLE_BASE_ID env var)",
+                },
+                "filter_formula": {
+                    "type": "string",
+                    "description": "Airtable formula for filtering, e.g. \"{Status}='Active'\"",
+                },
+                "max_records": {
+                    "type": "integer",
+                    "description": "Max records to return",
+                    "default": 100,
+                },
                 "sort_field": {"type": "string", "description": "Field name to sort by"},
                 "sort_direction": {"type": "string", "enum": ["asc", "desc"], "default": "asc"},
-                "offset": {"type": "string", "description": "Pagination offset token from previous response"},
+                "offset": {
+                    "type": "string",
+                    "description": "Pagination offset token from previous response",
+                },
             },
             "required": ["table_name"],
         },
@@ -43,7 +57,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "table_name": {"type": "string", "description": "Table name or ID"},
                 "fields": {"type": "object", "description": "Record fields as key-value pairs"},
-                "base_id": {"type": "string", "description": "Base ID (overrides AIRTABLE_BASE_ID)"},
+                "base_id": {
+                    "type": "string",
+                    "description": "Base ID (overrides AIRTABLE_BASE_ID)",
+                },
             },
             "required": ["table_name", "fields"],
         },
@@ -55,7 +72,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "table_name": {"type": "string"},
-                "record_id": {"type": "string", "description": "Airtable record ID (recXXXXXXXXXXXXXX)"},
+                "record_id": {
+                    "type": "string",
+                    "description": "Airtable record ID (recXXXXXXXXXXXXXX)",
+                },
                 "fields": {"type": "object", "description": "Fields to update"},
                 "base_id": {"type": "string"},
             },
@@ -93,7 +113,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "table_name": {"type": "string"},
                 "search_field": {"type": "string", "description": "Field name to search in"},
-                "search_value": {"type": "string", "description": "Value to search for (case-insensitive substring)"},
+                "search_value": {
+                    "type": "string",
+                    "description": "Value to search for (case-insensitive substring)",
+                },
                 "base_id": {"type": "string"},
                 "max_records": {"type": "integer", "default": 50},
             },
@@ -119,9 +142,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     base_id = arguments.get("base_id") or default_base_id
 
     try:
-        async with httpx.AsyncClient(
-            headers=_headers(api_key), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(headers=_headers(api_key), timeout=30.0) as c:
             if tool_name == "airtable_list_records":
                 if not base_id:
                     return {"error": "AIRTABLE_BASE_ID not configured and base_id not provided"}

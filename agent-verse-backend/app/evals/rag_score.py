@@ -1,4 +1,5 @@
 """RAGScorer — scores retrieval quality from RetrievalResult."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -8,15 +9,11 @@ from app.rag.agentic.retriever_tool import RetrievalResult
 
 
 class RAGScorer:
-    def score(
-        self, retrieval: RetrievalResult | Mapping[str, Any] | None
-    ) -> float | None:
+    def score(self, retrieval: RetrievalResult | Mapping[str, Any] | None) -> float | None:
         if retrieval is None:
             return None
         source = (
-            str(retrieval.get("source", ""))
-            if isinstance(retrieval, Mapping)
-            else retrieval.source
+            str(retrieval.get("source", "")) if isinstance(retrieval, Mapping) else retrieval.source
         )
         confidence = (
             float(retrieval.get("confidence", 0.0))

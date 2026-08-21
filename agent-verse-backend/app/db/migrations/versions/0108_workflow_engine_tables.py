@@ -3,6 +3,7 @@
 Adds alongside the existing `workflows` table (from 0046) without touching it.
 All tables: RLS enabled, tenant_id = current_setting('app.tenant_id').
 """
+
 from alembic import op
 
 revision = "0108"
@@ -36,8 +37,12 @@ def upgrade() -> None:
             updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
     """)
-    op.execute("CREATE INDEX IF NOT EXISTS idx_sys_tmpl_category ON system_workflow_templates (category, is_active)")
-    op.execute("CREATE INDEX IF NOT EXISTS idx_sys_tmpl_tags ON system_workflow_templates USING gin (tags)")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sys_tmpl_category ON system_workflow_templates (category, is_active)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sys_tmpl_tags ON system_workflow_templates USING gin (tags)"
+    )
 
     # ── 2. workflow_definitions (full — replaces stub from 0046) ─────────
     op.execute("""
@@ -76,8 +81,12 @@ def upgrade() -> None:
         USING (tenant_id::text = current_setting('app.tenant_id', TRUE))
         WITH CHECK (tenant_id::text = current_setting('app.tenant_id', TRUE))
     """)
-    op.execute("CREATE INDEX IF NOT EXISTS idx_wf_def_tenant ON workflow_definitions (tenant_id, status, updated_at DESC)")
-    op.execute("CREATE INDEX IF NOT EXISTS idx_wf_def_tags ON workflow_definitions USING gin (tags)")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wf_def_tenant ON workflow_definitions (tenant_id, status, updated_at DESC)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wf_def_tags ON workflow_definitions USING gin (tags)"
+    )
 
     # ── 3. workflow_definition_versions ──────────────────────────────────
     op.execute("""
@@ -99,7 +108,9 @@ def upgrade() -> None:
         CREATE POLICY wf_def_versions_tenant ON workflow_definition_versions
         USING (tenant_id::text = current_setting('app.tenant_id', TRUE))
     """)
-    op.execute("CREATE INDEX IF NOT EXISTS idx_wf_def_ver ON workflow_definition_versions (workflow_id, published_at DESC)")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wf_def_ver ON workflow_definition_versions (workflow_id, published_at DESC)"
+    )
 
     # ── 4. workflow_runs ─────────────────────────────────────────────────
     op.execute("""
@@ -135,8 +146,12 @@ def upgrade() -> None:
         CREATE POLICY workflow_runs_tenant ON workflow_runs
         USING (tenant_id::text = current_setting('app.tenant_id', TRUE))
     """)
-    op.execute("CREATE INDEX IF NOT EXISTS idx_wf_runs_workflow ON workflow_runs (tenant_id, workflow_id, created_at DESC)")
-    op.execute("CREATE INDEX IF NOT EXISTS idx_wf_runs_status ON workflow_runs (tenant_id, status, created_at DESC)")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wf_runs_workflow ON workflow_runs (tenant_id, workflow_id, created_at DESC)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wf_runs_status ON workflow_runs (tenant_id, status, created_at DESC)"
+    )
     op.execute("CREATE INDEX IF NOT EXISTS idx_wf_runs_labels ON workflow_runs USING gin (labels)")
 
     # ── 5. workflow_step_results ─────────────────────────────────────────
@@ -169,7 +184,9 @@ def upgrade() -> None:
         CREATE POLICY wf_step_results_tenant ON workflow_step_results
         USING (tenant_id::text = current_setting('app.tenant_id', TRUE))
     """)
-    op.execute("CREATE INDEX IF NOT EXISTS idx_wf_step_results_run ON workflow_step_results (run_id, step_id)")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wf_step_results_run ON workflow_step_results (run_id, step_id)"
+    )
 
     # ── 6. workflow_hitl_requests ────────────────────────────────────────
     op.execute("""

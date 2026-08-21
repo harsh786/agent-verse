@@ -11,6 +11,7 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 def _require_tenant(request: Request) -> Any:
     from fastapi import HTTPException
+
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -30,6 +31,7 @@ async def goal_analytics(
         m = await agg.goal_metrics(tenant_id=tenant_id, days=days, agent_id=agent_id)
     except Exception:
         from app.analytics.aggregator import GoalMetrics
+
         m = GoalMetrics()
     return {
         "period_days": days,
@@ -100,6 +102,7 @@ async def cost_analytics(
         m = await agg.goal_metrics(tenant_id=tenant_id, days=days)
     except Exception:
         from app.analytics.aggregator import GoalMetrics
+
         m = GoalMetrics()
 
     # Use GoalService's accurate cost_today_usd rather than summing the 30-day total
@@ -114,10 +117,7 @@ async def cost_analytics(
         cost_today = 0.0
 
     # Normalize trends to use "date" key for frontend compatibility
-    cost_by_day = [
-        {"date": t.get("period", ""), "cost_usd": t["cost_usd"]}
-        for t in trends
-    ]
+    cost_by_day = [{"date": t.get("period", ""), "cost_usd": t["cost_usd"]} for t in trends]
 
     return {
         "period_days": days,
@@ -128,7 +128,7 @@ async def cost_analytics(
         "total_goals": m.total,
         "avg_cost_per_goal": round(total / max(m.total, 1), 6),
         # Frontend-expected keys:
-        "cost_by_day": cost_by_day,      # normalized with "date" key
+        "cost_by_day": cost_by_day,  # normalized with "date" key
         "cost_by_model": cost_by_model,  # {model_name: total_cost_usd}
         # Legacy key kept for backward compat:
         "trends": trends,
@@ -176,30 +176,32 @@ async def list_traces(
         bd = get_breakdown(goal_id)
         bd_dict = bd.to_dict()
         if bd_dict.get("roles"):
-            traces.append({
-                "trace_id": goal_id,
-                "goal_id": goal_id,
-                "goal": "Goal execution",
-                "spans": [
-                    {
-                        "span_id": f"{r['role']}_span",
-                        "name": f"llm.{r['role']}",
-                        "start_time": 0,
-                        "duration_ms": 500,
-                        "status": "ok",
-                        "attributes": {
-                            "model": r["model"],
-                            "tokens": str(r["input_tokens"] + r["output_tokens"]),
-                        },
-                    }
-                    for r in bd_dict["roles"]
-                ],
-                "total_cost_usd": bd_dict["total_cost_usd"],
-                "total_tokens": sum(
-                    r["input_tokens"] + r["output_tokens"] for r in bd_dict["roles"]
-                ),
-                "created_at": "recent",
-            })
+            traces.append(
+                {
+                    "trace_id": goal_id,
+                    "goal_id": goal_id,
+                    "goal": "Goal execution",
+                    "spans": [
+                        {
+                            "span_id": f"{r['role']}_span",
+                            "name": f"llm.{r['role']}",
+                            "start_time": 0,
+                            "duration_ms": 500,
+                            "status": "ok",
+                            "attributes": {
+                                "model": r["model"],
+                                "tokens": str(r["input_tokens"] + r["output_tokens"]),
+                            },
+                        }
+                        for r in bd_dict["roles"]
+                    ],
+                    "total_cost_usd": bd_dict["total_cost_usd"],
+                    "total_tokens": sum(
+                        r["input_tokens"] + r["output_tokens"] for r in bd_dict["roles"]
+                    ),
+                    "created_at": "recent",
+                }
+            )
 
     return {"traces": traces, "total": len(traces)}
 
@@ -208,6 +210,7 @@ async def list_traces(
 async def get_spans(request: Request, limit: int = 50) -> list[dict]:
     """Get recent in-process trace spans (dev mode when OTLP not configured)."""
     from app.observability.tracing import get_recent_spans
+
     return get_recent_spans(limit=limit)
 
 
@@ -228,6 +231,7 @@ async def eval_analytics(
     if db_factory is not None:
         try:
             from sqlalchemy import text as _t
+
             async with db_factory() as session:
                 result = await session.execute(
                     _t(
@@ -266,12 +270,14 @@ async def eval_analytics(
                             {"tid": tenant_id, "days": days},
                         )
                         for dr in daily_result.fetchall():
-                            evals_by_day.append({
-                                "date": str(dr[0]),
-                                "total": int(dr[1] or 0),
-                                "pass_rate": round(float(dr[2] or 0), 4),
-                                "avg_score": round(float(dr[3] or 0), 4),
-                            })
+                            evals_by_day.append(
+                                {
+                                    "date": str(dr[0]),
+                                    "total": int(dr[1] or 0),
+                                    "pass_rate": round(float(dr[2] or 0), 4),
+                                    "avg_score": round(float(dr[3] or 0), 4),
+                                }
+                            )
                     except Exception:
                         pass  # Daily breakdown is best-effort
 
@@ -314,6 +320,7 @@ async def eval_analytics(
 
 def _get_aggregator(request: Request):  # type: ignore[return]
     from app.analytics.aggregator import GoalAnalyticsAggregator
+
     goal_service = getattr(request.app.state, "goal_service", None)
     db = getattr(request.app.state, "db_session_factory", None)
     return GoalAnalyticsAggregator(goal_service=goal_service, db=db)

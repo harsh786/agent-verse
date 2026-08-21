@@ -65,9 +65,7 @@ class FewShotCoTRuntime:
             if example.content_sha256 in seen_hashes:
                 rejected.append((example.example_id, "duplicate"))
                 continue
-            material = "\n".join(
-                (example.problem, example.safe_rationale, example.answer)
-            )
+            material = "\n".join((example.problem, example.safe_rationale, example.answer))
             if self._guardrail.check_goal(material):
                 rejected.append((example.example_id, "injection"))
                 continue

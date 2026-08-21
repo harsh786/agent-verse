@@ -8,6 +8,7 @@ Usage:
     result = await twin.simulate_mission(org_id, mission_config, session)
     print(result.resource_usage, result.estimated_duration_h, result.bottlenecks)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -26,15 +27,15 @@ _tracer = trace.get_tracer(__name__)
 class SimResult:
     """Result of a digital twin simulation run."""
 
-    mission_id:            str | None = None
-    estimated_duration_h:  float = 0.0
-    estimated_cost_usd:    float = 0.0
-    resource_usage:        dict[str, float] = field(default_factory=dict)
-    bottlenecks:           list[str] = field(default_factory=list)
-    recommendations:       list[str] = field(default_factory=list)
-    feasible:              bool = True
-    confidence:            float = 0.8
-    simulated_at:          str = ""
+    mission_id: str | None = None
+    estimated_duration_h: float = 0.0
+    estimated_cost_usd: float = 0.0
+    resource_usage: dict[str, float] = field(default_factory=dict)
+    bottlenecks: list[str] = field(default_factory=list)
+    recommendations: list[str] = field(default_factory=list)
+    feasible: bool = True
+    confidence: float = 0.8
+    simulated_at: str = ""
 
     def __post_init__(self) -> None:
         if not self.simulated_at:
@@ -45,13 +46,13 @@ class SimResult:
 class CapacityPlan:
     """Capacity planning output."""
 
-    org_id:              str
+    org_id: str
     current_utilisation: dict[str, float]  # department → %
-    queued_missions:     int
-    estimated_clear_h:   float             # hours until all queued missions complete
-    underutilised:       list[str]
-    overloaded:          list[str]
-    recommendations:     list[str]
+    queued_missions: int
+    estimated_clear_h: float  # hours until all queued missions complete
+    underutilised: list[str]
+    overloaded: list[str]
+    recommendations: list[str]
 
 
 class OrgDigitalTwin:
@@ -89,9 +90,9 @@ class OrgDigitalTwin:
             # Heuristic simulation based on priority and complexity
             priority = mission_config.get("priority", "medium")
             duration_map = {"critical": 2.0, "high": 6.0, "medium": 12.0, "low": 24.0}
-            cost_map     = {"critical": 50.0, "high": 20.0, "medium": 8.0, "low": 2.0}
+            cost_map = {"critical": 50.0, "high": 20.0, "medium": 8.0, "low": 2.0}
 
-            estimated_h   = duration_map.get(priority, 12.0)
+            estimated_h = duration_map.get(priority, 12.0)
             estimated_cost = cost_map.get(priority, 8.0)
 
             result = SimResult(

@@ -16,6 +16,7 @@ Supports:
 All {{...}} expressions in condition strings are resolved by ContextResolver
 BEFORE being passed to this engine.
 """
+
 from __future__ import annotations
 
 import re
@@ -35,20 +36,20 @@ class ExpressionEvalError(ValueError):
 
 # Safe functions exposed to expressions
 _SAFE_FUNCTIONS = {
-    "len":        len,
-    "str":        str,
-    "int":        int,
-    "float":      float,
-    "bool":       bool,
-    "lower":      lambda s: str(s).lower(),
-    "upper":      lambda s: str(s).upper(),
-    "contains":   lambda s, sub: sub in str(s),
+    "len": len,
+    "str": str,
+    "int": int,
+    "float": float,
+    "bool": bool,
+    "lower": lambda s: str(s).lower(),
+    "upper": lambda s: str(s).upper(),
+    "contains": lambda s, sub: sub in str(s),
     "startswith": lambda s, pre: str(s).startswith(str(pre)),
-    "endswith":   lambda s, suf: str(s).endswith(str(suf)),
-    "round":      round,
-    "abs":        abs,
-    "min":        min,
-    "max":        max,
+    "endswith": lambda s, suf: str(s).endswith(str(suf)),
+    "round": round,
+    "abs": abs,
+    "min": min,
+    "max": max,
 }
 
 # Blocked keywords that indicate dangerous patterns
@@ -65,9 +66,7 @@ class ExpressionEngine:
         """Evaluate a boolean expression. Returns True/False."""
         # Security check before evaluation
         if _BLOCKED_PATTERNS.search(expression):
-            raise ExpressionSecurityError(
-                f"Blocked construct in expression: {expression!r}"
-            )
+            raise ExpressionSecurityError(f"Blocked construct in expression: {expression!r}")
 
         try:
             # Try simpleeval first (preferred — has strict function allowlist)
@@ -88,13 +87,9 @@ class ExpressionEngine:
             result = s.eval(expression)
             return bool(result)
         except simpleeval.FeatureNotAvailable as exc:
-            raise ExpressionSecurityError(
-                f"Unsafe expression feature: {exc}"
-            ) from exc
+            raise ExpressionSecurityError(f"Unsafe expression feature: {exc}") from exc
         except Exception as exc:
-            raise ExpressionEvalError(
-                f"Expression error in {expression!r}: {exc}"
-            ) from exc
+            raise ExpressionEvalError(f"Expression error in {expression!r}: {exc}") from exc
 
     def _eval_fallback(self, expression: str) -> bool:
         """Minimal fallback for environments without simpleeval."""
@@ -104,13 +99,20 @@ class ExpressionEngine:
             # Allow: x > y, x < y, x >= y, x <= y, x == y, x != y
             # and simple: true, false, not expr
             import ast
+
             tree = ast.parse(expression, mode="eval")
             # Walk and reject anything that isn't safe
             for node in ast.walk(tree):
-                if isinstance(node, (
-                    ast.Import, ast.ImportFrom, ast.Call,
-                    ast.Attribute, ast.Subscript,
-                )):
+                if isinstance(
+                    node,
+                    (
+                        ast.Import,
+                        ast.ImportFrom,
+                        ast.Call,
+                        ast.Attribute,
+                        ast.Subscript,
+                    ),
+                ):
                     raise ExpressionSecurityError(
                         f"Blocked node type {type(node).__name__} in expression"
                     )

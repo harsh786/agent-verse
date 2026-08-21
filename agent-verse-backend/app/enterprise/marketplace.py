@@ -7,16 +7,16 @@ V2: see app.enterprise.marketplace_v2 for DB-backed service with atomic install,
 The existing API (browse/deploy/publish) is preserved unchanged so no existing
 tests break. New marketplace v2 endpoints in enterprise.py use marketplace_v2.
 """
+
 from __future__ import annotations
 
 import uuid
+import warnings
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from app.tenancy.context import TenantContext
-
-import warnings
 
 warnings.warn(
     "app.enterprise.marketplace is deprecated. Use app.enterprise.marketplace_v2 instead. "
@@ -63,9 +63,7 @@ _BUILTIN_TEMPLATES = [
         "trigger_type": "cron",
         "autonomy_mode": "fully-autonomous",
         "author": "AgentVerse",
-        "goal_template": (
-            "Generate and run E2E tests for {feature} and commit results to {repo}"
-        ),
+        "goal_template": ("Generate and run E2E tests for {feature} and commit results to {repo}"),
         "version": "1.0.0",
     },
     {
@@ -79,8 +77,7 @@ _BUILTIN_TEMPLATES = [
         "autonomy_mode": "supervised",
         "author": "AgentVerse",
         "goal_template": (
-            "Onboard {employee_name}: create accounts, file IT tickets, "
-            "assign first-week tasks"
+            "Onboard {employee_name}: create accounts, file IT tickets, assign first-week tasks"
         ),
         "version": "1.0.0",
     },
@@ -94,9 +91,7 @@ _BUILTIN_TEMPLATES = [
         "trigger_type": "interval",
         "autonomy_mode": "bounded-autonomous",
         "author": "AgentVerse",
-        "goal_template": (
-            "Follow up with all leads idle more than {idle_days} days in {pipeline}"
-        ),
+        "goal_template": ("Follow up with all leads idle more than {idle_days} days in {pipeline}"),
         "version": "1.0.0",
     },
     {
@@ -220,9 +215,7 @@ class Marketplace:
             for required_connector in required:
                 try:
                     servers = await registry.list_servers(tenant_ctx=tenant_ctx)
-                    server_names = {
-                        getattr(s, "name", "").lower() for s in servers
-                    }
+                    server_names = {getattr(s, "name", "").lower() for s in servers}
                     if required_connector.lower() not in server_names:
                         missing_connectors.append(required_connector)
                 except Exception:
@@ -233,9 +226,7 @@ class Marketplace:
                 "status": "failed",
                 "reason": f"Required connectors not registered: {missing_connectors}",
                 "required_connectors": missing_connectors,
-                "next_step": (
-                    f"Register these connectors first: {', '.join(missing_connectors)}"
-                ),
+                "next_step": (f"Register these connectors first: {', '.join(missing_connectors)}"),
             }
 
         agent_id: str
@@ -266,9 +257,7 @@ class Marketplace:
         self._deployments[deployment.deployment_id] = deployment
         return deployment
 
-    def publish(
-        self, *, template: dict[str, Any], tenant_ctx: TenantContext
-    ) -> dict[str, Any]:
+    def publish(self, *, template: dict[str, Any], tenant_ctx: TenantContext) -> dict[str, Any]:
         """Publish a custom agent template to the marketplace."""
         import uuid as _uuid
         from datetime import UTC
@@ -304,7 +293,9 @@ class Marketplace:
                     template_id=template_id, params={}, tenant_ctx=tenant_ctx
                 )
                 if isinstance(result, dict) and result.get("status") == "failed":
-                    errors.append({"template_id": template_id, "error": result.get("reason", "deploy failed")})
+                    errors.append(
+                        {"template_id": template_id, "error": result.get("reason", "deploy failed")}
+                    )
                 else:
                     results.append(
                         result
@@ -333,6 +324,7 @@ class Marketplace:
                 import uuid
 
                 from sqlalchemy import text
+
                 async with db() as session, session.begin():
                     await session.execute(
                         text("""
@@ -350,6 +342,7 @@ class Marketplace:
                     )
             except Exception as exc:
                 import logging
+
                 logging.getLogger(__name__).warning("version_publish_failed: %s", exc)
 
         return {"template_id": template_id, "version": version, "changelog": changelog}
@@ -362,6 +355,7 @@ class Marketplace:
             return []
         try:
             from sqlalchemy import text
+
             async with db() as session:
                 rows = (
                     await session.execute(

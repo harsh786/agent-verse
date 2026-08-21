@@ -7,6 +7,7 @@ The GoalTreeExecutor:
 4. Executes dependent sub-goals sequentially
 5. Returns aggregated results for the parent verifier
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -83,17 +84,13 @@ async def execute_sub_goal(
             )
             sub_goal.status = state.status
             sub_goal.provenance = list(state.provenance)
-            sub_goal.retrieval_trace = list(
-                state.context.get("rag_strategy_trace", [])
-            )
+            sub_goal.retrieval_trace = list(state.context.get("rag_strategy_trace", []))
             sub_goal.events = list(state.events)
             if state.status is GoalStatus.FAILED:
                 sub_goal.error = state.error_message or "Child goal failed"
                 sub_goal.result = ""
             else:
-                sub_goal.result = "\n".join(
-                    f"[{s.description}]: {s.output}" for s in state.steps
-                )
+                sub_goal.result = "\n".join(f"[{s.description}]: {s.output}" for s in state.steps)
         except Exception as exc:
             sub_goal.status = GoalStatus.FAILED
             sub_goal.error = str(exc)
@@ -119,11 +116,13 @@ async def _synthesize_goal_tree_results(
     try:
         from app.providers.base import CompletionRequest, Message
 
-        results_text = "\n\n".join([
-            f"Sub-task: {r['goal']}\nResult: {r['result'][:400]}"
-            for r in sub_results
-            if r.get("success")
-        ])
+        results_text = "\n\n".join(
+            [
+                f"Sub-task: {r['goal']}\nResult: {r['result'][:400]}"
+                for r in sub_results
+                if r.get("success")
+            ]
+        )
         prompt = (
             f"Original goal: {original_goal}\n\n"
             f"Sub-task results:\n{results_text}\n\n"
@@ -131,11 +130,13 @@ async def _synthesize_goal_tree_results(
             "based on all sub-task results. Be specific."
         )
         model = getattr(provider, "_default_model", "")
-        resp = await provider.complete(CompletionRequest(
-            messages=[Message(role="user", content=prompt)],
-            model=model,
-            max_tokens=2000,
-        ))
+        resp = await provider.complete(
+            CompletionRequest(
+                messages=[Message(role="user", content=prompt)],
+                model=model,
+                max_tokens=2000,
+            )
+        )
         return str(resp.content)
     except Exception as exc:
         _logging.getLogger(__name__).warning("goal_tree_synthesis_failed: %s", exc)
@@ -175,10 +176,7 @@ async def execute_goal_tree(
     while remaining and wave < max_waves:
         wave += 1
         # Find all sub-goals whose dependencies are already completed
-        ready = [
-            sg for sg in remaining
-            if all(dep in completed for dep in sg.depends_on)
-        ]
+        ready = [sg for sg in remaining if all(dep in completed for dep in sg.depends_on)]
         if not ready:
             # Circular dependency or impossible — execute all remaining sequentially
             ready = remaining[:]

@@ -3,6 +3,7 @@
 Environment:
   FRONT_API_TOKEN: Front API token
 """
+
 from __future__ import annotations
 
 import os
@@ -53,7 +54,11 @@ TOOL_DEFINITIONS = [
                 "conversation_id": {"type": "string"},
                 "body": {"type": "string"},
                 "author_id": {"type": "string", "description": "Teammate ID sending the reply"},
-                "to": {"type": "array", "items": {"type": "string"}, "description": "Recipient addresses"},
+                "to": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Recipient addresses",
+                },
                 "cc": {"type": "array", "items": {"type": "string"}},
                 "bcc": {"type": "array", "items": {"type": "string"}},
             },

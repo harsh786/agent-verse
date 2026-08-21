@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import enum
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 class TaskType(str, enum.Enum):
@@ -35,20 +35,20 @@ class TaskType(str, enum.Enum):
 
 class Criticality(str, enum.Enum):
     CRITICAL = "critical"  # P0 — always best-quality model
-    HIGH = "high"          # P1 — premium tier
-    MEDIUM = "medium"      # P2 — standard tier
-    LOW = "low"            # P3 — economy / local tier
+    HIGH = "high"  # P1 — premium tier
+    MEDIUM = "medium"  # P2 — standard tier
+    LOW = "low"  # P3 — economy / local tier
 
 
 @dataclass
 class ModelSelection:
-    primary: str                       # e.g. "anthropic/claude-3-5-sonnet"
-    fallbacks: list[str]               # ordered fallback list
-    provider: str                      # e.g. "openrouter" | "ollama"
+    primary: str  # e.g. "anthropic/claude-3-5-sonnet"
+    fallbacks: list[str]  # ordered fallback list
+    provider: str  # e.g. "openrouter" | "ollama"
     task_type: TaskType
     criticality: Criticality
-    estimated_cost_per_1k: float       # USD per 1 000 tokens (0 for local)
-    reasoning: str                     # human-readable justification
+    estimated_cost_per_1k: float  # USD per 1 000 tokens (0 for local)
+    reasoning: str  # human-readable justification
 
 
 # ---------------------------------------------------------------------------
@@ -57,36 +57,44 @@ class ModelSelection:
 
 # Cloud routing — delivered via OpenRouter or direct provider APIs
 CLOUD_TASK_ROUTING: dict[str, list[str]] = {
-    "reasoning":      ["anthropic/claude-3-opus",  "openai/o3",                    "anthropic/claude-3-5-sonnet"],
-    "coding":         ["deepseek/deepseek-v3",      "anthropic/claude-3-5-sonnet",  "openai/gpt-4o"],
-    "drafting":       ["google/gemini-flash-1.5",   "meta-llama/llama-3.1-70b-instruct", "openai/gpt-4o-mini"],
-    "analysis":       ["openai/gpt-4o",             "anthropic/claude-3-5-sonnet",  "google/gemini-pro-1.5"],
-    "summarization":  ["google/gemini-flash-1.5",   "anthropic/claude-3-haiku",     "openai/gpt-4o-mini"],
-    "classification": ["google/gemini-flash-1.5",   "meta-llama/llama-3.1-8b-instruct", "openai/gpt-4o-mini"],
-    "extraction":     ["openai/gpt-4o-mini",        "qwen/qwen-2.5-72b-instruct",   "anthropic/claude-3-haiku"],
-    "vision":         ["openai/gpt-4o",             "google/gemini-pro-1.5",        "anthropic/claude-3-5-sonnet"],
-    "ocr":            ["openai/gpt-4o",             "google/gemini-pro-1.5"],
-    "long_context":   ["google/gemini-pro-1.5",     "anthropic/claude-3-5-sonnet"],
-    "function_call":  ["openai/gpt-4o",             "anthropic/claude-3-5-sonnet",  "google/gemini-pro-1.5"],
-    "embedding":      ["voyage-3",                  "text-embedding-3-small"],
-    "reranking":      ["cohere/rerank-v3.5"],
+    "reasoning": ["anthropic/claude-3-opus", "openai/o3", "anthropic/claude-3-5-sonnet"],
+    "coding": ["deepseek/deepseek-v3", "anthropic/claude-3-5-sonnet", "openai/gpt-4o"],
+    "drafting": [
+        "google/gemini-flash-1.5",
+        "meta-llama/llama-3.1-70b-instruct",
+        "openai/gpt-4o-mini",
+    ],
+    "analysis": ["openai/gpt-4o", "anthropic/claude-3-5-sonnet", "google/gemini-pro-1.5"],
+    "summarization": ["google/gemini-flash-1.5", "anthropic/claude-3-haiku", "openai/gpt-4o-mini"],
+    "classification": [
+        "google/gemini-flash-1.5",
+        "meta-llama/llama-3.1-8b-instruct",
+        "openai/gpt-4o-mini",
+    ],
+    "extraction": ["openai/gpt-4o-mini", "qwen/qwen-2.5-72b-instruct", "anthropic/claude-3-haiku"],
+    "vision": ["openai/gpt-4o", "google/gemini-pro-1.5", "anthropic/claude-3-5-sonnet"],
+    "ocr": ["openai/gpt-4o", "google/gemini-pro-1.5"],
+    "long_context": ["google/gemini-pro-1.5", "anthropic/claude-3-5-sonnet"],
+    "function_call": ["openai/gpt-4o", "anthropic/claude-3-5-sonnet", "google/gemini-pro-1.5"],
+    "embedding": ["voyage-3", "text-embedding-3-small"],
+    "reranking": ["cohere/rerank-v3.5"],
 }
 
 # Ollama routing — free, private, on-device
 OLLAMA_TASK_ROUTING: dict[str, list[str]] = {
-    "reasoning":      ["qwen3.8:latest",          "llama3.2:latest",      "qwen3:8b"],
-    "coding":         ["qwen3.8:latest",           "llama3.2:latest",      "qwen2.5-coder:7b"],
-    "drafting":       ["qwen3.8:latest",           "llama3.2:latest",      "qwen3:4b"],
-    "analysis":       ["qwen3.8:latest",           "llama3.2:latest",      "qwen2.5:14b"],
-    "summarization":  ["qwen3.8:latest",           "llama3.2:latest"],
-    "classification": ["qwen3.8:latest",           "llama3.2:latest"],
-    "extraction":     ["qwen3.8:latest",           "llama3.2:latest"],
-    "vision":         ["glm-ocr:latest"],
-    "ocr":            ["glm-ocr:latest"],
-    "long_context":   ["qwen3.8:latest",           "gpt-oss:latest"],
-    "function_call":  ["qwen3.8:latest"],
-    "embedding":      ["qwen3-embedding:latest"],
-    "reranking":      ["qwen3-embedding:latest"],
+    "reasoning": ["qwen3.8:latest", "llama3.2:latest", "qwen3:8b"],
+    "coding": ["qwen3.8:latest", "llama3.2:latest", "qwen2.5-coder:7b"],
+    "drafting": ["qwen3.8:latest", "llama3.2:latest", "qwen3:4b"],
+    "analysis": ["qwen3.8:latest", "llama3.2:latest", "qwen2.5:14b"],
+    "summarization": ["qwen3.8:latest", "llama3.2:latest"],
+    "classification": ["qwen3.8:latest", "llama3.2:latest"],
+    "extraction": ["qwen3.8:latest", "llama3.2:latest"],
+    "vision": ["glm-ocr:latest"],
+    "ocr": ["glm-ocr:latest"],
+    "long_context": ["qwen3.8:latest", "gpt-oss:latest"],
+    "function_call": ["qwen3.8:latest"],
+    "embedding": ["qwen3-embedding:latest"],
+    "reranking": ["qwen3-embedding:latest"],
 }
 
 # Rough cost estimates (USD per 1 000 tokens) for cloud models
@@ -199,13 +207,13 @@ class ModelRouter:
 
         # Criticality filtering
         if crit == Criticality.CRITICAL:
-            selected = models[:1]           # always the best
+            selected = models[:1]  # always the best
         elif crit == Criticality.LOW:
-            selected = models[-1:]          # always the cheapest
+            selected = models[-1:]  # always the cheapest
         elif crit == Criticality.HIGH:
-            selected = models[:2]           # top two
+            selected = models[:2]  # top two
         else:
-            selected = list(models)         # full list (MEDIUM)
+            selected = list(models)  # full list (MEDIUM)
 
         primary = selected[0]
         cost = _CLOUD_COST_PER_1K.get(primary, 0.003)
@@ -218,8 +226,7 @@ class ModelRouter:
             criticality=crit,
             estimated_cost_per_1k=cost,
             reasoning=(
-                f"Cloud model '{primary}' selected for {task.value} "
-                f"at {crit.value} criticality"
+                f"Cloud model '{primary}' selected for {task.value} at {crit.value} criticality"
             ),
         )
 

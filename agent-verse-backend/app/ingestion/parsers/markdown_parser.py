@@ -1,4 +1,5 @@
 """Markdown parser — AST-aware section chunking."""
+
 from __future__ import annotations
 
 import logging
@@ -20,9 +21,9 @@ class MarkdownParser:
 
         # Preserve code blocks as-is (valuable for code search)
         # Convert inline/block formatting to plain text
-        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)      # bold
-        text = re.sub(r"\*(.+?)\*", r"\1", text)            # italic
-        text = re.sub(r"`{1,2}([^`]+)`{1,2}", r"\1", text) # inline code
+        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)  # bold
+        text = re.sub(r"\*(.+?)\*", r"\1", text)  # italic
+        text = re.sub(r"`{1,2}([^`]+)`{1,2}", r"\1", text)  # inline code
         text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"[Image: \1]", text)  # images
         text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)  # links
 
@@ -70,9 +71,11 @@ class YAMLParser:
     def _parse_yaml(self, content: str) -> str:
         try:
             import yaml  # type: ignore[import-not-found]
+
             obj = yaml.safe_load(content)
             if obj:
                 from app.ingestion.parsers.json_parser import _flatten
+
                 flat = _flatten(obj)
                 return "\n".join(flat[:500])
         except Exception as exc:
@@ -82,8 +85,10 @@ class YAMLParser:
     def _parse_toml(self, content: str) -> str:
         try:
             import tomllib  # Python 3.11+
+
             obj = tomllib.loads(content)
             from app.ingestion.parsers.json_parser import _flatten
+
             flat = _flatten(obj)
             return "\n".join(flat[:500])
         except Exception:

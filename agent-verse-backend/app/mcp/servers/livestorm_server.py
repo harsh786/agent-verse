@@ -3,6 +3,7 @@
 Environment:
   LIVESTORM_API_KEY: Livestorm API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -22,7 +23,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "filter_status": {"type": "string", "description": "Filter by status: upcoming, past, draft"},
+                "filter_status": {
+                    "type": "string",
+                    "description": "Filter by status: upcoming, past, draft",
+                },
                 "page_size": {"type": "integer", "description": "Events per page"},
                 "page_number": {"type": "integer", "description": "Page number for pagination"},
             },
@@ -35,9 +39,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Title of the event"},
-                "slug": {"type": "string", "description": "URL slug for the event registration page"},
+                "slug": {
+                    "type": "string",
+                    "description": "URL slug for the event registration page",
+                },
                 "description": {"type": "string", "description": "Description of the event"},
-                "estimated_duration": {"type": "integer", "description": "Estimated duration in minutes"},
+                "estimated_duration": {
+                    "type": "integer",
+                    "description": "Estimated duration in minutes",
+                },
                 "language": {"type": "string", "description": "Event language code (e.g. en)"},
             },
             "required": ["title"],

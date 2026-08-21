@@ -5,6 +5,7 @@ Environment:
   ZENDESK_EMAIL:      Agent email address
   ZENDESK_API_TOKEN:  API token from Admin > Apps & Integrations > API
 """
+
 from __future__ import annotations
 
 import base64
@@ -162,7 +163,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     email = os.getenv("ZENDESK_EMAIL", "")
     token = os.getenv("ZENDESK_API_TOKEN", "")
     if not all([subdomain, email, token]):
-        return {"error": "ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, and ZENDESK_API_TOKEN must be configured"}
+        return {
+            "error": "ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, and ZENDESK_API_TOKEN must be configured"
+        }
 
     base = _base()
 

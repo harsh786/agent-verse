@@ -8,11 +8,12 @@ Determines the safety level for each tool call:
 
 Based on: tool name, tool args, connector risk, action patterns.
 """
+
 from __future__ import annotations
 
 import enum
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -23,9 +24,7 @@ class ActionSafetyLevel(str, enum.Enum):
     BLOCKED = "blocked"
 
 
-_DESTRUCTIVE_RE = re.compile(
-    r"(?i)\b(delete|drop|truncate|destroy|wipe|purge|rm -rf)\b"
-)
+_DESTRUCTIVE_RE = re.compile(r"(?i)\b(delete|drop|truncate|destroy|wipe|purge|rm -rf)\b")
 _WRITE_HIGH_RE = re.compile(
     r"(?i)\b(deploy|publish|release|send|charge|payment|grant admin|revoke)\b"
 )
@@ -34,6 +33,7 @@ _WRITE_HIGH_RE = re.compile(
 @dataclass
 class ActionSafetyProfile:
     """Per-action safety determination."""
+
     tool_name: str
     safety_level: ActionSafetyLevel
     requires_hitl: bool
@@ -65,24 +65,36 @@ class ActionSafetyProfileSelector:
 
         if risk_level == "critical" or _DESTRUCTIVE_RE.search(combined):
             return ActionSafetyProfile(
-                tool_name=tool_name, safety_level=ActionSafetyLevel.HITL_REQUIRED,
-                requires_hitl=True, rollback_registered=True, audit_required=True,
+                tool_name=tool_name,
+                safety_level=ActionSafetyLevel.HITL_REQUIRED,
+                requires_hitl=True,
+                rollback_registered=True,
+                audit_required=True,
                 reason="destructive or critical-risk action",
             )
         if risk_level == "high" or _WRITE_HIGH_RE.search(combined):
             return ActionSafetyProfile(
-                tool_name=tool_name, safety_level=ActionSafetyLevel.HITL_REQUIRED,
-                requires_hitl=True, rollback_registered=True, audit_required=True,
+                tool_name=tool_name,
+                safety_level=ActionSafetyLevel.HITL_REQUIRED,
+                requires_hitl=True,
+                rollback_registered=True,
+                audit_required=True,
                 reason="write_high risk action",
             )
         if risk_level == "medium":
             return ActionSafetyProfile(
-                tool_name=tool_name, safety_level=ActionSafetyLevel.LOG_ONLY,
-                requires_hitl=False, rollback_registered=True, audit_required=True,
+                tool_name=tool_name,
+                safety_level=ActionSafetyLevel.LOG_ONLY,
+                requires_hitl=False,
+                rollback_registered=True,
+                audit_required=True,
                 reason="write_low risk — log and execute",
             )
         return ActionSafetyProfile(
-            tool_name=tool_name, safety_level=ActionSafetyLevel.SAFE,
-            requires_hitl=False, rollback_registered=False, audit_required=False,
+            tool_name=tool_name,
+            safety_level=ActionSafetyLevel.SAFE,
+            requires_hitl=False,
+            rollback_registered=False,
+            audit_required=False,
             reason="read-only or safe action",
         )

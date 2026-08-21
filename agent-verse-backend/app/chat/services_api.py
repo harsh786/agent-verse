@@ -28,7 +28,7 @@ class ConnectedService:
     name: str
     url: str
     scopes: list[str] = field(default_factory=list)
-    status: str = "connected"   # connected | disconnected | error
+    status: str = "connected"  # connected | disconnected | error
     connected_at: datetime = field(default_factory=_now)
 
 

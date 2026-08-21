@@ -3,6 +3,7 @@
 Environment variables:
   APOLLO_API_KEY: Apollo.io API key
 """
+
 from __future__ import annotations
 
 import os
@@ -121,15 +122,18 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "APOLLO_API_KEY not configured"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=APOLLO_BASE, headers=_headers(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=APOLLO_BASE, headers=_headers(), timeout=30.0) as c:
             if tool_name == "apollo_search_people":
                 body: dict[str, Any] = {
                     "page": arguments.get("page", 1),
                     "per_page": arguments.get("per_page", 10),
                 }
-                for k in ("q_keywords", "person_titles", "organization_domains", "person_locations"):
+                for k in (
+                    "q_keywords",
+                    "person_titles",
+                    "organization_domains",
+                    "person_locations",
+                ):
                     if k in arguments:
                         body[k] = arguments[k]
                 r = await c.post("/mixed_people/search", json=body)
@@ -150,7 +154,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "page": arguments.get("page", 1),
                     "per_page": arguments.get("per_page", 10),
                 }
-                for k in ("q_organization_name", "organization_locations", "organization_num_employees_ranges"):
+                for k in (
+                    "q_organization_name",
+                    "organization_locations",
+                    "organization_num_employees_ranges",
+                ):
                     if k in arguments:
                         body[k] = arguments[k]
                 r = await c.post("/mixed_companies/search", json=body)

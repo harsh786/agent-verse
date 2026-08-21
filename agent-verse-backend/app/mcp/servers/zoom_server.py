@@ -7,6 +7,7 @@ Environment:
   ZOOM_CLIENT_ID:   Client ID for Server-to-Server OAuth
   ZOOM_CLIENT_SECRET: Client secret for Server-to-Server OAuth
 """
+
 from __future__ import annotations
 
 import os
@@ -29,7 +30,13 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "type": {
                     "type": "string",
-                    "enum": ["scheduled", "live", "upcoming", "upcoming_meetings", "previous_meetings"],
+                    "enum": [
+                        "scheduled",
+                        "live",
+                        "upcoming",
+                        "upcoming_meetings",
+                        "previous_meetings",
+                    ],
                     "default": "upcoming",
                 },
                 "page_size": {"type": "integer", "default": 30},
@@ -49,7 +56,11 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Meeting start time in ISO 8601 format (UTC), e.g. '2024-01-15T14:00:00Z'",
                 },
-                "duration": {"type": "integer", "description": "Duration in minutes", "default": 60},
+                "duration": {
+                    "type": "integer",
+                    "description": "Duration in minutes",
+                    "default": 60,
+                },
                 "agenda": {"type": "string"},
                 "password": {"type": "string"},
                 "type": {
@@ -151,6 +162,7 @@ async def _get_token() -> str:
 
     if all([account_id, client_id, client_secret]):
         import base64
+
         creds = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
         async with httpx.AsyncClient(timeout=15.0) as c:
             r = await c.post(
@@ -227,7 +239,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "zoom_delete_meeting":
                 mid = arguments["meeting_id"]
-                params = {"notify_registrants": str(arguments.get("notify_registrants", True)).lower()}
+                params = {
+                    "notify_registrants": str(arguments.get("notify_registrants", True)).lower()
+                }
                 r = await c.delete(f"/meetings/{mid}", params=params)
                 r.raise_for_status()
                 return {"success": True, "status_code": r.status_code}

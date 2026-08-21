@@ -3,6 +3,7 @@
 Environment:
   BITLY_ACCESS_TOKEN: Bitly OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os

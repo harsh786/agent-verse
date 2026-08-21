@@ -90,11 +90,7 @@ class GeminiProvider:
         return CompletionResponse(content=content, model=model_name)
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
-        task_type = (
-            "RETRIEVAL_QUERY"
-            if request.input_type == "query"
-            else "RETRIEVAL_DOCUMENT"
-        )
+        task_type = "RETRIEVAL_QUERY" if request.input_type == "query" else "RETRIEVAL_DOCUMENT"
         response = await self._client.aio.models.embed_content(
             model=self._embed_model,
             contents=request.texts,  # type: ignore[arg-type]

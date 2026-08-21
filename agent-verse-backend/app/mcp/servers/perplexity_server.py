@@ -3,6 +3,7 @@
 Environment:
   PERPLEXITY_API_KEY: Perplexity API key (pplx-...)
 """
+
 from __future__ import annotations
 
 import os
@@ -100,7 +101,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "PERPLEXITY_API_KEY not configured"}
 
     try:
-        async with httpx.AsyncClient(base_url=PERPLEXITY_BASE, headers=_headers(), timeout=60.0) as c:
+        async with httpx.AsyncClient(
+            base_url=PERPLEXITY_BASE, headers=_headers(), timeout=60.0
+        ) as c:
             if tool_name == "perplexity_chat":
                 messages = list(arguments.get("messages", []))
                 if sys := arguments.get("system"):
@@ -124,9 +127,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "perplexity_search":
                 payload = {
                     "model": arguments.get("model", "llama-3.1-sonar-large-128k-online"),
-                    "messages": [
-                        {"role": "user", "content": arguments["query"]}
-                    ],
+                    "messages": [{"role": "user", "content": arguments["query"]}],
                     "max_tokens": arguments.get("max_tokens", 1024),
                     "return_citations": arguments.get("return_citations", True),
                 }

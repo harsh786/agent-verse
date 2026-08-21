@@ -5,6 +5,7 @@ Environment variables:
   CONFLUENCE_EMAIL: Atlassian account email
   CONFLUENCE_API_TOKEN: Atlassian API token
 """
+
 from __future__ import annotations
 
 import base64
@@ -56,7 +57,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "space_key": {"type": "string", "description": "Space key where the page will be created"},
+                "space_key": {
+                    "type": "string",
+                    "description": "Space key where the page will be created",
+                },
                 "title": {"type": "string"},
                 "body": {
                     "type": "string",
@@ -109,7 +113,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "page_id": {"type": "string"},
-                "body": {"type": "string", "description": "Comment text (plain text or storage format)"},
+                "body": {
+                    "type": "string",
+                    "description": "Comment text (plain text or storage format)",
+                },
             },
             "required": ["page_id", "body"],
         },
@@ -154,7 +161,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
@@ -170,7 +180,12 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
     async with httpx.AsyncClient(base_url=base, headers=headers, timeout=30.0) as client:
         if tool_name == "confluence_search":
             params: dict[str, Any] = {
-                "cql": (arguments.get("cql") or arguments.get("query") or arguments.get("search_query") or ""),
+                "cql": (
+                    arguments.get("cql")
+                    or arguments.get("query")
+                    or arguments.get("search_query")
+                    or ""
+                ),
                 "limit": arguments.get("limit", 25),
                 "start": arguments.get("start", 0),
             }
@@ -219,7 +234,13 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
                 "space": {"key": (arguments.get("space_key") or arguments.get("space") or "")},
                 "body": {
                     "storage": {
-                        "value": (arguments.get("body") or arguments.get("content") or arguments.get("text") or arguments.get("page_content") or ""),
+                        "value": (
+                            arguments.get("body")
+                            or arguments.get("content")
+                            or arguments.get("text")
+                            or arguments.get("page_content")
+                            or ""
+                        ),
                         "representation": "storage",
                     }
                 },
@@ -254,7 +275,13 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
                 "version": {"number": version_number + 1},
                 "body": {
                     "storage": {
-                        "value": (arguments.get("body") or arguments.get("content") or arguments.get("text") or arguments.get("page_content") or ""),
+                        "value": (
+                            arguments.get("body")
+                            or arguments.get("content")
+                            or arguments.get("text")
+                            or arguments.get("page_content")
+                            or ""
+                        ),
                         "representation": "storage",
                     }
                 },

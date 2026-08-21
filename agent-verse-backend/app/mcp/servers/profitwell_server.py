@@ -3,6 +3,7 @@
 Environment:
   PROFITWELL_API_KEY: ProfitWell API key
 """
+
 from __future__ import annotations
 
 import os

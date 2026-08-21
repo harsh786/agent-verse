@@ -3,6 +3,7 @@
 Environment:
   MICROSOFT_ACCESS_TOKEN: Microsoft OAuth2 access token with Notes.ReadWrite scope
 """
+
 from __future__ import annotations
 
 import os

@@ -2,6 +2,7 @@
 
 Records every risk finding and verification decision for audit and observability.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -20,6 +21,7 @@ class PlanTraceEntry:
 @dataclass
 class PlanTrace:
     """Trace of PlanVerifier decisions for a goal execution."""
+
     goal_id: str
     trace_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     entries: list[PlanTraceEntry] = field(default_factory=list)
@@ -33,10 +35,14 @@ class PlanTrace:
         findings: list[str] | None = None,
         requires_hitl: bool = False,
     ) -> None:
-        self.entries.append(PlanTraceEntry(
-            step=step, risk_level=risk_level,
-            findings=findings or [], requires_hitl=requires_hitl,
-        ))
+        self.entries.append(
+            PlanTraceEntry(
+                step=step,
+                risk_level=risk_level,
+                findings=findings or [],
+                requires_hitl=requires_hitl,
+            )
+        )
         # Update overall risk to highest seen
         order = ["low", "medium", "high", "critical"]
         if order.index(risk_level) > order.index(self.overall_risk):
@@ -49,8 +55,12 @@ class PlanTrace:
             "overall_risk": self.overall_risk,
             "estimated_cost_usd": self.estimated_cost_usd,
             "entries": [
-                {"step": e.step, "risk_level": e.risk_level,
-                 "findings": e.findings, "requires_hitl": e.requires_hitl}
+                {
+                    "step": e.step,
+                    "risk_level": e.risk_level,
+                    "findings": e.findings,
+                    "requires_hitl": e.requires_hitl,
+                }
                 for e in self.entries
             ],
         }

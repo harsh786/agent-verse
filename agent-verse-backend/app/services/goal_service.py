@@ -114,10 +114,12 @@ def _resolve_checkpointer(app_state: Any) -> Any:
       4. MemorySaver with a WARNING about durability loss
     """
     import os
+
     cp = getattr(app_state, "langgraph_checkpointer", None)
     if cp is not None and not isinstance(cp, MemorySaver):
         try:
             from langgraph.checkpoint.base import BaseCheckpointSaver
+
             if isinstance(cp, BaseCheckpointSaver):
                 return cp
         except Exception:
@@ -144,9 +146,7 @@ def _resolve_checkpointer(app_state: Any) -> Any:
             _first_node = _sentinel_urls.split(",")[0].strip()
             _sentinel_db = os.getenv("REDIS_SENTINEL_DB", "0")
             redis_url = f"sentinel://{_first_node}/{_sentinel_db}"
-            _svc_logger.info(
-                "checkpointer_using_sentinel_url sentinel_node=%s", _first_node
-            )
+            _svc_logger.info("checkpointer_using_sentinel_url sentinel_node=%s", _first_node)
 
     if redis_url:
         # AsyncRedisSaver (preferred).
@@ -156,6 +156,7 @@ def _resolve_checkpointer(app_state: Any) -> Any:
         try:
             from langgraph.checkpoint.base import BaseCheckpointSaver as _BCS
             from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+
             _saver = AsyncRedisSaver.from_conn_string(redis_url)
             if not isinstance(_saver, _BCS):
                 raise TypeError(
@@ -175,6 +176,7 @@ def _resolve_checkpointer(app_state: Any) -> Any:
         try:
             from langgraph.checkpoint.base import BaseCheckpointSaver as _BCS2
             from langgraph.checkpoint.redis import RedisSaver
+
             _saver2 = RedisSaver.from_conn_string(redis_url)
             if not isinstance(_saver2, _BCS2):
                 raise TypeError(
@@ -187,7 +189,8 @@ def _resolve_checkpointer(app_state: Any) -> Any:
             _msg = (
                 f"redis_saver_unavailable redis_url={redis_url[:30]} "
                 f"error={_e2!s} "
-                "impact=GOAL STATE WILL BE LOST ON PROCESS RESTART"            )
+                "impact=GOAL STATE WILL BE LOST ON PROCESS RESTART"
+            )
             _svc_logger.warning(
                 "redis_saver_unavailable_falling_back_to_memory",
                 redis_url=redis_url[:30],
@@ -199,7 +202,8 @@ def _resolve_checkpointer(app_state: Any) -> Any:
         _msg2 = (
             "no_redis_url_using_memory_saver "
             "impact=GOAL STATE WILL BE LOST ON PROCESS RESTART "
-            "set REDIS_URL environment variable"        )
+            "set REDIS_URL environment variable"
+        )
         _svc_logger.warning(
             "no_redis_url_using_memory_saver",
             impact="GOAL STATE WILL BE LOST ON PROCESS RESTART — set REDIS_URL environment variable",
@@ -271,8 +275,10 @@ def _fake_provider() -> Any:
 def _build_dedup_cache(redis: Any) -> DeduplicationCache | Any:
     """Build the best available dedup cache: Redis-backed when Redis is available."""
     from app.reliability.dedup import DeduplicationCache as _DedupCache
+
     try:
         from app.reliability.dedup import RedisDeduplicationCache
+
         if redis is not None:
             return RedisDeduplicationCache(redis=redis)
     except Exception:
@@ -365,16 +371,16 @@ class GoalService:
                             if goal_id and goal_id in self._goals:
                                 record = self._goals[goal_id]
                                 record.hitl_rejection_note = note
-                                record.events.append({
-                                    "type": "hitl_rejected",
-                                    "note": note,
-                                    "ts": __import__("datetime").datetime.now(
-                                        __import__("datetime").timezone.utc
-                                    ).isoformat(),
-                                })
-                                _svc_logger.info(
-                                    "hitl_rejection_note_stored", goal_id=goal_id
+                                record.events.append(
+                                    {
+                                        "type": "hitl_rejected",
+                                        "note": note,
+                                        "ts": __import__("datetime")
+                                        .datetime.now(__import__("datetime").timezone.utc)
+                                        .isoformat(),
+                                    }
                                 )
+                                _svc_logger.info("hitl_rejection_note_stored", goal_id=goal_id)
                         except Exception as exc:
                             _svc_logger.warning(
                                 "hitl_rejection_message_parse_failed", error=str(exc)
@@ -382,6 +388,7 @@ class GoalService:
             except Exception as exc:
                 _svc_logger.warning("hitl_rejection_subscriber_error", error=str(exc))
                 await asyncio.sleep(5)
+
     def _track_db_task(self, coro: Coroutine[Any, Any, None]) -> None:
         task = asyncio.create_task(coro)
         self._db_tasks.add(task)
@@ -468,8 +475,11 @@ class GoalService:
                                             pass
                                     # Send end-of-stream sentinel on terminal events
                                     _TERMINAL_BRIDGE = {
-                                        "goal_complete", "worker_complete",
-                                        "goal_failed", "worker_failed", "goal_cancelled",
+                                        "goal_complete",
+                                        "worker_complete",
+                                        "goal_failed",
+                                        "worker_failed",
+                                        "goal_cancelled",
                                     }
                                     if event_type in _TERMINAL_BRIDGE:
                                         for q in list(record.subscribers):
@@ -479,6 +489,7 @@ class GoalService:
                                                 pass
                                         # Update record status
                                         from app.agent.state import GoalStatus as _GS
+
                                         if event_type in {"goal_complete", "worker_complete"}:
                                             record.status = _GS.COMPLETE
                                         elif event_type in {"goal_failed", "worker_failed"}:
@@ -486,9 +497,7 @@ class GoalService:
                                         elif event_type == "goal_cancelled":
                                             record.status = _GS.CANCELLED
                         except Exception as exc:
-                            self._logger.warning(
-                                "celery_event_bridge_parse_failed", error=str(exc)
-                            )
+                            self._logger.warning("celery_event_bridge_parse_failed", error=str(exc))
             except Exception as exc:
                 self._logger.warning("celery_event_bridge_error", error=str(exc))
                 await asyncio.sleep(5)
@@ -555,9 +564,9 @@ class GoalService:
             # Fall back to in-memory count (single-process mode)
             today_prefix = datetime.now(UTC).strftime("%Y-%m-%d")
             daily_count = sum(
-                1 for r in self._goals.values()
-                if r.tenant_id == tenant_ctx.tenant_id
-                and r.created_at.startswith(today_prefix)
+                1
+                for r in self._goals.values()
+                if r.tenant_id == tenant_ctx.tenant_id and r.created_at.startswith(today_prefix)
             )
             check_daily_goal_limit(tenant_ctx, daily_count)
             return
@@ -613,20 +622,14 @@ class GoalService:
                         record.status = GoalStatus.PLANNING
                         recovered += 1
                     except Exception as exc:
-                        _svc_logger.warning(
-                            "goal_recovery_failed", goal_id=goal_id, error=str(exc)
-                        )
+                        _svc_logger.warning("goal_recovery_failed", goal_id=goal_id, error=str(exc))
                 else:
                     # No task queue — mark as failed so callers know to resubmit
                     record.status = GoalStatus.FAILED
-                    record.error_message = (
-                        "Goal interrupted by process restart. Please resubmit."
-                    )
+                    record.error_message = "Goal interrupted by process restart. Please resubmit."
         return recovered
 
-    async def _batch_event_counts(
-        self, goal_ids: list[str], tenant_id: str
-    ) -> dict[str, int]:
+    async def _batch_event_counts(self, goal_ids: list[str], tenant_id: str) -> dict[str, int]:
         """Fetch event counts for multiple goals in one DB query.
 
         Replaces per-goal calls to _event_count_for_response() inside
@@ -681,18 +684,21 @@ class GoalService:
             if encrypted_key:
                 try:
                     from app.providers.vault import get_vault
+
                     api_key = get_vault().decrypt(encrypted_key)
                 except Exception:
                     pass
             pname = tenant_cfg.get("provider", "")
             if pname == "anthropic" and api_key:
                 from app.providers.anthropic_provider import AnthropicProvider
+
                 provider = AnthropicProvider(
                     api_key=api_key,
                     default_model=tenant_cfg.get("default_model", "claude-opus-4-8"),
                 )
             elif pname in {"openai", "groq", "together", "azure", "ollama"} and api_key:
                 from app.providers.openai_compatible import OpenAICompatibleProvider
+
                 provider = OpenAICompatibleProvider(
                     api_key=api_key,
                     base_url=tenant_cfg.get("base_url"),
@@ -706,12 +712,14 @@ class GoalService:
             if anthropic_key:
                 try:
                     from app.providers.anthropic_provider import AnthropicProvider
+
                     provider = AnthropicProvider(api_key=anthropic_key)
                 except Exception:
                     pass
             elif openai_key:
                 try:
                     from app.providers.openai_compatible import OpenAICompatibleProvider
+
                     provider = OpenAICompatibleProvider(api_key=openai_key)
                 except Exception:
                     pass
@@ -719,26 +727,33 @@ class GoalService:
         # 3. Final fallback: FakeProvider (with explicit warning)
         if provider is None:
             from app.providers.fake import FakeProvider as _FakeProvider
-            provider = _FakeProvider(responses=[
-                '{"steps": ["Complete the requested task"]}',
-                "Task executed successfully",
-                '{"success": true, "reason": "Goal achieved"}',
-            ])
+
+            provider = _FakeProvider(
+                responses=[
+                    '{"steps": ["Complete the requested task"]}',
+                    "Task executed successfully",
+                    '{"success": true, "reason": "Goal achieved"}',
+                ]
+            )
             _svc_logger.warning(
                 "fake_provider_active",
                 message=(
                     "No real LLM provider configured. Goal will use FakeProvider. "
                     "Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real agent execution."
-                )
+                ),
             )
 
         # ── Pull services from app.state ─────────────────────────────────────────
         audit_log = getattr(app_state, "audit_log", None) if app_state else self._audit_log
         # Prefer RedisCostController (cross-replica) over in-memory CostController
         cost_controller = (
-            getattr(app_state, "redis_cost_controller", None)
-            or getattr(app_state, "cost_controller", None)
-        ) if app_state else None
+            (
+                getattr(app_state, "redis_cost_controller", None)
+                or getattr(app_state, "cost_controller", None)
+            )
+            if app_state
+            else None
+        )
         hitl_gateway = getattr(app_state, "hitl_gateway", None) if app_state else self._hitl
         knowledge_store = getattr(app_state, "knowledge_store", None) if app_state else None
         retrieval_gateway = None
@@ -782,6 +797,7 @@ class GoalService:
         # Use ModelOrchestrator for rich tier-based model selection with budget downgrade
         try:
             from app.ai_router.model_orchestrator import ModelOrchestrator, ModelOrchestratorAdapter
+
             _model_router = ModelOrchestratorAdapter(
                 orchestrator=ModelOrchestrator(),
                 default_tier=_agent_config.get("model_tier", "medium"),
@@ -790,6 +806,7 @@ class GoalService:
             # Fallback to simple ModelRouter if orchestrator fails
             try:
                 from app.agent.model_router import ModelRouter, get_router_for_tenant  # noqa: F401
+
                 _model_router = get_router_for_tenant(_agent_config)
             except Exception:
                 _model_router = None
@@ -849,12 +866,14 @@ class GoalService:
         from app.agent.grounding import GroundingChecker
         from app.agent.synthesis import AnswerSynthesizer
         from app.intelligence.verifier_calibration import _default_calibration_store
+
         _grounding_checker = GroundingChecker()
         _answer_synthesizer = AnswerSynthesizer(llm_provider=provider)
         _calibration_store = getattr(app_state, "calibration_store", _default_calibration_store)
         _consensus_verifier = None
         try:
             from app.agent.consensus import ConsensusVerifier
+
             _consensus_verifier = ConsensusVerifier(primary_verifier=provider) if provider else None
         except Exception:
             pass
@@ -941,6 +960,7 @@ class GoalService:
         graph._agent_id = agent_id
         # Phase 25: Wire self-optimizer for automatic improvement on poor performance
         from app.intelligence.self_optimization import SelfOptimizer
+
         _self_optimizer = getattr(app_state, "self_optimizer", None) if app_state else None
         if _self_optimizer is None:
             _self_optimizer = SelfOptimizer()
@@ -994,11 +1014,13 @@ class GoalService:
     ) -> dict:
         """Build GoalRuntimeProfile and persist to goals.execution_context."""
         from app.core.runtime_flags import get_runtime_flags
+
         flags = get_runtime_flags()
         if not flags.dynamic_orchestration:
             return {}
         try:
             from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
+
             builder = RuntimeProfileBuilder()
             profile, trace = await builder.build_with_trace(
                 goal,
@@ -1047,6 +1069,7 @@ class GoalService:
                     import json
 
                     from sqlalchemy import text
+
                     await db_session.execute(
                         text("""
                             UPDATE goals
@@ -1079,28 +1102,28 @@ class GoalService:
                             "patterns_used": json.dumps(
                                 [
                                     profile.primary_strategy.strategy_id,
-                                    *(
-                                        item.strategy_id
-                                        for item in profile.auxiliary_strategies
-                                    ),
+                                    *(item.strategy_id for item in profile.auxiliary_strategies),
                                 ]
                             ),
                             "rag_strategy": profile.rag_strategy.strategy,
                             "goal_id": goal_id,
                             "tenant_id": tenant_ctx.tenant_id,
-                        }
+                        },
                     )
                 except Exception as db_exc:
                     from app.observability.logging import get_logger
+
                     get_logger(__name__).warning(
                         "runtime_profile_persist_failed",
-                        error=str(db_exc), goal_id=goal_id,
+                        error=str(db_exc),
+                        goal_id=goal_id,
                     )
             if rollout.path == "v2":
                 profile_data["profile_object"] = profile
             return profile_data
         except Exception as exc:
             from app.observability.logging import get_logger
+
             get_logger(__name__).warning(
                 "runtime_profile_build_failed", error=str(exc), goal_id=goal_id
             )
@@ -1113,11 +1136,13 @@ class GoalService:
         production from executing a strategy whose dependencies were not verified.
         """
         from app.core.runtime_flags import get_runtime_flags
+
         if not getattr(get_runtime_flags(), "readiness_gate", False):
             return True, ""
         try:
             from app.runtime_readiness.dependency_health import DependencyHealth
             from app.runtime_readiness.readiness_gate import ReadinessGate
+
             health = DependencyHealth.all_healthy()
             gate = ReadinessGate(health)
             result = gate.check(runtime_profile)
@@ -1191,6 +1216,7 @@ class GoalService:
     ) -> ToolContext:
         # Always include built-in RPA tools so agents can use browser automation
         from app.rpa.tools import RPA_TOOLS
+
         tools: list[ToolRef] = [
             ToolRef(
                 server_id="rpa",
@@ -1222,9 +1248,7 @@ class GoalService:
                     server_id=connector_id_str, tenant_ctx=tenant_ctx
                 )
             except Exception as exc:
-                connector_errors.append(
-                    {"connector_id": connector_id_str, "error": str(exc)}
-                )
+                connector_errors.append({"connector_id": connector_id_str, "error": str(exc)})
                 continue
             for discovered_tool in discovered:
                 name = str(getattr(discovered_tool, "name", "") or "")
@@ -1234,9 +1258,7 @@ class GoalService:
                 if not isinstance(input_schema, dict):
                     input_schema = {}
                 server_id = connector_id_str
-                server_name = str(
-                    getattr(discovered_tool, "server_name", server_id) or server_id
-                )
+                server_name = str(getattr(discovered_tool, "server_name", server_id) or server_id)
                 tools.append(
                     ToolRef(
                         server_id=server_id,
@@ -1263,6 +1285,7 @@ class GoalService:
                     tenant_ctx=tenant_ctx,
                 )
                 from app.agent.tool_context import to_tiered_prompt
+
                 tool_prompt = to_tiered_prompt(selection)
                 return ToolContext(
                     connectors=[connector_metadata],
@@ -1270,9 +1293,7 @@ class GoalService:
                     tool_prompt_override=tool_prompt,
                 )
             except Exception as exc:
-                _svc_logger.debug(
-                    "tool_selector_failed_fallback_to_full", error=str(exc)[:60]
-                )
+                _svc_logger.debug("tool_selector_failed_fallback_to_full", error=str(exc)[:60])
 
         return ToolContext(connectors=[connector_metadata], tools=all_tools)
 
@@ -1428,12 +1449,11 @@ class GoalService:
             # Agent Runtime: mark trace success
             try:
                 from app.api.agent_runtime import _traces
+
                 _t_id = record.execution_context.get("agent_runtime_trace_id")
                 if _t_id and _t_id in _traces:
                     _traces[_t_id].success = True
-                    _traces[_t_id].duration_ms = (
-                        (_monotonic() - record.started_monotonic) * 1000
-                    )
+                    _traces[_t_id].duration_ms = (_monotonic() - record.started_monotonic) * 1000
             except Exception:
                 pass
             # Persist status update to PostgreSQL in the background.
@@ -1516,9 +1536,7 @@ class GoalService:
                                     "Self-optimizer failed for goal %s: %s", goal_id, opt_exc
                                 )
             except Exception as exc:
-                _svc_logger.warning(
-                    "Eval scoring failed for goal %s: %s", goal_id, exc
-                )
+                _svc_logger.warning("Eval scoring failed for goal %s: %s", goal_id, exc)
         elif etype == "goal_failed":
             record.status = GoalStatus.FAILED
             record.completed_at = datetime.now(UTC).isoformat()
@@ -1526,13 +1544,12 @@ class GoalService:
             # Agent Runtime: mark trace failed
             try:
                 from app.api.agent_runtime import _traces
+
                 _t_id = record.execution_context.get("agent_runtime_trace_id")
                 if _t_id and _t_id in _traces:
                     _traces[_t_id].success = False
                     _traces[_t_id].error = sanitized_event.get("reason", "goal_failed")
-                    _traces[_t_id].duration_ms = (
-                        (_monotonic() - record.started_monotonic) * 1000
-                    )
+                    _traces[_t_id].duration_ms = (_monotonic() - record.started_monotonic) * 1000
             except Exception:
                 pass
             if self._db is not None:
@@ -1552,12 +1569,12 @@ class GoalService:
         # Decrement the per-tenant concurrent-goal counter for every terminal event.
         if etype in {"goal_complete", "goal_failed", "goal_cancelled"}:
             from app.tenancy.limits import decrement_concurrent_goals
-            await decrement_concurrent_goals(
-                tenant_id=record.tenant_id, redis=self._redis
-            )
+
+            await decrement_concurrent_goals(tenant_id=record.tenant_id, redis=self._redis)
             # Release dedup key so future identical goals can be submitted
             try:
                 from app.services.dedup import _default_deduplicator as _goal_dedup
+
                 _goal_text = getattr(record, "goal_text", "") or ""
                 if _goal_text:
                     await _goal_dedup.release(record.tenant_id, _goal_text)
@@ -1574,7 +1591,11 @@ class GoalService:
         # Publish ephemeral token_chunk events to a *separate* lightweight channel
         # so front-end SSE consumers can display live typing without polluting the
         # main event log.  Only published when Redis is available.
-        if sanitized_event.get("type") == "token_chunk" and self._redis is not None and tenant_ctx is not None:
+        if (
+            sanitized_event.get("type") == "token_chunk"
+            and self._redis is not None
+            and tenant_ctx is not None
+        ):
             try:
                 _token_channel = f"goal_tokens:{tenant_ctx.tenant_id}:{goal_id}"
                 await self._redis.publish(_token_channel, json.dumps(sanitized_event))
@@ -1648,11 +1669,7 @@ class GoalService:
                     admitted.max_attempts,
                 ),
                 iterations_per_attempt=min(
-                    int(
-                        cfg_data.get(
-                            "iterations_per_attempt", admitted.iterations_per_attempt
-                        )
-                    ),
+                    int(cfg_data.get("iterations_per_attempt", admitted.iterations_per_attempt)),
                     admitted.iterations_per_attempt,
                 ),
                 base_backoff_seconds=float(
@@ -1665,16 +1682,10 @@ class GoalService:
                     cfg_data.get("strategy_switch_after", admitted.strategy_switch_after)
                 ),
                 escalate_after_failures=int(
-                    cfg_data.get(
-                        "escalate_after_failures", admitted.escalate_after_failures
-                    )
+                    cfg_data.get("escalate_after_failures", admitted.escalate_after_failures)
                 ),
                 total_timeout_seconds=min(
-                    float(
-                        cfg_data.get(
-                            "total_timeout_seconds", admitted.total_timeout_seconds
-                        )
-                    ),
+                    float(cfg_data.get("total_timeout_seconds", admitted.total_timeout_seconds)),
                     admitted.total_timeout_seconds,
                 ),
                 decompose_on_failure=bool(
@@ -1707,8 +1718,7 @@ class GoalService:
             _persist_record = self._goals.get(goal_id)
             _persist_profile_kwargs = (
                 {"runtime_profile": _persist_record.runtime_profile}
-                if _persist_record is not None
-                and _persist_record.runtime_profile is not None
+                if _persist_record is not None and _persist_record.runtime_profile is not None
                 else {}
             )
             loop = self._make_agent_loop_for_tenant(
@@ -1783,8 +1793,7 @@ class GoalService:
             raise
         except Exception as exc:
             await self._dispatch_event(
-                goal_id, {"type": "goal_failed", "reason": str(exc)},
-                tenant_ctx=tenant_ctx
+                goal_id, {"type": "goal_failed", "reason": str(exc)}, tenant_ctx=tenant_ctx
             )
 
     async def _run_agent_loop(
@@ -1810,6 +1819,7 @@ class GoalService:
             # closed (required=True) or fall through (required=False).
             try:
                 from app.core.runtime_flags import get_runtime_flags as _get_flags
+
                 _flags = _get_flags()
                 if _flags.isolated_agent_execution:
                     await self._run_agent_loop_isolated(
@@ -1822,15 +1832,18 @@ class GoalService:
             except Exception as _iso_import_exc:
                 _svc_logger.warning(
                     "isolation_flag_check_failed goal_id=%s error=%s",
-                    goal_id, str(_iso_import_exc)[:120],
+                    goal_id,
+                    str(_iso_import_exc)[:120],
                 )
                 # Fail-closed when isolation is required
                 try:
                     from app.core.runtime_flags import get_runtime_flags as _gf2
+
                     if _gf2().isolated_execution_required:
                         record = self._goals.get(goal_id)
                         if record is not None:
                             from app.agent.state import GoalStatus as _GS
+
                             record.status = _GS.FAILED
                             record.error_message = str(_iso_import_exc)
                         await self._dispatch_event(
@@ -1873,9 +1886,9 @@ class GoalService:
                         _agent_collection_ids = list(_agent_rec.get("allowed_collection_ids", []))
             loop._agent_collection_ids = _agent_collection_ids
             # Detect FakeProvider so get_goal() can surface a warning to callers
-            if hasattr(loop, '_planner') and type(loop._planner).__name__ == 'FakeProvider':
+            if hasattr(loop, "_planner") and type(loop._planner).__name__ == "FakeProvider":
                 if record is not None:
-                    record.execution_context['provider_warning'] = (
+                    record.execution_context["provider_warning"] = (
                         "No real LLM provider configured. Results are simulated."
                     )
 
@@ -1901,6 +1914,7 @@ class GoalService:
             # Lessons written by ReflexionWirer on failure are recalled here for the next goal.
             try:
                 from app.agent.reflexion_wirer import get_reflexion_wirer
+
                 _rw_for_ctx = get_reflexion_wirer()
                 _lessons_for_ctx = _rw_for_ctx._store.recall(
                     tenant_id=tenant_ctx.tenant_id, limit=5
@@ -2000,6 +2014,7 @@ class GoalService:
         scoped_llm_key = ""
         try:
             from app.services.llm_config_store import get_llm_config_store
+
             _config_store = get_llm_config_store()
             if _config_store is not None:
                 _cfg = await _config_store.get_config(tenant_ctx.tenant_id) or {}
@@ -2065,6 +2080,7 @@ class GoalService:
             # Update goal record status to mirror the execution result
             if record is not None:
                 from app.agent.state import GoalStatus
+
                 if result.success:
                     record.status = GoalStatus.COMPLETE
                 else:
@@ -2073,10 +2089,12 @@ class GoalService:
         except RunnerUnavailableError as exc:
             _svc_logger.error(
                 "isolated_runner_unavailable goal_id=%s reason=%s",
-                goal_id, str(exc)[:200],
+                goal_id,
+                str(exc)[:200],
             )
             if record is not None:
                 from app.agent.state import GoalStatus
+
                 record.status = GoalStatus.FAILED
                 record.error_message = str(exc)
             await self._dispatch_event(
@@ -2092,10 +2110,12 @@ class GoalService:
         except Exception as exc:
             _svc_logger.error(
                 "isolated_execution_unexpected_error goal_id=%s error=%s",
-                goal_id, str(exc)[:200],
+                goal_id,
+                str(exc)[:200],
             )
             if record is not None:
                 from app.agent.state import GoalStatus
+
                 record.status = GoalStatus.FAILED
                 record.error_message = str(exc)
             await self._dispatch_event(
@@ -2173,6 +2193,7 @@ class GoalService:
             # Check and atomically increment the concurrent-goal counter.
             # Raises PlanLimitExceededError (HTTP 429) when the tenant is at limit.
             from app.tenancy.limits import check_and_increment_concurrent_goals
+
             await check_and_increment_concurrent_goals(
                 tenant_ctx=tenant_ctx,
                 redis=getattr(self, "_redis", None),
@@ -2183,13 +2204,12 @@ class GoalService:
             # the existing goal_id rather than spawning a duplicate Celery task.
             try:
                 from app.services.dedup import _default_deduplicator as _goal_dedup
+
                 _dedup_redis = getattr(self, "_redis", None)
                 if _dedup_redis is not None and not hasattr(_goal_dedup, "_redis_wired"):
                     _goal_dedup._redis = _dedup_redis
                     _goal_dedup._redis_wired = True  # type: ignore[attr-defined]
-                _existing_id = await _goal_dedup.get_existing(
-                    tenant_ctx.tenant_id, goal
-                )
+                _existing_id = await _goal_dedup.get_existing(tenant_ctx.tenant_id, goal)
                 if _existing_id:
                     return {
                         "goal_id": _existing_id,
@@ -2205,6 +2225,7 @@ class GoalService:
             # Register goal_id for deduplication (allow others to find it)
             try:
                 from app.services.dedup import _default_deduplicator as _goal_dedup
+
                 await _goal_dedup.register(tenant_ctx.tenant_id, goal, goal_id)
             except Exception:
                 pass
@@ -2221,6 +2242,7 @@ class GoalService:
                         else:
                             # Fallback: create fresh router (no DB history scoring)
                             from app.agent.router import AgentRouter
+
                             router = AgentRouter(agent_store=agent_store)
                             decision = await router.route(goal, tenant_ctx)
                         if decision.agent_id and decision.confidence >= 0.3:
@@ -2252,8 +2274,7 @@ class GoalService:
                                     *_ma_tasks, return_exceptions=True
                                 )
                                 _ma_valid = [
-                                    r for r in _ma_results
-                                    if isinstance(r, dict) and "goal_id" in r
+                                    r for r in _ma_results if isinstance(r, dict) and "goal_id" in r
                                 ]
                                 if _ma_valid:
                                     return {
@@ -2277,10 +2298,10 @@ class GoalService:
                             if _all_agents:
                                 # Use router scoring to pick the best agent
                                 from app.agent.router import AgentRouter as _AR
+
                                 _fallback_router = _AR(agent_store=agent_store)
                                 _fallback_agents = [
-                                    a if isinstance(a, dict) else a.__dict__
-                                    for a in _all_agents
+                                    a if isinstance(a, dict) else a.__dict__ for a in _all_agents
                                 ]
                                 # Score each agent and pick highest
                                 _best_id = None
@@ -2294,7 +2315,9 @@ class GoalService:
                                         _best_id = _fa.get("agent_id")
                                 # Use best if it has any score; otherwise first
                                 agent_id = _best_id or (
-                                    _fallback_agents[0].get("agent_id") if _fallback_agents else None
+                                    _fallback_agents[0].get("agent_id")
+                                    if _fallback_agents
+                                    else None
                                 )
                                 if agent_id:
                                     _svc_logger.info(
@@ -2324,12 +2347,15 @@ class GoalService:
             try:
                 from app.ai_router.models import TaskType
                 from app.ai_router.router import ai_router
+
                 planner_model = ai_router.select_model(TaskType.PLANNING, tenant_ctx.tenant_id)
                 if planner_model:
                     record.execution_context["ai_router_planner"] = (
                         f"{planner_model.provider}/{planner_model.model_id}"
                     )
-                    record.execution_context["ai_router_quality_score"] = planner_model.quality_score
+                    record.execution_context["ai_router_quality_score"] = (
+                        planner_model.quality_score
+                    )
             except Exception:
                 pass
 
@@ -2343,10 +2369,16 @@ class GoalService:
                 )
                 if _profile_data:
                     record.runtime_profile = _profile_data.get("profile_object")
-                    record.execution_context["runtime_profile"] = _profile_data.get("runtime_profile", {})
-                    record.execution_context["decision_trace"] = _profile_data.get("decision_trace", {})
+                    record.execution_context["runtime_profile"] = _profile_data.get(
+                        "runtime_profile", {}
+                    )
+                    record.execution_context["decision_trace"] = _profile_data.get(
+                        "decision_trace", {}
+                    )
                     record.execution_context["profile_id"] = _profile_data.get("profile_id", "")
-                    record.execution_context["assembly_latency_ms"] = _profile_data.get("assembly_latency_ms", 0.0)
+                    record.execution_context["assembly_latency_ms"] = _profile_data.get(
+                        "assembly_latency_ms", 0.0
+                    )
             except Exception:
                 pass
 
@@ -2354,6 +2386,7 @@ class GoalService:
             try:
                 from app.agent_runtime.models import AgentExecutionPlan, AgentRunTrace
                 from app.api.agent_runtime import _plans, _traces
+
                 _ar_now = datetime.now(UTC).isoformat()
                 _plan_id = uuid.uuid4().hex
                 _trace_id = uuid.uuid4().hex
@@ -2415,6 +2448,7 @@ class GoalService:
                     # we must decrement here before re-raising.
                     try:
                         from app.tenancy.limits import decrement_concurrent_goals
+
                         await decrement_concurrent_goals(
                             tenant_id=tenant_ctx.tenant_id,
                             redis=getattr(self, "_redis", None),
@@ -2450,8 +2484,7 @@ class GoalService:
                             )
                             if isinstance(_agent_for_queue, dict):
                                 _connector_ids = [
-                                    str(item)
-                                    for item in _agent_for_queue.get("connector_ids", [])
+                                    str(item) for item in _agent_for_queue.get("connector_ids", [])
                                 ]
                     self._task_queue.enqueue_goal(
                         goal_id=goal_id,
@@ -2492,13 +2525,13 @@ class GoalService:
                         if record.runtime_profile is not None
                         else (execution_context or {}).get("persistence_mode", False)
                     )
-                    persistence_cfg = (execution_context or {}).get(
-                        "persistence_config", {}
-                    )
+                    persistence_cfg = (execution_context or {}).get("persistence_config", {})
                     if persistence_mode:
                         agent_task: asyncio.Task[None] = asyncio.create_task(
                             self._run_agent_loop_persistent(
-                                goal_id, goal, tenant_ctx,
+                                goal_id,
+                                goal,
+                                tenant_ctx,
                                 tool_context=tool_context,
                                 persistence_config=persistence_cfg,
                             ),
@@ -2614,9 +2647,7 @@ class GoalService:
                     "event_count": event_count,
                 }
             )
-        return {
-            "goals": responses
-        }
+        return {"goals": responses}
 
     async def get_metrics(self, tenant_ctx: TenantContext) -> dict[str, Any]:
         """Return aggregated metrics for the tenant's goals — reads from DB when available."""
@@ -2624,8 +2655,11 @@ class GoalService:
         if self._db is not None:
             try:
                 from sqlalchemy import text
+
                 async with self._db() as session:
-                    row = (await session.execute(text("""
+                    row = (
+                        await session.execute(
+                            text("""
                         SELECT
                           COUNT(*) FILTER (WHERE status IN ('complete','completed')) AS completed,
                           COUNT(*) FILTER (WHERE status IN ('failed','error')) AS failed,
@@ -2635,7 +2669,10 @@ class GoalService:
                           AVG(EXTRACT(EPOCH FROM (completed_at - created_at))*1000) FILTER (WHERE status IN ('complete','completed') AND completed_at IS NOT NULL) AS avg_latency_ms,
                           COUNT(*) FILTER (WHERE created_at::date = CURRENT_DATE) AS submitted_today
                         FROM goals WHERE tenant_id = :tid
-                    """), {"tid": tenant_ctx.tenant_id})).fetchone()
+                    """),
+                            {"tid": tenant_ctx.tenant_id},
+                        )
+                    ).fetchone()
 
                     if row:
                         completed = row[0] or 0
@@ -2645,9 +2682,13 @@ class GoalService:
                         terminal = completed + failed + cancelled
                         cost_today_usd = 0.0
                         cost_ctrl = (
-                            getattr(self._app_state, "redis_cost_controller", None)
-                            or getattr(self._app_state, "cost_controller", None)
-                        ) if self._app_state else None
+                            (
+                                getattr(self._app_state, "redis_cost_controller", None)
+                                or getattr(self._app_state, "cost_controller", None)
+                            )
+                            if self._app_state
+                            else None
+                        )
                         if cost_ctrl is not None:
                             try:
                                 _cost_val = cost_ctrl.get_tenant_cost_today(tenant_ctx)
@@ -2758,6 +2799,7 @@ class GoalService:
             # Reconstruct minimal state from record data
             from app.agent.state import AgentState as _AS
             from app.agent.state import GoalStatus as _GS
+
             try:
                 goal_status = _GS(record.status.value)
             except (ValueError, AttributeError):
@@ -2770,18 +2812,20 @@ class GoalService:
                 status=goal_status,
                 steps=list(record.steps) if getattr(record, "steps", None) else [],
                 verification_success=(record.status == record.status.COMPLETE),
-                verification_feedback=record.execution_context.get(
-                    "verification_feedback", ""
-                ) if isinstance(record.execution_context, dict) else "",
+                verification_feedback=record.execution_context.get("verification_feedback", "")
+                if isinstance(record.execution_context, dict)
+                else "",
                 events=list(record.events) if getattr(record, "events", None) else [],
-                iterations=int(
-                    record.execution_context.get("iterations", 1)
-                ) if isinstance(record.execution_context, dict) else 1,
+                iterations=int(record.execution_context.get("iterations", 1))
+                if isinstance(record.execution_context, dict)
+                else 1,
                 context=dict(record.execution_context)
-                if isinstance(record.execution_context, dict) else {},
+                if isinstance(record.execution_context, dict)
+                else {},
             )
 
         from app.intelligence.eval_runner import EvalRunner
+
         runner = EvalRunner()
         provider = getattr(self, "_app_provider", None)
         scorecard = await runner.score_async(
@@ -2812,6 +2856,7 @@ class GoalService:
         redis = getattr(self, "_redis", None)
         if redis is not None:
             from app.reliability.goal_lifecycle import signal_cancel
+
             await signal_cancel(goal_id, redis)
 
         record.status = GoalStatus.CANCELLED
@@ -2823,9 +2868,7 @@ class GoalService:
         """Pause a running goal. The agent loop will honour the pause event."""
         record = self._get_record(goal_id, tenant_ctx)
         if record.status not in {GoalStatus.EXECUTING, GoalStatus.PLANNING}:
-            raise ValueError(
-                f"Goal {goal_id} is not running (status: {record.status.value})"
-            )
+            raise ValueError(f"Goal {goal_id} is not running (status: {record.status.value})")
         _GOAL_PAUSE_EVENTS[goal_id] = asyncio.Event()
         record.status = GoalStatus.WAITING_HUMAN
         await self._dispatch_event(goal_id, {"type": "goal_paused"}, tenant_ctx=tenant_ctx)
@@ -2834,6 +2877,7 @@ class GoalService:
         redis = getattr(self, "_redis", None)
         if redis is not None:
             from app.reliability.goal_lifecycle import signal_pause
+
             await signal_pause(goal_id, redis)
 
         return {"goal_id": goal_id, "status": "paused"}
@@ -2855,9 +2899,7 @@ class GoalService:
         """
         record = self._get_record(goal_id, tenant_ctx)
         if record.status in _TERMINAL_STATUSES:
-            raise ValueError(
-                f"Goal {goal_id} is already terminal (status: {record.status.value})"
-            )
+            raise ValueError(f"Goal {goal_id} is already terminal (status: {record.status.value})")
 
         if not approved:
             record.status = GoalStatus.FAILED
@@ -2908,6 +2950,7 @@ class GoalService:
                 # C4 fix: clear Redis pause flag on checkpoint-based resume path too
                 try:
                     from app.reliability.goal_lifecycle import signal_resume as _signal_resume_cp
+
                     _redis_cp = getattr(self, "_redis", None)
                     if _redis_cp is not None:
                         _asyncio.ensure_future(_signal_resume_cp(goal_id, _redis_cp))
@@ -2931,9 +2974,11 @@ class GoalService:
         # C4 fix: clear Redis pause flag so Celery workers stop polling is_paused_sync()
         try:
             from app.reliability.goal_lifecycle import signal_resume as _signal_resume
+
             _redis = getattr(self, "_redis", None)
             if _redis is not None:
                 import asyncio as _c4_asyncio
+
                 _c4_asyncio.ensure_future(_signal_resume(goal_id, _redis))
         except Exception:
             pass
@@ -3020,9 +3065,13 @@ class GoalService:
 
             try:
                 import redis.asyncio as _aioredis
-                async with _aioredis.from_url(
-                    self._redis_url_for_pubsub, decode_responses=True
-                ) as _pubsub_client, _pubsub_client.pubsub() as pubsub:
+
+                async with (
+                    _aioredis.from_url(
+                        self._redis_url_for_pubsub, decode_responses=True
+                    ) as _pubsub_client,
+                    _pubsub_client.pubsub() as pubsub,
+                ):
                     channel = f"goal_events:{tenant_ctx.tenant_id}:{goal_id}"
                     await pubsub.subscribe(channel)
                     async for message in pubsub.listen():
@@ -3166,7 +3215,9 @@ class GoalService:
         if action == "approve":
             ok = self._hitl.approve(request_id, approver=approver, note=note, tenant_ctx=tenant_ctx)
         elif action == "reject":
-            ok = await self._hitl.reject(request_id, approver=approver, note=note, tenant_ctx=tenant_ctx)
+            ok = await self._hitl.reject(
+                request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
+            )
         else:
             ok = False
         return {"request_id": request_id, "action": action, "accepted": ok}
@@ -3193,8 +3244,10 @@ class GoalService:
             from app.db.models.goal import Goal
             from app.db.rls import sqlalchemy_rls_context
 
-            async with self._db() as session, session.begin(), sqlalchemy_rls_context(
-                session, tenant_id
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
             ):
                 g = Goal(
                     id=goal_id,
@@ -3209,8 +3262,6 @@ class GoalService:
                 )
                 session.add(g)
         except Exception as exc:
-            
-
             _svc_logger.warning("DB persist goal failed: %s", exc)
             if raise_on_error:
                 raise
@@ -3264,8 +3315,10 @@ class GoalService:
             from app.db.models.goal import Goal
             from app.db.rls import sqlalchemy_rls_context
 
-            async with self._db() as session, session.begin(), sqlalchemy_rls_context(
-                session, tenant_ctx.tenant_id
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
             ):
                 result = await session.execute(
                     select(Goal).where(
@@ -3295,8 +3348,6 @@ class GoalService:
             self._goals[row.id] = record
             return record
         except Exception as exc:
-            
-
             _svc_logger.warning("DB get goal failed: %s", exc)
             return None
 
@@ -3324,8 +3375,10 @@ class GoalService:
                 values["error_message"] = error_message
             if status == "complete":
                 values["completed_at"] = datetime.now(UTC)
-            async with self._db() as session, session.begin(), sqlalchemy_rls_context(
-                session, tenant_id
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
             ):
                 await session.execute(
                     update(Goal)
@@ -3333,8 +3386,6 @@ class GoalService:
                     .values(**values)
                 )
         except Exception as exc:
-            
-
             _svc_logger.warning("DB update goal status failed: %s", exc)
 
     async def _db_persist_step(
@@ -3355,8 +3406,10 @@ class GoalService:
             from app.db.models.goal import GoalStep
             from app.db.rls import sqlalchemy_rls_context
 
-            async with self._db() as session, session.begin(), sqlalchemy_rls_context(
-                session, tenant_id
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
             ):
                 s = GoalStep(
                     id=_uuid.uuid4().hex,
@@ -3369,8 +3422,6 @@ class GoalService:
                 )
                 session.add(s)
         except Exception as exc:
-            
-
             _svc_logger.warning("DB persist step failed: %s", exc)
 
     async def sync_from_db(self) -> int:
@@ -3430,7 +3481,6 @@ class GoalService:
                             )
                             self._goals[g.id] = record
                             loaded += 1
-            
 
             _svc_logger.info("Synced %d recent goals from DB", loaded)
             # Re-enqueue any goal that was interrupted mid-execution by a restart.
@@ -3439,7 +3489,5 @@ class GoalService:
                 _svc_logger.info("Recovered %d interrupted goals after restart", recovered)
             return loaded
         except Exception as exc:
-            
-
             _svc_logger.warning("DB sync goals failed: %s", exc)
             return 0

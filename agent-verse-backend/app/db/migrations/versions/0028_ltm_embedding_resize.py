@@ -7,8 +7,9 @@ This covers all supported embedding providers:
   - sentence-transformers all-MiniLM-L6-v2 (local): smaller dims (fits in 1536)
 """
 
-from alembic import op
 import os
+
+from alembic import op
 
 revision = "0028"
 down_revision = "0027"
@@ -23,12 +24,10 @@ def upgrade() -> None:
     op.execute("DROP INDEX IF EXISTS ix_ltm_embedding_hnsw")
     # Drop old column and recreate at new dimension
     op.execute("ALTER TABLE long_term_memory DROP COLUMN IF EXISTS embedding")
-    op.execute(
-        f"ALTER TABLE long_term_memory ADD COLUMN IF NOT EXISTS embedding vector({_DIM})"
-    )
+    op.execute(f"ALTER TABLE long_term_memory ADD COLUMN IF NOT EXISTS embedding vector({_DIM})")
     # Recreate HNSW index at new dimension
     op.execute(
-        f"""
+        """
         CREATE INDEX IF NOT EXISTS ix_ltm_embedding_hnsw
         ON long_term_memory
         USING hnsw (embedding vector_cosine_ops)

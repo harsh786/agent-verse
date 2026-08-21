@@ -1,4 +1,5 @@
 """Civilization event types and dispatch helpers."""
+
 from __future__ import annotations
 
 import json
@@ -71,9 +72,7 @@ async def emit_event(
                     },
                 )
         except Exception as exc:
-            logger.warning(
-                "civ_event_persist_failed", event_type=event_type, error=str(exc)
-            )
+            logger.warning("civ_event_persist_failed", event_type=event_type, error=str(exc))
 
     # Publish to Redis SSE channel
     if redis is not None:
@@ -81,9 +80,7 @@ async def emit_event(
             channel = f"civ_sse:{tenant_id}:{civilization_id}"
             await redis.publish(channel, json.dumps(full_event))
         except Exception as exc:
-            logger.warning(
-                "civ_event_redis_failed", event_type=event_type, error=str(exc)
-            )
+            logger.warning("civ_event_redis_failed", event_type=event_type, error=str(exc))
 
     return event_id
 

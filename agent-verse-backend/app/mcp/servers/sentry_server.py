@@ -4,6 +4,7 @@ Environment:
   SENTRY_AUTH_TOKEN: Sentry internal integration or user auth token
   SENTRY_ORG_SLUG:   Organization slug (e.g. my-company)
 """
+
 from __future__ import annotations
 
 import os
@@ -35,7 +36,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "project_slug": {"type": "string"},
-                "query": {"type": "string", "default": "is:unresolved", "description": "Issue search query"},
+                "query": {
+                    "type": "string",
+                    "default": "is:unresolved",
+                    "description": "Issue search query",
+                },
                 "limit": {"type": "integer", "default": 25},
                 "cursor": {"type": "string"},
             },
@@ -79,7 +84,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "issue_id": {"type": "string"},
                 "limit": {"type": "integer", "default": 10},
-                "full": {"type": "boolean", "default": False, "description": "Include full event details"},
+                "full": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Include full event details",
+                },
             },
             "required": ["issue_id"],
         },
@@ -145,7 +154,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
     if not token:
         return {"error": "SENTRY_AUTH_TOKEN not configured"}
-    if not org and tool_name in ("sentry_list_projects", "sentry_list_issues", "sentry_create_release", "sentry_query"):
+    if not org and tool_name in (
+        "sentry_list_projects",
+        "sentry_list_issues",
+        "sentry_create_release",
+        "sentry_query",
+    ):
         return {"error": "SENTRY_ORG_SLUG not configured"}
 
     try:
@@ -164,8 +178,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 resp.raise_for_status()
                 return {
                     "projects": [
-                        {"id": p["id"], "slug": p["slug"], "name": p["name"]}
-                        for p in resp.json()
+                        {"id": p["id"], "slug": p["slug"], "name": p["name"]} for p in resp.json()
                     ]
                 }
 

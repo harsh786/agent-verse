@@ -1,4 +1,5 @@
 """Channel Ingestion Gateway — routes inbound channel events to the dispatcher."""
+
 from __future__ import annotations
 
 import logging
@@ -7,13 +8,13 @@ from typing import Any
 _log = logging.getLogger(__name__)
 
 _CHANNEL_TYPE_MAP = {
-    "slack":   ["chat_command", "chat_keyword", "chat_mention", "slack_event"],
-    "teams":   ["teams_webhook", "chat_command"],
+    "slack": ["chat_command", "chat_keyword", "chat_mention", "slack_event"],
+    "teams": ["teams_webhook", "chat_command"],
     "discord": ["discord_event", "chat_command", "chat_keyword"],
-    "email":   ["email_intent", "email_arrival"],
-    "sms":     ["sms_inbound"],
-    "voice":   ["voice_transcript", "meeting_ended"],
-    "form":    ["form_submission"],
+    "email": ["email_intent", "email_arrival"],
+    "sms": ["sms_inbound"],
+    "voice": ["voice_transcript", "meeting_ended"],
+    "form": ["form_submission"],
 }
 
 
@@ -48,9 +49,7 @@ class ChannelIngestionGateway:
             if self._store is None:
                 continue
             try:
-                triggers = await self._store.find_by_type_async(
-                    trigger_type, tenant_id=tenant_id
-                )
+                triggers = await self._store.find_by_type_async(trigger_type, tenant_id=tenant_id)
             except Exception as exc:
                 _log.warning("channel_ingest_store_error channel=%s: %s", channel_type, exc)
                 continue
@@ -58,18 +57,22 @@ class ChannelIngestionGateway:
             for trigger in triggers:
                 spec = getattr(trigger, "spec", trigger)
                 from types import SimpleNamespace
+
                 tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=plan)
                 try:
                     if self._dispatcher:
                         event = await self._dispatcher.dispatch(
-                            spec, payload, tenant_ctx,
+                            spec,
+                            payload,
+                            tenant_ctx,
                             message_id=payload.get("message_id") or payload.get("event_id"),
                         )
                         fired.append(event)
                 except Exception as exc:
                     _log.warning(
                         "channel_ingest_dispatch_error trigger=%s: %s",
-                        getattr(spec, "trigger_id", "?"), exc,
+                        getattr(spec, "trigger_id", "?"),
+                        exc,
                     )
 
         return fired

@@ -1,4 +1,5 @@
 """app/org — AI Organization Operating System domain."""
+
 from __future__ import annotations
 
 from app.org.exceptions import (

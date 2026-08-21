@@ -1,5 +1,6 @@
 """Enterprise API — compliance, simulation, red-team, marketplace, intelligence,
 SAML 2.0 SSO, SCIM 2.0 provisioning, and contract management."""
+
 from __future__ import annotations
 
 import asyncio
@@ -21,6 +22,7 @@ scim_router = APIRouter(prefix="/scim/v2", tags=["SCIM 2.0"])
 
 # --- helpers ---
 
+
 def _require_tenant(request: Request) -> Any:
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
@@ -29,7 +31,9 @@ def _require_tenant(request: Request) -> Any:
 
 
 def _compliance(request: Request) -> Any:
-    from app.api._deps import get_compliance_controller as _gcc; return _gcc(request)
+    from app.api._deps import get_compliance_controller as _gcc
+
+    return _gcc(request)
 
 
 def _compliance_checker(request: Request) -> Any:
@@ -38,15 +42,21 @@ def _compliance_checker(request: Request) -> Any:
 
 
 def _simulation(request: Request) -> Any:
-    from app.api._deps import get_simulation_runner as _gsr; return _gsr(request)
+    from app.api._deps import get_simulation_runner as _gsr
+
+    return _gsr(request)
 
 
 def _red_team(request: Request) -> Any:
-    from app.api._deps import get_red_team_runner as _grtr; return _grtr(request)
+    from app.api._deps import get_red_team_runner as _grtr
+
+    return _grtr(request)
 
 
 def _marketplace(request: Request) -> Any:
-    from app.api._deps import get_marketplace as _gmp; return _gmp(request)
+    from app.api._deps import get_marketplace as _gmp
+
+    return _gmp(request)
 
 
 def _marketplace_v2(request: Request) -> Any:
@@ -57,11 +67,14 @@ def _marketplace_v2(request: Request) -> Any:
     # Lazy import fallback: return an un-wired MarketplaceV2 for environments
     # that haven't run the lifespan yet (e.g. some test setups).
     from app.enterprise.marketplace_v2 import MarketplaceV2
+
     return MarketplaceV2(db_factory=None)
 
 
 def _self_optimizer(request: Request) -> Any:
-    from app.api._deps import get_self_optimizer as _gso; return _gso(request)
+    from app.api._deps import get_self_optimizer as _gso
+
+    return _gso(request)
 
 
 def _get_db(request: Request) -> Any:
@@ -69,6 +82,7 @@ def _get_db(request: Request) -> Any:
     if db is None:
         try:
             from app.db.session import get_session_factory
+
             db = get_session_factory()
         except Exception:
             pass
@@ -76,6 +90,7 @@ def _get_db(request: Request) -> Any:
 
 
 # --- Compliance ---
+
 
 @router.get("/compliance/export")
 async def request_data_export(request: Request) -> dict[str, Any]:
@@ -102,9 +117,7 @@ async def download_export(request: Request, request_id: str) -> Response:
         content=content,
         media_type="application/json",
         headers={
-            "Content-Disposition": (
-                f'attachment; filename="agentverse-export-{request_id}.json"'
-            )
+            "Content-Disposition": (f'attachment; filename="agentverse-export-{request_id}.json"')
         },
     )
 
@@ -143,6 +156,7 @@ async def list_data_regions(request: Request) -> list[dict[str, Any]]:
 
 
 # --- Simulation ---
+
 
 class SimulationRequest(BaseModel):
     goal: str
@@ -250,17 +264,20 @@ async def get_simulation_available_tools(request: Request) -> dict[str, Any]:
         try:
             raw_tools = await mcp_client.discover_all_tools(tenant_ctx=ctx)
             for t in raw_tools:
-                tools.append({
-                    "name": t.get("name", "") if isinstance(t, dict) else str(t),
-                    "description": t.get("description", "") if isinstance(t, dict) else "",
-                    "server_id": t.get("server_id", "") if isinstance(t, dict) else "",
-                })
+                tools.append(
+                    {
+                        "name": t.get("name", "") if isinstance(t, dict) else str(t),
+                        "description": t.get("description", "") if isinstance(t, dict) else "",
+                        "server_id": t.get("server_id", "") if isinstance(t, dict) else "",
+                    }
+                )
         except Exception:
             pass
     return {"tools": tools, "total": len(tools)}
 
 
 # --- Red Team ---
+
 
 class RedTeamRequest(BaseModel):
     cases: list[str] | None = None
@@ -287,6 +304,7 @@ async def run_red_team(request: Request, body: RedTeamRequest) -> dict[str, Any]
 
 # --- Marketplace ---
 
+
 class PublishTemplateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     domain: str = Field(..., min_length=1, max_length=50)
@@ -303,6 +321,7 @@ class BundleDeployRequest(BaseModel):
 
 
 # ── V2 request/response models ────────────────────────────────────────────────
+
 
 class PublishTemplateV2Request(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
@@ -385,6 +404,7 @@ async def browse_marketplace(
 
 # ── V2: paginated template list ───────────────────────────────────────────────
 
+
 @marketplace_router.get("/templates")
 async def list_templates_v2(
     request: Request,
@@ -419,9 +439,7 @@ async def list_templates_v2(
 
 
 @marketplace_router.post("/templates", status_code=201)
-async def publish_template_v2(
-    request: Request, body: PublishTemplateV2Request
-) -> dict[str, Any]:
+async def publish_template_v2(request: Request, body: PublishTemplateV2Request) -> dict[str, Any]:
     """Publish a template using the V2 DB-backed service (triggers security review)."""
     ctx = _require_tenant(request)
     svc = _marketplace_v2(request)
@@ -587,11 +605,7 @@ async def list_installs(request: Request) -> dict[str, Any]:
                 installed_ids = await marketplace.list_installs(tenant.tenant_id)
             elif hasattr(marketplace, "list_deployments"):
                 deployments = await marketplace.list_deployments(tenant.tenant_id)
-                installed_ids = [
-                    d.get("template_id")
-                    for d in deployments
-                    if d.get("template_id")
-                ]
+                installed_ids = [d.get("template_id") for d in deployments if d.get("template_id")]
         except Exception:
             pass
 
@@ -681,6 +695,7 @@ async def deploy_template(
 
 # --- Intelligence / Self-optimization ---
 
+
 @intelligence_router.get("/experiments")
 async def list_experiments(request: Request) -> list[dict]:
     """List all A/B optimization experiments for this tenant (M-2)."""
@@ -711,7 +726,9 @@ async def rollback_experiment(
     ctx = _require_tenant(request)
     self_opt_v2 = getattr(request.app.state, "self_optimizer_v2", None)
     if self_opt_v2 is None:
-        from fastapi import HTTPException as _HTTPException, status as _status
+        from fastapi import HTTPException as _HTTPException
+        from fastapi import status as _status
+
         raise _HTTPException(
             status_code=_status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Self-optimizer v2 not available",
@@ -720,11 +737,10 @@ async def rollback_experiment(
         experiments = await self_opt_v2.list_experiments(tenant_id=ctx.tenant_id)
     except Exception:
         experiments = []
-    experiment = next(
-        (e for e in experiments if e.get("id") == experiment_id), None
-    )
+    experiment = next((e for e in experiments if e.get("id") == experiment_id), None)
     if experiment is None:
         from fastapi import HTTPException as _HTTPException
+
         raise _HTTPException(status_code=404, detail=f"Experiment {experiment_id!r} not found")
     success = await self_opt_v2.rollback(
         tenant_id=ctx.tenant_id,
@@ -734,6 +750,7 @@ async def rollback_experiment(
     )
     if not success:
         from fastapi import HTTPException as _HTTPException
+
         raise _HTTPException(status_code=400, detail="Rollback failed")
     return {
         "experiment_id": experiment_id,
@@ -744,9 +761,7 @@ async def rollback_experiment(
 
 
 @intelligence_router.get("/suggestions")
-async def list_suggestions(
-    request: Request, applied: bool | None = None
-) -> list[dict[str, Any]]:
+async def list_suggestions(request: Request, applied: bool | None = None) -> list[dict[str, Any]]:
     """Return suggestions shaped to match the frontend Suggestion interface:
       {id, type, status, confidence, description, agent_id, created_at}
 
@@ -755,7 +770,9 @@ async def list_suggestions(
       category      → type
       applied True  → status "applied", False → "pending"
     """
-    from datetime import UTC, datetime as _dt
+    from datetime import UTC
+    from datetime import datetime as _dt
+
     ctx = _require_tenant(request)
     suggestions = _self_optimizer(request).list_suggestions(tenant_ctx=ctx, applied=applied)
     now_iso = _dt.now(UTC).isoformat()
@@ -776,9 +793,7 @@ async def list_suggestions(
 @intelligence_router.post("/suggestions/{suggestion_id}/apply")
 async def apply_suggestion(request: Request, suggestion_id: str) -> dict[str, Any]:
     ctx = _require_tenant(request)
-    ok = _self_optimizer(request).apply_suggestion(
-        suggestion_id=suggestion_id, tenant_ctx=ctx
-    )
+    ok = _self_optimizer(request).apply_suggestion(suggestion_id=suggestion_id, tenant_ctx=ctx)
     if not ok:
         raise HTTPException(status_code=404, detail="Suggestion not found")
     return {"suggestion_id": suggestion_id, "applied": True}
@@ -787,9 +802,7 @@ async def apply_suggestion(request: Request, suggestion_id: str) -> dict[str, An
 @intelligence_router.post("/suggestions/{suggestion_id}/reject")
 async def reject_suggestion(request: Request, suggestion_id: str) -> dict[str, Any]:
     ctx = _require_tenant(request)
-    ok = _self_optimizer(request).reject_suggestion(
-        suggestion_id=suggestion_id, tenant_ctx=ctx
-    )
+    ok = _self_optimizer(request).reject_suggestion(suggestion_id=suggestion_id, tenant_ctx=ctx)
     if not ok:
         raise HTTPException(status_code=404, detail="Suggestion not found")
     return {"suggestion_id": suggestion_id, "rejected": True}
@@ -822,9 +835,12 @@ async def get_benchmarks(
     if db is not None:
         try:
             from sqlalchemy import text as _t
+
             async with db() as session:
                 # Success rate
-                goal_row = (await session.execute(_t("""
+                goal_row = (
+                    await session.execute(
+                        _t("""
                     SELECT
                         COUNT(*) AS total,
                         SUM(CASE WHEN status IN ('complete','completed') THEN 1 ELSE 0 END)
@@ -832,24 +848,32 @@ async def get_benchmarks(
                     FROM goals
                     WHERE tenant_id = :tid
                       AND created_at > NOW() - (:days * INTERVAL '1 day')
-                """), {"tid": tenant_id, "days": days})).fetchone()
-                if goal_row and goal_row[0]:
-                    your_success_rate = round(
-                        float(goal_row[1] or 0) / float(goal_row[0]), 4
+                """),
+                        {"tid": tenant_id, "days": days},
                     )
+                ).fetchone()
+                if goal_row and goal_row[0]:
+                    your_success_rate = round(float(goal_row[1] or 0) / float(goal_row[0]), 4)
 
                 # Avg cost
-                cost_row = (await session.execute(_t("""
+                cost_row = (
+                    await session.execute(
+                        _t("""
                     SELECT AVG(cost_usd) FROM goals
                     WHERE tenant_id = :tid
                       AND cost_usd IS NOT NULL
                       AND created_at > NOW() - (:days * INTERVAL '1 day')
-                """), {"tid": tenant_id, "days": days})).fetchone()
+                """),
+                        {"tid": tenant_id, "days": days},
+                    )
+                ).fetchone()
                 if cost_row and cost_row[0]:
                     your_cost_usd = round(float(cost_row[0]), 6)
 
                 # Eval scores
-                eval_row = (await session.execute(_t("""
+                eval_row = (
+                    await session.execute(
+                        _t("""
                     SELECT
                         AVG(score_task_completion),
                         AVG(score_efficiency),
@@ -864,7 +888,10 @@ async def get_benchmarks(
                     FROM evaluations
                     WHERE tenant_id = :tid
                       AND run_at > NOW() - (:days * INTERVAL '1 day')
-                """), {"tid": tenant_id, "days": days})).fetchone()
+                """),
+                        {"tid": tenant_id, "days": days},
+                    )
+                ).fetchone()
                 if eval_row and eval_row[5]:
                     your_eval_score = round(float(eval_row[5]), 4)
                     your_dims = {
@@ -876,6 +903,7 @@ async def get_benchmarks(
                     }
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("benchmarks_your_metrics_failed: %s", exc)
 
     # --- Platform averages (anonymized aggregates across all tenants) ---
@@ -883,30 +911,41 @@ async def get_benchmarks(
     platform_avg_cost_usd = 0.05
     platform_avg_eval_score = 0.74
     platform_dims: dict[str, float] = {
-        "task_completion": 0.75, "efficiency": 0.72, "accuracy": 0.76,
-        "safety": 0.88, "coherence": 0.71,
+        "task_completion": 0.75,
+        "efficiency": 0.72,
+        "accuracy": 0.76,
+        "safety": 0.88,
+        "coherence": 0.71,
     }
 
     if db is not None:
         try:
             from sqlalchemy import text as _t
+
             async with db() as session:
                 # Platform success rate across all tenants (anonymized)
-                plat_row = (await session.execute(_t("""
+                plat_row = (
+                    await session.execute(
+                        _t("""
                     SELECT
                         COUNT(*) AS total,
                         SUM(CASE WHEN status IN ('complete','completed') THEN 1 ELSE 0 END) AS ok,
                         AVG(cost_usd) AS avg_cost
                     FROM goals
                     WHERE created_at > NOW() - (:days * INTERVAL '1 day')
-                """), {"days": days})).fetchone()
+                """),
+                        {"days": days},
+                    )
+                ).fetchone()
                 if plat_row and plat_row[0]:
                     platform_avg_success_rate = round(
                         float(plat_row[1] or 0) / float(plat_row[0]), 4
                     )
                     platform_avg_cost_usd = round(float(plat_row[2] or 0), 6)
 
-                plat_eval = (await session.execute(_t("""
+                plat_eval = (
+                    await session.execute(
+                        _t("""
                     SELECT
                         AVG(score_task_completion),
                         AVG(score_efficiency),
@@ -915,7 +954,10 @@ async def get_benchmarks(
                         AVG(score_coherence)
                     FROM evaluations
                     WHERE run_at > NOW() - (:days * INTERVAL '1 day')
-                """), {"days": days})).fetchone()
+                """),
+                        {"days": days},
+                    )
+                ).fetchone()
                 if plat_eval and plat_eval[0]:
                     dims = [float(v or 0) for v in plat_eval]
                     platform_avg_eval_score = round(sum(dims) / 5.0, 4)
@@ -928,6 +970,7 @@ async def get_benchmarks(
                     }
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("benchmarks_platform_metrics_failed: %s", exc)
 
     # --- Percentile computation ---
@@ -977,6 +1020,7 @@ async def get_benchmarks(
 
 # --- Eval Suites ---
 
+
 class CreateEvalSuiteRequest(BaseModel):
     suite_id: str | None = None
     name: str = ""
@@ -997,6 +1041,7 @@ async def create_eval_suite(request: Request, body: CreateEvalSuiteRequest) -> d
     """Create a new eval suite for golden task testing."""
     _require_tenant(request)
     import uuid as _uuid
+
     runner = getattr(request.app.state, "eval_suite_runner", None)
     if runner is None:
         raise HTTPException(503, "Eval suite runner not configured")
@@ -1008,9 +1053,7 @@ async def create_eval_suite(request: Request, body: CreateEvalSuiteRequest) -> d
         "description": body.description,
         "task_count": 0,
         "created_at": (
-            __import__("datetime").datetime
-            .now(__import__("datetime").timezone.utc)
-            .isoformat()
+            __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
         ),
     }
 
@@ -1048,6 +1091,7 @@ async def add_golden_task(
     if runner is None:
         raise HTTPException(503, "Eval suite runner not configured")
     from app.intelligence.eval_suite import GoldenTask
+
     task = GoldenTask(
         suite_id=suite_id,
         goal=body.goal,
@@ -1068,10 +1112,10 @@ async def run_eval_suite(request: Request, suite_id: str) -> dict[str, Any]:
     runner = getattr(request.app.state, "eval_suite_runner", None)
     if runner is None:
         raise HTTPException(503, "Eval suite runner not configured")
-    from app.api._deps import get_goal_service as _ggs; goal_service = _ggs(request)
-    result = await runner.run_suite(
-        suite_id=suite_id, goal_service=goal_service, tenant_ctx=ctx
-    )
+    from app.api._deps import get_goal_service as _ggs
+
+    goal_service = _ggs(request)
+    result = await runner.run_suite(suite_id=suite_id, goal_service=goal_service, tenant_ctx=ctx)
     return {
         "run_id": result.run_id,
         "suite_id": suite_id,
@@ -1082,7 +1126,8 @@ async def run_eval_suite(request: Request, suite_id: str) -> dict[str, Any]:
         "run_at": result.run_at,
         "task_results": [
             {
-                "task_id": r.task_id, "passed": r.passed,
+                "task_id": r.task_id,
+                "passed": r.passed,
                 "failure_reasons": r.failure_reasons,
                 "duration_seconds": round(r.duration_seconds, 2),
             }
@@ -1099,8 +1144,13 @@ async def get_suite_results(request: Request, suite_id: str) -> list[dict[str, A
     if runner is None:
         return []
     return [
-        {"run_id": r.run_id, "pass_rate": r.pass_rate,
-         "passed": r.passed_tasks, "failed": r.failed_tasks, "run_at": r.run_at}
+        {
+            "run_id": r.run_id,
+            "pass_rate": r.pass_rate,
+            "passed": r.passed_tasks,
+            "failed": r.failed_tasks,
+            "run_at": r.run_at,
+        }
         for r in runner.get_results(suite_id)
     ]
 
@@ -1109,16 +1159,19 @@ async def get_suite_results(request: Request, suite_id: str) -> list[dict[str, A
 async def get_eval_dimensions(request: Request) -> dict[str, Any]:
     """Return all 7 evaluation dimension names produced by EvalRunner."""
     from app.intelligence.eval_runner import EvalRunner
+
     return {"dimensions": EvalRunner.DIMENSIONS, "count": len(EvalRunner.DIMENSIONS)}
 
 
 # ── Prompt Variants (PromptOptimizer A/B testing) ─────────────────────────────
+
 
 def _prompt_optimizer_svc(request: Request) -> Any:
     """Return the PromptOptimizer from app.state, falling back to the default instance."""
     opt = getattr(request.app.state, "prompt_optimizer", None)
     if opt is None:
         from app.intelligence.prompt_optimizer import _default_optimizer
+
         opt = _default_optimizer
     return opt
 
@@ -1130,12 +1183,11 @@ class CreateVariantRequest(BaseModel):
 
 
 @intelligence_router.get("/prompt-variants")
-async def list_prompt_variants(
-    request: Request, key: str = ""
-) -> list[dict[str, Any]]:
+async def list_prompt_variants(request: Request, key: str = "") -> list[dict[str, Any]]:
     """List prompt variants for the tenant, optionally filtered by key."""
     ctx = _require_tenant(request)
     import statistics as _stats
+
     opt = _prompt_optimizer_svc(request)
     tenant_id = ctx.tenant_id
     # prefer tenant-scoped variants, fall back to "global"
@@ -1152,9 +1204,7 @@ async def list_prompt_variants(
             "prompt_text": v.prompt_text,
             "is_control": v.is_control,
             "run_count": v.run_count,
-            "mean_score": (
-                round(_stats.mean(v.eval_scores), 4) if v.eval_scores else None
-            ),
+            "mean_score": (round(_stats.mean(v.eval_scores), 4) if v.eval_scores else None),
             "p95_score": opt._percentile(v.eval_scores, 95) if v.eval_scores else None,
             "promoted_at": v.promoted_at.isoformat() if v.promoted_at else None,
         }
@@ -1163,9 +1213,7 @@ async def list_prompt_variants(
 
 
 @intelligence_router.post("/prompt-variants", status_code=201)
-async def create_prompt_variant(
-    request: Request, body: CreateVariantRequest
-) -> dict[str, Any]:
+async def create_prompt_variant(request: Request, body: CreateVariantRequest) -> dict[str, Any]:
     """Register a new challenger prompt variant for A/B testing."""
     ctx = _require_tenant(request)
     opt = _prompt_optimizer_svc(request)
@@ -1190,12 +1238,12 @@ async def create_prompt_variant(
 
 
 @intelligence_router.post("/prompt-variants/{variant_id}/promote")
-async def promote_prompt_variant(
-    request: Request, variant_id: str
-) -> dict[str, Any]:
+async def promote_prompt_variant(request: Request, variant_id: str) -> dict[str, Any]:
     """Manually promote a challenger variant to control."""
     ctx = _require_tenant(request)
-    from datetime import UTC, datetime as _dt
+    from datetime import UTC
+    from datetime import datetime as _dt
+
     opt = _prompt_optimizer_svc(request)
     tenant_id = ctx.tenant_id
 
@@ -1256,6 +1304,7 @@ async def get_variant_report(request: Request, variant_id: str) -> dict[str, Any
     """Get score report for a specific prompt variant."""
     _require_tenant(request)
     import statistics as _stats
+
     opt = _prompt_optimizer_svc(request)
 
     target_variant = None
@@ -1276,9 +1325,7 @@ async def get_variant_report(request: Request, variant_id: str) -> dict[str, Any
             else None
         ),
         "p95_score": (
-            opt._percentile(target_variant.eval_scores, 95)
-            if target_variant.eval_scores
-            else None
+            opt._percentile(target_variant.eval_scores, 95) if target_variant.eval_scores else None
         ),
         "run_count": target_variant.run_count,
         "win_rate": None,
@@ -1287,6 +1334,7 @@ async def get_variant_report(request: Request, variant_id: str) -> dict[str, Any
 
 
 # ── P2.10: Async GDPR Export + Consent Management ─────────────────────────────
+
 
 @compliance_router.post("/export/start")
 async def start_gdpr_export(request: Request) -> dict[str, Any]:
@@ -1298,21 +1346,28 @@ async def start_gdpr_export(request: Request) -> dict[str, Any]:
     if db is not None:
         try:
             from sqlalchemy import text
+
             async with db() as session, session.begin():
-                await session.execute(text("""
+                await session.execute(
+                    text("""
                     INSERT INTO gdpr_export_jobs (id, tenant_id, status, created_at)
                     VALUES (:id, :tid, 'pending', NOW())
-                """), {"id": job_id, "tid": ctx.tenant_id})
+                """),
+                    {"id": job_id, "tid": ctx.tenant_id},
+                )
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("gdpr_export_job_insert_failed: %s", exc)
 
     # Enqueue Celery task (best-effort — job still exists if this fails)
     try:
         from app.scaling.tasks import run_gdpr_export
+
         run_gdpr_export.delay(job_id, ctx.tenant_id)
     except Exception as exc:
         import logging
+
         logging.getLogger(__name__).warning("gdpr_export_enqueue_failed: %s", exc)
 
     return {
@@ -1328,14 +1383,25 @@ async def get_gdpr_export_status(request: Request, job_id: str) -> dict[str, Any
     ctx = _require_tenant(request)
     db = _get_db(request)
     if db is None:
-        return {"job_id": job_id, "status": "pending", "completed_at": None,
-                "download_url": None, "error": None}
+        return {
+            "job_id": job_id,
+            "status": "pending",
+            "completed_at": None,
+            "download_url": None,
+            "error": None,
+        }
     from sqlalchemy import text
+
     async with db() as session:
-        row = (await session.execute(text("""
+        row = (
+            await session.execute(
+                text("""
             SELECT status, completed_at, download_url, error_message
             FROM gdpr_export_jobs WHERE id = :id AND tenant_id = :tid
-        """), {"id": job_id, "tid": ctx.tenant_id})).fetchone()
+        """),
+                {"id": job_id, "tid": ctx.tenant_id},
+            )
+        ).fetchone()
     if not row:
         raise HTTPException(404, "Export job not found")
     return {
@@ -1361,20 +1427,28 @@ async def record_consent(request: Request, body: ConsentRequest) -> dict[str, An
     if db is not None:
         try:
             from sqlalchemy import text
+
             ip = request.client.host if request.client else ""
             ua = request.headers.get("user-agent", "")
             async with db() as session, session.begin():
-                await session.execute(text("""
+                await session.execute(
+                    text("""
                     INSERT INTO consent_records
                         (id, tenant_id, purpose, legal_basis, ip_address, user_agent)
                     VALUES (:id, :tid, :purpose, :basis, :ip, :ua)
-                """), {
-                    "id": consent_id, "tid": ctx.tenant_id,
-                    "purpose": body.purpose, "basis": body.legal_basis,
-                    "ip": ip, "ua": ua,
-                })
+                """),
+                    {
+                        "id": consent_id,
+                        "tid": ctx.tenant_id,
+                        "purpose": body.purpose,
+                        "basis": body.legal_basis,
+                        "ip": ip,
+                        "ua": ua,
+                    },
+                )
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("consent_record_insert_failed: %s", exc)
     return {"consent_id": consent_id, "purpose": body.purpose, "status": "recorded"}
 
@@ -1387,13 +1461,18 @@ async def revoke_consent(request: Request, purpose: str) -> dict[str, Any]:
     if db is not None:
         try:
             from sqlalchemy import text
+
             async with db() as session, session.begin():
-                await session.execute(text("""
+                await session.execute(
+                    text("""
                     UPDATE consent_records SET revoked_at = NOW()
                     WHERE tenant_id = :tid AND purpose = :purpose AND revoked_at IS NULL
-                """), {"tid": ctx.tenant_id, "purpose": purpose})
+                """),
+                    {"tid": ctx.tenant_id, "purpose": purpose},
+                )
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("consent_revoke_failed: %s", exc)
     return {"purpose": purpose, "status": "revoked"}
 
@@ -1401,6 +1480,7 @@ async def revoke_consent(request: Request, purpose: str) -> dict[str, Any]:
 # =============================================================================
 # Compliance v2 — dynamic compliance status (no hardcoded booleans)
 # =============================================================================
+
 
 @router.get("/compliance/{framework}")
 async def get_compliance_status(request: Request, framework: str) -> dict[str, Any]:
@@ -1435,6 +1515,7 @@ async def rerun_compliance_check(request: Request, framework: str) -> dict[str, 
 # Contract management — BAA, DPA, MSA signing
 # =============================================================================
 
+
 class ContractSignRequest(BaseModel):
     signer_name: str = Field(..., min_length=1, max_length=200)
     signer_email: str = Field(..., min_length=3, max_length=200)
@@ -1450,19 +1531,29 @@ async def list_contracts(request: Request) -> list[dict[str, Any]]:
         return []
     try:
         from sqlalchemy import text
+
         async with db() as session:
-            rows = (await session.execute(text("""
+            rows = (
+                await session.execute(
+                    text("""
                 SELECT id, contract_type, status, version,
                        signed_by_name, signed_by_email, signed_at, expires_at,
                        document_url, created_at
                 FROM enterprise_contracts
                 WHERE tenant_id = :tid
                 ORDER BY created_at DESC
-            """), {"tid": ctx.tenant_id})).fetchall()
+            """),
+                    {"tid": ctx.tenant_id},
+                )
+            ).fetchall()
         return [
             {
-                "id": str(r[0]), "contract_type": r[1], "status": r[2], "version": r[3],
-                "signed_by_name": r[4], "signed_by_email": r[5],
+                "id": str(r[0]),
+                "contract_type": r[1],
+                "status": r[2],
+                "version": r[3],
+                "signed_by_name": r[4],
+                "signed_by_email": r[5],
                 "signed_at": str(r[6]) if r[6] else None,
                 "expires_at": str(r[7]) if r[7] else None,
                 "document_url": r[8],
@@ -1472,6 +1563,7 @@ async def list_contracts(request: Request) -> list[dict[str, Any]]:
         ]
     except Exception as exc:
         import logging
+
         logging.getLogger(__name__).warning("list_contracts_failed: %s", exc)
         return []
 
@@ -1492,19 +1584,25 @@ async def sign_contract(
     contract_id = uuid.uuid4().hex
     try:
         from sqlalchemy import text
+
         async with db() as session, session.begin():
-            await session.execute(text("""
+            await session.execute(
+                text("""
                 INSERT INTO enterprise_contracts
                     (id, tenant_id, contract_type, status, signed_by_name,
                      signed_by_email, signed_at, created_at)
                 VALUES
                     (:id, :tid, :ctype, 'signed', :name, :email, NOW(), NOW())
                 ON CONFLICT DO NOTHING
-            """), {
-                "id": contract_id, "tid": ctx.tenant_id,
-                "ctype": contract_type, "name": body.signer_name,
-                "email": body.signer_email,
-            })
+            """),
+                {
+                    "id": contract_id,
+                    "tid": ctx.tenant_id,
+                    "ctype": contract_type,
+                    "name": body.signer_name,
+                    "email": body.signer_email,
+                },
+            )
     except Exception as exc:
         raise HTTPException(500, f"Contract signing failed: {exc}")
 
@@ -1521,6 +1619,7 @@ async def sign_contract(
 # SAML 2.0 SSO endpoints
 # =============================================================================
 
+
 @router.get("/saml/metadata", response_class=Response)
 async def get_saml_metadata(request: Request) -> Response:
     """Return SP metadata XML for IdP configuration."""
@@ -1532,18 +1631,26 @@ async def get_saml_metadata(request: Request) -> Response:
         from sqlalchemy import text
 
         from app.auth.saml_provider import SAMLProvider
+
         async with db() as session:
-            row = (await session.execute(text("""
+            row = (
+                await session.execute(
+                    text("""
                 SELECT idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
                        attribute_mapping, name_id_format
                 FROM saml_configs WHERE tenant_id = :tid AND is_active = TRUE
-            """), {"tid": ctx.tenant_id})).fetchone()
+            """),
+                    {"tid": ctx.tenant_id},
+                )
+            ).fetchone()
         if row is None:
             raise HTTPException(404, "SAML not configured for this tenant")
         base_url = str(request.base_url).rstrip("/")
         provider = SAMLProvider(
             tenant_id=ctx.tenant_id,
-            idp_entity_id=row[0], idp_sso_url=row[1], idp_cert=row[2],
+            idp_entity_id=row[0],
+            idp_sso_url=row[1],
+            idp_cert=row[2],
             sp_entity_id=row[3],
             acs_url=f"{base_url}/api/enterprise/saml/acs",
             attribute_mapping=row[4] or {},
@@ -1576,8 +1683,10 @@ async def configure_saml(request: Request, body: SAMLConfigRequest) -> dict[str,
         raise HTTPException(503, "Database not configured")
     try:
         from sqlalchemy import text
+
         async with db() as session, session.begin():
-            await session.execute(text("""
+            await session.execute(
+                text("""
                 INSERT INTO saml_configs
                     (id, tenant_id, idp_entity_id, idp_sso_url, idp_cert,
                      sp_entity_id, attribute_mapping, default_role, jit_provisioning,
@@ -1595,13 +1704,19 @@ async def configure_saml(request: Request, body: SAMLConfigRequest) -> dict[str,
                       jit_provisioning = EXCLUDED.jit_provisioning,
                       is_active = TRUE,
                       updated_at = NOW()
-            """), {
-                "id": uuid.uuid4().hex, "tid": ctx.tenant_id,
-                "idp_entity": body.idp_entity_id, "idp_sso": body.idp_sso_url,
-                "idp_cert": body.idp_cert, "sp_entity": body.sp_entity_id,
-                "mapping": json.dumps(body.attribute_mapping),
-                "role": body.default_role, "jit": body.jit_provisioning,
-            })
+            """),
+                {
+                    "id": uuid.uuid4().hex,
+                    "tid": ctx.tenant_id,
+                    "idp_entity": body.idp_entity_id,
+                    "idp_sso": body.idp_sso_url,
+                    "idp_cert": body.idp_cert,
+                    "sp_entity": body.sp_entity_id,
+                    "mapping": json.dumps(body.attribute_mapping),
+                    "role": body.default_role,
+                    "jit": body.jit_provisioning,
+                },
+            )
     except Exception as exc:
         raise HTTPException(500, f"SAML configuration failed: {exc}")
     return {"status": "configured", "tenant_id": ctx.tenant_id}
@@ -1619,17 +1734,25 @@ async def saml_login(request: Request) -> Response:
         from sqlalchemy import text
 
         from app.auth.saml_provider import SAMLProvider
+
         async with db() as session:
-            row = (await session.execute(text("""
+            row = (
+                await session.execute(
+                    text("""
                 SELECT idp_entity_id, idp_sso_url, idp_cert, sp_entity_id
                 FROM saml_configs WHERE tenant_id = :tid AND is_active = TRUE
-            """), {"tid": ctx.tenant_id})).fetchone()
+            """),
+                    {"tid": ctx.tenant_id},
+                )
+            ).fetchone()
         if row is None:
             raise HTTPException(404, "SAML not configured")
         base_url = str(request.base_url).rstrip("/")
         provider = SAMLProvider(
             tenant_id=ctx.tenant_id,
-            idp_entity_id=row[0], idp_sso_url=row[1], idp_cert=row[2],
+            idp_entity_id=row[0],
+            idp_sso_url=row[1],
+            idp_cert=row[2],
             sp_entity_id=row[3],
             acs_url=f"{base_url}/api/enterprise/saml/acs",
         )
@@ -1659,19 +1782,27 @@ async def saml_acs(request: Request) -> dict[str, Any]:
         from sqlalchemy import text
 
         from app.auth.saml_provider import SAMLProvider
+
         async with db() as session:
-            row = (await session.execute(text("""
+            row = (
+                await session.execute(
+                    text("""
                 SELECT idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
                        attribute_mapping
                 FROM saml_configs WHERE tenant_id = :tid AND is_active = TRUE
-            """), {"tid": ctx.tenant_id})).fetchone()
+            """),
+                    {"tid": ctx.tenant_id},
+                )
+            ).fetchone()
         if row is None:
             raise HTTPException(404, "SAML not configured")
         redis = getattr(request.app.state, "redis", None)
         base_url = str(request.base_url).rstrip("/")
         provider = SAMLProvider(
             tenant_id=ctx.tenant_id,
-            idp_entity_id=row[0], idp_sso_url=row[1], idp_cert=row[2],
+            idp_entity_id=row[0],
+            idp_sso_url=row[1],
+            idp_cert=row[2],
             sp_entity_id=row[3],
             acs_url=f"{base_url}/api/enterprise/saml/acs",
             attribute_mapping=row[4] or {},
@@ -1721,6 +1852,7 @@ async def test_saml_connection(request: Request) -> dict[str, Any]:
                 }
         elif metadata_xml:
             import xml.etree.ElementTree as ET
+
             try:
                 ET.fromstring(metadata_xml)
                 return {"success": True, "latency_ms": 1, "message": "Metadata XML is valid"}
@@ -1740,9 +1872,11 @@ async def test_saml_connection(request: Request) -> dict[str, Any]:
 # SCIM 2.0 provisioning endpoints
 # =============================================================================
 
+
 async def _get_scim_handler(request: Request) -> SCIMHandler:  # noqa: F821
     """Authenticate + build SCIMHandler for this request."""
     from app.auth.scim_handler import SCIMHandler, require_scim_auth
+
     tenant_id = await require_scim_auth(request)
     db = _get_db(request)
     if db is None:
@@ -1750,12 +1884,18 @@ async def _get_scim_handler(request: Request) -> SCIMHandler:  # noqa: F821
     # Load scim_configs for this tenant
     try:
         from sqlalchemy import text
+
         async with db() as session:
-            row = (await session.execute(text("""
+            row = (
+                await session.execute(
+                    text("""
                 SELECT allow_user_create, allow_user_update, allow_user_delete,
                        allow_group_sync, default_role, group_role_map
                 FROM scim_configs WHERE tenant_id = :tid AND is_active = TRUE
-            """), {"tid": tenant_id})).fetchone()
+            """),
+                    {"tid": tenant_id},
+                )
+            ).fetchone()
         config = {
             "allow_user_create": row[0] if row else True,
             "allow_user_update": row[1] if row else True,
@@ -1765,8 +1905,13 @@ async def _get_scim_handler(request: Request) -> SCIMHandler:  # noqa: F821
             "group_role_map": row[5] if row else {},
         }
     except Exception:
-        config = {"allow_user_create": True, "allow_user_update": True,
-                  "allow_user_delete": False, "default_role": "viewer", "group_role_map": {}}
+        config = {
+            "allow_user_create": True,
+            "allow_user_update": True,
+            "allow_user_delete": False,
+            "default_role": "viewer",
+            "group_role_map": {},
+        }
     return SCIMHandler(tenant_id=tenant_id, config=config, db_factory=db)
 
 
@@ -1791,17 +1936,13 @@ async def scim_create_user(request: Request, body: dict[str, Any]) -> dict[str, 
 
 
 @scim_router.put("/Users/{scim_id}")
-async def scim_replace_user(
-    request: Request, scim_id: str, body: dict[str, Any]
-) -> dict[str, Any]:
+async def scim_replace_user(request: Request, scim_id: str, body: dict[str, Any]) -> dict[str, Any]:
     handler = await _get_scim_handler(request)
     return await handler.update_user(scim_id, body, partial=False)
 
 
 @scim_router.patch("/Users/{scim_id}")
-async def scim_patch_user(
-    request: Request, scim_id: str, body: dict[str, Any]
-) -> dict[str, Any]:
+async def scim_patch_user(request: Request, scim_id: str, body: dict[str, Any]) -> dict[str, Any]:
     handler = await _get_scim_handler(request)
     return await handler.update_user(scim_id, body, partial=True)
 
@@ -1813,6 +1954,7 @@ async def scim_delete_user(request: Request, scim_id: str) -> None:
 
 
 # ── SCIM token provisioning (admin endpoint) ─────────────────────────────────
+
 
 @router.post("/scim/provision-token", status_code=201)
 async def provision_scim_token(request: Request) -> dict[str, Any]:
@@ -1831,11 +1973,15 @@ async def provision_scim_token(request: Request) -> dict[str, Any]:
 
     try:
         from sqlalchemy import text
+
         async with db() as session, session.begin():
-            await session.execute(text("""
+            await session.execute(
+                text("""
                 INSERT INTO scim_tokens (id, tenant_id, token_hash, created_at)
                 VALUES (:id, :tid, :hash, NOW())
-            """), {"id": uuid.uuid4().hex, "tid": ctx.tenant_id, "hash": token_hash})
+            """),
+                {"id": uuid.uuid4().hex, "tid": ctx.tenant_id, "hash": token_hash},
+            )
     except Exception as exc:
         raise HTTPException(500, f"Token provisioning failed: {exc}")
 

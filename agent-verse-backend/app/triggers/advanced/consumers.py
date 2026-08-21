@@ -1,4 +1,5 @@
 """Advanced trigger consumers — GraphQL subscriptions, WebSocket messages, price polling."""
+
 from __future__ import annotations
 
 import logging
@@ -40,6 +41,7 @@ class GraphQLSubscriptionConsumer:
 
         triggers = await self._store.find_by_type_async("graphql_subscription", tenant_id=tenant_id)
         from types import SimpleNamespace
+
         tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=plan)
         fired = []
         payload = {"endpoint": endpoint, "data": data}
@@ -85,6 +87,7 @@ class WebSocketMessageConsumer:
 
         triggers = await self._store.find_by_type_async("websocket_message", tenant_id=tenant_id)
         from types import SimpleNamespace
+
         tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=plan)
         fired = []
         payload = {"url": url, "message": message}
@@ -98,6 +101,7 @@ class WebSocketMessageConsumer:
             pattern = getattr(spec, "websocket_message_pattern", "") or ""
             if pattern:
                 import re
+
                 if not re.search(pattern, message):
                     continue
             try:
@@ -139,6 +143,7 @@ class PriceThresholdPoller:
 
         triggers = await self._store.find_by_type_async("price_threshold", tenant_id=tenant_id)
         from types import SimpleNamespace
+
         tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=plan)
         fired = []
         last = self._last_prices.get(symbol)

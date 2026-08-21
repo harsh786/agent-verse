@@ -21,6 +21,7 @@ router = APIRouter(prefix="/tenants", tags=["tenants"])
 
 # ── utilities ─────────────────────────────────────────────────────────────────
 
+
 def _hash_key(raw_key: str) -> str:
     """SHA-256 hex digest of a raw API key. The raw key is never stored."""
     return hashlib.sha256(raw_key.encode()).hexdigest()
@@ -34,6 +35,7 @@ def _generate_raw_key(plan_prefix: str = "free") -> str:
 def _get_tenant_service(request: Request) -> Any:
     """Read the service from app.state (injected by create_app or tests)."""
     from app.api._deps import get_tenant_service as _get_ts
+
     return _get_ts(request)
 
 
@@ -47,6 +49,7 @@ def _require_tenant(request: Request) -> TenantContext:
 
 # ── request / response models ─────────────────────────────────────────────────
 
+
 class SignupRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     email: EmailStr
@@ -59,6 +62,7 @@ class CreateKeyRequest(BaseModel):
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────────
+
 
 @router.post("/signup", status_code=201)
 async def signup(
@@ -153,6 +157,7 @@ async def revoke_key(
 
 # ── Key rotation ──────────────────────────────────────────────────────────────
 
+
 class RotateKeyRequest(BaseModel):
     """Request body for key rotation."""
 
@@ -197,8 +202,10 @@ async def rotate_key(
 
 # ── LLM provider configuration ────────────────────────────────────────────────
 
+
 class LLMProviderConfig(BaseModel):
     """LLM provider configuration for a tenant."""
+
     provider: str = Field(
         description="Provider name: anthropic | openai | gemini | groq | together | azure | ollama"
     )
@@ -234,9 +241,7 @@ async def get_llm_config(
     llm_configs: dict[str, Any] = getattr(request.app.state, "_llm_configs", {})
     cfg = llm_configs.get(ctx.tenant_id)
     if cfg is None:
-        return JSONResponse(
-            {"tenant_id": ctx.tenant_id, "provider": None, "configured": False}
-        )
+        return JSONResponse({"tenant_id": ctx.tenant_id, "provider": None, "configured": False})
     # Never return the raw key or the vault-encrypted ciphertext.
     safe = {k: v for k, v in cfg.items() if k not in {"api_key", "encrypted_key"}}
     return JSONResponse({"tenant_id": ctx.tenant_id, **safe, "configured": True})
@@ -267,6 +272,7 @@ async def set_llm_config(
 
     # Also persist to Redis so Celery workers can access it without app state.
     from app.services.llm_config_store import get_llm_config_store
+
     _config_store = get_llm_config_store()
     if _config_store is not None:
         await _config_store.set_config(
@@ -289,6 +295,7 @@ async def set_llm_config(
 
 
 # ── LLM config (simple key-value store, no secret handling) ──────────────────
+
 
 @router.get("/me/llm-config")
 async def get_tenant_llm_config(request: Request) -> dict:
@@ -327,7 +334,11 @@ async def save_tenant_llm_config(request: Request) -> dict:
 _PROVIDER_CAPABILITIES: dict[str, dict[str, bool]] = {
     "anthropic": {"text": True, "tool_use": True, "vision": True, "streaming": True},
     "openai": {
-        "text": True, "tool_use": True, "vision": True, "streaming": True, "embedding": True
+        "text": True,
+        "tool_use": True,
+        "vision": True,
+        "streaming": True,
+        "embedding": True,
     },
     "openai_compatible": {"text": True, "tool_use": True, "streaming": True},
     "gemini": {"text": True, "tool_use": True, "vision": True, "streaming": True},
@@ -361,18 +372,21 @@ async def get_provider_catalog(request: Request) -> dict:
             env_key_name is None  # No key needed (e.g. Ollama)
             or bool(os.getenv(env_key_name, ""))
         )
-        providers.append({
-            "name": provider_name,
-            "display_name": provider_name.replace("_", " ").title(),
-            "configured": is_configured,
-            "capabilities": caps,
-            "env_var": env_key_name,  # name only, never the value
-        })
+        providers.append(
+            {
+                "name": provider_name,
+                "display_name": provider_name.replace("_", " ").title(),
+                "configured": is_configured,
+                "capabilities": caps,
+                "env_var": env_key_name,  # name only, never the value
+            }
+        )
 
     return {"providers": providers}
 
 
 # ── RBAC: Role management ─────────────────────────────────────────────────────
+
 
 class CreateRoleRequest(BaseModel):
     user_id: str
@@ -401,12 +415,11 @@ async def list_roles(
         from app.db.models.rbac import UserRole
         from app.db.rls import sqlalchemy_rls_context
 
-        async with db() as session:
-            async with sqlalchemy_rls_context(session, ctx.tenant_id):
-                result = await session.execute(
-                    select(UserRole).where(UserRole.tenant_id == ctx.tenant_id)
-                )
-                rows = result.scalars().all()
+        async with db() as session, sqlalchemy_rls_context(session, ctx.tenant_id):
+            result = await session.execute(
+                select(UserRole).where(UserRole.tenant_id == ctx.tenant_id)
+            )
+            rows = result.scalars().all()
         return [
             {
                 "id": r.id,
@@ -487,9 +500,7 @@ async def delete_role(
                 )
                 row = result.scalar_one_or_none()
                 if row is None:
-                    raise HTTPException(
-                        status_code=404, detail="Role assignment not found"
-                    )
+                    raise HTTPException(status_code=404, detail="Role assignment not found")
                 await session.delete(row)
     except HTTPException:
         raise
@@ -498,6 +509,7 @@ async def delete_role(
 
 
 # ── IP Allowlist management ───────────────────────────────────────────────────
+
 
 class CreateIPAllowlistRequest(BaseModel):
     cidr: str
@@ -530,14 +542,11 @@ async def list_ip_allowlist(
         from app.db.models.rbac import IPAllowlistEntry
         from app.db.rls import sqlalchemy_rls_context
 
-        async with db() as session:
-            async with sqlalchemy_rls_context(session, ctx.tenant_id):
-                result = await session.execute(
-                    select(IPAllowlistEntry).where(
-                        IPAllowlistEntry.tenant_id == ctx.tenant_id
-                    )
-                )
-                rows = result.scalars().all()
+        async with db() as session, sqlalchemy_rls_context(session, ctx.tenant_id):
+            result = await session.execute(
+                select(IPAllowlistEntry).where(IPAllowlistEntry.tenant_id == ctx.tenant_id)
+            )
+            rows = result.scalars().all()
         return [
             {
                 "id": r.id,
@@ -584,6 +593,7 @@ async def create_ip_allowlist_entry(
 
 # ── Tenant membership ─────────────────────────────────────────────────────────
 
+
 class InviteMemberRequest(BaseModel):
     email: str
     role: str = "viewer"  # owner | admin | operator | viewer
@@ -606,6 +616,7 @@ async def invite_member(body: InviteMemberRequest, request: Request) -> dict:
     """Invite a user to the tenant."""
     import uuid as _uuid
     from datetime import UTC, datetime
+
     tenant_ctx = getattr(request.state, "tenant", None)
     if tenant_ctx is None:
         raise HTTPException(status_code=401, detail="Auth required")
@@ -643,6 +654,7 @@ async def invite_member(body: InviteMemberRequest, request: Request) -> dict:
 
 # ── BYOK vault key management ─────────────────────────────────────────────────
 
+
 class VaultKeyRequest(BaseModel):
     key_base64: str  # Customer-provided 32-byte key, base64-encoded
 
@@ -655,6 +667,7 @@ async def set_byok_vault_key(
 ) -> dict:
     """Set a Bring-Your-Own-Key (BYOK) master key for this tenant's secret vault."""
     import base64 as _b64
+
     try:
         key_bytes = _b64.b64decode(body.key_base64)
         if len(key_bytes) != 32:
@@ -699,9 +712,7 @@ async def delete_ip_allowlist_entry(
                 )
                 row = result.scalar_one_or_none()
                 if row is None:
-                    raise HTTPException(
-                        status_code=404, detail="Allowlist entry not found"
-                    )
+                    raise HTTPException(status_code=404, detail="Allowlist entry not found")
                 await session.delete(row)
     except HTTPException:
         raise
@@ -710,6 +721,7 @@ async def delete_ip_allowlist_entry(
 
 
 # ── Notification preferences ──────────────────────────────────────────────────
+
 
 @router.get("/me/notifications")
 async def get_notifications(request: Request) -> dict:
@@ -726,6 +738,7 @@ async def get_notifications(request: Request) -> dict:
     if redis is not None:
         try:
             import json
+
             stored = await redis.get(f"notif_prefs:{tenant.tenant_id}")
             if stored:
                 prefs = json.loads(stored)
@@ -747,9 +760,8 @@ async def update_notifications(request: Request) -> dict:
     if redis is not None:
         try:
             import json
-            await redis.setex(
-                f"notif_prefs:{tenant.tenant_id}", 86400 * 30, json.dumps(body)
-            )
+
+            await redis.setex(f"notif_prefs:{tenant.tenant_id}", 86400 * 30, json.dumps(body))
         except Exception:
             pass
 
@@ -757,6 +769,7 @@ async def update_notifications(request: Request) -> dict:
 
 
 # ── Sessions ──────────────────────────────────────────────────────────────────
+
 
 @router.get("/me/sessions")
 async def list_sessions(request: Request) -> list:
@@ -766,6 +779,7 @@ async def list_sessions(request: Request) -> list:
 
 
 # ── Data export ───────────────────────────────────────────────────────────────
+
 
 @router.post("/me/export")
 async def export_tenant_data(request: Request) -> dict:
@@ -783,9 +797,7 @@ async def export_tenant_data(request: Request) -> dict:
     if goal_svc:
         try:
             resp = await goal_svc.list_goals(tenant_ctx=tenant)
-            export_data["goals"] = (
-                resp.get("goals", []) if isinstance(resp, dict) else []
-            )
+            export_data["goals"] = resp.get("goals", []) if isinstance(resp, dict) else []
         except Exception:
             pass
 
@@ -803,6 +815,7 @@ async def export_tenant_data(request: Request) -> dict:
 
 
 # ── Account deletion ──────────────────────────────────────────────────────────
+
 
 @router.delete("/me")
 async def delete_tenant(request: Request) -> dict:

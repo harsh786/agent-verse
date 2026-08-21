@@ -27,6 +27,7 @@ router = APIRouter(prefix="/governance", tags=["governance"])
 # Request models
 # ---------------------------------------------------------------------------
 
+
 class CreatePolicyRequest(BaseModel):
     name: str
     description: str = ""
@@ -65,6 +66,7 @@ class PolicyGoalSimulateRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers — lazy app.state init keeps tests isolated per FastAPI instance
 # ---------------------------------------------------------------------------
+
 
 def _require_tenant(request: Request) -> Any:
     ctx = getattr(request.state, "tenant", None)
@@ -107,6 +109,7 @@ def _budget_config(request: Request) -> dict[str, BudgetConfig]:
 # DB-backed policy helpers (fall back gracefully if DB is unavailable)
 # ---------------------------------------------------------------------------
 
+
 async def _db_list_policies(request: Request, tenant_id: str) -> list[dict[str, Any]]:
     db = getattr(request.app.state, "db_session_factory", None)
     if db is None:
@@ -115,6 +118,7 @@ async def _db_list_policies(request: Request, tenant_id: str) -> list[dict[str, 
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
+
         async with db() as session, sqlalchemy_rls_context(session, tenant_id):
             result = await session.execute(
                 text(
@@ -139,9 +143,7 @@ async def _db_list_policies(request: Request, tenant_id: str) -> list[dict[str, 
         return []
 
 
-async def _db_create_policy(
-    request: Request, tenant_id: str, record: dict[str, Any]
-) -> None:
+async def _db_create_policy(request: Request, tenant_id: str, record: dict[str, Any]) -> None:
     db = getattr(request.app.state, "db_session_factory", None)
     if db is None:
         return
@@ -149,8 +151,8 @@ async def _db_create_policy(
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
-        async with db() as session, session.begin(), \
-                   sqlalchemy_rls_context(session, tenant_id):
+
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
             await session.execute(
                 text(
                     """INSERT INTO governance_policies
@@ -172,9 +174,7 @@ async def _db_create_policy(
         pass
 
 
-async def _db_delete_policy(
-    request: Request, tenant_id: str, policy_id: str
-) -> None:
+async def _db_delete_policy(request: Request, tenant_id: str, policy_id: str) -> None:
     db = getattr(request.app.state, "db_session_factory", None)
     if db is None:
         return
@@ -182,12 +182,10 @@ async def _db_delete_policy(
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
-        async with db() as session, session.begin(), \
-                   sqlalchemy_rls_context(session, tenant_id):
+
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
             await session.execute(
-                text(
-                    "DELETE FROM governance_policies WHERE id = :id AND tenant_id = :tid"
-                ),
+                text("DELETE FROM governance_policies WHERE id = :id AND tenant_id = :tid"),
                 {"id": policy_id, "tid": tenant_id},
             )
     except Exception:
@@ -197,6 +195,7 @@ async def _db_delete_policy(
 # ---------------------------------------------------------------------------
 # Endpoints — policies
 # ---------------------------------------------------------------------------
+
 
 @router.get("/policies")
 async def list_policies(request: Request) -> list[dict[str, Any]]:
@@ -211,9 +210,7 @@ async def list_policies(request: Request) -> list[dict[str, Any]]:
 
 
 @router.post("/policies", status_code=status.HTTP_201_CREATED)
-async def create_policy(
-    request: Request, body: CreatePolicyRequest
-) -> dict[str, Any]:
+async def create_policy(request: Request, body: CreatePolicyRequest) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     engine = _policy_engine(request)
     registry = _policy_registry(request)
@@ -232,7 +229,9 @@ async def create_policy(
         description=body.description,
         denied_tools=denied_tools,
         approval_tools=approval_tools,
-        allowed_hours_utc=tuple(body.allowed_hours_utc) if body.allowed_hours_utc and len(body.allowed_hours_utc) == 2 else None,  # type: ignore[arg-type]
+        allowed_hours_utc=tuple(body.allowed_hours_utc)
+        if body.allowed_hours_utc and len(body.allowed_hours_utc) == 2
+        else None,  # type: ignore[arg-type]
         allowed_weekdays=body.allowed_weekdays,
         tenant_id=tenant_ctx.tenant_id,
     )
@@ -273,11 +272,9 @@ async def delete_policy(request: Request, policy_id: str) -> None:
     # Matching only on name (without tenant check) would delete identically-named
     # policies belonging to other tenants — the critical isolation bug.
     engine._policies = [  # type: ignore[attr-defined]
-        p for p in engine._policies  # type: ignore[attr-defined]
-        if not (
-            p.name == record["name"]
-            and getattr(p, "tenant_id", "") == tenant_ctx.tenant_id
-        )
+        p
+        for p in engine._policies  # type: ignore[attr-defined]
+        if not (p.name == record["name"] and getattr(p, "tenant_id", "") == tenant_ctx.tenant_id)
     ]
     del tenant_policies[policy_id]
     await _db_delete_policy(request, tenant_ctx.tenant_id, policy_id)
@@ -286,9 +283,7 @@ async def delete_policy(request: Request, policy_id: str) -> None:
 
 
 @router.post("/policies/simulate")
-async def simulate_policies(
-    request: Request, body: PolicySimulateRequest
-) -> dict[str, Any]:
+async def simulate_policies(request: Request, body: PolicySimulateRequest) -> dict[str, Any]:
     """Dry-run policy evaluation without executing anything."""
     tenant = _require_tenant(request)
     engine = _policy_engine(request)
@@ -329,8 +324,12 @@ async def simulate_policy_for_goal(
     if not tools_to_check:
         # Default to common high-risk tools
         tools_to_check = [
-            "jira.delete", "github.deploy", "stripe.refund",
-            "jira.search", "github.read", "slack.message",
+            "jira.delete",
+            "github.deploy",
+            "stripe.refund",
+            "jira.search",
+            "github.read",
+            "slack.message",
         ]
 
     simulation_result: dict[str, Any] = {
@@ -383,6 +382,7 @@ async def simulate_policy_for_goal(
 # Endpoints — HITL approvals
 # ---------------------------------------------------------------------------
 
+
 @router.get("/approvals")
 async def list_approvals(request: Request) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
@@ -414,9 +414,7 @@ async def approve_request(
 ) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     gateway = _hitl(request)
-    ok = gateway.approve(
-        request_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
-    )
+    ok = gateway.approve(request_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx)
     if not ok:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -524,7 +522,7 @@ async def stream_approvals(request: Request) -> StreamingResponse:
     async def gen() -> AsyncGenerator[str, None]:
         yield f"data: {_json.dumps(_pending_snapshot(gateway, tenant_ctx))}\n\n"
         if redis is None:
-            yield f'data: {_json.dumps({"type": "stream_unavailable"})}\n\n'
+            yield f"data: {_json.dumps({'type': 'stream_unavailable'})}\n\n"
             return
         channel = f"platform_events:{tenant_ctx.tenant_id}"
         async for frame in _tail_redis_channel(redis, channel, _APPROVAL_EVENT_TYPES):
@@ -552,7 +550,7 @@ async def stream_policies(request: Request) -> StreamingResponse:
         snapshot: dict[str, Any] = {"type": "policies_snapshot", "policies": db_policies}
         yield f"data: {_json.dumps(snapshot)}\n\n"
         if redis is None:
-            yield f'data: {_json.dumps({"type": "stream_unavailable"})}\n\n'
+            yield f"data: {_json.dumps({'type': 'stream_unavailable'})}\n\n"
             return
         pubsub = redis.pubsub()
         await pubsub.subscribe("policy_changes")
@@ -578,6 +576,7 @@ async def stream_policies(request: Request) -> StreamingResponse:
                 await pubsub.close()
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
 
 @router.get("/audit")
 async def query_audit(
@@ -609,9 +608,7 @@ async def query_audit(
             "goal_id": e.goal_id,
             "tool_name": e.tool_name,
             "action_level": (
-                e.action_level.value
-                if hasattr(e.action_level, "value")
-                else e.action_level
+                e.action_level.value if hasattr(e.action_level, "value") else e.action_level
             ),
             "outcome": e.outcome,
             "step_id": e.step_id,
@@ -625,6 +622,7 @@ async def query_audit(
 # ---------------------------------------------------------------------------
 # Endpoints — cost budget
 # ---------------------------------------------------------------------------
+
 
 @router.get("/budget")
 async def get_budget(request: Request) -> dict[str, Any]:
@@ -662,6 +660,7 @@ async def set_budget(
 # Endpoints — notification channels
 # ---------------------------------------------------------------------------
 
+
 @router.post("/notifications", status_code=201)
 async def create_notification_channel(
     request: Request, body: CreateNotificationChannelRequest
@@ -671,6 +670,7 @@ async def create_notification_channel(
     if svc is None:
         raise HTTPException(503, "Notification service not configured")
     from app.services.notification_service import NotificationChannel
+
     channel = NotificationChannel(
         channel_id=uuid.uuid4().hex,
         tenant_id=tenant.tenant_id,
@@ -724,14 +724,18 @@ async def test_notification_channel(request: Request, channel_id: str) -> dict[s
             risk_level="low",
             tenant_id=tenant.tenant_id,
         )
-        return {"success": True, "message": f"Test notification sent to {channel.channel_type} channel."}
-    except Exception as e:  # noqa: BLE001
+        return {
+            "success": True,
+            "message": f"Test notification sent to {channel.channel_type} channel.",
+        }
+    except Exception as e:
         return {"success": False, "message": f"Delivery failed: {e}"}
 
 
 # ---------------------------------------------------------------------------
 # Request models — legal hold
 # ---------------------------------------------------------------------------
+
 
 class LegalHoldRequest(BaseModel):
     reason: str
@@ -742,11 +746,13 @@ class LegalHoldRequest(BaseModel):
 # Helpers — DB session factory
 # ---------------------------------------------------------------------------
 
+
 def _get_db(request: Request) -> Any:
     db = getattr(request.app.state, "db_session_factory", None)
     if db is None:
         try:
             from app.db.session import get_session_factory
+
             db = get_session_factory()
         except Exception:
             pass
@@ -756,6 +762,7 @@ def _get_db(request: Request) -> Any:
 # ---------------------------------------------------------------------------
 # Endpoints — emergency stop
 # ---------------------------------------------------------------------------
+
 
 @router.post("/emergency-stop")
 async def emergency_stop(request: Request) -> dict:
@@ -773,11 +780,11 @@ async def emergency_stop(request: Request) -> dict:
         try:
             # Get all running goals for this tenant
             running = [
-                gid for gid, record in goal_service._goals.items()
+                gid
+                for gid, record in goal_service._goals.items()
                 if getattr(record, "tenant_id", "") == ctx.tenant_id
-                and str(getattr(record, "status", "")).lower() not in (
-                    "complete", "completed", "failed", "cancelled"
-                )
+                and str(getattr(record, "status", "")).lower()
+                not in ("complete", "completed", "failed", "cancelled")
             ]
             for goal_id in running:
                 try:
@@ -787,6 +794,7 @@ async def emergency_stop(request: Request) -> dict:
                     pass
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("emergency_stop_cancel_failed: %s", exc)
 
     # 2. Publish emergency stop signal to Redis so Celery workers abort
@@ -795,18 +803,20 @@ async def emergency_stop(request: Request) -> dict:
         try:
             import json
             from datetime import UTC, datetime
+
             await redis.publish(
                 "emergency_stop",
-                json.dumps({"tenant_id": ctx.tenant_id, "ts": datetime.now(UTC).isoformat()})
+                json.dumps({"tenant_id": ctx.tenant_id, "ts": datetime.now(UTC).isoformat()}),
             )
             # Also set a flag that Celery workers can poll
             await redis.set(
                 f"emergency_stop:{ctx.tenant_id}",
                 "1",
-                ex=300  # 5 minute window
+                ex=300,  # 5 minute window
             )
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("emergency_stop_redis_failed: %s", exc)
 
     # 3. Reject all pending HITL approvals
@@ -836,22 +846,26 @@ async def emergency_stop(request: Request) -> dict:
             from app.governance.permissions import ActionLevel
             from app.tenancy.context import PlanTier
             from app.tenancy.context import TenantContext as _TC
+
             _audit_ctx = _TC(
                 tenant_id=ctx.tenant_id,
                 plan=PlanTier.FREE,
                 api_key_id=getattr(ctx, "api_key_id", ""),
             )
-            audit_log.record(AuditEvent(
-                goal_id="emergency_stop",
-                tool_name="emergency_stop",
-                action_level=ActionLevel.DENY,
-                outcome="stop_activated",
-                api_key_id=getattr(ctx, "api_key_id", ""),
-                note=(
-                    f"cancelled_goals={len(cancelled_goals)},"
-                    f"rejected_approvals={len(rejected_approvals)}"
+            audit_log.record(
+                AuditEvent(
+                    goal_id="emergency_stop",
+                    tool_name="emergency_stop",
+                    action_level=ActionLevel.DENY,
+                    outcome="stop_activated",
+                    api_key_id=getattr(ctx, "api_key_id", ""),
+                    note=(
+                        f"cancelled_goals={len(cancelled_goals)},"
+                        f"rejected_approvals={len(rejected_approvals)}"
+                    ),
                 ),
-            ), tenant_ctx=_audit_ctx)
+                tenant_ctx=_audit_ctx,
+            )
         except Exception:
             pass
 
@@ -862,10 +876,7 @@ async def emergency_stop(request: Request) -> dict:
         "cancelled_goal_ids": cancelled_goals[:20],
         "rejected_approvals": len(rejected_approvals),
         "celery_signal_sent": redis is not None,
-        "message": (
-            "All running goals cancelled. "
-            "Celery workers will abort in-progress tasks."
-        ),
+        "message": ("All running goals cancelled. Celery workers will abort in-progress tasks."),
     }
 
 
@@ -886,10 +897,9 @@ async def clear_emergency_stop(request: Request) -> dict:
 # P1.3: Email approval link handlers (signed URLs from approval emails)
 # ---------------------------------------------------------------------------
 
+
 @router.get("/hitl/{request_id}/approve")
-async def email_approve_link(
-    request: Request, request_id: str, sig: str = ""
-) -> dict[str, Any]:
+async def email_approve_link(request: Request, request_id: str, sig: str = "") -> dict[str, Any]:
     """Handle one-click approve link from HITL approval email.
 
     Validates HMAC signature and approves the request on behalf of the email recipient.
@@ -898,6 +908,7 @@ async def email_approve_link(
 
     if not sig or not _verify(request_id, "approve", sig):
         from fastapi import HTTPException
+
         raise HTTPException(status_code=403, detail="Invalid or expired approval link")
 
     gateway = getattr(request.app.state, "hitl_gateway", None)
@@ -916,6 +927,7 @@ async def email_approve_link(
 
     tenant_id, _req_obj = matching_req
     from app.tenancy.context import PlanTier, TenantContext
+
     tenant_svc = getattr(request.app.state, "tenant_service", None)
     actual_plan = PlanTier.FREE  # safe default
     if tenant_svc is not None:
@@ -944,9 +956,7 @@ async def email_approve_link(
 
 
 @router.get("/hitl/{request_id}/reject")
-async def email_reject_link(
-    request: Request, request_id: str, sig: str = ""
-) -> dict[str, Any]:
+async def email_reject_link(request: Request, request_id: str, sig: str = "") -> dict[str, Any]:
     """Handle one-click reject link from HITL approval email.
 
     Validates HMAC signature and rejects the request.
@@ -955,6 +965,7 @@ async def email_reject_link(
 
     if not sig or not _verify(request_id, "reject", sig):
         from fastapi import HTTPException
+
         raise HTTPException(status_code=403, detail="Invalid or expired rejection link")
 
     gateway = getattr(request.app.state, "hitl_gateway", None)
@@ -973,6 +984,7 @@ async def email_reject_link(
 
     tenant_id, _req_obj = matching_req
     from app.tenancy.context import PlanTier, TenantContext
+
     tenant_svc = getattr(request.app.state, "tenant_service", None)
     actual_plan = PlanTier.FREE  # safe default
     if tenant_svc is not None:
@@ -988,7 +1000,9 @@ async def email_reject_link(
         api_key_id="email-link-approver",
     )
 
-    ok = await gateway.reject(request_id, approver="email-link", note="Rejected via email link", tenant_ctx=fake_ctx)
+    ok = await gateway.reject(
+        request_id, approver="email-link", note="Rejected via email link", tenant_ctx=fake_ctx
+    )
     if not ok:
         raise HTTPException(status_code=409, detail="Approval request is no longer pending")
 
@@ -1004,6 +1018,7 @@ async def email_reject_link(
 # Endpoints — legal hold
 # ---------------------------------------------------------------------------
 
+
 @router.post("/legal-hold")
 async def create_legal_hold(request: Request, body: LegalHoldRequest) -> dict:
     """Place a legal hold on tenant data to prevent retention deletion."""
@@ -1014,17 +1029,21 @@ async def create_legal_hold(request: Request, body: LegalHoldRequest) -> dict:
     import uuid
 
     from sqlalchemy import text
+
     async with db() as session, session.begin():
-        await session.execute(text("""
+        await session.execute(
+            text("""
             INSERT INTO legal_holds (id, tenant_id, reason, expires_at, created_by)
             VALUES (:id, :tid, :reason, :exp, :by)
-        """), {
-            "id": uuid.uuid4().hex,
-            "tid": ctx.tenant_id,
-            "reason": body.reason,
-            "exp": body.expires_at,
-            "by": getattr(ctx, "api_key_id", "unknown"),
-        })
+        """),
+            {
+                "id": uuid.uuid4().hex,
+                "tid": ctx.tenant_id,
+                "reason": body.reason,
+                "exp": body.expires_at,
+                "by": getattr(ctx, "api_key_id", "unknown"),
+            },
+        )
     return {
         "status": "legal_hold_placed",
         "tenant_id": ctx.tenant_id,
@@ -1041,11 +1060,17 @@ async def list_legal_holds(request: Request) -> list[dict[str, Any]]:
         return []
     try:
         from sqlalchemy import text
+
         async with db() as session:
-            rows = (await session.execute(text(
-                "SELECT id, reason, expires_at, created_by "
-                "FROM legal_holds WHERE tenant_id = :tid ORDER BY id"
-            ), {"tid": ctx.tenant_id})).fetchall()
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT id, reason, expires_at, created_by "
+                        "FROM legal_holds WHERE tenant_id = :tid ORDER BY id"
+                    ),
+                    {"tid": ctx.tenant_id},
+                )
+            ).fetchall()
         return [
             {
                 "id": r[0],
@@ -1062,6 +1087,7 @@ async def list_legal_holds(request: Request) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # NEW (governance v2): Batch HITL approval
 # ---------------------------------------------------------------------------
+
 
 class BatchApproveRequest(BaseModel):
     action: str  # "approve" | "reject"
@@ -1144,9 +1170,7 @@ async def batch_approve(
 
 
 @router.get("/policies/{policy_id}/versions")
-async def get_policy_versions(
-    request: Request, policy_id: str
-) -> list[dict[str, Any]]:
+async def get_policy_versions(request: Request, policy_id: str) -> list[dict[str, Any]]:
     """Return the full version history for a policy."""
     _require_tenant(request)
     db = _get_db(request)
@@ -1244,6 +1268,7 @@ async def rollback_policy(
             max_ver = max_r.scalar() or 0
             new_ver = max_ver + 1
             import uuid as _uuid
+
             new_id = _uuid.uuid4().hex
             await session.execute(
                 text(
@@ -1299,16 +1324,8 @@ async def verify_audit_chain(
     from datetime import datetime
 
     try:
-        fd = (
-            datetime.fromisoformat(from_date)
-            if from_date
-            else datetime(2026, 1, 1, tzinfo=UTC)
-        )
-        td = (
-            datetime.fromisoformat(to_date)
-            if to_date
-            else datetime.now(UTC)
-        )
+        fd = datetime.fromisoformat(from_date) if from_date else datetime(2026, 1, 1, tzinfo=UTC)
+        td = datetime.fromisoformat(to_date) if to_date else datetime.now(UTC)
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 

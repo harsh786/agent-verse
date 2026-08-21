@@ -3,6 +3,7 @@
 Environment:
   MEETUP_ACCESS_TOKEN: OAuth2 access token for Meetup API
 """
+
 from __future__ import annotations
 
 import os
@@ -22,7 +23,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "role": {"type": "string", "description": "Filter by role: organizer, member, assistant_organizer"},
+                "role": {
+                    "type": "string",
+                    "description": "Filter by role: organizer, member, assistant_organizer",
+                },
                 "page": {"type": "integer", "description": "Results per page"},
                 "offset": {"type": "integer", "description": "Pagination offset"},
             },
@@ -35,7 +39,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "group_urlname": {"type": "string", "description": "URL name of the Meetup group"},
-                "status": {"type": "string", "description": "Filter by status: upcoming, past, cancelled"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: upcoming, past, cancelled",
+                },
                 "page": {"type": "integer", "description": "Results per page"},
             },
             "required": ["group_urlname"],
@@ -86,10 +93,19 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "group_urlname": {"type": "string", "description": "URL name of the organizer's group"},
+                "group_urlname": {
+                    "type": "string",
+                    "description": "URL name of the organizer's group",
+                },
                 "name": {"type": "string", "description": "Name of the event"},
-                "description": {"type": "string", "description": "Event description (HTML allowed)"},
-                "time": {"type": "integer", "description": "Event start time as Unix timestamp in milliseconds"},
+                "description": {
+                    "type": "string",
+                    "description": "Event description (HTML allowed)",
+                },
+                "time": {
+                    "type": "integer",
+                    "description": "Event start time as Unix timestamp in milliseconds",
+                },
                 "duration": {"type": "integer", "description": "Duration in milliseconds"},
                 "venue_id": {"type": "string", "description": "Meetup venue ID"},
                 "rsvp_limit": {"type": "integer", "description": "Maximum RSVPs allowed"},
@@ -116,7 +132,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "meetup_list_events":
                 group = arguments["group_urlname"]
-                params = {k: v for k, v in arguments.items() if k != "group_urlname" and v is not None}
+                params = {
+                    k: v for k, v in arguments.items() if k != "group_urlname" and v is not None
+                }
                 r = await client.get(f"{BASE_URL}/{group}/events", headers=headers, params=params)
                 r.raise_for_status()
                 return r.json()
@@ -131,7 +149,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "meetup_list_members":
                 group = arguments["group_urlname"]
-                params = {k: v for k, v in arguments.items() if k != "group_urlname" and v is not None}
+                params = {
+                    k: v for k, v in arguments.items() if k != "group_urlname" and v is not None
+                }
                 r = await client.get(f"{BASE_URL}/{group}/members", headers=headers, params=params)
                 r.raise_for_status()
                 return r.json()

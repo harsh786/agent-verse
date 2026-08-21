@@ -8,6 +8,7 @@ Legal: block client names without consent, require citation
 Finance: block specific numbers from being emailed, require reconciliation
 Government: require human approval for all submissions
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -16,9 +17,11 @@ from dataclasses import dataclass, field
 
 try:
     from app.observability.logging import get_logger
+
     logger = get_logger(__name__)
 except Exception:
     import logging
+
     logger = logging.getLogger(__name__)  # type: ignore[assignment]
 
 
@@ -39,7 +42,7 @@ _DOMAIN_POLICIES: dict[str, DomainPolicy] = {
         domain="healthcare",
         blocked_output_patterns=[
             r"\b\d{3}-\d{2}-\d{4}\b",  # SSN
-            r"\b\d{10,12}\b",           # MRN-like numbers
+            r"\b\d{10,12}\b",  # MRN-like numbers
         ],
         masked_fields=["patient_name", "dob", "ssn", "mrn", "diagnosis"],
         require_citation=True,

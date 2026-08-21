@@ -4,11 +4,11 @@ Retrieves from 10 priority sources, ranks by relevance + priority,
 semantic-deduplicates, compresses to fit the token budget, and
 returns an OptimizedContext with full provenance.
 """
+
 from __future__ import annotations
 
-import hashlib
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import structlog
@@ -21,14 +21,15 @@ from app.org.models import OrgDecision, OrgMission, OrgRole
 _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
-_TOKENS_PER_CHAR: float = 0.25     # ~4 chars per token
+_TOKENS_PER_CHAR: float = 0.25  # ~4 chars per token
 _DEDUP_THRESHOLD: float = 0.92
-_MAX_ITEM_CHARS: int = 3_000       # hard cap per item before compression
+_MAX_ITEM_CHARS: int = 3_000  # hard cap per item before compression
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def estimate_tokens(text: str) -> int:
     return max(1, int(len(text) * _TOKENS_PER_CHAR))
@@ -45,7 +46,11 @@ def _term_relevance(query: str, text: str) -> float:
 
 def _ngram_fingerprint(text: str) -> set[str]:
     words = text.lower().split()
-    return {f"{words[i]} {words[i+1]}" for i in range(len(words) - 1)} if len(words) > 1 else set(words)
+    return (
+        {f"{words[i]} {words[i + 1]}" for i in range(len(words) - 1)}
+        if len(words) > 1
+        else set(words)
+    )
 
 
 def _jaccard(a: set[str], b: set[str]) -> float:
@@ -59,6 +64,7 @@ def _jaccard(a: set[str], b: set[str]) -> float:
 #  Data classes
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class ContextStrategy:
     max_tokens: int
@@ -69,16 +75,16 @@ class ContextStrategy:
 class ContextItem:
     source: str
     content: str
-    relevance: float        # 0–1
+    relevance: float  # 0–1
     tokens_estimate: int
-    priority: int           # lower = higher priority (index in PRIORITY_SOURCES)
+    priority: int  # lower = higher priority (index in PRIORITY_SOURCES)
 
 
 @dataclass
 class OptimizedContext:
     items: list[ContextItem]
     total_tokens: int
-    provenance: list[str]   # sorted unique source names
+    provenance: list[str]  # sorted unique source names
     compression_ratio: float
     strategy_used: str
 
@@ -99,6 +105,7 @@ class ContextBuildRequest:
 #  Engine
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class ContextEngine:
     """
     Builds optimal context for every LLM call.
@@ -117,11 +124,11 @@ class ContextEngine:
     """
 
     CONTEXT_STRATEGIES: dict[str, ContextStrategy] = {
-        "quick":    ContextStrategy(max_tokens=2_000,  compression="aggressive"),
-        "standard": ContextStrategy(max_tokens=6_000,  compression="moderate"),
-        "deep":     ContextStrategy(max_tokens=12_000, compression="light"),
+        "quick": ContextStrategy(max_tokens=2_000, compression="aggressive"),
+        "standard": ContextStrategy(max_tokens=6_000, compression="moderate"),
+        "deep": ContextStrategy(max_tokens=12_000, compression="light"),
         "research": ContextStrategy(max_tokens=20_000, compression="none"),
-        "code":     ContextStrategy(max_tokens=8_000,  compression="semantic_only"),
+        "code": ContextStrategy(max_tokens=8_000, compression="semantic_only"),
     }
 
     PRIORITY_SOURCES: list[str] = [
@@ -216,24 +223,31 @@ class ContextEngine:
         return items
 
     async def _mission_context(
-        self, mission_id: str | None, tenant_id: str, query: str,
+        self,
+        mission_id: str | None,
+        tenant_id: str,
+        query: str,
     ) -> list[ContextItem]:
         if not mission_id:
             return []
         try:
             res = await self._s.execute(
-                select(OrgMission).where(and_(
-                    OrgMission.tenant_id == tenant_id,
-                    OrgMission.id == mission_id,
-                ))
+                select(OrgMission).where(
+                    and_(
+                        OrgMission.tenant_id == tenant_id,
+                        OrgMission.id == mission_id,
+                    )
+                )
             )
             m = res.scalar_one_or_none()
             if m is None:
                 return []
             parts = []
             for attr, label in (
-                ("title", "Mission"), ("objective", "Objective"),
-                ("description", "Description"), ("requirements", "Requirements"),
+                ("title", "Mission"),
+                ("objective", "Objective"),
+                ("description", "Description"),
+                ("requirements", "Requirements"),
             ):
                 val = getattr(m, attr, None)
                 if val:
@@ -241,25 +255,34 @@ class ContextEngine:
             if not parts:
                 return []
             content = "\n".join(parts)
-            return [ContextItem(
-                source="mission_requirements", content=content,
-                relevance=0.95, tokens_estimate=estimate_tokens(content),
-                priority=self.PRIORITY_SOURCES.index("mission_requirements"),
-            )]
+            return [
+                ContextItem(
+                    source="mission_requirements",
+                    content=content,
+                    relevance=0.95,
+                    tokens_estimate=estimate_tokens(content),
+                    priority=self.PRIORITY_SOURCES.index("mission_requirements"),
+                )
+            ]
         except Exception as exc:
             _log.warning("context_engine._mission_context.failed", error=str(exc))
             return []
 
     async def _recent_decisions(
-        self, org_id: str, tenant_id: str, query: str,
+        self,
+        org_id: str,
+        tenant_id: str,
+        query: str,
     ) -> list[ContextItem]:
         try:
             res = await self._s.execute(
                 select(OrgDecision)
-                .where(and_(
-                    OrgDecision.tenant_id == tenant_id,
-                    OrgDecision.org_id == org_id,
-                ))
+                .where(
+                    and_(
+                        OrgDecision.tenant_id == tenant_id,
+                        OrgDecision.org_id == org_id,
+                    )
+                )
                 .order_by(OrgDecision.created_at.desc())
                 .limit(8)
             )
@@ -268,8 +291,10 @@ class ContextEngine:
             for d in res.scalars().all():
                 parts = []
                 for attr, label in (
-                    ("title", "Decision"), ("rationale", "Rationale"),
-                    ("outcome", "Outcome"), ("description", "Description"),
+                    ("title", "Decision"),
+                    ("rationale", "Rationale"),
+                    ("outcome", "Outcome"),
+                    ("description", "Description"),
                 ):
                     val = getattr(d, attr, None)
                     if val:
@@ -277,24 +302,31 @@ class ContextEngine:
                 if not parts:
                     continue
                 content = "\n".join(parts)
-                items.append(ContextItem(
-                    source="recent_decisions", content=content,
-                    relevance=_term_relevance(query, content),
-                    tokens_estimate=estimate_tokens(content), priority=prio,
-                ))
+                items.append(
+                    ContextItem(
+                        source="recent_decisions",
+                        content=content,
+                        relevance=_term_relevance(query, content),
+                        tokens_estimate=estimate_tokens(content),
+                        priority=prio,
+                    )
+                )
             return items
         except Exception as exc:
             _log.warning("context_engine._recent_decisions.failed", error=str(exc))
             return []
 
     async def _working_memory(
-        self, agent_id: str | None, tenant_id: str,
+        self,
+        agent_id: str | None,
+        tenant_id: str,
     ) -> list[ContextItem]:
         if not agent_id or self._ms is None:
             return []
         try:
             entries = await self._ms.get_working_memory(
-                agent_id=agent_id, tenant_id=tenant_id,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
             )
             prio = self.PRIORITY_SOURCES.index("working_memory")
             return [
@@ -305,20 +337,25 @@ class ContextEngine:
                     tokens_estimate=estimate_tokens(str(e.get("content", ""))),
                     priority=prio,
                 )
-                for e in (entries or []) if e.get("content")
+                for e in (entries or [])
+                if e.get("content")
             ]
         except Exception as exc:
             _log.warning("context_engine._working_memory.failed", error=str(exc))
             return []
 
     async def _dept_memory(
-        self, dept_id: str | None, query: str,
+        self,
+        dept_id: str | None,
+        query: str,
     ) -> list[ContextItem]:
         if not dept_id or self._ks is None:
             return []
         try:
             results = await self._ks.search(
-                query=query, filters={"dept_id": dept_id}, limit=5,
+                query=query,
+                filters={"dept_id": dept_id},
+                limit=5,
             )
             prio = self.PRIORITY_SOURCES.index("dept_knowledge")
             return [
@@ -329,20 +366,26 @@ class ContextEngine:
                     tokens_estimate=estimate_tokens(str(r.get("content", ""))),
                     priority=prio,
                 )
-                for r in (results or []) if r.get("content")
+                for r in (results or [])
+                if r.get("content")
             ]
         except Exception as exc:
             _log.warning("context_engine._dept_memory.failed", error=str(exc))
             return []
 
     async def _knowledge_store(
-        self, org_id: str, tenant_id: str, query: str,
+        self,
+        org_id: str,
+        tenant_id: str,
+        query: str,
     ) -> list[ContextItem]:
         if self._ks is None:
             return []
         try:
             results = await self._ks.search(
-                query=query, filters={"org_id": org_id}, limit=8,
+                query=query,
+                filters={"org_id": org_id},
+                limit=8,
             )
             prio = self.PRIORITY_SOURCES.index("relevant_knowledge")
             return [
@@ -353,20 +396,27 @@ class ContextEngine:
                     tokens_estimate=estimate_tokens(str(r.get("content", ""))),
                     priority=prio,
                 )
-                for r in (results or []) if r.get("content")
+                for r in (results or [])
+                if r.get("content")
             ]
         except Exception as exc:
             _log.warning("context_engine._knowledge_store.failed", error=str(exc))
             return []
 
     async def _long_term_memory(
-        self, agent_id: str | None, tenant_id: str, query: str,
+        self,
+        agent_id: str | None,
+        tenant_id: str,
+        query: str,
     ) -> list[ContextItem]:
         if not agent_id or self._ms is None:
             return []
         try:
             entries = await self._ms.search(
-                agent_id=agent_id, tenant_id=tenant_id, query=query, limit=5,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                query=query,
+                limit=5,
             )
             prio = self.PRIORITY_SOURCES.index("org_memory")
             return [
@@ -377,22 +427,27 @@ class ContextEngine:
                     tokens_estimate=estimate_tokens(str(e.get("content", ""))),
                     priority=prio,
                 )
-                for e in (entries or []) if e.get("content")
+                for e in (entries or [])
+                if e.get("content")
             ]
         except Exception as exc:
             _log.warning("context_engine._long_term_memory.failed", error=str(exc))
             return []
 
     async def _role_guidelines(
-        self, org_id: str, tenant_id: str,
+        self,
+        org_id: str,
+        tenant_id: str,
     ) -> list[ContextItem]:
         try:
             res = await self._s.execute(
                 select(OrgRole)
-                .where(and_(
-                    OrgRole.tenant_id == tenant_id,
-                    OrgRole.org_id == org_id,
-                ))
+                .where(
+                    and_(
+                        OrgRole.tenant_id == tenant_id,
+                        OrgRole.org_id == org_id,
+                    )
+                )
                 .limit(3)
             )
             prio = self.PRIORITY_SOURCES.index("role_guidelines")
@@ -400,7 +455,8 @@ class ContextEngine:
             for role in res.scalars().all():
                 parts = []
                 for attr, label in (
-                    ("name", "Role"), ("responsibilities", "Responsibilities"),
+                    ("name", "Role"),
+                    ("responsibilities", "Responsibilities"),
                 ):
                     val = getattr(role, attr, None)
                     if val:
@@ -408,11 +464,15 @@ class ContextEngine:
                 if not parts:
                     continue
                 content = "\n".join(parts)
-                items.append(ContextItem(
-                    source="role_guidelines", content=content,
-                    relevance=0.4, tokens_estimate=estimate_tokens(content),
-                    priority=prio,
-                ))
+                items.append(
+                    ContextItem(
+                        source="role_guidelines",
+                        content=content,
+                        relevance=0.4,
+                        tokens_estimate=estimate_tokens(content),
+                        priority=prio,
+                    )
+                )
             return items
         except Exception as exc:
             _log.warning("context_engine._role_guidelines.failed", error=str(exc))
@@ -421,7 +481,9 @@ class ContextEngine:
     # ── Ranking + dedup + compression ─────────────────────────────────────
 
     async def _rank_and_select(
-        self, items: list[ContextItem], max_tokens: int,
+        self,
+        items: list[ContextItem],
+        max_tokens: int,
     ) -> list[ContextItem]:
         """Priority-first then relevance, cut at token budget."""
         sorted_items = sorted(items, key=lambda i: (i.priority, -i.relevance))
@@ -434,7 +496,9 @@ class ContextEngine:
         return selected
 
     async def _semantic_dedup(
-        self, items: list[ContextItem], threshold: float = _DEDUP_THRESHOLD,
+        self,
+        items: list[ContextItem],
+        threshold: float = _DEDUP_THRESHOLD,
     ) -> list[ContextItem]:
         """Remove near-duplicate items by bigram Jaccard similarity."""
         kept: list[ContextItem] = []
@@ -447,7 +511,9 @@ class ContextEngine:
         return kept
 
     async def _compress(
-        self, items: list[ContextItem], strategy: str,
+        self,
+        items: list[ContextItem],
+        strategy: str,
     ) -> list[ContextItem]:
         """Truncate long items based on compression strategy."""
         limits = {
@@ -464,13 +530,15 @@ class ContextEngine:
                 result.append(item)
             else:
                 truncated = item.content[:char_limit] + "…"
-                result.append(ContextItem(
-                    source=item.source,
-                    content=truncated,
-                    relevance=item.relevance,
-                    tokens_estimate=estimate_tokens(truncated),
-                    priority=item.priority,
-                ))
+                result.append(
+                    ContextItem(
+                        source=item.source,
+                        content=truncated,
+                        relevance=item.relevance,
+                        tokens_estimate=estimate_tokens(truncated),
+                        priority=item.priority,
+                    )
+                )
         return result
 
 
@@ -478,11 +546,13 @@ class ContextEngine:
 #  Singleton factory
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def get_context_engine(
     session: AsyncSession,
     knowledge_store: Any | None = None,
     memory_store: Any | None = None,
 ) -> ContextEngine:
     """Return a ContextEngine bound to the given session."""
-    return ContextEngine(session=session, knowledge_store=knowledge_store,
-                         memory_store=memory_store)
+    return ContextEngine(
+        session=session, knowledge_store=knowledge_store, memory_store=memory_store
+    )

@@ -1,4 +1,5 @@
 """SourceInventory — builds a snapshot of all retrieval sources available for a tenant."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,7 +18,7 @@ class SourceInventoryResult:
     exec_memory_plans: int
     web_available: bool
     embedder_available: bool
-    kb_state: str = "unknown"     # empty|sparse|healthy|stale
+    kb_state: str = "unknown"  # empty|sparse|healthy|stale
     graph_state: str = "unknown"  # empty|healthy|partial
 
     def to_dict(self) -> dict[str, Any]:

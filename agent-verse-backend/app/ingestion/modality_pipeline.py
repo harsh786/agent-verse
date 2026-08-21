@@ -1,4 +1,5 @@
 """ModalityPipeline — maps content type to full processing pipeline config."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -31,9 +32,7 @@ class ModalityPipeline:
                 ct, None, "scene", "multimodal", requires_transcription=True
             )
         if ct == ContentType.IMAGE:
-            return ModalityPipelineResult(
-                ct, None, "region", "multimodal", requires_vision=True
-            )
+            return ModalityPipelineResult(ct, None, "region", "multimodal", requires_vision=True)
         if ct == ContentType.CODE:
             return ModalityPipelineResult(ct, None, "ast", "code")
         if ct == ContentType.DOCX:

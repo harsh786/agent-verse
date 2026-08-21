@@ -3,6 +3,7 @@
 Environment:
   UPKEEP_API_KEY: UpKeep API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -22,8 +23,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter by status: open, pending, on hold, complete"},
-                "priority": {"type": "integer", "description": "Filter by priority: 0-3 (none to critical)"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: open, pending, on hold, complete",
+                },
+                "priority": {
+                    "type": "integer",
+                    "description": "Filter by priority: 0-3 (none to critical)",
+                },
                 "limit": {"type": "integer", "description": "Maximum results"},
                 "offset": {"type": "integer", "description": "Pagination offset"},
             },
@@ -36,9 +43,18 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Work order title"},
-                "description": {"type": "string", "description": "Detailed description of the maintenance task"},
-                "priority": {"type": "integer", "description": "Priority level: 0=none, 1=low, 2=medium, 3=high, 4=critical"},
-                "asset_id": {"type": "string", "description": "Asset ID to associate with the work order"},
+                "description": {
+                    "type": "string",
+                    "description": "Detailed description of the maintenance task",
+                },
+                "priority": {
+                    "type": "integer",
+                    "description": "Priority level: 0=none, 1=low, 2=medium, 3=high, 4=critical",
+                },
+                "asset_id": {
+                    "type": "string",
+                    "description": "Asset ID to associate with the work order",
+                },
                 "location_id": {"type": "string", "description": "Location ID for the work order"},
                 "due_date": {"type": "string", "description": "Due date in ISO format"},
             },
@@ -118,8 +134,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "upkeep_update_work_order":
                 woid = arguments["work_order_id"]
-                payload = {k: v for k, v in arguments.items() if k != "work_order_id" and v is not None}
-                r = await client.patch(f"{BASE_URL}/work-orders/{woid}", headers=headers, json=payload)
+                payload = {
+                    k: v for k, v in arguments.items() if k != "work_order_id" and v is not None
+                }
+                r = await client.patch(
+                    f"{BASE_URL}/work-orders/{woid}", headers=headers, json=payload
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -137,7 +157,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "upkeep_get_dashboard_stats":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/work-orders/stats", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/work-orders/stats", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

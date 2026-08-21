@@ -23,14 +23,14 @@ _logger = _get_logger(__name__)
 def _not_found_response(request: Request, exc: Exception) -> HTTPException:
     """Return a sanitized 404 with correlation_id — avoids leaking internal IDs."""
     correlation_id = (
-        getattr(getattr(request, "state", None), "correlation_id", None)
-        or str(uuid.uuid4())[:8]
+        getattr(getattr(request, "state", None), "correlation_id", None) or str(uuid.uuid4())[:8]
     )
     _logger.info("goal_not_found", correlation_id=correlation_id, detail=str(exc))
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"Resource not found [{correlation_id}]",
     )
+
 
 router = APIRouter(prefix="/goals", tags=["goals"])
 
@@ -56,9 +56,7 @@ class GoalRequest(BaseModel):
     debate_rounds: int = Field(default=2, ge=1, le=10)
     # Persistence mode: keep trying until goal is achieved
     persistence_mode: bool = False
-    persistence_config: PersistenceConfigRequest = Field(
-        default_factory=PersistenceConfigRequest
-    )
+    persistence_config: PersistenceConfigRequest = Field(default_factory=PersistenceConfigRequest)
     # Multi-agent modes
     agent_ids: list[str] = Field(default_factory=list)
     supervisor_max_parallel: int = Field(default=5, ge=1, le=20)
@@ -106,6 +104,7 @@ def _goal_service(request: Request) -> Any:
     # Re-export from _deps for backward compatibility with existing usages in this file.
     # New code should use: Depends(get_goal_service) from app.api._deps
     from app.api._deps import get_goal_service
+
     return get_goal_service(request)
 
 
@@ -191,6 +190,7 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
         if provider is not None:
             try:
                 from app.agent.debate import DebateOrchestrator
+
                 rounds = body.debate_rounds
                 orchestrator = DebateOrchestrator(provider=provider, rounds=rounds)
                 debate_result = await orchestrator.run(goal=body.goal)
@@ -203,6 +203,7 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
     # ── Supervisor mode: LLM decomposes goal → parallel sub-agents ───────────
     if body.workflow_mode == "supervisor":
         from app.agent.supervisor import SupervisorAgent
+
         provider = getattr(request.app.state, "_app_provider", None)
         goal_svc = _goal_service(request)
         try:
@@ -297,12 +298,12 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
                             "status": "needs_agent_selection",
                             "routing": decision.to_dict(),
                             "message": (
-                                "Multiple agents could handle this goal. "
-                                "Please select one."
+                                "Multiple agents could handle this goal. Please select one."
                             ),
                         }
                 except Exception as _re:
                     import logging
+
                     logging.getLogger(__name__).warning("agent_router_failed: %s", _re)
 
     result: dict[str, Any] = await svc.submit_goal(
@@ -317,9 +318,7 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
     # Gap 5: Dry-run vs simulation — surface execution mode in response
     result["execution_mode"] = "preview" if body.dry_run else "live"
     result["execution_mode_description"] = (
-        "Plan generated but no tools executed"
-        if body.dry_run
-        else "Fully autonomous execution"
+        "Plan generated but no tools executed" if body.dry_run else "Fully autonomous execution"
     )
     return result
 
@@ -350,6 +349,7 @@ async def get_cost_metrics(request: Request) -> dict[str, Any]:
     # Get budget config
     budget_configs = getattr(request.app.state, "_budget_config", {})
     from app.governance.cost import BudgetConfig
+
     budget_cfg: BudgetConfig = budget_configs.get(tenant.tenant_id, BudgetConfig())
     return {
         **metrics,
@@ -357,7 +357,8 @@ async def get_cost_metrics(request: Request) -> dict[str, Any]:
         "per_goal_budget_usd": budget_cfg.per_goal_usd,
         "budget_utilization": (
             metrics["cost_today_usd"] / budget_cfg.per_tenant_daily_usd
-            if budget_cfg.per_tenant_daily_usd > 0 else 0.0
+            if budget_cfg.per_tenant_daily_usd > 0
+            else 0.0
         ),
     }
 
@@ -376,9 +377,7 @@ async def preview_routing(
     agents: list = []
     if agent_store is not None:
         agents = await agent_store.list_async(tenant_ctx=tenant)
-    decision = await agent_router.route(
-        goal=goal, tenant_ctx=tenant, available_agents=agents
-    )
+    decision = await agent_router.route(goal=goal, tenant_ctx=tenant, available_agents=agents)
     return decision.to_dict()
 
 
@@ -505,7 +504,7 @@ async def stream_goal(request: Request, goal_id: str) -> StreamingResponse:
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",       # Disable nginx buffering for SSE
+            "X-Accel-Buffering": "no",  # Disable nginx buffering for SSE
             "Connection": "keep-alive",
         },
     )
@@ -554,9 +553,7 @@ async def trigger_goal_eval(request: Request, goal_id: str) -> dict[str, Any]:
 
 
 @router.post("/{goal_id}/approve")
-async def approve_goal(
-    request: Request, goal_id: str, body: ApproveRequest
-) -> dict[str, Any]:
+async def approve_goal(request: Request, goal_id: str, body: ApproveRequest) -> dict[str, Any]:
     """Approve or reject a pending HITL request for this goal."""
     tenant = _require_tenant(request)
     svc = _goal_service(request)
@@ -674,9 +671,7 @@ async def ghost_run(request: Request, body: GhostRunRequest) -> dict[str, Any]:
     )
 
     goal_ids: dict[str, str] = {
-        r["name"]: r["goal_id"]
-        for r in strategy_results
-        if r.get("goal_id")
+        r["name"]: r["goal_id"] for r in strategy_results if r.get("goal_id")
     }
 
     return {
@@ -705,21 +700,28 @@ async def submit_batch_goals(request: Request, body: BatchGoalRequest) -> dict[s
     for goal_text in body.goals:
         try:
             result = await svc.submit_goal(
-                goal=goal_text, priority=body.priority, dry_run=False,
-                tenant_ctx=tenant, agent_id=body.agent_id,
+                goal=goal_text,
+                priority=body.priority,
+                dry_run=False,
+                tenant_ctx=tenant,
+                agent_id=body.agent_id,
             )
-            submitted.append({
-                "goal_id": result.get("goal_id"),
-                "goal": goal_text[:100],
-                "status": "queued",
-            })
+            submitted.append(
+                {
+                    "goal_id": result.get("goal_id"),
+                    "goal": goal_text[:100],
+                    "status": "queued",
+                }
+            )
         except Exception as exc:
-            submitted.append({
-                "goal_id": None,
-                "goal": goal_text[:100],
-                "status": "error",
-                "error": str(exc),
-            })
+            submitted.append(
+                {
+                    "goal_id": None,
+                    "goal": goal_text[:100],
+                    "status": "error",
+                    "error": str(exc),
+                }
+            )
 
     return {
         "batch_id": batch_id,
@@ -771,6 +773,7 @@ async def get_goal_traces(request: Request, goal_id: str) -> list[dict[str, Any]
     # Query DB for traces
     # db_session_factory is not on app.state — get it from the session module
     from app.db.session import get_session_factory
+
     db = get_session_factory()
     if db is None:
         # Fall back to in-memory context
@@ -817,10 +820,16 @@ async def get_goal_lineage(request: Request, goal_id: str) -> dict[str, Any]:
 
         db = get_session_factory()
         if db is None:
-            return {"root_goal_id": goal_id, "nodes": [{"goal_id": goal_id, "depth": 0}], "edges": []}
+            return {
+                "root_goal_id": goal_id,
+                "nodes": [{"goal_id": goal_id, "depth": 0}],
+                "edges": [],
+            }
 
         async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
-            rows = (await session.execute(text("""
+            rows = (
+                await session.execute(
+                    text("""
                 SELECT
                     gl.id, gl.root_goal_id, gl.parent_goal_id, gl.child_goal_id,
                     gl.parent_agent_id, gl.child_agent_id, gl.civilization_id,
@@ -841,7 +850,10 @@ async def get_goal_lineage(request: Request, goal_id: str) -> dict[str, Any]:
                     NOW() AS spawned_at,
                     :tid AS tenant_id
                 ORDER BY depth ASC
-            """), {"root_id": goal_id, "tid": tenant.tenant_id})).fetchall()
+            """),
+                    {"root_id": goal_id, "tid": tenant.tenant_id},
+                )
+            ).fetchall()
     except Exception:
         return {"root_goal_id": goal_id, "nodes": [{"goal_id": goal_id, "depth": 0}], "edges": []}
 
@@ -849,25 +861,49 @@ async def get_goal_lineage(request: Request, goal_id: str) -> dict[str, Any]:
     edges = []
     seen_goals: set[str] = set()
     for row in rows:
-        row_id, root_id, parent_gid, child_gid, parent_aid, child_aid, civ_id, reason, depth, spawned_at, _ = row
+        (
+            row_id,
+            root_id,
+            parent_gid,
+            child_gid,
+            parent_aid,
+            child_aid,
+            civ_id,
+            reason,
+            depth,
+            spawned_at,
+            _,
+        ) = row
         if row_id == "root":
             continue
         if child_gid not in seen_goals:
             seen_goals.add(child_gid)
-            nodes.append({
-                "goal_id": child_gid,
-                "parent_goal_id": parent_gid,
-                "agent_id": child_aid,
-                "depth": depth,
-                "spawn_reason": reason,
-                "spawned_at": spawned_at.isoformat() if spawned_at else "",
-            })
+            nodes.append(
+                {
+                    "goal_id": child_gid,
+                    "parent_goal_id": parent_gid,
+                    "agent_id": child_aid,
+                    "depth": depth,
+                    "spawn_reason": reason,
+                    "spawned_at": spawned_at.isoformat() if spawned_at else "",
+                }
+            )
         if parent_gid:
             edges.append({"parent": parent_gid, "child": child_gid})
 
     # Ensure root node is always present
     if goal_id not in seen_goals:
-        nodes.insert(0, {"goal_id": goal_id, "parent_goal_id": None, "agent_id": None, "depth": 0, "spawn_reason": "", "spawned_at": ""})
+        nodes.insert(
+            0,
+            {
+                "goal_id": goal_id,
+                "parent_goal_id": None,
+                "agent_id": None,
+                "depth": 0,
+                "spawn_reason": "",
+                "spawned_at": "",
+            },
+        )
 
     return {"root_goal_id": goal_id, "nodes": nodes, "edges": edges}
 
@@ -887,14 +923,19 @@ async def get_goal_attempts(request: Request, goal_id: str) -> list[dict[str, An
             return []
 
         async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
-            rows = (await session.execute(text("""
+            rows = (
+                await session.execute(
+                    text("""
                 SELECT id, attempt_number, strategy, enriched_goal, started_at,
                        ended_at, succeeded, failure_reason, iterations_used,
                        cost_usd, backoff_seconds
                 FROM goal_attempts
                 WHERE goal_id = :gid AND tenant_id = :tid
                 ORDER BY attempt_number ASC
-            """), {"gid": goal_id, "tid": tenant.tenant_id})).fetchall()
+            """),
+                    {"gid": goal_id, "tid": tenant.tenant_id},
+                )
+            ).fetchall()
     except Exception:
         return []
 
@@ -963,6 +1004,7 @@ async def submit_goal_feedback(
     if body.is_correct is not None:
         try:
             from app.intelligence.verifier_calibration import _default_calibration_store
+
             # Find the calibration record for this goal and update actual_outcome
             for record in _default_calibration_store._records:
                 if record["goal_id"] == goal_id and record["tenant_id"] == tenant_ctx.tenant_id:
@@ -1000,12 +1042,13 @@ async def submit_goal_feedback(
                         "id": str(_uuid.uuid4()),
                         "goal_id": goal_id,
                         "tenant_id": tenant_ctx.tenant_id,
-                            "rating": body.rating,
-                            "correction": body.comment or None,
-                        },
-                    )
+                        "rating": body.rating,
+                        "correction": body.comment or None,
+                    },
+                )
     except Exception as _exc:
         import logging
+
         logging.getLogger(__name__).warning("goal_feedback_persist_failed: %s", _exc)
 
     return {
@@ -1029,7 +1072,11 @@ async def inject_persistence_guidance(
         3600,
         body.guidance[:5000],
     )
-    return {"goal_id": goal_id, "status": "guidance_injected", "guidance_length": len(body.guidance)}
+    return {
+        "goal_id": goal_id,
+        "status": "guidance_injected",
+        "guidance_length": len(body.guidance),
+    }
 
 
 @router.get("/{goal_id}/explain")

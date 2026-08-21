@@ -4,8 +4,9 @@ Revision ID: 0072
 Revises: 0071
 Create Date: 2026-07-04
 """
-from alembic import op
+
 import sqlalchemy as sa
+from alembic import op
 
 revision = "0072"
 down_revision = "0071"
@@ -24,8 +25,16 @@ def upgrade() -> None:
         sa.Column("google_sub", sa.String(255), nullable=True, unique=True),
         sa.Column("keycloak_sub", sa.String(255), nullable=True, unique=True),
         sa.Column("mfa_enabled", sa.Boolean, nullable=False, server_default="false"),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            onupdate=sa.func.now(),
+            nullable=False,
+        ),
         sa.Column("last_login_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.create_index("ix_users_email", "users", ["email"])
@@ -40,8 +49,16 @@ def upgrade() -> None:
         sa.Column("role", sa.String(64), nullable=False, server_default="viewer"),
         sa.Column("status", sa.String(32), nullable=False, server_default="active"),
         sa.Column("invited_by", sa.String(32), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            onupdate=sa.func.now(),
+            nullable=False,
+        ),
         sa.UniqueConstraint("user_id", "tenant_id", name="uq_user_tenant"),
     )
     op.create_index("ix_tenant_memberships_tenant", "tenant_memberships", ["tenant_id"])

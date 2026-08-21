@@ -1,4 +1,5 @@
 """Per-agent credential management API."""
+
 from __future__ import annotations
 
 import time

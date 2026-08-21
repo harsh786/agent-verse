@@ -4,6 +4,7 @@ Environment:
   THINKIFIC_API_KEY: Thinkific API key from Settings > Developer
   THINKIFIC_SUBDOMAIN: Thinkific school subdomain (e.g. myschool)
 """
+
 from __future__ import annotations
 
 import os
@@ -24,8 +25,16 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "page": {"type": "integer", "description": "Page number for pagination", "default": 1},
-                "limit": {"type": "integer", "description": "Number of courses per page (max 250)", "default": 20},
+                "page": {
+                    "type": "integer",
+                    "description": "Page number for pagination",
+                    "default": 1,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of courses per page (max 250)",
+                    "default": 20,
+                },
             },
         },
     },
@@ -37,7 +46,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "email": {"type": "string", "description": "Filter by email address"},
                 "page": {"type": "integer", "description": "Page number", "default": 1},
-                "limit": {"type": "integer", "description": "Number of users per page", "default": 20},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of users per page",
+                    "default": 20,
+                },
             },
         },
     },
@@ -51,7 +64,11 @@ TOOL_DEFINITIONS = [
                 "first_name": {"type": "string", "description": "User first name"},
                 "last_name": {"type": "string", "description": "User last name"},
                 "password": {"type": "string", "description": "Initial password for the user"},
-                "roles": {"type": "array", "items": {"type": "string"}, "description": "User roles: student, affiliate"},
+                "roles": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "User roles: student, affiliate",
+                },
             },
             "required": ["email", "first_name", "last_name"],
         },
@@ -64,8 +81,14 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "user_id": {"type": "integer", "description": "Thinkific user ID"},
                 "course_id": {"type": "integer", "description": "Thinkific course ID"},
-                "activated_at": {"type": "string", "description": "Enrollment activation date (ISO 8601)"},
-                "expiry_date": {"type": "string", "description": "Enrollment expiry date (ISO 8601)"},
+                "activated_at": {
+                    "type": "string",
+                    "description": "Enrollment activation date (ISO 8601)",
+                },
+                "expiry_date": {
+                    "type": "string",
+                    "description": "Enrollment expiry date (ISO 8601)",
+                },
             },
             "required": ["user_id", "course_id"],
         },
@@ -79,7 +102,11 @@ TOOL_DEFINITIONS = [
                 "course_id": {"type": "integer", "description": "Filter by course ID"},
                 "user_id": {"type": "integer", "description": "Filter by user ID"},
                 "page": {"type": "integer", "description": "Page number", "default": 1},
-                "limit": {"type": "integer", "description": "Number of enrollments per page", "default": 20},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of enrollments per page",
+                    "default": 20,
+                },
             },
         },
     },

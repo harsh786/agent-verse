@@ -1,4 +1,5 @@
 """RPA API endpoints."""
+
 from __future__ import annotations
 
 import base64
@@ -62,6 +63,7 @@ async def execute_rpa_tool(request: Request, body: RPAExecuteRequest) -> dict[st
     if executor is None:
         # Late import to avoid circular deps at startup
         from app.rpa.executor import RPAExecutor
+
         executor = RPAExecutor()
         # Cache on app.state for subsequent requests
         request.app.state.rpa_executor = executor
@@ -92,6 +94,7 @@ async def list_sessions(request: Request) -> list[dict[str, Any]]:
     store = _session_store(request)
     if store is None:
         from app.rpa.session import RPASessionStore
+
         store = RPASessionStore()
         request.app.state.rpa_session_store = store
 
@@ -114,6 +117,7 @@ async def create_session(request: Request) -> dict[str, Any]:
     store = _session_store(request)
     if store is None:
         from app.rpa.session import RPASessionStore
+
         store = RPASessionStore()
         request.app.state.rpa_session_store = store
 
@@ -188,9 +192,7 @@ class TakeoverRequest(BaseModel):
 
 
 @router.post("/sessions/{session_id}/takeover")
-async def request_human_takeover(
-    request: Request, session_id: str, body: TakeoverRequest
-) -> dict:
+async def request_human_takeover(request: Request, session_id: str, body: TakeoverRequest) -> dict:
     """Request a human operator to take over an RPA session."""
     tenant = _require_tenant(request)
     store = _session_store(request)
@@ -206,14 +208,17 @@ async def request_human_takeover(
     if redis is not None:
         import json
         from datetime import UTC, datetime
+
         await redis.set(
             f"rpa_human_needed:{session_id}",
-            json.dumps({
-                "reason": body.reason,
-                "session_id": session_id,
-                "tenant_id": tenant.tenant_id,
-                "requested_at": datetime.now(UTC).isoformat(),
-            }),
+            json.dumps(
+                {
+                    "reason": body.reason,
+                    "session_id": session_id,
+                    "tenant_id": tenant.tenant_id,
+                    "requested_at": datetime.now(UTC).isoformat(),
+                }
+            ),
             ex=3600,
         )
 

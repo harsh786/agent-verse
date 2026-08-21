@@ -3,6 +3,7 @@
 Environment:
   PANDADOC_API_KEY: PandaDoc API key
 """
+
 from __future__ import annotations
 
 import os
@@ -89,7 +90,11 @@ TOOL_DEFINITIONS = [
                 "document_id": {"type": "string"},
                 "message": {"type": "string", "description": "Email message to recipients"},
                 "subject": {"type": "string", "description": "Email subject"},
-                "silent": {"type": "boolean", "default": False, "description": "Skip email notification"},
+                "silent": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Skip email notification",
+                },
             },
             "required": ["document_id"],
         },

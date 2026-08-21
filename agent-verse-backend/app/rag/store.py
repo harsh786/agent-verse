@@ -72,7 +72,7 @@ def _trigram_score(query: str, text: str) -> float:
 
     def trigrams(s: str) -> set[str]:
         s = s.lower()
-        return {s[i:i + 3] for i in range(len(s) - 2)} if len(s) >= 3 else set()
+        return {s[i : i + 3] for i in range(len(s) - 2)} if len(s) >= 3 else set()
 
     q_tris = trigrams(query)
     t_tris = trigrams(text)
@@ -121,6 +121,7 @@ class KnowledgeStore:
     ) -> str:
         """Persist a collection before making it visible to the caller."""
         from opentelemetry import trace as _trace
+
         _tracer = _trace.get_tracer(__name__)
         with _tracer.start_as_current_span("rag.create_collection") as span:
             span.set_attribute("tenant_id", tenant_ctx.tenant_id)
@@ -134,9 +135,7 @@ class KnowledgeStore:
         )
         return collection.collection_id
 
-    async def _db_create_collection(
-        self, collection: KnowledgeCollection, tenant_id: str
-    ) -> None:
+    async def _db_create_collection(self, collection: KnowledgeCollection, tenant_id: str) -> None:
         if self._db is None:
             return
         from sqlalchemy import text
@@ -176,11 +175,7 @@ class KnowledgeStore:
         return store.collection if store is not None else None
 
     def list_collections(self, *, tenant_ctx: TenantContext) -> list[KnowledgeCollection]:
-        return [
-            v.collection
-            for (tid, _), v in self._data.items()
-            if tid == tenant_ctx.tenant_id
-        ]
+        return [v.collection for (tid, _), v in self._data.items() if tid == tenant_ctx.tenant_id]
 
     async def get_collection_async(
         self,
@@ -633,9 +628,7 @@ class KnowledgeStore:
         store.chunks.append(chunk)
         store.collection.document_count = len({c.document_id for c in store.chunks})
 
-    async def _db_ingest_chunk(
-        self, chunk: Chunk, collection_id: str, tenant_id: str
-    ) -> None:
+    async def _db_ingest_chunk(self, chunk: Chunk, collection_id: str, tenant_id: str) -> None:
         if self._db is None:
             return
         await self._persist_chunk(
@@ -670,7 +663,8 @@ class KnowledgeStore:
         chunks_to_score = list(store.chunks)
         if metadata_filter:
             chunks_to_score = [
-                c for c in chunks_to_score
+                c
+                for c in chunks_to_score
                 if all(c.metadata.get(k) == v for k, v in metadata_filter.items())
             ]
 
@@ -698,10 +692,7 @@ class KnowledgeStore:
 
             _bm25 = BM25Retriever()
             _bm25.index([{"chunk_id": r.chunk_id, "content": r.content} for r in scored])
-            _bm25_hits = {
-                h.chunk_id: h.score
-                for h in _bm25.search(query, top_k=len(scored))
-            }
+            _bm25_hits = {h.chunk_id: h.score for h in _bm25.search(query, top_k=len(scored))}
             if _bm25_hits:
                 _max_bm25 = max(_bm25_hits.values()) or 1.0
                 for r in scored:
@@ -726,7 +717,11 @@ class KnowledgeStore:
         """Search persisted chunks via pgvector, FTS, and pg_trgm RRF fusion."""
         if self._db is None:
             return self.hybrid_search(
-                query, query_embedding, collection_id, tenant_ctx, top_k,
+                query,
+                query_embedding,
+                collection_id,
+                tenant_ctx,
+                top_k,
                 metadata_filter=metadata_filter,
             )
 
@@ -792,6 +787,7 @@ class KnowledgeStore:
     ) -> list[dict[str, Any]]:
         """Return plain-dict results from the configured source of truth."""
         from opentelemetry import trace as _trace
+
         _tracer = _trace.get_tracer(__name__)
         with _tracer.start_as_current_span("rag.search") as span:
             span.set_attribute("tenant_id", tenant_ctx.tenant_id)
@@ -825,17 +821,18 @@ class KnowledgeStore:
                 continue
             for chunk in store.chunks:
                 if metadata_filter and not all(
-                    chunk.metadata.get(key) == value
-                    for key, value in metadata_filter.items()
+                    chunk.metadata.get(key) == value for key, value in metadata_filter.items()
                 ):
                     continue
                 tri = _trigram_score(query, chunk.content)
-                results.append({
-                    "chunk_id": chunk.chunk_id,
-                    "content": chunk.content,
-                    "score": tri,
-                    "metadata": chunk.metadata,
-                })
+                results.append(
+                    {
+                        "chunk_id": chunk.chunk_id,
+                        "content": chunk.content,
+                        "score": tri,
+                        "metadata": chunk.metadata,
+                    }
+                )
         results.sort(key=lambda r: r["score"], reverse=True)
         return results[:top_k]
 
@@ -851,14 +848,10 @@ class KnowledgeStore:
         if store is None:
             return 0
         before = len(store.chunks)
-        store.chunks = [
-            c for c in store.chunks if c.document_id != document_id
-        ]
+        store.chunks = [c for c in store.chunks if c.document_id != document_id]
         deleted = before - len(store.chunks)
         if deleted > 0:
-            store.collection.document_count = len(
-                {c.document_id for c in store.chunks}
-            )
+            store.collection.document_count = len({c.document_id for c in store.chunks})
         return deleted
 
     async def delete_document_async(
@@ -979,13 +972,15 @@ class KnowledgeStore:
 
         document_id = source_doc_id or chunk_id
         merged_metadata = dict(metadata or {})
-        merged_metadata.update({
-            "source_url": source_url,
-            "source_type": source_type,
-            "source_doc_id": document_id,
-            "page_number": page_number,
-            "freshness_ttl_hours": freshness_ttl_hours,
-        })
+        merged_metadata.update(
+            {
+                "source_url": source_url,
+                "source_type": source_type,
+                "source_doc_id": document_id,
+                "page_number": page_number,
+                "freshness_ttl_hours": freshness_ttl_hours,
+            }
+        )
 
         chunk = Chunk(
             document_id=document_id,
@@ -1082,9 +1077,7 @@ class KnowledgeStore:
             )
         cache_key = (tenant_ctx.tenant_id, collection_id)
         existing = self._index_records.setdefault(cache_key, [])
-        existing[:] = [
-            record for record in existing if record.document_id != document_id
-        ]
+        existing[:] = [record for record in existing if record.document_id != document_id]
         existing.extend(records)
         return [record.chunk_id for record in records]
 
@@ -1112,11 +1105,7 @@ class KnowledgeStore:
         strategy_filter: dict[str, Any] = {"rag_strategy": strategy.value}
         if strategy.value == "agentic_chunking":
             strategy_filter["is_proposition"] = True
-        candidate_limit = (
-            min(top_k * 4, 100)
-            if strategy.value == "agentic_chunking"
-            else top_k
-        )
+        candidate_limit = min(top_k * 4, 100) if strategy.value == "agentic_chunking" else top_k
         results = await self.hybrid_search_db(
             query,
             query_embedding,
@@ -1159,17 +1148,12 @@ class KnowledgeStore:
         candidates = [record for record in records if record.strategy is strategy]
         if strategy.value == "agentic_chunking":
             candidates = [record for record in candidates if record.is_proposition]
-        candidate_limit = (
-            min(top_k * 4, 100)
-            if strategy.value == "agentic_chunking"
-            else top_k
-        )
+        candidate_limit = min(top_k * 4, 100) if strategy.value == "agentic_chunking" else top_k
         ranked = sorted(
             candidates,
             key=lambda record: (
                 -(
-                    _VECTOR_WEIGHT
-                    * _cosine_similarity(query_embedding, record.embedding)
+                    _VECTOR_WEIGHT * _cosine_similarity(query_embedding, record.embedding)
                     + _TRIGRAM_WEIGHT * _trigram_score(query, record.content)
                 ),
                 record.chunk_id,
@@ -1185,10 +1169,9 @@ class KnowledgeStore:
         retrieval_results: list[RetrievalResult] = []
         parent_citations: dict[str, ParentWindowCitation] = {}
         for record in ranked:
-            score = (
-                _VECTOR_WEIGHT * _cosine_similarity(query_embedding, record.embedding)
-                + _TRIGRAM_WEIGHT * _trigram_score(query, record.content)
-            )
+            score = _VECTOR_WEIGHT * _cosine_similarity(
+                query_embedding, record.embedding
+            ) + _TRIGRAM_WEIGHT * _trigram_score(query, record.content)
             retrieval_results.append(
                 RetrievalResult(
                     chunk_id=record.chunk_id,
@@ -1347,9 +1330,7 @@ class KnowledgeStore:
         cached = self._data.get((tenant_ctx.tenant_id, collection_id))
         if cached is not None:
             cached.chunks.extend(chunks)
-            cached.collection.document_count = len(
-                {chunk.document_id for chunk in cached.chunks}
-            )
+            cached.collection.document_count = len({chunk.document_id for chunk in cached.chunks})
         return [chunk.chunk_id for chunk in chunks]
 
     async def ingest_repository_chunks_async(
@@ -1440,9 +1421,7 @@ class KnowledgeStore:
         cached = self._data.get((tenant_ctx.tenant_id, collection_id))
         if cached is not None:
             cached.chunks.extend(chunks)
-            cached.collection.document_count = len(
-                {chunk.document_id for chunk in cached.chunks}
-            )
+            cached.collection.document_count = len({chunk.document_id for chunk in cached.chunks})
         return [chunk.chunk_id for chunk in chunks]
 
     async def _persist_chunk(
@@ -1512,9 +1491,7 @@ class KnowledgeStore:
         table = _chunk_table(dimension)
         parameters = []
         for record in records:
-            vector_literal = "[" + ",".join(
-                f"{value:.9g}" for value in record["embedding"]
-            ) + "]"
+            vector_literal = "[" + ",".join(f"{value:.9g}" for value in record["embedding"]) + "]"
             parameters.append(
                 {
                     "id": record["chunk_id"],

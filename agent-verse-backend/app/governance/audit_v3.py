@@ -23,6 +23,7 @@ Hash input (canonical JSON, deterministic):
   "metadata_hash": "sha256(metadata)"
 }
 """
+
 from __future__ import annotations
 
 import csv
@@ -40,10 +41,22 @@ logger = get_logger(__name__)
 
 _AGENT_PATTERN_AUDIT_ACTIONS = frozenset(
     {
-        "approval_issued", "approval_consumed", "policy_compiled", "budget_mutated",
-        "replay_requested", "redrive_requested", "key_rotated", "context_disclosed",
-        "memory_quarantined", "memory_deleted", "bid_unseal", "governor_authority_changed",
-        "feature_flag_changed", "rollout_decided", "audit_accessed", "break_glass",
+        "approval_issued",
+        "approval_consumed",
+        "policy_compiled",
+        "budget_mutated",
+        "replay_requested",
+        "redrive_requested",
+        "key_rotated",
+        "context_disclosed",
+        "memory_quarantined",
+        "memory_deleted",
+        "bid_unseal",
+        "governor_authority_changed",
+        "feature_flag_changed",
+        "rollout_decided",
+        "audit_accessed",
+        "break_glass",
     }
 )
 
@@ -57,12 +70,12 @@ class AuditRecord:
     goal_id: str
     action: str
     tool_name: str
-    tool_args_hash: str       # sha256 of sorted tool args (not raw args — privacy)
-    actor: str                # "user:alice", "agent:xyz", "system"
+    tool_args_hash: str  # sha256 of sorted tool args (not raw args — privacy)
+    actor: str  # "user:alice", "agent:xyz", "system"
     actor_ip: str
     delegation_chain_hash: str
     previous_hash: str
-    entry_hash: str           # hash of this record (includes previous_hash)
+    entry_hash: str  # hash of this record (includes previous_hash)
     timestamp: str
     metadata_hash: str
     sequence: int
@@ -248,6 +261,7 @@ class AuditV3:
                 from sqlalchemy import text
 
                 from app.db.rls import system_session
+
                 async with self._db() as session, session.begin(), system_session(session):
                     await session.execute(
                         text("""
@@ -261,14 +275,21 @@ class AuditV3:
                             ON CONFLICT (id) DO NOTHING
                         """),
                         {
-                            "id": record.id, "tid": tenant_id, "gid": goal_id,
-                            "action": action, "tool": tool_name,
-                            "args_hash": tool_args_hash, "actor": actor,
-                            "ip": actor_ip, "del_hash": delegation_chain_hash,
-                            "prev_hash": previous_hash, "hash": entry_hash,
-                            "ts": ts, "meta_hash": metadata_hash,
+                            "id": record.id,
+                            "tid": tenant_id,
+                            "gid": goal_id,
+                            "action": action,
+                            "tool": tool_name,
+                            "args_hash": tool_args_hash,
+                            "actor": actor,
+                            "ip": actor_ip,
+                            "del_hash": delegation_chain_hash,
+                            "prev_hash": previous_hash,
+                            "hash": entry_hash,
+                            "ts": ts,
+                            "meta_hash": metadata_hash,
                             "seq": record.sequence,
-                        }
+                        },
                     )
             except Exception as exc:
                 logger.warning("audit_v3_persist_failed", error=str(exc)[:80])
@@ -395,10 +416,7 @@ class AuditV3:
                     "valid": False,
                     "records_checked": record.sequence,
                     "broken_at": record.id,
-                    "reason": (
-                        f"Hash mismatch at sequence {record.sequence}: "
-                        f"record was tampered"
-                    ),
+                    "reason": (f"Hash mismatch at sequence {record.sequence}: record was tampered"),
                 }
             previous_hash = record.entry_hash
 
@@ -419,29 +437,55 @@ class AuditV3:
 
         if fmt == "csv":
             buf = io.StringIO()
-            writer = csv.DictWriter(buf, fieldnames=[
-                "id", "sequence", "timestamp", "tenant_id", "goal_id",
-                "action", "tool_name", "actor", "actor_ip", "entry_hash", "previous_hash",
-            ])
+            writer = csv.DictWriter(
+                buf,
+                fieldnames=[
+                    "id",
+                    "sequence",
+                    "timestamp",
+                    "tenant_id",
+                    "goal_id",
+                    "action",
+                    "tool_name",
+                    "actor",
+                    "actor_ip",
+                    "entry_hash",
+                    "previous_hash",
+                ],
+            )
             writer.writeheader()
             for r in records:
-                writer.writerow({
-                    "id": r.id, "sequence": r.sequence, "timestamp": r.timestamp,
-                    "tenant_id": r.tenant_id, "goal_id": r.goal_id,
-                    "action": r.action, "tool_name": r.tool_name,
-                    "actor": r.actor, "actor_ip": r.actor_ip,
-                    "entry_hash": r.entry_hash, "previous_hash": r.previous_hash,
-                })
+                writer.writerow(
+                    {
+                        "id": r.id,
+                        "sequence": r.sequence,
+                        "timestamp": r.timestamp,
+                        "tenant_id": r.tenant_id,
+                        "goal_id": r.goal_id,
+                        "action": r.action,
+                        "tool_name": r.tool_name,
+                        "actor": r.actor,
+                        "actor_ip": r.actor_ip,
+                        "entry_hash": r.entry_hash,
+                        "previous_hash": r.previous_hash,
+                    }
+                )
             return buf.getvalue()
         else:
             return json.dumps(
                 [
                     {
-                        "id": r.id, "sequence": r.sequence, "timestamp": r.timestamp,
-                        "tenant_id": r.tenant_id, "goal_id": r.goal_id,
-                        "action": r.action, "tool_name": r.tool_name,
-                        "actor": r.actor, "actor_ip": r.actor_ip,
-                        "entry_hash": r.entry_hash, "previous_hash": r.previous_hash,
+                        "id": r.id,
+                        "sequence": r.sequence,
+                        "timestamp": r.timestamp,
+                        "tenant_id": r.tenant_id,
+                        "goal_id": r.goal_id,
+                        "action": r.action,
+                        "tool_name": r.tool_name,
+                        "actor": r.actor,
+                        "actor_ip": r.actor_ip,
+                        "entry_hash": r.entry_hash,
+                        "previous_hash": r.previous_hash,
                     }
                     for r in records
                 ],
@@ -460,7 +504,6 @@ class AuditV3:
         }
         manifest["manifest_digest"] = f"sha256:{_hash_dict(manifest)}"
         return json.dumps(manifest, sort_keys=True)
-
 
 
 # Module-level singleton
@@ -494,6 +537,7 @@ class AuditFlusher:
     async def run(self) -> None:
         """Long-running no-op so the background task doesn't crash."""
         import asyncio
+
         while True:
             await asyncio.sleep(3600)
 

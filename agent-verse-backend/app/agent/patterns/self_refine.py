@@ -4,6 +4,7 @@ Graph: _node_execute → _node_refine → _node_verify
 The _node_refine is already implemented in graph.py.
 This adapter provides standalone execute() for testing and composition.
 """
+
 from __future__ import annotations
 
 from typing import Any

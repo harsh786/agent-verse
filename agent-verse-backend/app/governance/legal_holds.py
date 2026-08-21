@@ -12,6 +12,7 @@ Enforcement is two-tier:
 
 Redis provides O(1) hold checks for high-throughput paths.
 """
+
 from __future__ import annotations
 
 import json
@@ -171,9 +172,7 @@ class LegalHoldManager:
                 cache_key = _CACHE_KEY.format(tenant_id=tenant_id)
                 members = await self._redis.smembers(cache_key)
                 if members:
-                    str_members = {
-                        m.decode() if isinstance(m, bytes) else m for m in members
-                    }
+                    str_members = {m.decode() if isinstance(m, bytes) else m for m in members}
                     return resource_id in str_members
             except Exception as exc:
                 logger.warning("legal_hold_cache_check_error", error=str(exc))
@@ -203,9 +202,7 @@ class LegalHoldManager:
 
         return False
 
-    async def list_holds(
-        self, tenant_id: str, status: str = "active"
-    ) -> list[dict[str, Any]]:
+    async def list_holds(self, tenant_id: str, status: str = "active") -> list[dict[str, Any]]:
         """Return all holds of the given status for a tenant."""
         if self._db is None:
             return []

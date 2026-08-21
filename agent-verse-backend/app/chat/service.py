@@ -28,6 +28,7 @@ def _hex() -> str:
 
 # ── In-memory store (replaced by DB in production) ────────────────────────────
 
+
 @dataclass
 class _Session:
     id: str
@@ -202,7 +203,8 @@ class ChatService:
 
     def list_messages(self, session_id: str, tenant_id: str, limit: int = 100) -> list[_Message]:
         msgs = [
-            m for m in self._messages.values()
+            m
+            for m in self._messages.values()
             if m.session_id == session_id and m.tenant_id == tenant_id
         ]
         return sorted(msgs, key=lambda m: m.created_at)[-limit:]
@@ -269,7 +271,8 @@ class ChatService:
 
     def session_usage_summary(self, session_id: str, tenant_id: str) -> dict[str, Any]:
         records = [
-            u for u in self._usage.values()
+            u
+            for u in self._usage.values()
             if u.session_id == session_id and u.tenant_id == tenant_id
         ]
         return {
@@ -397,13 +400,12 @@ class ChatService:
 
     def list_artifacts(self, session_id: str, tenant_id: str) -> list[_Artifact]:
         return [
-            a for a in self._artifacts.values()
+            a
+            for a in self._artifacts.values()
             if a.session_id == session_id and a.tenant_id == tenant_id
         ]
 
-    def update_artifact(
-        self, artifact_id: str, tenant_id: str, content: str
-    ) -> _Artifact | None:
+    def update_artifact(self, artifact_id: str, tenant_id: str, content: str) -> _Artifact | None:
         a = self._artifacts.get(artifact_id)
         if not a or a.tenant_id != tenant_id:
             return None
@@ -430,7 +432,8 @@ class ChatService:
         """Simple substring search — production uses Postgres FTS index."""
         q = query.lower()
         results = [
-            m for m in self._messages.values()
+            m
+            for m in self._messages.values()
             if m.tenant_id == tenant_id
             and (session_id is None or m.session_id == session_id)
             and q in m.content.lower()

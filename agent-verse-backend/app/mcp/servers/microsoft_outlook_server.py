@@ -3,6 +3,7 @@
 Environment:
   MICROSOFT_ACCESS_TOKEN: Microsoft OAuth2 access token with Mail.ReadWrite scope
 """
+
 from __future__ import annotations
 
 import os
@@ -148,9 +149,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                         {
                             "id": m.get("id"),
                             "subject": m.get("subject"),
-                            "from": m.get("from", {})
-                            .get("emailAddress", {})
-                            .get("address"),
+                            "from": m.get("from", {}).get("emailAddress", {}).get("address"),
                             "received_at": m.get("receivedDateTime"),
                             "is_read": m.get("isRead"),
                         }
@@ -240,9 +239,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                         {
                             "id": m.get("id"),
                             "subject": m.get("subject"),
-                            "from": m.get("from", {})
-                            .get("emailAddress", {})
-                            .get("address"),
+                            "from": m.get("from", {}).get("emailAddress", {}).get("address"),
                             "received_at": m.get("receivedDateTime"),
                         }
                         for m in data.get("value", [])
@@ -266,8 +263,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                             "id": ct.get("id"),
                             "display_name": ct.get("displayName"),
                             "email_addresses": [
-                                e.get("address")
-                                for e in ct.get("emailAddresses", [])
+                                e.get("address") for e in ct.get("emailAddresses", [])
                             ],
                             "mobile_phone": ct.get("mobilePhone"),
                         }

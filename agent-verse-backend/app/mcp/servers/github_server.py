@@ -4,6 +4,7 @@ Environment variables:
   GITHUB_TOKEN: Personal access token or GitHub App token
   GITHUB_BASE_URL: Override for GitHub Enterprise (default: https://api.github.com)
 """
+
 from __future__ import annotations
 
 import os
@@ -144,9 +145,7 @@ async def call_tool(
     if token:
         headers["Authorization"] = f"Bearer {token}"
     try:
-        async with httpx.AsyncClient(
-            base_url=base_url, headers=headers, timeout=30.0
-        ) as client:
+        async with httpx.AsyncClient(base_url=base_url, headers=headers, timeout=30.0) as client:
             return await _dispatch_github_tool(tool_name, arguments, client)
     except httpx.HTTPStatusError as exc:
         error_body = ""
@@ -199,9 +198,7 @@ async def _dispatch_github_tool(
         import base64
 
         content = (
-            base64.b64decode(data.get("content", "")).decode(
-                "utf-8", errors="replace"
-            )
+            base64.b64decode(data.get("content", "")).decode("utf-8", errors="replace")
             if data.get("encoding") == "base64"
             else data.get("content", "")
         )
@@ -242,9 +239,7 @@ async def _dispatch_github_tool(
             "body": arguments.get("body", ""),
             "labels": arguments.get("labels", []),
         }
-        resp = await client.post(
-            f"/repos/{owner}/{repo}/issues", json=payload
-        )
+        resp = await client.post(f"/repos/{owner}/{repo}/issues", json=payload)
         resp.raise_for_status()
         data = resp.json()
         return {
@@ -261,9 +256,7 @@ async def _dispatch_github_tool(
             "base": arguments.get("base", "main"),
             "body": arguments.get("body", ""),
         }
-        resp = await client.post(
-            f"/repos/{owner}/{repo}/pulls", json=payload
-        )
+        resp = await client.post(f"/repos/{owner}/{repo}/pulls", json=payload)
         resp.raise_for_status()
         data = resp.json()
         return {

@@ -3,6 +3,7 @@
 Wraps existing ConfluenceIngestor under the BaseConnector interface.
 Cursor: last page modified timestamp (ISO 8601).
 """
+
 from __future__ import annotations
 
 import logging
@@ -28,9 +29,11 @@ class ConfluenceConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             import httpx
+
             cc = config.connection_config
             base_url = cc.get("base_url", "").rstrip("/")
             auth = (cc.get("username", ""), cc.get("api_token", ""))
@@ -44,7 +47,8 @@ class ConfluenceConnector(BaseConnector):
                 spaces = r.json().get("results", [])
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
-                ok=True, latency_ms=latency,
+                ok=True,
+                latency_ms=latency,
                 metadata={"spaces_accessible": len(spaces)},
             )
         except Exception as exc:
@@ -68,7 +72,7 @@ class ConfluenceConnector(BaseConnector):
 
         async with httpx.AsyncClient(timeout=30) as client:
             for ctype in content_types:
-                for space_key in (space_keys or [""]):
+                for space_key in space_keys or [""]:
                     params: dict = {
                         "type": ctype,
                         "expand": "body.view,version,metadata.labels",
@@ -94,6 +98,7 @@ class ConfluenceConnector(BaseConnector):
                             body_html = page.get("body", {}).get("view", {}).get("value", "")
                             # Strip HTML tags
                             import re
+
                             text = re.sub(r"<[^>]+>", " ", body_html)
                             text = re.sub(r"\s+", " ", text).strip()
                             title = page.get("title", "")
@@ -105,7 +110,12 @@ class ConfluenceConnector(BaseConnector):
                                 source_url=f"{base_url}/wiki/spaces/{space_key}/pages/{page.get('id')}",
                                 content=full_text.encode(),
                                 content_type="text/plain",
-                                metadata={"title": title, "space": space_key, "type": ctype, "modified": modified},
+                                metadata={
+                                    "title": title,
+                                    "space": space_key,
+                                    "type": ctype,
+                                    "modified": modified,
+                                },
                             )
                             yield doc, new_cursor
                         next_link = data.get("_links", {}).get("next")

@@ -3,30 +3,61 @@
 5 roles x 8 operations = 40 cells, all explicitly defined.
 Operations: create | read | update | delete | fire | pause | resume | view_dlq
 """
+
 from __future__ import annotations
 
 # Explicit matrix: role → operation → bool
 # Every cell MUST be explicitly True or False (no implicit defaults).
 TRIGGER_PERMISSION_MATRIX: dict[str, dict[str, bool]] = {
     "admin": {
-        "create": True, "read": True, "update": True, "delete": True,
-        "fire": True, "pause": True, "resume": True, "view_dlq": True,
+        "create": True,
+        "read": True,
+        "update": True,
+        "delete": True,
+        "fire": True,
+        "pause": True,
+        "resume": True,
+        "view_dlq": True,
     },
     "developer": {
-        "create": True, "read": True, "update": True, "delete": False,
-        "fire": True, "pause": True, "resume": True, "view_dlq": True,
+        "create": True,
+        "read": True,
+        "update": True,
+        "delete": False,
+        "fire": True,
+        "pause": True,
+        "resume": True,
+        "view_dlq": True,
     },
     "operator": {
-        "create": False, "read": True, "update": False, "delete": False,
-        "fire": True, "pause": True, "resume": True, "view_dlq": True,
+        "create": False,
+        "read": True,
+        "update": False,
+        "delete": False,
+        "fire": True,
+        "pause": True,
+        "resume": True,
+        "view_dlq": True,
     },
     "viewer": {
-        "create": False, "read": True, "update": False, "delete": False,
-        "fire": False, "pause": False, "resume": False, "view_dlq": False,
+        "create": False,
+        "read": True,
+        "update": False,
+        "delete": False,
+        "fire": False,
+        "pause": False,
+        "resume": False,
+        "view_dlq": False,
     },
     "api_key": {
-        "create": False, "read": True, "update": False, "delete": False,
-        "fire": True, "pause": False, "resume": False, "view_dlq": False,
+        "create": False,
+        "read": True,
+        "update": False,
+        "delete": False,
+        "fire": True,
+        "pause": False,
+        "resume": False,
+        "view_dlq": False,
     },
 }
 
@@ -57,4 +88,3 @@ def check_permission(role: str, operation: str) -> bool:
             f"Role '{role}' is not permitted to perform '{operation}' on triggers"
         )
     return True
-

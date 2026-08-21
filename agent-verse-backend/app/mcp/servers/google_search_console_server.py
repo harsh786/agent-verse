@@ -4,6 +4,7 @@ Environment variables (one required):
   GOOGLE_ACCESS_TOKEN:         OAuth2 bearer token
   GOOGLE_SERVICE_ACCOUNT_JSON: JSON string of a service-account key file
 """
+
 from __future__ import annotations
 
 import json

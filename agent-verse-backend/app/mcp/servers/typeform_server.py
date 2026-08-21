@@ -3,6 +3,7 @@
 Environment:
   TYPEFORM_ACCESS_TOKEN: Typeform personal access token
 """
+
 from __future__ import annotations
 
 import os
@@ -133,9 +134,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
 
             elif tool_name == "typeform_get_form":
-                r = await c.get(
-                    f"{TYPEFORM_BASE}/forms/{arguments['form_id']}", headers=hdrs
-                )
+                r = await c.get(f"{TYPEFORM_BASE}/forms/{arguments['form_id']}", headers=hdrs)
                 r.raise_for_status()
                 data = r.json()
                 return {
@@ -182,9 +181,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
 
             elif tool_name == "typeform_delete_form":
-                r = await c.delete(
-                    f"{TYPEFORM_BASE}/forms/{arguments['form_id']}", headers=hdrs
-                )
+                r = await c.delete(f"{TYPEFORM_BASE}/forms/{arguments['form_id']}", headers=hdrs)
                 r.raise_for_status()
                 return {"deleted": True, "form_id": arguments["form_id"]}
 

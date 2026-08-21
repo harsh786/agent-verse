@@ -4,6 +4,7 @@ Environment:
   EBAY_APP_ID: eBay application client ID (App ID)
   EBAY_OAUTH_TOKEN: OAuth2 user/app token for authenticated API calls
 """
+
 from __future__ import annotations
 
 import os
@@ -25,10 +26,17 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "q": {"type": "string", "description": "Search keyword(s)"},
-                "category_ids": {"type": "string", "description": "Comma-separated category IDs to filter results"},
+                "category_ids": {
+                    "type": "string",
+                    "description": "Comma-separated category IDs to filter results",
+                },
                 "price_min": {"type": "number", "description": "Minimum price filter"},
                 "price_max": {"type": "number", "description": "Maximum price filter"},
-                "limit": {"type": "integer", "description": "Number of items to return (max 200)", "default": 20},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of items to return (max 200)",
+                    "default": 20,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
             "required": ["q"],
@@ -51,9 +59,19 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "order_ids": {"type": "string", "description": "Comma-separated order IDs to filter"},
-                "filter": {"type": "string", "description": "Filter string e.g. orderfulfillmentstatus:{NOT_STARTED}"},
-                "limit": {"type": "integer", "description": "Number of orders to return (max 200)", "default": 20},
+                "order_ids": {
+                    "type": "string",
+                    "description": "Comma-separated order IDs to filter",
+                },
+                "filter": {
+                    "type": "string",
+                    "description": "Filter string e.g. orderfulfillmentstatus:{NOT_STARTED}",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of orders to return (max 200)",
+                    "default": 20,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
         },
@@ -79,9 +97,21 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "keywords": {"type": "string", "description": "Keyword string to search for"},
-                "sort_order": {"type": "string", "description": "Sort order: BestMatch, CurrentPriceHighest, PricePlusShippingLowest", "default": "BestMatch"},
-                "page_number": {"type": "integer", "description": "Page number for pagination", "default": 1},
-                "entries_per_page": {"type": "integer", "description": "Results per page (max 100)", "default": 20},
+                "sort_order": {
+                    "type": "string",
+                    "description": "Sort order: BestMatch, CurrentPriceHighest, PricePlusShippingLowest",
+                    "default": "BestMatch",
+                },
+                "page_number": {
+                    "type": "integer",
+                    "description": "Page number for pagination",
+                    "default": 1,
+                },
+                "entries_per_page": {
+                    "type": "integer",
+                    "description": "Results per page (max 100)",
+                    "default": 20,
+                },
             },
             "required": ["keywords"],
         },
@@ -92,8 +122,15 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "category_tree_id": {"type": "string", "description": "Category tree ID (e.g. 0 for US)", "default": "0"},
-                "category_id": {"type": "string", "description": "Parent category ID to get subtree (optional)"},
+                "category_tree_id": {
+                    "type": "string",
+                    "description": "Category tree ID (e.g. 0 for US)",
+                    "default": "0",
+                },
+                "category_id": {
+                    "type": "string",
+                    "description": "Parent category ID to get subtree (optional)",
+                },
             },
         },
     },
@@ -188,7 +225,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
 
             elif tool_name == "ebay_get_selling_stats":
-                metric_keys = arguments.get("metric_keys", ["TRANSACTION", "LISTING_IMPRESSION_TOTAL"])
+                metric_keys = arguments.get(
+                    "metric_keys", ["TRANSACTION", "LISTING_IMPRESSION_TOTAL"]
+                )
                 r = await client.get(
                     "https://api.ebay.com/sell/analytics/v1/seller_standards_profile",
                     headers=headers,

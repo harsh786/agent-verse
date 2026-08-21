@@ -5,6 +5,7 @@ Environment variables:
   PAYPAL_CLIENT_SECRET: PayPal app client secret
   PAYPAL_SANDBOX:       'true' (default) or 'false' for live
 """
+
 from __future__ import annotations
 
 import os
@@ -25,7 +26,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "amount": {"type": "number", "description": "Order total amount"},
                 "currency": {"type": "string", "default": "USD"},
-                "intent": {"type": "string", "enum": ["CAPTURE", "AUTHORIZE"], "default": "CAPTURE"},
+                "intent": {
+                    "type": "string",
+                    "enum": ["CAPTURE", "AUTHORIZE"],
+                    "default": "CAPTURE",
+                },
                 "description": {"type": "string"},
                 "return_url": {"type": "string"},
                 "cancel_url": {"type": "string"},
@@ -61,13 +66,19 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "sender_batch_id": {"type": "string", "description": "Unique ID for this payout batch"},
+                "sender_batch_id": {
+                    "type": "string",
+                    "description": "Unique ID for this payout batch",
+                },
                 "items": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "receiver": {"type": "string", "description": "Recipient email or PayPal ID"},
+                            "receiver": {
+                                "type": "string",
+                                "description": "Recipient email or PayPal ID",
+                            },
                             "amount": {"type": "number"},
                             "currency": {"type": "string", "default": "USD"},
                             "note": {"type": "string"},
@@ -87,7 +98,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "start_date": {"type": "string", "description": "ISO8601 start date-time e.g. 2024-01-01T00:00:00-0700"},
+                "start_date": {
+                    "type": "string",
+                    "description": "ISO8601 start date-time e.g. 2024-01-01T00:00:00-0700",
+                },
                 "end_date": {"type": "string", "description": "ISO8601 end date-time"},
                 "page_size": {"type": "integer", "default": 100},
                 "page": {"type": "integer", "default": 1},

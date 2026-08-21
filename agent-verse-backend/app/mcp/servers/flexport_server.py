@@ -3,6 +3,7 @@
 Environment:
   FLEXPORT_API_KEY: Flexport API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -25,7 +26,10 @@ TOOL_DEFINITIONS = [
                 "per": {"type": "integer", "description": "Results per page"},
                 "page": {"type": "integer", "description": "Page number"},
                 "status": {"type": "string", "description": "Filter by status"},
-                "transport_mode": {"type": "string", "description": "Filter by mode: ocean, air, truck"},
+                "transport_mode": {
+                    "type": "string",
+                    "description": "Filter by mode: ocean, air, truck",
+                },
             },
         },
     },
@@ -47,10 +51,17 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Shipment name or reference"},
-                "transport_mode": {"type": "string", "description": "Transport mode: ocean, air, truck"},
+                "transport_mode": {
+                    "type": "string",
+                    "description": "Transport mode: ocean, air, truck",
+                },
                 "origin": {"type": "object", "description": "Origin location details"},
                 "destination": {"type": "object", "description": "Destination location details"},
-                "cargo": {"type": "array", "description": "List of cargo items", "items": {"type": "object"}},
+                "cargo": {
+                    "type": "array",
+                    "description": "List of cargo items",
+                    "items": {"type": "object"},
+                },
             },
             "required": ["transport_mode"],
         },
@@ -61,7 +72,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "shipment_id": {"type": "integer", "description": "Shipment ID to get documents for"},
+                "shipment_id": {
+                    "type": "integer",
+                    "description": "Shipment ID to get documents for",
+                },
                 "per": {"type": "integer", "description": "Results per page"},
                 "page": {"type": "integer", "description": "Page number"},
             },
@@ -85,8 +99,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "origin_port": {"type": "string", "description": "Origin port UNLOCODE (e.g. CNSHA)"},
-                "destination_port": {"type": "string", "description": "Destination port UNLOCODE (e.g. USLAX)"},
+                "origin_port": {
+                    "type": "string",
+                    "description": "Origin port UNLOCODE (e.g. CNSHA)",
+                },
+                "destination_port": {
+                    "type": "string",
+                    "description": "Destination port UNLOCODE (e.g. USLAX)",
+                },
                 "transport_mode": {"type": "string", "description": "Transport mode: ocean, air"},
                 "cargo_type": {"type": "string", "description": "Cargo type: FCL, LCL, AIR"},
                 "container_size": {"type": "string", "description": "Container size: 20, 40, 40HC"},
@@ -131,7 +151,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "flexport_list_documents":
                 shipment_id = arguments["shipment_id"]
-                params = {k: v for k, v in arguments.items() if k != "shipment_id" and v is not None}
+                params = {
+                    k: v for k, v in arguments.items() if k != "shipment_id" and v is not None
+                }
                 r = await client.get(
                     f"{BASE_URL}/shipments/{shipment_id}/documents",
                     headers=headers,

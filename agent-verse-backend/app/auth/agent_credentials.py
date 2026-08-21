@@ -10,6 +10,7 @@ Key structure: av_agent_{agent_id_prefix}_{random}
 - Scoped to one agent_id
 - Inherits parent tenant_id and plan
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -134,8 +135,7 @@ class AgentCredentialStore:
         if allowed is None:
             return True  # no restriction
         return any(
-            tool_name == a or (a.endswith("*") and tool_name.startswith(a[:-1]))
-            for a in allowed
+            tool_name == a or (a.endswith("*") and tool_name.startswith(a[:-1])) for a in allowed
         )
 
 

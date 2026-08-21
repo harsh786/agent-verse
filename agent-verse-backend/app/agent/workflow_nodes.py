@@ -12,6 +12,7 @@ Supported node types:
   - rag:      Collection picker + query + strategy                (NEW, uses engine.py)
   - skill:    Inject a skill's instructions into context           (NEW)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -98,7 +99,7 @@ async def execute_decision_node(
 
     # 2. Allowlist: only digits, whitespace, arithmetic/comparison/logical operators,
     #    quotes, parentheses, and simple identifiers (no brackets for subscript attacks).
-    safe_pattern = re.compile(r'^[\d\s\.\+\-\*\/\<\>\=\!\&\|\(\)\'\"a-zA-Z_\.]*$')
+    safe_pattern = re.compile(r"^[\d\s\.\+\-\*\/\<\>\=\!\&\|\(\)\'\"a-zA-Z_\.]*$")
     if not safe_pattern.match(
         expr.replace("context.", "").replace("True", "").replace("False", "")
     ):
@@ -286,9 +287,7 @@ async def execute_skill_node(
 
     instructions = "\n\n".join(s.get("instructions", "") for s in skills_to_inject)
 
-    logger.info(
-        "skill_node_complete", skills=[s.get("name") for s in skills_to_inject]
-    )
+    logger.info("skill_node_complete", skills=[s.get("name") for s in skills_to_inject])
     return {
         "skill_instructions": instructions,
         "skills_loaded": [s.get("name") for s in skills_to_inject],

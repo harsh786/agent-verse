@@ -4,6 +4,7 @@ Environment variables:
   ZOHO_ACCESS_TOKEN: OAuth2 access token
   ZOHO_DOMAIN: zoho.com | zoho.eu | zoho.in | zoho.com.au (default: zoho.com)
 """
+
 from __future__ import annotations
 
 import os

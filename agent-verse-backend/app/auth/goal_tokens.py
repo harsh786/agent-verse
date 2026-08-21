@@ -12,6 +12,7 @@ Token properties:
 
 This closes the "permanent credential exposure" risk in Celery workers.
 """
+
 from __future__ import annotations
 
 import base64
@@ -31,9 +32,7 @@ logger = get_logger(__name__)
 _GOAL_TOKEN_TTL = 1800
 
 # Secret for HMAC signing (should come from env in production)
-_SIGNING_SECRET = os.getenv(
-    "GOAL_TOKEN_SECRET", "agentverse-goal-token-secret-change-in-prod"
-)
+_SIGNING_SECRET = os.getenv("GOAL_TOKEN_SECRET", "agentverse-goal-token-secret-change-in-prod")
 
 
 def _b64url(data: bytes) -> str:
@@ -62,9 +61,7 @@ def mint_goal_token(
     header = _b64url(json.dumps({"alg": "HS256", "typ": "GoalToken"}).encode())
     body = _b64url(json.dumps(payload).encode())
     signing_input = f"{header}.{body}"
-    sig = hmac.new(
-        _SIGNING_SECRET.encode(), signing_input.encode(), hashlib.sha256
-    ).digest()
+    sig = hmac.new(_SIGNING_SECRET.encode(), signing_input.encode(), hashlib.sha256).digest()
     return f"{signing_input}.{_b64url(sig)}"
 
 

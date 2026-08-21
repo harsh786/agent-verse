@@ -4,6 +4,7 @@ Environment:
   ZOHO_DESK_ACCESS_TOKEN: Zoho Desk OAuth2 access token
   ZOHO_DESK_ORG_ID: Zoho Desk organization ID
 """
+
 from __future__ import annotations
 
 import os
@@ -23,8 +24,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter by status: Open, On Hold, Escalated, Closed"},
-                "priority": {"type": "string", "description": "Filter by priority: Low, Medium, High, Urgent"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: Open, On Hold, Escalated, Closed",
+                },
+                "priority": {
+                    "type": "string",
+                    "description": "Filter by priority: Low, Medium, High, Urgent",
+                },
                 "department_id": {"type": "string", "description": "Filter by department"},
                 "from_index": {"type": "integer", "description": "Pagination offset"},
                 "limit": {"type": "integer", "description": "Maximum tickets to return (max 100)"},
@@ -39,11 +46,26 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "subject": {"type": "string", "description": "Subject line of the ticket"},
-                "description": {"type": "string", "description": "Detailed description of the issue"},
-                "contact_id": {"type": "string", "description": "ID of the contact submitting the ticket"},
-                "department_id": {"type": "string", "description": "Department to assign the ticket to"},
-                "priority": {"type": "string", "description": "Ticket priority: Low, Medium, High, Urgent"},
-                "channel": {"type": "string", "description": "Support channel: Email, Chat, Phone, etc."},
+                "description": {
+                    "type": "string",
+                    "description": "Detailed description of the issue",
+                },
+                "contact_id": {
+                    "type": "string",
+                    "description": "ID of the contact submitting the ticket",
+                },
+                "department_id": {
+                    "type": "string",
+                    "description": "Department to assign the ticket to",
+                },
+                "priority": {
+                    "type": "string",
+                    "description": "Ticket priority: Low, Medium, High, Urgent",
+                },
+                "channel": {
+                    "type": "string",
+                    "description": "Support channel: Email, Chat, Phone, etc.",
+                },
             },
             "required": ["subject"],
         },
@@ -153,7 +175,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "zoho_desk_get_ticket_stats":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/reports/ticketSummary", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/reports/ticketSummary", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

@@ -11,6 +11,7 @@ Work Discovery Pipeline (N9):
     - Competitor signals
     - Unresolved blockers older than SLA
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -31,17 +32,17 @@ _tracer = trace.get_tracer(__name__)
 class WorkItem:
     """A discovered piece of work with scoring metadata."""
 
-    id:             str
-    title:          str
-    org_id:         str
-    source:         str  # 'kpi_deviation' | 'overdue' | 'blocker' | 'external'
-    urgency:        float = 0.5      # 0-1
-    strategic_fit:  float = 0.5      # 0-1
-    estimated_cost: float = 0.0      # USD
-    estimated_roi:  float = 0.0      # USD expected return
-    risk_level:     str = "low"      # low | medium | high
-    discovered_at:  str = ""
-    value_score:    float = 0.0      # computed by WorkValueEngine
+    id: str
+    title: str
+    org_id: str
+    source: str  # 'kpi_deviation' | 'overdue' | 'blocker' | 'external'
+    urgency: float = 0.5  # 0-1
+    strategic_fit: float = 0.5  # 0-1
+    estimated_cost: float = 0.0  # USD
+    estimated_roi: float = 0.0  # USD expected return
+    risk_level: str = "low"  # low | medium | high
+    discovered_at: str = ""
+    value_score: float = 0.0  # computed by WorkValueEngine
 
     def __post_init__(self) -> None:
         if not self.discovered_at:
@@ -57,8 +58,11 @@ class WorkValueEngine:
     """
 
     from typing import ClassVar
+
     DEFAULT_WEIGHTS: ClassVar[dict[str, float]] = {
-        "urgency": 0.4, "strategic_fit": 0.35, "roi": 0.25,
+        "urgency": 0.4,
+        "strategic_fit": 0.35,
+        "roi": 0.25,
     }
 
     def __init__(self, weights: dict[str, float] | None = None) -> None:
@@ -75,9 +79,9 @@ class WorkValueEngine:
                 roi_factor = min(1.0, item.estimated_roi / max(1.0, item.estimated_cost * 5))
 
             score = (
-                item.urgency      * self._weights["urgency"] +
-                item.strategic_fit * self._weights["strategic_fit"] +
-                roi_factor         * self._weights["roi"]
+                item.urgency * self._weights["urgency"]
+                + item.strategic_fit * self._weights["strategic_fit"]
+                + roi_factor * self._weights["roi"]
             )
             item.value_score = round(score, 4)
             span.set_attribute("value_score", item.value_score)
@@ -106,9 +110,7 @@ class WorkDiscoveryPipeline:
     def __init__(self, value_engine: WorkValueEngine | None = None) -> None:
         self._engine = value_engine or WorkValueEngine()
 
-    async def discover(
-        self, org_id: str, health: dict[str, Any]
-    ) -> list[WorkItem]:
+    async def discover(self, org_id: str, health: dict[str, Any]) -> list[WorkItem]:
         """Run all discovery sources and return ranked work items."""
         with _tracer.start_as_current_span("work_discovery.discover") as span:
             span.set_attribute("org_id", org_id)
@@ -129,79 +131,81 @@ class WorkDiscoveryPipeline:
             _log.info("work_discovery.complete", org_id=org_id, count=len(ranked))
             return ranked
 
-    async def _kpi_deviation(
-        self, org_id: str, health: dict[str, Any]
-    ) -> list[WorkItem]:
+    async def _kpi_deviation(self, org_id: str, health: dict[str, Any]) -> list[WorkItem]:
         """Detect KPI deviations that require investigation."""
         items: list[WorkItem] = []
         failed = health.get("task_counts", {}).get("failed", 0)
         blocked = health.get("task_counts", {}).get("blocked", 0)
 
         if failed > 0:
-            items.append(WorkItem(
-                id=f"kpi-failed-{org_id}",
-                title=f"Investigate {failed} failed tasks",
-                org_id=org_id,
-                source="kpi_deviation",
-                urgency=min(1.0, 0.5 + (failed / 20)),
-                strategic_fit=0.7,
-                estimated_cost=50.0,
-                estimated_roi=500.0,
-                risk_level="high" if failed > 5 else "medium",
-            ))
+            items.append(
+                WorkItem(
+                    id=f"kpi-failed-{org_id}",
+                    title=f"Investigate {failed} failed tasks",
+                    org_id=org_id,
+                    source="kpi_deviation",
+                    urgency=min(1.0, 0.5 + (failed / 20)),
+                    strategic_fit=0.7,
+                    estimated_cost=50.0,
+                    estimated_roi=500.0,
+                    risk_level="high" if failed > 5 else "medium",
+                )
+            )
 
         if blocked > 3:
-            items.append(WorkItem(
-                id=f"kpi-blocked-{org_id}",
-                title=f"Unblock {blocked} stalled tasks",
-                org_id=org_id,
-                source="kpi_deviation",
-                urgency=min(0.9, 0.4 + (blocked / 30)),
-                strategic_fit=0.6,
-                estimated_cost=20.0,
-                estimated_roi=200.0,
-                risk_level="medium",
-            ))
+            items.append(
+                WorkItem(
+                    id=f"kpi-blocked-{org_id}",
+                    title=f"Unblock {blocked} stalled tasks",
+                    org_id=org_id,
+                    source="kpi_deviation",
+                    urgency=min(0.9, 0.4 + (blocked / 30)),
+                    strategic_fit=0.6,
+                    estimated_cost=20.0,
+                    estimated_roi=200.0,
+                    risk_level="medium",
+                )
+            )
         return items
 
-    async def _overdue_obligations(
-        self, org_id: str, health: dict[str, Any]
-    ) -> list[WorkItem]:
+    async def _overdue_obligations(self, org_id: str, health: dict[str, Any]) -> list[WorkItem]:
         """Detect overdue tasks and missions."""
         pending = health.get("pending_approvals", 0)
         items: list[WorkItem] = []
         if pending > 2:
-            items.append(WorkItem(
-                id=f"overdue-approvals-{org_id}",
-                title=f"Process {pending} pending approvals before SLA",
-                org_id=org_id,
-                source="overdue",
-                urgency=min(1.0, 0.6 + (pending / 10)),
-                strategic_fit=0.8,
-                estimated_cost=10.0,
-                estimated_roi=300.0,
-                risk_level="medium",
-            ))
+            items.append(
+                WorkItem(
+                    id=f"overdue-approvals-{org_id}",
+                    title=f"Process {pending} pending approvals before SLA",
+                    org_id=org_id,
+                    source="overdue",
+                    urgency=min(1.0, 0.6 + (pending / 10)),
+                    strategic_fit=0.8,
+                    estimated_cost=10.0,
+                    estimated_roi=300.0,
+                    risk_level="medium",
+                )
+            )
         return items
 
-    async def _blocker_resolution(
-        self, org_id: str, health: dict[str, Any]
-    ) -> list[WorkItem]:
+    async def _blocker_resolution(self, org_id: str, health: dict[str, Any]) -> list[WorkItem]:
         """Detect items needing escalation."""
         attention = health.get("items_needing_attention", 0)
         if attention <= 0:
             return []
-        return [WorkItem(
-            id=f"blocker-esc-{org_id}",
-            title=f"{attention} items need escalation or attention",
-            org_id=org_id,
-            source="blocker",
-            urgency=0.7,
-            strategic_fit=0.5,
-            estimated_cost=30.0,
-            estimated_roi=150.0,
-            risk_level="medium",
-        )]
+        return [
+            WorkItem(
+                id=f"blocker-esc-{org_id}",
+                title=f"{attention} items need escalation or attention",
+                org_id=org_id,
+                source="blocker",
+                urgency=0.7,
+                strategic_fit=0.5,
+                estimated_cost=30.0,
+                estimated_roi=150.0,
+                risk_level="medium",
+            )
+        ]
 
 
 # ── N3: Domain Discovery ──────────────────────────────────────────────────────
@@ -221,9 +225,7 @@ class DomainDiscovery:
     def register_domains(self, domains: list[str]) -> None:
         self._known_domains.update(d.lower().strip() for d in domains)
 
-    def discover_unknown_domains(
-        self, required_capabilities: list[str]
-    ) -> list[dict[str, str]]:
+    def discover_unknown_domains(self, required_capabilities: list[str]) -> list[dict[str, str]]:
         """Return capabilities that match no known domain."""
         with _tracer.start_as_current_span("domain_discovery.scan") as span:
             span.set_attribute("required_count", len(required_capabilities))
@@ -232,11 +234,13 @@ class DomainDiscovery:
             for cap in required_capabilities:
                 cap_lower = cap.lower().strip()
                 if not any(cap_lower in d or d in cap_lower for d in self._known_domains):
-                    unknown.append({
-                        "capability": cap,
-                        "suggestion": f"Create new department or expand capabilities for '{cap}'",
-                        "severity": "gap",
-                    })
+                    unknown.append(
+                        {
+                            "capability": cap,
+                            "suggestion": f"Create new department or expand capabilities for '{cap}'",
+                            "severity": "gap",
+                        }
+                    )
 
             span.set_attribute("unknown_count", len(unknown))
             if unknown:
@@ -254,11 +258,11 @@ class DomainDiscovery:
 @dataclass
 class CapabilityNode:
     capability_id: str
-    name:           str
-    domain:         str
-    proficiency:    float = 0.5   # 0-1: how well the org can do this
-    agent_count:    int   = 0     # agents that have this capability
-    dependencies:   list[str] = field(default_factory=list)
+    name: str
+    domain: str
+    proficiency: float = 0.5  # 0-1: how well the org can do this
+    agent_count: int = 0  # agents that have this capability
+    dependencies: list[str] = field(default_factory=list)
 
 
 class CapabilityGraph:
@@ -296,7 +300,13 @@ class CapabilityGraph:
                 if found is None:
                     gaps.append({"capability": cap_name, "status": "missing"})
                 elif found.proficiency < 0.4:
-                    gaps.append({"capability": cap_name, "status": "under_proficient", "proficiency": found.proficiency})  # noqa: E501
+                    gaps.append(
+                        {
+                            "capability": cap_name,
+                            "status": "under_proficient",
+                            "proficiency": found.proficiency,
+                        }
+                    )
                 else:
                     present.append({"capability": cap_name, "proficiency": found.proficiency})
 
@@ -323,13 +333,23 @@ class CapabilityGraph:
 
 # ── Module-level singletons ───────────────────────────────────────────────────
 
-_work_value_engine   = WorkValueEngine()
-_work_discovery      = WorkDiscoveryPipeline(_work_value_engine)
-_domain_discovery    = DomainDiscovery()
-_capability_graph    = CapabilityGraph()
+_work_value_engine = WorkValueEngine()
+_work_discovery = WorkDiscoveryPipeline(_work_value_engine)
+_domain_discovery = DomainDiscovery()
+_capability_graph = CapabilityGraph()
 
 
-def get_work_value_engine()  -> WorkValueEngine:    return _work_value_engine
-def get_work_discovery()     -> WorkDiscoveryPipeline: return _work_discovery
-def get_domain_discovery()   -> DomainDiscovery:    return _domain_discovery
-def get_capability_graph()   -> CapabilityGraph:    return _capability_graph
+def get_work_value_engine() -> WorkValueEngine:
+    return _work_value_engine
+
+
+def get_work_discovery() -> WorkDiscoveryPipeline:
+    return _work_discovery
+
+
+def get_domain_discovery() -> DomainDiscovery:
+    return _domain_discovery
+
+
+def get_capability_graph() -> CapabilityGraph:
+    return _capability_graph

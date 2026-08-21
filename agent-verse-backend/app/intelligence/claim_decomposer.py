@@ -4,6 +4,7 @@ For rigorous hallucination detection, rather than checking the whole answer
 at once, we decompose it into small atomic factual claims and verify each
 claim independently against the retrieved evidence.
 """
+
 from __future__ import annotations
 
 import re
@@ -25,7 +26,7 @@ _DECOMPOSE_PROMPT = (
 @dataclass
 class ClaimVerificationReport:
     claims: list[str]
-    verdicts: list["NLIVerdict"]
+    verdicts: list[NLIVerdict]
     overall_score: float  # fraction of claims that are ENTAILED
     unsupported_claims: list[str]
     contradicted_claims: list[str]
@@ -38,7 +39,7 @@ class ClaimDecomposer:
     async def decompose(
         self,
         text: str,
-        provider: "LLMProvider",
+        provider: LLMProvider,
     ) -> list[str]:
         """Split *text* into atomic factual claims via LLM.
 
@@ -73,8 +74,8 @@ class ClaimDecomposer:
         self,
         claims: list[str],
         evidence_chunks: list[str],
-        nli: "NLIChecker",
-        provider: "LLMProvider",
+        nli: NLIChecker,
+        provider: LLMProvider,
     ) -> ClaimVerificationReport:
         """Verify each claim against the combined evidence.
 
@@ -90,7 +91,7 @@ class ClaimDecomposer:
             LLM provider for NLI calls.
         """
         combined_evidence = " ".join(evidence_chunks[:3])[:1500]
-        verdicts: list["NLIVerdict"] = []
+        verdicts: list[NLIVerdict] = []
         unsupported: list[str] = []
         contradicted: list[str] = []
 
@@ -118,8 +119,8 @@ class ClaimDecomposer:
         self,
         answer: str,
         evidence_chunks: list[str],
-        nli: "NLIChecker",
-        provider: "LLMProvider",
+        nli: NLIChecker,
+        provider: LLMProvider,
     ) -> ClaimVerificationReport:
         """Convenience: decompose + verify in one call."""
         claims = await self.decompose(answer, provider)

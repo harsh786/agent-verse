@@ -1,4 +1,5 @@
 """AgentVerse CLI — submit goals, create agents, manage schedules."""
+
 from __future__ import annotations
 
 import json
@@ -17,6 +18,7 @@ app = typer.Typer(
 def _base_url() -> str:
     # Check config file first, then env var
     from pathlib import Path
+
     config_path = Path.home() / ".agentverse" / "config.json"
     if config_path.exists():
         try:
@@ -31,6 +33,7 @@ def _base_url() -> str:
 def _api_key() -> str:
     # Check config file first, then env var
     from pathlib import Path
+
     config_path = Path.home() / ".agentverse" / "config.json"
     if config_path.exists():
         try:
@@ -70,13 +73,16 @@ def _post(url: str, api_key: str, body: dict) -> dict:
 
 @app.command()
 def login(
-    api_key: str = typer.Option(..., "--key", "-k", prompt="API Key", hide_input=True,
-                                help="Your AgentVerse API key"),
-    base_url: str = typer.Option("http://localhost:8000", "--url", "-u",
-                                 help="AgentVerse API base URL"),
+    api_key: str = typer.Option(
+        ..., "--key", "-k", prompt="API Key", hide_input=True, help="Your AgentVerse API key"
+    ),
+    base_url: str = typer.Option(
+        "http://localhost:8000", "--url", "-u", help="AgentVerse API base URL"
+    ),
 ) -> None:
     """Save API key to ~/.agentverse/config.json for CLI use."""
     from pathlib import Path
+
     config_dir = Path.home() / ".agentverse"
     config_dir.mkdir(exist_ok=True)
     config_path = config_dir / "config.json"
@@ -157,9 +163,7 @@ def _stream_goal(goal_id: str) -> None:
                                 typer.echo(f"[FAIL] {event.get('reason', 'Unknown error')}")
                                 sys.exit(1)
                             elif event_type == "waiting_approval":
-                                typer.echo(
-                                    f"[WAIT] Approval needed for: {event.get('action', '')}"
-                                )
+                                typer.echo(f"[WAIT] Approval needed for: {event.get('action', '')}")
                                 typer.echo(f"       Request ID: {event.get('request_id', '')}")
                         except json.JSONDecodeError:
                             pass
@@ -324,6 +328,7 @@ def manifest_cmd(
     if action == "validate":
         try:
             from app.sdk.manifest import AgentManifest
+
             manifest = AgentManifest.from_yaml(path)
             errors = manifest.validate()
             if errors:
@@ -335,7 +340,9 @@ def manifest_cmd(
                 typer.echo(f"✅ Manifest '{manifest.name}' v{manifest.version} is valid")
                 typer.echo(f"   Autonomy: {manifest.autonomy_mode}")
                 if manifest.connector_requirements:
-                    typer.echo(f"   Connectors: {[c.type for c in manifest.connector_requirements]}")
+                    typer.echo(
+                        f"   Connectors: {[c.type for c in manifest.connector_requirements]}"
+                    )
         except FileNotFoundError:
             typer.echo(f"❌ File not found: {path}")
             raise typer.Exit(1)
@@ -366,7 +373,7 @@ def dev_server(
     typer.echo("\n  AgentVerse Dev Server")
     typer.echo("  " + "-" * 43)
     typer.echo(f"  URL:       http://localhost:{port}")
-    typer.echo("  Docs:      http://localhost:{}/docs".format(port))
+    typer.echo(f"  Docs:      http://localhost:{port}/docs")
     typer.echo("  LLM:       FakeProvider (no API key required)")
     typer.echo("  Database:  SQLite  /tmp/agentverse-dev.db")
     typer.echo("  Cache:     fakeredis (in-memory)")
@@ -383,7 +390,9 @@ def dev_server(
     }
 
     cmd = [
-        sys.executable, "-m", "uvicorn",
+        sys.executable,
+        "-m",
+        "uvicorn",
         "app.main:create_app",
         "--factory",
         f"--port={port}",

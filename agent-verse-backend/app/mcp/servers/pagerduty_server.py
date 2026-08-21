@@ -5,6 +5,7 @@ Environment variables:
   PAGERDUTY_FROM_EMAIL: Email address of the PagerDuty user making the request
                         (required by the API for incident create/update operations)
 """
+
 from __future__ import annotations
 
 import os
@@ -287,7 +288,9 @@ async def call_tool(
             elif tool_name == "pagerduty_create_incident":
                 from_email = os.getenv("PAGERDUTY_FROM_EMAIL", "")
                 if not from_email:
-                    return {"error": "PAGERDUTY_FROM_EMAIL not configured (required for incident creation)"}
+                    return {
+                        "error": "PAGERDUTY_FROM_EMAIL not configured (required for incident creation)"
+                    }
                 incident: dict[str, Any] = {
                     "type": "incident",
                     "title": arguments["title"],
@@ -357,9 +360,7 @@ async def call_tool(
             elif tool_name == "pagerduty_add_note":
                 incident_id = arguments["incident_id"]
                 payload = {"note": {"content": arguments["content"]}}
-                resp = await client.post(
-                    f"/incidents/{incident_id}/notes", json=payload
-                )
+                resp = await client.post(f"/incidents/{incident_id}/notes", json=payload)
                 resp.raise_for_status()
                 note = resp.json().get("note", {})
                 return {
@@ -388,7 +389,9 @@ async def call_tool(
                             "name": svc.get("name", ""),
                             "description": svc.get("description", ""),
                             "status": svc.get("status", ""),
-                            "escalation_policy": (svc.get("escalation_policy") or {}).get("summary", ""),
+                            "escalation_policy": (svc.get("escalation_policy") or {}).get(
+                                "summary", ""
+                            ),
                             "html_url": svc.get("html_url", ""),
                         }
                         for svc in data.get("services", [])
@@ -413,7 +416,9 @@ async def call_tool(
                             "user": (oc.get("user") or {}).get("summary", ""),
                             "user_id": (oc.get("user") or {}).get("id", ""),
                             "schedule": (oc.get("schedule") or {}).get("summary", ""),
-                            "escalation_policy": (oc.get("escalation_policy") or {}).get("summary", ""),
+                            "escalation_policy": (oc.get("escalation_policy") or {}).get(
+                                "summary", ""
+                            ),
                             "start": oc.get("start", ""),
                             "end": oc.get("end", ""),
                         }
@@ -439,9 +444,7 @@ async def call_tool(
                             "name": ep.get("name", ""),
                             "description": ep.get("description", ""),
                             "num_loops": ep.get("num_loops", 0),
-                            "services": [
-                                s.get("summary", "") for s in ep.get("services", [])
-                            ],
+                            "services": [s.get("summary", "") for s in ep.get("services", [])],
                             "html_url": ep.get("html_url", ""),
                         }
                         for ep in data.get("escalation_policies", [])

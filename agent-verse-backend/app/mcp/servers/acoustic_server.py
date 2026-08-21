@@ -5,6 +5,7 @@ Environment:
   ACOUSTIC_CLIENT_SECRET: Acoustic OAuth2 client secret
   ACOUSTIC_REFRESH_TOKEN: Acoustic OAuth2 refresh token
 """
+
 from __future__ import annotations
 
 import os
@@ -111,7 +112,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
     client_secret = os.getenv("ACOUSTIC_CLIENT_SECRET", "")
     refresh_token = os.getenv("ACOUSTIC_REFRESH_TOKEN", "")
     if not client_id or not client_secret or not refresh_token:
-        return {"error": "ACOUSTIC_CLIENT_ID, ACOUSTIC_CLIENT_SECRET, and ACOUSTIC_REFRESH_TOKEN not configured"}
+        return {
+            "error": "ACOUSTIC_CLIENT_ID, ACOUSTIC_CLIENT_SECRET, and ACOUSTIC_REFRESH_TOKEN not configured"
+        }
 
     async with httpx.AsyncClient(timeout=30) as client:
         try:
@@ -123,24 +126,33 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 <Envelope><Body><{func_name}>{params_xml}</{func_name}></Body></Envelope>"""
 
             if tool_name == "acoustic_list_campaigns":
-                xml = _xml_body("GetMailings", f"""
+                xml = _xml_body(
+                    "GetMailings",
+                    f"""
                 <VISIBILITY>1</VISIBILITY>
                 <MAILING_TYPE>1</MAILING_TYPE>
-                <PAGE_SIZE>{arguments.get('page_size', 20)}</PAGE_SIZE>
-                <PAGE_NUMBER>{arguments.get('page_number', 1)}</PAGE_NUMBER>""")
+                <PAGE_SIZE>{arguments.get("page_size", 20)}</PAGE_SIZE>
+                <PAGE_NUMBER>{arguments.get("page_number", 1)}</PAGE_NUMBER>""",
+                )
                 r = await client.post(f"{BASE_URL}/XMLAPI", headers=headers, content=xml.encode())
                 r.raise_for_status()
                 return {"raw_xml": r.text[:2000]}
 
             if tool_name == "acoustic_get_campaign_stats":
-                xml = _xml_body("GetAggregateTrackingForMailing", f"<MAILING_ID>{arguments['mailing_id']}</MAILING_ID>")
+                xml = _xml_body(
+                    "GetAggregateTrackingForMailing",
+                    f"<MAILING_ID>{arguments['mailing_id']}</MAILING_ID>",
+                )
                 r = await client.post(f"{BASE_URL}/XMLAPI", headers=headers, content=xml.encode())
                 r.raise_for_status()
                 return {"raw_xml": r.text[:2000]}
 
             if tool_name == "acoustic_list_contacts":
-                xml = _xml_body("SelectRecipientData", f"""
-                <LIST_ID>{arguments['list_id']}</LIST_ID>""")
+                xml = _xml_body(
+                    "SelectRecipientData",
+                    f"""
+                <LIST_ID>{arguments["list_id"]}</LIST_ID>""",
+                )
                 r = await client.post(f"{BASE_URL}/XMLAPI", headers=headers, content=xml.encode())
                 r.raise_for_status()
                 return {"raw_xml": r.text[:2000]}
@@ -150,26 +162,35 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     f"<COLUMN><NAME>{k}</NAME><VALUE>{v}</VALUE></COLUMN>"
                     for k, v in arguments.get("columns", {}).items()
                 )
-                xml = _xml_body("AddRecipient", f"""
-                <LIST_ID>{arguments['list_id']}</LIST_ID>
-                <COLUMN><NAME>EMAIL</NAME><VALUE>{arguments['email']}</VALUE></COLUMN>
-                {cols}""")
+                xml = _xml_body(
+                    "AddRecipient",
+                    f"""
+                <LIST_ID>{arguments["list_id"]}</LIST_ID>
+                <COLUMN><NAME>EMAIL</NAME><VALUE>{arguments["email"]}</VALUE></COLUMN>
+                {cols}""",
+                )
                 r = await client.post(f"{BASE_URL}/XMLAPI", headers=headers, content=xml.encode())
                 r.raise_for_status()
                 return {"raw_xml": r.text[:2000]}
 
             if tool_name == "acoustic_send_mailing":
-                xml = _xml_body("ScheduleMailing", f"""
-                <TEMPLATE_ID>{arguments['mailing_id']}</TEMPLATE_ID>
-                <SCHEDULED_DATE>{arguments.get('schedule_date', '')}</SCHEDULED_DATE>""")
+                xml = _xml_body(
+                    "ScheduleMailing",
+                    f"""
+                <TEMPLATE_ID>{arguments["mailing_id"]}</TEMPLATE_ID>
+                <SCHEDULED_DATE>{arguments.get("schedule_date", "")}</SCHEDULED_DATE>""",
+                )
                 r = await client.post(f"{BASE_URL}/XMLAPI", headers=headers, content=xml.encode())
                 r.raise_for_status()
                 return {"raw_xml": r.text[:2000]}
 
             if tool_name == "acoustic_list_databases":
-                xml = _xml_body("GetLists", f"""
-                <VISIBILITY>{arguments.get('visibility', 1)}</VISIBILITY>
-                <LIST_TYPE>{arguments.get('list_type', 0)}</LIST_TYPE>""")
+                xml = _xml_body(
+                    "GetLists",
+                    f"""
+                <VISIBILITY>{arguments.get("visibility", 1)}</VISIBILITY>
+                <LIST_TYPE>{arguments.get("list_type", 0)}</LIST_TYPE>""",
+                )
                 r = await client.post(f"{BASE_URL}/XMLAPI", headers=headers, content=xml.encode())
                 r.raise_for_status()
                 return {"raw_xml": r.text[:2000]}

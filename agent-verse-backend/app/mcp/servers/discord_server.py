@@ -3,6 +3,7 @@
 Environment:
   DISCORD_BOT_TOKEN: Bot token (Bot ...)
 """
+
 from __future__ import annotations
 
 import os
@@ -119,17 +120,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "DISCORD_BOT_TOKEN not configured"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=DISCORD_BASE, headers=_headers(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=DISCORD_BASE, headers=_headers(), timeout=30.0) as c:
             if tool_name == "discord_send_message":
                 payload: dict[str, Any] = {
                     "content": arguments["content"],
                     "tts": arguments.get("tts", False),
                 }
-                r = await c.post(
-                    f"/channels/{arguments['channel_id']}/messages", json=payload
-                )
+                r = await c.post(f"/channels/{arguments['channel_id']}/messages", json=payload)
                 r.raise_for_status()
                 data = r.json()
                 return {"id": data["id"], "channel_id": data["channel_id"]}
@@ -137,11 +134,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "discord_list_guilds":
                 r = await c.get("/users/@me/guilds")
                 r.raise_for_status()
-                return {
-                    "guilds": [
-                        {"id": g["id"], "name": g["name"]} for g in r.json()
-                    ]
-                }
+                return {"guilds": [{"id": g["id"], "name": g["name"]} for g in r.json()]}
 
             elif tool_name == "discord_list_channels":
                 r = await c.get(f"/guilds/{arguments['guild_id']}/channels")
@@ -180,15 +173,14 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "name": arguments["name"],
                     "auto_archive_duration": arguments.get("auto_archive_duration", 1440),
                 }
-                r = await c.post(
-                    f"/channels/{arguments['channel_id']}/threads", json=payload
-                )
+                r = await c.post(f"/channels/{arguments['channel_id']}/threads", json=payload)
                 r.raise_for_status()
                 data = r.json()
                 return {"id": data["id"], "name": data.get("name")}
 
             elif tool_name == "discord_add_reaction":
                 import urllib.parse
+
                 emoji = urllib.parse.quote(arguments["emoji"])
                 r = await c.put(
                     f"/channels/{arguments['channel_id']}/messages"

@@ -3,6 +3,7 @@
 Environment:
   ELEVENLABS_API_KEY: ElevenLabs API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -22,11 +23,20 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "voice_id": {"type": "string", "description": "ID of the voice to use for synthesis"},
+                "voice_id": {
+                    "type": "string",
+                    "description": "ID of the voice to use for synthesis",
+                },
                 "text": {"type": "string", "description": "Text content to convert to speech"},
-                "model_id": {"type": "string", "description": "Model ID (e.g. eleven_monolingual_v1)"},
+                "model_id": {
+                    "type": "string",
+                    "description": "Model ID (e.g. eleven_monolingual_v1)",
+                },
                 "stability": {"type": "number", "description": "Voice stability (0.0-1.0)"},
-                "similarity_boost": {"type": "number", "description": "Voice similarity boost (0.0-1.0)"},
+                "similarity_boost": {
+                    "type": "number",
+                    "description": "Voice similarity boost (0.0-1.0)",
+                },
                 "style": {"type": "number", "description": "Style exaggeration (0.0-1.0)"},
             },
             "required": ["voice_id", "text"],
@@ -78,7 +88,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "start_unix": {"type": "integer", "description": "Start of period as Unix timestamp"},
+                "start_unix": {
+                    "type": "integer",
+                    "description": "Start of period as Unix timestamp",
+                },
                 "end_unix": {"type": "integer", "description": "End of period as Unix timestamp"},
             },
         },
@@ -115,7 +128,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     json=payload,
                 )
                 r.raise_for_status()
-                return {"audio_content_length": len(r.content), "content_type": r.headers.get("content-type")}
+                return {
+                    "audio_content_length": len(r.content),
+                    "content_type": r.headers.get("content-type"),
+                }
 
             if tool_name == "elevenlabs_list_voices":
                 r = await client.get(f"{BASE_URL}/voices", headers=headers)
@@ -144,7 +160,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "elevenlabs_get_usage_stats":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/user/subscription", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/user/subscription", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

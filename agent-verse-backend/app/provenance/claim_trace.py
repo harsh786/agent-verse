@@ -1,6 +1,7 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.provenance.source_ref import SourceRef
@@ -10,7 +11,7 @@ if TYPE_CHECKING:
 class ProvenanceRecord:
     claim_id: str
     claim_text: str
-    supporting_sources: list["SourceRef"]
+    supporting_sources: list[SourceRef]
     generated_by_step: str
     generated_by_model: str
     confidence: float

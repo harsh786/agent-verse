@@ -9,6 +9,7 @@ Supported SIEM platforms:
 - Webhook (generic HTTP)
 - Null (disabled / no-op)
 """
+
 from __future__ import annotations
 
 import abc
@@ -84,9 +85,7 @@ class SplunkHECAdapter(SIEMAdapter):
         for e in events:
             ts_raw = e.get("created_at", "")
             try:
-                ts = int(
-                    datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp()
-                )
+                ts = int(datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp())
             except Exception:
                 ts = 0
             lines.append(
@@ -125,9 +124,7 @@ class ElasticsearchAdapter(SIEMAdapter):
         url = f"{config.endpoint.rstrip('/')}/_bulk"
         lines: list[str] = []
         for e in events:
-            lines.append(
-                json.dumps({"index": {"_index": config.index, "_id": e.get("id", "")}})
-            )
+            lines.append(json.dumps({"index": {"_index": config.index, "_id": e.get("id", "")}}))
             lines.append(json.dumps(e))
         body = "\n".join(lines) + "\n"
         try:
@@ -157,10 +154,7 @@ class DatadogAdapter(SIEMAdapter):
         payload = [
             {
                 "ddsource": "agentverse",
-                "ddtags": (
-                    f"event_type:{e.get('event_type', '')},"
-                    f"tenant:{e.get('tenant_id', '')}"
-                ),
+                "ddtags": (f"event_type:{e.get('event_type', '')},tenant:{e.get('tenant_id', '')}"),
                 "hostname": "agentverse-agent",
                 "service": config.service,
                 "message": json.dumps(e),
@@ -196,18 +190,14 @@ class CEFAdapter(SIEMAdapter):
     async def send(self, events: list[dict[str, Any]], config: SIEMConfig) -> bool:
         import socket
 
-        sock_type = (
-            socket.SOCK_DGRAM if config.protocol == "udp" else socket.SOCK_STREAM
-        )
+        sock_type = socket.SOCK_DGRAM if config.protocol == "udp" else socket.SOCK_STREAM
         try:
             with socket.socket(socket.AF_INET, sock_type) as sock:
                 sock.settimeout(5.0)
                 if config.protocol == "tcp":
                     sock.connect((config.host, config.port))
                 for e in events:
-                    sev = self._SEVERITY.get(
-                        (e.get("metadata") or {}).get("severity", "low"), "3"
-                    )
+                    sev = self._SEVERITY.get((e.get("metadata") or {}).get("severity", "low"), "3")
                     cef_line = (
                         f"CEF:0|AgentVerse|AgentVerse|1.0"
                         f"|{e.get('event_type', 'unknown')}"
@@ -250,13 +240,8 @@ class LEEFAdapter(SIEMAdapter):
 
         lines: list[str] = []
         for e in events:
-            event_id = (
-                (e.get("event_type") or "UNKNOWN").replace(".", "_").upper()
-            )
-            header = (
-                f"{self.LEEF_VERSION}|{self.VENDOR}|{self.PRODUCT}"
-                f"|{self.VERSION}|{event_id}|"
-            )
+            event_id = (e.get("event_type") or "UNKNOWN").replace(".", "_").upper()
+            header = f"{self.LEEF_VERSION}|{self.VENDOR}|{self.PRODUCT}|{self.VERSION}|{event_id}|"
             ts_raw = e.get("created_at", "")
             try:
                 dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
@@ -264,9 +249,7 @@ class LEEFAdapter(SIEMAdapter):
             except Exception:
                 dev_time = ts_raw
 
-            sev = self._SEVERITY.get(
-                (e.get("metadata") or {}).get("severity", "low"), "1"
-            )
+            sev = self._SEVERITY.get((e.get("metadata") or {}).get("severity", "low"), "1")
             attrs = {
                 "devTime": dev_time,
                 "sev": sev,

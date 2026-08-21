@@ -1,4 +1,5 @@
 """Memory creation trigger consumer."""
+
 from __future__ import annotations
 
 import json
@@ -59,6 +60,7 @@ class MemoryTriggerConsumer:
 
         triggers = await self._store.find_by_type_async("memory_created", tenant_id=tenant_id)
         from types import SimpleNamespace
+
         tenant_ctx = SimpleNamespace(
             tenant_id=tenant_id,
             plan=data.get("tenant_plan", "free"),

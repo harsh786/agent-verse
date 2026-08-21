@@ -27,6 +27,7 @@ Endpoints:
   GET    /workflows/{id}/webhooks       List webhook events
   GET    /workflows/marketplace         Public marketplace listing
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -391,9 +392,7 @@ async def list_versions(workflow_id: str, request: Request) -> Any:
 
 
 @router.post("/{workflow_id}/versions/{version}/restore", response_model=WorkflowResponse)
-async def restore_version(
-    workflow_id: str, version: int, request: Request
-) -> Any:
+async def restore_version(workflow_id: str, version: int, request: Request) -> Any:
     svc = _svc(request)
     tenant = _get_tenant(request)
     try:
@@ -418,9 +417,7 @@ async def get_permissions(workflow_id: str, request: Request) -> Any:
 
 
 @router.post("/{workflow_id}/permissions", status_code=status.HTTP_201_CREATED)
-async def add_permission(
-    workflow_id: str, body: PermissionRequest, request: Request
-) -> Any:
+async def add_permission(workflow_id: str, body: PermissionRequest, request: Request) -> Any:
     svc = _svc(request)
     tenant = _get_tenant(request)
     perm = await svc.add_permission(
@@ -433,9 +430,7 @@ async def add_permission(
 
 
 @router.delete("/{workflow_id}/permissions/{permission_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_permission(
-    workflow_id: str, permission_id: str, request: Request
-) -> None:
+async def remove_permission(workflow_id: str, permission_id: str, request: Request) -> None:
     svc = _svc(request)
     tenant = _get_tenant(request)
     ok = await svc.remove_permission(
@@ -560,7 +555,5 @@ async def marketplace(
     per_page: int = Query(20, ge=1, le=100),
 ) -> Any:
     svc = _svc(request)
-    items, total = await svc.marketplace_list(
-        category=category, q=q, page=page, per_page=per_page
-    )
+    items, total = await svc.marketplace_list(category=category, q=q, page=page, per_page=per_page)
     return {"items": items, "total": total, "page": page, "per_page": per_page}

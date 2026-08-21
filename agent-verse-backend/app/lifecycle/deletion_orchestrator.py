@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
+
 from app.lifecycle.retention_policy import DataCategory
 
 

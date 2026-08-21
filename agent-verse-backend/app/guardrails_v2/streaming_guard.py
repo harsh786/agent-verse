@@ -4,6 +4,7 @@ Checks a rolling buffer of accumulated LLM output tokens against a set of
 compiled regex patterns. When a match is detected the guard returns a BLOCK
 decision, allowing the `_on_token` callback in AgentGraph to redact output.
 """
+
 from __future__ import annotations
 
 import re
@@ -39,7 +40,7 @@ class StreamingGuard:
         self._buffer: deque[str] = deque()
         self._buffer_len: int = 0
         self._patterns: list[re.Pattern[str]] = []
-        for p in (patterns or []):
+        for p in patterns or []:
             try:
                 self._patterns.append(re.compile(p, re.IGNORECASE | re.DOTALL))
             except re.error:

@@ -5,6 +5,7 @@ Environment:
 Security:
   Only SELECT by default. DML requires POSTGRES_MCP_ALLOW_WRITES=true.
 """
+
 from __future__ import annotations
 
 import os

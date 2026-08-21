@@ -10,6 +10,7 @@ Algorithm (BFS variant):
   5. Repeat for max_depth levels
   6. Return the thought path with highest cumulative score
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -92,6 +93,7 @@ class TreeOfThoughtsPattern(AgentPattern):
     def is_compatible(self, goal_properties: Any) -> bool:
         try:
             from app.core.config import get_settings
+
             if not get_settings().enable_tree_of_thoughts:
                 return False
         except Exception:
@@ -182,9 +184,7 @@ class TreeOfThoughtsPattern(AgentPattern):
         )
 
         # Final answer is separate from private frontier evidence.
-        return await self._expand_thought(
-            problem, best_thought.content, provider, max_tokens
-        )
+        return await self._expand_thought(problem, best_thought.content, provider, max_tokens)
 
     async def execute_with_evidence(self, **kwargs: Any) -> ReasoningExecution:
         result = await self.execute(**kwargs)
@@ -239,8 +239,7 @@ class TreeOfThoughtsPattern(AgentPattern):
                             Message(
                                 role="user",
                                 content=(
-                                    f"Problem: {problem[:300]}\n"
-                                    f"Thought: {thought.content[:300]}"
+                                    f"Problem: {problem[:300]}\nThought: {thought.content[:300]}"
                                 ),
                             ),
                         ],
@@ -261,9 +260,7 @@ class TreeOfThoughtsPattern(AgentPattern):
                 try:
                     d = json.loads(raw)
                     thought.score = max(0.0, min(1.0, float(d.get("score", 0.5))))
-                    thought.promising = bool(
-                        d.get("promising", thought.score >= 0.6)
-                    )
+                    thought.promising = bool(d.get("promising", thought.score >= 0.6))
                     thought.reason = str(d.get("reason", ""))
                 except Exception:
                     pass

@@ -26,6 +26,7 @@ class RPASession:
 
 # ── HTTP-level session management (used by the RPA API layer) ──────────────────
 
+
 @dataclass
 class RPAManagedSession:
     """Lightweight session record tracked by RPASessionStore for API consumers."""
@@ -123,8 +124,7 @@ class RPASessionStore:
             except Exception:
                 pass  # fall through to in-memory
         return [
-            s for s in self._fallback.values()
-            if s.tenant_id == tenant_id and s.status == "active"
+            s for s in self._fallback.values() if s.tenant_id == tenant_id and s.status == "active"
         ]
 
     async def close(self, session_id: str, *, tenant_id: str) -> bool:

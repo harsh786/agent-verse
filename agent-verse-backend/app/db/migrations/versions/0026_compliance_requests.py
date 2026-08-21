@@ -44,8 +44,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS deleted_tenants")
-    op.execute(
-        "DROP POLICY IF EXISTS compliance_requests_tenant_isolation ON compliance_requests"
-    )
+    op.execute("DROP POLICY IF EXISTS compliance_requests_tenant_isolation ON compliance_requests")
     op.execute("DROP INDEX IF EXISTS ix_compliance_requests_tenant")
     op.execute("DROP TABLE IF EXISTS compliance_requests")

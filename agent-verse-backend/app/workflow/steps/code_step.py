@@ -1,4 +1,5 @@
 """CodeStepNode — sandboxed Python/JavaScript execution."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -33,6 +34,7 @@ class CodeStepNode:
         else:
             # Minimal safe fallback for tests (Python only, no network/fs)
             import ast
+
             try:
                 tree = ast.parse(code, mode="exec")
                 local_ns: dict[str, Any] = {"inputs": inputs, "__builtins__": {}}

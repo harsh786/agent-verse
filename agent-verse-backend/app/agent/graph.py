@@ -14,58 +14,25 @@ a crashed goal can be resumed by re-invoking with the same thread_id.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import re
-import time
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any, TypedDict
+from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from app.agent.prompts import (
-    CHAIN_OF_THOUGHT_SYSTEM,
-    EXECUTOR_SYSTEM,
-    PLANNER_SYSTEM,
-    REFLECTION_SYSTEM,
-    STRUCTURED_PLANNER_SYSTEM,
-    VERIFIER_SYSTEM,
-)
-from app.agent.sanitization import (
-    _EXECUTOR_CONTEXT_MAX_LENGTH,
-    sanitize_event,
-    sanitize_event_value,
-    sanitize_tool_event_value,
-    sanitize_tool_raw_output,
-)
-from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus, SubGoal
-from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_arguments
-from app.agent.tool_risk import classify_tool_risk
-from app.governance.audit import AuditEvent, AuditLog
+from app.agent.state import AgentState, GoalStatus, StepStatus
+from app.governance.audit import AuditLog
 from app.governance.cost import CostController
-from app.governance.hitl import ApprovalStatus, HITLGateway
-from app.governance.permissions import ActionLevel, PermissionMatrix
-from app.governance.policies import PolicyEngine, PolicyResult
+from app.governance.hitl import HITLGateway
+from app.governance.permissions import PermissionMatrix
+from app.governance.policies import PolicyEngine
 from app.intelligence.eval_runner import EvalRunner
-from app.intelligence.explainability import DecisionTrace
 from app.intelligence.guardrails import GuardrailChecker
 from app.memory.execution import ExecutionMemory
 from app.memory.long_term import LongTermMemoryStore
-from app.observability.metrics import (
-    record_approval_wait,
-    record_goal_completed,
-    record_goal_failed,
-    record_plan_duration,
-    record_tool_call,
-    record_verify_duration,
-    track_tool_call,
-)
-from app.pipeline.steps import smart_context_fetch
-from app.providers.base import CompletionRequest, LLMProvider, Message, ToolDefinition
-from app.providers.circuit_breaker import call_with_circuit_breaker
-from app.rag.contracts import RAGExecutionResult, RAGStrategy, resolve_rag_strategy
+from app.providers.base import LLMProvider
 from app.rag.store import KnowledgeStore
 from app.reliability.circuit_breaker import CircuitBreaker
 from app.reliability.dedup import DeduplicationCache
@@ -77,6 +44,7 @@ from app.tenancy.context import TenantContext
 try:
     from app.guardrails_v2.engine import guardrails_engine
     from app.guardrails_v2.models import GuardrailLayer
+
     _GUARDRAILS_AVAILABLE = True
 except ImportError:
     _GUARDRAILS_AVAILABLE = False
@@ -85,22 +53,13 @@ except ImportError:
 
 
 # ── Node module imports ─────────────────────────────────────────────────
-from app.agent.nodes._helpers import (
-    _is_high_risk_step,
-    _build_verifier_summary,
-    _is_ungrounded_status,
-    _parse_json,
-    _parse_verifier_response,
-    _extract_tool_name as _extract_tool_name_from_text,
-    _extract_scope_value,
-)
+from app.agent.nodes.executor_mixin import ExecutorMixin
 from app.agent.nodes.initialize_mixin import InitializeMixin
+from app.agent.nodes.planner_mixin import PlannerMixin
 from app.agent.nodes.rag_mixin import RAGMixin
 from app.agent.nodes.reasoning_mixin import ReasoningMixin
-from app.agent.nodes.planner_mixin import PlannerMixin
-from app.agent.nodes.executor_mixin import ExecutorMixin
-from app.agent.nodes.verifier_mixin import VerifierMixin
 from app.agent.nodes.routing_mixin import RoutingMixin
+from app.agent.nodes.verifier_mixin import VerifierMixin
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 _DEFAULT_MAX_ITERATIONS = 100
@@ -112,8 +71,7 @@ _RM_COMMAND_PATTERN = re.compile(r"\brm\b")
 
 # GraphState and RetrievalEntryPointError now live in graph_types
 # to avoid circular imports from mixin modules.
-from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
-
+from app.agent.graph_types import GraphState, RetrievalEntryPointError
 
 # ---------------------------------------------------------------------------
 # AgentGraph — thin orchestrator, all node logic lives in nodes/
@@ -226,10 +184,7 @@ class AgentGraph(
         if runtime_profile is not None:
             selected_strategy_ids = {
                 runtime_profile.primary_strategy.strategy_id,
-                *(
-                    item.strategy_id
-                    for item in runtime_profile.auxiliary_strategies
-                ),
+                *(item.strategy_id for item in runtime_profile.auxiliary_strategies),
             }
         self._enable_cot = enable_cot or "chain_of_thought" in selected_strategy_ids
         self._enable_reflection = enable_reflection or "reflection" in selected_strategy_ids
@@ -253,7 +208,8 @@ class AgentGraph(
         # which is always async-safe.
         try:
             import inspect
-            _aget = getattr(self._checkpointer, 'aget_tuple', None)
+
+            _aget = getattr(self._checkpointer, "aget_tuple", None)
             if _aget is not None and not inspect.iscoroutinefunction(_aget):
                 # Sync implementation — replace with in-memory checkpointer
                 self._checkpointer = MemorySaver()
@@ -275,14 +231,15 @@ class AgentGraph(
         # OTel trace context injected by parent when spawned as sub-agent
         self._parent_trace_context: Any = None
         from opentelemetry import trace as _otel_trace
+
         self._tracer = _otel_trace.get_tracer(__name__)
         self._db_session_factory: Any = None  # Set by main.py after construction
         self._rpa_executor: Any = None  # Set externally to dispatch RPA tool calls directly
         self._tool_context: Any = None  # Settable from outside; used by _extract_tool_name
         self._prompt_optimizer: Any = None  # Settable from outside; PromptOptimizer instance
-        self._self_optimizer: Any = None    # Settable from outside; SelfOptimizer instance
-        self._app_state: Any = None         # Set externally by goal_service; FastAPI app
-        self._agent_id: str | None = None   # Set externally by goal_service
+        self._self_optimizer: Any = None  # Settable from outside; SelfOptimizer instance
+        self._app_state: Any = None  # Set externally by goal_service; FastAPI app
+        self._agent_id: str | None = None  # Set externally by goal_service
         # Track fire-and-forget background tasks to prevent GC before completion
         self._background_tasks: set[Any] = set()
         # Agent knowledge collection binding — set externally by goal_service after construction
@@ -298,6 +255,7 @@ class AgentGraph(
         # during parallel-wave execution.
         self._state_lock = asyncio.Lock()
         from app.observability.logging import get_logger as _get_logger
+
         self._logger = _get_logger(__name__)
 
     @property
@@ -382,7 +340,10 @@ class AgentGraph(
         g.add_edge("rag_remediate", "plan")
 
         routing_map: dict[str, Any] = {
-            "complete": END, "replan": "plan", "max_iter": END, "waiting_human": END,
+            "complete": END,
+            "replan": "plan",
+            "max_iter": END,
+            "waiting_human": END,
             "rag_remediate": "rag_remediate",
         }
         if self._enable_reflection:
@@ -397,7 +358,7 @@ class AgentGraph(
 
     # ── Verify node — delegates to VerifierMixin ─────────────────────────
 
-    async def _node_verify(self, state: "GraphState") -> dict:  # type: ignore[override]
+    async def _node_verify(self, state: GraphState) -> dict:  # type: ignore[override]
         """Verify step — should_skip_cache guard applied before LLM call.
 
         The LLM response cache check (should_skip_cache) is performed in
@@ -473,10 +434,9 @@ class AgentGraph(
                     if dept_id:
                         try:
                             from app.memory.dept_memory import DepartmentMemory
+
                             _dept_mem = DepartmentMemory()
-                            _mem_entries = await _dept_mem.retrieve(
-                                dept_id, goal, top_k=6
-                            )
+                            _mem_entries = await _dept_mem.retrieve(dept_id, goal, top_k=6)
                             if _mem_entries:
                                 _org_ctx["dept_memory"] = [
                                     {
@@ -486,9 +446,7 @@ class AgentGraph(
                                     }
                                     for e in _mem_entries
                                 ]
-                                span.set_attribute(
-                                    "org.dept_memory_entries", len(_mem_entries)
-                                )
+                                span.set_attribute("org.dept_memory_entries", len(_mem_entries))
                         except Exception as _dm_exc:
                             # Non-fatal: proceed without dept memory
                             pass
@@ -546,11 +504,14 @@ class AgentGraph(
                         checkpoint_state = await self._load_checkpoint(goal_id, tenant_ctx)
                         if checkpoint_state is not None:
                             saved_state = checkpoint_state.get("agent_state")
-                            if (saved_state is not None
-                                    and hasattr(saved_state, "steps")
-                                    and saved_state.steps):
+                            if (
+                                saved_state is not None
+                                and hasattr(saved_state, "steps")
+                                and saved_state.steps
+                            ):
                                 input_state = checkpoint_state
                                 from app.observability.logging import get_logger
+
                                 get_logger(__name__).info(
                                     "goal_resumed_from_checkpoint",
                                     goal_id=goal_id,
@@ -564,6 +525,7 @@ class AgentGraph(
                 # _node_verify can compute _latency_ms before RuntimeScorecard.score().
                 try:
                     import time as _time_mod
+
                     _goal_start_ms = _time_mod.monotonic() * 1000
                     _as_ref = input_state.get("agent_state")
                     if _as_ref is None:
@@ -611,9 +573,11 @@ class AgentGraph(
                                 )
                             return failed_state
                     import logging as _logging
+
                     _logging.getLogger(__name__).warning(
                         "agentgraph_run_exception type=%s msg=%r",
-                        type(exc).__name__, str(exc)[:200],
+                        type(exc).__name__,
+                        str(exc)[:200],
                         exc_info=True,
                     )
                     err_state = AgentState(goal=goal, tenant_ctx=tenant_ctx)
@@ -632,6 +596,7 @@ class AgentGraph(
 
     async def _emit(self, event: dict[str, Any]) -> None:
         from datetime import UTC, datetime
+
         if "ts" not in event:
             event["ts"] = datetime.now(UTC).isoformat()
         if self._event_callback is not None:
@@ -650,9 +615,7 @@ class AgentGraph(
         recent = [s for s in state.steps if hasattr(s, "status")][-window:]
         if len(recent) < window:
             return False
-        return all(
-            getattr(s, "status", None) == StepStatus.FAILED for s in recent
-        )
+        return all(getattr(s, "status", None) == StepStatus.FAILED for s in recent)
 
     async def _write_checkpoint(
         self, goal_id: str, step_index: int, state: Any, tenant_ctx: Any
@@ -672,8 +635,11 @@ class AgentGraph(
                 "iterations": getattr(state, "iterations", 0),
                 "completed_at": datetime.now(UTC).isoformat(),
             }
-            async with self._db_session_factory() as session, session.begin(), \
-                       sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
+            async with (
+                self._db_session_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 ck = GoalCheckpoint(
                     goal_id=goal_id,
                     tenant_id=tenant_ctx.tenant_id,
@@ -685,13 +651,10 @@ class AgentGraph(
                 session.add(ck)
         except Exception as exc:
             from app.observability.logging import get_logger
-            get_logger(__name__).warning(
-                "checkpoint_write_failed", goal_id=goal_id, error=str(exc)
-            )
 
-    async def _load_checkpoint(
-        self, goal_id: str, tenant_ctx: Any
-    ) -> dict[str, Any] | None:
+            get_logger(__name__).warning("checkpoint_write_failed", goal_id=goal_id, error=str(exc))
+
+    async def _load_checkpoint(self, goal_id: str, tenant_ctx: Any) -> dict[str, Any] | None:
         """Load latest checkpoint for goal resume."""
         if self._db_session_factory is None:
             return None
@@ -701,8 +664,10 @@ class AgentGraph(
             from app.db.models.goal import GoalCheckpoint
             from app.db.rls import sqlalchemy_rls_context
 
-            async with self._db_session_factory() as session, \
-                       sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
+            async with (
+                self._db_session_factory() as session,
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 result = await session.execute(
                     select(GoalCheckpoint)
                     .where(
@@ -716,9 +681,8 @@ class AgentGraph(
                 return row.payload if row else None
         except Exception as exc:
             from app.observability.logging import get_logger
-            get_logger(__name__).warning(
-                "checkpoint_load_failed", goal_id=goal_id, error=str(exc)
-            )
+
+            get_logger(__name__).warning("checkpoint_load_failed", goal_id=goal_id, error=str(exc))
             return None
 
     def _extract_tool_name(self, step: str, tool_calls_result: list | None = None) -> str:
@@ -745,17 +709,18 @@ class AgentGraph(
         # Final fallback to module-level heuristic
         return _extract_tool_name(step)
 
-    async def _persist_decision_trace(
-        self, trace: Any, state: Any, tenant_ctx: Any
-    ) -> None:
+    async def _persist_decision_trace(self, trace: Any, state: Any, tenant_ctx: Any) -> None:
         """Persist decision trace record to DB (fire-and-forget via create_task)."""
         try:
             from sqlalchemy import text
 
             from app.db.rls import sqlalchemy_rls_context
 
-            async with self._db_session_factory() as session, session.begin(), \
-                       sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
+            async with (
+                self._db_session_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 await session.execute(
                     text(
                         """INSERT INTO decision_traces
@@ -774,11 +739,10 @@ class AgentGraph(
                 )
         except Exception as exc:
             from app.observability.logging import get_logger
+
             get_logger(__name__).warning("decision_trace_persist_failed", error=str(exc))
 
-    async def _trigger_self_optimization(
-        self, state: Any, scorecard: Any, tenant_ctx: Any
-    ) -> None:
+    async def _trigger_self_optimization(self, state: Any, scorecard: Any, tenant_ctx: Any) -> None:
         """Trigger self-optimization when a goal scores poorly (BUG 5 fix).
 
         Called as a fire-and-forget task from ``_node_verify`` whenever a
@@ -803,9 +767,7 @@ class AgentGraph(
         except Exception as exc:
             self._logger.warning("self_optimization_trigger_failed", error=str(exc))
 
-    async def _validate_plan_tools(
-        self, steps: list[str], tenant_ctx: Any
-    ) -> list[str]:
+    async def _validate_plan_tools(self, steps: list[str], tenant_ctx: Any) -> list[str]:
         """Warn about steps that reference unknown tools.
 
         Scans each step description for underscore-separated words that look
@@ -823,12 +785,11 @@ class AgentGraph(
                 words = step.lower().split()
                 for word in words:
                     if "_" in word and len(word) > 5 and word not in known:
-                        warnings.append(
-                            f"Step '{step[:50]}' may reference unknown tool '{word}'"
-                        )
+                        warnings.append(f"Step '{step[:50]}' may reference unknown tool '{word}'")
             return warnings
         except Exception:
             return []
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
@@ -837,12 +798,6 @@ class AgentGraph(
 
 # Re-export helpers for backward compatibility with existing imports
 # (tests and other modules may import these directly from app.agent.graph)
-from app.agent.nodes._helpers import (  # noqa: F401, E402
-    _parse_json,
-    _parse_verifier_response,
+from app.agent.nodes._helpers import (  # noqa: E402
     _extract_tool_name,
-    _extract_scope_value,
-    _build_verifier_summary,
-    _is_high_risk_step,
-    _is_ungrounded_status,
 )

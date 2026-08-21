@@ -19,9 +19,7 @@ class DecisionTrace(Base):
 
     __tablename__ = "decision_traces"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     goal_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -42,9 +40,7 @@ class Evaluation(Base):
 
     __tablename__ = "evaluations"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     goal_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -53,18 +49,14 @@ class Evaluation(Base):
     average_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     passed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     primary_strategy_id: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
-    primary_strategy_version: Mapped[str] = mapped_column(
-        Text, nullable=False, default="unknown"
-    )
+    primary_strategy_version: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
     auxiliary_strategy_versions: Mapped[dict[str, str]] = mapped_column(
         JSONB, nullable=False, default=dict
     )
     profile_id: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
     profile_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     strategy_execution_id: Mapped[str] = mapped_column(Text, nullable=False)
-    evaluator_version: Mapped[str] = mapped_column(
-        Text, nullable=False, default="eval-runner-v1"
-    )
+    evaluator_version: Mapped[str] = mapped_column(Text, nullable=False, default="eval-runner-v1")
     evidence_completeness: Mapped[dict[str, bool]] = mapped_column(
         JSONB, nullable=False, default=dict
     )
@@ -80,9 +72,7 @@ class CostLedger(Base):
 
     __tablename__ = "cost_ledger"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     goal_id: Mapped[str | None] = mapped_column(String(32), nullable=True, default="")
     tool_name: Mapped[str | None] = mapped_column(String(200), nullable=True, default="")
@@ -98,9 +88,7 @@ class CollabSession(Base):
 
     __tablename__ = "collab_sessions"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -128,9 +116,7 @@ class CollabOperation(Base):
 
     __tablename__ = "collab_operations"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     session_id: Mapped[str] = mapped_column(
         String(32),
         ForeignKey("collab_sessions.id", ondelete="CASCADE"),
@@ -145,9 +131,7 @@ class CollabOperation(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    session: Mapped[CollabSession] = relationship(
-        "CollabSession", back_populates="operations"
-    )
+    session: Mapped[CollabSession] = relationship("CollabSession", back_populates="operations")
 
 
 class AgentTemplate(Base):
@@ -155,9 +139,7 @@ class AgentTemplate(Base):
 
     __tablename__ = "agent_templates"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     # NULL = system/public template; non-NULL = tenant-owned template
     tenant_id: Mapped[str | None] = mapped_column(
         String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
@@ -167,9 +149,7 @@ class AgentTemplate(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
     goal_template: Mapped[str] = mapped_column(Text, nullable=False)
     connectors: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    trigger_type: Mapped[str | None] = mapped_column(
-        String(20), nullable=True, default="rest"
-    )
+    trigger_type: Mapped[str | None] = mapped_column(String(20), nullable=True, default="rest")
     autonomy_mode: Mapped[str | None] = mapped_column(
         String(50), nullable=True, default="bounded-autonomous"
     )

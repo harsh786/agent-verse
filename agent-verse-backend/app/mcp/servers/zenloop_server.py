@@ -3,6 +3,7 @@
 Environment:
   ZENLOOP_API_TOKEN: Zenloop API token for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -51,8 +52,14 @@ TOOL_DEFINITIONS = [
                 "name": {"type": "string", "description": "Internal name for the survey"},
                 "language": {"type": "string", "description": "Survey language code (e.g. en, de)"},
                 "question": {"type": "string", "description": "Custom NPS question text"},
-                "followup_question_positive": {"type": "string", "description": "Follow-up for promoters"},
-                "followup_question_negative": {"type": "string", "description": "Follow-up for detractors"},
+                "followup_question_positive": {
+                    "type": "string",
+                    "description": "Follow-up for promoters",
+                },
+                "followup_question_negative": {
+                    "type": "string",
+                    "description": "Follow-up for detractors",
+                },
             },
             "required": ["name"],
         },
@@ -64,7 +71,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "survey_id": {"type": "string", "description": "ID of the survey"},
-                "date_from": {"type": "string", "description": "Start date for the NPS calculation"},
+                "date_from": {
+                    "type": "string",
+                    "description": "Start date for the NPS calculation",
+                },
                 "date_to": {"type": "string", "description": "End date for the NPS calculation"},
             },
             "required": ["survey_id"],
@@ -88,9 +98,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "survey_id": {"type": "string", "description": "ID of the survey to send"},
-                "recipient_email": {"type": "string", "description": "Email address of the recipient"},
+                "recipient_email": {
+                    "type": "string",
+                    "description": "Email address of the recipient",
+                },
                 "recipient_name": {"type": "string", "description": "Full name of the recipient"},
-                "custom_attributes": {"type": "object", "description": "Extra attributes for personalization"},
+                "custom_attributes": {
+                    "type": "object",
+                    "description": "Extra attributes for personalization",
+                },
             },
             "required": ["survey_id", "recipient_email"],
         },

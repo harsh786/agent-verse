@@ -37,9 +37,7 @@ class SQLRAFTRepository:
     def __init__(self, session_factory: Callable[[], AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def load_chunks(
-        self, tenant_id: str, collection_id: str
-    ) -> list[PersistedRAFTChunk]:
+    async def load_chunks(self, tenant_id: str, collection_id: str) -> list[PersistedRAFTChunk]:
         async with self._tenant_session(tenant_id) as session:
             dimension = await session.scalar(
                 text(
@@ -88,9 +86,7 @@ class SQLRAFTRepository:
             )
             await session.flush()
 
-    async def get_dataset(
-        self, tenant_id: str, dataset_id: str
-    ) -> RAFTDatasetRecord | None:
+    async def get_dataset(self, tenant_id: str, dataset_id: str) -> RAFTDatasetRecord | None:
         async with self._tenant_session(tenant_id) as session:
             row = await session.scalar(
                 select(RAFTDataset).where(
@@ -110,9 +106,7 @@ class SQLRAFTRepository:
             created_at=row.created_at,
         )
 
-    async def save_confirmation(
-        self, tenant_id: str, grant: _ConfirmationGrant
-    ) -> None:
+    async def save_confirmation(self, tenant_id: str, grant: _ConfirmationGrant) -> None:
         _require_matching_tenant(tenant_id, grant.tenant_id)
         async with self._tenant_session(tenant_id) as session:
             await session.merge(
@@ -319,21 +313,15 @@ class SQLRAFTRepository:
                 RAFTFineTuneJob.fine_tuned_model.is_not(None),
             )
             if provider_ids is not None:
-                statement = statement.where(
-                    RAFTFineTuneJob.provider_id.in_(provider_ids)
-                )
+                statement = statement.where(RAFTFineTuneJob.provider_id.in_(provider_ids))
             if capability is not None:
-                statement = statement.where(
-                    RAFTFineTuneJob.capability == capability
-                )
+                statement = statement.where(RAFTFineTuneJob.capability == capability)
             if dataset_id is not None:
                 statement = statement.where(RAFTFineTuneJob.dataset_id == dataset_id)
             if base_model is not None:
                 statement = statement.where(RAFTFineTuneJob.base_model == base_model)
             rows = (
-                await session.scalars(
-                    statement.order_by(RAFTFineTuneJob.updated_at.desc())
-                )
+                await session.scalars(statement.order_by(RAFTFineTuneJob.updated_at.desc()))
             ).all()
         return [_job_record(row) for row in rows]
 

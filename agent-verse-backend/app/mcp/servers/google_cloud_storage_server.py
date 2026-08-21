@@ -4,6 +4,7 @@ Environment variables (one required):
   GOOGLE_ACCESS_TOKEN:         OAuth2 bearer token
   GOOGLE_SERVICE_ACCOUNT_JSON: JSON string of a service-account key file
 """
+
 from __future__ import annotations
 
 import json
@@ -181,14 +182,20 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r = await c.get(
                     f"{GCS_BASE}/b",
                     headers=hdrs,
-                    params={"project": arguments["project_id"], "maxResults": arguments.get("max_results", 20)},
+                    params={
+                        "project": arguments["project_id"],
+                        "maxResults": arguments.get("max_results", 20),
+                    },
                 )
                 r.raise_for_status()
                 data = r.json()
                 return {
                     "buckets": [
-                        {"name": b["name"], "location": b.get("location", ""),
-                         "storage_class": b.get("storageClass", "")}
+                        {
+                            "name": b["name"],
+                            "location": b.get("location", ""),
+                            "storage_class": b.get("storageClass", ""),
+                        }
                         for b in data.get("items", [])
                     ]
                 }
@@ -207,9 +214,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "objects": [
-                        {"name": o["name"], "size": o.get("size", 0),
-                         "content_type": o.get("contentType", ""),
-                         "updated": o.get("updated", "")}
+                        {
+                            "name": o["name"],
+                            "size": o.get("size", 0),
+                            "content_type": o.get("contentType", ""),
+                            "updated": o.get("updated", ""),
+                        }
                         for o in data.get("items", [])
                     ],
                     "prefixes": data.get("prefixes", []),
@@ -304,14 +314,19 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 )
                 r.raise_for_status()
                 data = r.json()
-                return {"name": data["name"], "location": data.get("location", ""),
-                        "storage_class": data.get("storageClass", "")}
+                return {
+                    "name": data["name"],
+                    "location": data.get("location", ""),
+                    "storage_class": data.get("storageClass", ""),
+                }
 
             elif tool_name == "gcs_generate_signed_url":
                 # Signed URLs require service account credentials — return instructions if not available
                 sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
                 if not sa_json:
-                    return {"error": "GOOGLE_SERVICE_ACCOUNT_JSON required for signed URL generation"}
+                    return {
+                        "error": "GOOGLE_SERVICE_ACCOUNT_JSON required for signed URL generation"
+                    }
                 try:
                     import datetime
 
@@ -328,13 +343,20 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     bucket_obj = client.bucket(arguments["bucket"])
                     blob = bucket_obj.blob(arguments["object_name"])
                     url = blob.generate_signed_url(
-                        expiration=datetime.timedelta(seconds=arguments.get("expiration_seconds", 3600)),
+                        expiration=datetime.timedelta(
+                            seconds=arguments.get("expiration_seconds", 3600)
+                        ),
                         method=arguments.get("method", "GET"),
                         version="v4",
                     )
-                    return {"signed_url": url, "expires_in_seconds": arguments.get("expiration_seconds", 3600)}
+                    return {
+                        "signed_url": url,
+                        "expires_in_seconds": arguments.get("expiration_seconds", 3600),
+                    }
                 except ImportError:
-                    return {"error": "google-cloud-storage package required for signed URL generation"}
+                    return {
+                        "error": "google-cloud-storage package required for signed URL generation"
+                    }
 
             return {"error": f"Unknown tool: {tool_name}"}
 

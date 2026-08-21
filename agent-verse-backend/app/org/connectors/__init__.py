@@ -7,6 +7,7 @@ Each connector exposes:
   - health_check(): verify connectivity
   - execute(action, inputs): run a connector action
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -22,16 +23,16 @@ _log = get_logger(__name__)
 
 
 class ConnectorCategory(str, Enum):
-    COMMUNICATION  = "communication"
-    CRM            = "crm"
-    DEVELOPMENT    = "development"
-    KNOWLEDGE      = "knowledge"
-    DATA           = "data"
-    HR             = "hr"
-    FINANCE        = "finance"
-    CLOUD          = "cloud"
-    MONITORING     = "monitoring"
-    MARKETING      = "marketing"
+    COMMUNICATION = "communication"
+    CRM = "crm"
+    DEVELOPMENT = "development"
+    KNOWLEDGE = "knowledge"
+    DATA = "data"
+    HR = "hr"
+    FINANCE = "finance"
+    CLOUD = "cloud"
+    MONITORING = "monitoring"
+    MARKETING = "marketing"
 
 
 @dataclass
@@ -39,7 +40,7 @@ class ConnectorMeta:
     name: str
     display_name: str
     category: ConnectorCategory
-    auth_type: str               # oauth2 | api_key | basic | none
+    auth_type: str  # oauth2 | api_key | basic | none
     description: str = ""
     always_audit: bool = False
     high_sensitivity: bool = False
@@ -70,8 +71,10 @@ class BaseConnector(ABC):
 
 # ── Stub connector implementations ────────────────────────────────────────────
 
+
 class LookerConnector(BaseConnector):
     """Looker Business Intelligence connector."""
+
     meta = ConnectorMeta(
         name="looker",
         display_name="Looker",
@@ -95,6 +98,7 @@ class LookerConnector(BaseConnector):
 
 class ExpensifyConnector(BaseConnector):
     """Expensify expense management connector."""
+
     meta = ConnectorMeta(
         name="expensify",
         display_name="Expensify",
@@ -120,6 +124,7 @@ class ExpensifyConnector(BaseConnector):
 
 class GrafanaConnector(BaseConnector):
     """Grafana monitoring and observability connector."""
+
     meta = ConnectorMeta(
         name="grafana",
         display_name="Grafana",
@@ -140,12 +145,17 @@ class GrafanaConnector(BaseConnector):
 
     async def list_actions(self) -> list[str]:
         return [
-            "get_dashboard", "list_dashboards", "query_datasource",
-            "create_annotation", "fire_alert", "get_alert_rules",
+            "get_dashboard",
+            "list_dashboards",
+            "query_datasource",
+            "create_annotation",
+            "fire_alert",
+            "get_alert_rules",
         ]
 
 
 # ── Connector registry ────────────────────────────────────────────────────────
+
 
 class ConnectorRegistry:
     """

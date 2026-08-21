@@ -33,109 +33,231 @@ _KEYWORD_RULES: list[tuple[re.Pattern, TriggerType, dict]] = [
     # A. Time / Schedule
     # More-specific rules MUST come before general "every X" patterns
     # API_POLL: "poll the API every 5 min" / "check URL every hour"
-    (re.compile(
-        r"\bpoll\b.*\bapi\b|\bapi\b.*\bpoll\b|\bcheck\b.*\burl\b.*\bevery\b"
-        r"|\bpoll\s+the\s+api\b|\bhttp.*poll\b",
-        re.I,
-    ), TriggerType.API_POLL, {}),
-    (re.compile(
-        r"\bevery\b.*(minute|hour|day|week|month|weekday)\b|\bcron\b", re.I,
-    ), TriggerType.CRON, {}),
-    (re.compile(
-        r"\bevery\b\s+\d+\s*(seconds?|minutes?|hours?)\b", re.I,
-    ), TriggerType.INTERVAL, {}),
+    (
+        re.compile(
+            r"\bpoll\b.*\bapi\b|\bapi\b.*\bpoll\b|\bcheck\b.*\burl\b.*\bevery\b"
+            r"|\bpoll\s+the\s+api\b|\bhttp.*poll\b",
+            re.I,
+        ),
+        TriggerType.API_POLL,
+        {},
+    ),
+    (
+        re.compile(
+            r"\bevery\b.*(minute|hour|day|week|month|weekday)\b|\bcron\b",
+            re.I,
+        ),
+        TriggerType.CRON,
+        {},
+    ),
+    (
+        re.compile(
+            r"\bevery\b\s+\d+\s*(seconds?|minutes?|hours?)\b",
+            re.I,
+        ),
+        TriggerType.INTERVAL,
+        {},
+    ),
     (re.compile(r"\bonce\b|\bone[\s-]?time\b|\bat\s+\d", re.I), TriggerType.ONCE, {}),
     # RELATIVE_DELAY before DEADLINE
-    (re.compile(
-        r"\brelative\b.*\bdelay\b|\bN?\s*\d+\s+days?\s+before\b"
-        r"|\bafter\s+.*\s+days?\b|\b\d+\s+days?\s+before\b",
-        re.I,
-    ), TriggerType.RELATIVE_DELAY, {}),
+    (
+        re.compile(
+            r"\brelative\b.*\bdelay\b|\bN?\s*\d+\s+days?\s+before\b"
+            r"|\bafter\s+.*\s+days?\b|\b\d+\s+days?\s+before\b",
+            re.I,
+        ),
+        TriggerType.RELATIVE_DELAY,
+        {},
+    ),
     (re.compile(r"\bdeadline\b|\bdue\s+date\b|\bexpir", re.I), TriggerType.DEADLINE, {}),
-    (re.compile(
-        r"\bbusiness\s+hours?\b|\bworking\s+hours?\b", re.I,
-    ), TriggerType.BUSINESS_CALENDAR, {}),
+    (
+        re.compile(
+            r"\bbusiness\s+hours?\b|\bworking\s+hours?\b",
+            re.I,
+        ),
+        TriggerType.BUSINESS_CALENDAR,
+        {},
+    ),
     # B. Goal Chain
-    (re.compile(
-        r"\b(goal|agent|task)\b.*\bfin(ishes?|ished|ishes?)\b|\bwhen.*complet", re.I,
-    ), TriggerType.GOAL_COMPLETED, {}),
-    (re.compile(
-        r"\b(goal|agent|task)\b.*\bfails?\b|\bfailure\b", re.I,
-    ), TriggerType.GOAL_FAILED, {}),
-    (re.compile(
-        r"\bscore\b.*\bbelow\b|\blow\b.*\bscore\b", re.I,
-    ), TriggerType.GOAL_SCORE_BELOW, {}),
+    (
+        re.compile(
+            r"\b(goal|agent|task)\b.*\bfin(ishes?|ished|ishes?)\b|\bwhen.*complet",
+            re.I,
+        ),
+        TriggerType.GOAL_COMPLETED,
+        {},
+    ),
+    (
+        re.compile(
+            r"\b(goal|agent|task)\b.*\bfails?\b|\bfailure\b",
+            re.I,
+        ),
+        TriggerType.GOAL_FAILED,
+        {},
+    ),
+    (
+        re.compile(
+            r"\bscore\b.*\bbelow\b|\blow\b.*\bscore\b",
+            re.I,
+        ),
+        TriggerType.GOAL_SCORE_BELOW,
+        {},
+    ),
     (re.compile(r"\bhitl\b|\bhuman\s+approv", re.I), TriggerType.HITL_APPROVED, {}),
     (re.compile(r"\bhuman\s+reject", re.I), TriggerType.HITL_REJECTED, {}),
-    (re.compile(
-        r"\bmemory\b.*\bcreated?\b|\bnew\s+memory\b", re.I,
-    ), TriggerType.MEMORY_CREATED, {}),
+    (
+        re.compile(
+            r"\bmemory\b.*\bcreated?\b|\bnew\s+memory\b",
+            re.I,
+        ),
+        TriggerType.MEMORY_CREATED,
+        {},
+    ),
     # C. Conversational
-    (re.compile(
-        r"\bslack\s+command\b|\btype[s]?\s+/\w+\b|\bchat\s+command\b"
-        r"|\b/run\b|\b/deploy\b",
-        re.I,
-    ), TriggerType.CHAT_COMMAND, {}),
-    (re.compile(
-        r"\bkeyword\b|\bchat\s+keyword\b|\bwhen.*mention\b.*\bword\b", re.I,
-    ), TriggerType.CHAT_KEYWORD, {}),
-    (re.compile(
-        r"\bmentioned?\b|\b@bot\b|\bchat\s+mention\b", re.I,
-    ), TriggerType.CHAT_MENTION, {}),
+    (
+        re.compile(
+            r"\bslack\s+command\b|\btype[s]?\s+/\w+\b|\bchat\s+command\b"
+            r"|\b/run\b|\b/deploy\b",
+            re.I,
+        ),
+        TriggerType.CHAT_COMMAND,
+        {},
+    ),
+    (
+        re.compile(
+            r"\bkeyword\b|\bchat\s+keyword\b|\bwhen.*mention\b.*\bword\b",
+            re.I,
+        ),
+        TriggerType.CHAT_KEYWORD,
+        {},
+    ),
+    (
+        re.compile(
+            r"\bmentioned?\b|\b@bot\b|\bchat\s+mention\b",
+            re.I,
+        ),
+        TriggerType.CHAT_MENTION,
+        {},
+    ),
     (re.compile(r"\bslack\s+event\b", re.I), TriggerType.SLACK_EVENT, {}),
-    (re.compile(
-        r"\bteams\b.*\bwebhook\b|\bmicrosoft\s+teams\b", re.I,
-    ), TriggerType.TEAMS_WEBHOOK, {}),
+    (
+        re.compile(
+            r"\bteams\b.*\bwebhook\b|\bmicrosoft\s+teams\b",
+            re.I,
+        ),
+        TriggerType.TEAMS_WEBHOOK,
+        {},
+    ),
     (re.compile(r"\bdiscord\b", re.I), TriggerType.DISCORD_EVENT, {}),
-    (re.compile(
-        r"\bemail\b.*\bintent\b|\binbound.*email\b|\bemail.*classif", re.I,
-    ), TriggerType.EMAIL_INTENT, {}),
+    (
+        re.compile(
+            r"\bemail\b.*\bintent\b|\binbound.*email\b|\bemail.*classif",
+            re.I,
+        ),
+        TriggerType.EMAIL_INTENT,
+        {},
+    ),
     (re.compile(r"\bemail\b.*\barriv|\bnew\s+email\b", re.I), TriggerType.EMAIL_ARRIVAL, {}),
     (re.compile(r"\bsms\b|\btext\s+message\b|\btwilio\b", re.I), TriggerType.SMS_INBOUND, {}),
-    (re.compile(
-        r"\bvoice\b.*\btranscript\b|\bspeech\b", re.I,
-    ), TriggerType.VOICE_TRANSCRIPT, {}),
-    (re.compile(
-        r"\bmeeting\s+end\b|\bmeeting\s+finish", re.I,
-    ), TriggerType.MEETING_ENDED, {}),
+    (
+        re.compile(
+            r"\bvoice\b.*\btranscript\b|\bspeech\b",
+            re.I,
+        ),
+        TriggerType.VOICE_TRANSCRIPT,
+        {},
+    ),
+    (
+        re.compile(
+            r"\bmeeting\s+end\b|\bmeeting\s+finish",
+            re.I,
+        ),
+        TriggerType.MEETING_ENDED,
+        {},
+    ),
     (re.compile(r"\bform\s+submiss|\bform\s+fill", re.I), TriggerType.FORM_SUBMISSION, {}),
     # D. Condition/State
-    (re.compile(
-        r"\bstate\s+(machine\s+)?transition\b|\bstate\s+change\b", re.I,
-    ), TriggerType.STATE_TRANSITION, {}),
-    (re.compile(
-        r"\bcondition\b.*\btrue\b|\bcel\b.*\bexpression\b|\bwhen\s+.*\s*==\s*", re.I,
-    ), TriggerType.CONDITION, {}),
-    (re.compile(
-        r"\bcount(?:er|ed)?\b.*\bthreshold\b|\b\d+\s+times?\b.*\bwindow\b", re.I,
-    ), TriggerType.COUNTER_THRESHOLD, {}),
-    (re.compile(
-        r"\bwindow\b.*\baggreg|\baverage\b.*\bexceed|\bsum\b.*\bthreshold", re.I,
-    ), TriggerType.WINDOW_AGGREGATE, {}),
+    (
+        re.compile(
+            r"\bstate\s+(machine\s+)?transition\b|\bstate\s+change\b",
+            re.I,
+        ),
+        TriggerType.STATE_TRANSITION,
+        {},
+    ),
+    (
+        re.compile(
+            r"\bcondition\b.*\btrue\b|\bcel\b.*\bexpression\b|\bwhen\s+.*\s*==\s*",
+            re.I,
+        ),
+        TriggerType.CONDITION,
+        {},
+    ),
+    (
+        re.compile(
+            r"\bcount(?:er|ed)?\b.*\bthreshold\b|\b\d+\s+times?\b.*\bwindow\b",
+            re.I,
+        ),
+        TriggerType.COUNTER_THRESHOLD,
+        {},
+    ),
+    (
+        re.compile(
+            r"\bwindow\b.*\baggreg|\baverage\b.*\bexceed|\bsum\b.*\bthreshold",
+            re.I,
+        ),
+        TriggerType.WINDOW_AGGREGATE,
+        {},
+    ),
     (re.compile(r"\bcompound\b|\band\b.*\bor\b.*\btrigger\b", re.I), TriggerType.COMPOUND, {}),
-    (re.compile(
-        r"\bfeature\s+flag\b|\bflag\s+change\b", re.I,
-    ), TriggerType.EVENT, {}),  # event type for flags
+    (
+        re.compile(
+            r"\bfeature\s+flag\b|\bflag\s+change\b",
+            re.I,
+        ),
+        TriggerType.EVENT,
+        {},
+    ),  # event type for flags
     # E. Webhooks
-    (re.compile(
-        r"\bgithub\b|\bpr\s+merged?\b|\bgit\s+push\b|\bpull\s+request\b", re.I,
-    ), TriggerType.GITHUB_WEBHOOK, {}),
+    (
+        re.compile(
+            r"\bgithub\b|\bpr\s+merged?\b|\bgit\s+push\b|\bpull\s+request\b",
+            re.I,
+        ),
+        TriggerType.GITHUB_WEBHOOK,
+        {},
+    ),
     (re.compile(r"\bjira\b", re.I), TriggerType.JIRA_WEBHOOK, {}),
-    (re.compile(
-        r"\bstripe\b|\bpayment\s+(received?|succeeded?)\b", re.I,
-    ), TriggerType.STRIPE_WEBHOOK, {}),
+    (
+        re.compile(
+            r"\bstripe\b|\bpayment\s+(received?|succeeded?)\b",
+            re.I,
+        ),
+        TriggerType.STRIPE_WEBHOOK,
+        {},
+    ),
     (re.compile(r"\bpagerduty\b|\bpd\s+alert\b", re.I), TriggerType.PAGERDUTY, {}),
     (re.compile(r"\blinear\b.*\b(issue|ticket)\b", re.I), TriggerType.LINEAR_WEBHOOK, {}),
     (re.compile(r"\bsalesforce\b", re.I), TriggerType.SALESFORCE_EVENT, {}),
     (re.compile(r"\bconfluence\b", re.I), TriggerType.CONFLUENCE_WEBHOOK, {}),
     (re.compile(r"\bwebhook\b", re.I), TriggerType.WEBHOOK, {}),
     # F. Data
-    (re.compile(
-        r"\bdatabase\b.*\brow\b|\bdb\b.*\binsert\b|\bdb\b.*\bupdate\b|\bnew\s+row\b", re.I,
-    ), TriggerType.DB_ROW_CHANGE, {}),
-    (re.compile(
-        r"\bs3\b|\bfile\s+drop[ps]?\b.*\bbucket\b|\bnew\s+file\b.*\bs3\b", re.I,
-    ), TriggerType.S3_EVENT, {}),
+    (
+        re.compile(
+            r"\bdatabase\b.*\brow\b|\bdb\b.*\binsert\b|\bdb\b.*\bupdate\b|\bnew\s+row\b",
+            re.I,
+        ),
+        TriggerType.DB_ROW_CHANGE,
+        {},
+    ),
+    (
+        re.compile(
+            r"\bs3\b|\bfile\s+drop[ps]?\b.*\bbucket\b|\bnew\s+file\b.*\bs3\b",
+            re.I,
+        ),
+        TriggerType.S3_EVENT,
+        {},
+    ),
     (re.compile(r"\bfile\s+drop[ps]?\b", re.I), TriggerType.FILE_DROP, {}),
     (re.compile(r"\brss\b|\batom\s+feed\b|\bnews\s+feed\b", re.I), TriggerType.RSS_FEED, {}),
     (re.compile(r"\bgoogle\s+sheets?\b", re.I), TriggerType.GOOGLE_SHEETS, {}),
@@ -146,38 +268,70 @@ _KEYWORD_RULES: list[tuple[re.Pattern, TriggerType, dict]] = [
     (re.compile(r"\bsentry\b", re.I), TriggerType.SENTRY_ISSUE, {}),
     (re.compile(r"\bpagerduty\b", re.I), TriggerType.PAGERDUTY, {}),
     (re.compile(r"\bdatadog\b", re.I), TriggerType.DATADOG, {}),
-    (re.compile(
-        r"\balerting?\b.*\bmanager\b|\balertmanager\b", re.I,
-    ), TriggerType.ALERTMANAGER, {}),
-    (re.compile(
-        r"\blog\s+pattern\b|\bregex\b.*\blog\b|\bmatches?\b.*\blog\b", re.I,
-    ), TriggerType.LOG_PATTERN, {}),
-    (re.compile(
-        r"\bmetric\b.*\bthreshold\b|\b(cpu|memory|disk)\b.*\b(exceed|above|over)\b", re.I,
-    ), TriggerType.WINDOW_AGGREGATE, {}),
+    (
+        re.compile(
+            r"\balerting?\b.*\bmanager\b|\balertmanager\b",
+            re.I,
+        ),
+        TriggerType.ALERTMANAGER,
+        {},
+    ),
+    (
+        re.compile(
+            r"\blog\s+pattern\b|\bregex\b.*\blog\b|\bmatches?\b.*\blog\b",
+            re.I,
+        ),
+        TriggerType.LOG_PATTERN,
+        {},
+    ),
+    (
+        re.compile(
+            r"\bmetric\b.*\bthreshold\b|\b(cpu|memory|disk)\b.*\b(exceed|above|over)\b",
+            re.I,
+        ),
+        TriggerType.WINDOW_AGGREGATE,
+        {},
+    ),
     # H. Advanced / Polling
     (re.compile(r"\bgraphql\b.*\bsubscri", re.I), TriggerType.GRAPHQL_SUBSCRIPTION, {}),
-    (re.compile(
-        r"\bwebsocket\b.*\bmessage\b|\bws\b.*\bmessage\b", re.I,
-    ), TriggerType.WEBSOCKET_MESSAGE, {}),
-    (re.compile(
-        r"\bprice\b.*\b(drop[ps]?|fall[s]?|below|above|rise[s]?|threshold)\b"
-        r"|\bbitcoin\b|\bcrypto\b|\bstock\b.*\bprice\b",
-        re.I,
-    ), TriggerType.PRICE_THRESHOLD, {}),
+    (
+        re.compile(
+            r"\bwebsocket\b.*\bmessage\b|\bws\b.*\bmessage\b",
+            re.I,
+        ),
+        TriggerType.WEBSOCKET_MESSAGE,
+        {},
+    ),
+    (
+        re.compile(
+            r"\bprice\b.*\b(drop[ps]?|fall[s]?|below|above|rise[s]?|threshold)\b"
+            r"|\bbitcoin\b|\bcrypto\b|\bstock\b.*\bprice\b",
+            re.I,
+        ),
+        TriggerType.PRICE_THRESHOLD,
+        {},
+    ),
     (re.compile(r"\bkafka\b", re.I), TriggerType.EVENT, {}),  # kafka maps to event
     # I. IoT
     (re.compile(r"\bmqtt\b|\bbroker\b.*\btopic\b", re.I), TriggerType.MQTT, {}),
-    (re.compile(
-        r"\bgeofence\b|\benter[s]?\b.*\bzone\b|\bleave[s]?\b.*\bzone\b"
-        r"|\benter[s]?\b.*\bregion\b",
-        re.I,
-    ), TriggerType.GEOFENCE, {}),
-    (re.compile(
-        r"\bsensor\b.*\b(threshold|exceed|above|below)\b"
-        r"|\btemperature\b.*\b(exceed|above|below|sensor)\b|\bhumid|\b\d+°[CF]\b",
-        re.I,
-    ), TriggerType.SENSOR_THRESHOLD, {}),
+    (
+        re.compile(
+            r"\bgeofence\b|\benter[s]?\b.*\bzone\b|\bleave[s]?\b.*\bzone\b"
+            r"|\benter[s]?\b.*\bregion\b",
+            re.I,
+        ),
+        TriggerType.GEOFENCE,
+        {},
+    ),
+    (
+        re.compile(
+            r"\bsensor\b.*\b(threshold|exceed|above|below)\b"
+            r"|\btemperature\b.*\b(exceed|above|below|sensor)\b|\bhumid|\b\d+°[CF]\b",
+            re.I,
+        ),
+        TriggerType.SENSOR_THRESHOLD,
+        {},
+    ),
     # Email arrival fallback (after more-specific email_intent rule)
     (re.compile(r"\bemail\b", re.I), TriggerType.EMAIL_ARRIVAL, {}),
 ]
@@ -244,22 +398,56 @@ def _parse_single(obj: dict) -> TriggerSpec:
     kwargs: dict = {"trigger_type": ttype}
     # Map all recognized fields from LLM response
     field_map = [
-        "cron_expression", "timezone", "interval_seconds", "fire_at_iso",
-        "condition", "description", "watch_goal_id", "watch_agent_id",
-        "score_threshold", "condition_expression", "webhook_signature_secret",
-        "mqtt_topic", "mqtt_broker_url", "mqtt_qos",
-        "geofence_action", "geofence_polygon",
-        "sensor_metric", "sensor_threshold", "sensor_comparison", "sensor_device_id",
-        "price_symbol", "price_threshold", "price_direction",
-        "poll_url", "poll_method", "poll_interval_seconds", "poll_jsonpath",
-        "rss_url", "s3_bucket", "s3_prefix", "db_table", "db_operation",
-        "log_pattern_regex", "log_stream",
-        "graphql_endpoint", "graphql_subscription_query",
-        "state_machine_id", "from_state", "to_state",
-        "counter_key", "counter_threshold", "counter_window_secs",
-        "channel_type", "channel_id", "command_pattern", "keyword_pattern",
-        "email_sender_filter", "email_subject_pattern",
-        "hitl_queue_id", "memory_type",
+        "cron_expression",
+        "timezone",
+        "interval_seconds",
+        "fire_at_iso",
+        "condition",
+        "description",
+        "watch_goal_id",
+        "watch_agent_id",
+        "score_threshold",
+        "condition_expression",
+        "webhook_signature_secret",
+        "mqtt_topic",
+        "mqtt_broker_url",
+        "mqtt_qos",
+        "geofence_action",
+        "geofence_polygon",
+        "sensor_metric",
+        "sensor_threshold",
+        "sensor_comparison",
+        "sensor_device_id",
+        "price_symbol",
+        "price_threshold",
+        "price_direction",
+        "poll_url",
+        "poll_method",
+        "poll_interval_seconds",
+        "poll_jsonpath",
+        "rss_url",
+        "s3_bucket",
+        "s3_prefix",
+        "db_table",
+        "db_operation",
+        "log_pattern_regex",
+        "log_stream",
+        "graphql_endpoint",
+        "graphql_subscription_query",
+        "state_machine_id",
+        "from_state",
+        "to_state",
+        "counter_key",
+        "counter_threshold",
+        "counter_window_secs",
+        "channel_type",
+        "channel_id",
+        "command_pattern",
+        "keyword_pattern",
+        "email_sender_filter",
+        "email_subject_pattern",
+        "hitl_queue_id",
+        "memory_type",
     ]
     for field in field_map:
         if obj.get(field) is not None:
@@ -310,4 +498,3 @@ class NLScheduler:
 
         # Last resort
         return [TriggerSpec(trigger_type=TriggerType.ONCE, description=description)]
-

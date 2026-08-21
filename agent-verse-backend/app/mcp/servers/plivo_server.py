@@ -4,6 +4,7 @@ Environment:
   PLIVO_AUTH_ID: Plivo Auth ID from console.plivo.com
   PLIVO_AUTH_TOKEN: Plivo Auth Token from console.plivo.com
 """
+
 from __future__ import annotations
 
 import os
@@ -29,11 +30,21 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "src": {"type": "string", "description": "Sender phone number or alphanumeric sender ID"},
-                "dst": {"type": "string", "description": "Recipient phone number(s) in E.164 format, comma-separated"},
+                "src": {
+                    "type": "string",
+                    "description": "Sender phone number or alphanumeric sender ID",
+                },
+                "dst": {
+                    "type": "string",
+                    "description": "Recipient phone number(s) in E.164 format, comma-separated",
+                },
                 "text": {"type": "string", "description": "SMS message body"},
                 "url": {"type": "string", "description": "Callback URL for delivery status"},
-                "method": {"type": "string", "description": "HTTP method for callback: GET or POST", "default": "POST"},
+                "method": {
+                    "type": "string",
+                    "description": "HTTP method for callback: GET or POST",
+                    "default": "POST",
+                },
             },
             "required": ["src", "dst", "text"],
         },
@@ -44,10 +55,20 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "description": "Max messages to return (max 20)", "default": 20},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max messages to return (max 20)",
+                    "default": 20,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
-                "message_direction": {"type": "string", "description": "Filter by direction: inbound, outbound"},
-                "message_state": {"type": "string", "description": "Filter by state: queued, sent, failed, delivered, undelivered"},
+                "message_direction": {
+                    "type": "string",
+                    "description": "Filter by direction: inbound, outbound",
+                },
+                "message_state": {
+                    "type": "string",
+                    "description": "Filter by state: queued, sent, failed, delivered, undelivered",
+                },
             },
         },
     },
@@ -57,10 +78,23 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "from_number": {"type": "string", "description": "Caller ID phone number (must be a Plivo number)"},
-                "to_number": {"type": "string", "description": "Destination phone number in E.164 format"},
-                "answer_url": {"type": "string", "description": "URL returning a Plivo XML response to control the call"},
-                "answer_method": {"type": "string", "description": "HTTP method for answer_url: GET or POST", "default": "POST"},
+                "from_number": {
+                    "type": "string",
+                    "description": "Caller ID phone number (must be a Plivo number)",
+                },
+                "to_number": {
+                    "type": "string",
+                    "description": "Destination phone number in E.164 format",
+                },
+                "answer_url": {
+                    "type": "string",
+                    "description": "URL returning a Plivo XML response to control the call",
+                },
+                "answer_method": {
+                    "type": "string",
+                    "description": "HTTP method for answer_url: GET or POST",
+                    "default": "POST",
+                },
             },
             "required": ["from_number", "to_number", "answer_url"],
         },
@@ -71,9 +105,16 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "description": "Max records to return (max 20)", "default": 20},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max records to return (max 20)",
+                    "default": 20,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
-                "call_direction": {"type": "string", "description": "Filter by direction: inbound, outbound"},
+                "call_direction": {
+                    "type": "string",
+                    "description": "Filter by direction: inbound, outbound",
+                },
             },
         },
     },
@@ -93,7 +134,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "limit": {"type": "integer", "description": "Max numbers to return", "default": 20},
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
-                "type": {"type": "string", "description": "Filter by type: local, tollfree, mobile"},
+                "type": {
+                    "type": "string",
+                    "description": "Filter by type: local, tollfree, mobile",
+                },
             },
         },
     },
@@ -146,7 +190,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "messages": [
-                        {"message_uuid": m.get("message_uuid"), "from_number": m.get("from_number"), "to_number": m.get("to_number"), "message_state": m.get("message_state")}
+                        {
+                            "message_uuid": m.get("message_uuid"),
+                            "from_number": m.get("from_number"),
+                            "to_number": m.get("to_number"),
+                            "message_state": m.get("message_state"),
+                        }
                         for m in data.get("objects", [])
                     ],
                     "meta": data.get("meta", {}),
@@ -182,7 +231,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "calls": [
-                        {"call_uuid": c.get("call_uuid"), "from_number": c.get("from_number"), "to_number": c.get("to_number"), "duration": c.get("duration")}
+                        {
+                            "call_uuid": c.get("call_uuid"),
+                            "from_number": c.get("from_number"),
+                            "to_number": c.get("to_number"),
+                            "duration": c.get("duration"),
+                        }
                         for c in data.get("objects", [])
                     ]
                 }
@@ -211,7 +265,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "numbers": [
-                        {"number": n.get("number"), "type": n.get("number_type"), "country": n.get("country")}
+                        {
+                            "number": n.get("number"),
+                            "type": n.get("number_type"),
+                            "country": n.get("country"),
+                        }
                         for n in data.get("objects", [])
                     ]
                 }

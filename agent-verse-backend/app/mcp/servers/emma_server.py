@@ -5,6 +5,7 @@ Environment:
   EMMA_PUBLIC_KEY: Emma public API key
   EMMA_PRIVATE_KEY: Emma private API key
 """
+
 from __future__ import annotations
 
 import os
@@ -43,7 +44,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "email": {"type": "string", "description": "Subscriber email address"},
                 "fields": {"type": "object", "description": "Custom field name-value pairs"},
-                "group_ids": {"type": "array", "description": "Groups to add subscriber to", "items": {"type": "integer"}},
+                "group_ids": {
+                    "type": "array",
+                    "description": "Groups to add subscriber to",
+                    "items": {"type": "integer"},
+                },
             },
             "required": ["email"],
         },
@@ -81,8 +86,16 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "mailing_id": {"type": "integer", "description": "Mailing ID to send"},
-                "heads_up_emails": {"type": "array", "description": "Email addresses to notify", "items": {"type": "string"}},
-                "recipient_groups": {"type": "array", "description": "Group IDs to send to", "items": {"type": "integer"}},
+                "heads_up_emails": {
+                    "type": "array",
+                    "description": "Email addresses to notify",
+                    "items": {"type": "string"},
+                },
+                "recipient_groups": {
+                    "type": "array",
+                    "description": "Group IDs to send to",
+                    "items": {"type": "integer"},
+                },
                 "send_at": {"type": "string", "description": "ISO datetime to schedule sending"},
             },
             "required": ["mailing_id"],
@@ -145,7 +158,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 mailing_id = arguments["mailing_id"]
                 payload = {}
                 if "recipient_groups" in arguments:
-                    payload["recipient_groups"] = [{"id": gid} for gid in arguments["recipient_groups"]]
+                    payload["recipient_groups"] = [
+                        {"id": gid} for gid in arguments["recipient_groups"]
+                    ]
                 if "heads_up_emails" in arguments:
                     payload["heads_up_emails"] = arguments["heads_up_emails"]
                 if "send_at" in arguments:

@@ -4,6 +4,7 @@ Environment:
   ESPUTNIK_LOGIN: eSputnik account login (email)
   ESPUTNIK_PASSWORD: eSputnik API password
 """
+
 from __future__ import annotations
 
 import os
@@ -66,7 +67,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "recipient": {"type": "string", "description": "Recipient email address"},
-                "params": {"type": "array", "description": "Template variables as name-value pairs", "items": {"type": "object"}},
+                "params": {
+                    "type": "array",
+                    "description": "Template variables as name-value pairs",
+                    "items": {"type": "object"},
+                },
                 "template_id": {"type": "integer", "description": "Email template ID"},
             },
             "required": ["recipient"],
@@ -79,8 +84,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "event_type_key": {"type": "string", "description": "Event type key identifier"},
-                "key_value": {"type": "string", "description": "Contact identifier (email or phone)"},
-                "params": {"type": "array", "description": "Event parameters as key-value pairs", "items": {"type": "object"}},
+                "key_value": {
+                    "type": "string",
+                    "description": "Contact identifier (email or phone)",
+                },
+                "params": {
+                    "type": "array",
+                    "description": "Event parameters as key-value pairs",
+                    "items": {"type": "object"},
+                },
             },
             "required": ["event_type_key", "key_value"],
         },
@@ -154,7 +166,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     payload["recipients"][0]["jsonParam"]["params"] = arguments["params"]
                 if "template_id" in arguments:
                     payload["email"] = {"templateId": arguments["template_id"]}
-                r = await client.post(f"{BASE_URL}/message/email", auth=auth, headers=headers, json=payload)
+                r = await client.post(
+                    f"{BASE_URL}/message/email", auth=auth, headers=headers, json=payload
+                )
                 r.raise_for_status()
                 return r.json()
 

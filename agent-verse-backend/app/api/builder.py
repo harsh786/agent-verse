@@ -9,21 +9,23 @@ The builder orchestrates a specialized agent with:
 
 Phase 9 V1: static sites/SPAs built in sandbox (npm build)
 """
+
 from __future__ import annotations
 
 import uuid
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
-from typing import Any
 
 router = APIRouter(prefix="/builder", tags=["builder"])
 
 
 class BuilderProjectRequest(BaseModel):
-    description: str                # "Build me a landing page for a law firm"
-    project_type: str = "landing"   # landing | dashboard | saas | portfolio
-    framework: str = "react"        # react | vanilla | vue
+    description: str  # "Build me a landing page for a law firm"
+    project_type: str = "landing"  # landing | dashboard | saas | portfolio
+    framework: str = "react"  # react | vanilla | vue
     tenant_goal_template: str | None = None
 
 
@@ -74,7 +76,9 @@ async def create_builder_project(
             )
             goal_id = result.get("goal_id")
         except Exception as exc:
-            raise HTTPException(status_code=503, detail=f"Could not start builder: {type(exc).__name__}")
+            raise HTTPException(
+                status_code=503, detail=f"Could not start builder: {type(exc).__name__}"
+            )
 
     return BuilderProject(
         project_id=project_id,
@@ -113,8 +117,7 @@ async def serve_preview(workspace_id: str, request: Request) -> HTMLResponse:
             # List artifacts for this workspace
             artifacts = await artifact_store.list_artifacts(workspace_id=workspace_id)
             index_artifact = next(
-                (a for a in (artifacts or [])
-                 if a.get("name", "").endswith("index.html")),
+                (a for a in (artifacts or []) if a.get("name", "").endswith("index.html")),
                 None,
             )
             if index_artifact:
@@ -129,7 +132,7 @@ async def serve_preview(workspace_id: str, request: Request) -> HTMLResponse:
         preview_html = index_content.replace(
             "<head>",
             f'<head><base href="/builder/assets/{workspace_id}/" />'
-            '<meta name="robots" content="noindex" />'
+            '<meta name="robots" content="noindex" />',
         )
         return HTMLResponse(content=preview_html, status_code=200)
 
@@ -187,10 +190,18 @@ async def serve_asset(workspace_id: str, file_path: str, request: Request) -> Re
         # Determine content type
         ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
         mime_map = {
-            "html": "text/html", "css": "text/css", "js": "application/javascript",
-            "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-            "svg": "image/svg+xml", "ico": "image/x-icon", "json": "application/json",
-            "woff": "font/woff", "woff2": "font/woff2", "ttf": "font/ttf",
+            "html": "text/html",
+            "css": "text/css",
+            "js": "application/javascript",
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "svg": "image/svg+xml",
+            "ico": "image/x-icon",
+            "json": "application/json",
+            "woff": "font/woff",
+            "woff2": "font/woff2",
+            "ttf": "font/ttf",
         }
         content_type = mime_map.get(ext, "application/octet-stream")
         return Response(content=raw, media_type=content_type)

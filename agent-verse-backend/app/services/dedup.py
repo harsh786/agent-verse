@@ -14,6 +14,7 @@ Key design:
 This prevents duplicate Celery tasks for the same tenant submitting the same
 goal twice (e.g. from double-click, retry button, or CI pipelines).
 """
+
 from __future__ import annotations
 
 import hashlib

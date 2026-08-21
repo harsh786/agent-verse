@@ -5,6 +5,7 @@ Environment variables:
   AWS_SECRET_ACCESS_KEY: AWS secret key
   AWS_REGION:            AWS region (default: us-east-1)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -47,7 +48,11 @@ TOOL_DEFINITIONS = [
                 "bucket": {"type": "string"},
                 "key": {"type": "string"},
                 "version_id": {"type": "string"},
-                "max_bytes": {"type": "integer", "default": 102400, "description": "Max bytes to return (default 100KB)"},
+                "max_bytes": {
+                    "type": "integer",
+                    "default": 102400,
+                    "description": "Max bytes to return (default 100KB)",
+                },
             },
             "required": ["bucket", "key"],
         },
@@ -93,7 +98,11 @@ TOOL_DEFINITIONS = [
                     "enum": ["get_object", "put_object"],
                     "default": "get_object",
                 },
-                "expires_in": {"type": "integer", "default": 3600, "description": "Expiry in seconds"},
+                "expires_in": {
+                    "type": "integer",
+                    "default": 3600,
+                    "description": "Expiry in seconds",
+                },
             },
             "required": ["bucket", "key"],
         },
@@ -105,7 +114,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "bucket": {"type": "string"},
-                "region": {"type": "string", "description": "AWS region (overrides AWS_REGION env)"},
+                "region": {
+                    "type": "string",
+                    "description": "AWS region (overrides AWS_REGION env)",
+                },
                 "object_ownership": {
                     "type": "string",
                     "enum": ["BucketOwnerEnforced", "BucketOwnerPreferred", "ObjectWriter"],
@@ -163,7 +175,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "buckets": [
                         {
                             "name": b["Name"],
-                            "creation_date": b.get("CreationDate").isoformat() if b.get("CreationDate") else None,
+                            "creation_date": b.get("CreationDate").isoformat()
+                            if b.get("CreationDate")
+                            else None,
                         }
                         for b in resp.get("Buckets", [])
                     ]
@@ -184,7 +198,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                         {
                             "key": o["Key"],
                             "size": o.get("Size"),
-                            "last_modified": o.get("LastModified").isoformat() if o.get("LastModified") else None,
+                            "last_modified": o.get("LastModified").isoformat()
+                            if o.get("LastModified")
+                            else None,
                             "etag": o.get("ETag", "").strip('"'),
                             "storage_class": o.get("StorageClass"),
                         }
@@ -208,6 +224,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     encoding = "utf-8"
                 except UnicodeDecodeError:
                     import base64 as b64
+
                     content = b64.b64encode(body).decode()
                     encoding = "base64"
                 return {
@@ -217,7 +234,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "encoding": encoding,
                     "content_type": content_type,
                     "content_length": resp.get("ContentLength"),
-                    "last_modified": resp.get("LastModified").isoformat() if resp.get("LastModified") else None,
+                    "last_modified": resp.get("LastModified").isoformat()
+                    if resp.get("LastModified")
+                    else None,
                     "truncated": resp.get("ContentLength", 0) > max_bytes,
                 }
 

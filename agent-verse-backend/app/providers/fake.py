@@ -56,6 +56,7 @@ class FakeProvider:
         if request.response_schema is not None and not content.startswith("{"):
             try:
                 import json
+
                 props = request.response_schema.get("properties", {})
                 fake_obj: dict[str, object] = {}
                 for k, v in props.items():
@@ -123,10 +124,7 @@ class FakeProvider:
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Return deterministic batch embeddings for testing."""
-        return [
-            [math.sin(i + idx) for i in range(self._embed_dim)]
-            for idx, _ in enumerate(texts)
-        ]
+        return [[math.sin(i + idx) for i in range(self._embed_dim)] for idx, _ in enumerate(texts)]
 
     def supports_vision(self) -> bool:
         return self._vision

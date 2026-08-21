@@ -11,6 +11,7 @@ class Chunk:
     chunk_index: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
 
+
 class ChunkerBase(ABC):
     @abstractmethod
     def chunk(self, content: str) -> list[Chunk]: ...

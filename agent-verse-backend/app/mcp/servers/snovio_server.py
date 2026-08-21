@@ -4,6 +4,7 @@ Environment variables:
   SNOVIO_CLIENT_ID: Snov.io OAuth application client ID
   SNOVIO_CLIENT_SECRET: Snov.io OAuth application client secret
 """
+
 from __future__ import annotations
 
 import os
@@ -24,7 +25,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "domain": {"type": "string", "description": "Company website domain, e.g. 'google.com'"},
+                "domain": {
+                    "type": "string",
+                    "description": "Company website domain, e.g. 'google.com'",
+                },
                 "first_name": {"type": "string", "description": "Person's first name"},
                 "last_name": {"type": "string", "description": "Person's last name"},
             },
@@ -128,9 +132,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             "Content-Type": "application/json",
         }
 
-        async with httpx.AsyncClient(
-            base_url=SNOVIO_BASE, headers=headers, timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=SNOVIO_BASE, headers=headers, timeout=30.0) as c:
             if tool_name == "snovio_find_emails":
                 body: dict[str, Any] = {
                     "domain": arguments["domain"],
@@ -185,7 +187,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "snovio_get_stats":
                 r = await c.get(
-                    f"/v2/campaign-stats",
+                    "/v2/campaign-stats",
                     params={"campaignId": arguments["campaign_id"]},
                 )
                 r.raise_for_status()

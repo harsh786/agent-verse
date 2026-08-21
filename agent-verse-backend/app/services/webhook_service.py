@@ -1,4 +1,5 @@
 """Outbound webhook delivery with retry and dead-letter queue."""
+
 from __future__ import annotations
 
 import asyncio
@@ -94,7 +95,7 @@ class OutboundWebhookService:
 
         for attempt in range(max_attempts):
             delivery.attempts = attempt + 1
-            backoff = 2 ** attempt  # 1s, 2s, 4s
+            backoff = 2**attempt  # 1s, 2s, 4s
 
             try:
                 headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -102,15 +103,14 @@ class OutboundWebhookService:
                     import hashlib
                     import hmac
                     import json
+
                     # Compute HMAC on the exact bytes that will be sent.
                     # sort_keys=True with compact separators ensures byte-for-byte
                     # consistency regardless of dict insertion order.
-                    body_bytes = json.dumps(
-                        payload, sort_keys=True, separators=(",", ":")
-                    ).encode("utf-8")
-                    sig = hmac.new(
-                        secret.encode(), body_bytes, hashlib.sha256
-                    ).hexdigest()
+                    body_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
+                    sig = hmac.new(secret.encode(), body_bytes, hashlib.sha256).hexdigest()
                     headers["X-Webhook-Signature"] = f"sha256={sig}"
 
                     async with httpx.AsyncClient(timeout=10.0) as client:

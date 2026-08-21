@@ -3,6 +3,7 @@
 Environment:
   EVENTBRITE_API_KEY: Eventbrite private token for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -22,10 +23,16 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter by status: draft, live, completed, canceled"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: draft, live, completed, canceled",
+                },
                 "page": {"type": "integer", "description": "Page number for pagination"},
                 "page_size": {"type": "integer", "description": "Events per page"},
-                "time_filter": {"type": "string", "description": "Filter by time: current, past, future"},
+                "time_filter": {
+                    "type": "string",
+                    "description": "Filter by time: current, past, future",
+                },
             },
         },
     },
@@ -37,7 +44,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "name": {"type": "string", "description": "Name/title of the event"},
                 "description": {"type": "string", "description": "HTML description of the event"},
-                "start_utc": {"type": "string", "description": "Start datetime in UTC (YYYY-MM-DDTHH:MM:SSZ)"},
+                "start_utc": {
+                    "type": "string",
+                    "description": "Start datetime in UTC (YYYY-MM-DDTHH:MM:SSZ)",
+                },
                 "end_utc": {"type": "string", "description": "End datetime in UTC"},
                 "timezone": {"type": "string", "description": "Timezone (e.g. America/New_York)"},
                 "currency": {"type": "string", "description": "Currency code (e.g. USD)"},

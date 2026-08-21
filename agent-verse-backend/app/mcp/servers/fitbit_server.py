@@ -3,6 +3,7 @@
 Environment:
   FITBIT_ACCESS_TOKEN: Fitbit OAuth2 access token with appropriate scopes
 """
+
 from __future__ import annotations
 
 import os
@@ -23,7 +24,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "date": {"type": "string", "description": "Date in YYYY-MM-DD format (or 'today')"},
-                "user_id": {"type": "string", "description": "User ID (default: '-' for authenticated user)"},
+                "user_id": {
+                    "type": "string",
+                    "description": "User ID (default: '-' for authenticated user)",
+                },
             },
             "required": ["date"],
         },

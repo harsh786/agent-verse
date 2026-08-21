@@ -1,4 +1,5 @@
 """Outbound A2A call tool — lets agents call external A2A/MCP agents as tools."""
+
 from __future__ import annotations
 
 from typing import Any

@@ -1,4 +1,5 @@
 """Base classes for agent pattern adapters."""
+
 from __future__ import annotations
 
 import enum

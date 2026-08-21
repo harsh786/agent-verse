@@ -33,15 +33,9 @@ def upgrade() -> None:
             created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
     """)
-    op.execute(
-        "CREATE INDEX ix_agent_credentials_agent  ON agent_credentials(agent_id)"
-    )
-    op.execute(
-        "CREATE INDEX ix_agent_credentials_key_id ON agent_credentials(key_id)"
-    )
-    op.execute(
-        "CREATE INDEX ix_agent_credentials_tenant ON agent_credentials(tenant_id)"
-    )
+    op.execute("CREATE INDEX ix_agent_credentials_agent  ON agent_credentials(agent_id)")
+    op.execute("CREATE INDEX ix_agent_credentials_key_id ON agent_credentials(key_id)")
+    op.execute("CREATE INDEX ix_agent_credentials_tenant ON agent_credentials(tenant_id)")
     op.execute("ALTER TABLE agent_credentials ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE agent_credentials FORCE ROW LEVEL SECURITY")
     op.execute("""
@@ -55,8 +49,7 @@ def upgrade() -> None:
             ADD COLUMN IF NOT EXISTS domain_metadata JSONB NOT NULL DEFAULT '{}'
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_agents_domain_metadata "
-        "ON agents USING GIN(domain_metadata)"
+        "CREATE INDEX IF NOT EXISTS ix_agents_domain_metadata ON agents USING GIN(domain_metadata)"
     )
 
 

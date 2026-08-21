@@ -3,6 +3,7 @@
 Environment:
   SPOTIFY_ACCESS_TOKEN: Spotify OAuth2 access token (requires appropriate scopes)
 """
+
 from __future__ import annotations
 
 import os
@@ -29,9 +30,16 @@ TOOL_DEFINITIONS = [
                     "description": "Comma-separated types to search: track, album, artist, playlist",
                     "default": "track",
                 },
-                "limit": {"type": "integer", "description": "Number of results (max 50)", "default": 20},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of results (max 50)",
+                    "default": 20,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
-                "market": {"type": "string", "description": "ISO 3166-1 alpha-2 market code e.g. US"},
+                "market": {
+                    "type": "string",
+                    "description": "ISO 3166-1 alpha-2 market code e.g. US",
+                },
             },
             "required": ["q"],
         },
@@ -54,7 +62,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "description": "Number of playlists to return (max 50)", "default": 20},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of playlists to return (max 50)",
+                    "default": 20,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
         },
@@ -67,8 +79,16 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "name": {"type": "string", "description": "Playlist name"},
                 "description": {"type": "string", "description": "Playlist description"},
-                "public": {"type": "boolean", "description": "Whether the playlist is public", "default": True},
-                "collaborative": {"type": "boolean", "description": "Whether others can add tracks", "default": False},
+                "public": {
+                    "type": "boolean",
+                    "description": "Whether the playlist is public",
+                    "default": True,
+                },
+                "collaborative": {
+                    "type": "boolean",
+                    "description": "Whether others can add tracks",
+                    "default": False,
+                },
             },
             "required": ["name"],
         },
@@ -85,7 +105,10 @@ TOOL_DEFINITIONS = [
                     "items": {"type": "string"},
                     "description": "List of Spotify track URIs e.g. spotify:track:XXXX (max 100)",
                 },
-                "position": {"type": "integer", "description": "Position to insert tracks (0-indexed, appends if omitted)"},
+                "position": {
+                    "type": "integer",
+                    "description": "Position to insert tracks (0-indexed, appends if omitted)",
+                },
             },
             "required": ["playlist_id", "uris"],
         },
@@ -97,7 +120,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "artist_id": {"type": "string", "description": "Spotify artist ID"},
-                "market": {"type": "string", "description": "ISO 3166-1 alpha-2 market code for top tracks", "default": "US"},
+                "market": {
+                    "type": "string",
+                    "description": "ISO 3166-1 alpha-2 market code for top tracks",
+                    "default": "US",
+                },
             },
             "required": ["artist_id"],
         },
@@ -192,7 +219,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 )
                 r.raise_for_status()
                 data = r.json()
-                return {"id": data.get("id"), "name": data.get("name"), "external_urls": data.get("external_urls")}
+                return {
+                    "id": data.get("id"),
+                    "name": data.get("name"),
+                    "external_urls": data.get("external_urls"),
+                }
 
             elif tool_name == "spotify_add_to_playlist":
                 payload = {"uris": arguments["uris"][:100]}
@@ -207,7 +238,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 return {"snapshot_id": r.json().get("snapshot_id"), "added": len(arguments["uris"])}
 
             elif tool_name == "spotify_get_artist":
-                artist_r = await client.get(f"{BASE}/artists/{arguments['artist_id']}", headers=headers)
+                artist_r = await client.get(
+                    f"{BASE}/artists/{arguments['artist_id']}", headers=headers
+                )
                 artist_r.raise_for_status()
                 artist_data = artist_r.json()
                 top_r = await client.get(
@@ -224,7 +257,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "popularity": artist_data.get("popularity"),
                     "followers": artist_data.get("followers", {}).get("total"),
                     "top_tracks": [
-                        {"id": t.get("id"), "name": t.get("name"), "popularity": t.get("popularity")}
+                        {
+                            "id": t.get("id"),
+                            "name": t.get("name"),
+                            "popularity": t.get("popularity"),
+                        }
                         for t in top_data.get("tracks", [])[:5]
                     ],
                 }

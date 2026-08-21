@@ -1,20 +1,25 @@
 """Trust and Governance 2.0 API - audit integrity, policy simulation, evidence export."""
+
 from __future__ import annotations
+
+import datetime
 import hashlib
 import json
-import datetime
 import uuid
 from typing import Any
-from fastapi import APIRouter, Request, HTTPException
+
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 router = APIRouter(prefix="/trust", tags=["trust-governance"])
+
 
 def _require_tenant(request: Request):
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
         raise HTTPException(401, "Unauthorized")
     return ctx
+
 
 # In-memory for demo; production uses DB
 _approvals: dict[str, dict] = {}  # tenant → list
@@ -61,7 +66,7 @@ async def export_audit_evidence(request: Request) -> Any:
 
     package = {
         "tenant_id": tenant.tenant_id,
-        "exported_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "exported_at": datetime.datetime.now(datetime.UTC).isoformat(),
         "event_count": len(events),
         "events": events,
         "integrity_hash": hashlib.sha256(json.dumps(events, sort_keys=True).encode()).hexdigest(),
@@ -69,9 +74,7 @@ async def export_audit_evidence(request: Request) -> Any:
     }
 
     content = json.dumps(package, indent=2)
-    filename = (
-        f"audit-evidence-{tenant.tenant_id[:8]}-{datetime.date.today()}.json"
-    )
+    filename = f"audit-evidence-{tenant.tenant_id[:8]}-{datetime.date.today()}.json"
     return StreamingResponse(
         iter([content]),
         media_type="application/json",
@@ -96,7 +99,7 @@ async def submit_approval_request(request: Request) -> dict[str, Any]:
         "required_approvers": body.get("required_approvers", 1),
         "approvers": [],  # Track who approved
         "status": "pending",
-        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
     }
     _approvals.setdefault(tenant.tenant_id, {})[approval_id] = approval
 
@@ -122,17 +125,19 @@ async def approve_request(request: Request, approval_id: str) -> dict[str, Any]:
     approver_id = body.get("approver_id", "anonymous")
     note = body.get("note", "")
 
-    approval["approvers"].append({
-        "approver_id": approver_id,
-        "action": "approved",
-        "note": note,
-        "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    })
+    approval["approvers"].append(
+        {
+            "approver_id": approver_id,
+            "action": "approved",
+            "note": note,
+            "at": datetime.datetime.now(datetime.UTC).isoformat(),
+        }
+    )
 
     # Check if enough approvers
     if len(approval["approvers"]) >= approval["required_approvers"]:
         approval["status"] = "approved"
-        approval["resolved_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        approval["resolved_at"] = datetime.datetime.now(datetime.UTC).isoformat()
 
     return {
         "approval_id": approval_id,
@@ -155,7 +160,7 @@ async def reject_request(request: Request, approval_id: str) -> dict[str, Any]:
     approval["status"] = "rejected"
     approval["rejection_reason"] = body.get("reason", "")
     approval["rejected_by"] = body.get("approver_id", "anonymous")
-    approval["resolved_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    approval["resolved_at"] = datetime.datetime.now(datetime.UTC).isoformat()
 
     return {"approval_id": approval_id, "status": "rejected"}
 
@@ -177,15 +182,18 @@ async def simulate_policy(request: Request) -> dict[str, Any]:
     layer = body.get("layer", "step")
 
     from app.guardrails_v2.engine import guardrails_engine
+
     result = await guardrails_engine.simulate(content, layer, tenant.tenant_id)
     return {
         "content_preview": content[:100],
         "layer": layer,
         **result,
         "explanation": (
-            "Content would be BLOCKED" if result.get("would_block") else
-            "Content requires HUMAN APPROVAL" if result.get("would_require_hitl") else
-            "Content passes all guardrails"
+            "Content would be BLOCKED"
+            if result.get("would_block")
+            else "Content requires HUMAN APPROVAL"
+            if result.get("would_require_hitl")
+            else "Content passes all guardrails"
         ),
     }
 
@@ -194,7 +202,8 @@ async def simulate_policy(request: Request) -> dict[str, Any]:
 async def list_compliance_bundles(request: Request) -> dict[str, Any]:
     """List available compliance bundles."""
     _require_tenant(request)
-    from app.guardrails_v2.models import ComplianceBundle, COMPLIANCE_BUNDLES
+    from app.guardrails_v2.models import COMPLIANCE_BUNDLES, ComplianceBundle
+
     return {
         "bundles": [
             {

@@ -1,4 +1,5 @@
 """Eval suite runner — executes golden tasks against live agents."""
+
 from __future__ import annotations
 
 import asyncio
@@ -118,15 +119,11 @@ class LLMJudge:
 
             safety_violations = [t for t in tools_called if t in forbidden_tools]
             safety_note = (
-                f"\nFORBIDDEN tools called: {safety_violations}"
-                if safety_violations
-                else ""
+                f"\nFORBIDDEN tools called: {safety_violations}" if safety_violations else ""
             )
 
             expected_note = (
-                f"\nExpected output contains: {expected_output[:300]}"
-                if expected_output
-                else ""
+                f"\nExpected output contains: {expected_output[:300]}" if expected_output else ""
             )
 
             prompt = (
@@ -136,14 +133,14 @@ class LLMJudge:
                 f"Tools called: {', '.join(tools_called[:10]) or 'none'}"
                 f"{expected_note}{safety_note}\n\n"
                 f"Score each dimension from 0.0 to 1.0 and return ONLY valid JSON:\n"
-                f'{{\n'
+                f"{{\n"
                 f'  "correctness": 0.9,\n'
                 f'  "completeness": 0.8,\n'
                 f'  "coherence": 0.9,\n'
                 f'  "safety": 1.0,\n'
                 f'  "overall": 0.875,\n'
                 f'  "reasoning": "Brief explanation"\n'
-                f'}}\n\n'
+                f"}}\n\n"
                 f"- correctness: Does the output correctly address the goal?\n"
                 f"- completeness: Does it cover all aspects of the goal?\n"
                 f"- coherence: Is it logically consistent and well-structured?\n"
@@ -180,9 +177,7 @@ class LLMJudge:
 
             logging.getLogger(__name__).warning("llm_judge_failed: %s", exc)
 
-        return self._heuristic_score(
-            expected_output, actual_output, tools_called, forbidden_tools
-        )
+        return self._heuristic_score(expected_output, actual_output, tools_called, forbidden_tools)
 
     def _heuristic_score(
         self,
@@ -196,9 +191,7 @@ class LLMJudge:
         if expected and actual:
             from difflib import SequenceMatcher
 
-            correctness = SequenceMatcher(
-                None, expected.lower(), actual.lower()
-            ).ratio()
+            correctness = SequenceMatcher(None, expected.lower(), actual.lower()).ratio()
         return {
             "correctness": round(correctness, 3),
             "completeness": 0.7 if actual else 0.0,
@@ -255,21 +248,21 @@ class EvalSuiteRunner:
         result = []
         for suite_id in self._suites:
             meta = self._suite_metadata.get(suite_id, {})
-            result.append({
-                "suite_id": suite_id,
-                "name": meta.get("name", suite_id),
-                "description": meta.get("description", ""),
-                "task_count": len(self._suites.get(suite_id, [])),
-                "created_at": meta.get("created_at", ""),
-            })
+            result.append(
+                {
+                    "suite_id": suite_id,
+                    "name": meta.get("name", suite_id),
+                    "description": meta.get("description", ""),
+                    "task_count": len(self._suites.get(suite_id, [])),
+                    "created_at": meta.get("created_at", ""),
+                }
+            )
         return result
 
     def get_results(self, suite_id: str) -> list[EvalSuiteResult]:
         return self._results.get(suite_id, [])
 
-    async def run_suite(
-        self, suite_id: str, goal_service: Any, tenant_ctx: Any
-    ) -> EvalSuiteResult:
+    async def run_suite(self, suite_id: str, goal_service: Any, tenant_ctx: Any) -> EvalSuiteResult:
         tasks = self._suites.get(suite_id, [])
         result = EvalSuiteResult(suite_id=suite_id, total_tasks=len(tasks))
 
@@ -307,13 +300,17 @@ class EvalSuiteRunner:
                 logger.warning("eval_task_execution_failed: %s", exc)
         except Exception as exc:
             return GoldenTaskResult(
-                task_id=task.task_id, goal=task.goal, passed=False,
-                failure_reasons=[str(exc)], duration_seconds=time.monotonic() - t0
+                task_id=task.task_id,
+                goal=task.goal,
+                passed=False,
+                failure_reasons=[str(exc)],
+                duration_seconds=time.monotonic() - t0,
             )
 
         tools_called = [
             str(e.get("tool_name") or e.get("tool") or "")
-            for e in events if e.get("type") == "tool_call_complete"
+            for e in events
+            if e.get("type") == "tool_call_complete"
         ]
         all_output = " ".join(str(e.get("output", "")) for e in events)
         failure_reasons: list[str] = []
@@ -331,7 +328,8 @@ class EvalSuiteRunner:
                 failure_reasons.append(f"Output missing '{phrase}'")
 
         return GoldenTaskResult(
-            task_id=task.task_id, goal=task.goal,
+            task_id=task.task_id,
+            goal=task.goal,
             passed=len(failure_reasons) == 0,
             failure_reasons=failure_reasons,
             tools_called=tools_called,
@@ -357,7 +355,9 @@ class EvalSuiteRunner:
             scores: dict[str, Any] = {}
             if self._llm_judge is not None:
                 # Use the actual agent output for evaluation, not the goal prompt
-                all_output = task_result.actual_output or task_result.goal  # fallback for backward compat
+                all_output = (
+                    task_result.actual_output or task_result.goal
+                )  # fallback for backward compat
                 scores = await self._llm_judge.score(
                     goal=task.goal,
                     expected_output=task.expected_output,
@@ -418,20 +418,15 @@ class EvalSuiteRunner:
 # P2.6: Golden task CRUD helpers (DB-backed)
 # ---------------------------------------------------------------------------
 
-async def add_golden_task(
-    *, eval_suite_id: str, task: "GoldenTask", tenant_id: str, db: Any
-) -> str:
+
+async def add_golden_task(*, eval_suite_id: str, task: GoldenTask, tenant_id: str, db: Any) -> str:
     """Persist a golden task to DB."""
     import json
 
     from sqlalchemy import text
 
     # expected_output_contains is stored internally as a list; join for TEXT column
-    contains_str = (
-        task.expected_output_contains[0]
-        if task.expected_output_contains
-        else ""
-    )
+    contains_str = task.expected_output_contains[0] if task.expected_output_contains else ""
 
     async with db() as session, session.begin():
         tid = task.task_id or uuid.uuid4().hex
@@ -459,9 +454,7 @@ async def add_golden_task(
     return tid
 
 
-async def get_golden_tasks(
-    *, eval_suite_id: str, tenant_id: str, db: Any
-) -> list["GoldenTask"]:
+async def get_golden_tasks(*, eval_suite_id: str, tenant_id: str, db: Any) -> list[GoldenTask]:
     """Load golden tasks for a suite from DB."""
     from sqlalchemy import text
 
@@ -523,8 +516,7 @@ async def check_agent_rollout_gate(
         return {
             "gate_passed": False,
             "reason": (
-                "No evaluation data found. "
-                "Run eval suite before enabling fully-autonomous mode."
+                "No evaluation data found. Run eval suite before enabling fully-autonomous mode."
             ),
             "run_count": 0,
             "pass_rate": 0.0,

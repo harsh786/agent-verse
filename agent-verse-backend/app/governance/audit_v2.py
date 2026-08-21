@@ -10,20 +10,20 @@ This module delivers:
 Writes never block the HTTP response path — all DB work is deferred to the
 background AuditFlusher task that runs every WAL_FLUSH_INTERVAL seconds.
 """
+
 from __future__ import annotations
 
 import contextlib
 import functools
 import hashlib
 import json
+import warnings
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
 from app.observability.logging import get_logger
-
-import warnings
 
 warnings.warn(
     "app.governance.audit_v2 is deprecated. Use app.governance.audit_v3 instead. "
@@ -215,9 +215,7 @@ class AuditWriter:
         try:
             await pipeline.execute()
         except Exception as exc:
-            logger.error(
-                "audit_wal_batch_write_failed", count=len(events), error=str(exc)
-            )
+            logger.error("audit_wal_batch_write_failed", count=len(events), error=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -262,9 +260,7 @@ class AuditFlusher:
         # tenant_id → True once the DB tip has been loaded for that tenant
         self._chain_initialized: dict[str, bool] = {}
 
-    async def _ensure_chain_initialized(
-        self, tenant_id: str, session: Any
-    ) -> None:
+    async def _ensure_chain_initialized(self, tenant_id: str, session: Any) -> None:
         """Seed the in-process chain tip from the DB for *tenant_id*.
 
         Called once per tenant per process lifetime before the first hash is
@@ -593,9 +589,7 @@ def audit_admin_action(
                         ),
                         api_key_id=str(api_key.id) if api_key else None,
                         actor_type="api_key" if api_key else "system",
-                        actor_label=(
-                            getattr(api_key, "prefix", None) if api_key else "system"
-                        ),
+                        actor_label=(getattr(api_key, "prefix", None) if api_key else "system"),
                         event_type=event_type,
                         resource_type=resource_type,
                         resource_id=resource_id,
@@ -604,13 +598,9 @@ def audit_admin_action(
                         error_code=error_code,
                         error_message=error_message,
                         ip_address=(
-                            str(request.client.host)
-                            if request and request.client
-                            else None
+                            str(request.client.host) if request and request.client else None
                         ),
-                        request_id=(
-                            request.headers.get("X-Request-ID") if request else None
-                        ),
+                        request_id=(request.headers.get("X-Request-ID") if request else None),
                     )
                     if (
                         request is not None

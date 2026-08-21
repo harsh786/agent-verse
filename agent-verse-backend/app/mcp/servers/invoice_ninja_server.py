@@ -3,6 +3,7 @@
 Environment:
   INVOICE_NINJA_TOKEN: Invoice Ninja API token
 """
+
 from __future__ import annotations
 
 import os

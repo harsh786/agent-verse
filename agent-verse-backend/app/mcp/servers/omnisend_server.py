@@ -3,6 +3,7 @@
 Environment:
   OMNISEND_API_KEY: Omnisend API key from Store Settings > API Keys
 """
+
 from __future__ import annotations
 
 import os
@@ -31,7 +32,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "description": "Max contacts to return", "default": 100},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max contacts to return",
+                    "default": 100,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
                 "email": {"type": "string", "description": "Filter by email address"},
             },
@@ -47,7 +52,11 @@ TOOL_DEFINITIONS = [
                 "first_name": {"type": "string", "description": "Contact first name"},
                 "last_name": {"type": "string", "description": "Contact last name"},
                 "phone": {"type": "string", "description": "Contact phone number in E.164 format"},
-                "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags to apply to the contact"},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tags to apply to the contact",
+                },
             },
             "required": ["email"],
         },
@@ -70,8 +79,15 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter by status: draft, scheduled, ongoing, paused, sent"},
-                "limit": {"type": "integer", "description": "Max campaigns to return", "default": 50},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: draft, scheduled, ongoing, paused, sent",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max campaigns to return",
+                    "default": 50,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
         },
@@ -94,8 +110,14 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "email": {"type": "string", "description": "Contact email address"},
-                "event_name": {"type": "string", "description": "Name of the custom event to track"},
-                "fields": {"type": "object", "description": "Additional event properties as key-value pairs"},
+                "event_name": {
+                    "type": "string",
+                    "description": "Name of the custom event to track",
+                },
+                "fields": {
+                    "type": "object",
+                    "description": "Additional event properties as key-value pairs",
+                },
             },
             "required": ["email", "event_name"],
         },
@@ -121,14 +143,24 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "contacts": [
-                        {"contactID": c.get("contactID"), "email": c.get("email"), "status": c.get("status")}
+                        {
+                            "contactID": c.get("contactID"),
+                            "email": c.get("email"),
+                            "status": c.get("status"),
+                        }
                         for c in data.get("contacts", [])
                     ],
                     "total": data.get("total", 0),
                 }
 
             elif tool_name == "omnisend_create_contact":
-                identifiers = [{"type": "email", "id": arguments["email"], "channels": {"email": {"status": "subscribed", "statusDate": ""}}}]
+                identifiers = [
+                    {
+                        "type": "email",
+                        "id": arguments["email"],
+                        "channels": {"email": {"status": "subscribed", "statusDate": ""}},
+                    }
+                ]
                 payload: dict[str, Any] = {"identifiers": identifiers}
                 if "first_name" in arguments:
                     payload["firstName"] = arguments["first_name"]
@@ -162,7 +194,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "campaigns": [
-                        {"campaignID": c.get("campaignID"), "name": c.get("name"), "status": c.get("status")}
+                        {
+                            "campaignID": c.get("campaignID"),
+                            "name": c.get("name"),
+                            "status": c.get("status"),
+                        }
                         for c in data.get("campaigns", [])
                     ]
                 }

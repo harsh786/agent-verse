@@ -1,8 +1,10 @@
 """QueuePolicy — per-tenant queue routing rules."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass
 
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @dataclass

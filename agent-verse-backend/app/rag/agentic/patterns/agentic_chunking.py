@@ -6,6 +6,7 @@ becomes an independently searchable unit with higher precision.
 
 Based on: Chen et al. 2023 'Dense X Retrieval'
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -49,6 +50,7 @@ class AgenticChunkingPattern(RAGPattern):
     def is_compatible(self, goal_properties: Any) -> bool:
         try:
             from app.core.config import get_settings
+
             if not get_settings().enable_agentic_chunking:
                 return False
         except Exception:
@@ -90,20 +92,21 @@ class AgenticChunkingPattern(RAGPattern):
         """Extract atomic propositions from a single chunk."""
         try:
             from app.providers.base import CompletionRequest, Message
-            resp = await provider.complete(CompletionRequest(
-                messages=[
-                    Message(role="system", content=_PROPOSITION_SYSTEM),
-                    Message(role="user", content=chunk_content[:2000]),
-                ],
-                model=model,
-                max_tokens=max_tokens,
-                temperature=0.0,
-            ))
+
+            resp = await provider.complete(
+                CompletionRequest(
+                    messages=[
+                        Message(role="system", content=_PROPOSITION_SYSTEM),
+                        Message(role="user", content=chunk_content[:2000]),
+                    ],
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=0.0,
+                )
+            )
             raw = (resp.content or "").strip()
             props = [
-                line.strip()
-                for line in raw.split("\n")
-                if line.strip() and len(line.strip()) > 10
+                line.strip() for line in raw.split("\n") if line.strip() and len(line.strip()) > 10
             ]
             return props[: self._max_props]
         except Exception:
@@ -111,7 +114,8 @@ class AgenticChunkingPattern(RAGPattern):
                 raise
             # Fallback: split into sentences
             import re
-            sentences = re.split(r'[.!?]', chunk_content)
+
+            sentences = re.split(r"[.!?]", chunk_content)
             return [s.strip() for s in sentences if len(s.strip()) > 15][: self._max_props]
 
     async def execute(
@@ -152,8 +156,6 @@ class AgenticChunkingPattern(RAGPattern):
                 for i, prop in enumerate(propositions)
             ]
 
-        all_prop_lists = await asyncio.gather(
-            *[_process_chunk(c) for c in chunks]
-        )
+        all_prop_lists = await asyncio.gather(*[_process_chunk(c) for c in chunks])
         all_props = [prop for prop_list in all_prop_lists for prop in prop_list]
-        return all_props[:top_k * self._max_props]
+        return all_props[: top_k * self._max_props]

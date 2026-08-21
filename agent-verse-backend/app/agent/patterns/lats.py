@@ -36,9 +36,7 @@ class LATSRuntime:
         if child.visits == 0:
             return math.inf
         mean = child.value_sum / child.visits
-        exploration = UCT_EXPLORATION * math.sqrt(
-            math.log(max(parent_visits, 1)) / child.visits
-        )
+        exploration = UCT_EXPLORATION * math.sqrt(math.log(max(parent_visits, 1)) / child.visits)
         return mean + exploration
 
     @classmethod

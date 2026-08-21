@@ -71,9 +71,7 @@ class InMemoryA2ANonceStore:
             if claim in self._claims:
                 return False
             now = datetime.now(UTC)
-            self._claims = {
-                key: expiry for key, expiry in self._claims.items() if expiry > now
-            }
+            self._claims = {key: expiry for key, expiry in self._claims.items() if expiry > now}
             self._claims[claim] = retain_until
             return True
 
@@ -96,9 +94,7 @@ class A2AKeyMetadata:
 class ExternalSecretA2AKeyProvider:
     """Resolves signing material from Vault/KMS only after metadata authorization."""
 
-    def __init__(
-        self, metadata: tuple[A2AKeyMetadata, ...], *, secrets: A2ASecretResolver
-    ) -> None:
+    def __init__(self, metadata: tuple[A2AKeyMetadata, ...], *, secrets: A2ASecretResolver) -> None:
         self._metadata = {(item.key_id, item.purpose): item for item in metadata}
         self._secrets = secrets
 

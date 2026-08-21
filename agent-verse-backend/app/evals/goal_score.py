@@ -1,5 +1,7 @@
 """GoalScorer — scores task completion and iteration efficiency."""
+
 from __future__ import annotations
+
 from app.agent.state import AgentState, GoalStatus
 
 

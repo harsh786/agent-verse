@@ -3,11 +3,12 @@
 Prevents unbounded memory growth for long-running agents. Clusters memories
 by keyword overlap and summarises clusters that exceed a size threshold.
 """
+
 from __future__ import annotations
 
 import re
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -77,7 +78,7 @@ class MemoryConsolidator:
     async def consolidate(
         self,
         memories: list[dict[str, Any]],
-        provider: "LLMProvider | None" = None,
+        provider: LLMProvider | None = None,
     ) -> ConsolidationResult:
         """Consolidate clusters; use LLM for summaries when provider is available."""
         clusters = self._cluster(memories)
@@ -140,7 +141,7 @@ class MemoryConsolidator:
     async def _summarise_with_llm(
         self,
         cluster: list[dict[str, Any]],
-        provider: "LLMProvider",
+        provider: LLMProvider,
     ) -> dict[str, Any]:
         from app.providers.base import CompletionRequest, Message
 

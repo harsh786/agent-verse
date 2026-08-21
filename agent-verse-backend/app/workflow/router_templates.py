@@ -8,6 +8,7 @@ Endpoints:
   GET    /workflow-templates/{slug}/preview-run    Dry-run with sample_input
   POST   /workflow-templates/{slug}/fork           Fork into tenant workspace
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -129,9 +130,7 @@ async def preview_run(slug: str, request: Request) -> dict[str, Any]:
 
 
 @router.post("/{slug}/fork", status_code=status.HTTP_201_CREATED)
-async def fork_template(
-    slug: str, body: ForkRequest, request: Request
-) -> dict[str, Any]:
+async def fork_template(slug: str, body: ForkRequest, request: Request) -> dict[str, Any]:
     """Fork a system template into the current tenant's workspace."""
     store = _store(request)
     tenant_id = _tenant_id(request)

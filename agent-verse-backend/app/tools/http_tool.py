@@ -1,4 +1,5 @@
 """Generic HTTP request tool for calling arbitrary APIs."""
+
 from __future__ import annotations
 
 import ipaddress
@@ -14,12 +15,17 @@ logger = get_logger(__name__)
 
 HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
 
-_BLOCKED_HOSTS = frozenset({
-    "localhost", "127.0.0.1", "0.0.0.0", "::1",
-    "169.254.169.254",   # AWS metadata
-    "metadata.google.internal",  # GCP metadata
-    "100.100.100.200",   # Alibaba Cloud metadata
-})
+_BLOCKED_HOSTS = frozenset(
+    {
+        "localhost",
+        "127.0.0.1",
+        "0.0.0.0",
+        "::1",
+        "169.254.169.254",  # AWS metadata
+        "metadata.google.internal",  # GCP metadata
+        "100.100.100.200",  # Alibaba Cloud metadata
+    }
+)
 
 _MAX_RESPONSE_BYTES = 512 * 1024  # 512 KB
 
@@ -131,7 +137,11 @@ class HttpRequestTool:
                 "type": "object",
                 "properties": {
                     "url": {"type": "string"},
-                    "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "default": "GET"},
+                    "method": {
+                        "type": "string",
+                        "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                        "default": "GET",
+                    },
                     "headers": {"type": "object", "additionalProperties": {"type": "string"}},
                     "body": {"description": "Request body (object for JSON, string for raw)"},
                     "timeout": {"type": "number", "description": "Timeout in seconds (max 60)"},

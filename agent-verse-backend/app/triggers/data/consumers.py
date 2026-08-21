@@ -1,4 +1,5 @@
 """Data trigger consumers — DB row change, S3 events, API poll, RSS feed."""
+
 from __future__ import annotations
 
 import logging
@@ -31,6 +32,7 @@ class DBRowChangeConsumer:
 
         triggers = await self._store.find_by_type_async("db_row_change", tenant_id=tenant_id)
         from types import SimpleNamespace
+
         tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=plan)
         fired = []
         payload = {"table": table, "operation": operation, "row": row}
@@ -77,6 +79,7 @@ class S3EventConsumer:
 
         triggers = await self._store.find_by_type_async("s3_event", tenant_id=tenant_id)
         from types import SimpleNamespace
+
         tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=plan)
         payload = {"bucket": bucket, "key": key, "event_type": event_type}
         fired = []
@@ -147,6 +150,7 @@ class APIPoller:
                 pass
 
         from types import SimpleNamespace
+
         tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=plan)
         try:
             return await self._dispatcher.dispatch(spec, payload, tenant_ctx)
@@ -211,6 +215,7 @@ class RSSPoller:
         entries = self._parse_feed(content)
         fired = []
         from types import SimpleNamespace
+
         tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=plan)
 
         for entry in entries:
@@ -229,6 +234,7 @@ class RSSPoller:
         """Simple RSS parser — returns list of entry dicts."""
         entries = []
         import re
+
         # Match <item> or <entry> elements
         pattern = re.compile(r"<(?:item|entry)>(.*?)</(?:item|entry)>", re.DOTALL)
         for match in pattern.finditer(content):

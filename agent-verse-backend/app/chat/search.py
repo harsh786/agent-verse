@@ -15,7 +15,7 @@ class SearchResult:
     message_id: str
     session_id: str
     role: str
-    snippet: str       # highlighted excerpt
+    snippet: str  # highlighted excerpt
     created_at: str
 
 

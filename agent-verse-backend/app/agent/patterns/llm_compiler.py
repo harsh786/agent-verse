@@ -73,15 +73,12 @@ class LLMCompilerRuntime:
                 return False
             properties = schema.get("properties", {})
             return all(
-                key not in properties
-                or cls._validate_schema(item, properties[key])
+                key not in properties or cls._validate_schema(item, properties[key])
                 for key, item in value.items()
             )
         return True
 
-    def validate_compilation(
-        self, tasks: tuple[CompiledTask, ...]
-    ) -> tuple[CompiledTask, ...]:
+    def validate_compilation(self, tasks: tuple[CompiledTask, ...]) -> tuple[CompiledTask, ...]:
         ordered = validate_compiled_tasks(tasks)
         if not ordered or len(ordered) > 16:
             raise ReasoningContractError("compiled task count must be between 1 and 16")

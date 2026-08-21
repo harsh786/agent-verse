@@ -19,6 +19,7 @@ router = APIRouter(prefix="/guardrails", tags=["guardrails"])
 # Request / response models
 # ---------------------------------------------------------------------------
 
+
 class CreateGuardrailConfigRequest(BaseModel):
     name: str
     # Gap 4: accept singular `layer` OR plural `layers`; normalize to `layers`
@@ -32,7 +33,7 @@ class CreateGuardrailConfigRequest(BaseModel):
     enabled: bool = True
 
     @model_validator(mode="after")
-    def normalize_layers(self) -> "CreateGuardrailConfigRequest":
+    def normalize_layers(self) -> CreateGuardrailConfigRequest:
         """Ensure `layers` is always populated; fall back to `layer` when not set."""
         if self.layer and not self.layers:
             self.layers = [self.layer]
@@ -74,7 +75,7 @@ class ViolationFilters(BaseModel):
 # In-memory store (upgraded to DB in lifespan when DB available)
 # ---------------------------------------------------------------------------
 
-_configs_store: dict[str, dict] = {}   # tenant_id → {id → config}
+_configs_store: dict[str, dict] = {}  # tenant_id → {id → config}
 _violations_store: dict[str, list] = defaultdict(list)  # tenant_id → [violation]
 
 # Per-tenant rate limiting for /test endpoint: {tenant_id → (count, window_start)}
@@ -86,6 +87,7 @@ _TEST_WINDOW = 60.0  # seconds
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _require_tenant(request: Request) -> Any:
     ctx = getattr(request.state, "tenant", None)
@@ -118,6 +120,7 @@ def _check_test_rate(tenant_id: str) -> None:
 # GET /guardrails  — list configs for tenant
 # ---------------------------------------------------------------------------
 
+
 @router.get("")
 async def list_guardrail_configs(
     request: Request,
@@ -129,14 +132,19 @@ async def list_guardrail_configs(
     if db_factory is not None:
         try:
             from sqlalchemy import text as _sql
+
             async with db_factory() as session:
                 from app.db.rls import rls_context
+
                 async with rls_context(session, tenant_id):
-                    result = await session.execute(_sql(
-                        "SELECT id, tenant_id, agent_id, name, layer, rule_type, "
-                        "config, severity, action, enabled, created_at "
-                        "FROM guardrail_configs WHERE tenant_id = :tid ORDER BY created_at DESC",
-                    ), {"tid": tenant_id})
+                    result = await session.execute(
+                        _sql(
+                            "SELECT id, tenant_id, agent_id, name, layer, rule_type, "
+                            "config, severity, action, enabled, created_at "
+                            "FROM guardrail_configs WHERE tenant_id = :tid ORDER BY created_at DESC",
+                        ),
+                        {"tid": tenant_id},
+                    )
                     rows = result.fetchall()
                     configs = [dict(r._mapping) for r in rows]
                     return {"configs": configs, "total": len(configs)}
@@ -151,6 +159,7 @@ async def list_guardrail_configs(
 # POST /guardrails  — create a new config rule
 # ---------------------------------------------------------------------------
 
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_guardrail_config(
     body: CreateGuardrailConfigRequest,
@@ -164,8 +173,8 @@ async def create_guardrail_config(
         "tenant_id": tenant_id,
         "agent_id": body.agent_id,
         "name": body.name,
-        "layer": body.layer,   # normalized by model_validator
-        "layers": body.layers, # normalized by model_validator
+        "layer": body.layer,  # normalized by model_validator
+        "layers": body.layers,  # normalized by model_validator
         "rule_type": body.rule_type,
         "config": body.config,
         "severity": body.severity,
@@ -180,18 +189,23 @@ async def create_guardrail_config(
             import json as _json
 
             from sqlalchemy import text as _sql
+
             async with db_factory() as session:
                 from app.db.rls import rls_context
+
                 async with rls_context(session, tenant_id):
                     db_record = {k: v for k, v in record.items() if k != "layers"}
-                    await session.execute(_sql("""
+                    await session.execute(
+                        _sql("""
                         INSERT INTO guardrail_configs
                             (id, tenant_id, agent_id, name, layer, rule_type,
                              config, severity, action, enabled)
                         VALUES
                             (:id, :tenant_id, :agent_id, :name, :layer, :rule_type,
                              :config, :severity, :action, :enabled)
-                    """), {**db_record, "config": _json.dumps(body.config)})
+                    """),
+                        {**db_record, "config": _json.dumps(body.config)},
+                    )
                     await session.commit()
             return record
         except Exception:
@@ -204,6 +218,7 @@ async def create_guardrail_config(
 # ---------------------------------------------------------------------------
 # PUT /guardrails/{config_id}  — update existing config
 # ---------------------------------------------------------------------------
+
 
 @router.put("/{config_id}")
 async def update_guardrail_config(
@@ -226,6 +241,7 @@ async def update_guardrail_config(
 # DELETE /guardrails/{config_id}
 # ---------------------------------------------------------------------------
 
+
 @router.delete("/{config_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_guardrail_config(
     config_id: str,
@@ -242,6 +258,7 @@ async def delete_guardrail_config(
 # ---------------------------------------------------------------------------
 # POST /guardrails/test  — live-test a rule (rate-limited 20/min per tenant)
 # ---------------------------------------------------------------------------
+
 
 @router.post("/test")
 async def test_guardrail(
@@ -263,9 +280,7 @@ async def test_guardrail(
     elif body.layer == "final":
         result = await engine.evaluate_output(body.text, context={"tenant_id": ctx.tenant_id})
     else:
-        result = await engine.evaluate_goal(
-            body.text, context={"tenant_id": ctx.tenant_id}
-        )
+        result = await engine.evaluate_goal(body.text, context={"tenant_id": ctx.tenant_id})
 
     violations_out = [
         {
@@ -275,8 +290,7 @@ async def test_guardrail(
             "risk_score": v.risk_score,
             "matched_pattern": v.matched_pattern,
             "recommendation": (
-                "block" if v.risk_score >= 0.9 else
-                "warn" if v.risk_score >= 0.6 else "log"
+                "block" if v.risk_score >= 0.9 else "warn" if v.risk_score >= 0.6 else "log"
             ),
         }
         for v in result.violations
@@ -293,6 +307,7 @@ async def test_guardrail(
 # ---------------------------------------------------------------------------
 # GET /guardrails/violations  — query violations with filters
 # ---------------------------------------------------------------------------
+
 
 @router.get("/violations")
 async def list_violations(
@@ -315,13 +330,14 @@ async def list_violations(
         violations = [v for v in violations if v.get("goal_id") == goal_id]
 
     total = len(violations)
-    page = violations[offset: offset + limit]
+    page = violations[offset : offset + limit]
     return {"violations": page, "total": total, "offset": offset, "limit": limit}
 
 
 # ---------------------------------------------------------------------------
 # GET /guardrails/stats  — aggregated violation statistics
 # ---------------------------------------------------------------------------
+
 
 @router.get("/stats")
 async def guardrail_stats(

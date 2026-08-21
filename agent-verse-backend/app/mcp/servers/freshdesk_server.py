@@ -4,6 +4,7 @@ Environment:
   FRESHDESK_DOMAIN:  Freshdesk subdomain (e.g. 'mycompany')
   FRESHDESK_API_KEY: API key (used as HTTP Basic username, password='X')
 """
+
 from __future__ import annotations
 
 import base64

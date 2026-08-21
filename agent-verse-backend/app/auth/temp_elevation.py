@@ -10,6 +10,7 @@ Rules:
 - Auto-expires: cannot be extended
 - Appears in audit trail as "elevated:{user}:{original_role}→{elevated_role}"
 """
+
 from __future__ import annotations
 
 import base64
@@ -55,9 +56,7 @@ def grant_elevation(
 ) -> ElevationToken:
     """Grant temporary elevated access. Returns a signed token."""
     if duration_seconds > _MAX_ELEVATION_SECONDS:
-        raise ValueError(
-            f"Elevation cannot exceed {_MAX_ELEVATION_SECONDS} seconds (4 hours)"
-        )
+        raise ValueError(f"Elevation cannot exceed {_MAX_ELEVATION_SECONDS} seconds (4 hours)")
 
     token_id = uuid.uuid4().hex
     expires_at = time.time() + duration_seconds
@@ -109,9 +108,7 @@ def verify_elevation(token: str) -> dict[str, Any] | None:
         if len(parts) != 2:
             return None
         body, sig_b64 = parts
-        expected_sig_obj = hmac.new(
-            _ELEVATION_SECRET.encode(), body.encode(), hashlib.sha256
-        )
+        expected_sig_obj = hmac.new(_ELEVATION_SECRET.encode(), body.encode(), hashlib.sha256)
         actual_sig = base64.urlsafe_b64decode(sig_b64 + "==")
         if not hmac.compare_digest(expected_sig_obj.digest(), actual_sig):
             return None

@@ -3,6 +3,7 @@
 Environment variables:
   CLOSE_API_KEY: Close API key (used as HTTP Basic username, password empty)
 """
+
 from __future__ import annotations
 
 import os

@@ -3,6 +3,7 @@
 Environment:
   CALENDLY_ACCESS_TOKEN: Personal access token or OAuth token
 """
+
 from __future__ import annotations
 
 import os
@@ -113,7 +114,10 @@ TOOL_DEFINITIONS = [
                     "default": 1,
                     "description": "Max number of events that can be scheduled with this link",
                 },
-                "owner": {"type": "string", "description": "User URI (default: authenticated user)"},
+                "owner": {
+                    "type": "string",
+                    "description": "User URI (default: authenticated user)",
+                },
                 "owner_type": {
                     "type": "string",
                     "enum": ["EventType", "User"],
@@ -160,7 +164,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 if org := arguments.get("organization"):
                     params["organization"] = org
                 if active := arguments.get("active") is not None:
-                    params["active"] = str(arguments["active"]).lower() if "active" in arguments else None
+                    params["active"] = (
+                        str(arguments["active"]).lower() if "active" in arguments else None
+                    )
                 if pt := arguments.get("page_token"):
                     params["page_token"] = pt
                 # Clean None values

@@ -149,9 +149,7 @@ class CoordinationService:
     ) -> AcceptedTransition:
         if not session_id or not values.get("idempotency_key"):
             raise ValueError("session and idempotency key are required")
-        return await self._store.transition_session(
-            tenant_ctx, session_id=session_id, **values
-        )
+        return await self._store.transition_session(tenant_ctx, session_id=session_id, **values)
 
     @staticmethod
     def _require(authorization: AuthorizationContext, permission: str) -> None:

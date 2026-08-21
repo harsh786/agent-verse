@@ -5,6 +5,7 @@ Environment:
   GORGIAS_EMAIL:   Account email
   GORGIAS_API_KEY: API key
 """
+
 from __future__ import annotations
 
 import base64

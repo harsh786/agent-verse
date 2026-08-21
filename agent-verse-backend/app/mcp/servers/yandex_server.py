@@ -4,6 +4,7 @@ Environment:
   YANDEX_API_KEY: Yandex API key for translation and maps
   YANDEX_OAUTH_TOKEN: Yandex OAuth token for Disk and Metrica
 """
+
 from __future__ import annotations
 
 import os
@@ -28,9 +29,19 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "texts": {"type": "array", "description": "Array of text strings to translate", "items": {"type": "string"}},
-                "target_language_code": {"type": "string", "description": "Target language code (e.g. en, ru, de)"},
-                "source_language_code": {"type": "string", "description": "Source language code (auto-detect if omitted)"},
+                "texts": {
+                    "type": "array",
+                    "description": "Array of text strings to translate",
+                    "items": {"type": "string"},
+                },
+                "target_language_code": {
+                    "type": "string",
+                    "description": "Target language code (e.g. en, ru, de)",
+                },
+                "source_language_code": {
+                    "type": "string",
+                    "description": "Source language code (auto-detect if omitted)",
+                },
             },
             "required": ["texts", "target_language_code"],
         },
@@ -79,7 +90,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "counter_id": {"type": "integer", "description": "Metrica counter ID"},
-                "metrics": {"type": "string", "description": "Comma-separated metrics (e.g. ym:s:visits,ym:s:users)"},
+                "metrics": {
+                    "type": "string",
+                    "description": "Comma-separated metrics (e.g. ym:s:visits,ym:s:users)",
+                },
                 "date1": {"type": "string", "description": "Start date YYYY-MM-DD"},
                 "date2": {"type": "string", "description": "End date YYYY-MM-DD"},
             },
@@ -92,7 +106,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "geocode": {"type": "string", "description": "Address string or 'longitude,latitude' for reverse geocoding"},
+                "geocode": {
+                    "type": "string",
+                    "description": "Address string or 'longitude,latitude' for reverse geocoding",
+                },
                 "lang": {"type": "string", "description": "Response language (e.g. en_US, ru_RU)"},
                 "results": {"type": "integer", "description": "Maximum results to return"},
             },
@@ -113,7 +130,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     return {"error": "YANDEX_API_KEY not configured"}
                 r = await client.post(
                     TRANSLATE_URL,
-                    headers={"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"},
+                    headers={
+                        "Authorization": f"Api-Key {api_key}",
+                        "Content-Type": "application/json",
+                    },
                     json={
                         "texts": arguments["texts"],
                         "targetLanguageCode": arguments["target_language_code"],
@@ -161,7 +181,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 r = await client.get(
                     f"{DISK_URL}/resources/upload",
                     headers={"Authorization": f"OAuth {oauth_token}"},
-                    params={"path": arguments["path"], "overwrite": str(arguments.get("overwrite", False)).lower()},
+                    params={
+                        "path": arguments["path"],
+                        "overwrite": str(arguments.get("overwrite", False)).lower(),
+                    },
                 )
                 r.raise_for_status()
                 return r.json()

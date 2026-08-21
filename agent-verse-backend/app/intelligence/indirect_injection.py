@@ -14,6 +14,7 @@ Defense:
   2. Scan for injection patterns within tool outputs
   3. Sanitize or flag before re-injection into context
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -23,9 +24,11 @@ from typing import Any
 
 try:
     from app.observability.logging import get_logger
+
     logger = get_logger(__name__)
 except Exception:
     import logging
+
     logger = logging.getLogger(__name__)  # type: ignore[assignment]
 
 # Patterns that indicate injection attempts in retrieved content

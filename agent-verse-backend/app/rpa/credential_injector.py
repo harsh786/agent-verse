@@ -3,6 +3,7 @@
 P1.2: Auto-fill credentials referenced as ``vault://<server_id>/<key>`` so that
 RPA steps never contain plaintext secrets in the agent plan.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -34,12 +35,13 @@ class CredentialInjector:
         if not self.is_vault_ref(credential_ref):
             return credential_ref
 
-        secret_path = credential_ref[len(VAULT_PREFIX):]
+        secret_path = credential_ref[len(VAULT_PREFIX) :]
 
         # Try secret store first (tenant-scoped Redis-encrypted)
         if self._secret_store is not None:
             try:
                 from app.tenancy.context import PlanTier, TenantContext
+
                 fake_ctx = TenantContext(
                     tenant_id=self._tenant_id,
                     plan=PlanTier.PROFESSIONAL,

@@ -10,6 +10,7 @@ Detects and blocks injection attempts that use:
 - Zero-width characters
 - Bidirectional text tricks (RTL override)
 """
+
 from __future__ import annotations
 
 import base64
@@ -21,44 +22,82 @@ from typing import Any
 
 try:
     from app.observability.logging import get_logger
+
     logger = get_logger(__name__)
 except Exception:
     import logging
+
     logger = logging.getLogger(__name__)  # type: ignore[assignment]
 
 # Known homoglyph substitutions (Cyrillic, Greek, etc.)
 # Keys are Unicode codepoints that look like Latin letters; values are ASCII equivalents.
 _HOMOGLYPH_MAP: dict[str, str] = {
     # Cyrillic lookalikes (\u0410=Cyrillic A, \u0430=Cyrillic a, etc.)
-    "\u0410": "A", "\u0430": "a",
-    "\u0412": "B", "\u0421": "C", "\u0441": "c",
-    "\u0435": "e", "\u0415": "E",
-    "\u0456": "i", "\u0406": "I",
-    "\u043E": "o", "\u041E": "O",
-    "\u0440": "r", "\u0420": "R",
-    "\u0455": "s", "\u0405": "S",
-    "\u0445": "x", "\u0425": "X",
-    "\u0443": "y", "\u0423": "Y",
+    "\u0410": "A",
+    "\u0430": "a",
+    "\u0412": "B",
+    "\u0421": "C",
+    "\u0441": "c",
+    "\u0435": "e",
+    "\u0415": "E",
+    "\u0456": "i",
+    "\u0406": "I",
+    "\u043e": "o",
+    "\u041e": "O",
+    "\u0440": "r",
+    "\u0420": "R",
+    "\u0455": "s",
+    "\u0405": "S",
+    "\u0445": "x",
+    "\u0425": "X",
+    "\u0443": "y",
+    "\u0423": "Y",
     # Greek lookalikes
-    "\u03B1": "a", "\u03C1": "p",
+    "\u03b1": "a",
+    "\u03c1": "p",
     # Zero-width characters (invisible, used to hide injections)
-    "\u200B": "", "\u200C": "", "\u200D": "", "\uFEFF": "",
+    "\u200b": "",
+    "\u200c": "",
+    "\u200d": "",
+    "\ufeff": "",
     # RTL override characters (used to reverse text visually)
-    "\u202E": "", "\u202D": "",
+    "\u202e": "",
+    "\u202d": "",
 }
 
 _LEETSPEAK: dict[str, str] = {
-    "0": "o", "1": "i", "3": "e", "4": "a", "5": "s",
-    "6": "g", "7": "t", "8": "b", "9": "g", "@": "a",
-    "$": "s", "!": "i", "+": "t",
+    "0": "o",
+    "1": "i",
+    "3": "e",
+    "4": "a",
+    "5": "s",
+    "6": "g",
+    "7": "t",
+    "8": "b",
+    "9": "g",
+    "@": "a",
+    "$": "s",
+    "!": "i",
+    "+": "t",
 }
 
 # Suspicious decoded strings to check
-_INJECTION_KEYWORDS: frozenset[str] = frozenset({
-    "ignore", "disregard", "forget", "override", "system", "admin",
-    "jailbreak", "ignore all previous", "new instructions",
-    "you are now", "from now on", "you will",
-})
+_INJECTION_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "ignore",
+        "disregard",
+        "forget",
+        "override",
+        "system",
+        "admin",
+        "jailbreak",
+        "ignore all previous",
+        "new instructions",
+        "you are now",
+        "from now on",
+        "you will",
+    }
+)
 
 
 def normalize_homoglyphs(text: str) -> str:
@@ -116,9 +155,7 @@ def scan_for_encoding_attacks(text: str) -> dict[str, Any]:
         for kw in _INJECTION_KEYWORDS:
             if kw in norm_lower:
                 with contextlib.suppress(Exception):
-                    logger.warning(
-                        "homoglyph_injection_detected", keyword=kw, preview=text[:80]
-                    )
+                    logger.warning("homoglyph_injection_detected", keyword=kw, preview=text[:80])
                 return {"clean": False, "attack_type": "homoglyph", "decoded": normalized}
 
     # 2. HTML entity decode

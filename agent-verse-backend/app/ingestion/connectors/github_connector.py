@@ -5,6 +5,7 @@ Supports:
 - Issues/PRs: REST API with since= parameter
 - ACL: repository visibility + team membership
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,19 +32,26 @@ class GitHubConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             import httpx
+
             token = config.connection_config.get("token", "")
             async with httpx.AsyncClient(timeout=10) as c:
                 r = await c.get(
                     "https://api.github.com/user",
-                    headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"},
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github.v3+json",
+                    },
                 )
             latency = (time.perf_counter() - t0) * 1000
             if r.status_code == 200:
                 data = r.json()
-                return ConnectionHealth(ok=True, latency_ms=latency, metadata={"login": data.get("login")})
+                return ConnectionHealth(
+                    ok=True, latency_ms=latency, metadata={"login": data.get("login")}
+                )
             return ConnectionHealth(ok=False, latency_ms=latency, error=f"HTTP {r.status_code}")
         except Exception as exc:
             return ConnectionHealth(ok=False, error=str(exc))
@@ -69,7 +77,9 @@ class GitHubConnector(BaseConnector):
                     chunks = await ingestor.ingest_repo(
                         repo,
                         branch=config.connection_config.get("branch", "main"),
-                        file_extensions=config.connection_config.get("file_extensions", [".py", ".ts", ".md"]),
+                        file_extensions=config.connection_config.get(
+                            "file_extensions", [".py", ".ts", ".md"]
+                        ),
                     )
                     for chunk in chunks:
                         doc_id = f"{repo}_{chunk.get('source_doc_id', uuid.uuid4().hex)}"

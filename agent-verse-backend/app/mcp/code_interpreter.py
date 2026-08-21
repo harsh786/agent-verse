@@ -120,10 +120,7 @@ class CodeInterpreterTool:
             await self._record("code.denied", invocation, workload)
             raise CodeInterpreterDeniedError(denial)
 
-        key = (
-            f"{invocation.strategy_execution_id}:{workload.workload_id}:"
-            f"{workload.source_sha256}"
-        )
+        key = f"{invocation.strategy_execution_id}:{workload.workload_id}:{workload.source_sha256}"
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             if key in self._results:
@@ -165,9 +162,7 @@ class CodeInterpreterTool:
             )
         else:
             if result.code_observation is not None:
-                return CodeInterpreterTool._to_observation(
-                    workload, result.code_observation
-                )
+                return CodeInterpreterTool._to_observation(workload, result.code_observation)
             terminal = "completed" if result.success else "failed"
             payload = {
                 "workload_id": workload.workload_id,
@@ -188,9 +183,7 @@ class CodeInterpreterTool:
         digest = hashlib.sha256(
             repr(sorted(payload.items(), key=lambda item: item[0])).encode()
         ).hexdigest()
-        return CodeExecutionObservation.model_validate(
-            {**payload, "observation_sha256": digest}
-        )
+        return CodeExecutionObservation.model_validate({**payload, "observation_sha256": digest})
 
 
 CodeInterpreterDenied = CodeInterpreterDeniedError

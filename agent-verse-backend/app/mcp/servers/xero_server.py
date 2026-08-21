@@ -4,6 +4,7 @@ Environment:
   XERO_ACCESS_TOKEN: OAuth 2.0 Bearer token
   XERO_TENANT_ID:    Xero Tenant/Organisation ID
 """
+
 from __future__ import annotations
 
 import os
@@ -75,7 +76,11 @@ TOOL_DEFINITIONS = [
                         },
                     },
                 },
-                "status": {"type": "string", "enum": ["DRAFT", "SUBMITTED", "AUTHORISED"], "default": "DRAFT"},
+                "status": {
+                    "type": "string",
+                    "enum": ["DRAFT", "SUBMITTED", "AUTHORISED"],
+                    "default": "DRAFT",
+                },
                 "due_date": {"type": "string", "description": "YYYY-MM-DD"},
                 "reference": {"type": "string"},
                 "currency_code": {"type": "string", "default": "USD"},
@@ -151,7 +156,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "invoice_id": {"type": "string"},
-                "account_id": {"type": "string", "description": "Bank account ID to receive payment"},
+                "account_id": {
+                    "type": "string",
+                    "description": "Bank account ID to receive payment",
+                },
                 "amount": {"type": "number"},
                 "date": {"type": "string", "description": "YYYY-MM-DD payment date"},
                 "reference": {"type": "string"},
@@ -198,11 +206,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 params: dict[str, Any] = {"page": arguments.get("page", 1)}
                 conditions = []
                 if status := arguments.get("status"):
-                    conditions.append(f"Status==\"{status}\"")
+                    conditions.append(f'Status=="{status}"')
                 if inv_type := arguments.get("type"):
-                    conditions.append(f"Type==\"{inv_type}\"")
+                    conditions.append(f'Type=="{inv_type}"')
                 if cid := arguments.get("contact_id"):
-                    conditions.append(f"Contact.ContactID=Guid(\"{cid}\")")
+                    conditions.append(f'Contact.ContactID=Guid("{cid}")')
                 if conditions:
                     params["where"] = " AND ".join(conditions)
                 if df := arguments.get("date_from"):
@@ -240,7 +248,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     params["searchFields"] = "EmailAddress,Name"
                     params["contactName"] = search
                 if status := arguments.get("contact_status"):
-                    params["where"] = f"ContactStatus==\"{status}\""
+                    params["where"] = f'ContactStatus=="{status}"'
                 r = await c.get("/Contacts", params=params)
                 r.raise_for_status()
                 return r.json()
@@ -265,9 +273,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 params = {}
                 conditions = []
                 if acc_type := arguments.get("type"):
-                    conditions.append(f"Type==\"{acc_type}\"")
+                    conditions.append(f'Type=="{acc_type}"')
                 if status := arguments.get("status"):
-                    conditions.append(f"Status==\"{status}\"")
+                    conditions.append(f'Status=="{status}"')
                 if conditions:
                     params["where"] = " AND ".join(conditions)
                 r = await c.get("/Accounts", params=params)
@@ -305,7 +313,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 params = {"page": arguments.get("page", 1)}
                 conditions = []
                 if bid := arguments.get("bank_account_id"):
-                    conditions.append(f"BankAccount.AccountID=Guid(\"{bid}\")")
+                    conditions.append(f'BankAccount.AccountID=Guid("{bid}")')
                 if fd := arguments.get("from_date"):
                     params["fromDate"] = fd
                 if td := arguments.get("to_date"):

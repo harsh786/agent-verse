@@ -5,6 +5,7 @@ Environment variables:
   DATADOG_APP_KEY: Datadog Application key (DD-APPLICATION-KEY header)
   DATADOG_SITE: Datadog site (default: datadoghq.com; EU: datadoghq.eu)
 """
+
 from __future__ import annotations
 
 import os
@@ -202,9 +203,7 @@ async def call_tool(
     base_url = f"https://api.{site}"
 
     try:
-        async with httpx.AsyncClient(
-            base_url=base_url, headers=_headers(), timeout=30.0
-        ) as client:
+        async with httpx.AsyncClient(base_url=base_url, headers=_headers(), timeout=30.0) as client:
             if tool_name == "datadog_list_monitors":
                 params: dict[str, Any] = {
                     "page": arguments.get("page", 0),

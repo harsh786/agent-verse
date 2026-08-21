@@ -8,6 +8,7 @@ Adds:
   - ingestion_dlq.last_error             (last retry error message)
   - ingestion_dlq.last_retried_at        (timestamp of last retry attempt)
 """
+
 from __future__ import annotations
 
 import sqlalchemy as sa

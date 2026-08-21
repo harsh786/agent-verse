@@ -14,9 +14,9 @@ Includes:
   - Per-org permission matrix
   - CRUD endpoints: GET/POST/DELETE/PATCH users + invites
 """
+
 from __future__ import annotations
 
-import hashlib
 import secrets
 import uuid
 from dataclasses import dataclass, field
@@ -24,7 +24,6 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any
 
-import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.observability.logging import get_logger
@@ -33,21 +32,21 @@ _log = get_logger(__name__)
 
 
 class TenantRole(str, Enum):
-    TENANT_ADMIN  = "tenant_admin"   # full access to all orgs + billing
-    ORG_ADMIN     = "org_admin"      # full access to specific org(s)
-    ORG_MEMBER    = "org_member"     # can use org, create missions
-    ORG_VIEWER    = "org_viewer"     # read-only
-    APPROVER      = "approver"       # approve/reject only
+    TENANT_ADMIN = "tenant_admin"  # full access to all orgs + billing
+    ORG_ADMIN = "org_admin"  # full access to specific org(s)
+    ORG_MEMBER = "org_member"  # can use org, create missions
+    ORG_VIEWER = "org_viewer"  # read-only
+    APPROVER = "approver"  # approve/reject only
     BILLING_ADMIN = "billing_admin"  # billing only
 
 
 # Scope → permissions mapping
 ROLE_PERMISSIONS: dict[str, list[str]] = {
-    TenantRole.TENANT_ADMIN:  ["read", "write", "delete", "approve", "billing", "admin"],
-    TenantRole.ORG_ADMIN:     ["read", "write", "delete", "approve"],
-    TenantRole.ORG_MEMBER:    ["read", "write"],
-    TenantRole.ORG_VIEWER:    ["read"],
-    TenantRole.APPROVER:      ["read", "approve"],
+    TenantRole.TENANT_ADMIN: ["read", "write", "delete", "approve", "billing", "admin"],
+    TenantRole.ORG_ADMIN: ["read", "write", "delete", "approve"],
+    TenantRole.ORG_MEMBER: ["read", "write"],
+    TenantRole.ORG_VIEWER: ["read"],
+    TenantRole.APPROVER: ["read", "approve"],
     TenantRole.BILLING_ADMIN: ["billing"],
 }
 
@@ -55,6 +54,7 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
 @dataclass
 class TenantUser:
     """Per spec QA1 — full tenant user record."""
+
     user_id: str
     tenant_id: str
     email: str
@@ -84,6 +84,7 @@ class TenantUser:
 @dataclass
 class TenantInvite:
     """Pending invitation — expires after 7 days."""
+
     invite_id: str
     tenant_id: str
     email: str
@@ -93,9 +94,7 @@ class TenantInvite:
     invited_by: str = ""
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    expires_at: datetime = field(
-        default_factory=lambda: datetime.now(UTC) + timedelta(days=7)
-    )
+    expires_at: datetime = field(default_factory=lambda: datetime.now(UTC) + timedelta(days=7))
     accepted: bool = False
 
     @property
@@ -118,11 +117,11 @@ class TenantUserService:
         email_service: Any | None = None,
         session: AsyncSession | None = None,
     ) -> None:
-        self._email   = email_service
+        self._email = email_service
         self._session = session
-        self._users:   dict[str, TenantUser]   = {}   # user_id → TenantUser
-        self._invites: dict[str, TenantInvite] = {}   # invite_id → TenantInvite
-        self._by_email: dict[str, str]          = {}   # email → user_id
+        self._users: dict[str, TenantUser] = {}  # user_id → TenantUser
+        self._invites: dict[str, TenantInvite] = {}  # invite_id → TenantInvite
+        self._by_email: dict[str, str] = {}  # email → user_id
 
     async def invite_user(
         self,
@@ -153,7 +152,7 @@ class TenantUserService:
             try:
                 await self._email.send(
                     to=email,
-                    subject=f"You're invited to join the organization",
+                    subject="You're invited to join the organization",
                     body=(
                         f"You've been invited as {role.value}.\n"
                         f"Accept here: {invite.magic_link}\n"
@@ -213,7 +212,8 @@ class TenantUserService:
 
     async def list_pending_invites(self, tenant_id: str) -> list[TenantInvite]:
         return [
-            i for i in self._invites.values()
+            i
+            for i in self._invites.values()
             if i.tenant_id == tenant_id and not i.accepted and not i.is_expired
         ]
 
@@ -240,9 +240,7 @@ class TenantUserService:
         del self._invites[invite_id]
         return True
 
-    async def set_org_permissions(
-        self, user_id: str, org_id: str, permissions: list[str]
-    ) -> bool:
+    async def set_org_permissions(self, user_id: str, org_id: str, permissions: list[str]) -> bool:
         user = self._users.get(user_id)
         if not user:
             return False

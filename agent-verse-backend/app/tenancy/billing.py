@@ -16,6 +16,7 @@ Usage-based billing (additional to flat plan):
   Per mission above plan limit
   Per agent-hour above limit
 """
+
 from __future__ import annotations
 
 import uuid
@@ -24,32 +25,31 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-import structlog
-
 from app.observability.logging import get_logger
 
 _log = get_logger(__name__)
 
 
 class BillingPlan(str, Enum):
-    FREE       = "free"
-    STARTER    = "starter"
-    PRO        = "pro"
+    FREE = "free"
+    STARTER = "starter"
+    PRO = "pro"
     ENTERPRISE = "enterprise"
 
 
 class BillingCycle(str, Enum):
     MONTHLY = "monthly"
-    ANNUAL  = "annual"
+    ANNUAL = "annual"
 
 
 class PaymentProvider(str, Enum):
-    STRIPE   = "stripe"
+    STRIPE = "stripe"
     RAZORPAY = "razorpay"
-    PADDLE   = "paddle"
+    PADDLE = "paddle"
 
 
 # ── Plan definitions ──────────────────────────────────────────────────────────
+
 
 @dataclass
 class PlanLimits:
@@ -66,44 +66,77 @@ class PlanLimits:
 
 PLAN_CATALOG: dict[str, PlanLimits] = {
     BillingPlan.FREE: PlanLimits(
-        max_orgs=1, max_agents_per_org=5, max_missions_per_day=2,
-        channels_allowed=["rest"], mcp_enabled=False, sso_enabled=False,
-        support_tier="community", price_usd_monthly=0.0, price_usd_annual=0.0,
+        max_orgs=1,
+        max_agents_per_org=5,
+        max_missions_per_day=2,
+        channels_allowed=["rest"],
+        mcp_enabled=False,
+        sso_enabled=False,
+        support_tier="community",
+        price_usd_monthly=0.0,
+        price_usd_annual=0.0,
     ),
     BillingPlan.STARTER: PlanLimits(
-        max_orgs=3, max_agents_per_org=20, max_missions_per_day=30,
-        channels_allowed=["rest", "telegram"], mcp_enabled=False, sso_enabled=False,
-        support_tier="email", price_usd_monthly=49.0, price_usd_annual=490.0,
+        max_orgs=3,
+        max_agents_per_org=20,
+        max_missions_per_day=30,
+        channels_allowed=["rest", "telegram"],
+        mcp_enabled=False,
+        sso_enabled=False,
+        support_tier="email",
+        price_usd_monthly=49.0,
+        price_usd_annual=490.0,
     ),
     BillingPlan.PRO: PlanLimits(
-        max_orgs=10, max_agents_per_org=100, max_missions_per_day=10_000,
-        channels_allowed=["rest", "telegram", "slack", "whatsapp", "discord", "email", "teams", "mcp"],
-        mcp_enabled=True, sso_enabled=False,
-        support_tier="chat", price_usd_monthly=199.0, price_usd_annual=1990.0,
+        max_orgs=10,
+        max_agents_per_org=100,
+        max_missions_per_day=10_000,
+        channels_allowed=[
+            "rest",
+            "telegram",
+            "slack",
+            "whatsapp",
+            "discord",
+            "email",
+            "teams",
+            "mcp",
+        ],
+        mcp_enabled=True,
+        sso_enabled=False,
+        support_tier="chat",
+        price_usd_monthly=199.0,
+        price_usd_annual=1990.0,
     ),
     BillingPlan.ENTERPRISE: PlanLimits(
-        max_orgs=999_999, max_agents_per_org=999_999, max_missions_per_day=999_999,
-        channels_allowed=["all"], mcp_enabled=True, sso_enabled=True,
-        support_tier="dedicated", price_usd_monthly=0.0, price_usd_annual=0.0,
+        max_orgs=999_999,
+        max_agents_per_org=999_999,
+        max_missions_per_day=999_999,
+        channels_allowed=["all"],
+        mcp_enabled=True,
+        sso_enabled=True,
+        support_tier="dedicated",
+        price_usd_monthly=0.0,
+        price_usd_annual=0.0,
     ),
 }
 
 # Overage rates (per unit above plan)
 OVERAGE_RATES: dict[str, float] = {
     "extra_agent_hour_usd": 0.05,
-    "extra_mission_usd":    0.10,
-    "extra_1k_tokens_usd":  0.002,
+    "extra_mission_usd": 0.10,
+    "extra_1k_tokens_usd": 0.002,
 }
 
 
 @dataclass
 class TenantBilling:
     """Per spec QA3 — full billing record."""
+
     tenant_id: str
     plan: BillingPlan = BillingPlan.FREE
     billing_cycle: BillingCycle = BillingCycle.MONTHLY
     payment_provider: PaymentProvider = PaymentProvider.STRIPE
-    customer_id: str | None = None          # provider customer ID
+    customer_id: str | None = None  # provider customer ID
     subscription_id: str | None = None
     next_billing_date: datetime | None = None
     currency: str = "USD"
@@ -136,10 +169,10 @@ class BillingService:
     """
 
     def __init__(self, stripe_key: str | None = None, razorpay_key: str | None = None) -> None:
-        self._stripe_key   = stripe_key
+        self._stripe_key = stripe_key
         self._razorpay_key = razorpay_key
         self._billings: dict[str, TenantBilling] = {}
-        self._invoices: dict[str, list[dict]] = {}   # tenant_id → invoices
+        self._invoices: dict[str, list[dict]] = {}  # tenant_id → invoices
 
     def get_or_create(self, tenant_id: str) -> TenantBilling:
         if tenant_id not in self._billings:
@@ -157,10 +190,10 @@ class BillingService:
     ) -> TenantBilling:
         """Upgrade tenant to a higher plan."""
         billing = self.get_or_create(tenant_id)
-        billing.plan             = new_plan
+        billing.plan = new_plan
         billing.payment_provider = provider
-        billing.currency         = currency
-        billing.billing_cycle    = cycle
+        billing.currency = currency
+        billing.billing_cycle = cycle
 
         # TODO: Integrate with Stripe/Razorpay/Paddle SDK when configured
         if payment_token:
@@ -194,20 +227,20 @@ class BillingService:
 
     async def create_invoice(self, tenant_id: str) -> dict:
         billing = self.get_or_create(tenant_id)
-        limits  = billing.plan_limits
+        limits = billing.plan_limits
         overage = billing.compute_overage()
-        base    = limits.price_usd_monthly
+        base = limits.price_usd_monthly
         invoice: dict[str, Any] = {
-            "invoice_id":    str(uuid.uuid4()),
-            "tenant_id":     tenant_id,
-            "plan":          billing.plan.value,
-            "period_start":  datetime.now(UTC).isoformat(),
-            "base_charge":   base,
+            "invoice_id": str(uuid.uuid4()),
+            "tenant_id": tenant_id,
+            "plan": billing.plan.value,
+            "period_start": datetime.now(UTC).isoformat(),
+            "base_charge": base,
             "overage_charge": overage,
-            "total":         base + overage,
-            "currency":      billing.currency,
-            "status":        "draft",
-            "created_at":    datetime.now(UTC).isoformat(),
+            "total": base + overage,
+            "currency": billing.currency,
+            "status": "draft",
+            "created_at": datetime.now(UTC).isoformat(),
         }
         self._invoices.setdefault(tenant_id, []).append(invoice)
         return invoice
@@ -224,10 +257,10 @@ class BillingService:
     def check_plan_limit(self, tenant_id: str, resource: str, current_value: int) -> bool:
         """Return True if within plan limits."""
         billing = self.get_or_create(tenant_id)
-        limits  = billing.plan_limits
+        limits = billing.plan_limits
         limit_map = {
-            "orgs":             limits.max_orgs,
-            "agents":           limits.max_agents_per_org,
+            "orgs": limits.max_orgs,
+            "agents": limits.max_agents_per_org,
             "missions_per_day": limits.max_missions_per_day,
         }
         limit = limit_map.get(resource, 999_999)
@@ -238,14 +271,16 @@ class BillingService:
     async def _create_stripe_subscription(self, billing: TenantBilling, token: str) -> None:
         """Create Stripe subscription — requires STRIPE_SECRET_KEY."""
         import os
+
         if not os.getenv("STRIPE_SECRET_KEY"):
             _log.warning("billing.stripe_key_missing")
             return
         try:
             import stripe  # type: ignore[import]
+
             stripe.api_key = self._stripe_key
             # TODO: full Stripe subscription flow
-            billing.customer_id    = f"cus_stub_{billing.tenant_id[:8]}"
+            billing.customer_id = f"cus_stub_{billing.tenant_id[:8]}"
             billing.subscription_id = f"sub_stub_{billing.tenant_id[:8]}"
         except ImportError:
             _log.warning("billing.stripe_not_installed")

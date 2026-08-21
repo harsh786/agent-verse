@@ -76,6 +76,7 @@ class GoalAnalyticsAggregator:
             return []
         try:
             from sqlalchemy import text
+
             async with db() as session:
                 result = await session.execute(
                     text("""
@@ -86,12 +87,14 @@ class GoalAnalyticsAggregator:
                         ORDER BY created_at DESC
                         LIMIT 10000
                     """),
-                    {"tid": tenant_id, "days": days}
+                    {"tid": tenant_id, "days": days},
                 )
                 rows = result.fetchall()
             return [
                 {
-                    "id": r[0], "status": r[1], "priority": r[2],
+                    "id": r[0],
+                    "status": r[1],
+                    "priority": r[2],
                     "agent_id": r[3],
                     "created_at": r[4].isoformat() if r[4] else "",
                     "dry_run": r[5],
@@ -132,8 +135,7 @@ class GoalAnalyticsAggregator:
         if since:
             # created_at may be a datetime or ISO string — normalise before comparing
             goals = [
-                g for g in goals
-                if (ts := self._parse_created_at(g)) is not None and ts >= since
+                g for g in goals if (ts := self._parse_created_at(g)) is not None and ts >= since
             ]
         if agent_id:
             goals = [g for g in goals if getattr(g, "agent_id", None) == agent_id]
@@ -231,6 +233,7 @@ class GoalAnalyticsAggregator:
             return self.tool_metrics(days=days)
         try:
             from sqlalchemy import text
+
             async with self._db() as session:
                 result = await session.execute(
                     text("""
@@ -332,8 +335,7 @@ class GoalAnalyticsAggregator:
                 rows = result.fetchall()
 
             db_results = [
-                {"period": str(row[0]), "cost_usd": round(float(row[1] or 0), 6)}
-                for row in rows
+                {"period": str(row[0]), "cost_usd": round(float(row[1] or 0), 6)} for row in rows
             ]
             if db_results:
                 return db_results
@@ -382,7 +384,9 @@ class GoalAnalyticsAggregator:
 
         results: list[AgentMetrics] = []
         for agent_id, agent_goals in by_agent.items():
-            completed = [g for g in agent_goals if _goal_status_completed(getattr(g, "status", None))]
+            completed = [
+                g for g in agent_goals if _goal_status_completed(getattr(g, "status", None))
+            ]
             costs = [getattr(g, "cost_usd", 0.0) or 0.0 for g in agent_goals]
             eval_scores = [
                 getattr(g, "eval_score", None)
@@ -394,7 +398,9 @@ class GoalAnalyticsAggregator:
                 AgentMetrics(
                     agent_id=agent_id,
                     goal_count=len(agent_goals),
-                    success_rate=round(len(completed) / len(agent_goals), 4) if agent_goals else 0.0,
+                    success_rate=round(len(completed) / len(agent_goals), 4)
+                    if agent_goals
+                    else 0.0,
                     avg_eval_score=round(statistics.mean(eval_scores), 4) if eval_scores else 0.0,
                     avg_cost_usd=round(statistics.mean(costs), 6) if costs else 0.0,
                 )

@@ -222,9 +222,7 @@ class SkillExecutor:
                         if missing:
                             raise ValueError(f"Output missing required fields: {missing}")
                     except (json.JSONDecodeError, TypeError) as exc:
-                        raise ValueError(
-                            f"Output contract validation failed: {exc}"
-                        ) from exc
+                        raise ValueError(f"Output contract validation failed: {exc}") from exc
 
             elapsed = (time.monotonic() - start) * 1000
             # 5. Return successful execution

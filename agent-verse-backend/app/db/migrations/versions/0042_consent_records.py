@@ -9,6 +9,7 @@ depends_on = None
 
 def upgrade() -> None:
     from alembic import op
+
     op.execute("""
         CREATE TABLE IF NOT EXISTS consent_records (
             id              TEXT PRIMARY KEY,
@@ -22,7 +23,9 @@ def upgrade() -> None:
             user_agent      TEXT
         )
     """)
-    op.execute("CREATE INDEX IF NOT EXISTS ix_consent_tenant ON consent_records (tenant_id, granted_at DESC)")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_consent_tenant ON consent_records (tenant_id, granted_at DESC)"
+    )
 
     # Async GDPR export jobs tracking
     op.execute("""
@@ -36,11 +39,14 @@ def upgrade() -> None:
             error_message TEXT
         )
     """)
-    op.execute("CREATE INDEX IF NOT EXISTS ix_gdpr_jobs_tenant ON gdpr_export_jobs (tenant_id, created_at DESC)")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_gdpr_jobs_tenant ON gdpr_export_jobs (tenant_id, created_at DESC)"
+    )
 
 
 def downgrade() -> None:
     from alembic import op
+
     op.execute("DROP INDEX IF EXISTS ix_gdpr_jobs_tenant")
     op.execute("DROP TABLE IF EXISTS gdpr_export_jobs")
     op.execute("DROP INDEX IF EXISTS ix_consent_tenant")

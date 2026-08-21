@@ -3,6 +3,7 @@
 Environment:
   NINOX_API_KEY: Ninox API key
 """
+
 from __future__ import annotations
 
 import os
@@ -46,7 +47,10 @@ TOOL_DEFINITIONS = [
                 "team_id": {"type": "string"},
                 "database_id": {"type": "string"},
                 "table_id": {"type": "string"},
-                "filters": {"type": "object", "description": "Filter conditions as key-value pairs"},
+                "filters": {
+                    "type": "object",
+                    "description": "Filter conditions as key-value pairs",
+                },
                 "per_page": {"type": "integer", "default": 100},
                 "page": {"type": "integer", "default": 1},
             },
@@ -133,7 +137,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
                 if filters := arguments.get("filters"):
                     params.update(filters)
-                r = await c.get(f"{BASE}/teams/{tid}/databases/{dbid}/tables/{tblid}/records", params=params)
+                r = await c.get(
+                    f"{BASE}/teams/{tid}/databases/{dbid}/tables/{tblid}/records", params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -165,7 +171,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 dbid = arguments["database_id"]
                 tblid = arguments["table_id"]
                 rid = arguments["record_id"]
-                r = await c.delete(f"{BASE}/teams/{tid}/databases/{dbid}/tables/{tblid}/records/{rid}")
+                r = await c.delete(
+                    f"{BASE}/teams/{tid}/databases/{dbid}/tables/{tblid}/records/{rid}"
+                )
                 r.raise_for_status()
                 return {"status": "deleted"} if r.status_code in (200, 204) else r.json()
 

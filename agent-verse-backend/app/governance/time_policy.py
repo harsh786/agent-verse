@@ -11,6 +11,7 @@ Rules:
 
 All times in UTC. Fails closed: if timezone/time parsing fails → DENY.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -21,15 +22,30 @@ from app.observability.logging import get_logger
 logger = get_logger(__name__)
 
 
-_DESTRUCTIVE_TOOLS = frozenset({
-    "delete", "drop", "truncate", "destroy", "wipe", "purge",
-    "nuke", "remove_all", "clear_all",
-})
+_DESTRUCTIVE_TOOLS = frozenset(
+    {
+        "delete",
+        "drop",
+        "truncate",
+        "destroy",
+        "wipe",
+        "purge",
+        "nuke",
+        "remove_all",
+        "clear_all",
+    }
+)
 
-_PROD_DEPLOY_TOOLS = frozenset({
-    "deploy", "kubectl_apply", "terraform_apply", "push_to_prod",
-    "release", "publish",
-})
+_PROD_DEPLOY_TOOLS = frozenset(
+    {
+        "deploy",
+        "kubectl_apply",
+        "terraform_apply",
+        "push_to_prod",
+        "release",
+        "publish",
+    }
+)
 
 
 @dataclass

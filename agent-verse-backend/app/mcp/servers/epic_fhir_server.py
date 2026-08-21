@@ -4,6 +4,7 @@ Environment:
   EPIC_ACCESS_TOKEN: Epic FHIR OAuth2 access token
   EPIC_BASE_URL: Base URL for the Epic FHIR endpoint (e.g. https://fhir.epic.com/interconnect-fhir-oauth)
 """
+
 from __future__ import annotations
 
 import os
@@ -54,7 +55,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "patient_id": {"type": "string", "description": "FHIR Patient ID"},
-                "clinical_status": {"type": "string", "description": "Filter by status: active, inactive, resolved"},
+                "clinical_status": {
+                    "type": "string",
+                    "description": "Filter by status: active, inactive, resolved",
+                },
             },
             "required": ["patient_id"],
         },
@@ -66,7 +70,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "patient_id": {"type": "string", "description": "FHIR Patient ID"},
-                "status": {"type": "string", "description": "Medication status: active, stopped, completed"},
+                "status": {
+                    "type": "string",
+                    "description": "Medication status: active, stopped, completed",
+                },
             },
             "required": ["patient_id"],
         },
@@ -78,7 +85,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "patient_id": {"type": "string", "description": "FHIR Patient ID"},
-                "category": {"type": "string", "description": "Observation category (e.g. laboratory)"},
+                "category": {
+                    "type": "string",
+                    "description": "Observation category (e.g. laboratory)",
+                },
                 "date_from": {"type": "string", "description": "Start date filter"},
                 "date_to": {"type": "string", "description": "End date filter"},
             },
@@ -141,7 +151,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 params = {"patient": arguments["patient_id"]}
                 if "status" in arguments:
                     params["status"] = arguments["status"]
-                r = await client.get(f"{base_url}/MedicationRequest", headers=headers, params=params)
+                r = await client.get(
+                    f"{base_url}/MedicationRequest", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

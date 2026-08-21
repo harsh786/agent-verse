@@ -3,6 +3,7 @@
 Environment:
   DATABOX_API_KEY: Databox API key for authentication (used as HTTP Basic password)
 """
+
 from __future__ import annotations
 
 import os
@@ -22,7 +23,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "push_token": {"type": "string", "description": "Databox Push Token for the datasource"},
+                "push_token": {
+                    "type": "string",
+                    "description": "Databox Push Token for the datasource",
+                },
                 "data": {
                     "type": "array",
                     "description": "Array of metric objects with 'key' and 'value' fields",
@@ -94,7 +98,10 @@ TOOL_DEFINITIONS = [
                 "databoard_id": {"type": "string", "description": "ID of the target databoard"},
                 "name": {"type": "string", "description": "Name of the datablock"},
                 "metric_key": {"type": "string", "description": "Metric key to track"},
-                "visualization": {"type": "string", "description": "Visualization type (e.g. number, line, bar)"},
+                "visualization": {
+                    "type": "string",
+                    "description": "Visualization type (e.g. number, line, bar)",
+                },
             },
             "required": ["databoard_id", "name", "metric_key"],
         },
@@ -155,7 +162,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "databox_get_performance":
                 databoard_id = arguments["databoard_id"]
-                params = {k: v for k, v in arguments.items() if k != "databoard_id" and v is not None}
+                params = {
+                    k: v for k, v in arguments.items() if k != "databoard_id" and v is not None
+                }
                 r = await client.get(
                     f"{BASE_URL}/databoards/{databoard_id}/performance",
                     auth=auth,

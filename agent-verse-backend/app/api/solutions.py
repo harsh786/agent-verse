@@ -1,4 +1,5 @@
 """Solutions API — installable domain solution packages."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request

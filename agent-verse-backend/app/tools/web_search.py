@@ -2,6 +2,7 @@
 
 Falls back to DuckDuckGo Instant Answer API if SearXNG not configured.
 """
+
 from __future__ import annotations
 
 import json
@@ -52,9 +53,7 @@ class WebSearchTool:
         fallback_to_duckduckgo: bool = True,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        configured_url = (
-            os.getenv("SEARXNG_URL", "") if searxng_url is None else searxng_url
-        )
+        configured_url = os.getenv("SEARXNG_URL", "") if searxng_url is None else searxng_url
         self._searxng_url = configured_url.rstrip("/")
         self._timeout = max(
             0.1,
@@ -144,21 +143,25 @@ class WebSearchTool:
             results: list[SearchResult] = []
             # Abstract (featured snippet)
             if data.get("AbstractText"):
-                results.append(SearchResult(
-                    title=data.get("Heading", query),
-                    url=data.get("AbstractURL", ""),
-                    snippet=data["AbstractText"][:500],
-                    source="duckduckgo",
-                ))
+                results.append(
+                    SearchResult(
+                        title=data.get("Heading", query),
+                        url=data.get("AbstractURL", ""),
+                        snippet=data["AbstractText"][:500],
+                        source="duckduckgo",
+                    )
+                )
             # Related topics
             for topic in data.get("RelatedTopics", [])[:num_results]:
                 if isinstance(topic, dict) and topic.get("Text"):
-                    results.append(SearchResult(
-                        title=topic.get("Text", "")[:80],
-                        url=topic.get("FirstURL", ""),
-                        snippet=topic.get("Text", "")[:300],
-                        source="duckduckgo",
-                    ))
+                    results.append(
+                        SearchResult(
+                            title=topic.get("Text", "")[:80],
+                            url=topic.get("FirstURL", ""),
+                            snippet=topic.get("Text", "")[:300],
+                            source="duckduckgo",
+                        )
+                    )
                 if len(results) >= num_results:
                     break
 
@@ -193,7 +196,6 @@ class WebSearchTool:
             "query": result.query,
             "source": result.source,
             "results": [
-                {"title": r.title, "url": r.url, "snippet": r.snippet}
-                for r in result.results
+                {"title": r.title, "url": r.url, "snippet": r.snippet} for r in result.results
             ],
         }

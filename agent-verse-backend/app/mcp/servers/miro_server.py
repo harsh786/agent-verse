@@ -3,6 +3,7 @@
 Environment:
   MIRO_ACCESS_TOKEN: Miro OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -68,7 +69,24 @@ TOOL_DEFINITIONS = [
                 "content": {"type": "string", "description": "Text content of the sticky note"},
                 "color": {
                     "type": "string",
-                    "enum": ["gray", "light_yellow", "yellow", "orange", "light_green", "green", "dark_green", "cyan", "light_pink", "pink", "violet", "red", "light_blue", "blue", "dark_blue", "black"],
+                    "enum": [
+                        "gray",
+                        "light_yellow",
+                        "yellow",
+                        "orange",
+                        "light_green",
+                        "green",
+                        "dark_green",
+                        "cyan",
+                        "light_pink",
+                        "pink",
+                        "violet",
+                        "red",
+                        "light_blue",
+                        "blue",
+                        "dark_blue",
+                        "black",
+                    ],
                     "default": "yellow",
                 },
                 "x": {"type": "number", "default": 0.0},

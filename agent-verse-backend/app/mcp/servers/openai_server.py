@@ -3,6 +3,7 @@
 Environment:
   OPENAI_API_KEY: OpenAI API key (sk-...)
 """
+
 from __future__ import annotations
 
 import os
@@ -292,9 +293,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "OPENAI_API_KEY not configured"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=OPENAI_BASE, headers=_headers(), timeout=60.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=OPENAI_BASE, headers=_headers(), timeout=60.0) as c:
             if tool_name == "openai_chat_completion":
                 messages = list(arguments.get("messages", []))
                 if sys := arguments.get("system"):

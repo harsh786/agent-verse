@@ -7,6 +7,7 @@ Environment variables:
 Note: Terraform Cloud uses the JSON:API specification. All request bodies must use
 Content-Type: application/vnd.api+json and the 'data' wrapper format.
 """
+
 from __future__ import annotations
 
 import os
@@ -244,9 +245,7 @@ async def call_tool(
                 }
                 if arguments.get("search"):
                     params["search[name]"] = arguments["search"]
-                resp = await client.get(
-                    f"/organizations/{org}/workspaces", params=params
-                )
+                resp = await client.get(f"/organizations/{org}/workspaces", params=params)
                 resp.raise_for_status()
                 data = resp.json()
                 return {
@@ -255,8 +254,12 @@ async def call_tool(
                         {
                             "id": ws["id"],
                             "name": (ws.get("attributes") or {}).get("name", ""),
-                            "status": (ws.get("attributes") or {}).get("latest-run", {}).get("status", ""),
-                            "terraform_version": (ws.get("attributes") or {}).get("terraform-version", ""),
+                            "status": (ws.get("attributes") or {})
+                            .get("latest-run", {})
+                            .get("status", ""),
+                            "terraform_version": (ws.get("attributes") or {}).get(
+                                "terraform-version", ""
+                            ),
                             "locked": (ws.get("attributes") or {}).get("locked", False),
                             "created_at": (ws.get("attributes") or {}).get("created-at", ""),
                         }
@@ -296,9 +299,7 @@ async def call_tool(
                 if arguments.get("working_directory"):
                     attrs["working-directory"] = arguments["working_directory"]
                 payload = {"data": {"type": "workspaces", "attributes": attrs}}
-                resp = await client.post(
-                    f"/organizations/{org}/workspaces", json=payload
-                )
+                resp = await client.post(f"/organizations/{org}/workspaces", json=payload)
                 resp.raise_for_status()
                 ws = resp.json().get("data", {})
                 ws_attrs = ws.get("attributes") or {}
@@ -314,9 +315,7 @@ async def call_tool(
                     "page[number]": arguments.get("page_number", 1),
                     "page[size]": arguments.get("page_size", 20),
                 }
-                resp = await client.get(
-                    f"/workspaces/{workspace_id}/runs", params=params
-                )
+                resp = await client.get(f"/workspaces/{workspace_id}/runs", params=params)
                 resp.raise_for_status()
                 data = resp.json()
                 return {
@@ -364,9 +363,7 @@ async def call_tool(
                         "type": "runs",
                         "attributes": attrs,
                         "relationships": {
-                            "workspace": {
-                                "data": {"type": "workspaces", "id": workspace_id}
-                            }
+                            "workspace": {"data": {"type": "workspaces", "id": workspace_id}}
                         },
                     }
                 }
@@ -435,9 +432,7 @@ async def call_tool(
                         "attributes": attrs,
                     }
                 }
-                resp = await client.post(
-                    f"/workspaces/{workspace_id}/vars", json=payload
-                )
+                resp = await client.post(f"/workspaces/{workspace_id}/vars", json=payload)
                 resp.raise_for_status()
                 v = resp.json().get("data", {})
                 v_attrs = v.get("attributes") or {}

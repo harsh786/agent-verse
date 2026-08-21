@@ -1,4 +1,5 @@
 """State Machine API — CRUD for state machine definitions + instance transitions."""
+
 from __future__ import annotations
 
 import uuid
@@ -8,9 +9,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.triggers.state_machine import (
+    StateDefinition,
     StateMachine,
     StateMachineDefinition,
-    StateDefinition,
     TransitionDefinition,
 )
 
@@ -21,6 +22,7 @@ _sm_registry = StateMachine()
 
 
 # ── Request models ────────────────────────────────────────────────────────────
+
 
 class StateModel(BaseModel):
     name: str
@@ -50,6 +52,7 @@ class TransitionRequest(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _require_tenant(request: Request) -> Any:
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
@@ -63,10 +66,9 @@ def _get_registry(request: Request) -> StateMachine:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+
 @router.post("", status_code=201)
-async def create_state_machine(
-    request: Request, body: CreateStateMachineRequest
-) -> dict:
+async def create_state_machine(request: Request, body: CreateStateMachineRequest) -> dict:
     tenant = _require_tenant(request)
     registry = _get_registry(request)
     machine_id = uuid.uuid4().hex
@@ -108,8 +110,14 @@ async def get_state_machine(machine_id: str, request: Request) -> dict:
     return {
         "machine_id": defn.machine_id,
         "name": defn.name,
-        "states": [{"name": s.name, "is_initial": s.is_initial, "is_terminal": s.is_terminal} for s in defn.states],
-        "transitions": [{"from_state": t.from_state, "to_state": t.to_state, "event": t.event} for t in defn.transitions],
+        "states": [
+            {"name": s.name, "is_initial": s.is_initial, "is_terminal": s.is_terminal}
+            for s in defn.states
+        ],
+        "transitions": [
+            {"from_state": t.from_state, "to_state": t.to_state, "event": t.event}
+            for t in defn.transitions
+        ],
     }
 
 

@@ -6,6 +6,7 @@ Environment:
   WORKDAY_TENANT:        Workday tenant ID (e.g. 'mycompany')
   WORKDAY_BASE_URL:      Workday API base URL (e.g. https://wd2-impl-services1.workday.com)
 """
+
 from __future__ import annotations
 
 import os

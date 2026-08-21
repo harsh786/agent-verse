@@ -4,6 +4,7 @@ Environment:
   TWITCH_CLIENT_ID: Twitch application Client ID from dev.twitch.tv
   TWITCH_ACCESS_TOKEN: Twitch OAuth2 access token (app or user token)
 """
+
 from __future__ import annotations
 
 import os
@@ -32,10 +33,23 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "user_login": {"type": "string", "description": "Comma-separated list of streamer login names to filter"},
-                "game_id": {"type": "string", "description": "Game/category ID to filter streams by"},
-                "language": {"type": "string", "description": "Stream language filter (ISO 639-1 code)"},
-                "first": {"type": "integer", "description": "Max results to return (1-100)", "default": 20},
+                "user_login": {
+                    "type": "string",
+                    "description": "Comma-separated list of streamer login names to filter",
+                },
+                "game_id": {
+                    "type": "string",
+                    "description": "Game/category ID to filter streams by",
+                },
+                "language": {
+                    "type": "string",
+                    "description": "Stream language filter (ISO 639-1 code)",
+                },
+                "first": {
+                    "type": "integer",
+                    "description": "Max results to return (1-100)",
+                    "default": 20,
+                },
             },
         },
     },
@@ -56,9 +70,19 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "broadcaster_id": {"type": "string", "description": "Twitch broadcaster/channel user ID"},
-                "first": {"type": "integer", "description": "Max followers to return (1-100)", "default": 20},
-                "after": {"type": "string", "description": "Pagination cursor from previous response"},
+                "broadcaster_id": {
+                    "type": "string",
+                    "description": "Twitch broadcaster/channel user ID",
+                },
+                "first": {
+                    "type": "integer",
+                    "description": "Max followers to return (1-100)",
+                    "default": 20,
+                },
+                "after": {
+                    "type": "string",
+                    "description": "Pagination cursor from previous response",
+                },
             },
             "required": ["broadcaster_id"],
         },
@@ -71,8 +95,16 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "user_id": {"type": "string", "description": "Twitch user ID to get videos for"},
                 "game_id": {"type": "string", "description": "Game ID to get videos for"},
-                "type": {"type": "string", "description": "Video type filter: all, upload, archive, highlight", "default": "all"},
-                "first": {"type": "integer", "description": "Max videos to return (1-100)", "default": 20},
+                "type": {
+                    "type": "string",
+                    "description": "Video type filter: all, upload, archive, highlight",
+                    "default": "all",
+                },
+                "first": {
+                    "type": "integer",
+                    "description": "Max videos to return (1-100)",
+                    "default": 20,
+                },
             },
         },
     },
@@ -83,8 +115,16 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query string"},
-                "live_only": {"type": "boolean", "description": "If true, only return currently live channels", "default": False},
-                "first": {"type": "integer", "description": "Max results to return (1-100)", "default": 20},
+                "live_only": {
+                    "type": "boolean",
+                    "description": "If true, only return currently live channels",
+                    "default": False,
+                },
+                "first": {
+                    "type": "integer",
+                    "description": "Max results to return (1-100)",
+                    "default": 20,
+                },
             },
             "required": ["query"],
         },
@@ -157,12 +197,18 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
                 if "after" in arguments:
                     params["after"] = arguments["after"]
-                r = await client.get(f"{BASE_URL}/channels/followers", headers=_headers(), params=params)
+                r = await client.get(
+                    f"{BASE_URL}/channels/followers", headers=_headers(), params=params
+                )
                 r.raise_for_status()
                 data = r.json()
                 return {
                     "followers": [
-                        {"user_id": f.get("user_id"), "user_name": f.get("user_name"), "followed_at": f.get("followed_at")}
+                        {
+                            "user_id": f.get("user_id"),
+                            "user_name": f.get("user_name"),
+                            "followed_at": f.get("followed_at"),
+                        }
                         for f in data.get("data", [])
                     ],
                     "total": data.get("total", 0),
@@ -183,7 +229,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "videos": [
-                        {"id": v.get("id"), "title": v.get("title"), "url": v.get("url"), "view_count": v.get("view_count")}
+                        {
+                            "id": v.get("id"),
+                            "title": v.get("title"),
+                            "url": v.get("url"),
+                            "view_count": v.get("view_count"),
+                        }
                         for v in data.get("data", [])
                     ]
                 }
@@ -194,12 +245,19 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "first": arguments.get("first", 20),
                     "live_only": str(arguments.get("live_only", False)).lower(),
                 }
-                r = await client.get(f"{BASE_URL}/search/channels", headers=_headers(), params=params)
+                r = await client.get(
+                    f"{BASE_URL}/search/channels", headers=_headers(), params=params
+                )
                 r.raise_for_status()
                 data = r.json()
                 return {
                     "channels": [
-                        {"id": c.get("id"), "display_name": c.get("display_name"), "game_name": c.get("game_name"), "is_live": c.get("is_live")}
+                        {
+                            "id": c.get("id"),
+                            "display_name": c.get("display_name"),
+                            "game_name": c.get("game_name"),
+                            "is_live": c.get("is_live"),
+                        }
                         for c in data.get("data", [])
                     ]
                 }

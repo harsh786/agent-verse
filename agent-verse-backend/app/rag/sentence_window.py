@@ -6,6 +6,7 @@ window of ±window_size surrounding sentences for richer context.
 
 This is the "small-to-big" retrieval pattern from LlamaIndex.
 """
+
 from __future__ import annotations
 
 import re
@@ -23,8 +24,8 @@ def _split_sentences(text: str) -> list[str]:
 class SentenceWindowResult:
     """Retrieved sentence + surrounding window context."""
 
-    sentence: str        # The matched sentence
-    window: str          # Full context window (±window_size sentences)
+    sentence: str  # The matched sentence
+    window: str  # Full context window (±window_size sentences)
     sentence_index: int  # Index within source text
     source_metadata: dict[str, Any]
 
@@ -36,9 +37,7 @@ class SentenceWindowChunker:
         """window_size: number of sentences before/after to include in retrieval."""
         self._window_size = window_size
 
-    def chunk(
-        self, text: str, metadata: dict[str, Any] | None = None
-    ) -> list[dict[str, Any]]:
+    def chunk(self, text: str, metadata: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """Split text into sentence chunks with window context stored in metadata."""
         import uuid
 
@@ -53,17 +52,19 @@ class SentenceWindowChunker:
             end = min(len(sentences), idx + self._window_size + 1)
             window = " ".join(sentences[start:end])
 
-            chunks.append({
-                "chunk_id": uuid.uuid4().hex,
-                "content": sentence,  # Small sentence for precise matching
-                "metadata": {
-                    **(metadata or {}),
-                    "window_context": window,    # Full context stored here
-                    "sentence_index": idx,
-                    "window_start": start,
-                    "window_end": end,
-                },
-            })
+            chunks.append(
+                {
+                    "chunk_id": uuid.uuid4().hex,
+                    "content": sentence,  # Small sentence for precise matching
+                    "metadata": {
+                        **(metadata or {}),
+                        "window_context": window,  # Full context stored here
+                        "sentence_index": idx,
+                        "window_start": start,
+                        "window_end": end,
+                    },
+                }
+            )
         return chunks
 
 

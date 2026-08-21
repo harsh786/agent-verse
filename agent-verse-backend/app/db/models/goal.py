@@ -27,9 +27,7 @@ from app.db.models import Base
 class Goal(Base):
     __tablename__ = "goals"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -61,12 +59,8 @@ class Goal(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    runtime_profile_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True
-    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    runtime_profile_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     patterns_used: Mapped[list[Any]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
     )
@@ -75,9 +69,7 @@ class Goal(Base):
     )
     runtime_profile_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     strategy_registry_revision: Mapped[str | None] = mapped_column(String(80), nullable=True)
-    runtime_profile_snapshot: Mapped[dict[str, Any] | None] = mapped_column(
-        JSONB, nullable=True
-    )
+    runtime_profile_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     rejected_strategies: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
     )
@@ -105,9 +97,7 @@ class Goal(Base):
 class GoalStep(Base):
     __tablename__ = "goal_steps"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     goal_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -131,9 +121,7 @@ class GoalEvent(Base):
         UniqueConstraint("tenant_id", "goal_id", "sequence", name="uq_goal_events_sequence"),
     )
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -156,9 +144,7 @@ class GoalCheckpoint(Base):
         UniqueConstraint("tenant_id", "goal_id", "checkpoint_key", name="uq_goal_checkpoints_key"),
     )
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )

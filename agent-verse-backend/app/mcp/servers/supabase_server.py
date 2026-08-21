@@ -4,6 +4,7 @@ Environment:
   SUPABASE_URL:         Project URL (e.g. https://xyz.supabase.co)
   SUPABASE_SERVICE_KEY: Service role key (has full access, keep secret)
 """
+
 from __future__ import annotations
 
 import os
@@ -178,9 +179,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 params = {}
                 for k, v in (arguments.get("filters") or {}).items():
                     params[k] = v
-                resp = await client.delete(
-                    f"{rest_base}/{table}", params=params, headers=headers
-                )
+                resp = await client.delete(f"{rest_base}/{table}", params=params, headers=headers)
                 resp.raise_for_status()
                 data = resp.json() if resp.content else []
                 return {"data": data}
@@ -208,7 +207,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     )
                     if resp2.status_code == 200:
                         return {"tables": [r["table_name"] for r in resp2.json()]}
-                    return {"tables": [], "note": "Requires get_tables RPC function or pg_tables access"}
+                    return {
+                        "tables": [],
+                        "note": "Requires get_tables RPC function or pg_tables access",
+                    }
                 resp.raise_for_status()
                 return {"tables": resp.json()}
 

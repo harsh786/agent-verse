@@ -16,9 +16,7 @@ router = APIRouter(prefix="/api/v1/coordination/sessions", tags=["coordination-g
 _MAX_MESSAGE_BYTES = 16_384
 _MAX_MESSAGES_PER_WINDOW = 30
 _RATE_WINDOW_SECONDS = 10.0
-_PRIVILEGED_MESSAGE_TYPES = frozenset(
-    {"approval", "policy", "privilege", "tool", "tool_call"}
-)
+_PRIVILEGED_MESSAGE_TYPES = frozenset({"approval", "policy", "privilege", "tool", "tool_call"})
 
 
 class GroupChatWebSocketHandshake(BaseModel):
@@ -136,9 +134,7 @@ async def group_chat_websocket(websocket: WebSocket, session_id: str) -> None:
                 return
             client_message_id = str(payload.get("client_message_id", ""))
             if not client_message_id:
-                await websocket.send_json(
-                    {"type": "error", "code": "idempotency_key_required"}
-                )
+                await websocket.send_json({"type": "error", "code": "idempotency_key_required"})
                 continue
             try:
                 classification = Classification(
@@ -156,9 +152,7 @@ async def group_chat_websocket(websocket: WebSocket, session_id: str) -> None:
             except ValueError:
                 await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
                 return
-            await websocket.send_json(
-                {"type": "ack", "message": stored.model_dump(mode="json")}
-            )
+            await websocket.send_json({"type": "ack", "message": stored.model_dump(mode="json")})
     except (WebSocketDisconnect, RuntimeError):
         return
 

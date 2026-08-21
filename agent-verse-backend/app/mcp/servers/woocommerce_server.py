@@ -5,6 +5,7 @@ Environment:
   WOOCOMMERCE_CONSUMER_KEY:     REST API consumer key (ck_...)
   WOOCOMMERCE_CONSUMER_SECRET:  REST API consumer secret (cs_...)
 """
+
 from __future__ import annotations
 
 import os
@@ -27,7 +28,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "per_page": {"type": "integer", "default": 20},
                 "page": {"type": "integer", "default": 1},
-                "status": {"type": "string", "enum": ["any", "draft", "pending", "private", "publish"]},
+                "status": {
+                    "type": "string",
+                    "enum": ["any", "draft", "pending", "private", "publish"],
+                },
                 "category": {"type": "string", "description": "Category ID filter"},
                 "search": {"type": "string"},
             },
@@ -76,11 +80,23 @@ TOOL_DEFINITIONS = [
                 "page": {"type": "integer", "default": 1},
                 "status": {
                     "type": "string",
-                    "enum": ["any", "pending", "processing", "on-hold", "completed", "cancelled", "refunded", "failed"],
+                    "enum": [
+                        "any",
+                        "pending",
+                        "processing",
+                        "on-hold",
+                        "completed",
+                        "cancelled",
+                        "refunded",
+                        "failed",
+                    ],
                 },
                 "customer": {"type": "integer", "description": "Customer user ID"},
                 "after": {"type": "string", "description": "ISO 8601 date — orders created after"},
-                "before": {"type": "string", "description": "ISO 8601 date — orders created before"},
+                "before": {
+                    "type": "string",
+                    "description": "ISO 8601 date — orders created before",
+                },
             },
         },
     },
@@ -173,7 +189,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "type": arguments.get("type", "simple"),
                     "status": arguments.get("status", "draft"),
                 }
-                for key in ["regular_price", "description", "short_description", "sku", "categories"]:
+                for key in [
+                    "regular_price",
+                    "description",
+                    "short_description",
+                    "sku",
+                    "categories",
+                ]:
                     if v := arguments.get(key):
                         payload[key] = v
                 r = await c.post(f"{base}/products", json=payload)

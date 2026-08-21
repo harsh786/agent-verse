@@ -32,9 +32,7 @@ def build_aggregation_input(
     excluded: list[tuple[str, str]] = []
     for proposal in proposals:
         if not proposal.valid:
-            excluded.append(
-                (proposal.proposal_id, proposal.rejection_reason or "invalid")
-            )
+            excluded.append((proposal.proposal_id, proposal.rejection_reason or "invalid"))
             continue
         if _INJECTION.search(proposal.safe_excerpt):
             raise ValueError("unsafe proposal content")

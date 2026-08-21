@@ -3,6 +3,7 @@
 Environment:
   MOOSEND_API_KEY: Moosend API key from Settings > API Key
 """
+
 from __future__ import annotations
 
 import os
@@ -46,7 +47,11 @@ TOOL_DEFINITIONS = [
                 "list_id": {"type": "string", "description": "Moosend mailing list ID (UUID)"},
                 "email": {"type": "string", "description": "Subscriber email address"},
                 "name": {"type": "string", "description": "Subscriber full name"},
-                "custom_fields": {"type": "array", "items": {"type": "string"}, "description": "Custom field values"},
+                "custom_fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Custom field values",
+                },
             },
             "required": ["list_id", "email"],
         },
@@ -58,7 +63,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "list_id": {"type": "string", "description": "Moosend mailing list ID (UUID)"},
-                "email": {"type": "string", "description": "Subscriber email address to unsubscribe"},
+                "email": {
+                    "type": "string",
+                    "description": "Subscriber email address to unsubscribe",
+                },
             },
             "required": ["list_id", "email"],
         },
@@ -70,7 +78,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "page": {"type": "integer", "description": "Page number (1-based)", "default": 1},
-                "page_size": {"type": "integer", "description": "Campaigns per page", "default": 50},
+                "page_size": {
+                    "type": "integer",
+                    "description": "Campaigns per page",
+                    "default": 50,
+                },
             },
         },
     },
@@ -111,10 +123,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             if tool_name == "moosend_get_lists":
-                params = _params_with_key({
-                    "Page": arguments.get("page", 1),
-                    "PageSize": arguments.get("page_size", 50),
-                })
+                params = _params_with_key(
+                    {
+                        "Page": arguments.get("page", 1),
+                        "PageSize": arguments.get("page_size", 50),
+                    }
+                )
                 if "sort_by" in arguments:
                     params["SortBy"] = arguments["sort_by"]
                 r = await client.get(f"{BASE_URL}/lists.json", params=params)
@@ -123,7 +137,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 context = data.get("Context", {})
                 return {
                     "lists": [
-                        {"id": lst.get("ID"), "name": lst.get("Name"), "active_member_count": lst.get("ActiveMemberCount")}
+                        {
+                            "id": lst.get("ID"),
+                            "name": lst.get("Name"),
+                            "active_member_count": lst.get("ActiveMemberCount"),
+                        }
                         for lst in context.get("MailingLists", [])
                     ],
                     "total_page_count": context.get("TotalPageCount"),
@@ -155,10 +173,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "moosend_get_campaigns":
                 r = await client.get(
                     f"{BASE_URL}/campaigns.json",
-                    params=_params_with_key({
-                        "Page": arguments.get("page", 1),
-                        "PageSize": arguments.get("page_size", 50),
-                    }),
+                    params=_params_with_key(
+                        {
+                            "Page": arguments.get("page", 1),
+                            "PageSize": arguments.get("page_size", 50),
+                        }
+                    ),
                 )
                 r.raise_for_status()
                 data = r.json()

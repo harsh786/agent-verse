@@ -17,24 +17,54 @@ depends_on = None
 
 COORDINATION_TABLES: dict[str, tuple[str, ...]] = {
     "coordination_sessions": (
-        "civilization_id", "goal_id", "state", "policy_snapshot", "budget_snapshot",
-        "deadline", "cancellation_requested_at", "cancellation_reason", "next_sequence",
+        "civilization_id",
+        "goal_id",
+        "state",
+        "policy_snapshot",
+        "budget_snapshot",
+        "deadline",
+        "cancellation_requested_at",
+        "cancellation_reason",
+        "next_sequence",
     ),
     "strategy_executions": (
-        "session_id", "goal_id", "adapter_id", "adapter_version",
-        "state_schema_version", "profile_snapshot", "state", "result", "cost",
-        "idempotency_key", "deadline", "attempt", "prior_execution_id",
+        "session_id",
+        "goal_id",
+        "adapter_id",
+        "adapter_version",
+        "state_schema_version",
+        "profile_snapshot",
+        "state",
+        "result",
+        "cost",
+        "idempotency_key",
+        "deadline",
+        "attempt",
+        "prior_execution_id",
     ),
     "context_messages": (
-        "session_id", "sequence", "sender_agent_id", "recipient_agent_ids", "message_type",
-        "content", "provenance", "classification", "idempotency_key", "expires_at",
+        "session_id",
+        "sequence",
+        "sender_agent_id",
+        "recipient_agent_ids",
+        "message_type",
+        "content",
+        "provenance",
+        "classification",
+        "idempotency_key",
+        "expires_at",
     ),
     "progress_ledger_revisions": ("session_id", "objective", "state"),
     "work_items": ("session_id", "state", "dependencies"),
     "handoffs": ("session_id", "source_agent_id", "target_agent_id", "state"),
     "claims": (
-        "work_item_id", "owner_agent_id", "lease_id", "fencing_token",
-        "heartbeat_at", "lease_expires_at", "state",
+        "work_item_id",
+        "owner_agent_id",
+        "lease_id",
+        "fencing_token",
+        "heartbeat_at",
+        "lease_expires_at",
+        "state",
     ),
     "agent_bids": ("work_item_id", "bidder_agent_id", "sealed", "score"),
     "allocations": ("session_id", "work_item_id", "state"),
@@ -53,16 +83,29 @@ COORDINATION_TABLES: dict[str, tuple[str, ...]] = {
     "budget_reservations": ("session_id", "account_id", "amount", "state"),
     "budget_entries": ("session_id", "account_id", "entry_type", "amount"),
     "coordination_events": (
-        "session_id", "sequence", "schema_version", "event_type", "occurred_at",
-        "correlation_id", "causation_id", "idempotency_key", "classification",
-        "expires_at", "payload",
+        "session_id",
+        "sequence",
+        "schema_version",
+        "event_type",
+        "occurred_at",
+        "correlation_id",
+        "causation_id",
+        "idempotency_key",
+        "classification",
+        "expires_at",
+        "payload",
     ),
     "coordination_outbox": (
         "event_id",
         "session_id",
-        "stream", "payload",
+        "stream",
+        "payload",
         "state",
-        "attempt_count", "available_at", "claim_owner", "claimed_at", "published_at",
+        "attempt_count",
+        "available_at",
+        "claim_owner",
+        "claimed_at",
+        "published_at",
         "last_error",
     ),
     "coordination_dead_letters": ("event_id", "session_id", "payload", "replay_status"),
@@ -83,8 +126,14 @@ LEGACY_RLS_TABLES = (
 
 INTEGER_COLUMNS = frozenset(
     {
-        "next_sequence", "sequence", "schema_version", "state_schema_version",
-        "fencing_token", "depth", "attempt", "attempt_count",
+        "next_sequence",
+        "sequence",
+        "schema_version",
+        "state_schema_version",
+        "fencing_token",
+        "depth",
+        "attempt",
+        "attempt_count",
     }
 )
 NULLABLE_COLUMNS = frozenset(
@@ -93,21 +142,33 @@ NULLABLE_COLUMNS = frozenset(
         "prior_execution_id",
     }
 )
-NUMERIC_COLUMNS = frozenset(
-    {"score", "cost", "ceiling", "reserved", "committed", "amount"}
-)
+NUMERIC_COLUMNS = frozenset({"score", "cost", "ceiling", "reserved", "committed", "amount"})
 BOOLEAN_COLUMNS = frozenset({"sealed"})
 JSON_COLUMNS = frozenset(
     {
-        "policy_snapshot", "budget_snapshot", "profile_snapshot", "result", "content",
-        "recipient_agent_ids", "provenance", "dependencies", "payload",
+        "policy_snapshot",
+        "budget_snapshot",
+        "profile_snapshot",
+        "result",
+        "content",
+        "recipient_agent_ids",
+        "provenance",
+        "dependencies",
+        "payload",
     }
 )
 DATETIME_COLUMNS = frozenset(
     {
-        "deadline", "cancellation_requested_at", "expires_at", "occurred_at",
-        "available_at", "claimed_at", "published_at", "consumed_at",
-        "heartbeat_at", "lease_expires_at",
+        "deadline",
+        "cancellation_requested_at",
+        "expires_at",
+        "occurred_at",
+        "available_at",
+        "claimed_at",
+        "published_at",
+        "consumed_at",
+        "heartbeat_at",
+        "lease_expires_at",
     }
 )
 
@@ -155,9 +216,7 @@ def upgrade() -> None:
                 )
             )
         if table_name == "coordination_outbox":
-            constraints.append(
-                sa.UniqueConstraint("event_id", name="uq_coordination_outbox_event")
-            )
+            constraints.append(sa.UniqueConstraint("event_id", name="uq_coordination_outbox_event"))
         if table_name == "coordination_consumptions":
             constraints.append(
                 sa.UniqueConstraint(
@@ -203,9 +262,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     for table_name in reversed(tuple(COORDINATION_TABLES)):
-        op.execute(
-            f"DROP POLICY IF EXISTS {table_name}_tenant_isolation ON {table_name}"
-        )
+        op.execute(f"DROP POLICY IF EXISTS {table_name}_tenant_isolation ON {table_name}")
         op.drop_index(f"ix_{table_name}_tenant", table_name=table_name)
         op.drop_table(table_name)
 

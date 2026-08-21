@@ -1,4 +1,5 @@
 """GitHub repository ingestor — crawls code/docs via GitHub REST API."""
+
 from __future__ import annotations
 
 import os
@@ -10,23 +11,94 @@ from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
-_SKIP_EXTENSIONS = frozenset({
-    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
-    ".bin", ".zip", ".tar", ".gz", ".pdf", ".woff", ".ttf",
-    ".mp4", ".mp3", ".avi", ".mov", ".exe", ".dll", ".so", ".dylib",
-})
-_SKIP_DIRS = frozenset({
-    ".git", ".github", "node_modules", "__pycache__", ".venv", "venv",
-    "dist", "build", ".next", "coverage", ".cache", "vendor",
-})
-_TEXT_EXTENSIONS = frozenset({
-    ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-    ".md", ".mdx", ".txt", ".rst", ".adoc",
-    ".yaml", ".yml", ".json", ".toml", ".ini", ".cfg", ".env.example",
-    ".sh", ".bash", ".zsh", ".fish", ".go", ".rs", ".java", ".rb",
-    ".php", ".cs", ".cpp", ".c", ".h", ".hpp", ".kt", ".swift",
-    ".html", ".htm", ".css", ".scss", ".less", ".sql", ".graphql",
-})
+_SKIP_EXTENSIONS = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".svg",
+        ".ico",
+        ".webp",
+        ".bin",
+        ".zip",
+        ".tar",
+        ".gz",
+        ".pdf",
+        ".woff",
+        ".ttf",
+        ".mp4",
+        ".mp3",
+        ".avi",
+        ".mov",
+        ".exe",
+        ".dll",
+        ".so",
+        ".dylib",
+    }
+)
+_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".github",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        ".next",
+        "coverage",
+        ".cache",
+        "vendor",
+    }
+)
+_TEXT_EXTENSIONS = frozenset(
+    {
+        ".py",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".md",
+        ".mdx",
+        ".txt",
+        ".rst",
+        ".adoc",
+        ".yaml",
+        ".yml",
+        ".json",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".env.example",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".fish",
+        ".go",
+        ".rs",
+        ".java",
+        ".rb",
+        ".php",
+        ".cs",
+        ".cpp",
+        ".c",
+        ".h",
+        ".hpp",
+        ".kt",
+        ".swift",
+        ".html",
+        ".htm",
+        ".css",
+        ".scss",
+        ".less",
+        ".sql",
+        ".graphql",
+    }
+)
 _CHUNK_SIZE = 1500
 _CHUNK_OVERLAP = 100
 
@@ -71,8 +143,12 @@ class GitHubIngestor:
         return True
 
     async def ingest_repo(
-        self, owner: str, repo: str, *,
-        branch: str = "HEAD", max_files: int = 300,
+        self,
+        owner: str,
+        repo: str,
+        *,
+        branch: str = "HEAD",
+        max_files: int = 300,
         file_patterns: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         tree = await self._get_tree(owner, repo)
@@ -100,20 +176,24 @@ class GitHubIngestor:
                 # Sliding window chunks
                 start = 0
                 while start < len(content):
-                    chunk = content[start:start + _CHUNK_SIZE]
+                    chunk = content[start : start + _CHUNK_SIZE]
                     if len(chunk.strip()) >= 50:
-                        chunks.append({
-                            "content": chunk,
-                            "source_url": source_url,
-                            "source_type": "github",
-                            "source_doc_id": source_doc_id,
-                            "page_number": None,
-                            "metadata": {
-                                "owner": owner, "repo": repo,
-                                "path": path, "branch": branch,
-                                "size": item.get("size", 0),
-                            },
-                        })
+                        chunks.append(
+                            {
+                                "content": chunk,
+                                "source_url": source_url,
+                                "source_type": "github",
+                                "source_doc_id": source_doc_id,
+                                "page_number": None,
+                                "metadata": {
+                                    "owner": owner,
+                                    "repo": repo,
+                                    "path": path,
+                                    "branch": branch,
+                                    "size": item.get("size", 0),
+                                },
+                            }
+                        )
                     start += _CHUNK_SIZE - _CHUNK_OVERLAP
                 file_count += 1
             except httpx.HTTPStatusError as e:

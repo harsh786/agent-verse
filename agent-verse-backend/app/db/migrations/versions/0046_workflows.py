@@ -1,4 +1,5 @@
 """Create workflows table with tenant isolation, RLS, and indexes."""
+
 from alembic import op
 
 revision = "0046"
@@ -22,12 +23,8 @@ def upgrade() -> None:
         )
     """)
 
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_workflows_tenant_id ON workflows (tenant_id)"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_workflows_status ON workflows (status)"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS ix_workflows_tenant_id ON workflows (tenant_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_workflows_status ON workflows (status)")
 
     # Row-Level Security — same pattern as all other tenant-scoped tables.
     op.execute("ALTER TABLE workflows ENABLE ROW LEVEL SECURITY")

@@ -122,13 +122,17 @@ class PostgresTranscriptRepository:
             if session is None:
                 raise KeyError(f"coordination session not found: {message.session_id}")
             prior = (
-                await db.execute(
-                    select(messages).where(
-                        messages.c.session_id == message.session_id,
-                        messages.c.idempotency_key == message.idempotency_key,
+                (
+                    await db.execute(
+                        select(messages).where(
+                            messages.c.session_id == message.session_id,
+                            messages.c.idempotency_key == message.idempotency_key,
+                        )
                     )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if prior is not None:
                 return _message_from_row(prior)
             sequence = int(session.next_sequence)

@@ -4,6 +4,7 @@ Environment:
   ACTIVECAMPAIGN_API_KEY: ActiveCampaign API key from Settings > Developer
   ACTIVECAMPAIGN_BASE_URL: Account-specific base URL, e.g. https://youraccountname.api-us1.com
 """
+
 from __future__ import annotations
 
 import os
@@ -35,8 +36,16 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "email": {"type": "string", "description": "Filter contacts by email address"},
-                "limit": {"type": "integer", "description": "Number of contacts to return (max 100)", "default": 20},
-                "offset": {"type": "integer", "description": "Number of contacts to skip for pagination", "default": 0},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of contacts to return (max 100)",
+                    "default": 20,
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of contacts to skip for pagination",
+                    "default": 0,
+                },
             },
         },
     },
@@ -77,7 +86,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "contact_id": {"type": "string", "description": "ActiveCampaign contact ID"},
                 "list_id": {"type": "string", "description": "ActiveCampaign list ID"},
-                "status": {"type": "integer", "description": "Subscription status: 1=subscribed, 2=unsubscribed", "default": 1},
+                "status": {
+                    "type": "integer",
+                    "description": "Subscription status: 1=subscribed, 2=unsubscribed",
+                    "default": 1,
+                },
             },
             "required": ["contact_id", "list_id"],
         },
@@ -88,8 +101,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "campaign_id": {"type": "string", "description": "ActiveCampaign campaign ID to send"},
-                "scheduled_date": {"type": "string", "description": "ISO 8601 scheduled send datetime (optional, sends immediately if omitted)"},
+                "campaign_id": {
+                    "type": "string",
+                    "description": "ActiveCampaign campaign ID to send",
+                },
+                "scheduled_date": {
+                    "type": "string",
+                    "description": "ISO 8601 scheduled send datetime (optional, sends immediately if omitted)",
+                },
             },
             "required": ["campaign_id"],
         },
@@ -149,7 +168,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "activecampaign_create_contact":
                 contact: dict[str, Any] = {"email": arguments["email"]}
-                for field, ac_field in [("first_name", "firstName"), ("last_name", "lastName"), ("phone", "phone")]:
+                for field, ac_field in [
+                    ("first_name", "firstName"),
+                    ("last_name", "lastName"),
+                    ("phone", "phone"),
+                ]:
                     if field in arguments:
                         contact[ac_field] = arguments[field]
                 r = await client.post(
@@ -164,7 +187,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "activecampaign_update_contact":
                 contact = {}
-                for field, ac_field in [("email", "email"), ("first_name", "firstName"), ("last_name", "lastName"), ("phone", "phone")]:
+                for field, ac_field in [
+                    ("email", "email"),
+                    ("first_name", "firstName"),
+                    ("last_name", "lastName"),
+                    ("phone", "phone"),
+                ]:
                     if field in arguments:
                         contact[ac_field] = arguments[field]
                 r = await client.put(

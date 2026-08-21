@@ -4,6 +4,7 @@ from app.ingestion.chunkers.base import Chunk, ChunkerBase
 
 _CHARS_PER_TOKEN = 4
 
+
 class SemanticChunker(ChunkerBase):
     def __init__(self, max_chunk_tokens: int = 512) -> None:
         self._max_chars = max_chunk_tokens * _CHARS_PER_TOKEN
@@ -32,6 +33,7 @@ class SemanticChunker(ChunkerBase):
 
     def _split_sentences(self, text: str) -> list[str]:
         import re
+
         sentences = re.split(r"(?<=[.!?])\s+", text)
         parts: list[str] = []
         current = ""
@@ -39,14 +41,16 @@ class SemanticChunker(ChunkerBase):
             if len(current) + len(s) <= self._max_chars:
                 current = f"{current} {s}".strip()
             else:
-                if current: parts.append(current)
+                if current:
+                    parts.append(current)
                 # If a single sentence still exceeds max_chars, split by words
                 if len(s) > self._max_chars:
                     parts.extend(self._split_by_words(s))
                     current = ""
                 else:
                     current = s
-        if current: parts.append(current)
+        if current:
+            parts.append(current)
         return parts or [text]
 
     def _split_by_words(self, text: str) -> list[str]:
@@ -57,7 +61,9 @@ class SemanticChunker(ChunkerBase):
             if len(current) + len(word) + 1 <= self._max_chars:
                 current = f"{current} {word}".strip()
             else:
-                if current: parts.append(current)
+                if current:
+                    parts.append(current)
                 current = word
-        if current: parts.append(current)
+        if current:
+            parts.append(current)
         return parts or [text]

@@ -39,7 +39,7 @@ class EvalReport:
     mean_mrr: float
     overall_score: float
     query_results: list[QueryEvalResult]
-    low_quality_chunks: list[str]      # chunk_ids with lowest relevance
+    low_quality_chunks: list[str]  # chunk_ids with lowest relevance
     recommendations: list[str]
 
 
@@ -101,9 +101,7 @@ class RetrievalEvaluator:
 
         # Path 3: real KnowledgeStore.hybrid_search (sync, in-memory).
         if hasattr(self._store, "hybrid_search") and self._tenant_ctx is not None:
-            raw = self._store.hybrid_search(
-                query, [], collection_id, self._tenant_ctx, top_k=k
-            )
+            raw = self._store.hybrid_search(query, [], collection_id, self._tenant_ctx, top_k=k)
             return [
                 {"chunk_id": r.chunk_id, "id": r.chunk_id, "text": r.content, "content": r.content}
                 for r in raw
@@ -259,7 +257,5 @@ class RetrievalEvaluator:
                 "Review and re-chunk these source segments."
             )
         if not recs:
-            recs.append(
-                "Retrieval quality is good. Continue monitoring with regular evaluations."
-            )
+            recs.append("Retrieval quality is good. Continue monitoring with regular evaluations.")
         return recs

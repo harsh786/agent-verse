@@ -5,6 +5,7 @@ Environment:
   SAP_CLIENT_SECRET: SAP OAuth2 client secret
   SAP_BASE_URL: SAP system base URL (e.g. https://mycompany.s4hana.cloud)
 """
+
 from __future__ import annotations
 
 import os
@@ -31,7 +32,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "vendor": {"type": "string", "description": "Filter by vendor number"},
                 "plant": {"type": "string", "description": "Filter by plant code"},
-                "status": {"type": "string", "description": "Filter by status: A (active), B (blocked)"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: A (active), B (blocked)",
+                },
                 "top": {"type": "integer", "description": "Maximum records to return"},
             },
         },
@@ -61,7 +65,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "plant": {"type": "string", "description": "Plant code"},
-                "material_type": {"type": "string", "description": "Material type (e.g. ROH, FERT)"},
+                "material_type": {
+                    "type": "string",
+                    "description": "Material type (e.g. ROH, FERT)",
+                },
                 "search": {"type": "string", "description": "Search by material description"},
                 "top": {"type": "integer", "description": "Maximum records"},
             },

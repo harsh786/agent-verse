@@ -1,4 +1,5 @@
 """ModelScorer — scores model efficiency: cost and latency."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -23,17 +24,17 @@ class ModelScorer:
             latency_score = 0.1
         return 0.5 * cost_score + 0.5 * latency_score
 
-    def score_cost(
-        self, profile: GoalRuntimeProfile, state: AgentState
-    ) -> float | None:
+    def score_cost(self, profile: GoalRuntimeProfile, state: AgentState) -> float | None:
         """Score cost efficiency: how much below budget the goal executed."""
         max_cost = getattr(profile.model_plan, "max_cost_usd", 0.10) or 0.10
         # N4 fix: cost is stored in state.context["total_cost_usd"], not a direct attribute
         _cost_ctx = getattr(state, "context", {}) or {}
         actual_cost = float(
-            _cost_ctx.get("total_cost_usd",
-                          getattr(state, "total_cost_usd", 0.0)  # fallback to attr
-                          ) or 0.0
+            _cost_ctx.get(
+                "total_cost_usd",
+                getattr(state, "total_cost_usd", 0.0),  # fallback to attr
+            )
+            or 0.0
         )
         if "total_cost_usd" not in _cost_ctx and not hasattr(state, "total_cost_usd"):
             return 0.8

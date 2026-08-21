@@ -4,6 +4,7 @@ Environment variables:
   VERCEL_TOKEN:   Vercel personal access token or team token
   VERCEL_TEAM_ID: (optional) Team ID to scope requests (teamId=xxx)
 """
+
 from __future__ import annotations
 
 import os
@@ -82,7 +83,11 @@ TOOL_DEFINITIONS = [
                         "ref": {"type": "string"},
                     },
                 },
-                "target": {"type": "string", "enum": ["production", "staging"], "default": "staging"},
+                "target": {
+                    "type": "string",
+                    "enum": ["production", "staging"],
+                    "default": "staging",
+                },
             },
             "required": ["name"],
         },
@@ -146,7 +151,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}

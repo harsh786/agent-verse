@@ -3,6 +3,7 @@
 Environment:
   BEDS24_API_KEY: Beds24 API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -155,7 +156,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "beds24_update_booking":
                 booking_id = arguments["booking_id"]
-                payload = {k: v for k, v in arguments.items() if k != "booking_id" and v is not None}
+                payload = {
+                    k: v for k, v in arguments.items() if k != "booking_id" and v is not None
+                }
                 r = await client.put(
                     f"{BASE_URL}/bookings/{booking_id}",
                     headers=headers,

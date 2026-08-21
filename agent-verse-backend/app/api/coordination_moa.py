@@ -67,9 +67,7 @@ async def list_layers(
 
 
 @router.get("/{session_id}/moa/layers/{layer_index}", operation_id="get_moa_layer")
-async def get_layer(
-    request: Request, session_id: str, layer_index: int
-) -> dict[str, Any]:
+async def get_layer(request: Request, session_id: str, layer_index: int) -> dict[str, Any]:
     tenant_id = _tenant(request)
     repository = _repository(request)
     layer = next(

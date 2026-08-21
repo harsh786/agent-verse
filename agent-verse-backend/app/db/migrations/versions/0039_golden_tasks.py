@@ -1,4 +1,5 @@
 """Add golden_tasks table for P2.6 eval rollout gate."""
+
 from alembic import op
 
 revision = "0039"

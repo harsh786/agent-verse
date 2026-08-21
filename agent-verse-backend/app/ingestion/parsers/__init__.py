@@ -8,10 +8,17 @@ from app.ingestion.parsers.video_parser import VideoParser, VideoParseResult
 from app.ingestion.parsers.vision_parser import VisionParser, VisionParseResult
 
 __all__ = [
+    "AudioParseResult",
+    "AudioParser",
+    "AudioSegment",
+    "DOCXParseResult",
+    "DOCXParser",
+    "PDFPage",
+    "PDFParseResult",
+    "PDFParser",
     "ParsedChunk",
-    "PDFParser", "PDFParseResult", "PDFPage",
-    "AudioParser", "AudioParseResult", "AudioSegment",
-    "VisionParser", "VisionParseResult",
-    "VideoParser", "VideoParseResult",
-    "DOCXParser", "DOCXParseResult",
+    "VideoParseResult",
+    "VideoParser",
+    "VisionParseResult",
+    "VisionParser",
 ]

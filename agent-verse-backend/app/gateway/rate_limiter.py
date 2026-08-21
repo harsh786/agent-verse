@@ -9,13 +9,13 @@ Limits:
 Implementation: Redis sliding window counter.
 Falls back to in-memory if Redis unavailable.
 """
+
 from __future__ import annotations
 
 import time
 from collections import defaultdict
 from typing import Any
 
-import structlog
 from opentelemetry import trace
 
 from app.observability.logging import get_logger
@@ -26,40 +26,41 @@ _tracer = trace.get_tracer(__name__)
 
 class RateLimitExceeded(Exception):
     """Raised when a channel command exceeds rate limits."""
+
     def __init__(self, limit: int, window_seconds: int, retry_after: int) -> None:
-        self.limit          = limit
+        self.limit = limit
         self.window_seconds = window_seconds
-        self.retry_after    = retry_after
+        self.retry_after = retry_after
         super().__init__(f"Rate limit {limit}/window exceeded. Retry after {retry_after}s")
 
 
 # ── Per-channel limits (commands per window) ──────────────────────────────────
 
 CHANNEL_LIMITS: dict[str, dict[str, Any]] = {
-    "rest":          {"limit": 100, "window": 3600},  # 100/hour
-    "telegram":      {"limit": 60,  "window": 3600},  # 60/hour
-    "slack":         {"limit": 60,  "window": 3600},
-    "discord":       {"limit": 60,  "window": 3600},
-    "whatsapp":      {"limit": 30,  "window": 3600},
-    "email":         {"limit": 10,  "window": 3600},
-    "mcp":           {"limit": 200, "window": 3600},
-    "a2a":           {"limit": 500, "window": 3600},
-    "webhook":       {"limit": 300, "window": 3600},
-    "voice_webhook":  {"limit": 20,  "window": 3600},
+    "rest": {"limit": 100, "window": 3600},  # 100/hour
+    "telegram": {"limit": 60, "window": 3600},  # 60/hour
+    "slack": {"limit": 60, "window": 3600},
+    "discord": {"limit": 60, "window": 3600},
+    "whatsapp": {"limit": 30, "window": 3600},
+    "email": {"limit": 10, "window": 3600},
+    "mcp": {"limit": 200, "window": 3600},
+    "a2a": {"limit": 500, "window": 3600},
+    "webhook": {"limit": 300, "window": 3600},
+    "voice_webhook": {"limit": 20, "window": 3600},
     # Voice OS endpoint rate limits (spec Task 5.3)
     "voice_transcribe": {"limit": 30, "window": 60},
-    "voice_speak":      {"limit": 20, "window": 60},
-    "voice_greeting":   {"limit": 10, "window": 60},
-    "voice_persona":    {"limit": 5,  "window": 60},
-    "voice_stream":     {"limit": 5,  "window": 300},  # 5 concurrent WS sessions
+    "voice_speak": {"limit": 20, "window": 60},
+    "voice_greeting": {"limit": 10, "window": 60},
+    "voice_persona": {"limit": 5, "window": 60},
+    "voice_stream": {"limit": 5, "window": 300},  # 5 concurrent WS sessions
 }
 
 # Action-level limits (applied on top of channel limits)
 ACTION_LIMITS: dict[str, dict[str, Any]] = {
-    "start_mission": {"limit": 10,  "window": 3600},
-    "approve":       {"limit": 50,  "window": 3600},
-    "pause_org":     {"limit": 5,   "window": 3600},
-    "delete_mission":{"limit": 3,   "window": 3600},
+    "start_mission": {"limit": 10, "window": 3600},
+    "approve": {"limit": 50, "window": 3600},
+    "pause_org": {"limit": 5, "window": 3600},
+    "delete_mission": {"limit": 3, "window": 3600},
 }
 
 
@@ -70,7 +71,7 @@ class ChannelRateLimiter:
     """
 
     def __init__(self, redis_client: Any | None = None) -> None:
-        self._redis  = redis_client
+        self._redis = redis_client
         # in-memory fallback: {key: [(timestamp, count), ...]}
         self._memory: dict[str, list[float]] = defaultdict(list)
 
@@ -92,7 +93,7 @@ class ChannelRateLimiter:
             span.set_attribute("action", action or "command")
 
             channel_cfg = CHANNEL_LIMITS.get(channel, CHANNEL_LIMITS["rest"])
-            limit  = channel_cfg["limit"]
+            limit = channel_cfg["limit"]
             window = channel_cfg["window"]
 
             key = f"rl:{tenant_id}:{org_id}:{channel}:{actor_id}"
@@ -110,7 +111,9 @@ class ChannelRateLimiter:
                 action_cfg = ACTION_LIMITS[action]
                 akey = f"rl:action:{tenant_id}:{org_id}:{action}:{actor_id}"
                 if self._redis:
-                    aresult = await self._check_redis(akey, action_cfg["limit"], action_cfg["window"])
+                    aresult = await self._check_redis(
+                        akey, action_cfg["limit"], action_cfg["window"]
+                    )
                 else:
                     aresult = self._check_memory(akey, action_cfg["limit"], action_cfg["window"])
                 if not aresult["allowed"]:
@@ -136,11 +139,11 @@ class ChannelRateLimiter:
         allowed = current_count < limit
 
         return {
-            "allowed":     allowed,
-            "remaining":   max(0, limit - current_count - 1),
-            "limit":       limit,
+            "allowed": allowed,
+            "remaining": max(0, limit - current_count - 1),
+            "limit": limit,
             "retry_after": window if not allowed else 0,
-            "reset_at":    now + (window * 1000),
+            "reset_at": now + (window * 1000),
         }
 
     def _check_memory(self, key: str, limit: int, window: int) -> dict[str, Any]:
@@ -156,13 +159,19 @@ class ChannelRateLimiter:
         if count >= limit:
             oldest = min(self._memory[key]) if self._memory[key] else now
             retry_after = int(oldest + window - now) + 1
-            return {"allowed": False, "remaining": 0, "limit": limit, "retry_after": retry_after, "reset_at": int(oldest + window)}
+            return {
+                "allowed": False,
+                "remaining": 0,
+                "limit": limit,
+                "retry_after": retry_after,
+                "reset_at": int(oldest + window),
+            }
 
         self._memory[key].append(now)
         return {
-            "allowed":     True,
-            "remaining":   limit - count - 1,
-            "limit":       limit,
+            "allowed": True,
+            "remaining": limit - count - 1,
+            "limit": limit,
             "retry_after": 0,
-            "reset_at":    int(now + window),
+            "reset_at": int(now + window),
         }

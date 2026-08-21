@@ -1,14 +1,16 @@
 """Skills Runtime data models."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
 
 class SkillScope(str, Enum):
-    PLATFORM = "platform"      # Available to all tenants
-    TENANT = "tenant"          # Tenant-specific
-    AGENT = "agent"            # Agent-specific
+    PLATFORM = "platform"  # Available to all tenants
+    TENANT = "tenant"  # Tenant-specific
+    AGENT = "agent"  # Agent-specific
 
 
 class SkillStatus(str, Enum):
@@ -21,6 +23,7 @@ class SkillStatus(str, Enum):
 @dataclass
 class SkillDefinition:
     """A skill definition."""
+
     skill_id: str
     name: str
     description: str
@@ -42,6 +45,7 @@ class SkillDefinition:
 @dataclass
 class SkillExecution:
     """A skill execution trace."""
+
     execution_id: str
     skill_id: str
     tenant_id: str

@@ -32,9 +32,7 @@ def upgrade() -> None:
         sa.Column("name", sa.String(200), nullable=False),
         sa.Column("description", sa.Text, nullable=True, server_default=""),
         sa.Column("embedder", sa.String(100), nullable=True, server_default="voyage"),
-        sa.Column(
-            "document_count", sa.Integer, nullable=True, server_default=sa.text("0")
-        ),
+        sa.Column("document_count", sa.Integer, nullable=True, server_default=sa.text("0")),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -42,9 +40,7 @@ def upgrade() -> None:
             server_default=sa.text("NOW()"),
         ),
     )
-    op.create_index(
-        "ix_knowledge_collections_tenant_id", "knowledge_collections", ["tenant_id"]
-    )
+    op.create_index("ix_knowledge_collections_tenant_id", "knowledge_collections", ["tenant_id"])
 
     op.execute("ALTER TABLE knowledge_collections ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE knowledge_collections FORCE ROW LEVEL SECURITY")
@@ -68,12 +64,8 @@ def upgrade() -> None:
         sa.Column("content", sa.Text, nullable=False),
         sa.Column("content_hash", sa.String(64), nullable=False),
         sa.Column("embedding", Vector(768), nullable=True),
-        sa.Column(
-            "chunk_index", sa.Integer, nullable=True, server_default=sa.text("0")
-        ),
-        sa.Column(
-            "metadata", JSONB, nullable=True, server_default=sa.text("'{}'")
-        ),
+        sa.Column("chunk_index", sa.Integer, nullable=True, server_default=sa.text("0")),
+        sa.Column("metadata", JSONB, nullable=True, server_default=sa.text("'{}'")),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -93,8 +85,7 @@ def upgrade() -> None:
     )
     # GIN trigram index for full-text search (requires pg_trgm from 0001)
     op.execute(
-        "CREATE INDEX idx_documents_content_trgm ON documents "
-        "USING GIN (content gin_trgm_ops)"
+        "CREATE INDEX idx_documents_content_trgm ON documents USING GIN (content gin_trgm_ops)"
     )
 
     op.execute("ALTER TABLE documents ENABLE ROW LEVEL SECURITY")
@@ -111,9 +102,7 @@ def upgrade() -> None:
         sa.Column("tenant_id", sa.String(32), nullable=False),
         sa.Column("goal_text", sa.Text, nullable=False),
         sa.Column("plan", sa.JSON, nullable=False, server_default=sa.text("'[]'")),
-        sa.Column(
-            "success", sa.Boolean, nullable=False, server_default=sa.text("TRUE")
-        ),
+        sa.Column("success", sa.Boolean, nullable=False, server_default=sa.text("TRUE")),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -143,9 +132,7 @@ def upgrade() -> None:
             nullable=True,
             server_default="success_pattern",
         ),
-        sa.Column(
-            "confidence", sa.Float, nullable=True, server_default=sa.text("1.0")
-        ),
+        sa.Column("confidence", sa.Float, nullable=True, server_default=sa.text("1.0")),
         sa.Column("tags", sa.JSON, nullable=False, server_default=sa.text("'[]'")),
         sa.Column(
             "created_at",
@@ -155,9 +142,7 @@ def upgrade() -> None:
         ),
     )
     op.create_index("ix_long_term_memory_tenant_id", "long_term_memory", ["tenant_id"])
-    op.create_index(
-        "ix_long_term_memory_memory_type", "long_term_memory", ["memory_type"]
-    )
+    op.create_index("ix_long_term_memory_memory_type", "long_term_memory", ["memory_type"])
 
     op.execute("ALTER TABLE long_term_memory ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE long_term_memory FORCE ROW LEVEL SECURITY")
@@ -168,14 +153,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "DROP POLICY IF EXISTS long_term_memory_tenant_isolation ON long_term_memory"
-    )
+    op.execute("DROP POLICY IF EXISTS long_term_memory_tenant_isolation ON long_term_memory")
     op.drop_table("long_term_memory")
 
-    op.execute(
-        "DROP POLICY IF EXISTS execution_memory_tenant_isolation ON execution_memory"
-    )
+    op.execute("DROP POLICY IF EXISTS execution_memory_tenant_isolation ON execution_memory")
     op.drop_table("execution_memory")
 
     op.execute("DROP POLICY IF EXISTS documents_tenant_isolation ON documents")
@@ -184,7 +165,6 @@ def downgrade() -> None:
     op.drop_table("documents")
 
     op.execute(
-        "DROP POLICY IF EXISTS knowledge_collections_tenant_isolation "
-        "ON knowledge_collections"
+        "DROP POLICY IF EXISTS knowledge_collections_tenant_isolation ON knowledge_collections"
     )
     op.drop_table("knowledge_collections")

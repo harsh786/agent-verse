@@ -39,6 +39,7 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 
 # ─── Pydantic schemas ────────────────────────────────────────────────────────
 
+
 class WorkflowCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: str = Field(default="", max_length=2000)
@@ -68,12 +69,11 @@ class WorkflowOut(BaseModel):
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
+
 def _require_tenant(request: Request) -> TenantContext:
     ctx: TenantContext | None = getattr(request.state, "tenant", None)
     if ctx is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
     return ctx
 
 
@@ -120,6 +120,7 @@ def _orm_to_dict(wf: Any) -> dict[str, Any]:
 
 
 # ─── In-memory + optional DB workflow store ──────────────────────────────────
+
 
 class _WorkflowStore:
     """Workflow persistence store.
@@ -184,9 +185,7 @@ class _WorkflowStore:
         definition: dict[str, Any],
     ) -> dict[str, Any] | None:
         if self._db is not None:
-            return await self._update_db(
-                tenant_id, workflow_id, name, description, definition
-            )
+            return await self._update_db(tenant_id, workflow_id, name, description, definition)
         w = self._mem.get(workflow_id)
         if not w or w["tenant_id"] != tenant_id:
             return None
@@ -227,9 +226,7 @@ class _WorkflowStore:
             )
             return [_orm_to_dict(r) for r in result.scalars().all()]
 
-    async def _get_db(
-        self, tenant_id: str, workflow_id: str
-    ) -> dict[str, Any] | None:
+    async def _get_db(self, tenant_id: str, workflow_id: str) -> dict[str, Any] | None:
         from sqlalchemy import select
         from sqlalchemy import text as sa_text
 
@@ -345,35 +342,43 @@ def _plan_to_canvas(plan: Any) -> dict[str, Any]:
     edges: list[dict[str, Any]] = []
 
     goal_text: str = getattr(plan, "goal", "")
-    nodes.append({
-        "id": "trigger",
-        "type": "trigger",
-        "label": "Start",
-        "subtitle": (goal_text[:40] + "…") if len(goal_text) > 40 else goal_text,
-        "position": {"x": 250, "y": 50},
-    })
+    nodes.append(
+        {
+            "id": "trigger",
+            "type": "trigger",
+            "label": "Start",
+            "subtitle": (goal_text[:40] + "…") if len(goal_text) > 40 else goal_text,
+            "position": {"x": 250, "y": 50},
+        }
+    )
 
     steps = getattr(plan, "steps", [])
     for i, step in enumerate(steps):
         node_type = "tool_call" if getattr(step, "tool", "") else "agent_step"
         desc: str = getattr(step, "description", "")
         label = (desc[:40] + "…") if len(desc) > 40 else desc
-        nodes.append({
-            "id": step.id,
-            "type": node_type,
-            "label": label,
-            "subtitle": getattr(step, "tool", "") or "",
-            "position": {"x": 250, "y": 150 + i * 100},
-            "tool": getattr(step, "tool", ""),
-            "depends_on": list(getattr(step, "depends_on", [])),
-            "can_parallel": getattr(step, "can_parallel", True),
-        })
+        nodes.append(
+            {
+                "id": step.id,
+                "type": node_type,
+                "label": label,
+                "subtitle": getattr(step, "tool", "") or "",
+                "position": {"x": 250, "y": 150 + i * 100},
+                "tool": getattr(step, "tool", ""),
+                "depends_on": list(getattr(step, "depends_on", [])),
+                "can_parallel": getattr(step, "can_parallel", True),
+            }
+        )
 
     end_y = 200 + len(steps) * 100
-    nodes.append({
-        "id": "end", "type": "end", "label": "End",
-        "position": {"x": 250, "y": end_y},
-    })
+    nodes.append(
+        {
+            "id": "end",
+            "type": "end",
+            "label": "End",
+            "position": {"x": 250, "y": end_y},
+        }
+    )
 
     # trigger → root steps (no depends_on)
     root_steps = [s for s in steps if not getattr(s, "depends_on", [])]
@@ -399,6 +404,7 @@ def _plan_to_canvas(plan: Any) -> dict[str, Any]:
 
 
 # ─── Route handlers ───────────────────────────────────────────────────────────
+
 
 @router.get("", response_model=list[WorkflowOut])
 async def list_workflows(request: Request) -> list[WorkflowOut]:
@@ -450,9 +456,7 @@ async def get_workflow(workflow_id: str, request: Request) -> WorkflowOut:
     store = _get_store(request)
     wf = await store.get(tenant.tenant_id, workflow_id)
     if wf is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
     return _workflow_to_out(wf)
 
 
@@ -473,9 +477,7 @@ async def update_workflow(
         definition=body.definition,
     )
     if result is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
 
 
 @router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -485,9 +487,7 @@ async def delete_workflow(workflow_id: str, request: Request) -> None:
     store = _get_store(request)
     deleted = await store.delete(tenant.tenant_id, workflow_id)
     if not deleted:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
 
 
 @router.post(
@@ -514,9 +514,7 @@ async def run_workflow(
     store = _get_store(request)
     wf = await store.get(tenant.tenant_id, workflow_id)
     if wf is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
 
     definition = wf.get("definition") or {}
     desc = (wf.get("description") or "").strip()
@@ -555,20 +553,15 @@ async def run_workflow(
                     *[
                         step_id
                         for step_id, step_result in (result.get("results") or {}).items()
-                        if isinstance(step_result, dict)
-                        and step_result.get("status") == "failed"
+                        if isinstance(step_result, dict) and step_result.get("status") == "failed"
                     ],
                 }
                 failed_rag_steps = [
-                    step
-                    for step in plan.steps
-                    if step.id in failed_ids and step.tool == "rag"
+                    step for step in plan.steps if step.id in failed_ids and step.tool == "rag"
                 ]
                 if failed_rag_steps:
                     failed_step = failed_rag_steps[0]
-                    requested_strategy = str(
-                        failed_step.config.get("requested_strategy_id", "")
-                    )
+                    requested_strategy = str(failed_step.config.get("requested_strategy_id", ""))
                     raise HTTPException(
                         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                         detail={
@@ -607,7 +600,9 @@ async def run_workflow(
                 detail={
                     "code": "workflow_retrieval_failed",
                     "reason": "Retrieval service is unavailable",
-                    "strategy_trace": [{"strategy": str(exc), "action": "workflow_retrieval", "status": "failed"}],
+                    "strategy_trace": [
+                        {"strategy": str(exc), "action": "workflow_retrieval", "status": "failed"}
+                    ],
                 },
             ) from exc
         except HTTPException:
@@ -633,9 +628,7 @@ async def run_workflow(
             "workflow_definition": definition,
         },
     )
-    goal_run_id: str = (
-        result.get("id") or result.get("goal_id") or f"wf-{workflow_id[:8]}"
-    )
+    goal_run_id: str = result.get("id") or result.get("goal_id") or f"wf-{workflow_id[:8]}"
     return {
         "run_id": goal_run_id,
         "status": result.get("status", "planning"),

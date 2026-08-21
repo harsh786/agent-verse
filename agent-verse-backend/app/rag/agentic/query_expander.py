@@ -1,4 +1,5 @@
 """QueryExpander — generates query variants for multi-source Fusion RAG."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -49,24 +50,28 @@ class QueryExpander:
             return self.expand_for_fusion(query, max_variants=max_variants)
         try:
             from app.providers.base import CompletionRequest, Message
-            resp = await provider.complete(CompletionRequest(
-                messages=[
-                    Message(role="system", content=(
-                        "Generate exactly 3 alternative phrasings of this search query. "
-                        "Each phrasing should capture the same intent but use different words. "
-                        "Output one query per line, no numbering, no bullets."
-                    )),
-                    Message(role="user", content=f"Query: {query}"),
-                ],
-                model=model,
-                max_tokens=200,
-                temperature=0.7,
-            ))
+
+            resp = await provider.complete(
+                CompletionRequest(
+                    messages=[
+                        Message(
+                            role="system",
+                            content=(
+                                "Generate exactly 3 alternative phrasings of this search query. "
+                                "Each phrasing should capture the same intent but use different words. "
+                                "Output one query per line, no numbering, no bullets."
+                            ),
+                        ),
+                        Message(role="user", content=f"Query: {query}"),
+                    ],
+                    model=model,
+                    max_tokens=200,
+                    temperature=0.7,
+                )
+            )
             raw = (resp.content or "").strip()
             variants = [query] + [
-                line.strip()
-                for line in raw.split("\n")
-                if line.strip() and line.strip() != query
+                line.strip() for line in raw.split("\n") if line.strip() and line.strip() != query
             ]
             return list(dict.fromkeys(variants))[:max_variants]
         except Exception:

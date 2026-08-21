@@ -1,4 +1,5 @@
 """Excel parser — XLS/XLSX/ODS extraction with sheet-aware text output."""
+
 from __future__ import annotations
 
 import io

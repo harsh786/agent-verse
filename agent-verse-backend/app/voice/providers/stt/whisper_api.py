@@ -1,4 +1,5 @@
 """OpenAI Whisper API STT — requires OPENAI_API_KEY."""
+
 from __future__ import annotations
 
 import os
@@ -7,7 +8,7 @@ from app.voice.providers.base import TranscriptResult
 
 
 class WhisperAPISTT:
-    provider_name:      str  = "whisper_api"
+    provider_name: str = "whisper_api"
     supports_streaming: bool = False
 
     def __init__(self) -> None:
@@ -21,6 +22,7 @@ class WhisperAPISTT:
 
     async def transcribe(self, audio_bytes: bytes, content_type: str) -> TranscriptResult:
         import httpx
+
         key = os.getenv("OPENAI_API_KEY", "")
         if not key:
             raise RuntimeError("OPENAI_API_KEY not set for whisper_api provider")

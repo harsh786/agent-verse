@@ -3,6 +3,7 @@
 Environment:
   BREX_TOKEN: Brex API token for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -35,7 +36,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "cursor": {"type": "string", "description": "Pagination cursor"},
                 "limit": {"type": "integer", "description": "Maximum transactions to return"},
-                "updated_after": {"type": "string", "description": "Filter transactions updated after this datetime"},
+                "updated_after": {
+                    "type": "string",
+                    "description": "Filter transactions updated after this datetime",
+                },
             },
         },
     },
@@ -79,7 +83,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "transaction_id": {"type": "string", "description": "Brex transaction ID to create expense for"},
+                "transaction_id": {
+                    "type": "string",
+                    "description": "Brex transaction ID to create expense for",
+                },
                 "memo": {"type": "string", "description": "Expense memo or description"},
                 "category": {"type": "string", "description": "Expense category"},
                 "budget_id": {"type": "string", "description": "Budget to allocate the expense to"},
@@ -106,7 +113,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "brex_get_transactions":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/v2/transactions/card/primary", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/v2/transactions/card/primary", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

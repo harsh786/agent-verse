@@ -13,6 +13,7 @@ Supported languages:
 - javascript (node:20-alpine)
 - bash (alpine:latest)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -69,6 +70,7 @@ _FILE_EXTENSIONS: dict[str, str] = {
 _DOCKER_AVAILABLE = False
 try:
     import docker as _docker_module
+
     _docker_module.from_env()
     _DOCKER_AVAILABLE = True
 except Exception:
@@ -156,9 +158,7 @@ class CodeInterpreter:
         t0 = time.monotonic()
 
         # Write code to a host-side temp file; volume-mount it read-only.
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=suffix, delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False) as f:
             f.write(code)
             tmp_path = f.name
 
@@ -255,9 +255,7 @@ class CodeInterpreter:
         ext = _FILE_EXTENSIONS[language]
         t0 = time.monotonic()
 
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=f".{ext}", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=f".{ext}", delete=False) as f:
             f.write(code)
             tmpfile = f.name
 

@@ -1,5 +1,7 @@
 """KnowledgePolicyEngine — decides which knowledge sources to use per profile."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -18,7 +20,7 @@ class KnowledgeDecision:
 class KnowledgePolicyEngine:
     def decide(
         self,
-        profile: "KnowledgeRuntimeProfile",
+        profile: KnowledgeRuntimeProfile,
         query_type: str = "factual",
     ) -> KnowledgeDecision:
         use_kb = profile.kb_state not in ("empty",)

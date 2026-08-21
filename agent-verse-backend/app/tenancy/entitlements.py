@@ -5,6 +5,7 @@ Answers: "Can tenant T use feature F at volume V?"
 This replaces scattered `if plan == "enterprise"` checks scattered throughout
 the codebase with a single, testable, auditable place.
 """
+
 from __future__ import annotations
 
 from app.tenancy.context import PLAN_LIMITS, PlanTier, TenantContext
@@ -12,31 +13,59 @@ from app.tenancy.context import PLAN_LIMITS, PlanTier, TenantContext
 # Feature flags per plan
 _PLAN_FEATURES: dict[PlanTier, set[str]] = {
     PlanTier.FREE: {
-        "goals", "agents", "knowledge", "memory",
+        "goals",
+        "agents",
+        "knowledge",
+        "memory",
     },
     PlanTier.STARTER: {
-        "goals", "agents", "knowledge", "memory",
-        "marketplace", "templates",
+        "goals",
+        "agents",
+        "knowledge",
+        "memory",
+        "marketplace",
+        "templates",
         "byo_api_key",
     },
     PlanTier.PROFESSIONAL: {
-        "goals", "agents", "knowledge", "memory",
-        "marketplace", "templates",
-        "byo_api_key", "byo_endpoints",
-        "simulations", "rpa", "a2a",
-        "advanced_guardrails", "audit_export",
+        "goals",
+        "agents",
+        "knowledge",
+        "memory",
+        "marketplace",
+        "templates",
+        "byo_api_key",
+        "byo_endpoints",
+        "simulations",
+        "rpa",
+        "a2a",
+        "advanced_guardrails",
+        "audit_export",
         "civilization",
     },
     PlanTier.ENTERPRISE: {
-        "goals", "agents", "knowledge", "memory",
-        "marketplace", "templates",
-        "byo_api_key", "byo_endpoints",
-        "simulations", "rpa", "a2a",
-        "advanced_guardrails", "audit_export",
+        "goals",
+        "agents",
+        "knowledge",
+        "memory",
+        "marketplace",
+        "templates",
+        "byo_api_key",
+        "byo_endpoints",
+        "simulations",
+        "rpa",
+        "a2a",
+        "advanced_guardrails",
+        "audit_export",
         "civilization",
-        "sso", "scim", "custom_roles", "white_label",
-        "compliance_reports", "data_residency",
-        "priority_support", "sla",
+        "sso",
+        "scim",
+        "custom_roles",
+        "white_label",
+        "compliance_reports",
+        "data_residency",
+        "priority_support",
+        "sla",
     },
 }
 

@@ -8,6 +8,7 @@ sexual          : explicit sexual content
 self_harm       : content promoting self-injury or suicide
 violence        : explicit descriptions of graphic violence
 """
+
 from __future__ import annotations
 
 import re
@@ -44,8 +45,7 @@ _PATTERNS: dict[str, list[str]] = {
 }
 
 _COMPILED: dict[str, list[re.Pattern[str]]] = {
-    cat: [re.compile(p, re.IGNORECASE) for p in pats]
-    for cat, pats in _PATTERNS.items()
+    cat: [re.compile(p, re.IGNORECASE) for p in pats] for cat, pats in _PATTERNS.items()
 }
 
 # Ambiguous zone where we invoke the LLM for a second opinion
@@ -83,7 +83,7 @@ class ToxicityClassifier:
     async def classify(
         self,
         text: str,
-        provider: "LLMProvider | None" = None,
+        provider: LLMProvider | None = None,
     ) -> ToxicityResult:
         """Full two-pass classification."""
         pattern_result = self._pattern_check(text)
@@ -128,7 +128,7 @@ class ToxicityClassifier:
     async def _llm_check(
         self,
         text: str,
-        provider: "LLMProvider",
+        provider: LLMProvider,
     ) -> ToxicityResult:
         try:
             from app.providers.base import CompletionRequest, Message
@@ -140,7 +140,7 @@ class ToxicityClassifier:
                         content=(
                             "Is the following text toxic? Rate it 0.0 (clean) to 1.0 (highly toxic). "
                             "List any categories from: hate_speech, threat, sexual, self_harm, violence. "
-                            "Respond as JSON: {\"score\": 0.0, \"categories\": []}.\n\n"
+                            'Respond as JSON: {"score": 0.0, "categories": []}.\n\n'
                             f"Text: {text[:300]}"
                         ),
                     )

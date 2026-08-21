@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from app.lifecycle.retention_policy import DataCategory, RetentionTier
 
 

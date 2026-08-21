@@ -1,15 +1,16 @@
 """EmbeddingModelRegistry — catalogue of available embedding models."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
 class EmbeddingModelSpec:
     model_id: str
-    modality: str               # text|code|multimodal|image
+    modality: str  # text|code|multimodal|image
     dimension: int
-    cost_class: str             # free|low|medium|high
+    cost_class: str  # free|low|medium|high
     provider: str
     description: str = ""
     max_input_tokens: int = 8192
@@ -35,18 +36,41 @@ class EmbeddingModelRegistry:
         return results
 
     @classmethod
-    def build_default(cls) -> "EmbeddingModelRegistry":
-        return cls([
-            EmbeddingModelSpec("text-embedding-3-small", "text", 1536, "low",
-                               "openai", "OpenAI small text embedding"),
-            EmbeddingModelSpec("text-embedding-3-large", "text", 3072, "medium",
-                               "openai", "OpenAI large text embedding"),
-            EmbeddingModelSpec("voyage-3-lite", "text", 512, "low",
-                               "voyage", "Voyage text embedding lite"),
-            EmbeddingModelSpec("voyage-code-3", "code", 1024, "low",
-                               "voyage", "Voyage code embedding"),
-            EmbeddingModelSpec("voyage-multimodal-3", "multimodal", 1024, "medium",
-                               "voyage", "Voyage multimodal embedding"),
-            EmbeddingModelSpec("fake-embedding", "text", 10, "free",
-                               "fake", "Fake embedding for testing"),
-        ])
+    def build_default(cls) -> EmbeddingModelRegistry:
+        return cls(
+            [
+                EmbeddingModelSpec(
+                    "text-embedding-3-small",
+                    "text",
+                    1536,
+                    "low",
+                    "openai",
+                    "OpenAI small text embedding",
+                ),
+                EmbeddingModelSpec(
+                    "text-embedding-3-large",
+                    "text",
+                    3072,
+                    "medium",
+                    "openai",
+                    "OpenAI large text embedding",
+                ),
+                EmbeddingModelSpec(
+                    "voyage-3-lite", "text", 512, "low", "voyage", "Voyage text embedding lite"
+                ),
+                EmbeddingModelSpec(
+                    "voyage-code-3", "code", 1024, "low", "voyage", "Voyage code embedding"
+                ),
+                EmbeddingModelSpec(
+                    "voyage-multimodal-3",
+                    "multimodal",
+                    1024,
+                    "medium",
+                    "voyage",
+                    "Voyage multimodal embedding",
+                ),
+                EmbeddingModelSpec(
+                    "fake-embedding", "text", 10, "free", "fake", "Fake embedding for testing"
+                ),
+            ]
+        )

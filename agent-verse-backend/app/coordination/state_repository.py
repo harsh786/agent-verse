@@ -99,22 +99,28 @@ class PostgresPatternStateRepository:
             sqlalchemy_rls_context(db, record.tenant_id),
         ):
             replay = (
-                await db.execute(select(table).where(table.c.id == command_id))
-            ).mappings().one_or_none()
+                (await db.execute(select(table).where(table.c.id == command_id)))
+                .mappings()
+                .one_or_none()
+            )
             if replay is not None:
                 return self._decode(replay)
             latest = (
-                await db.execute(
-                    select(table)
-                    .where(
-                        table.c.session_id == record.session_id,
-                        table.c.execution_id == record.execution_id,
+                (
+                    await db.execute(
+                        select(table)
+                        .where(
+                            table.c.session_id == record.session_id,
+                            table.c.execution_id == record.execution_id,
+                        )
+                        .order_by(table.c.sequence.desc())
+                        .limit(1)
+                        .with_for_update()
                     )
-                    .order_by(table.c.sequence.desc())
-                    .limit(1)
-                    .with_for_update()
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             current = int(latest.sequence) if latest is not None else 0
             if current != expected_version or record.version != current + 1:
                 raise OptimisticConflictError(
@@ -140,15 +146,11 @@ class PostgresPatternStateRepository:
             )
         return record
 
-    async def get(
-        self, tenant_id: str, session_id: str, execution_id: str
-    ) -> PatternRecord | None:
+    async def get(self, tenant_id: str, session_id: str, execution_id: str) -> PatternRecord | None:
         records = await self._list(tenant_id, session_id, execution_id=execution_id)
         return records[0] if records else None
 
-    async def list_session(
-        self, tenant_id: str, session_id: str
-    ) -> tuple[PatternRecord, ...]:
+    async def list_session(self, tenant_id: str, session_id: str) -> tuple[PatternRecord, ...]:
         records = await self._list(tenant_id, session_id)
         latest: dict[str, PatternRecord] = {}
         for record in records:

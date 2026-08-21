@@ -12,6 +12,7 @@ Lineage is stored in:
 - Every audit record
 - Every tool call log
 """
+
 from __future__ import annotations
 
 import copy

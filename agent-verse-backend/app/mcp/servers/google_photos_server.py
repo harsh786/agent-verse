@@ -3,6 +3,7 @@
 Environment:
   GOOGLE_ACCESS_TOKEN: OAuth2 access token with photoslibrary scope
 """
+
 from __future__ import annotations
 
 import os
@@ -22,8 +23,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "page_size": {"type": "integer", "description": "Number of media items per page (max 100)"},
-                "page_token": {"type": "string", "description": "Pagination token from previous response"},
+                "page_size": {
+                    "type": "integer",
+                    "description": "Number of media items per page (max 100)",
+                },
+                "page_token": {
+                    "type": "string",
+                    "description": "Pagination token from previous response",
+                },
             },
         },
     },
@@ -46,7 +53,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "page_size": {"type": "integer", "description": "Albums per page (max 50)"},
                 "page_token": {"type": "string", "description": "Pagination token"},
-                "exclude_non_app_created_data": {"type": "boolean", "description": "If true, exclude albums not created by the app"},
+                "exclude_non_app_created_data": {
+                    "type": "boolean",
+                    "description": "If true, exclude albums not created by the app",
+                },
             },
         },
     },
@@ -62,8 +72,14 @@ TOOL_DEFINITIONS = [
                     "description": "Content category filters (ANIMALS, FOOD, LANDSCAPES, etc.)",
                     "items": {"type": "string"},
                 },
-                "date_from": {"type": "string", "description": "Start date filter in YYYY-MM-DD format"},
-                "date_to": {"type": "string", "description": "End date filter in YYYY-MM-DD format"},
+                "date_from": {
+                    "type": "string",
+                    "description": "Start date filter in YYYY-MM-DD format",
+                },
+                "date_to": {
+                    "type": "string",
+                    "description": "End date filter in YYYY-MM-DD format",
+                },
                 "page_size": {"type": "integer", "description": "Results per page"},
                 "page_token": {"type": "string", "description": "Pagination token"},
             },
@@ -92,8 +108,14 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "album_id": {"type": "string", "description": "ID of the album to share"},
-                "is_collaborative": {"type": "boolean", "description": "Allow collaborators to add photos"},
-                "is_commentable": {"type": "boolean", "description": "Allow collaborators to add comments"},
+                "is_collaborative": {
+                    "type": "boolean",
+                    "description": "Allow collaborators to add photos",
+                },
+                "is_commentable": {
+                    "type": "boolean",
+                    "description": "Allow collaborators to add comments",
+                },
             },
             "required": ["album_id"],
         },
@@ -140,19 +162,33 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     payload["pageToken"] = arguments["page_token"]
                 filters: dict[str, Any] = {}
                 if "content_categories" in arguments:
-                    filters["contentFilter"] = {"includedContentCategories": arguments["content_categories"]}
+                    filters["contentFilter"] = {
+                        "includedContentCategories": arguments["content_categories"]
+                    }
                 if "date_from" in arguments or "date_to" in arguments:
                     date_parts_from = arguments.get("date_from", "2000-01-01").split("-")
                     date_parts_to = arguments.get("date_to", "2099-12-31").split("-")
                     filters["dateFilter"] = {
-                        "ranges": [{
-                            "startDate": {"year": int(date_parts_from[0]), "month": int(date_parts_from[1]), "day": int(date_parts_from[2])},
-                            "endDate": {"year": int(date_parts_to[0]), "month": int(date_parts_to[1]), "day": int(date_parts_to[2])},
-                        }]
+                        "ranges": [
+                            {
+                                "startDate": {
+                                    "year": int(date_parts_from[0]),
+                                    "month": int(date_parts_from[1]),
+                                    "day": int(date_parts_from[2]),
+                                },
+                                "endDate": {
+                                    "year": int(date_parts_to[0]),
+                                    "month": int(date_parts_to[1]),
+                                    "day": int(date_parts_to[2]),
+                                },
+                            }
+                        ]
                     }
                 if filters:
                     payload["filters"] = filters
-                r = await client.post(f"{BASE_URL}/mediaItems:search", headers=headers, json=payload)
+                r = await client.post(
+                    f"{BASE_URL}/mediaItems:search", headers=headers, json=payload
+                )
                 r.raise_for_status()
                 return r.json()
 

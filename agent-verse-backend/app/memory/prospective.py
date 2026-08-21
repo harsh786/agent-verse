@@ -19,8 +19,15 @@ class ProspectiveMemory(BaseModel):
     due_at: datetime
     expires_at: datetime
     state: Literal[
-        "pending", "scheduled", "due", "leased", "executing", "completed", "failed",
-        "cancelled", "expired",
+        "pending",
+        "scheduled",
+        "due",
+        "leased",
+        "executing",
+        "completed",
+        "failed",
+        "cancelled",
+        "expired",
     ] = "pending"
     source_goal_id: str
     source_execution_id: str

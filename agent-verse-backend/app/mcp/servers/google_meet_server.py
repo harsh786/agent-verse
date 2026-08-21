@@ -3,6 +3,7 @@
 Environment:
   GOOGLE_ACCESS_TOKEN: OAuth2 access token with meetings.conference.create scope
 """
+
 from __future__ import annotations
 
 import os
@@ -57,7 +58,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "conference_record_name": {"type": "string", "description": "Conference record name (conferenceRecords/*)"},
+                "conference_record_name": {
+                    "type": "string",
+                    "description": "Conference record name (conferenceRecords/*)",
+                },
             },
             "required": ["conference_record_name"],
         },
@@ -68,7 +72,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "conference_record_name": {"type": "string", "description": "Conference record name"},
+                "conference_record_name": {
+                    "type": "string",
+                    "description": "Conference record name",
+                },
                 "page_size": {"type": "integer", "description": "Maximum participants to return"},
                 "page_token": {"type": "string", "description": "Pagination token"},
             },
@@ -81,8 +88,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "conference_record_name": {"type": "string", "description": "Conference record name"},
-                "recording_name": {"type": "string", "description": "Specific recording resource name"},
+                "conference_record_name": {
+                    "type": "string",
+                    "description": "Conference record name",
+                },
+                "recording_name": {
+                    "type": "string",
+                    "description": "Specific recording resource name",
+                },
             },
             "required": ["conference_record_name"],
         },
@@ -111,7 +124,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "google_meet_list_meetings":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/conferenceRecords", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/conferenceRecords", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -133,7 +148,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "google_meet_list_participants":
                 conf = arguments["conference_record_name"]
-                params = {k: v for k, v in arguments.items() if k != "conference_record_name" and v is not None}
+                params = {
+                    k: v
+                    for k, v in arguments.items()
+                    if k != "conference_record_name" and v is not None
+                }
                 r = await client.get(
                     f"{BASE_URL}/{conf}/participants",
                     headers=headers,

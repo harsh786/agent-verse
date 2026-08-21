@@ -3,6 +3,7 @@
 Environment variables:
   STRIPE_SECRET_KEY: Stripe secret API key (sk_live_... or sk_test_...)
 """
+
 from __future__ import annotations
 
 import os
@@ -61,7 +62,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "amount": {"type": "integer", "description": "Amount in smallest currency unit (e.g. cents)"},
+                "amount": {
+                    "type": "integer",
+                    "description": "Amount in smallest currency unit (e.g. cents)",
+                },
                 "currency": {"type": "string", "default": "usd"},
                 "customer": {"type": "string", "description": "Stripe customer ID"},
                 "payment_method": {"type": "string"},
@@ -148,7 +152,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "payment_intent": {"type": "string"},
                 "charge": {"type": "string"},
-                "amount": {"type": "integer", "description": "Amount to refund in smallest currency unit (omit for full)"},
+                "amount": {
+                    "type": "integer",
+                    "description": "Amount to refund in smallest currency unit (omit for full)",
+                },
                 "reason": {
                     "type": "string",
                     "enum": ["duplicate", "fraudulent", "requested_by_customer"],
@@ -164,7 +171,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "customer": {"type": "string"},
-                "status": {"type": "string", "enum": ["draft", "open", "paid", "void", "uncollectible"]},
+                "status": {
+                    "type": "string",
+                    "enum": ["draft", "open", "paid", "void", "uncollectible"],
+                },
                 "limit": {"type": "integer", "default": 10},
                 "starting_after": {"type": "string"},
             },
@@ -238,7 +248,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "product": {"type": "string"},
-                "unit_amount": {"type": "integer", "description": "Price in smallest currency unit"},
+                "unit_amount": {
+                    "type": "integer",
+                    "description": "Price in smallest currency unit",
+                },
                 "currency": {"type": "string", "default": "usd"},
                 "recurring": {
                     "type": "object",
@@ -343,8 +356,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "stripe_confirm_payment_intent":
                 pi_id = arguments["payment_intent_id"]
-                data = _flatten({k: v for k, v in arguments.items()
-                                 if k != "payment_intent_id" and v is not None})
+                data = _flatten(
+                    {
+                        k: v
+                        for k, v in arguments.items()
+                        if k != "payment_intent_id" and v is not None
+                    }
+                )
                 r = await c.post(
                     f"{STRIPE_BASE}/payment_intents/{pi_id}/confirm",
                     headers=hdrs,

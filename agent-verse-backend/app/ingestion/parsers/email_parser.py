@@ -2,6 +2,7 @@
 
 Handles multipart messages and strips HTML to plain text automatically.
 """
+
 from __future__ import annotations
 
 import email as email_lib

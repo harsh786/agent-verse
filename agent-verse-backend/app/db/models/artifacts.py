@@ -1,4 +1,5 @@
 """Artifact DB model for storing RPA outputs, screenshots, reports, etc."""
+
 from __future__ import annotations
 
 import uuid
@@ -14,15 +15,9 @@ from app.db.models import Base
 class Artifact(Base):
     __tablename__ = "artifacts"
 
-    id: Mapped[str] = mapped_column(
-        String(64), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
-    goal_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, index=True
-    )
-    tenant_id: Mapped[str] = mapped_column(
-        String(64), nullable=False, index=True
-    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
+    goal_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     artifact_type: Mapped[str] = mapped_column(
         String(50), nullable=False, default="file"
@@ -35,9 +30,7 @@ class Artifact(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_artifacts_tenant_goal", "tenant_id", "goal_id"),

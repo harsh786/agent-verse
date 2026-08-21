@@ -4,6 +4,7 @@ Revision ID: 0106
 Revises: 0105_add_chat_tables
 Create Date: 2026-08-16
 """
+
 from __future__ import annotations
 
 import sqlalchemy as sa
@@ -30,12 +31,12 @@ def upgrade() -> None:
         sa.Column("goal_id", sa.String(36), nullable=True),
         sa.Column("skip_reason", sa.Text, nullable=True),
         sa.Column("processing_ms", sa.Integer, nullable=True),
-        sa.UniqueConstraint("tenant_id", "idempotency_key",
-                            name="uq_trigger_event_idempotency"),
+        sa.UniqueConstraint("tenant_id", "idempotency_key", name="uq_trigger_event_idempotency"),
     )
     op.create_index(
         "idx_trigger_events_tenant_fired",
-        "trigger_events", ["tenant_id", "fired_at"],
+        "trigger_events",
+        ["tenant_id", "fired_at"],
     )
     # RLS
     op.execute("ALTER TABLE trigger_events ENABLE ROW LEVEL SECURITY")
@@ -75,8 +76,7 @@ def upgrade() -> None:
         sa.Column("action", sa.Text, nullable=False),
         sa.Column("before_state", sa.JSON, nullable=True),
         sa.Column("after_state", sa.JSON, nullable=True),
-        sa.Column("occurred_at", sa.DateTime, nullable=False,
-                  server_default=sa.text("NOW()")),
+        sa.Column("occurred_at", sa.DateTime, nullable=False, server_default=sa.text("NOW()")),
         sa.Column("ip_address", sa.Text, nullable=True),
         sa.Column("request_id", sa.Text, nullable=True),
     )

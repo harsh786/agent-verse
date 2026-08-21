@@ -9,8 +9,7 @@ class SourceExplainer:
         reason: str,
     ) -> str:
         return (
-            f"Retrieval from '{original_source}' fell back to '{fallback_source}'. "
-            f"Reason: {reason}"
+            f"Retrieval from '{original_source}' fell back to '{fallback_source}'. Reason: {reason}"
         )
 
     def explain_source_selection(self, sources: list[str], reason: str) -> str:

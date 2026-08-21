@@ -4,6 +4,7 @@ Environment:
   SENDGRID_API_KEY: SendGrid API key (starts with SG.)
   SENDGRID_FROM_EMAIL: Default sender email address
 """
+
 from __future__ import annotations
 
 import os
@@ -28,7 +29,10 @@ TOOL_DEFINITIONS = [
                 "subject": {"type": "string"},
                 "text": {"type": "string", "description": "Plain text body"},
                 "html": {"type": "string", "description": "HTML body (overrides text)"},
-                "from_email": {"type": "string", "description": "Sender address (uses SENDGRID_FROM_EMAIL if omitted)"},
+                "from_email": {
+                    "type": "string",
+                    "description": "Sender address (uses SENDGRID_FROM_EMAIL if omitted)",
+                },
                 "from_name": {"type": "string"},
             },
             "required": ["to_email", "subject"],
@@ -160,9 +164,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     default_from = os.getenv("SENDGRID_FROM_EMAIL", "noreply@example.com")
 
     try:
-        async with httpx.AsyncClient(
-            base_url=SENDGRID_BASE, headers=_headers(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=SENDGRID_BASE, headers=_headers(), timeout=30.0) as c:
             if tool_name == "sendgrid_send_email":
                 from_email = arguments.get("from_email", default_from)
                 from_obj: dict[str, Any] = {"email": from_email}
@@ -246,7 +248,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "contacts": [
-                        {"id": ct.get("id"), "email": ct.get("email"), "first_name": ct.get("first_name", "")}
+                        {
+                            "id": ct.get("id"),
+                            "email": ct.get("email"),
+                            "first_name": ct.get("first_name", ""),
+                        }
                         for ct in data.get("result", [])
                     ],
                     "contact_count": data.get("contact_count", 0),
@@ -262,9 +268,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 return {"job_id": data.get("job_id")}
 
             elif tool_name == "sendgrid_create_list":
-                r = await c.post(
-                    "/marketing/lists", json={"name": arguments["name"]}
-                )
+                r = await c.post("/marketing/lists", json={"name": arguments["name"]})
                 r.raise_for_status()
                 data = r.json()
                 return {"id": data.get("id"), "name": data.get("name")}

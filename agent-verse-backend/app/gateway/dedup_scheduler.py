@@ -8,6 +8,7 @@ ScheduledCommand (QA9):
   Users schedule commands for future execution via any channel.
   Stored in DB; Celery Beat fires them at the scheduled time.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +18,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-import structlog
 from opentelemetry import trace
 
 from app.observability.logging import get_logger
@@ -27,6 +27,7 @@ _tracer = trace.get_tracer(__name__)
 
 
 # ── CommandDeduplicator (QA8) ─────────────────────────────────────────────────
+
 
 class CommandDeduplicator:
     """
@@ -38,11 +39,11 @@ class CommandDeduplicator:
     """
 
     WINDOW_SECONDS = 30
-    TTL_SECONDS    = 300   # 5 minutes
+    TTL_SECONDS = 300  # 5 minutes
 
     def __init__(self, redis_client: Any | None = None) -> None:
-        self._redis  = redis_client
-        self._memory: dict[str, str] = {}   # key → command_id
+        self._redis = redis_client
+        self._memory: dict[str, str] = {}  # key → command_id
 
     def _make_key(
         self,
@@ -96,6 +97,7 @@ class CommandDeduplicator:
 
 # ── ScheduledCommand (QA9) ────────────────────────────────────────────────────
 
+
 @dataclass
 class ScheduledCommand:
     """
@@ -105,16 +107,17 @@ class ScheduledCommand:
       "Start market intelligence mission every weekday at 7am"
       "Send me a status update every Friday at 5pm"
     """
+
     scheduled_id: str
     org_id: str
     tenant_id: str
     command_text: str
-    execute_at: datetime              # specific time (UTC)
-    repeat: str | None = None         # "daily" | "weekly" | "monthly" | None
-    channel: str = "rest"             # which channel to respond on
+    execute_at: datetime  # specific time (UTC)
+    repeat: str | None = None  # "daily" | "weekly" | "monthly" | None
+    channel: str = "rest"  # which channel to respond on
     actor_id: str = ""
-    created_at: datetime = None       # type: ignore
-    status: str = "pending"           # pending | executed | cancelled | failed
+    created_at: datetime = None  # type: ignore
+    status: str = "pending"  # pending | executed | cancelled | failed
 
     def __post_init__(self) -> None:
         if self.created_at is None:
@@ -153,17 +156,13 @@ class CommandScheduler:
         return True
 
     async def list_pending(self, org_id: str) -> list[ScheduledCommand]:
-        return [
-            c for c in self._scheduled.values()
-            if c.org_id == org_id and c.status == "pending"
-        ]
+        return [c for c in self._scheduled.values() if c.org_id == org_id and c.status == "pending"]
 
     async def get_due(self) -> list[ScheduledCommand]:
         """Return commands that are due for execution."""
         now = datetime.now(UTC)
         return [
-            c for c in self._scheduled.values()
-            if c.status == "pending" and c.execute_at <= now
+            c for c in self._scheduled.values() if c.status == "pending" and c.execute_at <= now
         ]
 
     async def mark_executed(self, scheduled_id: str) -> None:
@@ -175,7 +174,14 @@ class CommandScheduler:
         else:
             # Reschedule for next occurrence
             from datetime import timedelta
-            delta = {"daily": timedelta(days=1), "weekly": timedelta(weeks=1), "monthly": timedelta(days=30)}
+
+            delta = {
+                "daily": timedelta(days=1),
+                "weekly": timedelta(weeks=1),
+                "monthly": timedelta(days=30),
+            }
             if cmd.repeat in delta:
                 cmd.execute_at = cmd.execute_at + delta[cmd.repeat]
-            _log.info("command.rescheduled", scheduled_id=scheduled_id, next_at=cmd.execute_at.isoformat())
+            _log.info(
+                "command.rescheduled", scheduled_id=scheduled_id, next_at=cmd.execute_at.isoformat()
+            )

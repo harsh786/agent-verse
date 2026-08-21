@@ -13,17 +13,15 @@ New endpoints:
   GET  /v1/gateway/{org_id}/conversations
   GET  /v1/gateway/{org_id}/history
 """
+
 from __future__ import annotations
 
-import json
-import uuid
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
 from opentelemetry import trace
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.gateway.channels.slack import SlackChannelAdapter
 from app.gateway.channels.teams import MicrosoftTeamsAdapter
@@ -31,7 +29,6 @@ from app.gateway.channels.telegram import TelegramChannelAdapter
 from app.gateway.channels.webhook import WebhookChannelAdapter
 from app.gateway.channels.whatsapp import WhatsAppChannelAdapter
 from app.gateway.command import OrgCommand, OrgResponse
-from app.tenancy.middleware import get_tenant_id
 
 _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -47,6 +44,7 @@ _webhook = WebhookChannelAdapter()
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
+
 
 class CommandStreamResponse(BaseModel):
     command_id: str
@@ -67,6 +65,7 @@ class GatewayConfig(BaseModel):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 async def _process_command(command: OrgCommand) -> OrgResponse:
     """Route command to org brain and return response."""
@@ -93,6 +92,7 @@ async def _process_command(command: OrgCommand) -> OrgResponse:
 
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
+
 
 @router.post(
     "/{org_id}/telegram/webhook",
@@ -122,6 +122,7 @@ async def telegram_webhook(
 
 
 # ── Slack ─────────────────────────────────────────────────────────────────────
+
 
 @router.get(
     "/{org_id}/slack/events",
@@ -163,6 +164,7 @@ async def slack_events(
 
 # ── WhatsApp ──────────────────────────────────────────────────────────────────
 
+
 @router.get(
     "/{org_id}/whatsapp/webhook",
     operation_id="gateway_whatsapp_verify",
@@ -173,7 +175,8 @@ async def whatsapp_verify(
     hub_verify_token: str = "",
     hub_challenge: str = "",
 ) -> Any:
-    import os  # noqa: PLC0415
+    import os
+
     if hub_mode == "subscribe" and hub_verify_token == os.getenv("WHATSAPP_VERIFY_TOKEN", ""):
         return int(hub_challenge)
     raise HTTPException(status_code=403, detail="Verification failed")
@@ -206,6 +209,7 @@ async def whatsapp_webhook(
 
 # ── Microsoft Teams ───────────────────────────────────────────────────────────
 
+
 @router.post(
     "/{org_id}/teams/messages",
     operation_id="gateway_teams_messages",
@@ -233,6 +237,7 @@ async def teams_messages(
 
 # ── Generic webhook ───────────────────────────────────────────────────────────
 
+
 @router.post(
     "/{org_id}/webhook",
     operation_id="gateway_webhook",
@@ -258,6 +263,7 @@ async def generic_webhook(
 
 # ── Gateway config ────────────────────────────────────────────────────────────
 
+
 @router.get(
     "/{org_id}/config",
     operation_id="gateway_get_config",
@@ -278,6 +284,7 @@ async def update_config(org_id: str, config: GatewayConfig) -> GatewayConfig:
 
 # ── Q10: Gateway Admin UI endpoints ──────────────────────────────────────────
 
+
 @router.get(
     "/{org_id}/channels/status",
     operation_id="gateway_channel_status",
@@ -288,29 +295,53 @@ async def get_channel_status(org_id: str) -> dict[str, Any]:
     Q10: Gateway Admin UI — shows all active channels and their status.
     SETTINGS → Command Gateway → ACTIVE CHANNELS
     """
-    from app.gateway.dedup_scheduler import CommandScheduler
     return {
         "org_id": org_id,
         "channels": [
-            {"name": "rest",     "label": "REST API",  "enabled": True,  "status": "active",
-             "endpoint": f"/v1/org/{org_id}/command"},
-            {"name": "telegram", "label": "Telegram",  "enabled": False, "status": "not_configured",
-             "setup_url": f"/gateway/{org_id}/setup/telegram"},
-            {"name": "slack",    "label": "Slack",     "enabled": False, "status": "not_configured",
-             "setup_url": f"/gateway/{org_id}/setup/slack"},
-            {"name": "teams",    "label": "Teams",     "enabled": False, "status": "not_configured",
-             "setup_url": f"/gateway/{org_id}/setup/teams"},
-            {"name": "discord",  "label": "Discord",   "enabled": False, "status": "not_configured"},
-            {"name": "whatsapp", "label": "WhatsApp",  "enabled": False, "status": "not_configured"},
-            {"name": "email",    "label": "Email",     "enabled": False, "status": "not_configured"},
-            {"name": "mcp",      "label": "MCP Server","enabled": True,  "status": "active",
-             "endpoint": f"wss://mcp.agentverse.io/v1/org/{org_id}"},
-            {"name": "webhook",  "label": "Webhooks",  "enabled": True,  "status": "active"},
+            {
+                "name": "rest",
+                "label": "REST API",
+                "enabled": True,
+                "status": "active",
+                "endpoint": f"/v1/org/{org_id}/command",
+            },
+            {
+                "name": "telegram",
+                "label": "Telegram",
+                "enabled": False,
+                "status": "not_configured",
+                "setup_url": f"/gateway/{org_id}/setup/telegram",
+            },
+            {
+                "name": "slack",
+                "label": "Slack",
+                "enabled": False,
+                "status": "not_configured",
+                "setup_url": f"/gateway/{org_id}/setup/slack",
+            },
+            {
+                "name": "teams",
+                "label": "Teams",
+                "enabled": False,
+                "status": "not_configured",
+                "setup_url": f"/gateway/{org_id}/setup/teams",
+            },
+            {"name": "discord", "label": "Discord", "enabled": False, "status": "not_configured"},
+            {"name": "whatsapp", "label": "WhatsApp", "enabled": False, "status": "not_configured"},
+            {"name": "email", "label": "Email", "enabled": False, "status": "not_configured"},
+            {
+                "name": "mcp",
+                "label": "MCP Server",
+                "enabled": True,
+                "status": "active",
+                "endpoint": f"wss://mcp.agentverse.io/v1/org/{org_id}",
+            },
+            {"name": "webhook", "label": "Webhooks", "enabled": True, "status": "active"},
         ],
         "gateway_config": {
             "max_commands_per_hour": 100,
-            "require_2fa_for":       ["approve", "change-autonomy", "delete"],
-            "response_language":     "auto",
-            "log_all_commands":      True,
+            "require_2fa_for": ["approve", "change-autonomy", "delete"],
+            "response_language": "auto",
+            "log_all_commands": True,
         },
     }

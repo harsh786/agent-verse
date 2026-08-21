@@ -23,9 +23,7 @@ async def process_due_memories(
     maximum_items: int = 100,
 ) -> tuple[ProspectiveMemory, ...]:
     """Claim and complete a bounded batch; duplicate workers lose fencing races."""
-    claimed = await service.lease_due(
-        tenant_id, now=now, lease_duration=lease_duration
-    )
+    claimed = await service.lease_due(tenant_id, now=now, lease_duration=lease_duration)
     completed: list[ProspectiveMemory] = []
     for item in claimed[:maximum_items]:
         allowed = await authorize(item)

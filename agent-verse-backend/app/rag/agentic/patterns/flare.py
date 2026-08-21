@@ -12,6 +12,7 @@ Algorithm:
 Uncertainty signals: "I think", "I'm not sure", "might be", "could be",
 "possibly", "I believe", "[UNCERTAIN]", "I don't know", "unclear"
 """
+
 from __future__ import annotations
 
 import re
@@ -110,9 +111,7 @@ class FLARERAGRuntimeAdapter(FLARERAGRuntimeContract):
         )
 
         if context is None or context.llm is None or context.llm.provider is None:
-            raise RetrievalStrategyExecutionError(
-                self.strategy.value, "resolved LLM is required"
-            )
+            raise RetrievalStrategyExecutionError(self.strategy.value, "resolved LLM is required")
 
         provider = context.llm.provider
         model = context.llm.model
@@ -254,6 +253,7 @@ class FLAREPattern(RAGPattern):
     def is_compatible(self, goal_properties: Any) -> bool:
         try:
             from app.core.config import get_settings
+
             if not get_settings().enable_flare:
                 return False
         except Exception:
@@ -275,6 +275,7 @@ class FLAREPattern(RAGPattern):
         """Execute FLARE: generate → check uncertainty → retrieve → refine."""
         try:
             from app.observability.logging import get_logger
+
             get_logger(__name__).info("flare_started", query=query[:60])
         except Exception:
             pass
@@ -284,6 +285,7 @@ class FLAREPattern(RAGPattern):
         # Circuit breaker setup
         try:
             from app.reliability.circuit_breaker import CircuitBreaker
+
             _cb_key = f"pattern_{self.pattern_id}"
             if _cb_key not in self._circuit_breakers:
                 self._circuit_breakers[_cb_key] = CircuitBreaker(
@@ -300,15 +302,17 @@ class FLAREPattern(RAGPattern):
                 raise RuntimeError("FLARE provider circuit is open")
             return ""
         try:
-            resp = await provider.complete(CompletionRequest(
-                messages=[
-                    Message(role="system", content=system_prompt),
-                    Message(role="user", content=query),
-                ],
-                model=model,
-                max_tokens=max_tokens,
-                temperature=0.3,
-            ))
+            resp = await provider.complete(
+                CompletionRequest(
+                    messages=[
+                        Message(role="system", content=system_prompt),
+                        Message(role="user", content=query),
+                    ],
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=0.3,
+                )
+            )
             if cb is not None:
                 cb.record_success()
             initial = (resp.content or "").strip()
@@ -323,6 +327,7 @@ class FLAREPattern(RAGPattern):
         if not _detect_uncertainty(initial) or retrieve_fn is None:
             try:
                 from app.observability.logging import get_logger
+
                 get_logger(__name__).info("flare_completed", result_len=len(initial))
             except Exception:
                 pass
@@ -347,28 +352,31 @@ class FLAREPattern(RAGPattern):
                     raise RuntimeError("FLARE provider circuit is open")
                 break
             try:
-                refined_resp = await provider.complete(CompletionRequest(
-                    messages=[
-                        Message(role="system", content=_FLARE_REFINE_SYSTEM),
-                        Message(
-                            role="user",
-                            content=(
-                                f"Context:\n{context[:1500]}\n\n"
-                                f"Question: {query}\n\n"
-                                "Answer based on the context:"
+                refined_resp = await provider.complete(
+                    CompletionRequest(
+                        messages=[
+                            Message(role="system", content=_FLARE_REFINE_SYSTEM),
+                            Message(
+                                role="user",
+                                content=(
+                                    f"Context:\n{context[:1500]}\n\n"
+                                    f"Question: {query}\n\n"
+                                    "Answer based on the context:"
+                                ),
                             ),
-                        ),
-                    ],
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=0.0,
-                ))
+                        ],
+                        model=model,
+                        max_tokens=max_tokens,
+                        temperature=0.0,
+                    )
+                )
                 if cb is not None:
                     cb.record_success()
                 refined = (refined_resp.content or "").strip()
                 if refined and not _detect_uncertainty(refined):
                     try:
                         from app.observability.logging import get_logger
+
                         get_logger(__name__).info("flare_completed", result_len=len(refined))
                     except Exception:
                         pass
@@ -385,6 +393,7 @@ class FLAREPattern(RAGPattern):
 
         try:
             from app.observability.logging import get_logger
+
             get_logger(__name__).info("flare_completed", result_len=len(initial))
         except Exception:
             pass

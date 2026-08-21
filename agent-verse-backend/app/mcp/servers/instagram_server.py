@@ -4,6 +4,7 @@ Environment:
   INSTAGRAM_ACCESS_TOKEN:        Meta/Facebook Graph API access token
   INSTAGRAM_BUSINESS_ACCOUNT_ID: Instagram Business Account ID
 """
+
 from __future__ import annotations
 
 import os
@@ -73,7 +74,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "account_id": {"type": "string"},
                 "image_url": {"type": "string", "description": "Public URL of the image"},
-                "video_url": {"type": "string", "description": "Public URL of the video (for reels)"},
+                "video_url": {
+                    "type": "string",
+                    "description": "Public URL of the video (for reels)",
+                },
                 "caption": {"type": "string"},
                 "media_type": {
                     "type": "string",
@@ -92,7 +96,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "account_id": {"type": "string"},
-                "creation_id": {"type": "string", "description": "Container ID from create_media_container"},
+                "creation_id": {
+                    "type": "string",
+                    "description": "Container ID from create_media_container",
+                },
             },
             "required": ["creation_id"],
         },
@@ -144,7 +151,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             if tool_name == "instagram_get_account":
                 r = await c.get(
                     f"{GRAPH_BASE}/{account_id}",
-                    params=_params({"fields": arguments.get("fields", "id,username,name,followers_count")}),
+                    params=_params(
+                        {"fields": arguments.get("fields", "id,username,name,followers_count")}
+                    ),
                 )
                 r.raise_for_status()
                 return r.json()
@@ -152,10 +161,14 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "instagram_list_media":
                 r = await c.get(
                     f"{GRAPH_BASE}/{account_id}/media",
-                    params=_params({
-                        "fields": arguments.get("fields", "id,caption,media_type,timestamp,like_count"),
-                        "limit": arguments.get("limit", 20),
-                    }),
+                    params=_params(
+                        {
+                            "fields": arguments.get(
+                                "fields", "id,caption,media_type,timestamp,like_count"
+                            ),
+                            "limit": arguments.get("limit", 20),
+                        }
+                    ),
                 )
                 r.raise_for_status()
                 return r.json()
@@ -163,16 +176,20 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "instagram_get_media":
                 r = await c.get(
                     f"{GRAPH_BASE}/{arguments['media_id']}",
-                    params=_params({"fields": arguments.get("fields", "id,caption,media_type,timestamp")}),
+                    params=_params(
+                        {"fields": arguments.get("fields", "id,caption,media_type,timestamp")}
+                    ),
                 )
                 r.raise_for_status()
                 return r.json()
 
             elif tool_name == "instagram_create_media_container":
-                payload = _params({
-                    "caption": arguments.get("caption", ""),
-                    "media_type": arguments.get("media_type", "IMAGE"),
-                })
+                payload = _params(
+                    {
+                        "caption": arguments.get("caption", ""),
+                        "media_type": arguments.get("media_type", "IMAGE"),
+                    }
+                )
                 if img := arguments.get("image_url"):
                     payload["image_url"] = img
                 if vid := arguments.get("video_url"):
@@ -192,10 +209,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "instagram_get_insights":
                 r = await c.get(
                     f"{GRAPH_BASE}/{account_id}/insights",
-                    params=_params({
-                        "metric": arguments.get("metrics", "follower_count,impressions,reach"),
-                        "period": arguments.get("period", "week"),
-                    }),
+                    params=_params(
+                        {
+                            "metric": arguments.get("metrics", "follower_count,impressions,reach"),
+                            "period": arguments.get("period", "week"),
+                        }
+                    ),
                 )
                 r.raise_for_status()
                 return r.json()

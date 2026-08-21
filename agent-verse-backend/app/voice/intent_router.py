@@ -17,10 +17,10 @@ VERIFIED API calls:
   - OrgService.record_decision(org_id, ...) — EXISTS at service.py:745
   - sqlalchemy_rls_context — is @asynccontextmanager, use async with
 """
+
 from __future__ import annotations
 
 import asyncio
-import logging
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -29,39 +29,51 @@ from typing import Any
 import structlog
 from opentelemetry import trace
 
-log    = structlog.get_logger(__name__)
+log = structlog.get_logger(__name__)
 tracer = trace.get_tracer(__name__)
 
 
 class VoiceIntent(str, Enum):
     CREATE_MISSION = "create_mission"
-    STATUS_CHECK   = "status_check"
-    APPROVE        = "approve"
-    REJECT         = "reject"
-    SUMMARIZE      = "summarize"
-    SEARCH         = "search"
-    UNKNOWN        = "unknown"
+    STATUS_CHECK = "status_check"
+    APPROVE = "approve"
+    REJECT = "reject"
+    SUMMARIZE = "summarize"
+    SEARCH = "search"
+    UNKNOWN = "unknown"
 
 
 @dataclass
 class IntentResult:
-    intent:     VoiceIntent
+    intent: VoiceIntent
     confidence: float
-    entities:   dict[str, str]
+    entities: dict[str, str]
 
 
-_CREATE_PATTERNS  = [
+_CREATE_PATTERNS = [
     r"\b(launch|start|create|initiate|kick off|begin|run)\b.*\b(mission|campaign|project|initiative|task)\b",
     r"\b(launch|start|create|initiate)\b\s+(.+)",
     r"\bi want (?:you )?to\b.+",
     r"\blet'?s\b.*\b(do|work on|build|make)\b",
     r"\b(build|make)\b.+\b(for|to|that)\b",
 ]
-_STATUS_PATTERNS  = [r"\bstatus\b", r"\bhow is\b", r"\bupdate on\b", r"\bwhat'?s happening\b"]
-_APPROVE_PATTERNS = [r"\bapprove\b", r"\bgo ahead\b", r"\bapproved\b", r"\byes,? do it\b", r"\bconfirm\b"]
-_REJECT_PATTERNS  = [r"\breject\b", r"\bdeny\b", r"\bcancel that\b", r"\bdon'?t do\b", r"^no\b"]
-_SUMMARIZE_PATTERNS = [r"\bsummariz", r"\bbrief me\b", r"\bwhat happened\b", r"\bdigest\b", r"\bwhat'?s new\b"]
-_SEARCH_PATTERNS  = [r"\bfind\b", r"\bsearch\b", r"\bshow me\b", r"\blist\b"]
+_STATUS_PATTERNS = [r"\bstatus\b", r"\bhow is\b", r"\bupdate on\b", r"\bwhat'?s happening\b"]
+_APPROVE_PATTERNS = [
+    r"\bapprove\b",
+    r"\bgo ahead\b",
+    r"\bapproved\b",
+    r"\byes,? do it\b",
+    r"\bconfirm\b",
+]
+_REJECT_PATTERNS = [r"\breject\b", r"\bdeny\b", r"\bcancel that\b", r"\bdon'?t do\b", r"^no\b"]
+_SUMMARIZE_PATTERNS = [
+    r"\bsummariz",
+    r"\bbrief me\b",
+    r"\bwhat happened\b",
+    r"\bdigest\b",
+    r"\bwhat'?s new\b",
+]
+_SEARCH_PATTERNS = [r"\bfind\b", r"\bsearch\b", r"\bshow me\b", r"\blist\b"]
 
 
 def classify_intent(transcript: str) -> IntentResult:
@@ -69,11 +81,11 @@ def classify_intent(transcript: str) -> IntentResult:
     t = transcript.lower().strip()
     checks = [
         (VoiceIntent.CREATE_MISSION, _CREATE_PATTERNS),
-        (VoiceIntent.APPROVE,        _APPROVE_PATTERNS),
-        (VoiceIntent.REJECT,         _REJECT_PATTERNS),
-        (VoiceIntent.SUMMARIZE,      _SUMMARIZE_PATTERNS),
-        (VoiceIntent.STATUS_CHECK,   _STATUS_PATTERNS),
-        (VoiceIntent.SEARCH,         _SEARCH_PATTERNS),
+        (VoiceIntent.APPROVE, _APPROVE_PATTERNS),
+        (VoiceIntent.REJECT, _REJECT_PATTERNS),
+        (VoiceIntent.SUMMARIZE, _SUMMARIZE_PATTERNS),
+        (VoiceIntent.STATUS_CHECK, _STATUS_PATTERNS),
+        (VoiceIntent.SEARCH, _SEARCH_PATTERNS),
     ]
     for intent, patterns in checks:
         for p in patterns:
@@ -100,8 +112,9 @@ async def handle_create_mission(
 
         # Step 1: Refine raw transcript → structured goal spec (SYNC → executor)
         from app.org.goal_refinement import GoalRefinementPipeline
+
         pipeline = GoalRefinementPipeline()
-        loop     = asyncio.get_event_loop()
+        loop = asyncio.get_event_loop()
         try:
             spec = await loop.run_in_executor(
                 None,
@@ -111,6 +124,7 @@ async def handle_create_mission(
             log.warning("voice.intent.refinement_failed", error=str(exc))
             # Fallback: use transcript as-is
             from types import SimpleNamespace
+
             spec = SimpleNamespace(
                 refined_goal=transcript[:200],
                 autonomy_level=3,
@@ -127,31 +141,33 @@ async def handle_create_mission(
         try:
             from app.db.rls import sqlalchemy_rls_context
             from app.org.service import OrgService
-            async with session_factory() as session:
-                async with session.begin():
-                    async with sqlalchemy_rls_context(session, tenant_id):
-                        svc     = OrgService(session=session, tenant_id=tenant_id)
-                        mission = await svc.create_mission(
-                            org_id=org_id,
-                            title=str(spec.refined_goal)[:200],
-                            objective=str(spec.refined_goal),
-                            source="voice",
-                            autonomy_level=getattr(spec, "autonomy_level", 3),
-                            budget_usd=getattr(spec, "estimated_budget_usd", None) or None,
-                            success_criteria=getattr(spec, "success_criteria", []),
-                            tags=getattr(spec, "departments_involved", []),
-                        )
-                        mission_id = str(mission.id)
+
+            async with session_factory() as session, session.begin():
+                async with sqlalchemy_rls_context(session, tenant_id):
+                    svc = OrgService(session=session, tenant_id=tenant_id)
+                    mission = await svc.create_mission(
+                        org_id=org_id,
+                        title=str(spec.refined_goal)[:200],
+                        objective=str(spec.refined_goal),
+                        source="voice",
+                        autonomy_level=getattr(spec, "autonomy_level", 3),
+                        budget_usd=getattr(spec, "estimated_budget_usd", None) or None,
+                        success_criteria=getattr(spec, "success_criteria", []),
+                        tags=getattr(spec, "departments_involved", []),
+                    )
+                    mission_id = str(mission.id)
         except Exception as exc:
             log.error("voice.create_mission.failed", error=str(exc))
-            return f"I understood your goal but couldn't create the mission: {exc}. Please try again."
+            return (
+                f"I understood your goal but couldn't create the mission: {exc}. Please try again."
+            )
 
-        depts  = ", ".join((getattr(spec, "departments_involved", []) or [])[:3]) or "your team"
-        hours  = getattr(spec, "estimated_duration_hours", 0) or 0
+        depts = ", ".join((getattr(spec, "departments_involved", []) or [])[:3]) or "your team"
+        hours = getattr(spec, "estimated_duration_hours", 0) or 0
         budget = getattr(spec, "estimated_budget_usd", 0) or 0
-        h_str  = f"{hours:.0f} hours" if hours > 0 else "an estimated timeline"
-        b_str  = f"${budget:,.0f}" if budget > 0 else "your budget"
-        risk   = getattr(spec, "risk_level", "medium")
+        h_str = f"{hours:.0f} hours" if hours > 0 else "an estimated timeline"
+        b_str = f"${budget:,.0f}" if budget > 0 else "your budget"
+        risk = getattr(spec, "risk_level", "medium")
         r_note = "" if risk in ("low", "medium") else " High-risk — human approval required."
 
         span.set_attribute("mission_id", mission_id)
@@ -177,19 +193,19 @@ async def handle_approve(
     try:
         from app.db.rls import sqlalchemy_rls_context
         from app.org.service import OrgService
-        async with session_factory() as session:
-            async with session.begin():
-                async with sqlalchemy_rls_context(session, tenant_id):
-                    svc = OrgService(session=session, tenant_id=tenant_id)
-                    await svc.record_decision(
-                        org_id=org_id,
-                        entity_type="mission",
-                        entity_id=pending_decision_id,
-                        decision_type="approval",
-                        description=f"Voice approval: {transcript}",
-                        why="Approved via voice command",
-                        approval_status="approved",
-                    )
+
+        async with session_factory() as session, session.begin():
+            async with sqlalchemy_rls_context(session, tenant_id):
+                svc = OrgService(session=session, tenant_id=tenant_id)
+                await svc.record_decision(
+                    org_id=org_id,
+                    entity_type="mission",
+                    entity_id=pending_decision_id,
+                    decision_type="approval",
+                    description=f"Voice approval: {transcript}",
+                    why="Approved via voice command",
+                    approval_status="approved",
+                )
         return "Approved. The mission is cleared to proceed."
     except Exception as exc:
         log.error("voice.approve.failed", error=str(exc))
@@ -205,15 +221,15 @@ async def route_voice_command(
 ) -> str:
     """Main entry: classify intent → dispatch to handler → return TTS text."""
     ir = classify_intent(transcript)
-    log.info("voice.intent.classified", intent=ir.intent, confidence=ir.confidence,
-             org_id=org_id)
+    log.info("voice.intent.classified", intent=ir.intent, confidence=ir.confidence, org_id=org_id)
 
     if ir.intent == VoiceIntent.CREATE_MISSION and session_factory is not None:
         return await handle_create_mission(transcript, org_id, tenant_id, session_factory)
 
     if ir.intent == VoiceIntent.APPROVE:
-        return await handle_approve(transcript, org_id, tenant_id, session_factory,
-                                    pending_decision_id)
+        return await handle_approve(
+            transcript, org_id, tenant_id, session_factory, pending_decision_id
+        )
 
     if ir.intent == VoiceIntent.REJECT:
         return "Understood. The request has been rejected."
@@ -247,7 +263,7 @@ async def _handle_summarize(org_id: str, tenant_id: str, session_factory: Any) -
 
 
 async def _handle_status(org_id: str, tenant_id: str, session_factory: Any) -> str:
-    h      = await _get_health(org_id, tenant_id, session_factory)
+    h = await _get_health(org_id, tenant_id, session_factory)
     active = h.get("active_missions", 0)
     health = h.get("overall_health", "unknown")
     return f"{active} mission{'s' if active != 1 else ''} currently running. Status: {health}."
@@ -259,10 +275,10 @@ async def _get_health(org_id: str, tenant_id: str, session_factory: Any) -> dict
     try:
         from app.db.rls import sqlalchemy_rls_context
         from app.org.service import OrgService
-        async with session_factory() as session:
-            async with session.begin():
-                async with sqlalchemy_rls_context(session, tenant_id):
-                    svc = OrgService(session=session, tenant_id=tenant_id)
-                    return await svc.get_org_health(org_id)
+
+        async with session_factory() as session, session.begin():
+            async with sqlalchemy_rls_context(session, tenant_id):
+                svc = OrgService(session=session, tenant_id=tenant_id)
+                return await svc.get_org_health(org_id)
     except Exception:
         return {}

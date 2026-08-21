@@ -5,6 +5,7 @@ Environment:
   BRAINTREE_PUBLIC_KEY:  Braintree public key
   BRAINTREE_PRIVATE_KEY: Braintree private key
 """
+
 from __future__ import annotations
 
 import os
@@ -26,7 +27,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "amount": {"type": "string", "description": "Decimal amount string, e.g. '10.00'"},
-                "payment_method_nonce": {"type": "string", "description": "Braintree payment method nonce"},
+                "payment_method_nonce": {
+                    "type": "string",
+                    "description": "Braintree payment method nonce",
+                },
                 "customer_id": {"type": "string"},
                 "order_id": {"type": "string"},
                 "submit_for_settlement": {"type": "boolean", "default": True},
@@ -110,7 +114,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     public_key = os.getenv("BRAINTREE_PUBLIC_KEY", "")
     private_key = os.getenv("BRAINTREE_PRIVATE_KEY", "")
     if not merchant_id or not public_key or not private_key:
-        return {"error": "BRAINTREE_MERCHANT_ID, BRAINTREE_PUBLIC_KEY, and BRAINTREE_PRIVATE_KEY must be configured"}
+        return {
+            "error": "BRAINTREE_MERCHANT_ID, BRAINTREE_PUBLIC_KEY, and BRAINTREE_PRIVATE_KEY must be configured"
+        }
 
     auth = (public_key, private_key)
     headers = {
@@ -126,7 +132,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "transaction": {
                         "amount": arguments["amount"],
                         "paymentMethodNonce": arguments["payment_method_nonce"],
-                        "options": {"submitForSettlement": arguments.get("submit_for_settlement", True)},
+                        "options": {
+                            "submitForSettlement": arguments.get("submit_for_settlement", True)
+                        },
                     }
                 }
                 if cid := arguments.get("customer_id"):

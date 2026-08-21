@@ -21,6 +21,7 @@ Minimum required return:
 Optional state updates:
     {"cost_usd": float, "tokens_used": int, "status": ..., "vars": {...}}
 """
+
 from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
@@ -36,7 +37,7 @@ class BaseStepNode(Protocol):
     def __init__(
         self,
         step: StepDefinition,
-        context_resolver: Any,   # ContextResolver
+        context_resolver: Any,  # ContextResolver
         **services: Any,
     ) -> None: ...
 

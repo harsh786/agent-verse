@@ -3,6 +3,7 @@
 Incremental: list blobs sorted by LastModified using cursor timestamp.
 Supports all file formats via ParserRegistry dispatch.
 """
+
 from __future__ import annotations
 
 import logging
@@ -28,9 +29,11 @@ class AzureBlobConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             from azure.storage.blob import BlobServiceClient  # type: ignore[import-not-found]
+
             conn_str = config.connection_config.get("connection_string", "")
             account_name = config.connection_config.get("account_name", "")
             account_key = config.connection_config.get("account_key", "")
@@ -47,8 +50,12 @@ class AzureBlobConnector(BaseConnector):
             props = cc.get_container_properties()
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
-                ok=True, latency_ms=latency,
-                metadata={"container": container, "lease_state": str(props.get("lease", {}).get("state"))},
+                ok=True,
+                latency_ms=latency,
+                metadata={
+                    "container": container,
+                    "lease_state": str(props.get("lease", {}).get("state")),
+                },
             )
         except ImportError:
             return ConnectionHealth(ok=False, error="azure-storage-blob not installed")
@@ -59,10 +66,12 @@ class AzureBlobConnector(BaseConnector):
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
+
         try:
             from azure.storage.blob import BlobServiceClient  # type: ignore[import-not-found]
         except ImportError:
-            _log.error("azure-storage-blob not installed"); return
+            _log.error("azure-storage-blob not installed")
+            return
 
         conn_str = config.connection_config.get("connection_string", "")
         account_name = config.connection_config.get("account_name", "")
@@ -94,7 +103,9 @@ class AzureBlobConnector(BaseConnector):
                     tenant_id=config.tenant_id,
                     source_url=f"https://{account_name}.blob.core.windows.net/{container}/{blob.name}",
                     content=data,
-                    content_type=blob.content_settings.content_type or "application/octet-stream" if blob.content_settings else "application/octet-stream",
+                    content_type=blob.content_settings.content_type or "application/octet-stream"
+                    if blob.content_settings
+                    else "application/octet-stream",
                     metadata={"container": container, "name": blob.name, "size": blob.size},
                 )
                 new_cursor = blob_ts or blob.name

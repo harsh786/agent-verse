@@ -6,6 +6,7 @@ SSRFGuard: Blocks HTTP steps from calling private/internal IP ranges
 SecretMasker: Redacts vault-resolved secret values before persisting
               step results to the database.
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -32,12 +33,14 @@ _PRIVATE_NETWORKS = [
 ]
 
 # Explicitly blocked hostnames (in addition to IP checks)
-_BLOCKED_HOSTNAMES = frozenset({
-    "metadata.google.internal",
-    "169.254.169.254",       # AWS IMDSv1
-    "fd00:ec2::254",         # AWS IMDSv2 IPv6
-    "localhost",
-})
+_BLOCKED_HOSTNAMES = frozenset(
+    {
+        "metadata.google.internal",
+        "169.254.169.254",  # AWS IMDSv1
+        "fd00:ec2::254",  # AWS IMDSv2 IPv6
+        "localhost",
+    }
+)
 
 
 class SSRFBlockedError(PermissionError):
@@ -62,9 +65,7 @@ class SSRFGuard:
 
         # Explicit hostname blocklist
         if hostname_lower in _BLOCKED_HOSTNAMES:
-            raise SSRFBlockedError(
-                f"SSRF blocked: hostname {hostname!r} is explicitly blocked"
-            )
+            raise SSRFBlockedError(f"SSRF blocked: hostname {hostname!r} is explicitly blocked")
 
         # Resolve DNS and check all returned IPs
         try:
@@ -72,9 +73,7 @@ class SSRFGuard:
         except socket.gaierror as exc:
             # DNS resolution failed — block (could be internal hostname)
             _log.warning("ssrf_dns_resolve_failed", hostname=hostname, url=url)
-            raise SSRFBlockedError(
-                f"SSRF blocked: could not resolve {hostname!r}"
-            ) from exc
+            raise SSRFBlockedError(f"SSRF blocked: could not resolve {hostname!r}") from exc
 
         for addr_info in addr_infos:
             ip_str = addr_info[4][0]

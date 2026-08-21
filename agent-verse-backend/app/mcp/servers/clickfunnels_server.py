@@ -3,6 +3,7 @@
 Environment:
   CLICKFUNNELS_API_KEY: ClickFunnels API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -73,7 +74,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "funnel_id": {"type": "integer", "description": "Filter by funnel"},
-                "status": {"type": "string", "description": "Filter by status: paid, pending, refunded"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: paid, pending, refunded",
+                },
                 "page": {"type": "integer", "description": "Page number"},
             },
         },
@@ -104,13 +108,17 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
         try:
             if tool_name == "clickfunnels_list_funnels":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/workspaces/1/funnels", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/workspaces/1/funnels", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
             if tool_name == "clickfunnels_list_contacts":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/workspaces/1/contacts", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/workspaces/1/contacts", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -126,13 +134,17 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "clickfunnels_list_purchases":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/workspaces/1/purchases", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/workspaces/1/purchases", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
             if tool_name == "clickfunnels_list_orders":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/workspaces/1/orders", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/workspaces/1/orders", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

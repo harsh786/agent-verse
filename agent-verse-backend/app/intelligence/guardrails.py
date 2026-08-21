@@ -48,7 +48,9 @@ _PII_PATTERNS = [
     # SSN: 123-45-6789
     re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
     # Credit card: 16-digit run
-    re.compile(r"\b(?:4[0-9]{12}(?:[0-9]{3})?|[25][1-7][0-9]{14}|6(?:011|5[0-9][0-9])[0-9]{12}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11}|(?:2131|1800|35\d{3})\d{11})\b"),
+    re.compile(
+        r"\b(?:4[0-9]{12}(?:[0-9]{3})?|[25][1-7][0-9]{14}|6(?:011|5[0-9][0-9])[0-9]{12}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11}|(?:2131|1800|35\d{3})\d{11})\b"
+    ),
     # Generic 16-digit card (fallback)
     re.compile(r"\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b"),
 ]
@@ -58,6 +60,7 @@ _ALWAYS_ALLOWED = {"llm_call"}
 
 # ── Extended injection detectors ───────────────────────────────────────────────
 
+
 def _normalize_text(text: str) -> str:
     """Normalize Unicode to NFKC and lower-case for injection detection."""
     return unicodedata.normalize("NFKC", text).lower()
@@ -66,9 +69,10 @@ def _normalize_text(text: str) -> str:
 def _detect_base64_injection(text: str) -> list[str]:
     """Detect injection phrases encoded as base64."""
     import base64
+
     issues: list[str] = []
     for word in text.split():
-        if len(word) >= 16 and re.match(r'^[A-Za-z0-9+/=]+$', word):
+        if len(word) >= 16 and re.match(r"^[A-Za-z0-9+/=]+$", word):
             try:
                 decoded = (
                     base64.b64decode(word.rstrip("=") + "==")
@@ -86,10 +90,13 @@ def _detect_base64_injection(text: str) -> list[str]:
 def _detect_rot13_injection(text: str) -> list[str]:
     """Detect injection phrases encoded with ROT13."""
     import codecs
+
     rot13 = codecs.encode(text.lower(), "rot_13")
-    return ["rot13-encoded injection detected"] if any(
-        phrase in rot13 for phrase in _INJECTION_PHRASES
-    ) else []
+    return (
+        ["rot13-encoded injection detected"]
+        if any(phrase in rot13 for phrase in _INJECTION_PHRASES)
+        else []
+    )
 
 
 def _detect_homoglyph_injection(text: str) -> list[str]:
@@ -152,6 +159,7 @@ def _scan_value_recursive(value: Any, depth: int = 0) -> list[str]:
 
 # ── Legacy dataclass ───────────────────────────────────────────────────────────
 
+
 @dataclass
 class GuardrailResult:
     blocked: bool
@@ -159,6 +167,7 @@ class GuardrailResult:
 
 
 # ── Enhanced checker ───────────────────────────────────────────────────────────
+
 
 class GuardrailChecker:
     """Validates tool calls, outputs, and goals against guardrail rules.

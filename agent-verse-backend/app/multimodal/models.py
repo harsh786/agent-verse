@@ -1,5 +1,7 @@
 """Multimodal data models."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -17,6 +19,7 @@ class Modality(str, Enum):
 @dataclass
 class ExtractedSpan:
     """A span of extracted content with source provenance."""
+
     content: str
     modality: Modality
     source_page: int | None = None
@@ -32,6 +35,7 @@ class ExtractedSpan:
 @dataclass
 class AssetIngestionJob:
     """A multimodal asset ingestion job."""
+
     job_id: str
     tenant_id: str
     asset_type: Modality

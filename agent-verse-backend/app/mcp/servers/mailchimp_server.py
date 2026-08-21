@@ -4,6 +4,7 @@ Environment:
   MAILCHIMP_API_KEY: Mailchimp API key (ends with -us1 or similar)
   MAILCHIMP_SERVER_PREFIX: Data center prefix, e.g. "us1" (extracted from API key if omitted)
 """
+
 from __future__ import annotations
 
 import os
@@ -40,7 +41,10 @@ TOOL_DEFINITIONS = [
                     "enum": ["subscribed", "pending", "unsubscribed"],
                     "default": "subscribed",
                 },
-                "merge_fields": {"type": "object", "description": "Merge tag values, e.g. {FNAME: 'John'}"},
+                "merge_fields": {
+                    "type": "object",
+                    "description": "Merge tag values, e.g. {FNAME: 'John'}",
+                },
             },
             "required": ["list_id", "email"],
         },
@@ -52,7 +56,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "list_id": {"type": "string"},
-                "email": {"type": "string", "description": "Member email (used to compute subscriber hash)"},
+                "email": {
+                    "type": "string",
+                    "description": "Member email (used to compute subscriber hash)",
+                },
                 "status": {
                     "type": "string",
                     "enum": ["subscribed", "unsubscribed", "cleaned", "pending"],
@@ -102,7 +109,10 @@ TOOL_DEFINITIONS = [
                 "list_id": {"type": "string"},
                 "count": {"type": "integer", "default": 20},
                 "offset": {"type": "integer", "default": 0},
-                "status": {"type": "string", "enum": ["subscribed", "unsubscribed", "cleaned", "pending"]},
+                "status": {
+                    "type": "string",
+                    "enum": ["subscribed", "unsubscribed", "cleaned", "pending"],
+                },
             },
             "required": ["list_id"],
         },
@@ -129,6 +139,7 @@ def _auth() -> tuple[str, str]:
 
 def _subscriber_hash(email: str) -> str:
     import hashlib
+
     return hashlib.md5(email.lower().encode()).hexdigest()
 
 
@@ -139,19 +150,24 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     base = _base()
 
     try:
-        async with httpx.AsyncClient(
-            auth=_auth(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(auth=_auth(), timeout=30.0) as c:
             if tool_name == "mailchimp_list_lists":
                 r = await c.get(
                     f"{base}/lists",
-                    params={"count": arguments.get("count", 20), "offset": arguments.get("offset", 0)},
+                    params={
+                        "count": arguments.get("count", 20),
+                        "offset": arguments.get("offset", 0),
+                    },
                 )
                 r.raise_for_status()
                 data = r.json()
                 return {
                     "lists": [
-                        {"id": lst["id"], "name": lst.get("name"), "member_count": lst.get("stats", {}).get("member_count", 0)}
+                        {
+                            "id": lst["id"],
+                            "name": lst.get("name"),
+                            "member_count": lst.get("stats", {}).get("member_count", 0),
+                        }
                         for lst in data.get("lists", [])
                     ],
                     "total_items": data.get("total_items", 0),
@@ -167,7 +183,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r = await c.post(f"{base}/lists/{arguments['list_id']}/members", json=payload)
                 r.raise_for_status()
                 data = r.json()
-                return {"id": data.get("id"), "status": data.get("status"), "email": data.get("email_address")}
+                return {
+                    "id": data.get("id"),
+                    "status": data.get("status"),
+                    "email": data.get("email_address"),
+                }
 
             elif tool_name == "mailchimp_update_member":
                 sub_hash = _subscriber_hash(arguments["email"])
@@ -201,9 +221,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 return {"id": data.get("id"), "status": data.get("status")}
 
             elif tool_name == "mailchimp_send_campaign":
-                r = await c.post(
-                    f"{base}/campaigns/{arguments['campaign_id']}/actions/send"
-                )
+                r = await c.post(f"{base}/campaigns/{arguments['campaign_id']}/actions/send")
                 return {"success": r.status_code == 204, "status_code": r.status_code}
 
             elif tool_name == "mailchimp_list_members":
@@ -213,9 +231,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
                 if "status" in arguments:
                     params["status"] = arguments["status"]
-                r = await c.get(
-                    f"{base}/lists/{arguments['list_id']}/members", params=params
-                )
+                r = await c.get(f"{base}/lists/{arguments['list_id']}/members", params=params)
                 r.raise_for_status()
                 data = r.json()
                 return {

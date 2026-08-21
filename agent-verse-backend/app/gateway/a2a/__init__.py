@@ -9,11 +9,13 @@ OrgA2AClient:
   Enables one org to delegate work to another org.
   Both orgs must be in same tenant OR have explicit federation.
 """
+
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any
 
 import httpx
 import structlog
@@ -27,9 +29,11 @@ _tracer = trace.get_tracer(__name__)
 
 # ── Response types ─────────────────────────────────────────────────────────────
 
+
 @dataclass
 class AgentResult:
     """Result returned by OrgAsAgent.invoke()."""
+
     output: Any = None
     artifacts: list[dict] = field(default_factory=list)
     cost_usd: float = 0.0
@@ -42,7 +46,8 @@ class AgentResult:
 @dataclass
 class AgentEvent:
     """Streaming event from OrgAsAgent.stream()."""
-    event_type: str         # thinking | step | tool_call | artifact | complete | error
+
+    event_type: str  # thinking | step | tool_call | artifact | complete | error
     text: str = ""
     data: dict[str, Any] = field(default_factory=dict)
     mission_id: str | None = None
@@ -51,6 +56,7 @@ class AgentEvent:
 @dataclass
 class DelegationResult:
     """Result of inter-org delegation."""
+
     delegated_to_org: str
     task: str
     mission_id: str | None = None
@@ -59,6 +65,7 @@ class DelegationResult:
 
 
 # ── OrgAsAgent ─────────────────────────────────────────────────────────────────
+
 
 class OrgAsAgent:
     """
@@ -72,7 +79,7 @@ class OrgAsAgent:
     """
 
     def __init__(self, org_id: str, tenant_id: str) -> None:
-        self.org_id    = org_id
+        self.org_id = org_id
         self.tenant_id = tenant_id
 
     async def invoke(
@@ -90,6 +97,7 @@ class OrgAsAgent:
             span.set_attribute("task_len", len(task))
 
             import time
+
             start = time.monotonic()
 
             # TODO: create mission and poll for completion
@@ -118,6 +126,7 @@ class OrgAsAgent:
 
             # TODO: create mission via OrgService
             import uuid
+
             mission_id = f"mission_{uuid.uuid4().hex[:12]}"
             _log.info("a2a.invoke_async", org_id=self.org_id, mission_id=mission_id, task=task[:80])
             return mission_id
@@ -142,6 +151,7 @@ class OrgAsAgent:
 
 # ── OrgA2AClient ───────────────────────────────────────────────────────────────
 
+
 class OrgA2AClient:
     """
     Enables one org to delegate work to another org.
@@ -155,11 +165,11 @@ class OrgA2AClient:
         base_url: str = "",
         api_key: str = "",
     ) -> None:
-        self.calling_org_id    = calling_org_id
+        self.calling_org_id = calling_org_id
         self.calling_tenant_id = calling_tenant_id
         self._base_url = base_url.rstrip("/")
-        self._api_key  = api_key
-        self._http     = httpx.AsyncClient(timeout=30.0)
+        self._api_key = api_key
+        self._http = httpx.AsyncClient(timeout=30.0)
 
     async def delegate_to_org(
         self,
@@ -180,7 +190,7 @@ class OrgA2AClient:
         """
         with _tracer.start_as_current_span("a2a.delegate") as span:
             span.set_attribute("from_org", self.calling_org_id)
-            span.set_attribute("to_org",   to_org_id)
+            span.set_attribute("to_org", to_org_id)
             span.set_attribute("task_len", len(task))
 
             if not self._base_url:
@@ -199,10 +209,10 @@ class OrgA2AClient:
                 resp = await self._http.post(
                     f"{self._base_url}/v1/a2a/{to_org_id}/invoke",
                     json={
-                        "task":          task,
+                        "task": task,
                         "calling_org_id": self.calling_org_id,
                         "share_context": share_context or [],
-                        "budget_usd":    budget_usd,
+                        "budget_usd": budget_usd,
                     },
                     headers={"Authorization": f"Bearer {self._api_key}"},
                 )
@@ -212,7 +222,9 @@ class OrgA2AClient:
                     delegated_to_org=to_org_id,
                     task=task,
                     mission_id=data.get("mission_id"),
-                    result=AgentResult(output=data.get("output"), cost_usd=data.get("cost_usd", 0.0)),
+                    result=AgentResult(
+                        output=data.get("output"), cost_usd=data.get("cost_usd", 0.0)
+                    ),
                 )
             except Exception as exc:
                 _log.error("a2a.delegate_failed", to_org=to_org_id, error=str(exc))

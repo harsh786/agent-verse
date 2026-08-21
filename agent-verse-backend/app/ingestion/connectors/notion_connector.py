@@ -6,6 +6,7 @@ connector = NotionConnector(api_key="secret_...")
 pages = await connector.list_pages(database_id="abc123")
 content = await connector.fetch_page_content(page_id="xyz...")
 """
+
 from __future__ import annotations
 
 from typing import Any

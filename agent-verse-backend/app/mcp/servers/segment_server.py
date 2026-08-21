@@ -3,6 +3,7 @@
 Environment variables:
   SEGMENT_WRITE_KEY: Segment Source write key
 """
+
 from __future__ import annotations
 
 import os
@@ -24,7 +25,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "userId": {"type": "string", "description": "Your database user ID"},
-                "anonymousId": {"type": "string", "description": "Anonymous ID (use if no userId yet)"},
+                "anonymousId": {
+                    "type": "string",
+                    "description": "Anonymous ID (use if no userId yet)",
+                },
                 "traits": {
                     "type": "object",
                     "description": "User traits, e.g. {name, email, plan, company, createdAt}",
@@ -41,7 +45,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "userId": {"type": "string"},
                 "anonymousId": {"type": "string"},
-                "event": {"type": "string", "description": "Event name, e.g. 'Order Completed', 'Button Clicked'"},
+                "event": {
+                    "type": "string",
+                    "description": "Event name, e.g. 'Order Completed', 'Button Clicked'",
+                },
                 "properties": {
                     "type": "object",
                     "description": "Event properties, e.g. {revenue, currency, productName}",
@@ -91,7 +98,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "userId": {"type": "string", "description": "New canonical user ID"},
-                "previousId": {"type": "string", "description": "Previous anonymous or user ID to alias"},
+                "previousId": {
+                    "type": "string",
+                    "description": "Previous anonymous or user ID to alias",
+                },
             },
             "required": ["userId", "previousId"],
         },
@@ -102,7 +112,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "pagination_cursor": {"type": "string", "description": "Pagination cursor for next page"},
+                "pagination_cursor": {
+                    "type": "string",
+                    "description": "Pagination cursor for next page",
+                },
             },
         },
     },

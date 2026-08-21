@@ -4,6 +4,7 @@ Environment:
   KNACK_APP_ID:  Knack application ID
   KNACK_API_KEY: Knack API key
 """
+
 from __future__ import annotations
 
 import os

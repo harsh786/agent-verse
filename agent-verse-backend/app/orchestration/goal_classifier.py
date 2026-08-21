@@ -2,6 +2,7 @@
 Tier 1: Fast keyword-based (<1ms) — always runs.
 Tier 2: LLM-based (~200ms) — runs only for MEDIUM complexity when confidence <= 0.85.
 """
+
 from __future__ import annotations
 
 import re
@@ -16,166 +17,184 @@ from app.orchestration.runtime_profile import (
     TimeSensitivity,
 )
 
-_CRITICAL_RISK = frozenset({
-    "delete",
-    "drop",
-    "truncate",
-    "destroy",
-    "wipe",
-    "purge",
-    "rm -rf",
-    "production",
-    "prod",
-    "overwrite",
-    "payment",
-    "charge",
-    "billing",
-    "transfer funds",
-    "admin",
-    "sudo",
-    "root access",
-    "send email blast",
-    "publish release",
-})
-_HIGH_RISK = frozenset({
-    "deploy",
-    "migrate",
-    "alter table",
-    "modify schema",
-    "send email",
-    "send sms",
-    "post to",
-    "release",
-    "revoke",
-    "terminate",
-    "disable account",
-    "reset password",
-    "grant admin",
-})
-_IRREVERSIBLE = frozenset({
-    "delete",
-    "drop",
-    "truncate",
-    "destroy",
-    "wipe",
-    "purge",
-    "payment",
-    "transfer",
-    "charge",
-    "send email",
-    "publish",
-    "release",
-})
-_COMPLEXITY_EXPERT = frozenset({
-    "analyze",
-    "research",
-    "compare",
-    "synthesize",
-    "evaluate",
-    "comprehensive",
-    "strategic",
-    "multi-step",
-    "cross-reference",
-    "architecture",
-    "design",
-    "forecast",
-    "model",
-    "create",
-    "build",
-    "deploy",
-    "implement",
-    "architect",
-    "automate",
-    "migrate",
-    "refactor",
-    "pipeline",
-    "integrate",
-})
-_COMPLEXITY_COMPLEX = frozenset({
-    "report",
-    "summary",
-    "breakdown",
-    "multiple",
-    "then",
-    "after",
-    "also",
-    "and then",
-    "followed by",
-    "step by step",
-    "summarize",
-})
+_CRITICAL_RISK = frozenset(
+    {
+        "delete",
+        "drop",
+        "truncate",
+        "destroy",
+        "wipe",
+        "purge",
+        "rm -rf",
+        "production",
+        "prod",
+        "overwrite",
+        "payment",
+        "charge",
+        "billing",
+        "transfer funds",
+        "admin",
+        "sudo",
+        "root access",
+        "send email blast",
+        "publish release",
+    }
+)
+_HIGH_RISK = frozenset(
+    {
+        "deploy",
+        "migrate",
+        "alter table",
+        "modify schema",
+        "send email",
+        "send sms",
+        "post to",
+        "release",
+        "revoke",
+        "terminate",
+        "disable account",
+        "reset password",
+        "grant admin",
+    }
+)
+_IRREVERSIBLE = frozenset(
+    {
+        "delete",
+        "drop",
+        "truncate",
+        "destroy",
+        "wipe",
+        "purge",
+        "payment",
+        "transfer",
+        "charge",
+        "send email",
+        "publish",
+        "release",
+    }
+)
+_COMPLEXITY_EXPERT = frozenset(
+    {
+        "analyze",
+        "research",
+        "compare",
+        "synthesize",
+        "evaluate",
+        "comprehensive",
+        "strategic",
+        "multi-step",
+        "cross-reference",
+        "architecture",
+        "design",
+        "forecast",
+        "model",
+        "create",
+        "build",
+        "deploy",
+        "implement",
+        "architect",
+        "automate",
+        "migrate",
+        "refactor",
+        "pipeline",
+        "integrate",
+    }
+)
+_COMPLEXITY_COMPLEX = frozenset(
+    {
+        "report",
+        "summary",
+        "breakdown",
+        "multiple",
+        "then",
+        "after",
+        "also",
+        "and then",
+        "followed by",
+        "step by step",
+        "summarize",
+    }
+)
 _STEP_SEPARATORS = re.compile(
     r"\band\b|\bthen\b|\bafter\b|\bfollowed by\b|\balso\b|\bnext\b", re.IGNORECASE
 )
-_WEB_SIGNALS = frozenset({
-    "latest",
-    "current",
-    "recent",
-    "today",
-    "news",
-    "price",
-    "version",
-    "now",
-    "2025",
-    "2026",
-    "live",
-    "real-time",
-    "right now",
-})
-_TECHNICAL_SIGNALS = frozenset({
-    "code",
-    "function",
-    "api",
-    "database",
-    "sql",
-    "python",
-    "javascript",
-    "docker",
-    "kubernetes",
-    "git",
-    "github",
-    "aws",
-    "gcp",
-    "azure",
-    "bug",
-    "error",
-    "deploy",
-    "test",
-    "script",
-    "query",
-    "schema",
-})
-_ANALYTICAL_SIGNALS = frozenset({
-    "analyze",
-    "analysis",
-    "data",
-    "metrics",
-    "statistics",
-    "forecast",
-    "trend",
-    "compare",
-    "correlation",
-    "regression",
-    "model",
-    "chart",
-    "dashboard",
-    "report",
-    "kpi",
-})
-_CREATIVE_SIGNALS = frozenset({
-    "write",
-    "create",
-    "draft",
-    "generate",
-    "compose",
-    "design",
-    "brainstorm",
-    "ideate",
-    "story",
-    "blog",
-    "email",
-    "proposal",
-})
+_WEB_SIGNALS = frozenset(
+    {
+        "latest",
+        "current",
+        "recent",
+        "today",
+        "news",
+        "price",
+        "version",
+        "now",
+        "2025",
+        "2026",
+        "live",
+        "real-time",
+        "right now",
+    }
+)
+_TECHNICAL_SIGNALS = frozenset(
+    {
+        "code",
+        "function",
+        "api",
+        "database",
+        "sql",
+        "python",
+        "javascript",
+        "docker",
+        "kubernetes",
+        "git",
+        "github",
+        "aws",
+        "gcp",
+        "azure",
+        "bug",
+        "error",
+        "deploy",
+        "test",
+        "script",
+        "query",
+        "schema",
+    }
+)
+_ANALYTICAL_SIGNALS = frozenset(
+    {
+        "analyze",
+        "analysis",
+        "data",
+        "metrics",
+        "statistics",
+        "forecast",
+        "trend",
+        "compare",
+        "correlation",
+        "regression",
+        "model",
+        "chart",
+        "dashboard",
+        "report",
+        "kpi",
+    }
+)
+_CREATIVE_SIGNALS = frozenset(
+    {
+        "write",
+        "create",
+        "draft",
+        "generate",
+        "compose",
+        "design",
+        "brainstorm",
+        "ideate",
+        "story",
+        "blog",
+        "email",
+        "proposal",
+    }
+)
 
 
 def _phrase_in(phrase: str, lower: str, tokens: set[str]) -> bool:
@@ -271,14 +290,10 @@ class GoalClassifier:
             kb_state=KnowledgeState.UNKNOWN,
             reversibility=reversibility,
             multi_step=estimated_steps > 1,
-            is_generative=bool(
-                tokens & {"write", "generate", "create", "draft", "compose"}
-            ),
+            is_generative=bool(tokens & {"write", "generate", "create", "draft", "compose"}),
             requires_web=requires_web,
             requires_code=requires_code,
-            requires_vision=bool(
-                tokens & {"image", "photo", "screenshot", "vision", "ocr"}
-            ),
+            requires_vision=bool(tokens & {"image", "photo", "screenshot", "vision", "ocr"}),
             estimated_steps=estimated_steps,
             classifier_confidence=confidence,
         )
@@ -334,5 +349,6 @@ class GoalClassifier:
             )
         except Exception as exc:
             from app.observability.logging import get_logger
+
             get_logger(__name__).warning("llm_classification_failed", error=str(exc))
             return base

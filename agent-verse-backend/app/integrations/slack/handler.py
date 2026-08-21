@@ -7,6 +7,7 @@ Enables:
 
 Uses open-source slack-sdk (not Bolt, just the SDK for webhook handling).
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -48,9 +49,7 @@ def verify_slack_signature(
         return False
 
     base = f"v0:{timestamp}:{body.decode('utf-8')}"
-    expected = "v0=" + hmac.new(
-        signing_secret.encode(), base.encode(), hashlib.sha256
-    ).hexdigest()
+    expected = "v0=" + hmac.new(signing_secret.encode(), base.encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature)
 
 

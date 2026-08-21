@@ -3,6 +3,7 @@
 Environment variables:
   NETLIFY_ACCESS_TOKEN: Netlify personal access token
 """
+
 from __future__ import annotations
 
 import os
@@ -116,7 +117,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
@@ -143,7 +147,9 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
                         "published_deploy": {
                             "id": s.get("published_deploy", {}).get("id"),
                             "state": s.get("published_deploy", {}).get("state"),
-                        } if s.get("published_deploy") else None,
+                        }
+                        if s.get("published_deploy")
+                        else None,
                     }
                     for s in resp.json()
                 ]

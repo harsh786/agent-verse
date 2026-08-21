@@ -1,7 +1,9 @@
 """Marketplace monetization — paid templates, Stripe Connect, author payouts."""
+
 from __future__ import annotations
-import uuid
+
 from typing import Any
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -29,7 +31,9 @@ def _require_tenant(request: Request) -> Any:
 def _stripe():
     try:
         import stripe
+
         from app.core.config import get_settings
+
         s = get_settings()
         if not s.stripe_api_key:
             raise HTTPException(503, "Stripe not configured. Set STRIPE_API_KEY.")
@@ -47,14 +51,20 @@ async def set_template_price(body: PricingRequest, request: Request) -> dict[str
     if db is None:
         raise HTTPException(503, "Database unavailable")
     from sqlalchemy import text
+
     from app.db.rls import sqlalchemy_rls_context
+
     async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
         await session.execute(
             text("""UPDATE marketplace_templates
                     SET price_usd = :price, author_tenant_id = :tid, revenue_share_pct = :share
                     WHERE template_id = :tmpl_id"""),
-            {"price": body.price_usd, "tid": tenant.tenant_id,
-             "share": body.revenue_share_pct, "tmpl_id": body.template_id},
+            {
+                "price": body.price_usd,
+                "tid": tenant.tenant_id,
+                "share": body.revenue_share_pct,
+                "tmpl_id": body.template_id,
+            },
         )
         await session.commit()
     return {"template_id": body.template_id, "price_usd": body.price_usd}
@@ -91,11 +101,14 @@ async def purchase_template(template_id: str, request: Request) -> dict[str, Any
     if db is None:
         raise HTTPException(503, "Database unavailable")
     from sqlalchemy import text
+
     async with db() as session:
-        row = (await session.execute(
-            text("SELECT price_usd FROM marketplace_templates WHERE template_id = :tid"),
-            {"tid": template_id},
-        )).fetchone()
+        row = (
+            await session.execute(
+                text("SELECT price_usd FROM marketplace_templates WHERE template_id = :tid"),
+                {"tid": template_id},
+            )
+        ).fetchone()
     if row is None:
         raise HTTPException(404, f"Template {template_id} not found")
     price_usd = float(row[0] or 0)

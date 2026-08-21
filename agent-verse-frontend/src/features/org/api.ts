@@ -10,6 +10,7 @@ import type {
   OrgTask,
   OrgEvent,
   OrgHealthResponse,
+  TeamMembersResponse,
   CursorPage,
   CreateOrganizationRequest,
   UpdateOrganizationRequest,
@@ -67,6 +68,10 @@ export const orgApi = {
 
   listDepartments(orgId: string): Promise<OrgDepartment[]> {
     return apiFetch<OrgDepartment[]>(`${BASE}/${orgId}/departments`);
+  },
+
+  listTeamMembers(orgId: string, teamId: string): Promise<TeamMembersResponse> {
+    return apiFetch<TeamMembersResponse>(`${BASE}/${orgId}/teams/${teamId}/members`);
   },
 
   // ── Missions ──────────────────────────────────────────────────────────────

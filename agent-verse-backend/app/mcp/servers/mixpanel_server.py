@@ -5,6 +5,7 @@ Environment:
   MIXPANEL_SERVICE_ACCOUNT_SECRET:   Service account secret
   MIXPANEL_PROJECT_ID:               Project ID (numeric string)
 """
+
 from __future__ import annotations
 
 import os
@@ -136,7 +137,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     project_id = _project_id()
 
     if not username or not secret:
-        return {"error": "MIXPANEL_SERVICE_ACCOUNT_USERNAME and MIXPANEL_SERVICE_ACCOUNT_SECRET not configured"}
+        return {
+            "error": "MIXPANEL_SERVICE_ACCOUNT_USERNAME and MIXPANEL_SERVICE_ACCOUNT_SECRET not configured"
+        }
     if not project_id:
         return {"error": "MIXPANEL_PROJECT_ID not configured"}
 
@@ -147,6 +150,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             if tool_name == "mixpanel_query_events":
                 import json as _json
+
                 params: dict[str, Any] = {
                     "from_date": arguments["from_date"],
                     "to_date": arguments["to_date"],

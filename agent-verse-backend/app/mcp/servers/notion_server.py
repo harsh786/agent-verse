@@ -3,6 +3,7 @@
 Environment variables:
   NOTION_API_KEY: Notion integration token (secret_...)
 """
+
 from __future__ import annotations
 
 import os
@@ -41,7 +42,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "page_id": {"type": "string", "description": "Notion page UUID (with or without dashes)"},
+                "page_id": {
+                    "type": "string",
+                    "description": "Notion page UUID (with or without dashes)",
+                },
             },
             "required": ["page_id"],
         },
@@ -195,7 +199,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
@@ -237,9 +244,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             payload: dict[str, Any] = {
                 "parent": {parent_type: arguments["parent_id"]},
                 "properties": {
-                    "title": {
-                        "title": [{"type": "text", "text": {"content": arguments["title"]}}]
-                    }
+                    "title": {"title": [{"type": "text", "text": {"content": arguments["title"]}}]}
                 },
             }
             # Merge custom properties if provided
@@ -270,9 +275,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
                 payload["archived"] = arguments["archived"]
             if arguments.get("title"):
                 payload["properties"] = {
-                    "title": {
-                        "title": [{"type": "text", "text": {"content": arguments["title"]}}]
-                    }
+                    "title": {"title": [{"type": "text", "text": {"content": arguments["title"]}}]}
                 }
             if arguments.get("properties"):
                 payload.setdefault("properties", {}).update(arguments["properties"])
@@ -285,9 +288,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             resp = await client.get(f"/databases/{arguments['database_id']}")
             resp.raise_for_status()
             data = resp.json()
-            title = "".join(
-                t.get("plain_text", "") for t in data.get("title", [])
-            )
+            title = "".join(t.get("plain_text", "") for t in data.get("title", []))
             return {
                 "id": data.get("id", ""),
                 "title": title,

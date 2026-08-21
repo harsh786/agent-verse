@@ -2,6 +2,7 @@
 
 Uses HubSpot REST API v3. Cursor: last record's updatedAt timestamp.
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,6 +30,7 @@ class HubSpotConnector(BaseConnector):
         import time
 
         import httpx
+
         t0 = time.perf_counter()
         try:
             token = config.connection_config.get("access_token", "")
@@ -67,20 +69,30 @@ class HubSpotConnector(BaseConnector):
                 url: str | None = f"{_HUBSPOT_BASE}/{obj_type}"
                 while url:
                     r = await client.get(url, params=params, headers=headers)
-                    if not r.is_success: break
+                    if not r.is_success:
+                        break
                     data = r.json()
                     for result in data.get("results", []):
                         props = result.get("properties", {})
                         updated = props.get("hs_lastmodifieddate") or props.get("updatedAt", "")
                         new_cursor = max(new_cursor, updated)
                         text_parts = [f"{k}: {v}" for k, v in props.items() if v]
-                        text = f"HubSpot {obj_type.rstrip('s').capitalize()}: {result.get('id')}\n" + "\n".join(text_parts)
+                        text = (
+                            f"HubSpot {obj_type.rstrip('s').capitalize()}: {result.get('id')}\n"
+                            + "\n".join(text_parts)
+                        )
                         doc = RawDocument(
                             doc_id=str(uuid.uuid4()),
-                            source_id=config.source_id, tenant_id=config.tenant_id,
+                            source_id=config.source_id,
+                            tenant_id=config.tenant_id,
                             source_url=f"https://app.hubspot.com/contacts/{result.get('id')}",
-                            content=text.encode(), content_type="text/plain",
-                            metadata={"object_type": obj_type, "id": result.get("id"), "updated": updated},
+                            content=text.encode(),
+                            content_type="text/plain",
+                            metadata={
+                                "object_type": obj_type,
+                                "id": result.get("id"),
+                                "updated": updated,
+                            },
                         )
                         yield doc, new_cursor
                     paging = data.get("paging", {}).get("next", {}).get("after")

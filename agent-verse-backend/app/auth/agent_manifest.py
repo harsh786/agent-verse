@@ -18,6 +18,7 @@ Manifest contents:
 
 External A2A systems can verify this manifest before accepting tasks.
 """
+
 from __future__ import annotations
 
 import base64
@@ -65,9 +66,7 @@ def sign_manifest(manifest: dict[str, Any], secret: str = "") -> dict[str, Any]:
     """Add an HMAC signature to the manifest."""
     import hmac as _hmac
 
-    signing_secret = secret or os.getenv(
-        "MANIFEST_SIGNING_SECRET", "agentverse-manifest-secret"
-    )
+    signing_secret = secret or os.getenv("MANIFEST_SIGNING_SECRET", "agentverse-manifest-secret")
     canonical = json.dumps(manifest, sort_keys=True).encode()
     sig = _hmac.new(signing_secret.encode(), canonical, hashlib.sha256).digest()
     return {
@@ -85,9 +84,7 @@ def verify_manifest(manifest: dict[str, Any], secret: str = "") -> bool:
     manifest.pop("_signed", None)
     if not sig_b64:
         return False
-    signing_secret = secret or os.getenv(
-        "MANIFEST_SIGNING_SECRET", "agentverse-manifest-secret"
-    )
+    signing_secret = secret or os.getenv("MANIFEST_SIGNING_SECRET", "agentverse-manifest-secret")
     canonical = json.dumps(manifest, sort_keys=True).encode()
     expected = _hmac.new(signing_secret.encode(), canonical, hashlib.sha256).digest()
     try:

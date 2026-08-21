@@ -2,6 +2,7 @@
 Cost breakdown API endpoint — per-role token/cost attribution per goal.
 Exposes the GoalCostBreakdown data collected by graph.py.
 """
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Request

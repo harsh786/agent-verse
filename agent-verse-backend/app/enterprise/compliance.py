@@ -7,18 +7,18 @@ Provides:
 - Retention sweep: delete records older than configured retention window
 - SOC2: audit access logs
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import uuid
+import warnings
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.tenancy.context import TenantContext
-
-import warnings
 
 warnings.warn(
     "app.enterprise.compliance is deprecated. Use app.enterprise.compliance_v2 instead. "
@@ -88,6 +88,7 @@ class ComplianceController:
             return
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
                 await session.execute(
                     text(
@@ -109,15 +110,15 @@ class ComplianceController:
                 )
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("compliance_request_save_failed: %s", exc)
 
-    async def _db_load_request(
-        self, request_id: str, tenant_id: str
-    ) -> DataExportRequest | None:
+    async def _db_load_request(self, request_id: str, tenant_id: str) -> DataExportRequest | None:
         if self._db is None:
             return None
         try:
             from sqlalchemy import text
+
             async with self._db() as session:
                 row = (
                     await session.execute(
@@ -143,6 +144,7 @@ class ComplianceController:
             return req
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("compliance_request_load_failed: %s", exc)
             return None
 
@@ -151,6 +153,7 @@ class ComplianceController:
             return
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
                 await session.execute(
                     text(
@@ -161,6 +164,7 @@ class ComplianceController:
                 )
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("deletion_save_failed: %s", exc)
 
     # ── public API ─────────────────────────────────────────────────────────────
@@ -177,6 +181,7 @@ class ComplianceController:
             if db is not None:
                 try:
                     from sqlalchemy import text as _text
+
                     async with db() as _sess:
                         # FIX: The previous cap has been removed.
                         # GDPR Art. 20 right to portability requires exporting ALL data.
@@ -209,12 +214,14 @@ class ComplianceController:
                     goal_records: dict[str, Any] = getattr(self._goal_service, "_goals", {})
                     for gid, record in goal_records.items():
                         if getattr(record, "tenant_id", "") == tenant_ctx.tenant_id:
-                            goals_data.append({
-                                "goal_id": gid,
-                                "goal_text": getattr(record, "goal_text", ""),
-                                "status": str(getattr(record, "status", "")),
-                                "created_at": getattr(record, "created_at", ""),
-                            })
+                            goals_data.append(
+                                {
+                                    "goal_id": gid,
+                                    "goal_text": getattr(record, "goal_text", ""),
+                                    "status": str(getattr(record, "status", "")),
+                                    "created_at": getattr(record, "created_at", ""),
+                                }
+                            )
                 except Exception as exc:
                     logging.getLogger(__name__).warning(
                         "compliance_goals_memory_export_failed: %s", exc
@@ -234,9 +241,7 @@ class ComplianceController:
                     for e in entries[:100]  # Cap at 100 for export
                 ]
             except Exception as exc:
-                logging.getLogger(__name__).warning(
-                    "compliance_audit_export_failed: %s", exc
-                )
+                logging.getLogger(__name__).warning("compliance_audit_export_failed: %s", exc)
 
         agents_data: list[dict[str, Any]] = []
         if self._agent_store is not None:
@@ -246,9 +251,7 @@ class ComplianceController:
                     {"agent_id": a.get("agent_id"), "name": a.get("name")} for a in agents
                 ]
             except Exception as exc:
-                logging.getLogger(__name__).warning(
-                    "compliance_agents_export_failed: %s", exc
-                )
+                logging.getLogger(__name__).warning("compliance_agents_export_failed: %s", exc)
 
         schedules_data: list[dict[str, Any]] = []
         if self._schedule_store is not None:
@@ -259,9 +262,7 @@ class ComplianceController:
                     for s in schedules
                 ]
             except Exception as exc:
-                logging.getLogger(__name__).warning(
-                    "compliance_schedules_export_failed: %s", exc
-                )
+                logging.getLogger(__name__).warning("compliance_schedules_export_failed: %s", exc)
 
         req.payload = {
             "tenant_id": tenant_ctx.tenant_id,
@@ -345,9 +346,9 @@ class ComplianceController:
             "tenant_id": tenant_ctx.tenant_id,
             "primary_region": "us-east-1",
             "backup_region": "eu-west-1",
-            "gdpr_compliant": False,   # FIX: was hardcoded True — dynamically checked via /compliance/gdpr
+            "gdpr_compliant": False,  # FIX: was hardcoded True — dynamically checked via /compliance/gdpr
             "pci_dss_scope": False,
-            "soc2_type2": False,       # FIX: was hardcoded True — dynamically checked via /compliance/soc2
+            "soc2_type2": False,  # FIX: was hardcoded True — dynamically checked via /compliance/soc2
             "note": "Use GET /enterprise/compliance/{framework} for authoritative compliance status.",
         }
 
@@ -359,18 +360,31 @@ class ComplianceController:
             return {"error": "No database configured", "deleted_rows": 0}
 
         from sqlalchemy import text
+
         deleted_counts: dict[str, Any] = {}
         tables_ordered = [
             # Child tables first (FK constraints)
-            "goal_events", "goal_checkpoints", "goal_steps",
-            "decision_traces", "evaluations", "cost_ledger",
-            "audit_log", "approval_requests", "governance_policies",
-            "collab_operations", "collab_sessions",
-            "documents", "knowledge_collections",
-            "mcp_credentials", "oauth_tokens", "mcp_servers",
-            "execution_memory", "long_term_memory",
+            "goal_events",
+            "goal_checkpoints",
+            "goal_steps",
+            "decision_traces",
+            "evaluations",
+            "cost_ledger",
+            "audit_log",
+            "approval_requests",
+            "governance_policies",
+            "collab_operations",
+            "collab_sessions",
+            "documents",
+            "knowledge_collections",
+            "mcp_credentials",
+            "oauth_tokens",
+            "mcp_servers",
+            "execution_memory",
+            "long_term_memory",
             "agent_snapshots",
-            "agent_permissions", "agents",
+            "agent_permissions",
+            "agents",
             "schedules",
             "compliance_requests",
             "goals",
@@ -387,7 +401,7 @@ class ComplianceController:
                     col = "id" if table == "tenants" else "tenant_id"
                     result = await session.execute(
                         text(f"DELETE FROM {table} WHERE {col} = :tid"),
-                        {"tid": tenant_ctx.tenant_id}
+                        {"tid": tenant_ctx.tenant_id},
                     )
                     deleted_counts[table] = result.rowcount
                 except Exception as exc:
@@ -401,9 +415,7 @@ class ComplianceController:
                     {"tid": tenant_ctx.tenant_id},
                 )
         except Exception as exc:
-            logging.getLogger(__name__).warning(
-                "compliance_deletion_tracking_failed: %s", exc
-            )
+            logging.getLogger(__name__).warning("compliance_deletion_tracking_failed: %s", exc)
 
         total = sum(v for v in deleted_counts.values() if isinstance(v, int))
         return {

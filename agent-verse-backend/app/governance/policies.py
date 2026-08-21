@@ -109,16 +109,12 @@ class PolicyEngine:
 
             tz = ZoneInfo(policy.timezone or "UTC")
         except Exception:
-
             tz = UTC  # type: ignore[assignment]
 
         from datetime import datetime
 
         now = datetime.now(tz)
-        if (
-            policy.allowed_weekdays is not None
-            and now.weekday() not in policy.allowed_weekdays
-        ):
+        if policy.allowed_weekdays is not None and now.weekday() not in policy.allowed_weekdays:
             return False
         if policy.allowed_hours_utc is not None:
             start_h, end_h = policy.allowed_hours_utc
@@ -136,7 +132,8 @@ class PolicyEngine:
         """Evaluate tool access. parent_policy_ids allows sub-agents to inherit parent policies."""
         # Collect applicable policies for this tenant (including inherited)
         applicable_policies = [
-            p for p in self._policies
+            p
+            for p in self._policies
             if not getattr(p, "tenant_id", "")
             or getattr(p, "tenant_id", "") == tenant_ctx.tenant_id
         ]
@@ -229,35 +226,37 @@ class PolicyEngine:
             return len(rows)
         try:
             from sqlalchemy import text
+
             async with db() as session:
                 if tenant_id:
-                    rows = (await session.execute(
-                        text(
-                            "SELECT name, action, tools_pattern, tenant_id "
-                            "FROM governance_policies WHERE tenant_id=:tid"
-                        ),
-                        {"tid": tenant_id},
-                    )).fetchall()
+                    rows = (
+                        await session.execute(
+                            text(
+                                "SELECT name, action, tools_pattern, tenant_id "
+                                "FROM governance_policies WHERE tenant_id=:tid"
+                            ),
+                            {"tid": tenant_id},
+                        )
+                    ).fetchall()
                     # Remove old policies for this tenant only
                     self._policies = [
-                        p for p in self._policies
-                        if getattr(p, "tenant_id", "") != tenant_id
+                        p for p in self._policies if getattr(p, "tenant_id", "") != tenant_id
                     ]
                 else:
-                    rows = (await session.execute(
-                        text(
-                            "SELECT name, action, tools_pattern, tenant_id "
-                            "FROM governance_policies"
+                    rows = (
+                        await session.execute(
+                            text(
+                                "SELECT name, action, tools_pattern, tenant_id "
+                                "FROM governance_policies"
+                            )
                         )
-                    )).fetchall()
+                    ).fetchall()
                     self._policies = []
 
                 for row in rows:
                     name, action, tools_pattern, pol_tenant_id = row
                     denied_tools = [tools_pattern or ".*"] if action == "deny" else []
-                    approval_tools = (
-                        [tools_pattern or ".*"] if action == "require_approval" else []
-                    )
+                    approval_tools = [tools_pattern or ".*"] if action == "require_approval" else []
                     p = Policy(
                         name=name,
                         description="",
@@ -271,6 +270,7 @@ class PolicyEngine:
             return len(rows)
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("policy_reload_from_db_failed: %s", exc)
             return 0
 
@@ -286,20 +286,22 @@ class PolicyEngine:
         try:
             import json
             from datetime import UTC, datetime
-            msg = json.dumps({
-                "tenant_id": tenant_id,
-                "action": action,  # "created" | "deleted"
-                "ts": datetime.now(UTC).isoformat(),
-            })
+
+            msg = json.dumps(
+                {
+                    "tenant_id": tenant_id,
+                    "action": action,  # "created" | "deleted"
+                    "ts": datetime.now(UTC).isoformat(),
+                }
+            )
             await redis.publish("policy_changes", msg)
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("policy_publish_failed: %s", exc)
 
     @classmethod
-    async def subscribe_to_changes(
-        cls, redis_url: str, engine: PolicyEngine, db: Any
-    ) -> None:
+    async def subscribe_to_changes(cls, redis_url: str, engine: PolicyEngine, db: Any) -> None:
         """Long-running coroutine: subscribe to policy_changes channel and reload on message.
 
         Designed to run as an asyncio background task via asyncio.create_task().
@@ -346,14 +348,13 @@ class PolicyEngine:
                 await asyncio.sleep(5)  # reconnect after 5s
 
 
-def start_policy_subscriber(
-    redis_url: str, engine: PolicyEngine, db: Any
-) -> asyncio.Task[None]:
+def start_policy_subscriber(redis_url: str, engine: PolicyEngine, db: Any) -> asyncio.Task[None]:
     """Start the policy change subscriber as a background task.
     Call this from main.py lifespan after Redis is available.
     Returns the task so it can be cancelled on shutdown.
     """
     import asyncio
+
     return asyncio.create_task(
         PolicyEngine.subscribe_to_changes(redis_url, engine, db),
         name="policy_pubsub_subscriber",
@@ -459,9 +460,7 @@ class PolicyVersionManager:
 
         # Deactivate current version
         await db.execute(
-            sa_update(PolicyVersion)
-            .where(PolicyVersion.id == current.id)
-            .values(is_active=False)
+            sa_update(PolicyVersion).where(PolicyVersion.id == current.id).values(is_active=False)
         )
 
         new_version = await self._insert_version(
@@ -475,9 +474,7 @@ class PolicyVersionManager:
             is_active=True,
             change_summary=change_summary,
             changed_by=changed_by,
-            parent_policy_id=(
-                str(current.parent_policy_id) if current.parent_policy_id else None
-            ),
+            parent_policy_id=(str(current.parent_policy_id) if current.parent_policy_id else None),
         )
         await db.commit()
         return new_version
@@ -505,9 +502,7 @@ class PolicyVersionManager:
         )
         target = target_result.scalar_one_or_none()
         if not target:
-            raise ValueError(
-                f"Version {target_version} not found for policy {policy_id}"
-            )
+            raise ValueError(f"Version {target_version} not found for policy {policy_id}")
 
         # Deactivate current active version
         await db.execute(

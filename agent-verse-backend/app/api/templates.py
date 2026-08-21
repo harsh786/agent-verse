@@ -1,4 +1,5 @@
 """Goal Template REST API — parameterized reusable goal patterns."""
+
 from __future__ import annotations
 
 import re
@@ -59,7 +60,9 @@ class TemplateUpdate(BaseModel):
 
 class InstantiateRequest(BaseModel):
     parameters: dict[str, str] = Field(default_factory=dict)
-    submit: bool = Field(default=False, description="If true, submit the instantiated goal immediately")
+    submit: bool = Field(
+        default=False, description="If true, submit the instantiated goal immediately"
+    )
     agent_id: str | None = None
     priority: str = "normal"
 
@@ -250,17 +253,21 @@ class _TemplateStore:
         self._seeded_tenants.add(tenant_id)
         try:
             from sqlalchemy import text as _t
+
             now = datetime.now(UTC)
 
             yaml_templates = _load_yaml_goal_templates()
             source = yaml_templates if yaml_templates else _BUILTIN_TEMPLATES
 
             async with self._db() as session:
-                await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
+                await session.execute(
+                    _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+                )
                 for tpl in source:
                     tpl_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{tenant_id}:{tpl['name']}"))
                     params = _extract_parameters(tpl["goal_text"])
                     import json
+
                     await session.execute(
                         _t("""
                             INSERT INTO goal_templates
@@ -272,9 +279,14 @@ class _TemplateStore:
                             ON CONFLICT (id) DO NOTHING
                         """),
                         {
-                            "id": tpl_id, "tenant_id": tenant_id, "name": tpl["name"],
-                            "description": tpl["description"], "goal_text": tpl["goal_text"],
-                            "domain": tpl["domain"], "parameters": json.dumps(params), "now": now,
+                            "id": tpl_id,
+                            "tenant_id": tenant_id,
+                            "name": tpl["name"],
+                            "description": tpl["description"],
+                            "goal_text": tpl["goal_text"],
+                            "domain": tpl["domain"],
+                            "parameters": json.dumps(params),
+                            "now": now,
                         },
                     )
                 await session.commit()
@@ -318,30 +330,62 @@ class _TemplateStore:
         t = self._mem.get(template_id)
         return t if t and t["tenant_id"] == tenant_id else None
 
-    async def create(self, tenant_id: str, name: str, description: str, goal_text: str,
-                     domain: str, parameters: list[dict[str, Any]]) -> dict[str, Any]:
+    async def create(
+        self,
+        tenant_id: str,
+        name: str,
+        description: str,
+        goal_text: str,
+        domain: str,
+        parameters: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         if self._db:
-            return await self._create_db(tenant_id, name, description, goal_text, domain, parameters)
+            return await self._create_db(
+                tenant_id, name, description, goal_text, domain, parameters
+            )
         now = datetime.now(UTC)
         t: dict[str, Any] = {
-            "id": str(uuid.uuid4()), "tenant_id": tenant_id, "name": name,
-            "description": description, "goal_text": goal_text, "domain": domain,
-            "parameters": parameters, "use_count": 0, "version": 1,
-            "created_at": now, "updated_at": now,
+            "id": str(uuid.uuid4()),
+            "tenant_id": tenant_id,
+            "name": name,
+            "description": description,
+            "goal_text": goal_text,
+            "domain": domain,
+            "parameters": parameters,
+            "use_count": 0,
+            "version": 1,
+            "created_at": now,
+            "updated_at": now,
         }
         self._mem[t["id"]] = t
         return t
 
-    async def update(self, tenant_id: str, template_id: str, name: str, description: str,
-                     goal_text: str, domain: str, parameters: list[dict[str, Any]]) -> dict[str, Any] | None:
+    async def update(
+        self,
+        tenant_id: str,
+        template_id: str,
+        name: str,
+        description: str,
+        goal_text: str,
+        domain: str,
+        parameters: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         if self._db:
-            return await self._update_db(tenant_id, template_id, name, description, goal_text, domain, parameters)
+            return await self._update_db(
+                tenant_id, template_id, name, description, goal_text, domain, parameters
+            )
         t = self._mem.get(template_id)
         if not t or t["tenant_id"] != tenant_id:
             return None
-        t.update(name=name, description=description, goal_text=goal_text,
-                 domain=domain, parameters=parameters, version=t["version"] + 1,
-                 updated_at=datetime.now(UTC))
+        t.update(
+            name=name,
+            description=description,
+            goal_text=goal_text,
+            domain=domain,
+            parameters=parameters,
+            version=t["version"] + 1,
+            updated_at=datetime.now(UTC),
+        )
         return t
 
     async def delete(self, tenant_id: str, template_id: str) -> bool:
@@ -357,8 +401,11 @@ class _TemplateStore:
         if self._db:
             try:
                 from sqlalchemy import text as _t
+
                 async with self._db() as session:
-                    await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
+                    await session.execute(
+                        _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+                    )
                     await session.execute(
                         _t("UPDATE goal_templates SET use_count = use_count + 1 WHERE id = :id"),
                         {"id": template_id},
@@ -376,8 +423,11 @@ class _TemplateStore:
         from sqlalchemy import text as _t
 
         from app.db.models.template import GoalTemplate
+
         async with self._db() as session:
-            await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
+            await session.execute(
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+            )
             q = select(GoalTemplate).where(GoalTemplate.tenant_id == tenant_id)
             if domain:
                 q = q.where(GoalTemplate.domain == domain)
@@ -389,40 +439,82 @@ class _TemplateStore:
         from sqlalchemy import text as _t
 
         from app.db.models.template import GoalTemplate
+
         async with self._db() as session:
-            await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
-            row = (await session.execute(
-                select(GoalTemplate).where(GoalTemplate.id == template_id, GoalTemplate.tenant_id == tenant_id)
-            )).scalar_one_or_none()
+            await session.execute(
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+            )
+            row = (
+                await session.execute(
+                    select(GoalTemplate).where(
+                        GoalTemplate.id == template_id, GoalTemplate.tenant_id == tenant_id
+                    )
+                )
+            ).scalar_one_or_none()
             return self._orm_to_dict(row) if row else None
 
-    async def _create_db(self, tenant_id: str, name: str, description: str, goal_text: str,
-                         domain: str, parameters: list[dict[str, Any]]) -> dict[str, Any]:
+    async def _create_db(
+        self,
+        tenant_id: str,
+        name: str,
+        description: str,
+        goal_text: str,
+        domain: str,
+        parameters: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         from sqlalchemy import text as _t
 
         from app.db.models.template import GoalTemplate
+
         now = datetime.now(UTC)
         async with self._db() as session:
-            await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
-            obj = GoalTemplate(id=str(uuid.uuid4()), tenant_id=tenant_id, name=name,
-                               description=description, goal_text=goal_text, domain=domain,
-                               parameters=parameters, use_count=0, version=1, created_at=now, updated_at=now)
+            await session.execute(
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+            )
+            obj = GoalTemplate(
+                id=str(uuid.uuid4()),
+                tenant_id=tenant_id,
+                name=name,
+                description=description,
+                goal_text=goal_text,
+                domain=domain,
+                parameters=parameters,
+                use_count=0,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
             session.add(obj)
             await session.commit()
             await session.refresh(obj)
             return self._orm_to_dict(obj)
 
-    async def _update_db(self, tenant_id: str, template_id: str, name: str, description: str,
-                         goal_text: str, domain: str, parameters: list[dict[str, Any]]) -> dict[str, Any] | None:
+    async def _update_db(
+        self,
+        tenant_id: str,
+        template_id: str,
+        name: str,
+        description: str,
+        goal_text: str,
+        domain: str,
+        parameters: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         from sqlalchemy import select
         from sqlalchemy import text as _t
 
         from app.db.models.template import GoalTemplate
+
         async with self._db() as session:
-            await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
-            obj = (await session.execute(
-                select(GoalTemplate).where(GoalTemplate.id == template_id, GoalTemplate.tenant_id == tenant_id)
-            )).scalar_one_or_none()
+            await session.execute(
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+            )
+            obj = (
+                await session.execute(
+                    select(GoalTemplate).where(
+                        GoalTemplate.id == template_id, GoalTemplate.tenant_id == tenant_id
+                    )
+                )
+            ).scalar_one_or_none()
             if obj is None:
                 return None
             obj.name = name
@@ -441,11 +533,18 @@ class _TemplateStore:
         from sqlalchemy import text as _t
 
         from app.db.models.template import GoalTemplate
+
         async with self._db() as session:
-            await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
-            obj = (await session.execute(
-                select(GoalTemplate).where(GoalTemplate.id == template_id, GoalTemplate.tenant_id == tenant_id)
-            )).scalar_one_or_none()
+            await session.execute(
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+            )
+            obj = (
+                await session.execute(
+                    select(GoalTemplate).where(
+                        GoalTemplate.id == template_id, GoalTemplate.tenant_id == tenant_id
+                    )
+                )
+            ).scalar_one_or_none()
             if obj is None:
                 return False
             await session.delete(obj)
@@ -455,12 +554,21 @@ class _TemplateStore:
     @staticmethod
     def _orm_to_dict(obj: Any) -> dict[str, Any]:
         return {
-            "id": obj.id, "tenant_id": obj.tenant_id, "name": obj.name,
-            "description": obj.description, "goal_text": obj.goal_text,
-            "domain": obj.domain, "parameters": obj.parameters or [],
-            "use_count": obj.use_count, "version": obj.version,
-            "created_at": obj.created_at.isoformat() if isinstance(obj.created_at, datetime) else str(obj.created_at),
-            "updated_at": obj.updated_at.isoformat() if isinstance(obj.updated_at, datetime) else str(obj.updated_at),
+            "id": obj.id,
+            "tenant_id": obj.tenant_id,
+            "name": obj.name,
+            "description": obj.description,
+            "goal_text": obj.goal_text,
+            "domain": obj.domain,
+            "parameters": obj.parameters or [],
+            "use_count": obj.use_count,
+            "version": obj.version,
+            "created_at": obj.created_at.isoformat()
+            if isinstance(obj.created_at, datetime)
+            else str(obj.created_at),
+            "updated_at": obj.updated_at.isoformat()
+            if isinstance(obj.updated_at, datetime)
+            else str(obj.updated_at),
         }
 
 
@@ -479,7 +587,8 @@ async def list_templates(
     if search:
         q = search.lower()
         results = [
-            t for t in results
+            t
+            for t in results
             if q in t.get("name", "").lower()
             or q in t.get("description", "").lower()
             or q in t.get("goal_text", "").lower()
@@ -490,10 +599,16 @@ async def list_templates(
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_template(request: Request, body: TemplateCreate) -> dict[str, Any]:
     tenant = _require_tenant(request)
-    parameters = body.parameters if body.parameters is not None else _extract_parameters(body.goal_text)
+    parameters = (
+        body.parameters if body.parameters is not None else _extract_parameters(body.goal_text)
+    )
     return await template_store.create(
-        tenant_id=tenant.tenant_id, name=body.name, description=body.description,
-        goal_text=body.goal_text, domain=body.domain, parameters=parameters,
+        tenant_id=tenant.tenant_id,
+        name=body.name,
+        description=body.description,
+        goal_text=body.goal_text,
+        domain=body.domain,
+        parameters=parameters,
     )
 
 
@@ -509,10 +624,16 @@ async def get_template(template_id: str, request: Request) -> dict[str, Any]:
 @router.put("/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def update_template(template_id: str, request: Request, body: TemplateUpdate) -> None:
     tenant = _require_tenant(request)
-    parameters = body.parameters if body.parameters is not None else _extract_parameters(body.goal_text)
+    parameters = (
+        body.parameters if body.parameters is not None else _extract_parameters(body.goal_text)
+    )
     result = await template_store.update(
-        tenant_id=tenant.tenant_id, template_id=template_id, name=body.name,
-        description=body.description, goal_text=body.goal_text, domain=body.domain,
+        tenant_id=tenant.tenant_id,
+        template_id=template_id,
+        name=body.name,
+        description=body.description,
+        goal_text=body.goal_text,
+        domain=body.domain,
         parameters=parameters,
     )
     if result is None:
@@ -538,15 +659,20 @@ async def instantiate_template(
 
     # Check required parameters
     missing = [
-        p["name"] for p in (t.get("parameters") or [])
+        p["name"]
+        for p in (t.get("parameters") or [])
         if p.get("required", True) and p["name"] not in body.parameters and not p.get("default")
     ]
     if missing:
         raise HTTPException(422, f"Missing required parameters: {', '.join(missing)}")
 
     # Fill defaults for missing optional params
-    params = {**{p["name"]: p.get("default", "") for p in (t.get("parameters") or []) if p.get("default")},
-              **body.parameters}
+    params = {
+        **{
+            p["name"]: p.get("default", "") for p in (t.get("parameters") or []) if p.get("default")
+        },
+        **body.parameters,
+    }
     instantiated_goal = _instantiate_template(t["goal_text"], params)
 
     # Track usage

@@ -3,6 +3,7 @@
 Environment:
   BREVO_API_KEY: Brevo API key (api-key v3)
 """
+
 from __future__ import annotations
 
 import os
@@ -127,9 +128,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "BREVO_API_KEY not configured"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=BREVO_BASE, headers=_headers(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=BREVO_BASE, headers=_headers(), timeout=30.0) as c:
             if tool_name == "brevo_send_email":
                 sender_email = arguments.get("sender_email") or os.getenv(
                     "BREVO_SENDER_EMAIL", "noreply@example.com"
@@ -222,6 +221,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "brevo_get_contact":
                 import urllib.parse
+
                 email_enc = urllib.parse.quote(arguments["email"])
                 r = await c.get(f"/contacts/{email_enc}")
                 r.raise_for_status()
@@ -234,6 +234,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "brevo_delete_contact":
                 import urllib.parse
+
                 email_enc = urllib.parse.quote(arguments["email"])
                 r = await c.delete(f"/contacts/{email_enc}")
                 return {"success": r.status_code == 204, "status_code": r.status_code}

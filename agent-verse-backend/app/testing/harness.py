@@ -3,9 +3,9 @@
 Allows testing agent plans and execution in isolation without running
 a full server. Uses FakeProvider for LLM and MockMCPClient for tools.
 """
+
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -50,14 +50,16 @@ class AgentTestHarness:
         self._mock_tools: dict[str, Any] = {}
         self._planner_responses = planner_responses or ['{"steps": ["Execute the goal"]}']
         self._executor_responses = executor_responses or ["Task executed successfully"]
-        self._verifier_responses = verifier_responses or ['{"success": true, "reason": "Goal achieved"}']
+        self._verifier_responses = verifier_responses or [
+            '{"success": true, "reason": "Goal achieved"}'
+        ]
 
-    def set_mock_tool(self, tool_name: str, response: Any) -> "AgentTestHarness":
+    def set_mock_tool(self, tool_name: str, response: Any) -> AgentTestHarness:
         """Configure a mock response for a specific tool."""
         self._mock_tools[tool_name] = response
         return self  # Enable chaining
 
-    def set_planner_responses(self, responses: list[str]) -> "AgentTestHarness":
+    def set_planner_responses(self, responses: list[str]) -> AgentTestHarness:
         self._planner_responses = responses
         return self
 
@@ -109,7 +111,8 @@ class AgentTestHarness:
             )
             tools_called = [
                 str(e.get("tool_name") or e.get("tool") or "")
-                for e in events if e.get("type") == "tool_call_complete"
+                for e in events
+                if e.get("type") == "tool_call_complete"
             ]
             plan_steps: list[str] = []
             for e in events:
@@ -132,7 +135,9 @@ class AgentTestHarness:
                 error=str(exc),
             )
 
-    def assert_tool_called(self, tool_name: str, result: TestResult, times: int | None = None) -> None:
+    def assert_tool_called(
+        self, tool_name: str, result: TestResult, times: int | None = None
+    ) -> None:
         called = [t for t in result.tools_called if tool_name in t]
         if times is not None:
             assert len(called) == times, (

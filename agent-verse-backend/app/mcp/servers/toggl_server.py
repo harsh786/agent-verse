@@ -3,6 +3,7 @@
 Environment:
   TOGGL_API_TOKEN: Toggl Track API token (from Profile Settings)
 """
+
 from __future__ import annotations
 
 import os
@@ -38,8 +39,14 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "workspace_id": {"type": "integer", "description": "Workspace ID"},
                 "start": {"type": "string", "description": "ISO 8601 start time"},
-                "stop": {"type": "string", "description": "ISO 8601 stop time (omit to start running timer)"},
-                "duration": {"type": "integer", "description": "Duration in seconds (-1 for running)"},
+                "stop": {
+                    "type": "string",
+                    "description": "ISO 8601 stop time (omit to start running timer)",
+                },
+                "duration": {
+                    "type": "integer",
+                    "description": "Duration in seconds (-1 for running)",
+                },
                 "description": {"type": "string"},
                 "project_id": {"type": "integer"},
                 "billable": {"type": "boolean", "default": False},

@@ -4,6 +4,7 @@ Environment:
   EMARSYS_USERNAME: Emarsys API username
   EMARSYS_SECRET: Emarsys API secret key
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -40,7 +41,10 @@ TOOL_DEFINITIONS = [
                 "email": {"type": "string", "description": "Contact email address"},
                 "first_name": {"type": "string", "description": "First name"},
                 "last_name": {"type": "string", "description": "Last name"},
-                "custom_fields": {"type": "object", "description": "Custom field ID to value mappings"},
+                "custom_fields": {
+                    "type": "object",
+                    "description": "Custom field ID to value mappings",
+                },
             },
             "required": ["email"],
         },
@@ -64,7 +68,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "integer", "description": "Campaign status filter (1=launched, 2=scheduled)"},
+                "status": {
+                    "type": "integer",
+                    "description": "Campaign status filter (1=launched, 2=scheduled)",
+                },
                 "limit": {"type": "integer", "description": "Maximum campaigns"},
                 "offset": {"type": "integer", "description": "Pagination offset"},
             },
@@ -77,7 +84,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "campaign_id": {"type": "integer", "description": "Campaign ID to launch"},
-                "schedule": {"type": "string", "description": "ISO datetime to schedule launch (omit for immediate)"},
+                "schedule": {
+                    "type": "string",
+                    "description": "ISO datetime to schedule launch (omit for immediate)",
+                },
                 "segment_id": {"type": "integer", "description": "Target segment/contact list ID"},
             },
             "required": ["campaign_id"],
@@ -124,7 +134,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
         try:
             if tool_name == "emarsys_list_contacts":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/contact/query/return=3", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/contact/query/return=3", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -136,7 +148,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     fields["2"] = arguments["last_name"]
                 if "custom_fields" in arguments:
                     fields.update(arguments["custom_fields"])
-                r = await client.post(f"{BASE_URL}/contact", headers=headers, json={"key_id": "3", "contacts": [fields]})
+                r = await client.post(
+                    f"{BASE_URL}/contact",
+                    headers=headers,
+                    json={"key_id": "3", "contacts": [fields]},
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -146,7 +162,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     headers=headers,
                     json={
                         "key_id": str(arguments["key_id"]),
-                        "contacts": [{**{str(arguments["key_id"]): arguments["key_value"]}, **{str(k): v for k, v in arguments["fields"].items()}}],
+                        "contacts": [
+                            {
+                                **{str(arguments["key_id"]): arguments["key_value"]},
+                                **{str(k): v for k, v in arguments["fields"].items()},
+                            }
+                        ],
                     },
                 )
                 r.raise_for_status()

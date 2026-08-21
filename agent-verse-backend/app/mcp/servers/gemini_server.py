@@ -3,6 +3,7 @@
 Environment:
   GEMINI_API_KEY: Google Gemini API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -22,9 +23,15 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "prompt": {"type": "string", "description": "The text prompt to generate content from"},
+                "prompt": {
+                    "type": "string",
+                    "description": "The text prompt to generate content from",
+                },
                 "model": {"type": "string", "description": "Gemini model ID (default: gemini-pro)"},
-                "max_output_tokens": {"type": "integer", "description": "Maximum tokens to generate"},
+                "max_output_tokens": {
+                    "type": "integer",
+                    "description": "Maximum tokens to generate",
+                },
                 "temperature": {"type": "number", "description": "Sampling temperature (0.0-1.0)"},
                 "top_p": {"type": "number", "description": "Nucleus sampling parameter"},
                 "top_k": {"type": "integer", "description": "Top-k sampling parameter"},
@@ -41,8 +48,14 @@ TOOL_DEFINITIONS = [
                 "prompt": {"type": "string", "description": "Text prompt to accompany the image"},
                 "image_url": {"type": "string", "description": "URL of the image to include"},
                 "image_data": {"type": "string", "description": "Base64-encoded image data"},
-                "mime_type": {"type": "string", "description": "MIME type of the image (e.g. image/jpeg)"},
-                "model": {"type": "string", "description": "Gemini model ID (default: gemini-pro-vision)"},
+                "mime_type": {
+                    "type": "string",
+                    "description": "MIME type of the image (e.g. image/jpeg)",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Gemini model ID (default: gemini-pro-vision)",
+                },
             },
             "required": ["prompt"],
         },
@@ -53,7 +66,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "page_size": {"type": "integer", "description": "Number of models to return per page"},
+                "page_size": {
+                    "type": "integer",
+                    "description": "Number of models to return per page",
+                },
                 "page_token": {"type": "string", "description": "Pagination token"},
             },
         },
@@ -77,8 +93,14 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "text": {"type": "string", "description": "Text content to embed"},
-                "model": {"type": "string", "description": "Embedding model (default: embedding-001)"},
-                "task_type": {"type": "string", "description": "Task type (RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, etc.)"},
+                "model": {
+                    "type": "string",
+                    "description": "Embedding model (default: embedding-001)",
+                },
+                "task_type": {
+                    "type": "string",
+                    "description": "Task type (RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, etc.)",
+                },
             },
             "required": ["text"],
         },
@@ -95,7 +117,10 @@ TOOL_DEFINITIONS = [
                     "items": {"type": "object"},
                 },
                 "model": {"type": "string", "description": "Gemini model ID (default: gemini-pro)"},
-                "max_output_tokens": {"type": "integer", "description": "Maximum tokens in the response"},
+                "max_output_tokens": {
+                    "type": "integer",
+                    "description": "Maximum tokens in the response",
+                },
                 "temperature": {"type": "number", "description": "Sampling temperature"},
             },
             "required": ["messages"],
@@ -139,12 +164,14 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 model = arguments.get("model", "gemini-pro-vision")
                 parts: list[dict[str, Any]] = [{"text": arguments["prompt"]}]
                 if "image_data" in arguments:
-                    parts.append({
-                        "inlineData": {
-                            "mimeType": arguments.get("mime_type", "image/jpeg"),
-                            "data": arguments["image_data"],
+                    parts.append(
+                        {
+                            "inlineData": {
+                                "mimeType": arguments.get("mime_type", "image/jpeg"),
+                                "data": arguments["image_data"],
+                            }
                         }
-                    })
+                    )
                 elif "image_url" in arguments:
                     parts.append({"fileData": {"fileUri": arguments["image_url"]}})
                 r = await client.post(

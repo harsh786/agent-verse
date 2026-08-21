@@ -4,6 +4,7 @@ Utilities for wrapping raw agent-loop events into :class:`ExecutionEvent`
 objects and translating them back to the SSE format expected by the existing
 GoalService event pipeline.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
@@ -74,6 +75,7 @@ def make_forwarding_callback(
     AgentGraph.run() in place of the original GoalService callback — it adds
     isolation metadata without breaking the existing SSE event contract.
     """
+
     async def _callback(raw_event: dict[str, Any]) -> None:
         wrapped = wrap_agent_event(
             goal_id=goal_id,

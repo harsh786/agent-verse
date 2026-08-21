@@ -1,5 +1,7 @@
 """AI Ops - observability, evals, regression, and drift models."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -23,6 +25,7 @@ class AlertSeverity(str, Enum):
 @dataclass
 class EvalDataset:
     """A dataset of golden input/output pairs for evaluation."""
+
     dataset_id: str
     tenant_id: str
     name: str
@@ -35,6 +38,7 @@ class EvalDataset:
 @dataclass
 class EvalResult:
     """Result of running an eval suite."""
+
     result_id: str
     dataset_id: str
     tenant_id: str
@@ -50,6 +54,7 @@ class EvalResult:
 @dataclass
 class DriftAlert:
     """A drift detection alert."""
+
     alert_id: str
     tenant_id: str
     drift_type: DriftType
@@ -66,6 +71,7 @@ class DriftAlert:
 @dataclass
 class LLMJudge:
     """An LLM-as-judge configuration."""
+
     judge_id: str
     tenant_id: str
     name: str

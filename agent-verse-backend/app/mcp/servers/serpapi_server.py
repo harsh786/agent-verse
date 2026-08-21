@@ -3,6 +3,7 @@
 Environment:
   SERPAPI_API_KEY: SerpAPI key
 """
+
 from __future__ import annotations
 
 import os
@@ -24,11 +25,22 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query"},
-                "num": {"type": "integer", "default": 10, "description": "Number of results (1–100)"},
-                "location": {"type": "string", "description": "Location for results, e.g. 'New York, NY'"},
+                "num": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "Number of results (1–100)",
+                },
+                "location": {
+                    "type": "string",
+                    "description": "Location for results, e.g. 'New York, NY'",
+                },
                 "hl": {"type": "string", "default": "en", "description": "Language code"},
                 "gl": {"type": "string", "default": "us", "description": "Country code"},
-                "start": {"type": "integer", "default": 0, "description": "Result offset for pagination"},
+                "start": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Result offset for pagination",
+                },
                 "safe": {"type": "string", "enum": ["active", "off"], "default": "off"},
                 "time_period": {
                     "type": "string",
@@ -61,8 +73,14 @@ TOOL_DEFINITIONS = [
                 "query": {"type": "string"},
                 "num": {"type": "integer", "default": 10},
                 "hl": {"type": "string", "default": "en"},
-                "image_size": {"type": "string", "enum": ["icon", "small", "medium", "large", "xlarge", "xxlarge"]},
-                "image_type": {"type": "string", "enum": ["clipart", "face", "lineart", "stock", "photo", "animated"]},
+                "image_size": {
+                    "type": "string",
+                    "enum": ["icon", "small", "medium", "large", "xlarge", "xxlarge"],
+                },
+                "image_type": {
+                    "type": "string",
+                    "enum": ["clipart", "face", "lineart", "stock", "photo", "animated"],
+                },
             },
             "required": ["query"],
         },

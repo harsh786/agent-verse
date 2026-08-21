@@ -3,6 +3,7 @@
 Environment:
   FIRECRAWL_API_KEY: Firecrawl API key (fc-...)
 """
+
 from __future__ import annotations
 
 import os
@@ -65,8 +66,16 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "Starting URL to crawl"},
-                "max_depth": {"type": "integer", "default": 2, "description": "Maximum crawl depth"},
-                "limit": {"type": "integer", "default": 10, "description": "Maximum number of pages"},
+                "max_depth": {
+                    "type": "integer",
+                    "default": 2,
+                    "description": "Maximum crawl depth",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "Maximum number of pages",
+                },
                 "formats": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -158,7 +167,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "FIRECRAWL_API_KEY not configured"}
 
     try:
-        async with httpx.AsyncClient(base_url=FIRECRAWL_BASE, headers=_headers(), timeout=60.0) as c:
+        async with httpx.AsyncClient(
+            base_url=FIRECRAWL_BASE, headers=_headers(), timeout=60.0
+        ) as c:
             if tool_name == "firecrawl_scrape":
                 payload: dict[str, Any] = {
                     "url": arguments["url"],

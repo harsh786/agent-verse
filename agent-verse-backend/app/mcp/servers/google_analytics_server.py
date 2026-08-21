@@ -4,6 +4,7 @@ Environment variables (one required):
   GOOGLE_ACCESS_TOKEN:         OAuth2 bearer token
   GOOGLE_SERVICE_ACCOUNT_JSON: JSON string of a service-account key file
 """
+
 from __future__ import annotations
 
 import json
@@ -166,7 +167,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         async with httpx.AsyncClient(timeout=30.0) as c:
             if tool_name == "ga4_run_report":
                 body: dict[str, Any] = {
-                    "dateRanges": arguments.get("date_ranges", [{"startDate": "7daysAgo", "endDate": "today"}]),
+                    "dateRanges": arguments.get(
+                        "date_ranges", [{"startDate": "7daysAgo", "endDate": "today"}]
+                    ),
                     "metrics": [{"name": m} for m in arguments.get("metrics", [])],
                     "limit": arguments.get("limit", 100),
                     "offset": arguments.get("offset", 0),
@@ -209,8 +212,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "properties": [
-                        {"name": p["name"], "display_name": p.get("displayName", ""),
-                         "industry": p.get("industryCategory", ""), "time_zone": p.get("timeZone", "")}
+                        {
+                            "name": p["name"],
+                            "display_name": p.get("displayName", ""),
+                            "industry": p.get("industryCategory", ""),
+                            "time_zone": p.get("timeZone", ""),
+                        }
                         for p in data.get("properties", [])
                     ]
                 }
@@ -228,15 +235,20 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                         for d in data.get("dimensions", [])
                     ],
                     "metrics": [
-                        {"api_name": m["apiName"], "ui_name": m.get("uiName", ""),
-                         "type": m.get("type", "")}
+                        {
+                            "api_name": m["apiName"],
+                            "ui_name": m.get("uiName", ""),
+                            "type": m.get("type", ""),
+                        }
                         for m in data.get("metrics", [])
                     ],
                 }
 
             elif tool_name == "ga4_run_funnel_report":
                 body = {
-                    "dateRanges": arguments.get("date_ranges", [{"startDate": "30daysAgo", "endDate": "today"}]),
+                    "dateRanges": arguments.get(
+                        "date_ranges", [{"startDate": "30daysAgo", "endDate": "today"}]
+                    ),
                     "funnel": {"steps": arguments["funnel_steps"]},
                 }
                 r = await c.post(

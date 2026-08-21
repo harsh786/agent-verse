@@ -36,10 +36,7 @@ def upgrade() -> None:
         "CREATE INDEX IF NOT EXISTS ix_goal_attempts_goal "
         "ON goal_attempts (goal_id, attempt_number)"
     )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_goal_attempts_tenant "
-        "ON goal_attempts (tenant_id)"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS ix_goal_attempts_tenant ON goal_attempts (tenant_id)")
 
     # Step-level loop_until iteration history
     op.execute("""

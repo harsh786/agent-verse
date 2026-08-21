@@ -65,7 +65,7 @@ function drawShape(
       ctx.arc(x, y, size, 0, Math.PI * 2);
       ctx.fill();
       break;
-    case 'spark':
+    case 'spark': {
       ctx.lineWidth = 1.5;
       const arms = 4;
       for (let i = 0; i < arms; i++) {
@@ -79,6 +79,7 @@ function drawShape(
       ctx.arc(x, y, size * 0.6, 0, Math.PI * 2);
       ctx.fill();
       break;
+    }
     case 'diamond':
       ctx.beginPath();
       ctx.moveTo(x, y - size);

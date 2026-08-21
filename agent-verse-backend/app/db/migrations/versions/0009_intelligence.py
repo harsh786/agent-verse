@@ -34,12 +34,8 @@ def upgrade() -> None:
         sa.Column("action", sa.Text, nullable=False),
         sa.Column("reasoning", sa.Text, nullable=True, server_default=""),
         sa.Column("evidence", sa.JSON, nullable=False, server_default=sa.text("'[]'")),
-        sa.Column(
-            "alternatives", sa.JSON, nullable=False, server_default=sa.text("'[]'")
-        ),
-        sa.Column(
-            "confidence", sa.Float, nullable=True, server_default=sa.text("0.0")
-        ),
+        sa.Column("alternatives", sa.JSON, nullable=False, server_default=sa.text("'[]'")),
+        sa.Column("confidence", sa.Float, nullable=True, server_default=sa.text("0.0")),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -69,12 +65,8 @@ def upgrade() -> None:
         ),
         sa.Column("tenant_id", sa.String(32), nullable=False),
         sa.Column("scores", sa.JSON, nullable=False, server_default=sa.text("'[]'")),
-        sa.Column(
-            "average_score", sa.Float, nullable=False, server_default=sa.text("0.0")
-        ),
-        sa.Column(
-            "passed", sa.Boolean, nullable=False, server_default=sa.text("FALSE")
-        ),
+        sa.Column("average_score", sa.Float, nullable=False, server_default=sa.text("0.0")),
+        sa.Column("passed", sa.Boolean, nullable=False, server_default=sa.text("FALSE")),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -100,9 +92,7 @@ def upgrade() -> None:
         sa.Column("goal_id", sa.String(32), nullable=True, server_default=""),
         sa.Column("tool_name", sa.String(200), nullable=True, server_default=""),
         sa.Column("cost_usd", sa.Float, nullable=False),
-        sa.Column(
-            "tokens_used", sa.Integer, nullable=True, server_default=sa.text("0")
-        ),
+        sa.Column("tokens_used", sa.Integer, nullable=True, server_default=sa.text("0")),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -167,12 +157,8 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("tenant_id", sa.String(32), nullable=False),
-        sa.Column(
-            "version", sa.Integer, nullable=False, server_default=sa.text("0")
-        ),
-        sa.Column(
-            "operation", JSONB, nullable=False, server_default=sa.text("'{}'")
-        ),
+        sa.Column("version", sa.Integer, nullable=False, server_default=sa.text("0")),
+        sa.Column("operation", JSONB, nullable=False, server_default=sa.text("'{}'")),
         sa.Column("author", sa.String(200), nullable=True, server_default=""),
         sa.Column(
             "created_at",
@@ -181,12 +167,8 @@ def upgrade() -> None:
             server_default=sa.text("NOW()"),
         ),
     )
-    op.create_index(
-        "ix_collab_operations_session_id", "collab_operations", ["session_id"]
-    )
-    op.create_index(
-        "ix_collab_operations_tenant_id", "collab_operations", ["tenant_id"]
-    )
+    op.create_index("ix_collab_operations_session_id", "collab_operations", ["session_id"])
+    op.create_index("ix_collab_operations_tenant_id", "collab_operations", ["tenant_id"])
 
     op.execute("ALTER TABLE collab_operations ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE collab_operations FORCE ROW LEVEL SECURITY")
@@ -210,21 +192,15 @@ def upgrade() -> None:
         sa.Column("domain", sa.String(100), nullable=True, server_default=""),
         sa.Column("description", sa.Text, nullable=True, server_default=""),
         sa.Column("goal_template", sa.Text, nullable=False),
-        sa.Column(
-            "connectors", sa.JSON, nullable=False, server_default=sa.text("'[]'")
-        ),
-        sa.Column(
-            "trigger_type", sa.String(20), nullable=True, server_default="rest"
-        ),
+        sa.Column("connectors", sa.JSON, nullable=False, server_default=sa.text("'[]'")),
+        sa.Column("trigger_type", sa.String(20), nullable=True, server_default="rest"),
         sa.Column(
             "autonomy_mode",
             sa.String(50),
             nullable=True,
             server_default="bounded-autonomous",
         ),
-        sa.Column(
-            "is_public", sa.Boolean, nullable=True, server_default=sa.text("TRUE")
-        ),
+        sa.Column("is_public", sa.Boolean, nullable=True, server_default=sa.text("TRUE")),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -244,30 +220,20 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "DROP POLICY IF EXISTS agent_templates_tenant_isolation ON agent_templates"
-    )
+    op.execute("DROP POLICY IF EXISTS agent_templates_tenant_isolation ON agent_templates")
     op.drop_table("agent_templates")
 
-    op.execute(
-        "DROP POLICY IF EXISTS collab_operations_tenant_isolation ON collab_operations"
-    )
+    op.execute("DROP POLICY IF EXISTS collab_operations_tenant_isolation ON collab_operations")
     op.drop_table("collab_operations")
 
-    op.execute(
-        "DROP POLICY IF EXISTS collab_sessions_tenant_isolation ON collab_sessions"
-    )
+    op.execute("DROP POLICY IF EXISTS collab_sessions_tenant_isolation ON collab_sessions")
     op.drop_table("collab_sessions")
 
     op.execute("DROP POLICY IF EXISTS cost_ledger_tenant_isolation ON cost_ledger")
     op.drop_table("cost_ledger")
 
-    op.execute(
-        "DROP POLICY IF EXISTS evaluations_tenant_isolation ON evaluations"
-    )
+    op.execute("DROP POLICY IF EXISTS evaluations_tenant_isolation ON evaluations")
     op.drop_table("evaluations")
 
-    op.execute(
-        "DROP POLICY IF EXISTS decision_traces_tenant_isolation ON decision_traces"
-    )
+    op.execute("DROP POLICY IF EXISTS decision_traces_tenant_isolation ON decision_traces")
     op.drop_table("decision_traces")

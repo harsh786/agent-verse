@@ -11,6 +11,7 @@ Implements:
 LAW-14: Cursor atomicity — only committed after pipeline confirms indexing.
 LAW-17: No silent data loss — all failures land in DLQ.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -48,7 +49,9 @@ def _backoff_seconds(consecutive_failures: int) -> float:
 
 
 @shared_task(name="ingestion.sync_source", bind=True, max_retries=5, default_retry_delay=60)
-def sync_source_task(self, *, source_id: str, tenant_id: str, triggered_by: str = "scheduler") -> dict:
+def sync_source_task(
+    self, *, source_id: str, tenant_id: str, triggered_by: str = "scheduler"
+) -> dict:
     """Celery task: synchronise a single source through the full 13-stage pipeline.
 
     Called by:
@@ -96,15 +99,20 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
     if config.consecutive_failures and config.consecutive_failures > 0:
         backoff = _backoff_seconds(config.consecutive_failures)
         import time
+
         if config.last_synced_at:
             import datetime
+
             last = datetime.datetime.fromisoformat(config.last_synced_at.replace("Z", "+00:00"))
             elapsed = time.time() - last.timestamp()
             if elapsed < backoff:
                 await tracker.release_lock(source_id, tenant_id)
                 _log.info(
                     "source=%s in backoff (failures=%d, wait=%.0fs, elapsed=%.0fs)",
-                    source_id, config.consecutive_failures, backoff, elapsed,
+                    source_id,
+                    config.consecutive_failures,
+                    backoff,
+                    elapsed,
                 )
                 return {"skipped": True, "reason": "backoff", "retry_in_seconds": backoff - elapsed}
 
@@ -118,6 +126,7 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
 
     # ── Create job record ────────────────────────────────────────────────────
     import uuid as _uuid
+
     job = await tracker.create_job(
         config,
         job_id=str(_uuid.uuid4()),
@@ -153,7 +162,9 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
                     docs_failed += 1
                     _log.warning(
                         "pipeline failed: source=%s doc=%s error=%s",
-                        source_id, raw_doc.doc_id, result.error,
+                        source_id,
+                        raw_doc.doc_id,
+                        result.error,
                     )
                     # DLQ (LAW-17)
                     await tracker.add_to_dlq(
@@ -172,7 +183,9 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
 
             except Exception as doc_exc:
                 docs_failed += 1
-                _log.exception("unhandled error processing doc in source=%s: %s", source_id, doc_exc)
+                _log.exception(
+                    "unhandled error processing doc in source=%s: %s", source_id, doc_exc
+                )
 
         # ── Final cursor commit ───────────────────────────────────────────────
         await tracker.update_cursor(source_id, tenant_id, new_cursor)
@@ -181,7 +194,9 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
             docs_indexed=docs_indexed,
             docs_skipped=docs_skipped,
             docs_failed=docs_failed,
-            status=IngestionStatus.COMPLETED if docs_failed < docs_indexed else IngestionStatus.PARTIAL,
+            status=IngestionStatus.COMPLETED
+            if docs_failed < docs_indexed
+            else IngestionStatus.PARTIAL,
         )
         # Reset failure counter on success
         await tracker.reset_failure_counter(source_id, tenant_id)
@@ -285,7 +300,9 @@ async def _retry_dlq_async() -> dict:
             await tracker.increment_dlq_retry(entry.dlq_id, error=str(exc))
             still_failed += 1
 
-    _log.info("retry_dlq: retried=%d succeeded=%d still_failed=%d", retried, succeeded, still_failed)
+    _log.info(
+        "retry_dlq: retried=%d succeeded=%d still_failed=%d", retried, succeeded, still_failed
+    )
     return {"retried": retried, "succeeded": succeeded, "still_failed": still_failed}
 
 

@@ -17,8 +17,13 @@ class TableChunker(ChunkerBase):
             return [Chunk(content=content.strip(), chunk_index=0, metadata={"row_start": 0})]
         chunks = []
         for i in range(0, len(data_rows), self._rows_per_chunk):
-            batch = data_rows[i:i+self._rows_per_chunk]
+            batch = data_rows[i : i + self._rows_per_chunk]
             chunk_content = "\n".join([header] + batch)
-            chunks.append(Chunk(content=chunk_content, chunk_index=len(chunks),
-                                metadata={"row_start": i+1, "row_end": i+len(batch)}))
+            chunks.append(
+                Chunk(
+                    content=chunk_content,
+                    chunk_index=len(chunks),
+                    metadata={"row_start": i + 1, "row_end": i + len(batch)},
+                )
+            )
         return chunks

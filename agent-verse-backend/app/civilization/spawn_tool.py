@@ -1,4 +1,5 @@
 """spawn() — the governed tool exposed to agents to create child agents."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -74,6 +75,7 @@ async def execute_spawn_tool(
     )
 
     from app.civilization.models import SpawnDecision
+
     if verdict.decision == SpawnDecision.DENIED:
         logger.info(
             "spawn_tool_denied",

@@ -18,6 +18,7 @@ Supported variables:
   {{workflow.completed_branch}}     → last conditional branch taken
   {{workflow.tenant_admin_email}}   → resolved from tenant record
 """
+
 from __future__ import annotations
 
 import json

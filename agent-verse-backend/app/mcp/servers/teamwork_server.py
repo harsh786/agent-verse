@@ -4,6 +4,7 @@ Environment:
   TEAMWORK_API_KEY: Teamwork API key
   TEAMWORK_SITE:    Your Teamwork site subdomain (e.g. 'mycompany')
 """
+
 from __future__ import annotations
 
 import os
@@ -28,7 +29,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "enum": ["active", "archived", "completed", "all"], "default": "active"},
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "archived", "completed", "all"],
+                    "default": "active",
+                },
                 "page": {"type": "integer", "default": 1},
                 "page_size": {"type": "integer", "default": 50},
             },
@@ -131,7 +136,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "teamwork_create_project":
                 payload: dict[str, Any] = {"project": {"name": arguments["name"]}}
                 for field in ("description", "start_date", "end_date", "company_id"):
-                    mapped = {"start_date": "startDate", "end_date": "endDate", "company_id": "companyId"}.get(field, field)
+                    mapped = {
+                        "start_date": "startDate",
+                        "end_date": "endDate",
+                        "company_id": "companyId",
+                    }.get(field, field)
                     if v := arguments.get(field):
                         payload["project"][mapped] = v
                 r = await c.post(f"{base}/projects.json", json=payload)
@@ -156,7 +165,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 pid = arguments["project_id"]
                 task: dict[str, Any] = {"content": arguments["name"]}
                 for field in ("description", "due_date", "assignee_ids", "priority"):
-                    mapped = {"due_date": "dueDate", "assignee_ids": "assignedToUserIds"}.get(field, field)
+                    mapped = {"due_date": "dueDate", "assignee_ids": "assignedToUserIds"}.get(
+                        field, field
+                    )
                     if v := arguments.get(field):
                         task[mapped] = v
                 if tlid := arguments.get("tasklist_id"):

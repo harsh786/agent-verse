@@ -3,6 +3,7 @@
 Authentication: OAuth 2.0 client credentials flow (app-only).
 Requires an Azure AD app registration with Sites.Read.All permission.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -128,7 +129,9 @@ class SharePointConnector:
             path = f"sites/{site_id}/drives/{drive_id}/{folder_path}/children"
         else:
             path = f"sites/{site_id}/drive/{folder_path}/children"
-        data = await self._get(path, params={"$select": "id,name,file,folder,size,webUrl,lastModifiedDateTime"})
+        data = await self._get(
+            path, params={"$select": "id,name,file,folder,size,webUrl,lastModifiedDateTime"}
+        )
         items = data.get("value", [])
         # Return only files (not folders)
         return [item for item in items if "file" in item]

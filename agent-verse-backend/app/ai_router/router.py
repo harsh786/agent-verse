@@ -1,7 +1,10 @@
 """AI Router - select the best model for a given task."""
+
 from __future__ import annotations
+
 import logging
-from app.ai_router.models import ModelEndpoint, ModelCapability, TaskType, RoutingMode
+
+from app.ai_router.models import ModelCapability, ModelEndpoint, RoutingMode, TaskType
 from app.ai_router.registry import model_registry
 
 _log = logging.getLogger(__name__)
@@ -34,9 +37,7 @@ class AIRouter:
         # 2. Check tenant routing policy
         policy = model_registry.get_route_policy(tenant_id, task_type)
         if policy and policy.preferred_provider and policy.preferred_model:
-            model = model_registry.get_model(
-                policy.preferred_provider, policy.preferred_model
-            )
+            model = model_registry.get_model(policy.preferred_provider, policy.preferred_model)
             if model and self._meets_constraints(
                 model, require_vision, require_tools, max_cost_per_1k
             ):
@@ -46,25 +47,21 @@ class AIRouter:
         candidates = model_registry.list_models()
         candidates = [m for m in candidates if m.is_available]
         candidates = [
-            m for m in candidates
-            if not model_registry.get_provider_health(m.provider).circuit_open
+            m for m in candidates if not model_registry.get_provider_health(m.provider).circuit_open
         ]
 
         # Apply task requirements
         if task_type == TaskType.EMBEDDING:
-            candidates = [
-                m for m in candidates if ModelCapability.EMBEDDING in m.capabilities
-            ]
+            candidates = [m for m in candidates if ModelCapability.EMBEDDING in m.capabilities]
         elif task_type == TaskType.OCR:
             candidates = [
-                m for m in candidates
-                if ModelCapability.OCR in m.capabilities
-                or ModelCapability.VISION in m.capabilities
+                m
+                for m in candidates
+                if ModelCapability.OCR in m.capabilities or ModelCapability.VISION in m.capabilities
             ]
         else:
             candidates = [
-                m for m in candidates
-                if ModelCapability.TEXT_GENERATION in m.capabilities
+                m for m in candidates if ModelCapability.TEXT_GENERATION in m.capabilities
             ]
 
         if require_vision:

@@ -12,6 +12,7 @@ Flow:
   3. ACS validates assertion, checks replay, extracts attributes,
      JIT-provisions user, returns session JWT
 """
+
 from __future__ import annotations
 
 import sys
@@ -60,9 +61,7 @@ class SAMLProvider:
         sp_entity_id: str,
         acs_url: str,
         attribute_mapping: dict[str, str] | None = None,
-        name_id_format: str = (
-            "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
-        ),
+        name_id_format: str = ("urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"),
         jit_provisioning: bool = True,
         redis: Any = None,
     ) -> None:
@@ -100,10 +99,7 @@ class SAMLProvider:
         Raises ValueError on authentication failure or replay.
         """
         if not SAML_AVAILABLE:
-            raise RuntimeError(
-                "python3-saml is not installed. "
-                "Run: pip install python3-saml"
-            )
+            raise RuntimeError("python3-saml is not installed. Run: pip install python3-saml")
 
         settings = self._build_saml_settings()
         # python3-saml version-compatible https flag
@@ -162,7 +158,7 @@ class SAMLProvider:
             f'    entityID="{self._sp_entity_id}">\n'
             '  <md:SPSSODescriptor AuthnRequestsSigned="false" WantAssertionsSigned="true"\n'
             '      protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">\n'
-            '    <md:AssertionConsumerService'
+            "    <md:AssertionConsumerService"
             ' Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"\n'
             f'        Location="{self._acs_url}" index="1"/>\n'
             "  </md:SPSSODescriptor>\n"

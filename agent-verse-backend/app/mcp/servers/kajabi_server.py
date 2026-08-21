@@ -3,6 +3,7 @@
 Environment:
   KAJABI_API_KEY: Kajabi API key from Settings > API
 """
+
 from __future__ import annotations
 
 import os
@@ -23,7 +24,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "page": {"type": "integer", "description": "Page number for pagination", "default": 1},
+                "page": {
+                    "type": "integer",
+                    "description": "Page number for pagination",
+                    "default": 1,
+                },
             },
         },
     },
@@ -57,7 +62,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "member_id": {"type": "string", "description": "Kajabi member ID"},
                 "product_id": {"type": "string", "description": "Kajabi product ID"},
-                "action": {"type": "string", "description": "Action: grant or revoke", "default": "grant"},
+                "action": {
+                    "type": "string",
+                    "description": "Action: grant or revoke",
+                    "default": "grant",
+                },
             },
             "required": ["member_id", "product_id"],
         },
@@ -79,7 +88,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "page": {"type": "integer", "description": "Page number for pagination", "default": 1},
+                "page": {
+                    "type": "integer",
+                    "description": "Page number for pagination",
+                    "default": 1,
+                },
             },
         },
     },
@@ -137,7 +150,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                         }
                         for m in members
                     ],
-                    "total": data.get("total", len(members)) if isinstance(data, dict) else len(members),
+                    "total": data.get("total", len(members))
+                    if isinstance(data, dict)
+                    else len(members),
                 }
 
             elif tool_name == "kajabi_get_member":
@@ -160,7 +175,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 else:
                     r = await client.post(endpoint, headers=headers, json=payload)
                 r.raise_for_status()
-                return {"action": action, "member_id": arguments["member_id"], "product_id": arguments["product_id"]}
+                return {
+                    "action": action,
+                    "member_id": arguments["member_id"],
+                    "product_id": arguments["product_id"],
+                }
 
             elif tool_name == "kajabi_list_offers":
                 params = {"page": arguments.get("page", 1)}

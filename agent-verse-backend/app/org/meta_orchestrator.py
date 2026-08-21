@@ -4,6 +4,7 @@ Determines: which departments to involve, which topology to use,
 which model gateway profile to apply, the effective autonomy level,
 and approval gates — then forms the team via TeamFormationEngine.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,6 @@ from opentelemetry import trace
 
 from app.org.capability_registry import DEPT_CAPABILITY_MAP, get_model_profile_for_dept
 from app.org.team_formation import (
-    GOAL_CAPABILITY_HEURISTICS,
     TeamFormationEngine,
     TeamManifest,
     _heuristic_capabilities,
@@ -29,16 +29,17 @@ _tracer = trace.get_tracer(__name__)
 #  Data classes
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class GoalAnalysis:
-    complexity: str            # low|medium|high
+    complexity: str  # low|medium|high
     domain_count: int
     has_dependencies: bool
-    task_type: str             # research|build|analyze|manage|communicate|automate|decide
-    risk_level: str            # low|medium|high|critical
+    task_type: str  # research|build|analyze|manage|communicate|automate|decide
+    risk_level: str  # low|medium|high|critical
     estimated_phases: int
     primary_domains: list[str] = field(default_factory=list)
-    breadth: str = "narrow"    # narrow|medium|wide
+    breadth: str = "narrow"  # narrow|medium|wide
 
 
 @dataclass
@@ -54,7 +55,7 @@ class ExecutionPhase:
 @dataclass
 class OrchestrationPlan:
     mission_id: str
-    topology: str             # sequential|parallel|hierarchical|swarm|pipeline|debate|event_driven
+    topology: str  # sequential|parallel|hierarchical|swarm|pipeline|debate|event_driven
     departments: list[str]
     team_manifest: TeamManifest
     model_gateway_profile: str
@@ -119,13 +120,31 @@ _TASK_TYPE_KEYWORDS: dict[str, list[str]] = {
     "manage": ["manage", "monitor", "track", "oversee", "coordinate", "schedule", "maintain"],
     "communicate": ["communicate", "present", "report", "brief", "share", "publish", "announce"],
     "automate": ["automate", "scrape", "extract", "process", "transform", "migrate"],
-    "decide": ["decide", "choose", "select", "recommend", "strategy", "plan", "prioritize",
-                "compare", "evaluate options"],
+    "decide": [
+        "decide",
+        "choose",
+        "select",
+        "recommend",
+        "strategy",
+        "plan",
+        "prioritize",
+        "compare",
+        "evaluate options",
+    ],
 }
 
 _HIGH_RISK_KEYWORDS = {
-    "production", "deploy", "delete", "financial", "legal", "security",
-    "compliance", "gdpr", "pii", "regulated", "critical",
+    "production",
+    "deploy",
+    "delete",
+    "financial",
+    "legal",
+    "security",
+    "compliance",
+    "gdpr",
+    "pii",
+    "regulated",
+    "critical",
 }
 
 
@@ -161,7 +180,8 @@ class GoalAnalyzer:
             "primary_domains (list of dept kinds), breadth (narrow|medium|wide).\n\n"
             f"GOAL: {goal}\n\nRespond with only a JSON object."
         )
-        from app.providers.base import CompletionRequest, Message  # noqa: PLC0415
+        from app.providers.base import CompletionRequest, Message
+
         req = CompletionRequest(
             messages=[Message(role="user", content=prompt)],
             model="claude-sonnet-4-5",
@@ -187,7 +207,8 @@ class GoalAnalyzer:
         text = goal.lower()
         caps = _heuristic_capabilities(goal)
         domains = {
-            dept for dept, dept_caps in DEPT_CAPABILITY_MAP.items()
+            dept
+            for dept, dept_caps in DEPT_CAPABILITY_MAP.items()
             if any(c in caps for c in dept_caps)
         }
         task_type = "research"
@@ -249,9 +270,7 @@ class MetaOrchestrator:
             span.set_attribute("task_type", goal_analysis.task_type)
 
             topology = await self._select_topology(goal_analysis)
-            departments = await self._determine_departments(
-                goal, _heuristic_capabilities(goal)
-            )
+            departments = await self._determine_departments(goal, _heuristic_capabilities(goal))
             autonomy = await self._determine_autonomy(org, goal_analysis.risk_level)
 
             if mission is None:
@@ -314,11 +333,14 @@ class MetaOrchestrator:
             return "sequential"
 
     async def _determine_departments(
-        self, goal: str, capabilities: list[str],
+        self,
+        goal: str,
+        capabilities: list[str],
     ) -> list[str]:
         with _tracer.start_as_current_span("meta_orchestrator.determine_departments"):
             depts = {
-                dept for dept, dept_caps in DEPT_CAPABILITY_MAP.items()
+                dept
+                for dept, dept_caps in DEPT_CAPABILITY_MAP.items()
                 if any(c in capabilities for c in dept_caps)
             }
             return list(depts) if depts else ["research", "operations"]
@@ -330,7 +352,9 @@ class MetaOrchestrator:
             return max(1, min(5, org_level + penalty))
 
     async def _plan_execution_phases(
-        self, manifest: TeamManifest, goal_analysis: GoalAnalysis,
+        self,
+        manifest: TeamManifest,
+        goal_analysis: GoalAnalysis,
     ) -> list[ExecutionPhase]:
         with _tracer.start_as_current_span("meta_orchestrator.plan_phases"):
             phases: list[ExecutionPhase] = []
@@ -346,15 +370,14 @@ class MetaOrchestrator:
                         parallel=parallel,
                         estimated_hours=hours,
                         description=f"{'Parallel' if parallel else 'Sequential'} execution "
-                                     f"across {', '.join(phase_depts)}",
+                        f"across {', '.join(phase_depts)}",
                     )
                 )
             return phases
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Helpers
-# ─────────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────────
+    #  Helpers
+    # ─────────────────────────────────────────────────────────────────────────────
 
     async def decide(
         self,
@@ -372,7 +395,7 @@ class MetaOrchestrator:
         _TOPOLOGY_NORMALISE = {
             "parallel": "map_reduce",
             "sequential": "pipeline",
-            "swarm": "hierarchical",   # high-risk goals use hierarchical approval structure
+            "swarm": "hierarchical",  # high-risk goals use hierarchical approval structure
         }
         normalised_topology = _TOPOLOGY_NORMALISE.get(plan.topology, plan.topology)
         departments = list(plan.departments) if plan.departments else []
@@ -387,6 +410,7 @@ class MetaOrchestrator:
 
 class _StubMission:
     """Minimal mission-like object for planning before DB row exists."""
+
     def __init__(self, goal_text: str, risk_level: str, title: str) -> None:
         self.id = "planning"
         self.goal_text = goal_text
@@ -395,7 +419,8 @@ class _StubMission:
 
 
 def _group_depts_into_phases(
-    departments: list[str], has_dependencies: bool,
+    departments: list[str],
+    has_dependencies: bool,
 ) -> list[tuple[list[str], bool, float]]:
     """Group departments into (depts, parallel, hours) tuples."""
     if not departments:
@@ -413,7 +438,8 @@ def _group_depts_into_phases(
 
 
 def _compute_approval_gates(
-    goal_analysis: GoalAnalysis, manifest: TeamManifest,
+    goal_analysis: GoalAnalysis,
+    manifest: TeamManifest,
 ) -> list[str]:
     """Return list of action types that need approval gates."""
     gates: list[str] = []
@@ -432,9 +458,11 @@ def _compute_approval_gates(
 #  OrchestratorDecision — result type expected by tests
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class OrchestratorDecision:
     """Resolved routing decision from MetaOrchestrator.decide()."""
+
     plan: OrchestrationPlan
     topology: str = "single_agent"
     autonomy_level: int = 2

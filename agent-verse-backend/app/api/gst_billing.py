@@ -1,11 +1,14 @@
 """GST-compliant billing engine for India. Persists invoices for 7-year retention."""
+
 from __future__ import annotations
+
+import re
 import uuid
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Annotated, Any
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
-import re
 
 router = APIRouter(prefix="/billing/gst", tags=["billing"])
 
@@ -14,7 +17,9 @@ _GSTIN_PATTERN = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
 
 
 class GSTInvoiceRequest(BaseModel):
-    amount_inr: Annotated[float, Field(gt=0, description="Invoice amount in INR (must be positive)")]
+    amount_inr: Annotated[
+        float, Field(gt=0, description="Invoice amount in INR (must be positive)")
+    ]
     buyer_name: str = Field(min_length=1)
     buyer_address: str = Field(min_length=1)
     buyer_state_code: str = "27"
@@ -51,6 +56,7 @@ def _generate_invoice_number(tenant_prefix: str) -> str:
 async def generate_gst_invoice(body: GSTInvoiceRequest, request: Request) -> dict[str, Any]:
     """Generate and persist a GST-compliant tax invoice."""
     from app.core.config import get_settings
+
     tenant = _require_tenant(request)
     s = get_settings()
     seller_gstin = getattr(s, "seller_gstin", "27AAAAA0000A1Z5")
@@ -91,22 +97,34 @@ async def generate_gst_invoice(body: GSTInvoiceRequest, request: Request) -> dic
     if db is not None:
         try:
             import json as _json
+
             from sqlalchemy import text
+
             async with db() as session:
                 await session.execute(
-                    text("INSERT INTO gst_invoices (id, tenant_id, invoice_number, invoice_date, "
-                         "buyer_name, buyer_gstin, taxable_amount_inr, total_gst_amount, "
-                         "total_amount_inr, invoice_json) VALUES "
-                         "(:id, :tid, :inv_num, :inv_date, :buyer, :gstin, :taxable, :gst, :total, CAST(:json AS json))"),
-                    {"id": uuid.uuid4().hex, "tid": tenant.tenant_id,
-                     "inv_num": invoice_number, "inv_date": invoice_date,
-                     "buyer": body.buyer_name, "gstin": body.buyer_gstin,
-                     "taxable": taxable, "gst": gst_total, "total": body.amount_inr,
-                     "json": _json.dumps(invoice)},
+                    text(
+                        "INSERT INTO gst_invoices (id, tenant_id, invoice_number, invoice_date, "
+                        "buyer_name, buyer_gstin, taxable_amount_inr, total_gst_amount, "
+                        "total_amount_inr, invoice_json) VALUES "
+                        "(:id, :tid, :inv_num, :inv_date, :buyer, :gstin, :taxable, :gst, :total, CAST(:json AS json))"
+                    ),
+                    {
+                        "id": uuid.uuid4().hex,
+                        "tid": tenant.tenant_id,
+                        "inv_num": invoice_number,
+                        "inv_date": invoice_date,
+                        "buyer": body.buyer_name,
+                        "gstin": body.buyer_gstin,
+                        "taxable": taxable,
+                        "gst": gst_total,
+                        "total": body.amount_inr,
+                        "json": _json.dumps(invoice),
+                    },
                 )
                 await session.commit()
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("gst_invoice_persist_failed: %s", exc)
 
     return invoice
@@ -120,15 +138,29 @@ async def list_invoices(request: Request, limit: int = 50) -> list[dict[str, Any
     if not db:
         return []
     from sqlalchemy import text
+
     from app.db.rls import sqlalchemy_rls_context
+
     async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
-        rows = (await session.execute(
-            text("SELECT invoice_number, invoice_date, buyer_name, total_amount_inr, created_at "
-                 "FROM gst_invoices WHERE tenant_id = :tid ORDER BY created_at DESC LIMIT :lim"),
-            {"tid": tenant.tenant_id, "lim": limit},
-        )).fetchall()
-    return [{"invoice_number": r[0], "invoice_date": r[1], "buyer_name": r[2],
-             "total_amount_inr": float(r[3] or 0), "created_at": str(r[4])} for r in rows]
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT invoice_number, invoice_date, buyer_name, total_amount_inr, created_at "
+                    "FROM gst_invoices WHERE tenant_id = :tid ORDER BY created_at DESC LIMIT :lim"
+                ),
+                {"tid": tenant.tenant_id, "lim": limit},
+            )
+        ).fetchall()
+    return [
+        {
+            "invoice_number": r[0],
+            "invoice_date": r[1],
+            "buyer_name": r[2],
+            "total_amount_inr": float(r[3] or 0),
+            "created_at": str(r[4]),
+        }
+        for r in rows
+    ]
 
 
 @router.get("/hsn-lookup/{sac_code}")

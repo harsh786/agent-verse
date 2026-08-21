@@ -12,9 +12,7 @@ def upgrade() -> None:
     # Enable pgvector if not already enabled
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     # Add embedding column (768-dim for voyage-3, text-embedding-3-small)
-    op.execute(
-        "ALTER TABLE long_term_memory ADD COLUMN IF NOT EXISTS embedding vector(768)"
-    )
+    op.execute("ALTER TABLE long_term_memory ADD COLUMN IF NOT EXISTS embedding vector(768)")
     # Create HNSW index for fast approximate nearest neighbor search
     op.execute(
         """

@@ -3,6 +3,7 @@
 Environment:
   GOOGLE_ACCESS_TOKEN: OAuth2 bearer token with forms.body and forms.responses.readonly scopes
 """
+
 from __future__ import annotations
 
 import os
@@ -158,9 +159,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 body: dict[str, Any] = {
                     "info": {
                         "title": arguments["title"],
-                        "documentTitle": arguments.get(
-                            "document_title", arguments["title"]
-                        ),
+                        "documentTitle": arguments.get("document_title", arguments["title"]),
                     }
                 }
                 r = await c.post(f"{FORMS_BASE}/forms", headers=hdrs, json=body)
@@ -253,7 +252,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                         "requests": [
                             {
                                 "createItem": {
-                                    "item": {"title": arguments["question_title"], "questionItem": {"question": question}},
+                                    "item": {
+                                        "title": arguments["question_title"],
+                                        "questionItem": {"question": question},
+                                    },
                                     "location": {"index": 0},
                                 }
                             }

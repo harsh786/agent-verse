@@ -3,6 +3,7 @@
 Environment:
   STEAM_API_KEY: Steam Web API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -38,8 +39,14 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "steam_id": {"type": "string", "description": "64-bit Steam ID of the user"},
-                "include_appinfo": {"type": "boolean", "description": "Include game name and logo URL"},
-                "include_played_free_games": {"type": "boolean", "description": "Include free-to-play games"},
+                "include_appinfo": {
+                    "type": "boolean",
+                    "description": "Include game name and logo URL",
+                },
+                "include_played_free_games": {
+                    "type": "boolean",
+                    "description": "Include free-to-play games",
+                },
             },
             "required": ["steam_id"],
         },
@@ -64,7 +71,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "app_id": {"type": "integer", "description": "Steam Application ID of the game"},
                 "count": {"type": "integer", "description": "Number of news items to return"},
-                "max_length": {"type": "integer", "description": "Max characters per news item body"},
+                "max_length": {
+                    "type": "integer",
+                    "description": "Max characters per news item body",
+                },
             },
             "required": ["app_id"],
         },
@@ -121,9 +131,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     "steamid": arguments["steam_id"],
                     "format": "json",
                     "include_appinfo": int(arguments.get("include_appinfo", True)),
-                    "include_played_free_games": int(arguments.get("include_played_free_games", False)),
+                    "include_played_free_games": int(
+                        arguments.get("include_played_free_games", False)
+                    ),
                 }
-                r = await client.get(f"{BASE_URL}/IPlayerService/GetOwnedGames/v0001/", params=params)
+                r = await client.get(
+                    f"{BASE_URL}/IPlayerService/GetOwnedGames/v0001/", params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -135,7 +149,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 }
                 if "count" in arguments:
                     params["count"] = arguments["count"]
-                r = await client.get(f"{BASE_URL}/IPlayerService/GetRecentlyPlayedGames/v0001/", params=params)
+                r = await client.get(
+                    f"{BASE_URL}/IPlayerService/GetRecentlyPlayedGames/v0001/", params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -170,7 +186,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     "l": arguments.get("language", "en"),
                     "json": 1,
                 }
-                r = await client.get("https://store.steampowered.com/api/storesearch/", params=params)
+                r = await client.get(
+                    "https://store.steampowered.com/api/storesearch/", params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

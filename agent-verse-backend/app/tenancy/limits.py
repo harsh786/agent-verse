@@ -3,6 +3,7 @@
 Raises PlanLimitExceededError (HTTP 429) when a tenant exceeds their plan's
 resource limits.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -13,6 +14,7 @@ from app.tenancy.context import PLAN_LIMITS, TenantContext
 
 class PlanLimitExceededError(PlatformError):
     """Raised when a tenant exceeds their plan's resource limits."""
+
     http_status = 429
     severity = None  # Use PlatformError default
 

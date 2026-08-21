@@ -3,6 +3,7 @@
 Environment variables:
   KLENTY_API_KEY: Klenty API key
 """
+
 from __future__ import annotations
 
 import os
@@ -122,7 +123,15 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         ) as c:
             if tool_name == "klenty_add_prospect":
                 body: dict[str, Any] = {"Email": arguments["Email"]}
-                for k in ("FirstName", "LastName", "Company", "Phone", "JobTitle", "Website", "listName"):
+                for k in (
+                    "FirstName",
+                    "LastName",
+                    "Company",
+                    "Phone",
+                    "JobTitle",
+                    "Website",
+                    "listName",
+                ):
                     if k in arguments:
                         body[k] = arguments[k]
                 r = await c.post("/prospect/add", json=body)

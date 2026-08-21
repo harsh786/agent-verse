@@ -100,9 +100,7 @@ class GroupChatRuntime:
                 terminal = (
                     GroupChatState.CANCELLED if reason == "cancelled" else GroupChatState.FAILED
                 )
-                stopped = state.model_copy(
-                    update={"state": terminal, "terminal_reason": reason}
-                )
+                stopped = state.model_copy(update={"state": terminal, "terminal_reason": reason})
                 await self._save(stopped)
                 return stopped
 

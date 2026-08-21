@@ -5,6 +5,7 @@ Environment:
 
 The database name is inferred from the URI path or the 'database' argument.
 """
+
 from __future__ import annotations
 
 import os
@@ -22,7 +23,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "collection": {"type": "string", "description": "Collection name"},
-                "database": {"type": "string", "description": "Database name (overrides URI default)"},
+                "database": {
+                    "type": "string",
+                    "description": "Database name (overrides URI default)",
+                },
                 "query": {"type": "object", "description": "MongoDB query filter", "default": {}},
                 "projection": {"type": "object", "description": "Fields to include/exclude"},
                 "limit": {"type": "integer", "default": 100},

@@ -7,6 +7,7 @@ Provides:
 - POST /auth/logout   — Invalidate Keycloak session
 - GET /auth/config    — Return SSO configuration for frontend
 """
+
 from __future__ import annotations
 
 import os
@@ -18,15 +19,14 @@ from fastapi.responses import RedirectResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+
 async def _check_auth_rate_limit(request: Request) -> None:
     """Redis-backed sliding-window rate limiter for auth endpoints.
 
     Falls back to no-op when Redis is unavailable (preserves availability).
     10 requests per 60 seconds per client IP, enforced across all replicas.
     """
-    client_ip: str = (
-        request.client.host if request.client else "unknown"
-    )
+    client_ip: str = request.client.host if request.client else "unknown"
     redis = getattr(request.app.state, "_rate_limiter_redis", None)
     if redis is None:
         # No Redis wired yet (startup / test) — allow all requests
@@ -54,6 +54,7 @@ async def _check_auth_rate_limit(request: Request) -> None:
 
         if count > max_requests:
             from fastapi import HTTPException
+
             raise HTTPException(
                 status_code=429,
                 detail="Too many authentication requests. Please wait before trying again.",
@@ -62,6 +63,7 @@ async def _check_auth_rate_limit(request: Request) -> None:
     except Exception as exc:
         # Import here to avoid circular
         from app.observability.logging import get_logger as _gl
+
         _gl(__name__).warning("auth_rate_limit_redis_error", error=str(exc))
         # On Redis error, allow the request (prefer availability over blocking)
 
@@ -83,6 +85,7 @@ async def get_sso_config() -> dict[str, Any]:
         authorization_endpoint,
         token_endpoint,
     )
+
     enabled = _sso_enabled()
     return {
         "sso_enabled": enabled,
@@ -106,6 +109,7 @@ async def sso_login(
     import urllib.parse
 
     from app.auth.keycloak import _client_id, authorization_endpoint
+
     params = {
         "response_type": "code",
         "client_id": _client_id(),
@@ -141,6 +145,7 @@ async def exchange_token(
         client_secret = "agentverse-dev-secret"  # dev-only fallback
 
     import httpx
+
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(
             token_endpoint(),
@@ -154,10 +159,7 @@ async def exchange_token(
         )
 
     if not resp.is_success:
-        raise HTTPException(
-            status_code=401,
-            detail=f"Token exchange failed: {resp.text[:200]}"
-        )
+        raise HTTPException(status_code=401, detail=f"Token exchange failed: {resp.text[:200]}")
 
     data = resp.json()
     return {
@@ -186,6 +188,7 @@ async def refresh_token(request: Request, refresh_token_value: str) -> dict[str,
         client_secret = "agentverse-dev-secret"  # dev-only fallback
 
     import httpx
+
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(
             token_endpoint(),

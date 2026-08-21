@@ -2,6 +2,7 @@
 
 Every trigger firing, regardless of type, goes through this single dispatcher.
 """
+
 from __future__ import annotations
 
 import logging
@@ -65,9 +66,16 @@ class TriggerDispatcher:
             check_permission(caller_role, "fire")
         except Exception as exc:
             return self._skip_event(
-                trigger_id, tenant_id, payload, "RBAC_DENIED",
-                str(exc), scheduled_fire_time, source_goal_id,
-                completion_event_id, message_id, txn_id,
+                trigger_id,
+                tenant_id,
+                payload,
+                "RBAC_DENIED",
+                str(exc),
+                scheduled_fire_time,
+                source_goal_id,
+                completion_event_id,
+                message_id,
+                txn_id,
             )
 
         # ── Step 2: Payload size enforcement ─────────────────────────────────
@@ -75,16 +83,23 @@ class TriggerDispatcher:
         max_bytes = self._payload_size_limit(plan)
         if payload_bytes > max_bytes:
             return self._skip_event(
-                trigger_id, tenant_id, payload, "PAYLOAD_TOO_LARGE",
+                trigger_id,
+                tenant_id,
+                payload,
+                "PAYLOAD_TOO_LARGE",
                 f"Payload {payload_bytes}B exceeds {max_bytes}B limit",
-                scheduled_fire_time, source_goal_id, completion_event_id,
-                message_id, txn_id,
+                scheduled_fire_time,
+                source_goal_id,
+                completion_event_id,
+                message_id,
+                txn_id,
             )
 
         # ── Step 3: Idempotency key derivation ────────────────────────────────
         idempotency_key = derive_idempotency_key(
             trigger_id,
-            trigger_spec.trigger_type.value if hasattr(trigger_spec.trigger_type, "value")
+            trigger_spec.trigger_type.value
+            if hasattr(trigger_spec.trigger_type, "value")
             else str(trigger_spec.trigger_type),
             payload,
             scheduled_fire_time=scheduled_fire_time,
@@ -97,28 +112,42 @@ class TriggerDispatcher:
         # ── Step 4: Deduplication check ───────────────────────────────────────
         if await self._is_duplicate(idempotency_key, tenant_id):
             return self._make_skip_event(
-                trigger_id, tenant_id, payload, idempotency_key, "dedup",
+                trigger_id,
+                tenant_id,
+                payload,
+                idempotency_key,
+                "dedup",
             )
 
         # ── Step 5: Rate limit check ──────────────────────────────────────────
-        if not await self._rate_limiter.check(
-            trigger_id, trigger_spec.max_firings_per_hour, plan
-        ):
+        if not await self._rate_limiter.check(trigger_id, trigger_spec.max_firings_per_hour, plan):
             return self._make_skip_event(
-                trigger_id, tenant_id, payload, idempotency_key, "rate_limit",
+                trigger_id,
+                tenant_id,
+                payload,
+                idempotency_key,
+                "rate_limit",
             )
 
         # ── Step 6: Circuit breaker check ─────────────────────────────────────
         cb = self._cb_registry.get(trigger_id)
         if cb.is_open():
             return self._make_skip_event(
-                trigger_id, tenant_id, payload, idempotency_key, "circuit_open",
+                trigger_id,
+                tenant_id,
+                payload,
+                idempotency_key,
+                "circuit_open",
             )
 
         # ── Step 7: Bulkhead check ────────────────────────────────────────────
         if not await self._bulkhead.acquire(tenant_id, plan):
             return self._make_skip_event(
-                trigger_id, tenant_id, payload, idempotency_key, "bulkhead_full",
+                trigger_id,
+                tenant_id,
+                payload,
+                idempotency_key,
+                "bulkhead_full",
             )
 
         try:
@@ -127,14 +156,20 @@ class TriggerDispatcher:
                 try:
                     if not self._evaluate_condition(trigger_spec.condition, payload):
                         return self._make_skip_event(
-                            trigger_id, tenant_id, payload, idempotency_key,
+                            trigger_id,
+                            tenant_id,
+                            payload,
+                            idempotency_key,
                             "condition_false",
                         )
                 except Exception as exc:
                     _log.warning("condition_eval_error trigger=%s: %s", trigger_id, exc)
                     # Treat condition error as condition_false
                     return self._make_skip_event(
-                        trigger_id, tenant_id, payload, idempotency_key,
+                        trigger_id,
+                        tenant_id,
+                        payload,
+                        idempotency_key,
                         "condition_false",
                     )
 
@@ -161,17 +196,21 @@ class TriggerDispatcher:
             goal_id: str | None = None
             try:
                 goal_id = await self._create_goal(
-                    trigger_spec, goal_text, tenant_ctx, idempotency_key,
+                    trigger_spec,
+                    goal_text,
+                    tenant_ctx,
+                    idempotency_key,
                 )
                 cb.record_success()
             except Exception as exc:
                 cb.record_failure()
-                _log.error(
-                    "goal_enqueue_failed trigger_id=%s: %s", trigger_id, exc
-                )
+                _log.error("goal_enqueue_failed trigger_id=%s: %s", trigger_id, exc)
                 await self._write_dlq(
-                    tenant_id, trigger_id, "GOAL_ENQUEUE_FAILED",
-                    str(exc), payload,
+                    tenant_id,
+                    trigger_id,
+                    "GOAL_ENQUEUE_FAILED",
+                    str(exc),
+                    payload,
                 )
                 goal_id = None
 
@@ -193,7 +232,10 @@ class TriggerDispatcher:
             await self._persist_event(event)
             _log.info(
                 "trigger_fired trigger_id=%s type=%s goal_id=%s ms=%d",
-                trigger_id, trigger_spec.trigger_type, goal_id, processing_ms,
+                trigger_id,
+                trigger_spec.trigger_type,
+                goal_id,
+                processing_ms,
             )
             return event
 
@@ -230,14 +272,17 @@ class TriggerDispatcher:
             return True
         try:
             import celpy  # type: ignore[import]
+
             env = celpy.Environment()
             ast = env.compile(expression)
             prog = env.program(ast)
             import celpy.celtypes as ct  # type: ignore[import]
-            activation = {"payload": ct.MapType({
-                ct.StringType(k): ct.StringType(str(v))
-                for k, v in payload.items()
-            })}
+
+            activation = {
+                "payload": ct.MapType(
+                    {ct.StringType(k): ct.StringType(str(v)) for k, v in payload.items()}
+                )
+            }
             return bool(prog.evaluate(activation))
         except ImportError:
             # cel-python not installed — simple fallback: expression is truthy
@@ -245,11 +290,10 @@ class TriggerDispatcher:
         except Exception:
             return False
 
-    def _render_template(
-        self, template: str, payload: dict, **extra: str
-    ) -> str:
+    def _render_template(self, template: str, payload: dict, **extra: str) -> str:
         """Render a Jinja2 sandboxed goal template."""
         import re
+
         result = template
         # Replace {{payload.field}} with payload values
         for match in re.finditer(r"\{\{payload\.([^}]+)\}\}", template):
@@ -290,6 +334,7 @@ class TriggerDispatcher:
             return
         try:
             from sqlalchemy import text
+
             async with self._db_factory() as session:
                 await session.execute(
                     text(
@@ -377,7 +422,9 @@ class TriggerDispatcher:
         txn_id: str | None,
     ) -> TriggerEvent:
         key = derive_idempotency_key(
-            trigger_id, "unknown", payload,
+            trigger_id,
+            "unknown",
+            payload,
             scheduled_fire_time=scheduled_fire_time,
             source_goal_id=source_goal_id,
             completion_event_id=completion_event_id,

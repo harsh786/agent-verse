@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from typing import TYPE_CHECKING
+
 from app.sandbox_runtime.profile import SandboxRuntimeProfile, SandboxType
 
 if TYPE_CHECKING:
@@ -7,7 +9,7 @@ if TYPE_CHECKING:
 
 
 class SandboxExecutor:
-    def select_sandbox(self, profile: "GoalRuntimeProfile") -> SandboxRuntimeProfile:
+    def select_sandbox(self, profile: GoalRuntimeProfile) -> SandboxRuntimeProfile:
         if not profile.security.sandbox_required:
             return SandboxRuntimeProfile(sandbox_type=SandboxType.NONE)
         if profile.properties.requires_code:

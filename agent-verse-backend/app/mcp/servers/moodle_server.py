@@ -4,6 +4,7 @@ Environment:
   MOODLE_TOKEN: Moodle web service token
   MOODLE_URL: Base URL of the Moodle instance (e.g. https://mymoodle.example.com)
 """
+
 from __future__ import annotations
 
 import os
@@ -53,7 +54,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "field": {"type": "string", "description": "Search field: username, email, firstname, lastname"},
+                "field": {
+                    "type": "string",
+                    "description": "Search field: username, email, firstname, lastname",
+                },
                 "value": {"type": "string", "description": "Search value"},
             },
         },
@@ -116,6 +120,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
     endpoint = _base_url()
     async with httpx.AsyncClient(timeout=30) as client:
         try:
+
             def _params(wsfunction: str, extra: dict[str, Any]) -> dict[str, Any]:
                 return {
                     "wstoken": token,
@@ -134,40 +139,51 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 return r.json()
 
             if tool_name == "moodle_get_course":
-                params = _params("core_course_get_courses", {f"options[ids][0]": arguments["course_id"]})
+                params = _params(
+                    "core_course_get_courses", {"options[ids][0]": arguments["course_id"]}
+                )
                 r = await client.get(endpoint, params=params)
                 r.raise_for_status()
                 data = r.json()
                 return data[0] if isinstance(data, list) and data else data
 
             if tool_name == "moodle_list_users":
-                params = _params("core_user_get_users", {
-                    "criteria[0][key]": arguments.get("field", "email"),
-                    "criteria[0][value]": arguments.get("value", "%"),
-                })
+                params = _params(
+                    "core_user_get_users",
+                    {
+                        "criteria[0][key]": arguments.get("field", "email"),
+                        "criteria[0][value]": arguments.get("value", "%"),
+                    },
+                )
                 r = await client.get(endpoint, params=params)
                 r.raise_for_status()
                 return r.json()
 
             if tool_name == "moodle_create_user":
-                params = _params("core_user_create_users", {
-                    "users[0][username]": arguments["username"],
-                    "users[0][password]": arguments["password"],
-                    "users[0][firstname]": arguments["firstname"],
-                    "users[0][lastname]": arguments["lastname"],
-                    "users[0][email]": arguments["email"],
-                    "users[0][auth]": arguments.get("auth", "manual"),
-                })
+                params = _params(
+                    "core_user_create_users",
+                    {
+                        "users[0][username]": arguments["username"],
+                        "users[0][password]": arguments["password"],
+                        "users[0][firstname]": arguments["firstname"],
+                        "users[0][lastname]": arguments["lastname"],
+                        "users[0][email]": arguments["email"],
+                        "users[0][auth]": arguments.get("auth", "manual"),
+                    },
+                )
                 r = await client.post(endpoint, data=params)
                 r.raise_for_status()
                 return r.json()
 
             if tool_name == "moodle_enroll_user":
-                params = _params("enrol_manual_enrol_users", {
-                    "enrolments[0][userid]": arguments["user_id"],
-                    "enrolments[0][courseid]": arguments["course_id"],
-                    "enrolments[0][roleid]": arguments.get("role_id", 5),
-                })
+                params = _params(
+                    "enrol_manual_enrol_users",
+                    {
+                        "enrolments[0][userid]": arguments["user_id"],
+                        "enrolments[0][courseid]": arguments["course_id"],
+                        "enrolments[0][roleid]": arguments.get("role_id", 5),
+                    },
+                )
                 r = await client.post(endpoint, data=params)
                 r.raise_for_status()
                 return r.json() if r.content else {"enrolled": True}

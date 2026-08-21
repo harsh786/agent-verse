@@ -3,6 +3,7 @@
 Environment variables:
   HEROKU_API_KEY: Heroku API key (available from Account Settings)
 """
+
 from __future__ import annotations
 
 import os
@@ -56,7 +57,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "app": {"type": "string"},
-                "dyno": {"type": "string", "description": "Dyno name (e.g. web.1); omit to restart all"},
+                "dyno": {
+                    "type": "string",
+                    "description": "Dyno name (e.g. web.1); omit to restart all",
+                },
             },
             "required": ["app"],
         },
@@ -143,7 +147,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
@@ -254,7 +261,14 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             resp = await client.get(f"/apps/{app}/config-vars")
             resp.raise_for_status()
             data = resp.json()
-            return {"config_vars": {k: "***" if "KEY" in k.upper() or "SECRET" in k.upper() or "PASSWORD" in k.upper() else v for k, v in data.items()}}
+            return {
+                "config_vars": {
+                    k: "***"
+                    if "KEY" in k.upper() or "SECRET" in k.upper() or "PASSWORD" in k.upper()
+                    else v
+                    for k, v in data.items()
+                }
+            }
 
         elif tool_name == "heroku_set_config_var":
             app = arguments["app"]

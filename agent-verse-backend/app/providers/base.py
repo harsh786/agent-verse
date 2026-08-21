@@ -36,6 +36,7 @@ class ToolDefinition:
 
 # -- Completion ----------------------------------------------------------------
 
+
 @dataclass
 class CompletionRequest:
     messages: list[Message]
@@ -46,8 +47,8 @@ class CompletionRequest:
     temperature: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
     response_schema: dict[str, Any] | None = None  # JSON Schema; when set, provider MUST
-                                                    # return content that is a single valid
-                                                    # JSON object matching it
+    # return content that is a single valid
+    # JSON object matching it
     cache_prefix: str | None = None  # stable prefix for Anthropic ephemeral caching
 
 
@@ -81,6 +82,7 @@ class CompletionResponse:
 
 # -- Embedding -----------------------------------------------------------------
 
+
 @dataclass
 class EmbedRequest:
     texts: list[str]
@@ -96,6 +98,7 @@ class EmbedResponse:
 
 
 # -- Provider protocol ---------------------------------------------------------
+
 
 @runtime_checkable
 class LLMProvider(Protocol):
@@ -151,9 +154,7 @@ class LLMProvider(Protocol):
 # -- Standalone helpers --------------------------------------------------------
 
 
-async def embed_texts(
-    texts: list[str], provider: LLMProvider | None = None
-) -> list[list[float]]:
+async def embed_texts(texts: list[str], provider: LLMProvider | None = None) -> list[list[float]]:
     """Embed texts using the given provider, or return empty embeddings as fallback.
 
     Callers must handle empty embeddings (``[]``) gracefully — they indicate

@@ -6,6 +6,7 @@ Public API (backwards-compatible):
 
 The actual implementation is in app.voice.providers.stt.faster_whisper.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -25,6 +26,7 @@ async def get_model() -> Any:
         if _model is not None:
             return _model
         from app.voice.providers import get_stt
+
         provider = await get_stt()
         await provider.warmup()
         # Expose the internal model ref for status checks
@@ -39,6 +41,7 @@ async def transcribe(audio_bytes: bytes, content_type: str) -> dict:
         {transcript, language, confidence, segments: [{start, end, text}]}
     """
     from app.voice.providers import get_stt
+
     provider = await get_stt()
-    result   = await provider.transcribe(audio_bytes, content_type)
+    result = await provider.transcribe(audio_bytes, content_type)
     return result.to_dict()

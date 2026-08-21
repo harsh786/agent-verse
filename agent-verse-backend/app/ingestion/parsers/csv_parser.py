@@ -1,4 +1,5 @@
 """CSV and Excel parser — schema-aware extraction for structured data."""
+
 from __future__ import annotations
 
 import io
@@ -19,6 +20,7 @@ class CSVParser:
     def parse(self, content: str, *, filename: str = "", delimiter: str = "") -> str:
         try:
             import csv
+
             # Auto-detect delimiter if not specified
             if not delimiter:
                 sample = content[:4096]
@@ -58,6 +60,7 @@ class ExcelParser:
     def parse(self, content: bytes, *, filename: str = "") -> str:
         try:
             import openpyxl  # type: ignore[import-not-found]
+
             wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
             parts: list[str] = []
             for sheet_name in wb.sheetnames:
@@ -69,7 +72,8 @@ class ExcelParser:
                 headers = [str(h) if h is not None else "" for h in rows[0]]
                 for row in rows[1:1001]:
                     items = [
-                        f"{h}: {v}" for h, v in zip(headers, row)
+                        f"{h}: {v}"
+                        for h, v in zip(headers, row)
                         if v is not None and str(v).strip()
                     ]
                     if items:

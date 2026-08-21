@@ -3,6 +3,7 @@
 Environment:
   SQUARESPACE_API_KEY: Squarespace API key from Settings > Advanced > Developer API Keys
 """
+
 from __future__ import annotations
 
 import os
@@ -23,7 +24,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "type": {"type": "string", "description": "Page type filter: page, folder, index, blog, gallery"},
+                "type": {
+                    "type": "string",
+                    "description": "Page type filter: page, folder, index, blog, gallery",
+                },
             },
         },
     },
@@ -33,8 +37,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "type": {"type": "string", "description": "Product type: PHYSICAL, DIGITAL, SERVICE, GIFT_CARD"},
-                "cursor": {"type": "string", "description": "Pagination cursor from previous response"},
+                "type": {
+                    "type": "string",
+                    "description": "Product type: PHYSICAL, DIGITAL, SERVICE, GIFT_CARD",
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "Pagination cursor from previous response",
+                },
             },
         },
     },
@@ -44,8 +54,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "fulfillment_status": {"type": "string", "description": "Filter by fulfillment: PENDING, FULFILLED, CANCELED"},
-                "modified_after": {"type": "string", "description": "ISO 8601 datetime: only orders modified after this date"},
+                "fulfillment_status": {
+                    "type": "string",
+                    "description": "Filter by fulfillment: PENDING, FULFILLED, CANCELED",
+                },
+                "modified_after": {
+                    "type": "string",
+                    "description": "ISO 8601 datetime: only orders modified after this date",
+                },
                 "cursor": {"type": "string", "description": "Pagination cursor"},
             },
         },
@@ -67,7 +83,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "cursor": {"type": "string", "description": "Pagination cursor from previous response"},
+                "cursor": {
+                    "type": "string",
+                    "description": "Pagination cursor from previous response",
+                },
             },
         },
     },

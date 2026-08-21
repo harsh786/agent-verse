@@ -2,9 +2,9 @@
 
 Supports Slack-compatible and generic JSON webhook payloads.
 """
+
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -151,11 +151,14 @@ class AlertRouter:
             f"(threshold {alert.threshold:.4f})\n"
             f"Tenant: `{alert.tenant_id or 'global'}`"
         )
-        return {"text": text, "alert": {
-            "rule": alert.rule_name,
-            "metric": alert.metric,
-            "value": alert.value,
-            "threshold": alert.threshold,
-            "severity": alert.severity,
-            "tenant_id": alert.tenant_id,
-        }}
+        return {
+            "text": text,
+            "alert": {
+                "rule": alert.rule_name,
+                "metric": alert.metric,
+                "value": alert.value,
+                "threshold": alert.threshold,
+                "severity": alert.severity,
+                "tenant_id": alert.tenant_id,
+            },
+        }

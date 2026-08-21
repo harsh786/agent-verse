@@ -3,6 +3,7 @@
 Environment:
   SIGNNOW_ACCESS_TOKEN: SignNow OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os

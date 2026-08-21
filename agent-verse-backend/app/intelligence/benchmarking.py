@@ -1,4 +1,5 @@
 """Agent performance benchmarking — aggregate eval trends across runs."""
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -13,6 +14,7 @@ from app.tenancy.context import TenantContext
 @dataclass
 class BenchmarkRun:
     """A single benchmark run record."""
+
     suite_name: str
     score: float
     tenant_id: str = "global"
@@ -103,9 +105,7 @@ class BenchmarkStore:
 
         return bench
 
-    def get_benchmark(
-        self, *, agent_id: str, tenant_ctx: TenantContext
-    ) -> AgentBenchmark | None:
+    def get_benchmark(self, *, agent_id: str, tenant_ctx: TenantContext) -> AgentBenchmark | None:
         return self._benchmarks.get(tenant_ctx.tenant_id, {}).get(agent_id)
 
     def list_benchmarks(self, *, tenant_ctx: TenantContext) -> list[AgentBenchmark]:
@@ -129,21 +129,27 @@ class BenchmarkStore:
             try:
                 import json
                 import uuid
+
                 from sqlalchemy import text
+
                 async with self._db() as session, session.begin():
-                    await session.execute(text("""
+                    await session.execute(
+                        text("""
                         INSERT INTO benchmark_runs
                             (id, tenant_id, suite_name, score, metadata, created_at)
                         VALUES (:id, :tid, :suite, :score, CAST(:meta AS jsonb), NOW())
-                    """), {
-                        "id": uuid.uuid4().hex,
-                        "tid": getattr(run, "tenant_id", "global"),
-                        "suite": run.suite_name,
-                        "score": run.score,
-                        "meta": json.dumps(getattr(run, "metadata", {})),
-                    })
+                    """),
+                        {
+                            "id": uuid.uuid4().hex,
+                            "tid": getattr(run, "tenant_id", "global"),
+                            "suite": run.suite_name,
+                            "score": run.score,
+                            "meta": json.dumps(getattr(run, "metadata", {})),
+                        },
+                    )
             except Exception as exc:
                 import logging
+
                 logging.getLogger(__name__).warning("benchmark_persist_failed: %s", exc)
 
         # Also keep in-memory cache
@@ -155,16 +161,27 @@ class BenchmarkStore:
             return []
         try:
             from sqlalchemy import text
+
             async with self._db() as session:
-                rows = (await session.execute(text("""
+                rows = (
+                    await session.execute(
+                        text("""
                     SELECT id, suite_name, score, metadata, created_at
                     FROM benchmark_runs
                     WHERE suite_name = :suite
                     ORDER BY created_at DESC LIMIT :lim
-                """), {"suite": suite_name, "lim": limit})).fetchall()
+                """),
+                        {"suite": suite_name, "lim": limit},
+                    )
+                ).fetchall()
             return [
-                {"id": r[0], "suite_name": r[1], "score": float(r[2]),
-                 "metadata": r[3] or {}, "created_at": r[4].isoformat() if r[4] else ""}
+                {
+                    "id": r[0],
+                    "suite_name": r[1],
+                    "score": float(r[2]),
+                    "metadata": r[3] or {},
+                    "created_at": r[4].isoformat() if r[4] else "",
+                }
                 for r in rows
             ]
         except Exception:

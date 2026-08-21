@@ -43,7 +43,9 @@ async def sqlalchemy_rls_context(
     """
     from sqlalchemy import text
 
-    await session.execute(text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
+    await session.execute(
+        text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+    )
     try:
         yield session
     finally:
@@ -82,7 +84,5 @@ async def system_session(session: AsyncSession) -> AsyncIterator[AsyncSession]:
         # Fallback for roles without BYPASSRLS: set a recognisable system GUC.
         # A corresponding permissive RLS policy on each table can allow this value.
         with suppress(Exception):
-            await session.execute(
-                text("SELECT set_config('app.tenant_id', '__system__', true)")
-            )
+            await session.execute(text("SELECT set_config('app.tenant_id', '__system__', true)"))
     yield session

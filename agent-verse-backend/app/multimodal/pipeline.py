@@ -1,9 +1,12 @@
 """Multimodal ingestion pipeline."""
+
 from __future__ import annotations
+
 import io
 import logging
 import uuid
 from typing import Any
+
 from app.multimodal.models import AssetIngestionJob, ExtractedSpan, Modality
 
 _log = logging.getLogger(__name__)
@@ -117,20 +120,24 @@ class MultimodalPipeline:
             # Transcript
             transcript = await self._transcribe_audio(video_base64)
             if transcript:
-                spans.append(ExtractedSpan(
-                    content=f"[Transcript] {transcript}",
-                    modality=Modality.AUDIO,
-                    timestamp_start=0.0,
-                ))
+                spans.append(
+                    ExtractedSpan(
+                        content=f"[Transcript] {transcript}",
+                        modality=Modality.AUDIO,
+                        timestamp_start=0.0,
+                    )
+                )
             # Scene summary (placeholder — needs real video processing)
-            spans.append(ExtractedSpan(
-                content=(
-                    "[Video] Video content extracted. "
-                    "Real-time processing requires video provider integration."
-                ),
-                modality=Modality.VIDEO,
-                confidence=0.5,
-            ))
+            spans.append(
+                ExtractedSpan(
+                    content=(
+                        "[Video] Video content extracted. "
+                        "Real-time processing requires video provider integration."
+                    ),
+                    modality=Modality.VIDEO,
+                    confidence=0.5,
+                )
+            )
             job.spans = spans
             job.status = "completed"
         except Exception as exc:
@@ -155,19 +162,24 @@ class MultimodalPipeline:
             "Describe this image in detail, including any text, objects, "
             "scenes, and relevant information for search and retrieval."
         )
-        resp = await self._provider.complete(CompletionRequest(
-            messages=[Message(
-                role="user",
-                content=[
-                    {"type": "text", "text": prompt_text},
-                    {"type": "image_url", "image_url": {
-                        "url": f"data:image/jpeg;base64,{image_base64}"
-                    }},
+        resp = await self._provider.complete(
+            CompletionRequest(
+                messages=[
+                    Message(
+                        role="user",
+                        content=[
+                            {"type": "text", "text": prompt_text},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+                            },
+                        ],
+                    )
                 ],
-            )],
-            model="",
-            max_tokens=500,
-        ))
+                model="",
+                max_tokens=500,
+            )
+        )
         return resp.content
 
     async def _extract_pdf(self, pdf_base64: str) -> list[ExtractedSpan]:
@@ -180,37 +192,46 @@ class MultimodalPipeline:
             # Try pypdf first
             try:
                 from pypdf import PdfReader
+
                 reader = PdfReader(io.BytesIO(pdf_bytes))
                 spans = []
                 for i, page in enumerate(reader.pages):
                     text = page.extract_text() or ""
                     if text.strip():
-                        spans.append(ExtractedSpan(
-                            content=text.strip(),
-                            modality=Modality.PDF,
-                            source_page=i + 1,
-                            confidence=0.95,
-                        ))
+                        spans.append(
+                            ExtractedSpan(
+                                content=text.strip(),
+                                modality=Modality.PDF,
+                                source_page=i + 1,
+                                confidence=0.95,
+                            )
+                        )
                 if spans:
                     return spans
-                return [ExtractedSpan(
-                    content="[PDF: no extractable text found]",
-                    modality=Modality.PDF,
-                )]
+                return [
+                    ExtractedSpan(
+                        content="[PDF: no extractable text found]",
+                        modality=Modality.PDF,
+                    )
+                ]
             except ImportError:
                 pass
 
-            return [ExtractedSpan(
-                content="[PDF content - pypdf not installed]",
-                modality=Modality.PDF,
-                confidence=0.1,
-            )]
+            return [
+                ExtractedSpan(
+                    content="[PDF content - pypdf not installed]",
+                    modality=Modality.PDF,
+                    confidence=0.1,
+                )
+            ]
         except Exception as exc:
-            return [ExtractedSpan(
-                content=f"[PDF extraction error: {exc}]",
-                modality=Modality.PDF,
-                confidence=0.0,
-            )]
+            return [
+                ExtractedSpan(
+                    content=f"[PDF extraction error: {exc}]",
+                    modality=Modality.PDF,
+                    confidence=0.0,
+                )
+            ]
 
     async def _transcribe_audio(self, audio_base64: str) -> str:
         """Transcribe audio to text."""
@@ -225,11 +246,12 @@ class MultimodalPipeline:
 
     def _create_job(self, tenant_id: str, modality: Modality, **kwargs: Any) -> AssetIngestionJob:
         import datetime
+
         return AssetIngestionJob(
             job_id=str(uuid.uuid4()),
             tenant_id=tenant_id,
             asset_type=modality,
-            created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            created_at=datetime.datetime.now(datetime.UTC).isoformat(),
             **kwargs,
         )
 

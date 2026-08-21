@@ -1,4 +1,5 @@
 """Structured execution plan — parses LLM output into topologically sortable steps."""
+
 from __future__ import annotations
 
 import ast
@@ -74,6 +75,7 @@ def _safe_eval_condition(expr: str, context: dict[str, Any]) -> bool:
     try:
         # Try simpleeval first (safer AST-based evaluator)
         import simpleeval  # type: ignore[import-not-found]
+
         evaluator = simpleeval.EvalWithCompoundTypes(names=context)
         return bool(evaluator.eval(expr))
     except ImportError:
@@ -84,21 +86,25 @@ def _safe_eval_condition(expr: str, context: dict[str, Any]) -> bool:
         return True
 
     # Fallback: validate expression before eval using allowlist pattern
-    safe_pattern = re.compile(
-        r'^[\w\s\.\[\]\'\"=!<>&|+\-\*/%\(\),]+$'
-    )
+    safe_pattern = re.compile(r"^[\w\s\.\[\]\'\"=!<>&|+\-\*/%\(\),]+$")
     if not safe_pattern.match(expr):
         import logging
-        logging.getLogger(__name__).warning(
-            "unsafe_eval_expression_rejected: %s", expr[:100]
-        )
+
+        logging.getLogger(__name__).warning("unsafe_eval_expression_rejected: %s", expr[:100])
         return True  # Default to True (run the step) on unsafe expressions
 
     # Restricted builtins — no __import__, no open, no exec, no eval
     safe_builtins = {
-        "len": len, "str": str, "int": int, "float": float,
-        "bool": bool, "list": list, "dict": dict,
-        "True": True, "False": False, "None": None,
+        "len": len,
+        "str": str,
+        "int": int,
+        "float": float,
+        "bool": bool,
+        "list": list,
+        "dict": dict,
+        "True": True,
+        "False": False,
+        "None": None,
     }
     try:
         return bool(eval(expr, {"__builtins__": safe_builtins}, context))
@@ -125,12 +131,12 @@ class StructuredStep:
     estimated_minutes: int = 1
     config: dict[str, Any] = field(default_factory=dict)
     # P1.1: Conditional execution and loop fields
-    condition: str | None = None          # Python expr: "s1.status == 'complete'"
-    loop_until: str | None = None         # Python expr: "output.startswith('SUCCESS')"
-    max_loop_iter: int = 5               # Max loop iterations before forced exit
-    iterations_used: int = 0            # Tracks how many times we've looped
+    condition: str | None = None  # Python expr: "s1.status == 'complete'"
+    loop_until: str | None = None  # Python expr: "output.startswith('SUCCESS')"
+    max_loop_iter: int = 5  # Max loop iterations before forced exit
+    iterations_used: int = 0  # Tracks how many times we've looped
     # Runtime state (populated during execution)
-    status: str = "pending"             # pending | running | complete | failed | skipped
+    status: str = "pending"  # pending | running | complete | failed | skipped
     result: str = ""
     output: str = ""
     error: str | None = None
@@ -156,6 +162,7 @@ class StructuredStep:
             return _safe_eval_condition(self.condition, ctx)
         except Exception as e:
             import logging
+
             logging.getLogger(__name__).warning("condition_eval_failed: %s", e)
             return True  # default: run if condition can't be evaluated
 
@@ -202,9 +209,7 @@ class StructuredPlan:
                             )
                         elif isinstance(raw, str):
                             # Legacy string inside a JSON steps array
-                            steps.append(
-                                StructuredStep(id=f"s{len(steps) + 1}", description=raw)
-                            )
+                            steps.append(StructuredStep(id=f"s{len(steps) + 1}", description=raw))
                     plan = cls(steps=steps)
                     plan.validate()
                     return plan

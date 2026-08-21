@@ -6,6 +6,7 @@ PART 29: Event architecture — publishes org events to Redis pub/sub.
 Every org operation publishes a typed event:
   org.mission.created, org.team.formed, org.approval.requested, etc.
 """
+
 from __future__ import annotations
 
 import json
@@ -13,7 +14,6 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-import structlog
 from opentelemetry import trace
 
 from app.observability.logging import get_logger
@@ -24,54 +24,56 @@ _tracer = trace.get_tracer(__name__)
 
 # ── PART 21: All 30 org audit event types ─────────────────────────────────────
 
-ORG_AUDIT_EVENTS = frozenset({
-    # Mission lifecycle
-    "org.mission.created",
-    "org.mission.started",
-    "org.mission.completed",
-    "org.mission.failed",
-    "org.mission.blocked",
-    "org.mission.paused",
-    "org.mission.resumed",
-    "org.mission.cancelled",
-    # Team
-    "org.team.forming",
-    "org.team.formed",
-    "org.team.disbanded",
-    # Agent
-    "org.agent.activated",
-    "org.agent.idle",
-    "org.agent.blocked",
-    "org.agent.escalated",
-    "org.agent.completed_task",
-    "org.agent.failed_task",
-    # Approval
-    "org.approval.requested",
-    "org.approval.granted",
-    "org.approval.rejected",
-    "org.approval.timeout",
-    # Budget
-    "org.budget.threshold_80",
-    "org.budget.exceeded",
-    # Policy + Security
-    "org.policy.violation",
-    "org.anomaly.detected",
-    # Model
-    "org.model.fallback",
-    "org.model.degraded",
-    # Memory + Knowledge
-    "org.memory.promoted",
-    "org.knowledge.stale",
-    # Artifacts + Decisions
-    "org.artifact.created",
-    "org.artifact.approved",
-    "org.decision.recorded",
-    "org.learning.promoted",
-    # Health
-    "org.health.degraded",
-    "org.health.recovered",
-    "org.digest.ready",
-})
+ORG_AUDIT_EVENTS = frozenset(
+    {
+        # Mission lifecycle
+        "org.mission.created",
+        "org.mission.started",
+        "org.mission.completed",
+        "org.mission.failed",
+        "org.mission.blocked",
+        "org.mission.paused",
+        "org.mission.resumed",
+        "org.mission.cancelled",
+        # Team
+        "org.team.forming",
+        "org.team.formed",
+        "org.team.disbanded",
+        # Agent
+        "org.agent.activated",
+        "org.agent.idle",
+        "org.agent.blocked",
+        "org.agent.escalated",
+        "org.agent.completed_task",
+        "org.agent.failed_task",
+        # Approval
+        "org.approval.requested",
+        "org.approval.granted",
+        "org.approval.rejected",
+        "org.approval.timeout",
+        # Budget
+        "org.budget.threshold_80",
+        "org.budget.exceeded",
+        # Policy + Security
+        "org.policy.violation",
+        "org.anomaly.detected",
+        # Model
+        "org.model.fallback",
+        "org.model.degraded",
+        # Memory + Knowledge
+        "org.memory.promoted",
+        "org.knowledge.stale",
+        # Artifacts + Decisions
+        "org.artifact.created",
+        "org.artifact.approved",
+        "org.decision.recorded",
+        "org.learning.promoted",
+        # Health
+        "org.health.degraded",
+        "org.health.recovered",
+        "org.digest.ready",
+    }
+)
 
 
 def _make_envelope(
@@ -84,15 +86,15 @@ def _make_envelope(
 ) -> dict[str, Any]:
     """Build a spec-compliant event envelope (PART 29)."""
     return {
-        "tenant_id":      tenant_id,
-        "org_id":         org_id,
-        "event_type":     event_type,
-        "payload":        payload,
-        "timestamp":      datetime.now(UTC).isoformat(),
+        "tenant_id": tenant_id,
+        "org_id": org_id,
+        "event_type": event_type,
+        "payload": payload,
+        "timestamp": datetime.now(UTC).isoformat(),
         "correlation_id": correlation_id or str(uuid.uuid4()),
-        "causation_id":   causation_id,
-        "trace_id":       str(trace.get_current_span().get_span_context().trace_id),
-        "version":        "1.0",
+        "causation_id": causation_id,
+        "trace_id": str(trace.get_current_span().get_span_context().trace_id),
+        "version": "1.0",
     }
 
 
@@ -114,8 +116,8 @@ class OrgEventPublisher:
         redis_client: Any | None = None,
         audit_service: Any | None = None,
     ) -> None:
-        self._redis   = redis_client
-        self._audit   = audit_service
+        self._redis = redis_client
+        self._audit = audit_service
 
     async def publish(
         self,
@@ -137,9 +139,7 @@ class OrgEventPublisher:
                 _log.warning("org_event.unknown_type", event_type=event_type)
 
             corr_id = correlation_id or str(uuid.uuid4())
-            envelope = _make_envelope(
-                event_type, payload, tenant_id, org_id, corr_id, causation_id
-            )
+            envelope = _make_envelope(event_type, payload, tenant_id, org_id, corr_id, causation_id)
             span.set_attribute("event_type", event_type)
             span.set_attribute("org_id", org_id)
             span.set_attribute("correlation_id", corr_id)
@@ -177,7 +177,7 @@ class OrgEventPublisher:
 
     async def publish_mission_event(
         self,
-        lifecycle: str,   # created | started | completed | failed | blocked | paused
+        lifecycle: str,  # created | started | completed | failed | blocked | paused
         mission_id: str,
         org_id: str,
         tenant_id: str,
@@ -187,12 +187,13 @@ class OrgEventPublisher:
         return await self.publish(
             event_type,
             {"mission_id": mission_id, **(extra or {})},
-            tenant_id, org_id,
+            tenant_id,
+            org_id,
         )
 
     async def publish_team_event(
         self,
-        lifecycle: str,   # forming | formed | disbanded
+        lifecycle: str,  # forming | formed | disbanded
         team_id: str,
         mission_id: str,
         org_id: str,
@@ -201,12 +202,13 @@ class OrgEventPublisher:
         return await self.publish(
             f"org.team.{lifecycle}",
             {"team_id": team_id, "mission_id": mission_id},
-            tenant_id, org_id,
+            tenant_id,
+            org_id,
         )
 
     async def publish_approval_event(
         self,
-        lifecycle: str,   # requested | granted | rejected | timeout
+        lifecycle: str,  # requested | granted | rejected | timeout
         approval_id: str,
         action: str,
         org_id: str,
@@ -216,7 +218,8 @@ class OrgEventPublisher:
         return await self.publish(
             f"org.approval.{lifecycle}",
             {"approval_id": approval_id, "action": action, "approver": approver},
-            tenant_id, org_id,
+            tenant_id,
+            org_id,
             severity="warning" if lifecycle in ("rejected", "timeout") else "info",
         )
 
@@ -232,9 +235,14 @@ class OrgEventPublisher:
         event_type = "org.budget.exceeded" if threshold_pct >= 1.0 else "org.budget.threshold_80"
         return await self.publish(
             event_type,
-            {"threshold_pct": threshold_pct, "dept_id": dept_id,
-             "spent_usd": spent_usd, "budget_usd": budget_usd},
-            tenant_id, org_id,
+            {
+                "threshold_pct": threshold_pct,
+                "dept_id": dept_id,
+                "spent_usd": spent_usd,
+                "budget_usd": budget_usd,
+            },
+            tenant_id,
+            org_id,
             severity="critical" if threshold_pct >= 1.0 else "warning",
         )
 
@@ -249,7 +257,8 @@ class OrgEventPublisher:
         return await self.publish(
             "org.policy.violation",
             {"violation_type": violation_type, "agent_id": agent_id, "action": action},
-            tenant_id, org_id,
+            tenant_id,
+            org_id,
             severity="warning",
         )
 
@@ -263,6 +272,7 @@ class OrgEventPublisher:
         return await self.publish(
             "org.anomaly.detected",
             {"anomaly_type": anomaly_type, "details": details},
-            tenant_id, org_id,
+            tenant_id,
+            org_id,
             severity="critical",
         )

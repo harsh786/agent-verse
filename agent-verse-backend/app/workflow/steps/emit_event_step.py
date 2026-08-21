@@ -1,4 +1,5 @@
 """EmitEventStepNode — publishes a Redis pub/sub event."""
+
 from __future__ import annotations
 
 import json

@@ -3,6 +3,7 @@
 Environment:
   VIMEO_ACCESS_TOKEN: Vimeo OAuth2 personal access token from developer settings
 """
+
 from __future__ import annotations
 
 import os
@@ -23,10 +24,24 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Search query to filter videos by title"},
-                "sort": {"type": "string", "description": "Sort order: date, alphabetical, plays, likes, comments, duration"},
-                "direction": {"type": "string", "description": "Sort direction: asc or desc", "default": "desc"},
-                "per_page": {"type": "integer", "description": "Number of videos per page (max 100)", "default": 25},
+                "query": {
+                    "type": "string",
+                    "description": "Search query to filter videos by title",
+                },
+                "sort": {
+                    "type": "string",
+                    "description": "Sort order: date, alphabetical, plays, likes, comments, duration",
+                },
+                "direction": {
+                    "type": "string",
+                    "description": "Sort direction: asc or desc",
+                    "default": "desc",
+                },
+                "per_page": {
+                    "type": "integer",
+                    "description": "Number of videos per page (max 100)",
+                    "default": 25,
+                },
                 "page": {"type": "integer", "description": "Page number", "default": 1},
             },
         },
@@ -40,7 +55,11 @@ TOOL_DEFINITIONS = [
                 "name": {"type": "string", "description": "Video title"},
                 "description": {"type": "string", "description": "Video description"},
                 "file_size": {"type": "integer", "description": "Size of the video file in bytes"},
-                "privacy_view": {"type": "string", "description": "Privacy setting: anybody, nobody, password, disable, unlisted", "default": "anybody"},
+                "privacy_view": {
+                    "type": "string",
+                    "description": "Privacy setting: anybody, nobody, password, disable, unlisted",
+                    "default": "anybody",
+                },
             },
             "required": ["name", "file_size"],
         },
@@ -65,8 +84,14 @@ TOOL_DEFINITIONS = [
                 "video_id": {"type": "string", "description": "Vimeo video ID"},
                 "name": {"type": "string", "description": "Updated video title"},
                 "description": {"type": "string", "description": "Updated video description"},
-                "privacy_view": {"type": "string", "description": "Updated privacy: anybody, nobody, password, unlisted"},
-                "password": {"type": "string", "description": "Password for password-protected videos"},
+                "privacy_view": {
+                    "type": "string",
+                    "description": "Updated privacy: anybody, nobody, password, unlisted",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Password for password-protected videos",
+                },
             },
             "required": ["video_id"],
         },
@@ -77,7 +102,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "per_page": {"type": "integer", "description": "Number of folders per page (max 100)", "default": 25},
+                "per_page": {
+                    "type": "integer",
+                    "description": "Number of folders per page (max 100)",
+                    "default": 25,
+                },
                 "page": {"type": "integer", "description": "Page number", "default": 1},
             },
         },

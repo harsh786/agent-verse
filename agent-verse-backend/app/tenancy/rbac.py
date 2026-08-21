@@ -8,10 +8,12 @@ Roles (most privileged first):
 
 Role hierarchy: admin > operator/approver > viewer
 """
+
 from __future__ import annotations
 
 import ipaddress
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from fastapi import HTTPException, Request, status
 
@@ -65,6 +67,7 @@ def require_role(*roles: str) -> Callable:
         ):
             ...
     """
+
     def dependency(request: Request) -> None:
         ctx: TenantContext | None = getattr(request.state, "tenant", None)
         if ctx is None:
@@ -80,6 +83,7 @@ def require_role(*roles: str) -> Callable:
                     f"Your roles: {list(ctx.roles)}"
                 ),
             )
+
     return dependency
 
 
@@ -98,6 +102,7 @@ async def load_roles_from_db(
         from sqlalchemy import select
 
         from app.db.models.rbac import UserRole
+
         async with db_session_factory() as session:
             result = await session.execute(
                 select(UserRole.role).where(

@@ -1,4 +1,5 @@
 """A2A Agent Directory — per-agent AgentCards and queryable directory."""
+
 from __future__ import annotations
 
 import contextlib

@@ -98,9 +98,7 @@ class InClusterKubernetesClient:
         if not items:
             return ""
         pod = items[0]["metadata"]["name"]
-        logs = await self._request(
-            "GET", f"/api/v1/namespaces/{self._namespace}/pods/{pod}/log"
-        )
+        logs = await self._request("GET", f"/api/v1/namespaces/{self._namespace}/pods/{pod}/log")
         return logs.text.encode()[:maximum_bytes].decode(errors="replace")
 
     async def delete_workload(self, name: str, fencing_token: str) -> None:
@@ -168,9 +166,7 @@ def build_workload_manifests(
                 "metadata": {
                     "labels": labels,
                     "annotations": {
-                        "container.apparmor.security.beta.kubernetes.io/runner": (
-                            "runtime/default"
-                        )
+                        "container.apparmor.security.beta.kubernetes.io/runner": ("runtime/default")
                     },
                 },
                 "spec": {
@@ -190,7 +186,9 @@ def build_workload_manifests(
                             "image": envelope.spec.image,
                             "imagePullPolicy": "IfNotPresent",
                             "command": [
-                                "python", "-m", "app.execution_environment.worker_entrypoint"
+                                "python",
+                                "-m",
+                                "app.execution_environment.worker_entrypoint",
                             ],
                             "env": [
                                 {"name": "AGENTVERSE_EXECUTION_ENVELOPE_B64", "value": encoded}
@@ -299,7 +297,9 @@ class KubernetesRunner(BaseRunner):
             return self._failure(request, capsule_id, "Kubernetes API unavailable")
         if not verify_envelope(envelope):
             return self._failure(
-                request, capsule_id, "Envelope integrity verification failed",
+                request,
+                capsule_id,
+                "Envelope integrity verification failed",
                 ExecutionFailureReason.SANDBOX_VIOLATION,
             )
         token = uuid.uuid4().hex

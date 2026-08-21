@@ -1,5 +1,7 @@
 """MemoryPolicyEngine — decides which memory sources to activate per profile."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -17,7 +19,7 @@ class MemoryDecision:
 
 
 class MemoryPolicyEngine:
-    def decide(self, profile: "GoalRuntimeProfile") -> MemoryDecision:
+    def decide(self, profile: GoalRuntimeProfile) -> MemoryDecision:
         mc = profile.memory_cache
         return MemoryDecision(
             use_session_memory=mc.use_session_memory,

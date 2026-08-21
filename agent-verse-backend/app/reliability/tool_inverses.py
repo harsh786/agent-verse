@@ -3,10 +3,12 @@
 Each inverse function receives the original tool arguments and performs
 the actual API call to undo the tool's side effect.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +122,7 @@ def get_inverse_fn(
 
 # ── Built-in inverses — make real MCP API calls ─────────────────────────────
 
+
 async def _inverse_jira_create_issue(args: dict, mcp_client: Any) -> None:
     """Delete a Jira issue that was created by the forward tool call."""
     issue_id = (
@@ -129,9 +132,7 @@ async def _inverse_jira_create_issue(args: dict, mcp_client: Any) -> None:
     )
     server_id = args.get("server_id", "")
     if not issue_id or not mcp_client or not server_id:
-        logger.info(
-            "jira_rollback_skipped reason=no_issue_id_or_mcp_client args=%s", args
-        )
+        logger.info("jira_rollback_skipped reason=no_issue_id_or_mcp_client args=%s", args)
         return
     try:
         from app.tenancy.context import PlanTier, TenantContext
@@ -202,9 +203,7 @@ async def _inverse_slack_send_message(args: dict, mcp_client: Any) -> None:
         )
         logger.info("slack_message_rolled_back message_ts=%s", message_ts)
     except Exception as exc:
-        logger.warning(
-            "slack_rollback_failed message_ts=%s error=%s", message_ts, str(exc)
-        )
+        logger.warning("slack_rollback_failed message_ts=%s error=%s", message_ts, str(exc))
 
 
 async def _inverse_github_create_issue(args: dict, mcp_client: Any) -> None:
@@ -217,20 +216,14 @@ async def _inverse_github_create_issue(args: dict, mcp_client: Any) -> None:
             if isinstance(args.get("result"), dict)
             else None
         )
-        or (
-            args.get("result", {}).get("number")
-            if isinstance(args.get("result"), dict)
-            else None
-        )
+        or (args.get("result", {}).get("number") if isinstance(args.get("result"), dict) else None)
     )
     owner = args.get("owner", "")
     repo = args.get("repo", "")
     server_id = args.get("server_id", "builtin-github")
 
     if not all([owner, repo, issue_number]) or not mcp_client:
-        logger.info(
-            "github_rollback_skipped reason=no_issue_number_or_owner_repo args=%s", args
-        )
+        logger.info("github_rollback_skipped reason=no_issue_number_or_owner_repo args=%s", args)
         return
     try:
         from app.tenancy.context import PlanTier, TenantContext

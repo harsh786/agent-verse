@@ -1,4 +1,5 @@
 """Trigger rate limiter using Redis INCR with TTL sliding window."""
+
 from __future__ import annotations
 
 import logging
@@ -8,10 +9,10 @@ _log = logging.getLogger(__name__)
 
 # Plan-tier maximum firings per hour
 PLAN_CAPS: dict[str, int] = {
-    "free":         10,
-    "starter":      60,
+    "free": 10,
+    "starter": 60,
     "professional": 600,
-    "enterprise":   999_999,
+    "enterprise": 999_999,
 }
 
 

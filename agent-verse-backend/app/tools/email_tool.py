@@ -4,6 +4,7 @@ Sending: aiosmtplib (async SMTP)
 Reading: aioimaplib (async IMAP)
 Credentials: per-tenant configuration (SMTP host/port/user/pass)
 """
+
 from __future__ import annotations
 
 import re
@@ -73,10 +74,11 @@ class EmailTool:
         for addr in (cc or []) + (bcc or []):
             _validate_email(addr)
 
-        import aiosmtplib
         import uuid
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
+
+        import aiosmtplib
 
         msg = MIMEMultipart("alternative")
         msg["From"] = self._smtp.from_address
@@ -144,9 +146,7 @@ class EmailTool:
             fetch_ids = message_ids[-limit:]
 
             for msg_id in reversed(fetch_ids):
-                status, msg_data = await imap.fetch(
-                    msg_id.decode(), "(RFC822)"
-                )
+                status, msg_data = await imap.fetch(msg_id.decode(), "(RFC822)")
                 if status != "OK" or not msg_data:
                     continue
 
@@ -157,24 +157,24 @@ class EmailTool:
                 if msg.is_multipart():
                     for part in msg.walk():
                         if part.get_content_type() == "text/plain":
-                            body_preview = (
-                                part.get_payload(decode=True)
-                                .decode("utf-8", errors="replace")[:500]
-                            )
+                            body_preview = part.get_payload(decode=True).decode(
+                                "utf-8", errors="replace"
+                            )[:500]
                             break
                 else:
-                    body_preview = (
-                        msg.get_payload(decode=True)
-                        .decode("utf-8", errors="replace")[:500]
-                    )
+                    body_preview = msg.get_payload(decode=True).decode("utf-8", errors="replace")[
+                        :500
+                    ]
 
-                messages.append({
-                    "message_id": msg.get("Message-ID", ""),
-                    "from": msg.get("From", ""),
-                    "subject": msg.get("Subject", ""),
-                    "date": msg.get("Date", ""),
-                    "body_preview": body_preview,
-                })
+                messages.append(
+                    {
+                        "message_id": msg.get("Message-ID", ""),
+                        "from": msg.get("From", ""),
+                        "subject": msg.get("Subject", ""),
+                        "date": msg.get("Date", ""),
+                        "body_preview": body_preview,
+                    }
+                )
         finally:
             try:
                 await imap.logout()
@@ -184,9 +184,7 @@ class EmailTool:
         return messages
 
     @classmethod
-    def from_vault_config(
-        cls, vault_config: dict[str, Any]
-    ) -> "EmailTool":
+    def from_vault_config(cls, vault_config: dict[str, Any]) -> EmailTool:
         """Create EmailTool from a vault/secrets config dict.
 
         Expected keys: smtp_host, smtp_port, smtp_username, smtp_password,
@@ -199,9 +197,7 @@ class EmailTool:
                 port=int(vault_config.get("smtp_port", 587)),
                 username=vault_config.get("smtp_username", ""),
                 password=vault_config.get("smtp_password", ""),
-                from_address=vault_config.get(
-                    "smtp_from", vault_config.get("smtp_username", "")
-                ),
+                from_address=vault_config.get("smtp_from", vault_config.get("smtp_username", "")),
                 use_tls=bool(vault_config.get("smtp_use_tls", True)),
             )
         imap = None
@@ -233,9 +229,10 @@ async def email_send(
     Returns ``{"success": True, ...}`` or ``{"success": False, "error": ...}``.
     """
     try:
-        import aiosmtplib
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
+
+        import aiosmtplib
     except ImportError:
         return {
             "success": False,

@@ -1,4 +1,5 @@
 """PDF document ingestor using pypdf (open-source, no cloud dependencies)."""
+
 from __future__ import annotations
 
 import io
@@ -23,12 +24,16 @@ class PdfIngestor:
             from pypdf import PdfReader  # type: ignore[import-not-found]
         except ImportError:
             logger.warning("pypdf_not_installed", hint="pip install pypdf")
-            return [{
-                "content": f"[PDF: {filename} — install pypdf for text extraction]",
-                "source_url": source_url, "source_type": "pdf",
-                "source_doc_id": filename, "page_number": None,
-                "metadata": {"filename": filename, "error": "pypdf_not_installed"},
-            }]
+            return [
+                {
+                    "content": f"[PDF: {filename} — install pypdf for text extraction]",
+                    "source_url": source_url,
+                    "source_type": "pdf",
+                    "source_doc_id": filename,
+                    "page_number": None,
+                    "metadata": {"filename": filename, "error": "pypdf_not_installed"},
+                }
+            ]
 
         try:
             reader = PdfReader(io.BytesIO(content))
@@ -40,20 +45,22 @@ class PdfIngestor:
                 # Sliding window chunking
                 start = 0
                 while start < len(text):
-                    chunk_text = text[start:start + _CHUNK_SIZE]
+                    chunk_text = text[start : start + _CHUNK_SIZE]
                     if len(chunk_text.strip()) >= 30:
-                        chunks.append({
-                            "content": chunk_text,
-                            "source_url": source_url,
-                            "source_type": "pdf",
-                            "source_doc_id": filename,
-                            "page_number": page_num + 1,
-                            "metadata": {
-                                "filename": filename,
-                                "page": page_num + 1,
-                                "total_pages": total_pages,
-                            },
-                        })
+                        chunks.append(
+                            {
+                                "content": chunk_text,
+                                "source_url": source_url,
+                                "source_type": "pdf",
+                                "source_doc_id": filename,
+                                "page_number": page_num + 1,
+                                "metadata": {
+                                    "filename": filename,
+                                    "page": page_num + 1,
+                                    "total_pages": total_pages,
+                                },
+                            }
+                        )
                     start += _CHUNK_SIZE - _CHUNK_OVERLAP
         except Exception as exc:
             logger.warning("pdf_extract_failed", filename=filename, error=str(exc))

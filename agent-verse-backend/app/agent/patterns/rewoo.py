@@ -100,9 +100,7 @@ class ReWOORuntime:
                 phase=ReasoningPhase.FAILED, terminal_reason="plan_hash_mismatch"
             )
         outputs = dict(completed_outputs or {})
-        completed_ids = {
-            item.step_id for item in ordered if item.output_variable in outputs
-        }
+        completed_ids = {item.step_id for item in ordered if item.output_variable in outputs}
         calls = 0
         while len(completed_ids) < len(ordered):
             if cancelled is not None and cancelled.is_set():
@@ -144,11 +142,11 @@ class ReWOORuntime:
                     terminal_reason=f"tool_step_failed:{type(exc).__name__}",
                     checkpoint_cursor=plan_hash,
                     call_count=calls + len(ready),
-                    safe_evidence={"cancelled_dependency_ids": [
-                        item.step_id
-                        for item in ordered
-                        if item.step_id not in completed_ids
-                    ]},
+                    safe_evidence={
+                        "cancelled_dependency_ids": [
+                            item.step_id for item in ordered if item.step_id not in completed_ids
+                        ]
+                    },
                 )
             calls += len(wave_results)
             for step, output in wave_results:

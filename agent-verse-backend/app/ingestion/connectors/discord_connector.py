@@ -3,6 +3,7 @@
 Uses discord.py HTTP client (no bot required for basic read access with token).
 Cursor: last message snowflake ID per channel.
 """
+
 from __future__ import annotations
 
 import logging
@@ -30,6 +31,7 @@ class DiscordConnector(BaseConnector):
         import time
 
         import httpx
+
         t0 = time.perf_counter()
         try:
             token = config.connection_config.get("bot_token", "")
@@ -42,7 +44,8 @@ class DiscordConnector(BaseConnector):
                 user = r.json()
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
-                ok=True, latency_ms=latency,
+                ok=True,
+                latency_ms=latency,
                 metadata={"bot": user.get("username"), "id": user.get("id")},
             )
         except Exception as exc:
@@ -100,7 +103,12 @@ class DiscordConnector(BaseConnector):
                             source_url=f"https://discord.com/channels/{cc.get('guild_id', '_')}/{channel_id}/{msg_id}",
                             content=text.encode(),
                             content_type="text/plain",
-                            metadata={"author": author, "channel": channel_id, "ts": ts, "msg_id": msg_id},
+                            metadata={
+                                "author": author,
+                                "channel": channel_id,
+                                "ts": ts,
+                                "msg_id": msg_id,
+                            },
                         )
                         yield doc, new_cursor
 

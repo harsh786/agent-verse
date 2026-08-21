@@ -2,6 +2,7 @@
 All new orchestration behaviours are off by default.
 Set env var to "true" (case-insensitive) to enable.
 """
+
 from __future__ import annotations
 
 import os
@@ -19,9 +20,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def _env_set(name: str) -> frozenset[str]:
-    return frozenset(
-        item.strip() for item in os.getenv(name, "").split(",") if item.strip()
-    )
+    return frozenset(item.strip() for item in os.getenv(name, "").split(",") if item.strip())
 
 
 @dataclass
@@ -46,11 +45,11 @@ class RuntimeFlags:
     readiness_gate: bool = False
     # Granular flags — each can be enabled independently
     # OR set via the master dynamic_orchestration=True
-    enable_runtime_scorecard: bool = False    # RuntimeScorecard 9-dim scoring
-    enable_self_improvement: bool = False     # SelfImprovementEngine action dispatch
-    enable_rag_strategy_routing: bool = False # Profile-based RAG strategy selection
-    enable_pattern_sse_events: bool = False   # pattern_assembled, eval_score_recorded SSEs
-    enable_guardrail_profile: bool = False    # Profile-based GuardrailEnforcer
+    enable_runtime_scorecard: bool = False  # RuntimeScorecard 9-dim scoring
+    enable_self_improvement: bool = False  # SelfImprovementEngine action dispatch
+    enable_rag_strategy_routing: bool = False  # Profile-based RAG strategy selection
+    enable_pattern_sse_events: bool = False  # pattern_assembled, eval_score_recorded SSEs
+    enable_guardrail_profile: bool = False  # Profile-based GuardrailEnforcer
 
     # --- Isolated Agent Execution Environment ---
     # Mirror of config.py Settings fields so the Celery worker (which has no
@@ -92,12 +91,8 @@ class RuntimeFlags:
             isolated_execution_local_runner=_bool_env("ISOLATED_EXECUTION_LOCAL_RUNNER"),
             isolated_execution_kubernetes_runner=_bool_env("ISOLATED_EXECUTION_KUBERNETES_RUNNER"),
             strategy_runtime_v2_shadow=_bool_env("STRATEGY_RUNTIME_V2_SHADOW"),
-            strategy_runtime_v2_tenant_allowlist=_env_set(
-                "STRATEGY_RUNTIME_V2_TENANT_ALLOWLIST"
-            ),
-            strategy_runtime_v2_kill_switch=_bool_env(
-                "STRATEGY_RUNTIME_V2_KILL_SWITCH"
-            ),
+            strategy_runtime_v2_tenant_allowlist=_env_set("STRATEGY_RUNTIME_V2_TENANT_ALLOWLIST"),
+            strategy_runtime_v2_kill_switch=_bool_env("STRATEGY_RUNTIME_V2_KILL_SWITCH"),
         )
 
 
@@ -130,12 +125,8 @@ def get_runtime_flags() -> RuntimeFlags:
         isolated_execution_local_runner=_env_bool("ISOLATED_EXECUTION_LOCAL_RUNNER"),
         isolated_execution_kubernetes_runner=_env_bool("ISOLATED_EXECUTION_KUBERNETES_RUNNER"),
         strategy_runtime_v2_shadow=_env_bool("STRATEGY_RUNTIME_V2_SHADOW"),
-        strategy_runtime_v2_tenant_allowlist=_env_set(
-            "STRATEGY_RUNTIME_V2_TENANT_ALLOWLIST"
-        ),
-        strategy_runtime_v2_kill_switch=_env_bool(
-            "STRATEGY_RUNTIME_V2_KILL_SWITCH"
-        ),
+        strategy_runtime_v2_tenant_allowlist=_env_set("STRATEGY_RUNTIME_V2_TENANT_ALLOWLIST"),
+        strategy_runtime_v2_kill_switch=_env_bool("STRATEGY_RUNTIME_V2_KILL_SWITCH"),
     )
     # Master flag enables all granular flags
     if flags.dynamic_orchestration:

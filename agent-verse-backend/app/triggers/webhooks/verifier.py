@@ -1,4 +1,5 @@
 """WebhookSignatureVerifier — HMAC verification for all webhook families."""
+
 from __future__ import annotations
 
 import hashlib

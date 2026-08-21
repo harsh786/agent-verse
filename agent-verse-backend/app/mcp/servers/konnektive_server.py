@@ -4,6 +4,7 @@ Environment variables:
   KONNEKTIVE_LOGIN_ID: Konnektive API login ID
   KONNEKTIVE_PASSWORD: Konnektive API password
 """
+
 from __future__ import annotations
 
 import os
@@ -69,7 +70,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "startDate": {"type": "string", "description": "Registration start date (MM/DD/YYYY)"},
+                "startDate": {
+                    "type": "string",
+                    "description": "Registration start date (MM/DD/YYYY)",
+                },
                 "endDate": {"type": "string", "description": "Registration end date (MM/DD/YYYY)"},
                 "emailAddress": {"type": "string", "description": "Filter by email"},
                 "resultsPerPage": {"type": "integer", "default": 25},

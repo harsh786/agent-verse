@@ -1,4 +1,5 @@
 """Avro parser — schema extraction + record sampling from Avro binary files."""
+
 from __future__ import annotations
 
 import io
@@ -34,7 +35,9 @@ class AvroParser:
             return ""
 
         # Schema summary
-        schema_name = schema.get("name", filename or "unknown") if isinstance(schema, dict) else str(schema)
+        schema_name = (
+            schema.get("name", filename or "unknown") if isinstance(schema, dict) else str(schema)
+        )
         fields = schema.get("fields", []) if isinstance(schema, dict) else []
         field_strs = [f"{f.get('name', '?')} ({f.get('type', '?')})" for f in fields]
         schema_line = f"Schema: {schema_name}\nFields: " + ", ".join(field_strs)

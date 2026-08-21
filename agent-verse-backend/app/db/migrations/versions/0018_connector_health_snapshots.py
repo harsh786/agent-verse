@@ -1,6 +1,7 @@
 """Add connector_health_snapshots table."""
-from alembic import op
+
 import sqlalchemy as sa
+from alembic import op
 
 revision = "0018"
 down_revision = "0017"
@@ -19,8 +20,9 @@ def upgrade() -> None:
         sa.Column("error", sa.Text(), nullable=True),
         sa.Column("checked_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
-    op.create_index("ix_ch_snapshots_server_tenant", "connector_health_snapshots",
-                    ["server_id", "tenant_id"])
+    op.create_index(
+        "ix_ch_snapshots_server_tenant", "connector_health_snapshots", ["server_id", "tenant_id"]
+    )
 
 
 def downgrade() -> None:

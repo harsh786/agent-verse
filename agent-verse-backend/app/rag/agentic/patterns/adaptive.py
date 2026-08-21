@@ -1,4 +1,5 @@
 """Bounded capability-aware Adaptive RAG selection."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -114,6 +115,7 @@ class AdaptiveRAGPattern(RAGPattern):
         if use_llm_transform and provider is not None:
             try:
                 from app.rag.agentic.llm_query_transformer import LLMQueryTransformer
+
                 transformer = LLMQueryTransformer(provider)
                 effective_queries = await transformer.transform(query)
             except Exception:

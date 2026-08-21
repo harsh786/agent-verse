@@ -3,6 +3,7 @@
 Open source, no external dependencies beyond the standard library.
 Allows developers to test agent workflows without real connector deployments.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,9 @@ from typing import Any
 class ToolSpec:
     name: str
     description: str
-    input_schema: dict[str, Any] = field(default_factory=lambda: {"type": "object", "properties": {}})
+    input_schema: dict[str, Any] = field(
+        default_factory=lambda: {"type": "object", "properties": {}}
+    )
     risk: str = "read"
     fn: Callable[..., Any] | None = None
     fixture_response: Any = None
@@ -81,18 +84,15 @@ class MockMCPServer:
         else:
             return {"error": {"code": -32601, "message": f"Method not found: {method}"}}
 
-    async def _dispatch_tool(
-        self, tool_name: str, arguments: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def _dispatch_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         tool = self._tools.get(tool_name)
         if tool is None:
-            return {
-                "error": {"code": -32602, "message": f"Unknown tool: {tool_name}"}
-            }
+            return {"error": {"code": -32602, "message": f"Unknown tool: {tool_name}"}}
         # Callable handler takes precedence over fixture
         if tool.fn is not None:
             import asyncio  # noqa: F401
             import inspect
+
             try:
                 if inspect.iscoroutinefunction(tool.fn):
                     result = await tool.fn(**arguments)
@@ -104,8 +104,11 @@ class MockMCPServer:
                 return {"error": {"code": -32603, "message": str(exc)}}
         # Fixture response
         if tool.fixture_response is not None:
-            text = (tool.fixture_response if isinstance(tool.fixture_response, str)
-                    else json.dumps(tool.fixture_response))
+            text = (
+                tool.fixture_response
+                if isinstance(tool.fixture_response, str)
+                else json.dumps(tool.fixture_response)
+            )
             return {"content": [{"type": "text", "text": text}]}
         # No handler or fixture — return empty success
         return {"content": [{"type": "text", "text": f"[mock: {tool_name} called]"}]}
@@ -119,9 +122,7 @@ class MockMCPServer:
         self._call_log: list[dict[str, Any]] = []
         original_dispatch = self._dispatch_tool
 
-        async def logged_dispatch(
-            tool_name: str, arguments: dict[str, Any]
-        ) -> dict[str, Any]:
+        async def logged_dispatch(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             result = await original_dispatch(tool_name, arguments)
             self._call_log.append({"tool": tool_name, "arguments": arguments, "result": result})
             return result

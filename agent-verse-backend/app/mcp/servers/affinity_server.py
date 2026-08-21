@@ -3,6 +3,7 @@
 Environment variables:
   AFFINITY_API_KEY: Affinity API key (used as HTTP Basic password; username is empty)
 """
+
 from __future__ import annotations
 
 import os
@@ -89,9 +90,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "AFFINITY_API_KEY not configured"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=AFFINITY_BASE, auth=_auth(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=AFFINITY_BASE, auth=_auth(), timeout=30.0) as c:
             if tool_name == "affinity_list_lists":
                 r = await c.get("/lists")
                 r.raise_for_status()

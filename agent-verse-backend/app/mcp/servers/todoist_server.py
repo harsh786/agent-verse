@@ -3,6 +3,7 @@
 Environment variables:
   TODOIST_API_TOKEN: Todoist personal API token
 """
+
 from __future__ import annotations
 
 import os
@@ -164,7 +165,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
@@ -198,9 +202,18 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
         elif tool_name == "todoist_create_task":
             payload: dict[str, Any] = {"content": arguments["content"]}
             optional_fields = [
-                "description", "project_id", "section_id", "parent_id",
-                "labels", "priority", "due_string", "due_date", "due_datetime",
-                "assignee_id", "duration", "duration_unit",
+                "description",
+                "project_id",
+                "section_id",
+                "parent_id",
+                "labels",
+                "priority",
+                "due_string",
+                "due_date",
+                "due_datetime",
+                "assignee_id",
+                "duration",
+                "duration_unit",
             ]
             for field in optional_fields:
                 if field in arguments and arguments[field] is not None:
@@ -219,8 +232,14 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             task_id = arguments["task_id"]
             payload: dict[str, Any] = {}
             updatable = [
-                "content", "description", "labels", "priority",
-                "due_string", "due_date", "due_datetime", "assignee_id",
+                "content",
+                "description",
+                "labels",
+                "priority",
+                "due_string",
+                "due_date",
+                "due_datetime",
+                "assignee_id",
             ]
             for field in updatable:
                 if field in arguments:
@@ -229,7 +248,11 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             resp = await client.post(f"/tasks/{task_id}", json=payload)
             resp.raise_for_status()
             data = resp.json()
-            return {"task_id": data.get("id", ""), "content": data.get("content", ""), "updated": True}
+            return {
+                "task_id": data.get("id", ""),
+                "content": data.get("content", ""),
+                "updated": True,
+            }
 
         elif tool_name == "todoist_close_task":
             resp = await client.post(f"/tasks/{arguments['task_id']}/close")
@@ -250,7 +273,11 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             resp = await client.post("/projects", json=payload)
             resp.raise_for_status()
             data = resp.json()
-            return {"project_id": data.get("id", ""), "name": data.get("name", ""), "url": data.get("url", "")}
+            return {
+                "project_id": data.get("id", ""),
+                "name": data.get("name", ""),
+                "url": data.get("url", ""),
+            }
 
         else:
             return {"error": f"Unknown tool: {tool_name}"}

@@ -39,9 +39,7 @@ def select_participant(
         ),
     )
     rejected.extend(
-        (item.agent_id, "lower_score")
-        for item in eligible
-        if item.agent_id != selected.agent_id
+        (item.agent_id, "lower_score") for item in eligible if item.agent_id != selected.agent_id
     )
     return ParticipantDecision(
         selected_agent_id=selected.agent_id,

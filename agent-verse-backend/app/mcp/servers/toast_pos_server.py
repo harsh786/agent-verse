@@ -4,6 +4,7 @@ Environment:
   TOAST_CLIENT_ID: Toast API client ID
   TOAST_CLIENT_SECRET: Toast API client secret
 """
+
 from __future__ import annotations
 
 import os
@@ -36,7 +37,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "restaurant_guid": {"type": "string", "description": "Toast restaurant GUID"},
-                "start_date": {"type": "string", "description": "Start datetime in ISO 8601 format"},
+                "start_date": {
+                    "type": "string",
+                    "description": "Start datetime in ISO 8601 format",
+                },
                 "end_date": {"type": "string", "description": "End datetime in ISO 8601 format"},
                 "page": {"type": "integer", "description": "Page number"},
                 "page_size": {"type": "integer", "description": "Orders per page"},
@@ -63,7 +67,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "restaurant_guid": {"type": "string", "description": "Restaurant GUID"},
-                "last_modified": {"type": "string", "description": "Return items modified after this ISO datetime"},
+                "last_modified": {
+                    "type": "string",
+                    "description": "Return items modified after this ISO datetime",
+                },
             },
             "required": ["restaurant_guid"],
         },
@@ -125,7 +132,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "toast_list_restaurants":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/partners/v1/restaurants", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/partners/v1/restaurants", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -184,7 +193,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 params = {}
                 if "deleted" in arguments:
                     params["deleted"] = str(arguments["deleted"]).lower()
-                r = await client.get(f"{BASE_URL}/labor/v1/employees", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/labor/v1/employees", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

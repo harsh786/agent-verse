@@ -18,6 +18,7 @@ Ungrounded steps:
 - Their summaries include `[UNGROUNDED CLAIM]` markers for the verifier
 - Trigger a replan after max 2 consecutive ungrounded steps
 """
+
 from __future__ import annotations
 
 import re
@@ -30,13 +31,13 @@ logger = get_logger(__name__)
 
 # Regex patterns for extractable entity types
 _PATTERNS: dict[str, re.Pattern[str]] = {
-    "jira_id": re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b"),           # JIRA-123
-    "github_pr": re.compile(r"\bPR\s*[#-]?\s*(\d+)\b", re.I),        # PR-42, PR #42, PR42
-    "url": re.compile(r"https?://[^\s\"'<>]+"),                     # URLs
-    "date": re.compile(r"\b(\d{4}-\d{2}-\d{2})\b"),               # ISO dates
-    "number": re.compile(r"\b(\d{2,})\b"),                          # Numbers ≥ 10
+    "jira_id": re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b"),  # JIRA-123
+    "github_pr": re.compile(r"\bPR\s*[#-]?\s*(\d+)\b", re.I),  # PR-42, PR #42, PR42
+    "url": re.compile(r"https?://[^\s\"'<>]+"),  # URLs
+    "date": re.compile(r"\b(\d{4}-\d{2}-\d{2})\b"),  # ISO dates
+    "number": re.compile(r"\b(\d{2,})\b"),  # Numbers ≥ 10
     "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"),
-    "quoted": re.compile(r'"([^"]{4,60})"'),                        # Quoted strings 4-60 chars
+    "quoted": re.compile(r'"([^"]{4,60})"'),  # Quoted strings 4-60 chars
 }
 
 
@@ -157,8 +158,8 @@ def annotate_ungrounded(step_output: str, result: GroundingResult) -> str:
 class Claim:
     """A concrete claim extracted from step output."""
 
-    value: str   # e.g. "JIRA-123", "2026-07-15", "5 issues"
-    kind: str    # "jira_id" | "date" | "number" | "url" | "quoted" | "email"
+    value: str  # e.g. "JIRA-123", "2026-07-15", "5 issues"
+    kind: str  # "jira_id" | "date" | "number" | "url" | "quoted" | "email"
 
 
 def extract_claims_structured(text: str) -> list[Claim]:
@@ -273,6 +274,7 @@ class GroundingChecker:
 
                 from app.agent.prompts import GROUNDING_SYSTEM
                 from app.providers.base import CompletionRequest, Message
+
                 evidence = " ".join(str(t) for t in _outputs[:3])[:2000]
                 req = CompletionRequest(
                     messages=[
@@ -284,7 +286,7 @@ class GroundingChecker:
                                 f"Tool evidence:\n{evidence}\n\n"
                                 f"Residual ungrounded claims: {result.ungrounded_claims[:5]}\n\n"
                                 "For each claim, state if it is grounded or ungrounded. "
-                                'Return ONLY JSON: '
+                                "Return ONLY JSON: "
                                 '{"grounded": ["claim1"], "ungrounded": ["claim2"]}'
                             ),
                         ),

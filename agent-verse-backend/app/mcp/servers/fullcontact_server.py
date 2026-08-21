@@ -3,6 +3,7 @@
 Environment variables:
   FULLCONTACT_API_KEY: FullContact API key
 """
+
 from __future__ import annotations
 
 import os
@@ -38,8 +39,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "domain": {"type": "string", "description": "Company website domain, e.g. 'fullcontact.com'"},
-                "companyName": {"type": "string", "description": "Company name (used if domain unavailable)"},
+                "domain": {
+                    "type": "string",
+                    "description": "Company website domain, e.g. 'fullcontact.com'",
+                },
+                "companyName": {
+                    "type": "string",
+                    "description": "Company name (used if domain unavailable)",
+                },
                 "webhookUrl": {"type": "string"},
             },
         },

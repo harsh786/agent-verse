@@ -7,6 +7,7 @@ Usage:
   loader.load_all()  # loads + validates all YAML content
   await loader.seed(marketplace_v2_instance, template_store)
 """
+
 from __future__ import annotations
 
 import logging
@@ -67,9 +68,7 @@ class ContentLoader:
                         agent = MarketplaceAgentContent(**raw)
                         # Check uniqueness
                         if agent.slug in all_slugs:
-                            self._errors.append(
-                                f"Duplicate slug '{agent.slug}' in {yaml_file}"
-                            )
+                            self._errors.append(f"Duplicate slug '{agent.slug}' in {yaml_file}")
                             continue
                         if agent.template_id in all_template_ids:
                             self._errors.append(
@@ -149,9 +148,7 @@ class ContentLoader:
                 print(f"ERROR: {err}")
             print(f"\n{len(self._errors)} validation error(s) found.")
             return 1
-        print(
-            f"OK: {len(self._agents)} agents, {len(self._templates)} templates — all valid."
-        )
+        print(f"OK: {len(self._agents)} agents, {len(self._templates)} templates — all valid.")
         return 0
 
 

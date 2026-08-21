@@ -1,70 +1,28 @@
 """Mixin extracted from app.agent.graph — zero semantic changes."""
+
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
-import re
 import time
-import uuid
-from collections.abc import Awaitable, Callable
-from typing import Any, TypedDict
-
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, START, StateGraph
+from typing import Any
 
 from app.agent.prompts import (
-    CHAIN_OF_THOUGHT_SYSTEM,
-    EXECUTOR_SYSTEM,
-    PLANNER_SYSTEM,
-    REFLECTION_SYSTEM,
-    STRUCTURED_PLANNER_SYSTEM,
     VERIFIER_SYSTEM,
 )
-from app.agent.sanitization import (
-    _EXECUTOR_CONTEXT_MAX_LENGTH,
-    sanitize_event,
-    sanitize_event_value,
-    sanitize_tool_event_value,
-    sanitize_tool_raw_output,
-)
-from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus, SubGoal
-from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_arguments
-from app.agent.tool_risk import classify_tool_risk
-from app.governance.audit import AuditEvent, AuditLog
-from app.governance.cost import CostController
-from app.governance.hitl import ApprovalStatus, HITLGateway
-from app.governance.permissions import ActionLevel, PermissionMatrix
-from app.governance.policies import PolicyEngine, PolicyResult
-from app.intelligence.eval_runner import EvalRunner
-from app.intelligence.explainability import DecisionTrace
-from app.intelligence.guardrails import GuardrailChecker
-from app.memory.execution import ExecutionMemory
-from app.memory.long_term import LongTermMemoryStore
+from app.agent.state import AgentState, GoalStatus
 from app.observability.metrics import (
-    record_approval_wait,
     record_goal_completed,
-    record_goal_failed,
-    record_plan_duration,
-    record_tool_call,
     record_verify_duration,
-    track_tool_call,
 )
-from app.pipeline.steps import smart_context_fetch
-from app.providers.base import CompletionRequest, LLMProvider, Message, ToolDefinition
+from app.providers.base import CompletionRequest, Message
 from app.providers.circuit_breaker import call_with_circuit_breaker
-from app.rag.contracts import RAGExecutionResult, RAGStrategy, resolve_rag_strategy
-from app.rag.store import KnowledgeStore
-from app.reliability.circuit_breaker import CircuitBreaker
-from app.reliability.dedup import DeduplicationCache
-from app.reliability.result_processor import ResultProcessor
-from app.reliability.rollback import RollbackEngine
 from app.tenancy.context import TenantContext
 
 # Guardrails 2.0 integration
 try:
     from app.guardrails_v2.engine import guardrails_engine
     from app.guardrails_v2.models import GuardrailLayer
+
     _GUARDRAILS_AVAILABLE = True
 except ImportError:
     _GUARDRAILS_AVAILABLE = False
@@ -72,17 +30,10 @@ except ImportError:
     GuardrailLayer = None  # type: ignore[assignment]
 
 from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
-
-
 from app.agent.nodes._helpers import (
-    _is_high_risk_step,
-    _is_ungrounded_status,
     _build_verifier_summary,
-    _parse_json,
-    _parse_verifier_response,
-    _extract_tool_name as _extract_tool_name_fn,
-    _extract_scope_value,
 )
+
 
 class VerifierMixin:
     """Mixin: _node_verify."""
@@ -99,15 +50,14 @@ class VerifierMixin:
         summary = _build_verifier_summary(agent_state.steps)
         try:
             from app.agent.prompt_compressor import _default_compressor as _pc
+
             summary = _pc.compress(summary)
         except Exception:
             pass
         # N9: Prepend verifier context from ContextPipeline
         _verif_ctx = agent_state.context.get("_verifier_context", "") or ""
         if _verif_ctx and len(_verif_ctx) > 50:
-            summary = (
-                f"[Context for verification]\n{_verif_ctx[:800]}\n\n{summary}"
-            )
+            summary = f"[Context for verification]\n{_verif_ctx[:800]}\n\n{summary}"
         # Resolve verifier model via model_router when available (Bug 3 fix)
         _verify_model = ""
         if self._model_router is not None:
@@ -130,8 +80,10 @@ class VerifierMixin:
                 )
                 if _cached_verify is not None:
                     self._logger.info("llm_cache_verify_hit", tenant=tenant_ctx.tenant_id)
+
                     class _FakeResp:
                         content = _cached_verify
+
                     resp = _FakeResp()
                     _verify_cached = True
             except Exception:
@@ -141,6 +93,7 @@ class VerifierMixin:
             _verify_response_schema = None
             try:
                 from app.agent.schemas import verifier_schema
+
                 if (
                     hasattr(self._verifier, "supports_structured_output")
                     and self._verifier.supports_structured_output()
@@ -165,7 +118,9 @@ class VerifierMixin:
                 _verify_start = time.monotonic()
                 try:
                     resp = await call_with_circuit_breaker(
-                        self._verifier, "complete", req,
+                        self._verifier,
+                        "complete",
+                        req,
                         provider_name=type(self._verifier).__name__,
                     )
                 except RuntimeError as cb_exc:
@@ -174,6 +129,7 @@ class VerifierMixin:
             # 2.3: Per-goal verifier cost tracking
             try:
                 from app.observability.cost_breakdown import record_role_cost as _rrc
+
                 _rrc(
                     goal_id=agent_state.goal_id,
                     role="verifier",
@@ -189,7 +145,7 @@ class VerifierMixin:
                 try:
                     _is_error_verify = (
                         not resp.content
-                        or resp.content.strip().startswith("{\"error")
+                        or resp.content.strip().startswith('{"error')
                         or "model_not_found" in resp.content.lower()
                     )
                     if not _is_error_verify:
@@ -205,6 +161,7 @@ class VerifierMixin:
                     pass
         # Phase 3 Track A: use parse_verifier_verdict (handles JSON and text fallback)
         from app.agent.schemas import parse_verifier_verdict
+
         parsed = parse_verifier_verdict(resp.content)
         success: bool = bool(parsed.get("success", False))
         reason: str = self._sanitize_tool_raw_output(parsed.get("reason", ""))
@@ -217,6 +174,7 @@ class VerifierMixin:
             # Only attempt consensus when primary verifier says fail (to save cost)
             try:
                 from app.agent.consensus import requires_consensus
+
                 tool_risks = [
                     tc.risk_level
                     for step in agent_state.steps
@@ -236,12 +194,14 @@ class VerifierMixin:
                     reason = consensus_result.majority_reason or reason
                     # HITL if disagreement
                     if consensus_result.requires_hitl and self._hitl_gateway is not None:
-                        req_id = str(self._hitl_gateway.request_approval(
-                            goal_id=agent_state.goal_id,
-                            action=f"Consensus disagreement on goal: {agent_state.goal[:100]}",
-                            risk_level="high",
-                            tenant_ctx=tenant_ctx,
-                        ))
+                        req_id = str(
+                            self._hitl_gateway.request_approval(
+                                goal_id=agent_state.goal_id,
+                                action=f"Consensus disagreement on goal: {agent_state.goal[:100]}",
+                                risk_level="high",
+                                tenant_ctx=tenant_ctx,
+                            )
+                        )
                         self._logger.info("consensus_hitl_requested", req_id=req_id)
             except Exception as exc:
                 self._logger.warning("consensus_verify_failed", error=str(exc)[:80])
@@ -253,6 +213,7 @@ class VerifierMixin:
         # Record verifier verdict for calibration (Phase 3 Track E)
         try:
             from app.intelligence.verifier_calibration import _default_calibration_store
+
             _cal_store = getattr(self, "_calibration_store", _default_calibration_store)
             if _cal_store is not None:
                 _cal_task = asyncio.create_task(
@@ -294,9 +255,7 @@ class VerifierMixin:
 
             # Auto-extract long-term learnings (sync in-memory + async DB, BUG 1 fix)
             if self._long_term_memory is not None:
-                step_outputs = " ".join(
-                    s.output[:100] for s in agent_state.steps if s.output
-                )
+                step_outputs = " ".join(s.output[:100] for s in agent_state.steps if s.output)
                 # Sync extract: immediate in-memory update (same-session recall)
                 self._long_term_memory.extract_from_goal(
                     goal=agent_state.goal,
@@ -317,8 +276,9 @@ class VerifierMixin:
                     )
                     self._background_tasks.add(_ltm_task)
                     _ltm_task.add_done_callback(
-                        lambda t: t.exception() and self._logger.warning(
-                            "ltm_persist_failed", error=str(t.exception())
+                        lambda t: (
+                            t.exception()
+                            and self._logger.warning("ltm_persist_failed", error=str(t.exception()))
                         )
                     )
                     _ltm_task.add_done_callback(self._background_tasks.discard)
@@ -340,11 +300,10 @@ class VerifierMixin:
             # N3: Compute actual latency before scoring so RuntimeScorecard gets a real value
             try:
                 import time as _lat_time
+
                 _start_ms = agent_state.context.get("_goal_start_ms", 0.0)
                 if _start_ms > 0:
-                    agent_state.context["_latency_ms"] = (
-                        _lat_time.monotonic() * 1000 - _start_ms
-                    )
+                    agent_state.context["_latency_ms"] = _lat_time.monotonic() * 1000 - _start_ms
             except Exception:
                 pass
 
@@ -352,12 +311,12 @@ class VerifierMixin:
             try:
                 from app.core.runtime_flags import get_runtime_flags as _nv_rtf
                 from app.evals.runtime_scorecard import RuntimeScorecard
+
                 _nv_flags = _nv_rtf()
                 _profile = agent_state.context.get("_runtime_profile")
                 if (
-                    (_nv_flags.dynamic_orchestration or _nv_flags.enable_runtime_scorecard)
-                    and _profile is not None
-                ):
+                    _nv_flags.dynamic_orchestration or _nv_flags.enable_runtime_scorecard
+                ) and _profile is not None:
                     _scorecard = RuntimeScorecard()
                     _guardrail_violations = sum(
                         1
@@ -372,9 +331,7 @@ class VerifierMixin:
                     _scorecard_result = _scorecard.score(
                         state=agent_state,
                         profile=_profile,
-                        retrieval_result=agent_state.context.get(
-                            "runtime_retrieval_evidence"
-                        ),
+                        retrieval_result=agent_state.context.get("runtime_retrieval_evidence"),
                         cost_usd=agent_state.context.get("total_cost_usd"),
                         latency_ms=agent_state.context.get("_latency_ms"),
                         guardrail_violations=_guardrail_violations,
@@ -384,14 +341,14 @@ class VerifierMixin:
                     try:
                         _orch_persist = (
                             getattr(self._app_state, "orchestration_persistence", None)
-                            if self._app_state else None
+                            if self._app_state
+                            else None
                         )
                         if _orch_persist is not None:
                             import asyncio as _sc_asyncio
+
                             _sc_task = _sc_asyncio.ensure_future(
-                                _orch_persist.persist_scorecard(
-                                    _scorecard_result, profile=_profile
-                                )
+                                _orch_persist.persist_scorecard(_scorecard_result, profile=_profile)
                             )
                             if hasattr(self, "_background_tasks"):
                                 self._background_tasks.add(_sc_task)
@@ -401,6 +358,7 @@ class VerifierMixin:
                     # RegressionGate: catalogue low-scoring goals as regression cases
                     try:
                         from app.evals.regression_gate import RegressionGate
+
                         _rg = RegressionGate()
                         _regression_candidate = _rg.maybe_create_regression(
                             state=agent_state,
@@ -413,13 +371,20 @@ class VerifierMixin:
                             try:
                                 _orch_p = (
                                     getattr(self._app_state, "orchestration_persistence", None)
-                                    if self._app_state else None
+                                    if self._app_state
+                                    else None
                                 )
-                                if _orch_p is not None and hasattr(_orch_p, "persist_regression_case"):
+                                if _orch_p is not None and hasattr(
+                                    _orch_p, "persist_regression_case"
+                                ):
                                     import asyncio as _rc_asyncio
+
                                     _rc_asyncio.ensure_future(
                                         _orch_p.persist_regression_case(
-                                            {**_regression_candidate, "tenant_id": tenant_ctx.tenant_id}
+                                            {
+                                                **_regression_candidate,
+                                                "tenant_id": tenant_ctx.tenant_id,
+                                            }
                                         )
                                     )
                             except Exception:
@@ -433,6 +398,7 @@ class VerifierMixin:
                     _actions: list[Any] = []
                     if _si_enabled:
                         from app.evals.self_improvement_engine import SelfImprovementEngine
+
                         _engine = SelfImprovementEngine()
                         _actions = _engine.decide_actions(
                             _scorecard_result, _profile, state=agent_state
@@ -445,14 +411,16 @@ class VerifierMixin:
                         for _action in _actions:
                             _action_type = (
                                 _action.action_type.value
-                                if hasattr(_action, "action_type") else str(_action)
+                                if hasattr(_action, "action_type")
+                                else str(_action)
                             )
                             if "STORE_REFLEXION_LESSON" in _action_type:
                                 pass  # handled by reflexion_wirer in failure branch
                             elif "UPDATE_PROMPT_VARIANT" in _action_type:
                                 _po = (
                                     getattr(self._app_state, "prompt_optimizer", None)
-                                    if self._app_state else None
+                                    if self._app_state
+                                    else None
                                 )
                                 if _po is not None and hasattr(_po, "record_result"):
                                     _variant_id = agent_state.context.get("planner_variant_id")
@@ -461,13 +429,19 @@ class VerifierMixin:
                                             variant_id=_variant_id,
                                             eval_score=_scorecard_result.overall_score,
                                         )
-                            elif "SWITCH_MODEL" in _action_type or "UPDATE_MODEL_ROUTING" in _action_type:
+                            elif (
+                                "SWITCH_MODEL" in _action_type
+                                or "UPDATE_MODEL_ROUTING" in _action_type
+                            ):
                                 # N7a: Persist model switch recommendation to agent config
                                 try:
                                     if self._app_state is not None and self._agent_id is not None:
                                         _agent_store = getattr(self._app_state, "agent_store", None)
-                                        if _agent_store is not None and hasattr(_agent_store, "update_config"):
+                                        if _agent_store is not None and hasattr(
+                                            _agent_store, "update_config"
+                                        ):
                                             import asyncio as _mc_asyncio
+
                                             _mc_asyncio.ensure_future(
                                                 _agent_store.update_config(
                                                     agent_id=self._agent_id,
@@ -482,6 +456,7 @@ class VerifierMixin:
                                 except Exception:
                                     pass
                                 from app.observability.logging import get_logger
+
                                 get_logger(__name__).warning(
                                     "self_improvement_model_switch_applied",
                                     goal_id=agent_state.goal_id,
@@ -495,13 +470,16 @@ class VerifierMixin:
                                         # Find failed tools from recent steps
                                         _failed_tools: list[str] = []
                                         for _s in agent_state.steps:
-                                            for _tc in (getattr(_s, "tool_calls", None) or []):
-                                                if isinstance(_tc, dict) and not _tc.get("success", True):
+                                            for _tc in getattr(_s, "tool_calls", None) or []:
+                                                if isinstance(_tc, dict) and not _tc.get(
+                                                    "success", True
+                                                ):
                                                     _tn = _tc.get("tool_name", "")
                                                     if _tn and _tn not in _failed_tools:
                                                         _failed_tools.append(_tn)
                                         for _ft in _failed_tools[:3]:
                                             import asyncio as _bl_asyncio
+
                                             _bl_asyncio.ensure_future(
                                                 _tr_store.record(
                                                     tool_name=_ft,
@@ -511,10 +489,13 @@ class VerifierMixin:
                                                     error="blacklisted_by_self_improvement",
                                                 )
                                             )
-                                        agent_state.context["_blacklisted_tools"] = _failed_tools[:3]
+                                        agent_state.context["_blacklisted_tools"] = _failed_tools[
+                                            :3
+                                        ]
                                 except Exception:
                                     pass
                                 from app.observability.logging import get_logger
+
                                 get_logger(__name__).warning(
                                     "self_improvement_tool_blacklisted",
                                     goal_id=agent_state.goal_id,
@@ -526,26 +507,32 @@ class VerifierMixin:
                     try:
                         if self._event_callback is not None and _actions:
                             from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+
                             _sse_sis = RuntimeSSEEmitter()
-                            await self._emit(_sse_sis.self_improvement_suggested(
-                                goal_id=agent_state.goal_id,
-                                suggestions=[
-                                    a.action_type.value if hasattr(a, "action_type") else str(a)
-                                    for a in _actions
-                                ],
-                            ))
+                            await self._emit(
+                                _sse_sis.self_improvement_suggested(
+                                    goal_id=agent_state.goal_id,
+                                    suggestions=[
+                                        a.action_type.value if hasattr(a, "action_type") else str(a)
+                                        for a in _actions
+                                    ],
+                                )
+                            )
                     except Exception:
                         pass
                     # Emit eval_score_recorded SSE (N12: gated on pattern SSE flag)
                     if _nv_flags.dynamic_orchestration or _nv_flags.enable_pattern_sse_events:
                         try:
                             from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+
                             _sse_emitter = RuntimeSSEEmitter()
-                            await self._emit(_sse_emitter.eval_score_recorded(
-                                goal_id=agent_state.goal_id,
-                                overall_score=_scorecard_result.overall_score,
-                                scores=_scorecard_result.scores,
-                            ))
+                            await self._emit(
+                                _sse_emitter.eval_score_recorded(
+                                    goal_id=agent_state.goal_id,
+                                    overall_score=_scorecard_result.overall_score,
+                                    scores=_scorecard_result.scores,
+                                )
+                            )
                         except Exception:
                             pass
             except Exception:
@@ -583,16 +570,22 @@ class VerifierMixin:
                         {"text": c.text, "source": c.source, "step": c.step_index}
                         for c in cited.citations
                     ]
-                    await self._emit({
-                        "type": "synthesis_complete",
-                        "cited_answer": cited.answer[:2000],
-                        "citations": [{"text": c.text, "source": c.source} for c in cited.citations],
-                    })
+                    await self._emit(
+                        {
+                            "type": "synthesis_complete",
+                            "cited_answer": cited.answer[:2000],
+                            "citations": [
+                                {"text": c.text, "source": c.source} for c in cited.citations
+                            ],
+                        }
+                    )
                 except Exception as exc:
                     self._logger.debug("synthesis_failed", error=str(exc)[:60])
 
             # H-2: SelfOptimizerV2 result recording — feeds A/B experiment outcomes
-            _self_opt_v2 = getattr(self._app_state, "self_optimizer_v2", None) if self._app_state else None
+            _self_opt_v2 = (
+                getattr(self._app_state, "self_optimizer_v2", None) if self._app_state else None
+            )
             if _self_opt_v2 and self._agent_id and isinstance(agent_state.context, dict):
                 _arm = agent_state.context.get("_experiment_arm")
                 if _arm:
@@ -612,6 +605,7 @@ class VerifierMixin:
                                 pass
                     if _eval_score is not None:
                         import asyncio as _asyncio
+
                         _v2_task = _asyncio.create_task(
                             _self_opt_v2.on_goal_completed(
                                 tenant_id=tenant_ctx.tenant_id,
@@ -628,8 +622,10 @@ class VerifierMixin:
             try:
                 from app.optimization.ab_testing import ExperimentType
                 from app.optimization.ab_testing import ab_testing_engine as _abt_eng
+
                 if _abt_eng is not None and _eval_score is not None and tenant_ctx is not None:
                     import asyncio as _n5_asyncio
+
                     _abt_asyncio_task = _n5_asyncio.ensure_future(
                         _abt_eng.record_result_async(
                             goal_id=agent_state.goal_id,
@@ -655,8 +651,10 @@ class VerifierMixin:
             # Reflexion: store failure lesson (C1 fix — was incorrectly in success branch)
             try:
                 from app.agent.reflexion_wirer import get_reflexion_wirer
+
                 _rw = get_reflexion_wirer()
                 import asyncio as _rf_asyncio
+
                 _rf_asyncio.ensure_future(_rw.maybe_store_async(agent_state))
             except Exception:
                 pass
@@ -665,13 +663,13 @@ class VerifierMixin:
             try:
                 _orch_p = (
                     getattr(self._app_state, "orchestration_persistence", None)
-                    if self._app_state else None
+                    if self._app_state
+                    else None
                 )
                 if _orch_p is not None and hasattr(_orch_p, "persist_reflexion_lesson"):
                     import asyncio as _rl_asyncio
-                    _rl_asyncio.ensure_future(
-                        _orch_p.persist_reflexion_lesson(agent_state)
-                    )
+
+                    _rl_asyncio.ensure_future(_orch_p.persist_reflexion_lesson(agent_state))
             except Exception:
                 pass
 
@@ -752,4 +750,3 @@ class VerifierMixin:
     # ------------------------------------------------------------------
     # Routing (synchronous — LangGraph calls this synchronously)
     # ------------------------------------------------------------------
-

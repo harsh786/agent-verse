@@ -1,4 +1,5 @@
 """DimensionPolicy — maps model IDs to standard vector dimensions."""
+
 from __future__ import annotations
 
 _DIMENSION_MAP: dict[str, int] = {

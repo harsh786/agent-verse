@@ -14,15 +14,13 @@ Setup:
 Webhook URL: POST /v1/gateway/{org_id}/email/inbound
 (via email provider inbound parse, e.g. SendGrid, Mailgun, Postmark)
 """
+
 from __future__ import annotations
 
-import email as email_lib
 import html
 import os
 import re
 import uuid
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from typing import Any
 
 import structlog
@@ -46,7 +44,7 @@ class EmailChannelAdapter(ChannelAdapter):
         command_email: str | None = None,
     ) -> None:
         self._allowed_senders = set(allowed_senders or [])
-        self._command_email   = command_email or os.getenv("ORG_COMMAND_EMAIL", "")
+        self._command_email = command_email or os.getenv("ORG_COMMAND_EMAIL", "")
 
     async def verify_auth(
         self, request_headers: dict[str, str], raw_payload: dict[str, Any]
@@ -55,7 +53,7 @@ class EmailChannelAdapter(ChannelAdapter):
         sender = raw_payload.get("from", "")
         sender_email = self._extract_email(sender)
         if not self._allowed_senders:
-            return True   # no whitelist = open
+            return True  # no whitelist = open
         return sender_email.lower() in {s.lower() for s in self._allowed_senders}
 
     async def normalize(
@@ -63,10 +61,10 @@ class EmailChannelAdapter(ChannelAdapter):
     ) -> OrgCommand:
         with _tracer.start_as_current_span("email.normalize") as span:
             command_id = str(uuid.uuid4())
-            sender     = raw_payload.get("from", "")
+            sender = raw_payload.get("from", "")
             actor_email = self._extract_email(sender)
-            subject    = raw_payload.get("subject", "").strip()
-            body_text  = raw_payload.get("text", raw_payload.get("body", "")).strip()
+            subject = raw_payload.get("subject", "").strip()
+            body_text = raw_payload.get("text", raw_payload.get("body", "")).strip()
             in_reply_to = raw_payload.get("in_reply_to", "")
 
             # Subject is the command; body adds context

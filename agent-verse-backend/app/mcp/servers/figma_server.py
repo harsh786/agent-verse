@@ -3,6 +3,7 @@
 Environment:
   FIGMA_ACCESS_TOKEN: Figma personal access token or OAuth2 bearer token
 """
+
 from __future__ import annotations
 
 import os
@@ -189,8 +190,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "projects": [
-                        {"id": p.get("id"), "name": p.get("name")}
-                        for p in data.get("projects", [])
+                        {"id": p.get("id"), "name": p.get("name")} for p in data.get("projects", [])
                     ]
                 }
 

@@ -1,6 +1,8 @@
 """ToolPolicy — per-tool access policy based on tenant, risk, and capability."""
+
 from __future__ import annotations
-from dataclasses import dataclass, field
+
+from dataclasses import dataclass
 
 
 @dataclass

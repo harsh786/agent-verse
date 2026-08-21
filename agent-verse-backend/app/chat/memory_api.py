@@ -28,7 +28,7 @@ class Memory:
     id: str
     tenant_id: str
     content: str
-    source: str = "manual"   # manual | auto
+    source: str = "manual"  # manual | auto
     created_at: datetime = field(default_factory=_now)
     updated_at: datetime = field(default_factory=_now)
 
@@ -68,24 +68,28 @@ class MemoryAPI:
         if not m or m.tenant_id != tenant_id:
             return False
         del self._memories[memory_id]
-        self._audit_log.append({
-            "action": "delete_memory",
-            "memory_id": memory_id,
-            "tenant_id": tenant_id,
-            "at": _now().isoformat(),
-        })
+        self._audit_log.append(
+            {
+                "action": "delete_memory",
+                "memory_id": memory_id,
+                "tenant_id": tenant_id,
+                "at": _now().isoformat(),
+            }
+        )
         return True
 
     def delete_all_memories(self, tenant_id: str) -> int:
         ids = [mid for mid, m in self._memories.items() if m.tenant_id == tenant_id]
         for mid in ids:
             del self._memories[mid]
-        self._audit_log.append({
-            "action": "delete_all_memories",
-            "count": len(ids),
-            "tenant_id": tenant_id,
-            "at": _now().isoformat(),
-        })
+        self._audit_log.append(
+            {
+                "action": "delete_all_memories",
+                "count": len(ids),
+                "tenant_id": tenant_id,
+                "at": _now().isoformat(),
+            }
+        )
         return len(ids)
 
     def get_audit_log(self, tenant_id: str) -> list[dict]:

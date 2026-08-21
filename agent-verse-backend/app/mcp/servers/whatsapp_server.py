@@ -4,6 +4,7 @@ Environment:
   WHATSAPP_PHONE_NUMBER_ID: Registered phone number ID
   WHATSAPP_ACCESS_TOKEN: Meta Cloud API access token
 """
+
 from __future__ import annotations
 
 import os
@@ -24,7 +25,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "to": {"type": "string", "description": "Recipient phone number with country code, e.g. 15551234567"},
+                "to": {
+                    "type": "string",
+                    "description": "Recipient phone number with country code, e.g. 15551234567",
+                },
                 "body": {"type": "string", "description": "Message text"},
                 "preview_url": {"type": "boolean", "default": False},
             },
@@ -60,7 +64,10 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "enum": ["image", "document", "video", "audio"],
                 },
-                "media_url": {"type": "string", "description": "Publicly accessible URL of the media"},
+                "media_url": {
+                    "type": "string",
+                    "description": "Publicly accessible URL of the media",
+                },
                 "caption": {"type": "string"},
                 "filename": {"type": "string", "description": "Filename for document type"},
             },
@@ -95,9 +102,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_ACCESS_TOKEN required"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=GRAPH_BASE, headers=_headers(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=GRAPH_BASE, headers=_headers(), timeout=30.0) as c:
             if tool_name == "whatsapp_send_text":
                 payload: dict[str, Any] = {
                     "messaging_product": "whatsapp",

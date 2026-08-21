@@ -4,6 +4,7 @@ Environment variables:
   TRELLO_API_KEY: Trello Power-Up API key
   TRELLO_TOKEN: Trello user token
 """
+
 from __future__ import annotations
 
 import os
@@ -199,7 +200,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
@@ -311,7 +315,11 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
 
         elif tool_name == "trello_create_checklist":
             card_id = arguments["card_id"]
-            checklist_params = {**auth, "idCard": card_id, "name": arguments.get("name", "Checklist")}
+            checklist_params = {
+                **auth,
+                "idCard": card_id,
+                "name": arguments.get("name", "Checklist"),
+            }
             resp = await client.post("/checklists", params=checklist_params)
             resp.raise_for_status()
             checklist = resp.json()

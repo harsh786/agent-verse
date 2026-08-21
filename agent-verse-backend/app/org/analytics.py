@@ -6,31 +6,30 @@ Provides:
   - Cost tracking per department per mission type
   - Bottleneck detection + KPI trends
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import structlog
 from opentelemetry import trace
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.observability.logging import get_logger
 from app.org.models import (
+    OrgDepartment,
     OrgMission,
     OrgTask,
-    OrgDepartment,
-    OrgTeam,
-    OrgEvent,
 )
-from app.observability.logging import get_logger
 
 _log = get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
 
 # ── OrgHealthScore (spec PART 9, 8-factor formula) ───────────────────────────
+
 
 @dataclass
 class OrgHealthScore:
@@ -45,46 +44,48 @@ class OrgHealthScore:
       knowledge_freshness      × 10
       security_compliance      × 10
     """
-    mission_completion_rate: float = 0.0   # 0-1
-    agent_utilization:       float = 0.0   # 0-1
-    cost_efficiency:         float = 1.0   # 0-1 (1 = perfect)
-    quality_avg:             float = 0.0   # 0-1
-    blocked_ratio:           float = 0.0   # 0-1 (penalised)
-    escalation_rate:         float = 0.0   # 0-1 (penalised)
-    knowledge_freshness:     float = 1.0   # 0-1
-    security_compliance:     float = 1.0   # 0-1
+
+    mission_completion_rate: float = 0.0  # 0-1
+    agent_utilization: float = 0.0  # 0-1
+    cost_efficiency: float = 1.0  # 0-1 (1 = perfect)
+    quality_avg: float = 0.0  # 0-1
+    blocked_ratio: float = 0.0  # 0-1 (penalised)
+    escalation_rate: float = 0.0  # 0-1 (penalised)
+    knowledge_freshness: float = 1.0  # 0-1
+    security_compliance: float = 1.0  # 0-1
 
     @property
     def score(self) -> float:
         raw = (
             self.mission_completion_rate * 30
-            + self.agent_utilization        * 15
-            + self.cost_efficiency          * 15
-            + self.quality_avg              * 20
-            - self.blocked_ratio            * 15
-            - self.escalation_rate          *  5
-            + self.knowledge_freshness      * 10
-            + self.security_compliance      * 10
+            + self.agent_utilization * 15
+            + self.cost_efficiency * 15
+            + self.quality_avg * 20
+            - self.blocked_ratio * 15
+            - self.escalation_rate * 5
+            + self.knowledge_freshness * 10
+            + self.security_compliance * 10
         )
         return max(0.0, min(100.0, raw))
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "score":                   round(self.score, 1),
+            "score": round(self.score, 1),
             "factors": {
                 "mission_completion_rate": self.mission_completion_rate,
-                "agent_utilization":       self.agent_utilization,
-                "cost_efficiency":         self.cost_efficiency,
-                "quality_avg":             self.quality_avg,
-                "blocked_ratio":           self.blocked_ratio,
-                "escalation_rate":         self.escalation_rate,
-                "knowledge_freshness":     self.knowledge_freshness,
-                "security_compliance":     self.security_compliance,
+                "agent_utilization": self.agent_utilization,
+                "cost_efficiency": self.cost_efficiency,
+                "quality_avg": self.quality_avg,
+                "blocked_ratio": self.blocked_ratio,
+                "escalation_rate": self.escalation_rate,
+                "knowledge_freshness": self.knowledge_freshness,
+                "security_compliance": self.security_compliance,
             },
         }
 
 
 # ── Department analytics ──────────────────────────────────────────────────────
+
 
 @dataclass
 class DeptAnalytics:
@@ -111,6 +112,7 @@ class DeptAnalytics:
 
 
 # ── Analytics service ─────────────────────────────────────────────────────────
+
 
 class OrgAnalyticsService:
     """
@@ -172,13 +174,15 @@ class OrgAnalyticsService:
 
                 return OrgHealthScore(
                     mission_completion_rate=mission_completion_rate,
-                    agent_utilization=min(1.0, (total_missions / 10) if total_missions > 0 else 0.0),
-                    cost_efficiency=0.85,           # TODO: compute from actual vs estimated
-                    quality_avg=0.82,               # TODO: from EvalRunner
+                    agent_utilization=min(
+                        1.0, (total_missions / 10) if total_missions > 0 else 0.0
+                    ),
+                    cost_efficiency=0.85,  # TODO: compute from actual vs estimated
+                    quality_avg=0.82,  # TODO: from EvalRunner
                     blocked_ratio=blocked_ratio,
-                    escalation_rate=0.05,           # TODO: from HITL events
-                    knowledge_freshness=0.90,       # TODO: from knowledge freshness tracker
-                    security_compliance=0.98,       # TODO: from policy engine
+                    escalation_rate=0.05,  # TODO: from HITL events
+                    knowledge_freshness=0.90,  # TODO: from knowledge freshness tracker
+                    security_compliance=0.98,  # TODO: from policy engine
                 )
 
             except Exception as exc:
@@ -257,12 +261,14 @@ class OrgAnalyticsService:
                 )
                 completed = completed_q.scalar() or 0
 
-                results.append(DeptAnalytics(
-                    department_id=str(dept.id),
-                    department_name=dept.name,
-                    total_missions=total,
-                    completed_missions=completed,
-                ))
+                results.append(
+                    DeptAnalytics(
+                        department_id=str(dept.id),
+                        department_name=dept.name,
+                        total_missions=total,
+                        completed_missions=completed,
+                    )
+                )
             return results
 
     async def get_cost_breakdown(self, org_id: str) -> dict[str, Any]:
@@ -284,24 +290,29 @@ class OrgAnalyticsService:
             bottlenecks = []
 
             blocked_q = await self._session.execute(
-                select(OrgTask).where(
+                select(OrgTask)
+                .where(
                     OrgTask.org_id == org_id,
                     OrgTask.status == "blocked",
-                ).limit(10)
+                )
+                .limit(10)
             )
             blocked = blocked_q.scalars().all()
             for task in blocked:
                 blocked_since = (
                     datetime.now(UTC) - task.updated_at.replace(tzinfo=UTC)
-                    if task.updated_at else timedelta(0)
+                    if task.updated_at
+                    else timedelta(0)
                 )
-                bottlenecks.append({
-                    "type": "blocked_task",
-                    "entity_id": str(task.id),
-                    "title": (task.title if hasattr(task, "title") else "Unknown task"),
-                    "blocked_hours": blocked_since.total_seconds() / 3600,
-                    "severity": "high" if blocked_since.days > 1 else "medium",
-                })
+                bottlenecks.append(
+                    {
+                        "type": "blocked_task",
+                        "entity_id": str(task.id),
+                        "title": (task.title if hasattr(task, "title") else "Unknown task"),
+                        "blocked_hours": blocked_since.total_seconds() / 3600,
+                        "severity": "high" if blocked_since.days > 1 else "medium",
+                    }
+                )
 
             return bottlenecks
 

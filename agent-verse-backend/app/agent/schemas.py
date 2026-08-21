@@ -57,9 +57,7 @@ def planner_schema() -> dict[str, Any]:
                 "type": "array",
                 "items": {"type": "string"},
             },
-            "reasoning": {
-                "anyOf": [{"type": "string"}, {"type": "null"}]
-            },
+            "reasoning": {"anyOf": [{"type": "string"}, {"type": "null"}]},
         },
         "required": ["steps", "reasoning"],
         "additionalProperties": False,
@@ -80,12 +78,8 @@ def verifier_schema() -> dict[str, Any]:
         "properties": {
             "success": {"type": "boolean"},
             "reason": {"type": "string"},
-            "retry": {
-                "anyOf": [{"type": "boolean"}, {"type": "null"}]
-            },
-            "confidence": {
-                "anyOf": [{"type": "number"}, {"type": "null"}]
-            },
+            "retry": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+            "confidence": {"anyOf": [{"type": "number"}, {"type": "null"}]},
             "ungrounded_claims": {
                 "anyOf": [
                     {"type": "array", "items": {"type": "string"}},

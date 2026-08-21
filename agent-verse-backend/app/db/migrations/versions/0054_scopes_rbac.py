@@ -22,6 +22,7 @@ Downgrade:
   Restores api_keys.scopes JSONB column by aggregating api_key_scopes rows,
   then drops all new tables.
 """
+
 from __future__ import annotations
 
 from alembic import op
@@ -155,14 +156,8 @@ def upgrade() -> None:
         )
         """
     )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_api_key_scopes_key "
-        "ON api_key_scopes(api_key_id)"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_api_key_scopes_scope "
-        "ON api_key_scopes(scope)"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS idx_api_key_scopes_key ON api_key_scopes(api_key_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_api_key_scopes_scope ON api_key_scopes(scope)")
     op.execute("ALTER TABLE api_key_scopes ENABLE ROW LEVEL SECURITY")
     op.execute(
         """
@@ -252,51 +247,30 @@ def upgrade() -> None:
         )
         """
     )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_scope_grants_tenant "
-        "ON scope_grants(tenant_id)"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_scope_grants_grantee "
-        "ON scope_grants(grantee_id)"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS idx_scope_grants_tenant ON scope_grants(tenant_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_scope_grants_grantee ON scope_grants(grantee_id)")
 
     # ------------------------------------------------------------------
     # api_keys alterations
     # ------------------------------------------------------------------
     # Change default role from admin to viewer (least-privilege default)
+    op.execute("ALTER TABLE api_keys ALTER COLUMN scopes SET DEFAULT '{}'::text[]")
     op.execute(
-        "ALTER TABLE api_keys "
-        "ALTER COLUMN scopes SET DEFAULT '{}'::text[]"
+        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS default_role TEXT NOT NULL DEFAULT 'viewer'"
     )
     op.execute(
-        "ALTER TABLE api_keys "
-        "ADD COLUMN IF NOT EXISTS default_role TEXT NOT NULL DEFAULT 'viewer'"
+        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS rotated_from TEXT REFERENCES api_keys(id)"
     )
-    op.execute(
-        "ALTER TABLE api_keys "
-        "ADD COLUMN IF NOT EXISTS rotated_from TEXT REFERENCES api_keys(id)"
-    )
-    op.execute(
-        "ALTER TABLE api_keys "
-        "ADD COLUMN IF NOT EXISTS use_count BIGINT NOT NULL DEFAULT 0"
-    )
+    op.execute("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS use_count BIGINT NOT NULL DEFAULT 0")
     # last_used_at already exists in the ApiKey model (tenant.py), add IF NOT EXISTS
-    op.execute(
-        "ALTER TABLE api_keys "
-        "ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ"
-    )
+    op.execute("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ")
     # Downgrade any over-privileged defaults
-    op.execute(
-        "UPDATE api_keys SET default_role = 'viewer' WHERE default_role = 'admin'"
-    )
+    op.execute("UPDATE api_keys SET default_role = 'viewer' WHERE default_role = 'admin'")
 
 
 def downgrade() -> None:
     # Restore api_keys.scopes JSONB column populated from api_key_scopes BEFORE drop
-    op.execute(
-        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes_restored JSONB DEFAULT '[]'"
-    )
+    op.execute("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes_restored JSONB DEFAULT '[]'")
     op.execute(
         """
         UPDATE api_keys ak

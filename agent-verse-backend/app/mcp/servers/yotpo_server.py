@@ -4,6 +4,7 @@ Environment:
   YOTPO_APP_KEY: Yotpo application key (uToken)
   YOTPO_SECRET: Yotpo API secret for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -24,10 +25,17 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter by review status: published, pending, spam, deleted"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by review status: published, pending, spam, deleted",
+                },
                 "score": {"type": "integer", "description": "Filter by star rating (1-5)"},
                 "page": {"type": "integer", "description": "Page number", "default": 1},
-                "count": {"type": "integer", "description": "Number of reviews per page (max 150)", "default": 20},
+                "count": {
+                    "type": "integer",
+                    "description": "Number of reviews per page (max 150)",
+                    "default": 20,
+                },
             },
         },
     },
@@ -37,9 +45,16 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "product_id": {"type": "string", "description": "The product ID as stored in Yotpo"},
+                "product_id": {
+                    "type": "string",
+                    "description": "The product ID as stored in Yotpo",
+                },
                 "page": {"type": "integer", "description": "Page number", "default": 1},
-                "count": {"type": "integer", "description": "Number of reviews per page (max 150)", "default": 20},
+                "count": {
+                    "type": "integer",
+                    "description": "Number of reviews per page (max 150)",
+                    "default": 20,
+                },
                 "star": {"type": "integer", "description": "Filter by star rating (1-5)"},
             },
             "required": ["product_id"],
@@ -57,7 +72,13 @@ TOOL_DEFINITIONS = [
                 "product_id": {"type": "string", "description": "Product ID to review"},
                 "product_title": {"type": "string", "description": "Product title"},
             },
-            "required": ["customer_email", "customer_name", "order_id", "product_id", "product_title"],
+            "required": [
+                "customer_email",
+                "customer_name",
+                "order_id",
+                "product_id",
+                "product_title",
+            ],
         },
     },
     {
@@ -77,9 +98,16 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "type": {"type": "string", "description": "Campaign type filter: earning_rule, redemption_option"},
+                "type": {
+                    "type": "string",
+                    "description": "Campaign type filter: earning_rule, redemption_option",
+                },
                 "page": {"type": "integer", "description": "Page number", "default": 1},
-                "count": {"type": "integer", "description": "Number of campaigns per page", "default": 20},
+                "count": {
+                    "type": "integer",
+                    "description": "Number of campaigns per page",
+                    "default": 20,
+                },
             },
         },
     },
@@ -90,7 +118,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "page": {"type": "integer", "description": "Page number", "default": 1},
-                "count": {"type": "integer", "description": "Number of reviews per page (max 150)", "default": 20},
+                "count": {
+                    "type": "integer",
+                    "description": "Number of reviews per page (max 150)",
+                    "default": 20,
+                },
                 "status": {"type": "string", "description": "Filter by status: published, pending"},
             },
         },
@@ -161,7 +193,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 response_data = data.get("response", {})
                 return {
                     "reviews": response_data.get("reviews", []),
-                    "product": response_data.get("products", [{}])[0] if response_data.get("products") else {},
+                    "product": response_data.get("products", [{}])[0]
+                    if response_data.get("products")
+                    else {},
                     "pagination": response_data.get("pagination", {}),
                 }
 

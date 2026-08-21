@@ -10,6 +10,7 @@ The compiler:
   4. Sets up conditional routing
   5. Compiles with the shared Redis checkpointer
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -97,24 +98,30 @@ class WorkflowCompiler:
             if step.type == "conditional":
                 # Fan-out: one conditional edge per branch
                 branch_map = {b.next: b.next for b in step.branches if b.next}
+
                 def make_router(s: Any = step) -> Any:
                     async def router(state: WorkflowState) -> str:
                         out = (state.get("step_outputs") or {}).get(s.id, {})
                         return str(out.get("chosen_branch", ""))
+
                     return router
+
                 graph.add_conditional_edges(step.id, make_router(), branch_map)  # type: ignore[arg-type]
 
             elif step.type == "hitl":
                 # After HITL step: route based on _hitl_next_step
                 action_targets = {a.next: a.next for a in step.actions if a.next}
                 if action_targets:
+
                     def make_hitl_router(s: Any = step) -> Any:
                         async def router(state: WorkflowState) -> str:
                             if state.get("status") == WorkflowRunStatus.WAITING_HITL:
                                 return "__end__"
                             out = (state.get("step_outputs") or {}).get(s.id, {})
                             return str(out.get("action", ""))
+
                         return router
+
                     # Add END as a valid target for the waiting state
                     action_targets["__end__"] = END
                     graph.add_conditional_edges(step.id, make_hitl_router(), action_targets)  # type: ignore[arg-type]
@@ -159,7 +166,8 @@ class WorkflowCompiler:
     def _find_downstream(step_id: str, definition: WorkflowDefinition) -> list[str]:
         """Find all steps that directly depend on step_id."""
         return [
-            s.id for s in definition.steps
+            s.id
+            for s in definition.steps
             if (step_id in s.depends_on and not s.depends_on_any)
             or (s.depends_on_any and step_id in s.depends_on)
         ]

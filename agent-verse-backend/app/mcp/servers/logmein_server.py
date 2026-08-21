@@ -3,6 +3,7 @@
 Environment:
   LOGMEIN_API_KEY: LogMeIn Rescue API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -35,7 +36,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Session name or customer name"},
-                "channel_id": {"type": "string", "description": "Support channel ID to assign session to"},
+                "channel_id": {
+                    "type": "string",
+                    "description": "Support channel ID to assign session to",
+                },
                 "notes": {"type": "string", "description": "Session notes"},
             },
             "required": ["name"],
@@ -100,7 +104,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
         try:
             if tool_name == "logmein_list_sessions":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/API.asmx/GetSessions", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/API.asmx/GetSessions", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -129,7 +135,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "logmein_list_computers":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/API.asmx/GetComputers", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/API.asmx/GetComputers", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

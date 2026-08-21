@@ -80,9 +80,7 @@ async def list_strategies(request: Request) -> dict[str, Any]:
 @router.get("/{strategy_id}")
 async def get_strategy(request: Request, strategy_id: str) -> dict[str, Any]:
     capability = _capability(request, strategy_id)
-    decision = await request.app.state.strategy_readiness.evaluate(
-        capability, production=True
-    )
+    decision = await request.app.state.strategy_readiness.evaluate(capability, production=True)
     return _catalogue_item(
         capability,
         request.app.state.strategy_certification,

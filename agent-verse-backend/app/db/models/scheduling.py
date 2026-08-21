@@ -16,9 +16,7 @@ class Policy(Base):
 
     __tablename__ = "policies"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -37,9 +35,7 @@ class Schedule(Base):
 
     __tablename__ = "schedules"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -48,15 +44,11 @@ class Schedule(Base):
     )
     goal_id_template: Mapped[str] = mapped_column(String(500), nullable=False)
     trigger_type: Mapped[str] = mapped_column(String(20), nullable=False)
-    cron_expression: Mapped[str | None] = mapped_column(
-        String(200), nullable=True, default=""
-    )
+    cron_expression: Mapped[str | None] = mapped_column(String(200), nullable=True, default="")
     timezone: Mapped[str | None] = mapped_column(String(100), nullable=True, default="UTC")
     interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
     webhook_token: Mapped[str | None] = mapped_column(String(64), nullable=True, default="")
-    event_channel: Mapped[str | None] = mapped_column(
-        String(200), nullable=True, default=""
-    )
+    event_channel: Mapped[str | None] = mapped_column(String(200), nullable=True, default="")
     fire_at_iso: Mapped[str | None] = mapped_column(String(100), nullable=True, default="")
     condition: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
     description: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
@@ -64,9 +56,5 @@ class Schedule(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    last_fired_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    next_fire_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_fire_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

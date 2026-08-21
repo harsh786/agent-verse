@@ -3,6 +3,7 @@
 Environment:
   FRESHBOOKS_ACCESS_TOKEN: FreshBooks OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -108,7 +109,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "account_id": {"type": "string"},
-                "amount": {"type": "object", "description": "Amount object e.g. {amount: '50.00', code: 'USD'}"},
+                "amount": {
+                    "type": "object",
+                    "description": "Amount object e.g. {amount: '50.00', code: 'USD'}",
+                },
                 "categoryid": {"type": "integer"},
                 "date": {"type": "string", "description": "YYYY-MM-DD"},
                 "notes": {"type": "string"},
@@ -141,7 +145,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
                 if status := arguments.get("invoice_status"):
                     params["invoice_status"] = status
-                r = await c.get(f"{BASE}/accounting/account/{account_id}/invoices/invoices", params=params)
+                r = await c.get(
+                    f"{BASE}/accounting/account/{account_id}/invoices/invoices", params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -169,7 +175,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "per_page": arguments.get("per_page", 15),
                     "page": arguments.get("page", 1),
                 }
-                r = await c.get(f"{BASE}/accounting/account/{account_id}/users/clients", params=params)
+                r = await c.get(
+                    f"{BASE}/accounting/account/{account_id}/users/clients", params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -193,7 +201,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "per_page": arguments.get("per_page", 15),
                     "page": arguments.get("page", 1),
                 }
-                r = await c.get(f"{BASE}/accounting/account/{account_id}/expenses/expenses", params=params)
+                r = await c.get(
+                    f"{BASE}/accounting/account/{account_id}/expenses/expenses", params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

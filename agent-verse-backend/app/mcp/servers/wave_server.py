@@ -3,6 +3,7 @@
 Environment:
   WAVE_ACCESS_TOKEN: Wave Apps OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -97,7 +98,9 @@ TOOL_DEFINITIONS = [
 ]
 
 
-async def _gql(client: httpx.AsyncClient, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
+async def _gql(
+    client: httpx.AsyncClient, query: str, variables: dict[str, Any] | None = None
+) -> dict[str, Any]:
     payload: dict[str, Any] = {"query": query}
     if variables:
         payload["variables"] = variables

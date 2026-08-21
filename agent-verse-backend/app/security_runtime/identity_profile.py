@@ -3,6 +3,7 @@
 Resolves tenant identity, agent identity, delegated permissions, allowed scopes.
 Used to determine what actions an agent is permitted to take on behalf of a tenant.
 """
+
 from __future__ import annotations
 
 import enum
@@ -22,11 +23,12 @@ class IdentityScope(str, enum.Enum):
 @dataclass
 class IdentityProfile:
     """Resolved identity for a single request/goal execution."""
+
     tenant_id: str
     identity_scope: IdentityScope
     agent_id: str | None = None
     delegated_permissions: list[str] = field(default_factory=list)
-    sponsor_tenant_id: str | None = None   # for delegated/3P agents
+    sponsor_tenant_id: str | None = None  # for delegated/3P agents
     api_key_id: str | None = None
     roles: tuple[str, ...] = field(default_factory=tuple)
 
@@ -53,7 +55,7 @@ class IdentityResolver:
     def resolve(
         self,
         *,
-        tenant_ctx: "TenantContext",
+        tenant_ctx: TenantContext,
         agent_id: str | None = None,
         sponsor_tenant_id: str | None = None,
     ) -> IdentityProfile:

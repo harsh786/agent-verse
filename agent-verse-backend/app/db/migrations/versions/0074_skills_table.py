@@ -4,8 +4,9 @@ Revision ID: 0074
 Revises: 0073
 Create Date: 2026-07-04
 """
-from alembic import op
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "0074"
@@ -35,9 +36,7 @@ def upgrade() -> None:
             nullable=False,
             server_default="[]",
         ),
-        sa.Column(
-            "allowed_tools", postgresql.JSON, nullable=False, server_default="[]"
-        ),
+        sa.Column("allowed_tools", postgresql.JSON, nullable=False, server_default="[]"),
         sa.Column(
             "required_connectors",
             postgresql.JSON,
@@ -45,12 +44,8 @@ def upgrade() -> None:
             server_default="[]",
         ),
         sa.Column("token_estimate", sa.Integer, nullable=False, server_default="0"),
-        sa.Column(
-            "visibility", sa.String(32), nullable=False, server_default="tenant"
-        ),
-        sa.Column(
-            "is_active", sa.Boolean, nullable=False, server_default="true"
-        ),
+        sa.Column("visibility", sa.String(32), nullable=False, server_default="tenant"),
+        sa.Column("is_active", sa.Boolean, nullable=False, server_default="true"),
         sa.Column("created_by", sa.String(32), nullable=True),
         sa.Column(
             "created_at",

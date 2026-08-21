@@ -1,4 +1,5 @@
 """Per-tenant bulkhead: limits concurrent in-flight trigger goals."""
+
 from __future__ import annotations
 
 import logging
@@ -6,10 +7,10 @@ import logging
 _log = logging.getLogger(__name__)
 
 PLAN_CONCURRENCY: dict[str, int] = {
-    "free":         2,
-    "starter":      10,
+    "free": 2,
+    "starter": 10,
     "professional": 100,
-    "enterprise":   999,
+    "enterprise": 999,
 }
 
 

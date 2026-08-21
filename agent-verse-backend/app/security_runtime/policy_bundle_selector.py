@@ -1,5 +1,7 @@
 """PolicyBundleSelector — produces a CompiledRuntimePolicy before graph execution."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -21,16 +23,23 @@ class CompiledRuntimePolicy:
 
 
 class PolicyBundleSelector:
-    def select(self, profile: "GoalRuntimeProfile", *, tenant_ctx: "TenantContext") -> CompiledRuntimePolicy:
+    def select(
+        self, profile: GoalRuntimeProfile, *, tenant_ctx: TenantContext
+    ) -> CompiledRuntimePolicy:
         from app.policy_runtime.compiler import _compute_policy_fields
+
         fields = _compute_policy_fields(
-            risk=profile.properties.risk, plan=tenant_ctx.plan,
+            risk=profile.properties.risk,
+            plan=tenant_ctx.plan,
             compliance=list(profile.security.compliance_tags),
             hitl=profile.security.hitl_required,
         )
         return CompiledRuntimePolicy(
-            allowed_capabilities=[], denied_capabilities=fields["denied"],
-            required_approvals=fields["approvals"], max_cost_usd=fields["max_cost"],
-            audit_level=fields["audit"], data_classes_allowed=fields["data_classes"],
+            allowed_capabilities=[],
+            denied_capabilities=fields["denied"],
+            required_approvals=fields["approvals"],
+            max_cost_usd=fields["max_cost"],
+            audit_level=fields["audit"],
+            data_classes_allowed=fields["data_classes"],
             compliance_constraints=list(profile.security.compliance_tags),
         )

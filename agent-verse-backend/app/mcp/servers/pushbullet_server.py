@@ -3,6 +3,7 @@
 Environment:
   PUSHBULLET_API_KEY: Pushbullet access token from account settings
 """
+
 from __future__ import annotations
 
 import os
@@ -33,7 +34,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "title": {"type": "string", "description": "Note title"},
                 "body": {"type": "string", "description": "Note body text"},
-                "device_iden": {"type": "string", "description": "Target device identifier (omit to push to all devices)"},
+                "device_iden": {
+                    "type": "string",
+                    "description": "Target device identifier (omit to push to all devices)",
+                },
                 "email": {"type": "string", "description": "Target user by email address"},
                 "channel_tag": {"type": "string", "description": "Target channel by tag"},
             },
@@ -62,9 +66,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "file_name": {"type": "string", "description": "Name of the file"},
-                "file_type": {"type": "string", "description": "MIME type of the file, e.g. image/png"},
+                "file_type": {
+                    "type": "string",
+                    "description": "MIME type of the file, e.g. image/png",
+                },
                 "file_url": {"type": "string", "description": "URL of the file to push"},
-                "body": {"type": "string", "description": "Optional message body accompanying the file"},
+                "body": {
+                    "type": "string",
+                    "description": "Optional message body accompanying the file",
+                },
                 "device_iden": {"type": "string", "description": "Target device identifier"},
             },
             "required": ["file_name", "file_type", "file_url"],
@@ -76,7 +86,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "active": {"type": "boolean", "description": "If true, only return active (non-deleted) devices", "default": True},
+                "active": {
+                    "type": "boolean",
+                    "description": "If true, only return active (non-deleted) devices",
+                    "default": True,
+                },
             },
         },
     },
@@ -86,7 +100,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "modified_after": {"type": "number", "description": "Unix timestamp — only return pushes modified after this time"},
+                "modified_after": {
+                    "type": "number",
+                    "description": "Unix timestamp — only return pushes modified after this time",
+                },
                 "limit": {"type": "integer", "description": "Max pushes to return", "default": 100},
             },
         },
@@ -160,7 +177,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "devices": [
-                        {"iden": d.get("iden"), "nickname": d.get("nickname"), "type": d.get("type"), "active": d.get("active")}
+                        {
+                            "iden": d.get("iden"),
+                            "nickname": d.get("nickname"),
+                            "type": d.get("type"),
+                            "active": d.get("active"),
+                        }
                         for d in data.get("devices", [])
                     ]
                 }

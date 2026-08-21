@@ -1,4 +1,5 @@
 """RAGTrace — structured observability trace for agentic retrieval."""
+
 from __future__ import annotations
 
 import uuid
@@ -21,13 +22,15 @@ class RAGTrace:
         confidence: float,
         latency_ms: float,
     ) -> None:
-        self.steps.append({
-            "strategy": strategy,
-            "query": query[:200],
-            "result_count": result_count,
-            "confidence": confidence,
-            "latency_ms": latency_ms,
-        })
+        self.steps.append(
+            {
+                "strategy": strategy,
+                "query": query[:200],
+                "result_count": result_count,
+                "confidence": confidence,
+                "latency_ms": latency_ms,
+            }
+        )
 
     def to_sse_event(self) -> dict[str, Any]:
         last = self.steps[-1] if self.steps else {}

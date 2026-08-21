@@ -3,6 +3,7 @@
 Environment:
   UPWORK_ACCESS_TOKEN: Upwork OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -50,7 +51,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter by status: active, archived, declined"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: active, archived, declined",
+                },
                 "page": {"type": "integer", "description": "Page number"},
             },
         },
@@ -64,7 +68,11 @@ TOOL_DEFINITIONS = [
                 "job_key": {"type": "string", "description": "Job key to submit proposal for"},
                 "cover_letter": {"type": "string", "description": "Cover letter text"},
                 "charge_rate": {"type": "number", "description": "Hourly rate or fixed price bid"},
-                "milestone_schedule": {"type": "array", "description": "Milestone schedule for fixed-price jobs", "items": {"type": "object"}},
+                "milestone_schedule": {
+                    "type": "array",
+                    "description": "Milestone schedule for fixed-price jobs",
+                    "items": {"type": "object"},
+                },
             },
             "required": ["job_key", "cover_letter"],
         },
@@ -86,7 +94,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "username": {"type": "string", "description": "Upwork username (default: current user)"},
+                "username": {
+                    "type": "string",
+                    "description": "Upwork username (default: current user)",
+                },
             },
         },
     },

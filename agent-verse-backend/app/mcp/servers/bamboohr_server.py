@@ -4,6 +4,7 @@ Environment:
   BAMBOOHR_API_KEY:    API key (used as HTTP Basic username, password='x')
   BAMBOOHR_SUBDOMAIN: Company subdomain (e.g. 'mycompany')
 """
+
 from __future__ import annotations
 
 import base64
@@ -126,7 +127,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         async with httpx.AsyncClient(headers=_headers(), timeout=30.0) as c:
             if tool_name == "bamboo_get_employee":
                 eid = arguments["employee_id"]
-                fields = arguments.get("fields", "firstName,lastName,jobTitle,department,workEmail,hireDate")
+                fields = arguments.get(
+                    "fields", "firstName,lastName,jobTitle,department,workEmail,hireDate"
+                )
                 r = await c.get(f"{base}/employees/{eid}", params={"fields": fields})
                 r.raise_for_status()
                 return r.json()

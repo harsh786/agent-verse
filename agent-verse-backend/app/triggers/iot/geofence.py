@@ -1,4 +1,5 @@
 """Geofence trigger — detects when a device enters or exits a polygon."""
+
 from __future__ import annotations
 
 import logging
@@ -84,14 +85,11 @@ class GeofenceTriggerEvaluator:
         if self._store is None or self._dispatcher is None:
             return fired
 
-        triggers = await self._store.find_by_type_async(
-            "geofence", tenant_id=tenant_id
-        )
-        exit_triggers = await self._store.find_by_type_async(
-            "geofence", tenant_id=tenant_id
-        )
+        triggers = await self._store.find_by_type_async("geofence", tenant_id=tenant_id)
+        exit_triggers = await self._store.find_by_type_async("geofence", tenant_id=tenant_id)
 
         from types import SimpleNamespace
+
         tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=plan)
 
         for region in regions:
@@ -108,9 +106,8 @@ class GeofenceTriggerEvaluator:
             }
             for trigger in pool:
                 spec = trigger.get("spec", trigger)
-                watch_region = (
-                    getattr(spec, "geofence_region_id", "")
-                    or trigger.get("geofence_region_id", "")
+                watch_region = getattr(spec, "geofence_region_id", "") or trigger.get(
+                    "geofence_region_id", ""
                 )
                 if watch_region and watch_region != region.region_id:
                     continue

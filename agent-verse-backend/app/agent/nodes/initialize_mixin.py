@@ -1,70 +1,23 @@
 """Mixin extracted from app.agent.graph — zero semantic changes."""
+
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import json
-import re
-import time
-import uuid
-from collections.abc import Awaitable, Callable
-from typing import Any, TypedDict
+from typing import Any
 
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, START, StateGraph
-
-from app.agent.prompts import (
-    CHAIN_OF_THOUGHT_SYSTEM,
-    EXECUTOR_SYSTEM,
-    PLANNER_SYSTEM,
-    REFLECTION_SYSTEM,
-    STRUCTURED_PLANNER_SYSTEM,
-    VERIFIER_SYSTEM,
-)
 from app.agent.sanitization import (
-    _EXECUTOR_CONTEXT_MAX_LENGTH,
     sanitize_event,
     sanitize_event_value,
     sanitize_tool_event_value,
     sanitize_tool_raw_output,
 )
-from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus, SubGoal
-from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_arguments
-from app.agent.tool_risk import classify_tool_risk
-from app.governance.audit import AuditEvent, AuditLog
-from app.governance.cost import CostController
-from app.governance.hitl import ApprovalStatus, HITLGateway
-from app.governance.permissions import ActionLevel, PermissionMatrix
-from app.governance.policies import PolicyEngine, PolicyResult
-from app.intelligence.eval_runner import EvalRunner
-from app.intelligence.explainability import DecisionTrace
-from app.intelligence.guardrails import GuardrailChecker
-from app.memory.execution import ExecutionMemory
-from app.memory.long_term import LongTermMemoryStore
-from app.observability.metrics import (
-    record_approval_wait,
-    record_goal_completed,
-    record_goal_failed,
-    record_plan_duration,
-    record_tool_call,
-    record_verify_duration,
-    track_tool_call,
-)
-from app.pipeline.steps import smart_context_fetch
-from app.providers.base import CompletionRequest, LLMProvider, Message, ToolDefinition
-from app.providers.circuit_breaker import call_with_circuit_breaker
-from app.rag.contracts import RAGExecutionResult, RAGStrategy, resolve_rag_strategy
-from app.rag.store import KnowledgeStore
-from app.reliability.circuit_breaker import CircuitBreaker
-from app.reliability.dedup import DeduplicationCache
-from app.reliability.result_processor import ResultProcessor
-from app.reliability.rollback import RollbackEngine
+from app.agent.state import AgentState, GoalStatus
 from app.tenancy.context import TenantContext
 
 # Guardrails 2.0 integration
 try:
     from app.guardrails_v2.engine import guardrails_engine
     from app.guardrails_v2.models import GuardrailLayer
+
     _GUARDRAILS_AVAILABLE = True
 except ImportError:
     _GUARDRAILS_AVAILABLE = False
@@ -73,16 +26,6 @@ except ImportError:
 
 from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
 
-
-from app.agent.nodes._helpers import (
-    _is_high_risk_step,
-    _is_ungrounded_status,
-    _build_verifier_summary,
-    _parse_json,
-    _parse_verifier_response,
-    _extract_tool_name as _extract_tool_name_fn,
-    _extract_scope_value,
-)
 
 class InitializeMixin:
     """Mixin: _sanitize_* helpers + _node_initialize."""
@@ -123,14 +66,14 @@ class InitializeMixin:
             goal_issues = self._guardrail_checker.check_goal(goal=agent_state.goal)
             if goal_issues:
                 agent_state.status = GoalStatus.FAILED
-                agent_state.error_message = (
-                    f"Goal rejected by guardrails: {'; '.join(goal_issues)}"
-                )
+                agent_state.error_message = f"Goal rejected by guardrails: {'; '.join(goal_issues)}"
                 await self._emit({"type": "goal_rejected", "reason": agent_state.error_message})
                 return {"agent_state": agent_state, "terminal_reason": "guardrail_rejected"}
 
         # H-2: SelfOptimizerV2 arm config injection — pick experiment arm for this run
-        self_opt_v2 = getattr(self._app_state, "self_optimizer_v2", None) if self._app_state else None
+        self_opt_v2 = (
+            getattr(self._app_state, "self_optimizer_v2", None) if self._app_state else None
+        )
         if self_opt_v2 and self._agent_id:
             try:
                 arm_config = await self_opt_v2.get_arm_config(
@@ -150,6 +93,7 @@ class InitializeMixin:
         try:
             from app.security_runtime.governance_profile import GovernanceProfileSelector
             from app.security_runtime.identity_profile import IdentityResolver
+
             _id_resolver = IdentityResolver()
             _identity = _id_resolver.resolve(tenant_ctx=agent_state.tenant_ctx)
             agent_state.context["_identity_scope"] = _identity.identity_scope.value
@@ -167,6 +111,7 @@ class InitializeMixin:
         # Build source inventory for planner awareness (M1d)
         try:
             from app.rag.agentic.source_inventory import SourceInventory
+
             _kb = getattr(self, "_knowledge_store", None)
             if _kb is not None:
                 inventory = SourceInventory(knowledge_store=_kb)
@@ -176,4 +121,3 @@ class InitializeMixin:
             pass
 
         return {"agent_state": agent_state, "iteration": 0, "rag_context": ""}
-

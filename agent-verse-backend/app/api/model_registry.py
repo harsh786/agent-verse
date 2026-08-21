@@ -1,10 +1,14 @@
 """Model Registry API - expose model catalog, health, and routing policies."""
+
 from __future__ import annotations
+
 from typing import Any
-from fastapi import APIRouter, Request, Query
-from app.tenancy.context import TenantContext
+
+from fastapi import APIRouter, Query, Request
+
+from app.ai_router.models import ModelCapability, ModelRoutePolicy, RoutingMode, TaskType
 from app.ai_router.registry import model_registry
-from app.ai_router.models import TaskType, RoutingMode, ModelRoutePolicy, ModelCapability
+from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/models", tags=["model-registry"])
 
@@ -13,6 +17,7 @@ def _require_tenant(request: Request) -> TenantContext:
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
         from fastapi import HTTPException
+
         raise HTTPException(401, "Unauthorized")
     return ctx
 
@@ -68,8 +73,7 @@ async def get_provider_health(request: Request) -> dict[str, Any]:
     providers = sorted({m.provider for m in model_registry.list_models()})
     return {
         "providers": [
-            {"provider": p, **vars(model_registry.get_provider_health(p))}
-            for p in providers
+            {"provider": p, **vars(model_registry.get_provider_health(p))} for p in providers
         ]
     }
 
@@ -85,6 +89,7 @@ async def test_model(request: Request) -> dict[str, Any]:
     model = model_registry.get_model(provider, model_id)
     if model is None:
         from fastapi import HTTPException
+
         raise HTTPException(404, f"Model {provider}/{model_id} not found")
 
     app_provider = getattr(request.app.state, "_app_provider", None)
@@ -92,14 +97,18 @@ async def test_model(request: Request) -> dict[str, Any]:
         return {"status": "skipped", "reason": "No provider configured", "model": model_id}
 
     import time
+
     start = time.monotonic()
     try:
         from app.providers.base import CompletionRequest, Message
-        resp = await app_provider.complete(CompletionRequest(
-            messages=[Message(role="user", content="Reply with just the word 'OK'")],
-            model=model_id,
-            max_tokens=10,
-        ))
+
+        resp = await app_provider.complete(
+            CompletionRequest(
+                messages=[Message(role="user", content="Reply with just the word 'OK'")],
+                model=model_id,
+                max_tokens=10,
+            )
+        )
         latency_ms = (time.monotonic() - start) * 1000
         model_registry.update_health(provider, latency_ms=latency_ms, error=False)
         return {
@@ -142,6 +151,7 @@ async def set_routing_policy(request: Request, task_type: str) -> dict[str, Any]
         tt = TaskType(task_type)
     except ValueError:
         from fastapi import HTTPException
+
         raise HTTPException(400, f"Invalid task type: {task_type}")
 
     policy = ModelRoutePolicy(

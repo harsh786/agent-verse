@@ -3,6 +3,7 @@
 Environment:
   TELEGRAM_BOT_TOKEN: Bot token from @BotFather
 """
+
 from __future__ import annotations
 
 import os
@@ -149,7 +150,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r = await c.post(f"{base}/sendDocument", json=payload)
                 r.raise_for_status()
                 data = r.json()
-                return {"ok": data.get("ok"), "message_id": data.get("result", {}).get("message_id")}
+                return {
+                    "ok": data.get("ok"),
+                    "message_id": data.get("result", {}).get("message_id"),
+                }
 
             elif tool_name == "telegram_send_photo":
                 payload = {
@@ -161,7 +165,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r = await c.post(f"{base}/sendPhoto", json=payload)
                 r.raise_for_status()
                 data = r.json()
-                return {"ok": data.get("ok"), "message_id": data.get("result", {}).get("message_id")}
+                return {
+                    "ok": data.get("ok"),
+                    "message_id": data.get("result", {}).get("message_id"),
+                }
 
             elif tool_name == "telegram_get_updates":
                 params: dict[str, Any] = {"limit": arguments.get("limit", 100)}
@@ -173,9 +180,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 return {"ok": data.get("ok"), "updates": data.get("result", [])}
 
             elif tool_name == "telegram_get_chat":
-                r = await c.get(
-                    f"{base}/getChat", params={"chat_id": arguments["chat_id"]}
-                )
+                r = await c.get(f"{base}/getChat", params={"chat_id": arguments["chat_id"]})
                 r.raise_for_status()
                 data = r.json()
                 return data.get("result", {})

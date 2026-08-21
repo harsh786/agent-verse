@@ -1,4 +1,5 @@
 """YAML / TOML / HCL parser — config-file-aware extraction."""
+
 from __future__ import annotations
 
 import logging
@@ -32,6 +33,7 @@ class YAMLParser:
             content = content.decode("utf-8", errors="replace")
         try:
             import yaml  # type: ignore[import-not-found]
+
             data = yaml.safe_load(content)
         except Exception as exc:
             _log.warning("YAML parse failed for '%s': %s — returning raw", filename, exc)
@@ -52,10 +54,12 @@ class TOMLParser:
             content = content.decode("utf-8", errors="replace")
         try:
             import tomllib  # Python 3.11+
+
             data = tomllib.loads(content)
         except ImportError:
             try:
                 import tomli  # type: ignore[import-not-found]
+
                 data = tomli.loads(content)
             except ImportError:
                 _log.warning("tomllib/tomli not available — returning raw TOML")

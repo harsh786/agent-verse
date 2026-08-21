@@ -3,6 +3,7 @@
 Environment variables:
   CLEARBIT_API_KEY: Clearbit API key (secret key from dashboard)
 """
+
 from __future__ import annotations
 
 import os
@@ -28,7 +29,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "email": {"type": "string", "description": "Person's email address to enrich"},
-                "webhook_url": {"type": "string", "description": "Optional webhook URL for async enrichment"},
+                "webhook_url": {
+                    "type": "string",
+                    "description": "Optional webhook URL for async enrichment",
+                },
             },
             "required": ["email"],
         },
@@ -39,7 +43,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "domain": {"type": "string", "description": "Company website domain, e.g. 'stripe.com'"},
+                "domain": {
+                    "type": "string",
+                    "description": "Company website domain, e.g. 'stripe.com'",
+                },
             },
             "required": ["domain"],
         },
@@ -75,7 +82,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Full-text search query"},
-                "employee_range": {"type": "string", "description": "Employee count range, e.g. '1,10'"},
+                "employee_range": {
+                    "type": "string",
+                    "description": "Employee count range, e.g. '1,10'",
+                },
                 "industry_group": {"type": "string", "description": "Industry group filter"},
                 "country": {"type": "string", "description": "ISO 3166-1 alpha-2 country code"},
                 "limit": {"type": "integer", "description": "Max results (1-100)", "default": 20},
@@ -90,8 +100,14 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "email": {"type": "string", "description": "Email address to assess for risk"},
-                "ip": {"type": "string", "description": "Optional IP address for additional risk signals"},
-                "name": {"type": "string", "description": "Optional full name for identity verification"},
+                "ip": {
+                    "type": "string",
+                    "description": "Optional IP address for additional risk signals",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional full name for identity verification",
+                },
             },
             "required": ["email"],
         },

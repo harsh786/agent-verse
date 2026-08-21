@@ -3,6 +3,7 @@
 Cursor: last measurement timestamp (RFC3339 / Unix nanosecond epoch).
 Supports InfluxDB 2.x (Flux queries) and 3.x.
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,9 +28,11 @@ class InfluxDBConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             from influxdb_client import InfluxDBClient  # type: ignore[import-not-found]
+
             cc = config.connection_config
             with InfluxDBClient(
                 url=cc.get("url", "http://localhost:8086"),
@@ -39,10 +42,14 @@ class InfluxDBConnector(BaseConnector):
                 health = client.health()
             latency = (time.perf_counter() - t0) * 1000
             if health.status == "pass":
-                return ConnectionHealth(ok=True, latency_ms=latency, metadata={"version": health.version})
+                return ConnectionHealth(
+                    ok=True, latency_ms=latency, metadata={"version": health.version}
+                )
             return ConnectionHealth(ok=False, error=f"Unhealthy: {health.message}")
         except ImportError:
-            return ConnectionHealth(ok=False, error="influxdb-client not installed — pip install influxdb-client")
+            return ConnectionHealth(
+                ok=False, error="influxdb-client not installed — pip install influxdb-client"
+            )
         except Exception as exc:
             return ConnectionHealth(ok=False, error=str(exc))
 
@@ -50,12 +57,15 @@ class InfluxDBConnector(BaseConnector):
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
+
         try:
             from influxdb_client import InfluxDBClient  # type: ignore[import-not-found]
         except ImportError:
-            _log.error("influxdb-client not installed"); return
+            _log.error("influxdb-client not installed")
+            return
 
         import asyncio
+
         cc = config.connection_config
         url = cc.get("url", "http://localhost:8086")
         token = cc.get("token", "")
@@ -65,10 +75,7 @@ class InfluxDBConnector(BaseConnector):
         range_start = cursor or "-30d"
         batch_size = int(cc.get("batch_size", 500))
 
-        flux_query = (
-            f'from(bucket: "{bucket}")\n'
-            f'  |> range(start: {range_start})\n'
-        )
+        flux_query = f'from(bucket: "{bucket}")\n  |> range(start: {range_start})\n'
         if measurement:
             flux_query += f'  |> filter(fn: (r) => r._measurement == "{measurement}")\n'
         flux_query += f"  |> limit(n: {batch_size})\n"
@@ -92,17 +99,19 @@ class InfluxDBConnector(BaseConnector):
         for row in rows:
             ts = str(row.get("_time", ""))
             new_cursor = max(new_cursor, ts) if ts else new_cursor
-            text_parts = [f"{k}: {v}" for k, v in row.items() if v is not None and not k.startswith("_")]
-            text = (
-                f"Measurement: {row.get('_measurement', '')}\n"
-                f"Timestamp: {ts}\n"
-                + "\n".join(text_parts)
+            text_parts = [
+                f"{k}: {v}" for k, v in row.items() if v is not None and not k.startswith("_")
+            ]
+            text = f"Measurement: {row.get('_measurement', '')}\nTimestamp: {ts}\n" + "\n".join(
+                text_parts
             )
             doc = RawDocument(
                 doc_id=str(uuid.uuid4()),
-                source_id=config.source_id, tenant_id=config.tenant_id,
+                source_id=config.source_id,
+                tenant_id=config.tenant_id,
                 source_url=f"{url}/orgs/{org}/buckets/{bucket}/measurements/{measurement}",
-                content=text.encode(), content_type="text/plain",
+                content=text.encode(),
+                content_type="text/plain",
                 metadata={"measurement": row.get("_measurement"), "ts": ts, "bucket": bucket},
             )
             yield doc, new_cursor

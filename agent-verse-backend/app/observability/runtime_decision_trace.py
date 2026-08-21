@@ -1,4 +1,5 @@
 """RuntimeSSEEmitter — creates structured SSE events for all orchestration decisions."""
+
 from __future__ import annotations
 
 from typing import Any

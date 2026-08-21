@@ -21,7 +21,6 @@ RLS Notes:
 from __future__ import annotations
 
 from alembic import op
-import sqlalchemy as sa
 
 revision = "0059"
 down_revision = "0058"
@@ -93,10 +92,7 @@ def upgrade() -> None:
         )
     """)
     # Optional: vector embedding column for semantic search (768-dim, same as LTM)
-    op.execute(
-        "ALTER TABLE marketplace_templates "
-        "ADD COLUMN IF NOT EXISTS embedding vector(768)"
-    )
+    op.execute("ALTER TABLE marketplace_templates ADD COLUMN IF NOT EXISTS embedding vector(768)")
     op.execute("""
         CREATE INDEX IF NOT EXISTS ix_marketplace_templates_vec
         ON marketplace_templates

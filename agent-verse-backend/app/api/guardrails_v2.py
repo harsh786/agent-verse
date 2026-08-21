@@ -1,10 +1,14 @@
 """Guardrails 2.0 API."""
+
 from __future__ import annotations
+
 import datetime
 import uuid
 from typing import Any
-from fastapi import APIRouter, Request, HTTPException, Query
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+
 from app.guardrails_v2.models import (
     COMPLIANCE_BUNDLES,
     ComplianceBundle,
@@ -14,6 +18,7 @@ from app.guardrails_v2.models import (
 )
 
 router = APIRouter(prefix="/guardrails-v2", tags=["guardrails-v2"])
+
 
 def _require_tenant(request: Request):
     ctx = getattr(request.state, "tenant", None)
@@ -70,7 +75,7 @@ async def create_rule(request: Request, body: CreateRuleRequest) -> dict[str, An
         categories=[],
         severity=body.severity,
         config=body.config,
-        created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        created_at=datetime.datetime.now(datetime.UTC).isoformat(),
     )
     guardrails_engine.add_rule(rule)
 
@@ -127,6 +132,7 @@ async def simulate_evaluation(request: Request, body: SimulateRequest) -> dict[s
     """Simulate guardrail evaluation without recording violations."""
     tenant = _require_tenant(request)
     from app.guardrails_v2.engine import guardrails_engine
+
     return await guardrails_engine.simulate(body.content, body.layer, tenant.tenant_id)
 
 
@@ -193,7 +199,7 @@ async def enable_compliance_bundle(request: Request, bundle_name: str) -> dict[s
             layers=layers,
             action=action,
             severity=rule_def.get("severity", "high"),
-            created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            created_at=datetime.datetime.now(datetime.UTC).isoformat(),
         )
         guardrails_engine.add_rule(rule)
         created.append(rule.rule_id)

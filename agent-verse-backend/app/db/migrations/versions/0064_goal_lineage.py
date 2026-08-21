@@ -29,14 +29,8 @@ def upgrade() -> None:
             tenant_id       TEXT NOT NULL
         )
     """)
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_goal_lineage_root "
-        "ON goal_lineage (root_goal_id)"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_goal_lineage_tenant "
-        "ON goal_lineage (tenant_id)"
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS ix_goal_lineage_root ON goal_lineage (root_goal_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_goal_lineage_tenant ON goal_lineage (tenant_id)")
 
     op.execute("ALTER TABLE goal_lineage ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE goal_lineage FORCE ROW LEVEL SECURITY")

@@ -5,6 +5,7 @@ Environment:
   NETSUITE_CONSUMER_KEY: OAuth 1.0a consumer key
   NETSUITE_TOKEN_KEY:    OAuth 1.0a token key
 """
+
 from __future__ import annotations
 
 import os
@@ -29,7 +30,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "record_type": {"type": "string", "description": "NetSuite record type (e.g. customer, invoice)"},
+                "record_type": {
+                    "type": "string",
+                    "description": "NetSuite record type (e.g. customer, invoice)",
+                },
                 "limit": {"type": "integer", "default": 1000},
                 "offset": {"type": "integer", "default": 0},
                 "q": {"type": "string", "description": "Search query"},
@@ -56,7 +60,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "record_type": {"type": "string"},
-                "fields": {"type": "object", "description": "Record field values as key-value pairs"},
+                "fields": {
+                    "type": "object",
+                    "description": "Record field values as key-value pairs",
+                },
             },
             "required": ["record_type", "fields"],
         },
@@ -93,7 +100,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "saved_search_id": {"type": "string", "description": "Script ID or internal ID of the saved search"},
+                "saved_search_id": {
+                    "type": "string",
+                    "description": "Script ID or internal ID of the saved search",
+                },
                 "record_type": {"type": "string"},
             },
             "required": ["saved_search_id", "record_type"],
@@ -107,7 +117,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     consumer_key = os.getenv("NETSUITE_CONSUMER_KEY", "")
     token_key = os.getenv("NETSUITE_TOKEN_KEY", "")
     if not account_id or not consumer_key or not token_key:
-        return {"error": "NETSUITE_ACCOUNT_ID, NETSUITE_CONSUMER_KEY, and NETSUITE_TOKEN_KEY must be configured"}
+        return {
+            "error": "NETSUITE_ACCOUNT_ID, NETSUITE_CONSUMER_KEY, and NETSUITE_TOKEN_KEY must be configured"
+        }
 
     base = _base()
     # Note: NetSuite uses OAuth 1.0a; for full production use, sign requests with TBA.
@@ -143,7 +155,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 rt = arguments["record_type"]
                 r = await c.post(f"{base}/{rt}", json=arguments["fields"])
                 r.raise_for_status()
-                return r.json() if r.content else {"status": "created", "location": r.headers.get("Location")}
+                return (
+                    r.json()
+                    if r.content
+                    else {"status": "created", "location": r.headers.get("Location")}
+                )
 
             elif tool_name == "netsuite_update_record":
                 rt = arguments["record_type"]

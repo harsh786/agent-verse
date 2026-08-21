@@ -1,18 +1,23 @@
 """AI Ops Center API - evals, drift, regression, alerts."""
+
 from __future__ import annotations
-import uuid
+
 import datetime
+import uuid
 from typing import Any
-from fastapi import APIRouter, Request, HTTPException, Query
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/ai-ops", tags=["ai-ops"])
+
 
 def _require_tenant(request: Request):
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
         raise HTTPException(401, "Unauthorized")
     return ctx
+
 
 # In-memory stores
 _datasets: dict[str, dict] = {}
@@ -56,7 +61,7 @@ class ComputeDriftRequest(BaseModel):
 async def create_eval_dataset(request: Request, body: CreateDatasetRequest) -> dict[str, Any]:
     """Create an evaluation dataset with golden tasks."""
     tenant = _require_tenant(request)
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
     dataset_id = str(uuid.uuid4())
 
     dataset = {
@@ -77,10 +82,7 @@ async def create_eval_dataset(request: Request, body: CreateDatasetRequest) -> d
 async def list_eval_datasets(request: Request) -> dict[str, Any]:
     """List evaluation datasets for the tenant."""
     tenant = _require_tenant(request)
-    datasets = [
-        v for k, v in _datasets.items()
-        if k.startswith(f"{tenant.tenant_id}:")
-    ]
+    datasets = [v for k, v in _datasets.items() if k.startswith(f"{tenant.tenant_id}:")]
     return {"datasets": datasets, "total": len(datasets)}
 
 
@@ -92,7 +94,7 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
     if not dataset:
         raise HTTPException(404, "Dataset not found")
 
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
     result_id = str(uuid.uuid4())
 
     # Evaluate using LLM judge if available
@@ -109,6 +111,7 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
         if provider:
             try:
                 from app.providers.base import CompletionRequest, Message
+
                 judge_prompt = (
                     "Rate this output on a scale of 0 to 1 for: "
                     "accuracy, relevance, completeness.\n"
@@ -117,12 +120,15 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
                     f"Return JSON only: "
                     '{"accuracy": 0.0, "relevance": 0.0, "completeness": 0.0}'
                 )
-                resp = await provider.complete(CompletionRequest(
-                    messages=[Message(role="user", content=judge_prompt)],
-                    model="",
-                    max_tokens=100,
-                ))
+                resp = await provider.complete(
+                    CompletionRequest(
+                        messages=[Message(role="user", content=judge_prompt)],
+                        model="",
+                        max_tokens=100,
+                    )
+                )
                 import json
+
                 task_scores = json.loads(resp.content.strip())
                 for dim, score in task_scores.items():
                     scores[dim] = scores.get(dim, 0) + float(score)
@@ -136,12 +142,14 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
         scores["lexical_similarity"] = scores.get("lexical_similarity", 0) + similarity
 
         if similarity < 0.3:
-            failed_tasks.append({
-                "task": str(task.get("input", ""))[:100],
-                "expected": expected[:100],
-                "actual": actual[:100],
-                "score": similarity,
-            })
+            failed_tasks.append(
+                {
+                    "task": str(task.get("input", ""))[:100],
+                    "expected": expected[:100],
+                    "actual": actual[:100],
+                    "score": similarity,
+                }
+            )
 
     n = max(len(dataset["golden_tasks"]), 1)
     normalized_scores = {k: round(v / n, 3) for k, v in scores.items()}
@@ -207,12 +215,11 @@ async def create_llm_judge(request: Request, body: CreateJudgeRequest) -> dict[s
         "name": body.name,
         "provider": body.provider,
         "model": body.model,
-        "evaluation_dimensions": body.evaluation_dimensions or [
-            "accuracy", "relevance", "completeness"
-        ],
+        "evaluation_dimensions": body.evaluation_dimensions
+        or ["accuracy", "relevance", "completeness"],
         "prompt_template": body.prompt_template,
         "calibrated": False,
-        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
     }
     _judges[f"{tenant.tenant_id}:{judge_id}"] = judge
     return {"judge_id": judge_id, "status": "created"}
@@ -241,7 +248,7 @@ async def compute_drift(request: Request, body: ComputeDriftRequest) -> dict[str
     drift_score = absolute_drift / max(abs(baseline), 1e-9)
     severity = "info" if drift_score < 0.1 else "warning" if drift_score < 0.3 else "critical"
 
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
     alert = {
         "alert_id": str(uuid.uuid4()),
         "tenant_id": tenant.tenant_id,
@@ -252,8 +259,7 @@ async def compute_drift(request: Request, body: ComputeDriftRequest) -> dict[str
         "current_value": body.current_value,
         "drift_score": round(drift_score, 4),
         "message": (
-            f"Drift detected on {body.metric_name}: "
-            f"{baseline:.3f} → {body.current_value:.3f}"
+            f"Drift detected on {body.metric_name}: {baseline:.3f} → {body.current_value:.3f}"
         ),
         "created_at": now,
     }

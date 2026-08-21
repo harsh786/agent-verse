@@ -4,6 +4,7 @@ Environment:
   MATTERMOST_URL: Base URL, e.g. https://mattermost.example.com
   MATTERMOST_TOKEN: Personal access token or bot token
 """
+
 from __future__ import annotations
 
 import os
@@ -118,9 +119,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     base = _base()
 
     try:
-        async with httpx.AsyncClient(
-            headers=_headers(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(headers=_headers(), timeout=30.0) as c:
             if tool_name == "mattermost_send_message":
                 payload: dict[str, Any] = {
                     "channel_id": arguments["channel_id"],
@@ -184,7 +183,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r.raise_for_status()
                 return {
                     "teams": [
-                        {"id": t["id"], "name": t.get("name"), "display_name": t.get("display_name")}
+                        {
+                            "id": t["id"],
+                            "name": t.get("name"),
+                            "display_name": t.get("display_name"),
+                        }
                         for t in r.json()
                     ]
                 }
@@ -207,9 +210,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "terms": arguments["terms"],
                     "is_or_search": arguments.get("is_or_search", False),
                 }
-                r = await c.post(
-                    f"{base}/teams/{arguments['team_id']}/posts/search", json=payload
-                )
+                r = await c.post(f"{base}/teams/{arguments['team_id']}/posts/search", json=payload)
                 r.raise_for_status()
                 data = r.json()
                 posts = data.get("posts", {})

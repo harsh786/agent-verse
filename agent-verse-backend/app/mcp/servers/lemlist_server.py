@@ -3,6 +3,7 @@
 Environment variables:
   LEMLIST_API_KEY: Lemlist API key
 """
+
 from __future__ import annotations
 
 import os
@@ -39,7 +40,11 @@ TOOL_DEFINITIONS = [
                     "type": "object",
                     "description": "Sending schedule configuration (days and time windows)",
                 },
-                "maxNewLeadsPerDay": {"type": "integer", "description": "Max new leads to contact per day", "default": 50},
+                "maxNewLeadsPerDay": {
+                    "type": "integer",
+                    "description": "Max new leads to contact per day",
+                    "default": 50,
+                },
             },
             "required": ["name"],
         },

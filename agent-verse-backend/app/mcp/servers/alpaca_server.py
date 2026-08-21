@@ -4,6 +4,7 @@ Environment:
   ALPACA_API_KEY: Alpaca API key ID
   ALPACA_SECRET_KEY: Alpaca secret key
 """
+
 from __future__ import annotations
 
 import os
@@ -42,10 +43,16 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "symbol": {"type": "string", "description": "Ticker symbol (e.g. AAPL, TSLA)"},
                 "qty": {"type": "number", "description": "Number of shares to buy/sell"},
-                "notional": {"type": "number", "description": "Dollar amount for fractional trading"},
+                "notional": {
+                    "type": "number",
+                    "description": "Dollar amount for fractional trading",
+                },
                 "side": {"type": "string", "description": "Order side: buy or sell"},
                 "type": {"type": "string", "description": "Order type: market, limit, stop"},
-                "time_in_force": {"type": "string", "description": "Time in force: day, gtc, ioc, fok"},
+                "time_in_force": {
+                    "type": "string",
+                    "description": "Time in force: day, gtc, ioc, fok",
+                },
                 "limit_price": {"type": "number", "description": "Limit price for limit orders"},
                 "stop_price": {"type": "number", "description": "Stop price for stop orders"},
             },
@@ -71,7 +78,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "symbol": {"type": "string", "description": "Stock ticker symbol"},
                 "data_type": {"type": "string", "description": "Data type: quotes, trades, bars"},
-                "timeframe": {"type": "string", "description": "Bar timeframe: 1Min, 5Min, 1Hour, 1Day"},
+                "timeframe": {
+                    "type": "string",
+                    "description": "Bar timeframe: 1Min, 5Min, 1Hour, 1Day",
+                },
                 "start": {"type": "string", "description": "Start datetime in RFC-3339 format"},
                 "end": {"type": "string", "description": "End datetime in RFC-3339 format"},
             },
@@ -85,8 +95,14 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "status": {"type": "string", "description": "Asset status: active or inactive"},
-                "asset_class": {"type": "string", "description": "Asset class: us_equity or crypto"},
-                "exchange": {"type": "string", "description": "Exchange filter (e.g. NYSE, NASDAQ)"},
+                "asset_class": {
+                    "type": "string",
+                    "description": "Asset class: us_equity or crypto",
+                },
+                "exchange": {
+                    "type": "string",
+                    "description": "Exchange filter (e.g. NYSE, NASDAQ)",
+                },
             },
         },
     },

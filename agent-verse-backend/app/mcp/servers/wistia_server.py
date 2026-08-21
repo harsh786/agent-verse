@@ -3,6 +3,7 @@
 Environment:
   WISTIA_API_PASSWORD: Wistia API password (use 'api' as username with basic auth)
 """
+
 from __future__ import annotations
 
 import os
@@ -23,12 +24,26 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Filter by Wistia project hashed ID"},
+                "project_id": {
+                    "type": "string",
+                    "description": "Filter by Wistia project hashed ID",
+                },
                 "name": {"type": "string", "description": "Filter by media name (partial match)"},
-                "sort_by": {"type": "string", "description": "Sort field: name, created, updated, duration, file_size"},
-                "sort_direction": {"type": "integer", "description": "Sort direction: 1=ascending, 0=descending", "default": 0},
+                "sort_by": {
+                    "type": "string",
+                    "description": "Sort field: name, created, updated, duration, file_size",
+                },
+                "sort_direction": {
+                    "type": "integer",
+                    "description": "Sort direction: 1=ascending, 0=descending",
+                    "default": 0,
+                },
                 "page": {"type": "integer", "description": "Page number", "default": 1},
-                "per_page": {"type": "integer", "description": "Results per page (max 100)", "default": 25},
+                "per_page": {
+                    "type": "integer",
+                    "description": "Results per page (max 100)",
+                    "default": 25,
+                },
             },
         },
     },
@@ -49,10 +64,21 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "sort_by": {"type": "string", "description": "Sort field: name, mediaCount, created, updated"},
-                "sort_direction": {"type": "integer", "description": "1=ascending, 0=descending", "default": 0},
+                "sort_by": {
+                    "type": "string",
+                    "description": "Sort field: name, mediaCount, created, updated",
+                },
+                "sort_direction": {
+                    "type": "integer",
+                    "description": "1=ascending, 0=descending",
+                    "default": 0,
+                },
                 "page": {"type": "integer", "description": "Page number", "default": 1},
-                "per_page": {"type": "integer", "description": "Results per page (max 100)", "default": 25},
+                "per_page": {
+                    "type": "integer",
+                    "description": "Results per page (max 100)",
+                    "default": 25,
+                },
             },
         },
     },
@@ -85,7 +111,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Project name"},
-                "anonymize_visitors": {"type": "boolean", "description": "Anonymize visitor data for GDPR", "default": False},
+                "anonymize_visitors": {
+                    "type": "boolean",
+                    "description": "Anonymize visitor data for GDPR",
+                    "default": False,
+                },
             },
             "required": ["name"],
         },

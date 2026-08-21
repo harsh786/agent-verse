@@ -3,6 +3,7 @@
 Environment:
   THRIVECART_API_KEY: ThriveCart API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -72,7 +73,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "product_id": {"type": "string", "description": "Product to create coupon for"},
                 "code": {"type": "string", "description": "Coupon code string"},
-                "discount_type": {"type": "string", "description": "Discount type: flat or percent"},
+                "discount_type": {
+                    "type": "string",
+                    "description": "Discount type: flat or percent",
+                },
                 "discount_amount": {"type": "number", "description": "Discount value"},
                 "limit_uses": {"type": "integer", "description": "Maximum number of uses"},
             },

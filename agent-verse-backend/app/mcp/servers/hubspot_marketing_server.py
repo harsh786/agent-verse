@@ -3,6 +3,7 @@
 Environment variables:
   HUBSPOT_API_KEY: HubSpot private app access token (or legacy API key)
 """
+
 from __future__ import annotations
 
 import os
@@ -77,7 +78,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "List name"},
-                "dynamic": {"type": "boolean", "description": "True for active/dynamic list, False for static", "default": False},
+                "dynamic": {
+                    "type": "boolean",
+                    "description": "True for active/dynamic list, False for static",
+                    "default": False,
+                },
                 "filters": {
                     "type": "array",
                     "items": {"type": "object"},

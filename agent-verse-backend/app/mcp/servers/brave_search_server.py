@@ -3,6 +3,7 @@
 Environment:
   BRAVE_SEARCH_API_KEY: Brave Search API key
 """
+
 from __future__ import annotations
 
 import os
@@ -25,8 +26,15 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "query": {"type": "string", "description": "Search query"},
                 "count": {"type": "integer", "default": 10, "description": "1–20"},
-                "offset": {"type": "integer", "default": 0, "description": "Pagination offset (0–9)"},
-                "country": {"type": "string", "description": "ISO 3166-1 alpha-2 country code, e.g. 'US'"},
+                "offset": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Pagination offset (0–9)",
+                },
+                "country": {
+                    "type": "string",
+                    "description": "ISO 3166-1 alpha-2 country code, e.g. 'US'",
+                },
                 "search_lang": {"type": "string", "description": "Language code, e.g. 'en'"},
                 "safesearch": {
                     "type": "string",
@@ -104,7 +112,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "BRAVE_SEARCH_API_KEY not configured"}
 
     try:
-        async with httpx.AsyncClient(base_url=BRAVE_SEARCH_BASE, headers=_headers(), timeout=30.0) as c:
+        async with httpx.AsyncClient(
+            base_url=BRAVE_SEARCH_BASE, headers=_headers(), timeout=30.0
+        ) as c:
             if tool_name == "brave_web_search":
                 params: dict[str, Any] = {
                     "q": arguments["query"],

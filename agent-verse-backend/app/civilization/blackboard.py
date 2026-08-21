@@ -5,6 +5,7 @@ Others query before acting (reduces duplicate work).
 Conflicting high-confidence claims → triggers debate.
 Optimistic concurrency via version field.
 """
+
 from __future__ import annotations
 
 import json
@@ -110,9 +111,7 @@ class Blackboard:
             self._entries[entry_id] = entry
 
         # Check for conflicts and trigger debate if necessary
-        await self._check_and_handle_conflict(
-            topic, content, confidence, author_agent_id, entry_id
-        )
+        await self._check_and_handle_conflict(topic, content, confidence, author_agent_id, entry_id)
 
         # Publish to bus
         if self._bus is not None:
@@ -278,10 +277,7 @@ class Blackboard:
                 for e in self._entries.values()
                 if e["confidence"] >= min_confidence
                 and (topic is None or e["topic"] == topic)
-                and (
-                    author_agent_id is None
-                    or e["author_agent_id"] == author_agent_id
-                )
+                and (author_agent_id is None or e["author_agent_id"] == author_agent_id)
             ]
             return sorted(results, key=lambda x: x["confidence"], reverse=True)[:limit]
 
