@@ -103,7 +103,7 @@ TOOL_DEFINITIONS = [
 
 async def _get_token(client: httpx.AsyncClient) -> str:
     client_id = os.getenv("BUILDIUM_CLIENT_ID", "")
-    client_secret = os.getenv("BUILDIUM_CLIENT_SECRET", "")
+    os.getenv("BUILDIUM_CLIENT_SECRET", "")
     return client_id  # Buildium uses API key auth (client_id as key)
 
 

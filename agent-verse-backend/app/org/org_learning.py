@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from app.observability.logging import get_logger
@@ -29,7 +29,7 @@ from app.observability.logging import get_logger
 _log = get_logger(__name__)
 
 
-class LearningCategory(str, Enum):
+class LearningCategory(StrEnum):
     TEAM_COMPOSITION = "team_composition"
     MODEL_ROUTING = "model_routing"
     TOOL_RELIABILITY = "tool_reliability"

@@ -6,6 +6,7 @@ Environment variables:
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import Any
 
@@ -186,7 +187,7 @@ def _format_page(page: dict) -> dict:
         "created_time": page.get("created_time", ""),
         "last_edited_time": page.get("last_edited_time", ""),
         "archived": page.get("archived", False),
-        "parent_type": list(page.get("parent", {}).keys())[0] if page.get("parent") else "",
+        "parent_type": next(iter(page.get("parent", {}).keys())) if page.get("parent") else "",
     }
 
 
@@ -195,10 +196,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return await _call_tool_inner(tool_name, arguments)
     except httpx.HTTPStatusError as exc:
         error_body = ""
-        try:
+        with contextlib.suppress(Exception):
             error_body = exc.response.text[:500]
-        except Exception:
-            pass
         return {
             "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
             "status_code": exc.response.status_code,

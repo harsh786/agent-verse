@@ -84,7 +84,7 @@ class LateChunker:
         embeddings = await embed_texts(chunks, provider=provider)
         result: list[LateChunk] = []
         offset = 0
-        for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+        for _i, (chunk, emb) in enumerate(zip(chunks, embeddings, strict=False)):
             result.append(
                 LateChunk(
                     content=chunk,

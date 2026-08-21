@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class SkillScope(str, Enum):
+class SkillScope(StrEnum):
     PLATFORM = "platform"  # Available to all tenants
     TENANT = "tenant"  # Tenant-specific
     AGENT = "agent"  # Agent-specific
 
 
-class SkillStatus(str, Enum):
+class SkillStatus(StrEnum):
     ACTIVE = "active"
     DISABLED = "disabled"
     DEPRECATED = "deprecated"

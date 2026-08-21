@@ -102,9 +102,7 @@ class AIRouter:
             return False
         if require_tools and not model.supports_tools:
             return False
-        if max_cost is not None and model.cost_per_1k_input > max_cost:
-            return False
-        return True
+        return not (max_cost is not None and model.cost_per_1k_input > max_cost)
 
     def record_call(
         self, provider: str, latency_ms: float, success: bool, error_msg: str = ""

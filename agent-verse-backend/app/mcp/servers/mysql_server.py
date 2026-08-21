@@ -121,7 +121,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 elif tool_name == "mysql_list_tables":
                     await cur.execute("SHOW TABLES")
                     rows = await cur.fetchall()
-                    return {"tables": [list(r.values())[0] for r in rows]}
+                    return {"tables": [next(iter(r.values())) for r in rows]}
 
                 elif tool_name == "mysql_describe_table":
                     table = arguments["table_name"]

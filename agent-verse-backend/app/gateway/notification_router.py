@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from datetime import time as dt_time
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from opentelemetry import trace
@@ -29,7 +29,7 @@ _log = get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
 
-class NotificationSeverity(str, Enum):
+class NotificationSeverity(StrEnum):
     SILENT = "SILENT"
     DIGEST = "DIGEST"
     ATTENTION = "ATTENTION"
@@ -156,7 +156,7 @@ class OutboundNotificationRouter:
 
             notified = []
             # Try primary, then fallbacks
-            channels = [route.primary_channel] + list(route.fallback_channels)
+            channels = [route.primary_channel, *list(route.fallback_channels)]
             for channel in channels:
                 sent = await self._send_to_channel(channel, notification)
                 if sent:

@@ -23,6 +23,8 @@ except ImportError:
     guardrails_engine = None  # type: ignore[assignment]
     GuardrailLayer = None  # type: ignore[assignment]
 
+import contextlib
+
 from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
 
 
@@ -161,10 +163,8 @@ class ReasoningMixin:
         )
         _reflect_model = ""
         if self._model_router is not None:
-            try:
+            with contextlib.suppress(Exception):
                 _reflect_model = self._model_router.model_for("reflection") or ""
-            except Exception:
-                pass
         req = CompletionRequest(
             messages=[
                 Message(role="system", content=REFLECTION_SYSTEM),

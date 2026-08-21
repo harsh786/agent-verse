@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-class SandboxType(str, enum.Enum):
+class SandboxType(enum.StrEnum):
     NONE = "none"
     PYTHON = "python"
     BROWSER = "browser"

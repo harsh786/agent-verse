@@ -5,12 +5,8 @@ import asyncio
 
 import pytest
 
-from app.agent.graph import (
-    AgentGraph,
-    _extract_scope_value,
-    _extract_tool_name,
-    _parse_json,
-)
+from app.agent.graph import AgentGraph
+from app.agent.nodes._helpers import _extract_scope_value, _extract_tool_name, _parse_json
 from app.agent.state import GoalStatus
 from app.agent.tool_context import ToolContext, ToolRef
 from app.governance.audit import AuditLog

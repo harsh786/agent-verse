@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class MemoryLifecycleState(str, Enum):
+class MemoryLifecycleState(StrEnum):
     ACTIVE = "active"
     STALE = "stale"
     DISPUTED = "disputed"
@@ -14,7 +14,7 @@ class MemoryLifecycleState(str, Enum):
     DELETED = "deleted"
 
 
-class MemoryPrivacyClass(str, Enum):
+class MemoryPrivacyClass(StrEnum):
     PUBLIC = "public"
     INTERNAL = "internal"
     CONFIDENTIAL = "confidential"

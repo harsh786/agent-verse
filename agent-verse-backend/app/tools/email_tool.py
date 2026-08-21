@@ -7,6 +7,7 @@ Credentials: per-tenant configuration (SMTP host/port/user/pass)
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -176,10 +177,8 @@ class EmailTool:
                     }
                 )
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 await imap.logout()
-            except Exception:
-                pass
 
         return messages
 

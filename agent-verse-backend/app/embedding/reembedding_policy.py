@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 
 
-class ReembeddingTrigger(str, enum.Enum):
+class ReembeddingTrigger(enum.StrEnum):
     NONE = "none"
     MODEL_CHANGED = "model_changed"
     DRIFT_DETECTED = "drift_detected"

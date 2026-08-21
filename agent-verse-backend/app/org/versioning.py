@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 import structlog
@@ -22,7 +22,7 @@ import structlog
 _log = structlog.get_logger(__name__)
 
 
-class VersionStrategy(str, Enum):
+class VersionStrategy(StrEnum):
     SEMANTIC = "semantic"  # MAJOR.MINOR.PATCH
     HASH = "hash"  # SHA256 of content
     PROVIDER = "provider"  # provider-specific versioning

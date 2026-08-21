@@ -196,6 +196,4 @@ class BehavioralRedTeamRunner:
                     ):
                         return True
         # Error in submission — guardrail fired at entry
-        if any(e.get("type") == "error" for e in events):
-            return True
-        return False
+        return bool(any(e.get("type") == "error" for e in events))

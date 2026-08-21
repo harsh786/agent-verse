@@ -3,7 +3,7 @@ from __future__ import annotations
 import enum
 
 
-class DataCategory(str, enum.Enum):
+class DataCategory(enum.StrEnum):
     GOAL_ARTIFACT = "goal_artifact"
     AUDIT_LOG = "audit_log"
     MEMORY = "memory"
@@ -15,7 +15,7 @@ class DataCategory(str, enum.Enum):
     PHI_DATA = "phi_data"
 
 
-class RetentionTier(str, enum.Enum):
+class RetentionTier(enum.StrEnum):
     SHORT = "short"
     DEFAULT = "default"
     LONG = "long"

@@ -7,6 +7,8 @@ Create Date: 2026-07-08
 
 from __future__ import annotations
 
+import contextlib
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -31,7 +33,7 @@ def upgrade() -> None:
             )
         except Exception:
             pass  # Table may not exist for this dim
-        try:
+        with contextlib.suppress(Exception):
             op.add_column(
                 table,
                 sa.Column(
@@ -41,43 +43,27 @@ def upgrade() -> None:
                     server_default="'leaf'",
                 ),
             )
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             op.add_column(
                 table,
                 sa.Column("window_start", sa.Integer, nullable=True),
             )
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             op.add_column(
                 table,
                 sa.Column("window_end", sa.Integer, nullable=True),
             )
-        except Exception:
-            pass
 
 
 def downgrade() -> None:
     for table in ["knowledge_chunks_1536", "knowledge_chunks_1024", "knowledge_chunks_768"]:
-        try:
+        with contextlib.suppress(Exception):
             op.drop_index(f"ix_{table}_parent_chunk_id", table_name=table)
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             op.drop_column(table, "parent_chunk_id")
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             op.drop_column(table, "chunk_level")
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             op.drop_column(table, "window_start")
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             op.drop_column(table, "window_end")
-        except Exception:
-            pass

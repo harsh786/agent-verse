@@ -13,9 +13,4 @@ class ExportPolicy:
     ) -> bool:
         if requesting_tenant_id and requesting_tenant_id != tenant_id:
             return False
-        if data_category == DataCategory.AUDIT_LOG and requestor_role not in (
-            "admin",
-            "super_admin",
-        ):
-            return False
-        return True
+        return not (data_category == DataCategory.AUDIT_LOG and requestor_role not in ("admin", "super_admin"))

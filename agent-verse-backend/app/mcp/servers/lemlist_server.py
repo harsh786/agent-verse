@@ -163,9 +163,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "limit": arguments.get("limit", 25),
                     "offset": arguments.get("offset", 0),
                 }
-                if status := arguments.get("status", "all"):
-                    if status != "all":
-                        params["status"] = status
+                if (status := arguments.get("status", "all")) and status != "all":
+                    params["status"] = status
                 r = await c.get(f"/campaigns/{camp_id}/leads", params=params)
                 r.raise_for_status()
                 return r.json()

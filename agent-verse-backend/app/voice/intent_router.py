@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 import structlog
@@ -33,7 +33,7 @@ log = structlog.get_logger(__name__)
 tracer = trace.get_tracer(__name__)
 
 
-class VoiceIntent(str, Enum):
+class VoiceIntent(StrEnum):
     CREATE_MISSION = "create_mission"
     STATUS_CHECK = "status_check"
     APPROVE = "approve"

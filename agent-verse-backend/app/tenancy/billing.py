@@ -22,7 +22,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from app.observability.logging import get_logger
@@ -30,19 +30,19 @@ from app.observability.logging import get_logger
 _log = get_logger(__name__)
 
 
-class BillingPlan(str, Enum):
+class BillingPlan(StrEnum):
     FREE = "free"
     STARTER = "starter"
     PRO = "pro"
     ENTERPRISE = "enterprise"
 
 
-class BillingCycle(str, Enum):
+class BillingCycle(StrEnum):
     MONTHLY = "monthly"
     ANNUAL = "annual"
 
 
-class PaymentProvider(str, Enum):
+class PaymentProvider(StrEnum):
     STRIPE = "stripe"
     RAZORPAY = "razorpay"
     PADDLE = "paddle"

@@ -17,7 +17,7 @@ import os
 from dataclasses import dataclass
 
 
-class TaskType(str, enum.Enum):
+class TaskType(enum.StrEnum):
     REASONING = "reasoning"
     CODING = "coding"
     DRAFTING = "drafting"
@@ -33,7 +33,7 @@ class TaskType(str, enum.Enum):
     RERANKING = "reranking"
 
 
-class Criticality(str, enum.Enum):
+class Criticality(enum.StrEnum):
     CRITICAL = "critical"  # P0 — always best-quality model
     HIGH = "high"  # P1 — premium tier
     MEDIUM = "medium"  # P2 — standard tier

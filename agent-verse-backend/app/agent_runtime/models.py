@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class AgentRole(str, Enum):
+class AgentRole(StrEnum):
     PLANNER = "planner"
     EXECUTOR = "executor"
     VERIFIER = "verifier"
@@ -18,7 +18,7 @@ class AgentRole(str, Enum):
     SUBAGENT = "subagent"
 
 
-class StepStatus(str, Enum):
+class StepStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETE = "complete"
@@ -27,7 +27,7 @@ class StepStatus(str, Enum):
     WAITING_HUMAN = "waiting_human"
 
 
-class RiskLevel(str, Enum):
+class RiskLevel(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"

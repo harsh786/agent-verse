@@ -4,7 +4,7 @@ import enum
 from dataclasses import dataclass, field
 
 
-class CapabilityKind(str, enum.Enum):
+class CapabilityKind(enum.StrEnum):
     TOOL = "tool"
     MODEL = "model"
     AGENT = "agent"
@@ -16,7 +16,7 @@ class CapabilityKind(str, enum.Enum):
     GUARDRAIL = "guardrail"
 
 
-class RiskLevel(str, enum.Enum):
+class RiskLevel(enum.StrEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"

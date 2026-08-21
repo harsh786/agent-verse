@@ -129,7 +129,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     contact["Email"] = arguments["email"]
                 if "fields" in arguments:
                     contact.update(arguments["fields"])
-                contact_id = arguments.get("contact_id", arguments.get("email", ""))
+                arguments.get("contact_id", arguments.get("email", ""))
                 r = await client.post(
                     f"{BASE_URL}/contact",
                     headers=headers,

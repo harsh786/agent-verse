@@ -6,7 +6,7 @@ import enum
 from dataclasses import dataclass, field
 
 
-class DataClass(str, enum.Enum):
+class DataClass(enum.StrEnum):
     PUBLIC = "public"
     INTERNAL = "internal"
     CONFIDENTIAL = "confidential"

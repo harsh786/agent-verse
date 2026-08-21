@@ -107,7 +107,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             if tool_name == "perplexity_chat":
                 messages = list(arguments.get("messages", []))
                 if sys := arguments.get("system"):
-                    messages = [{"role": "system", "content": sys}] + messages
+                    messages = [{"role": "system", "content": sys}, *messages]
                 payload: dict[str, Any] = {
                     "model": arguments.get("model", "llama-3.1-sonar-large-128k-online"),
                     "messages": messages,

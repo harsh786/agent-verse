@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class ModelCapability(str, Enum):
+class ModelCapability(StrEnum):
     TEXT_GENERATION = "text_generation"
     STRUCTURED_OUTPUT = "structured_output"
     TOOL_USE = "tool_use"
@@ -21,7 +21,7 @@ class ModelCapability(str, Enum):
     LLM_JUDGE = "llm_judge"
 
 
-class RoutingMode(str, Enum):
+class RoutingMode(StrEnum):
     CHEAPEST = "cheapest"
     FASTEST = "fastest"
     HIGHEST_QUALITY = "highest_quality"
@@ -31,7 +31,7 @@ class RoutingMode(str, Enum):
     MODEL_PINNED = "model_pinned"
 
 
-class TaskType(str, Enum):
+class TaskType(StrEnum):
     PLANNING = "planning"
     EXECUTION = "execution"
     VERIFICATION = "verification"

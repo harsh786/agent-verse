@@ -46,6 +46,8 @@ except ImportError:
     guardrails_engine = None  # type: ignore[assignment]
     GuardrailLayer = None  # type: ignore[assignment]
 
+import contextlib
+
 from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
 from app.agent.nodes._helpers import (
     _extract_scope_value,
@@ -67,7 +69,7 @@ class ExecutorMixin:
         if self._enable_goal_tree and len(plan) >= self._goal_tree_threshold:
             from app.agent.goal_tree import execute_goal_tree
 
-            def _sub_graph_factory() -> AgentGraph:
+            def _sub_graph_factory() -> Any:
                 from opentelemetry import context as otel_context
 
                 from app.agent.graph import (
@@ -199,7 +201,7 @@ class ExecutorMixin:
                             embeddings=_batch_embs,
                             tenant_id=tenant_ctx.tenant_id,
                         )
-                        for desc, hit in zip(_all_descs, _batch_hits):
+                        for desc, hit in zip(_all_descs, _batch_hits, strict=False):
                             if hit is not None:
                                 # Skip cached empty/error results so they are not
                                 # served on fresh runs — forces a real tool call.
@@ -215,9 +217,18 @@ class ExecutorMixin:
                                             "to complete",
                                             "let me ",
                                             "i need to ",
+                                            "i can ",
+                                            "i should ",
                                             "step 1",
                                             "first,",
                                             "first i",
+                                            "i'll now",
+                                            "i'll start",
+                                            "i'll call",
+                                            "i'll search",
+                                            "now i'll",
+                                            "next, i",
+                                            "to search",
                                         )
                                     )
                                     or ("will use" in _cr_stripped and "tool" in _cr_stripped)
@@ -862,10 +873,8 @@ class ExecutorMixin:
         # Resolve executor model via model_router when available (Bug 3 fix)
         _exec_model = ""
         if self._model_router is not None:
-            try:
+            with contextlib.suppress(Exception):
                 _exec_model = self._model_router.model_for("execution") or ""
-            except Exception:
-                pass
 
         req = CompletionRequest(
             messages=[
@@ -1248,8 +1257,8 @@ class ExecutorMixin:
                                 # ── RPA failure → ExecutionMemory + SelfOptimizer ──
                                 if not rpa_result.success:
                                     _rpa_url_fail = (tool_call.arguments or {}).get("url", "") or (
-                                        agent_state.context.get("_current_rpa_url", "")
-                                        if isinstance(agent_state.context, dict)
+                                        state.context.get("_current_rpa_url", "")
+                                        if isinstance(state.context, dict)
                                         else ""
                                     )
                                     # Record failure in ExecutionMemory for recall
@@ -1259,7 +1268,7 @@ class ExecutorMixin:
                                     ):
                                         _fail_task = asyncio.create_task(
                                             self._exec_memory.record_failure_async(
-                                                goal=agent_state.goal,
+                                                goal=state.goal,
                                                 error=(
                                                     f"RPA {rpa_tool_name} failed on "
                                                     f"{_rpa_url_fail}: "
@@ -1625,7 +1634,7 @@ class ExecutorMixin:
                                         }
                                     )
                                     if self._audit_log is not None:
-                                        try:
+                                        with contextlib.suppress(Exception):
                                             self._audit_log.record(
                                                 AuditEvent(
                                                     goal_id=state.goal_id,
@@ -1643,8 +1652,6 @@ class ExecutorMixin:
                                                 ),
                                                 tenant_ctx=tenant_ctx,
                                             )
-                                        except Exception:
-                                            pass
                             raw_result_output = self._sanitize_tool_raw_output(result.output)
                             raw_result_error = self._sanitize_tool_raw_output(result.error)
 

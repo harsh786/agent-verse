@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 
 
-class DriftSeverity(str, enum.Enum):
+class DriftSeverity(enum.StrEnum):
     STABLE = "stable"
     LOW = "low"
     MEDIUM = "medium"

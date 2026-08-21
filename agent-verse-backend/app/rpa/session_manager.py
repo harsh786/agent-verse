@@ -8,6 +8,7 @@ Idle sessions auto-close after max_idle_seconds.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -43,15 +44,11 @@ class BrowserSession:
     async def close(self) -> None:
         """Close the browser and clean up resources."""
         if self._browser:
-            try:
+            with contextlib.suppress(Exception):
                 await self._browser.close()
-            except Exception:
-                pass
         if self._playwright:
-            try:
+            with contextlib.suppress(Exception):
                 await self._playwright.stop()
-            except Exception:
-                pass
         self._browser = None
         self._playwright = None
         self._context = None
@@ -208,7 +205,7 @@ class BrowserSessionManager:
         import json as _json
 
         key = f"rpa_session:{session.tenant_id}:{session.session_id}"
-        try:
+        with contextlib.suppress(Exception):
             await self._redis.setex(
                 key,
                 self._SESSION_TTL,
@@ -221,17 +218,13 @@ class BrowserSessionManager:
                     }
                 ),
             )
-        except Exception:
-            pass
 
     async def _deregister_from_redis(self, session_id: str, tenant_id: str) -> None:
         """Remove session metadata from Redis on close."""
         if self._redis is None:
             return
-        try:
+        with contextlib.suppress(Exception):
             await self._redis.delete(f"rpa_session:{tenant_id}:{session_id}")
-        except Exception:
-            pass
 
     async def list_active_from_redis(self, tenant_id: str) -> list[dict[str, Any]]:
         """List active sessions persisted in Redis (survives restarts)."""
@@ -246,10 +239,8 @@ class BrowserSessionManager:
             for key in keys:
                 raw = await self._redis.get(key)
                 if raw:
-                    try:
+                    with contextlib.suppress(Exception):
                         result.append(_json.loads(raw))
-                    except Exception:
-                        pass
             return result
         except Exception:
             return self.list_active(tenant_id=tenant_id)
@@ -257,7 +248,7 @@ class BrowserSessionManager:
     def get_page(self, session_id: str) -> Any:
         """Return the live Playwright page for a session, or None if not found."""
         # Search across all tenants since we only have session_id here
-        for (sid, tid), session in self._sessions.items():
+        for (sid, _tid), session in self._sessions.items():
             if sid == session_id and session.is_alive:
                 return getattr(session, "_page", None) or getattr(session, "page", None)
         return None

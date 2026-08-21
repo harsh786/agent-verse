@@ -5,7 +5,7 @@ import enum
 from app.recovery.failure_classifier import FailureClass, FailureResult
 
 
-class RecoveryAction(str, enum.Enum):
+class RecoveryAction(enum.StrEnum):
     WAIT_AND_RETRY = "wait_and_retry"
     SWITCH_TOOL = "switch_tool"
     FETCH_MORE_CONTEXT = "fetch_more_context"

@@ -80,7 +80,8 @@ class ChannelAuthGuard:
         if not allowed_phones:
             return False
         # Normalize: strip spaces/dashes/+
-        norm = lambda p: p.replace("+", "").replace(" ", "").replace("-", "")
+        def norm(p):
+            return p.replace("+", "").replace(" ", "").replace("-", "")
         return norm(phone_number) in {norm(p) for p in allowed_phones}
 
     def verify_email_sender(self, email: str, allowed_emails: list[str]) -> bool:

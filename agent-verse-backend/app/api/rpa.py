@@ -145,7 +145,7 @@ async def close_session(request: Request, session_id: str) -> None:
 @router.get("/sessions/{session_id}/screenshot")
 async def get_session_screenshot(request: Request, session_id: str) -> dict[str, Any]:
     """Take a read-only screenshot of the current viewport without recording an action."""
-    tenant = _require_tenant(request)
+    _require_tenant(request)
     session_manager = getattr(request.app.state, "rpa_session_manager", None)
     if session_manager is None:
         raise HTTPException(503, "RPA session manager not available")
@@ -167,7 +167,7 @@ async def get_session_screenshot(request: Request, session_id: str) -> dict[str,
 @router.get("/sessions/{session_id}/current-view")
 async def get_current_view(request: Request, session_id: str) -> dict[str, Any]:
     """Read-only viewport snapshot — does NOT create action log entry."""
-    tenant = _require_tenant(request)
+    _require_tenant(request)
     session_manager = getattr(request.app.state, "rpa_session_manager", None)
     if session_manager is None:
         raise HTTPException(503, "RPA not available")

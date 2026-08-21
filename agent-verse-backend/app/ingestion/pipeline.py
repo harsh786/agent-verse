@@ -469,7 +469,7 @@ class IngestionPipeline:
             import json
 
             # LAW-23: semantic cache invalidation key published
-            event = json.dumps(
+            json.dumps(
                 {
                     "source_id": config.source_id,
                     "doc_id": raw_doc.doc_id,

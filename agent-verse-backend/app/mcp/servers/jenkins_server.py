@@ -9,6 +9,7 @@ Environment variables:
 from __future__ import annotations
 
 import base64
+import contextlib
 import os
 from typing import Any
 
@@ -133,10 +134,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return await _call_tool_inner(tool_name, arguments)
     except httpx.HTTPStatusError as exc:
         error_body = ""
-        try:
+        with contextlib.suppress(Exception):
             error_body = exc.response.text[:500]
-        except Exception:
-            pass
         return {
             "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
             "status_code": exc.response.status_code,
@@ -156,10 +155,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
     async with httpx.AsyncClient(timeout=30.0) as client:
         if tool_name == "jenkins_list_jobs":
             folder = arguments.get("folder", "")
-            if folder:
-                url = f"{base}{_job_path(folder)}/api/json"
-            else:
-                url = f"{base}/api/json"
+            url = f"{base}{_job_path(folder)}/api/json" if folder else f"{base}/api/json"
             resp = await client.get(
                 url,
                 params={"tree": "jobs[name,url,color,buildable]"},

@@ -6,7 +6,7 @@ import enum
 import re
 
 
-class ContentType(str, enum.Enum):
+class ContentType(enum.StrEnum):
     TEXT = "text"
     PDF = "pdf"
     DOCX = "docx"

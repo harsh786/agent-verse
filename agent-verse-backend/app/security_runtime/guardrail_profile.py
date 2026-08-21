@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from app.tenancy.context import TenantContext
 
 
-class GuardrailBundle(str, enum.Enum):
+class GuardrailBundle(enum.StrEnum):
     DEFAULT = "default"
     STRICT = "strict"
     REGULATED = "regulated"

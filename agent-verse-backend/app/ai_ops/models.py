@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class DriftType(str, Enum):
+class DriftType(StrEnum):
     MODEL_OUTPUT = "model_output"
     RETRIEVAL = "retrieval"
     EMBEDDING = "embedding"
@@ -16,7 +16,7 @@ class DriftType(str, Enum):
     GUARDRAIL_VIOLATIONS = "guardrail_violations"
 
 
-class AlertSeverity(str, Enum):
+class AlertSeverity(StrEnum):
     INFO = "info"
     WARNING = "warning"
     CRITICAL = "critical"

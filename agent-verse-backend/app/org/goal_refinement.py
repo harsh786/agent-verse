@@ -223,7 +223,7 @@ class GoalRefinementPipeline:
         if any(k in g_lower for k in ["germany", "eu", "europe"]):
             constraints["compliance"] = ["GDPR"]
         if any(k in g_lower for k in ["hipaa", "medical", "health"]):
-            constraints["compliance"] = constraints.get("compliance", []) + ["HIPAA"]
+            constraints["compliance"] = [*constraints.get("compliance", []), "HIPAA"]
 
         return constraints
 

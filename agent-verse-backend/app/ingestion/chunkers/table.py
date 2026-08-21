@@ -18,7 +18,7 @@ class TableChunker(ChunkerBase):
         chunks = []
         for i in range(0, len(data_rows), self._rows_per_chunk):
             batch = data_rows[i : i + self._rows_per_chunk]
-            chunk_content = "\n".join([header] + batch)
+            chunk_content = "\n".join([header, *batch])
             chunks.append(
                 Chunk(
                     content=chunk_content,

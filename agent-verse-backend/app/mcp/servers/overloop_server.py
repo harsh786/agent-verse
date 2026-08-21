@@ -150,9 +150,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "page": arguments.get("page", 1),
                     "per_page": arguments.get("per_page", 25),
                 }
-                if status := arguments.get("status", "all"):
-                    if status != "all":
-                        params["status"] = status
+                if (status := arguments.get("status", "all")) and status != "all":
+                    params["status"] = status
                 r = await c.get("/campaigns", params=params)
                 r.raise_for_status()
                 return r.json()

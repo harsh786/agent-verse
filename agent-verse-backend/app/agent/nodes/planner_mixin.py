@@ -29,6 +29,8 @@ except ImportError:
     guardrails_engine = None  # type: ignore[assignment]
     GuardrailLayer = None  # type: ignore[assignment]
 
+import contextlib
+
 from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
 from app.agent.nodes._helpers import (
     _parse_json,
@@ -56,10 +58,8 @@ class PlannerMixin:
             rerank_strategy = RerankStrategy.SCORE
             if runtime_profile is not None:
                 reranker_name = getattr(runtime_profile.rag_strategy, "reranker", "score")
-                try:
+                with contextlib.suppress(ValueError):
                     rerank_strategy = RerankStrategy(reranker_name)
-                except ValueError:
-                    pass
             retrieved_chunks = agent_state.context.get("_retrieved_chunks", [])
             if not retrieved_chunks and rag_context:
                 retrieved_chunks = [{"content": rag_context, "score": 0.7, "chunk_id": "rag_0"}]

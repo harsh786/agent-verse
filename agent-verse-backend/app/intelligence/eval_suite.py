@@ -351,7 +351,7 @@ class EvalSuiteRunner:
         tasks = self._suites.get(suite_id, [])
 
         judge_results: list[dict[str, Any]] = []
-        for task, task_result in zip(tasks, suite_result.task_results):
+        for task, task_result in zip(tasks, suite_result.task_results, strict=False):
             scores: dict[str, Any] = {}
             if self._llm_judge is not None:
                 # Use the actual agent output for evaluation, not the goal prompt

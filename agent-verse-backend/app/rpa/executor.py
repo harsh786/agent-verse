@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import time
 import uuid
 from dataclasses import dataclass
@@ -324,10 +325,8 @@ class RPAExecutor:
                         except Exception:
                             pass
                         finally:
-                            try:
+                            with contextlib.suppress(Exception):
                                 os.unlink(tmp_path)
-                            except Exception:
-                                pass
                     size = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
                     session.touch()
                     return RPAResult(
@@ -581,10 +580,8 @@ class RPAExecutor:
                             except Exception:
                                 pass
                             finally:
-                                try:
+                                with contextlib.suppress(Exception):
                                     os.unlink(tmp_path)
-                                except Exception:
-                                    pass
                         size = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
                         return RPAResult(
                             success=True,

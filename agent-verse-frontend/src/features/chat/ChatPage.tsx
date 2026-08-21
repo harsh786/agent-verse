@@ -15,10 +15,13 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { ChatSidebar } from './ChatSidebar';
 import { ChatThread } from './ChatThread';
 import { ChatInput } from './ChatInput';
+import { ChatHITLCard } from './ChatHITLCard';
 import { useSessions, useCreateSession, useDeleteSession, usePinSession, useFolders } from './hooks/useChatSession';
 import { useChatHistory, useInvalidateHistory } from './hooks/useChatHistory';
 import { useChatStream } from './hooks/useChatStream';
 import { chatApi } from '@/lib/api/chat';
+import { governanceApi } from '@/lib/api/client';
+import { toast } from '@/stores/toast';
 import type { ChatMessage } from './types/chat.types';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
@@ -97,6 +100,43 @@ export default function ChatPage() {
       if (r.models.length > 0) setSelectedModel(r.models[0]);
     }).catch(() => {});
   }, []);
+
+  // G-02: Surface hitl_required events from the chat stream as an inline
+  // approval card. When the backend emits hitl_required we capture the
+  // latest event in local state so ChatHITLCard can render with the right
+  // requestId/approvalToken, and we wire approve/reject to governanceApi.
+  const [hitlEvent, setHitlEvent] = useState<any>(null); // eslint-disable-line @typescript-eslint/no-explicit-any
+  useEffect(() => {
+    if (currentEvent && (currentEvent as any).type === 'hitl_required') { // eslint-disable-line @typescript-eslint/no-explicit-any
+      setHitlEvent(currentEvent);
+    } else if (currentEvent && ['done', 'error', 'approval_granted', 'hitl_rejected'].includes((currentEvent as any).type)) { // eslint-disable-line @typescript-eslint/no-explicit-any
+      setHitlEvent(null);
+    }
+  }, [currentEvent]);
+
+  const handleHITLApprove = useCallback(async () => {
+    const reqId = hitlEvent?.request_id as string | undefined;
+    if (!reqId) return;
+    try {
+      await governanceApi.approve(reqId, 'chat-user', 'Approved from chat');
+      toast({ kind: 'success', message: 'Approved — the action was approved from chat.' });
+      setHitlEvent(null);
+    } catch (err) {
+      toast({ kind: 'error', message: `Approve failed: ${err}` });
+    }
+  }, [hitlEvent]);
+
+  const handleHITLReject = useCallback(async () => {
+    const reqId = hitlEvent?.request_id as string | undefined;
+    if (!reqId) return;
+    try {
+      await governanceApi.reject(reqId, 'chat-user', 'Rejected from chat');
+      toast({ kind: 'error', message: 'Rejected — the action was rejected from chat.' });
+      setHitlEvent(null);
+    } catch (err) {
+      toast({ kind: 'error', message: `Reject failed: ${err}` });
+    }
+  }, [hitlEvent]);
 
   // ── Handlers ─────────────────────────────────────────────────────────────
 
@@ -222,7 +262,17 @@ export default function ChatPage() {
               currentEvent={currentEvent}
               onEditMessage={handleEditMessage}
             />
-
+            {hitlEvent && (
+              <ChatHITLCard
+                stepName={String(hitlEvent.action ?? hitlEvent.step_name ?? 'Pending action')}
+                riskLevel={String(hitlEvent.risk_level ?? 'high')}
+                timeoutSeconds={Number(hitlEvent.timeout_seconds ?? 300)}
+                requestId={hitlEvent.request_id}
+                approvalToken={hitlEvent.approval_token}
+                onApprove={handleHITLApprove}
+                onReject={handleHITLReject}
+              />
+            )}
             <ChatInput
               onSend={handleSend}
               isLoading={isSending || isStreaming}

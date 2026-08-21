@@ -863,12 +863,12 @@ async def get_goal_lineage(request: Request, goal_id: str) -> dict[str, Any]:
     for row in rows:
         (
             row_id,
-            root_id,
+            _root_id,
             parent_gid,
             child_gid,
-            parent_aid,
+            _parent_aid,
             child_aid,
-            civ_id,
+            _civ_id,
             reason,
             depth,
             spawned_at,

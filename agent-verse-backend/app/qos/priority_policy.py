@@ -5,7 +5,7 @@ import enum
 from app.tenancy.context import PlanTier, TenantContext
 
 
-class QueuePriority(str, enum.Enum):
+class QueuePriority(enum.StrEnum):
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"

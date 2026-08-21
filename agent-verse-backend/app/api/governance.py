@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio  # noqa: F401  (used in SSE generators)
+import contextlib
 import json as _json
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
@@ -384,10 +385,43 @@ async def simulate_policy_for_goal(
 
 
 @router.get("/approvals")
-async def list_approvals(request: Request) -> list[dict[str, Any]]:
+async def list_approvals(
+    request: Request,
+    org_id: str | None = Query(default=None, description="Filter approvals by org id (G-10)"),
+) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
     gateway = _hitl(request)
     pending = gateway.list_pending(tenant_ctx=tenant_ctx)
+
+    # G-10: optionally filter by org_id by resolving each approval's goal
+    # execution_context["org_id"]. We keep the lookup best-effort and skip
+    # approvals whose goal cannot be resolved (treat as unscoped).
+    if org_id:
+        scoped: list[Any] = []
+        for r in pending:
+            _goal_id = getattr(r, "goal_id", None)
+            if not _goal_id:
+                continue
+            try:
+                from app.db.session import get_session_factory as _gsf
+
+                _db = _gsf()
+                from sqlalchemy import select
+
+                from app.db.models.goal import Goal as _GoalM
+
+                async with _db() as _sess:
+                    _row = (
+                        await _sess.execute(
+                            select(_GoalM.execution_context).where(_GoalM.id == _goal_id)
+                        )
+                    ).first()
+                if _row and isinstance(_row[0], dict) and _row[0].get("org_id") == org_id:
+                    scoped.append(r)
+            except Exception:
+                continue
+        pending = scoped
+
     return [
         {
             "request_id": r.request_id,
@@ -717,7 +751,7 @@ async def test_notification_channel(request: Request, channel_id: str) -> dict[s
     if channel is None:
         raise HTTPException(404, "Notification channel not found")
     try:
-        result = await svc.notify_approval_required(
+        await svc.notify_approval_required(
             request_id="test-" + uuid.uuid4().hex[:8],
             goal_id="test-goal",
             action="Test notification from AgentVerse",
@@ -886,10 +920,8 @@ async def clear_emergency_stop(request: Request) -> dict:
     ctx = _require_tenant(request)
     redis = getattr(request.app.state, "_policy_pubsub_redis", None)
     if redis is not None:
-        try:
+        with contextlib.suppress(Exception):
             await redis.delete(f"emergency_stop:{ctx.tenant_id}")
-        except Exception:
-            pass
     return {"status": "cleared", "tenant_id": ctx.tenant_id}
 
 
@@ -1288,7 +1320,7 @@ async def rollback_policy(
                     "ver": new_ver,
                     "name": target[1],
                     "desc": target[2],
-                    "rules": json.dumps(target[3]) if not isinstance(target[3], str) else target[3],
+                    "rules": _json.dumps(target[3]) if not isinstance(target[3], str) else target[3],
                     "summary": f"Rollback to v{body.target_version}: {body.reason}",
                 },
             )

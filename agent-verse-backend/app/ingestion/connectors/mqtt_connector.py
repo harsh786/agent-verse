@@ -93,7 +93,7 @@ class MQTTConnector(BaseConnector):
         timeout_seconds = float(cc.get("timeout_seconds", 10.0))
 
         messages: list[dict] = []
-        lock = asyncio.Lock()
+        asyncio.Lock()
 
         def on_message(client, userdata, msg):
             payload = msg.payload

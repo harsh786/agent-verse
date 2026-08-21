@@ -59,7 +59,7 @@ class WebCrawlConnector(BaseConnector):
         max_depth: int = config.connection_config.get("max_depth", 3)
         max_pages: int = config.connection_config.get("max_pages", 100)
         crawl_delay: float = config.connection_config.get("crawl_delay_seconds", 1.0)
-        respect_robots: bool = config.connection_config.get("respect_robots_txt", True)
+        config.connection_config.get("respect_robots_txt", True)
         include_pat: str = config.connection_config.get("include_url_pattern", "")
         exclude_pat: str = config.connection_config.get("exclude_url_pattern", "")
 
@@ -106,7 +106,7 @@ class WebCrawlConnector(BaseConnector):
                     response = await client.get(url)
                     if response.status_code >= 400:
                         continue
-                    content_type = response.headers.get("content-type", "text/html")
+                    response.headers.get("content-type", "text/html")
                     html_bytes = response.content
                 except Exception as exc:
                     _log.debug("webcrawl_fetch_error url=%s: %s", url, exc)

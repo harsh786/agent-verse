@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from app.agent.pattern_config import PatternConfig
 
 
-class AgentRole(str, enum.Enum):
+class AgentRole(enum.StrEnum):
     PLANNER = "planner"
     EXECUTOR = "executor"
     VERIFIER = "verifier"

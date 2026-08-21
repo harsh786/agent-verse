@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -1303,10 +1303,8 @@ def create_app(
                 _oauth = getattr(app.state, "oauth_manager", None)
                 if _oauth is not None and hasattr(_oauth, "_db_session_factory"):
                     _oauth._db_session_factory = db_factory
-                    try:
+                    with suppress(Exception):
                         await _oauth.load_tokens_from_db()
-                    except Exception:
-                        pass
 
                 # MCPClient: Redis circuit-breaker + oauth + tool cache.
                 _mcp = getattr(app.state, "mcp_client", None)
@@ -1448,6 +1446,38 @@ def create_app(
                 # ── GuardrailEngine v2: wire Redis for tenant config cache ────────────
                 _guardrail_engine_v2._redis = redis_for_runtime
                 logger.info("guardrail_engine_v2_redis_wired")
+
+                # ── G-19: OrgEventPublisher — publish org.approval.* SSE events ────
+                # Without this, OrgRealtimeManager's APPROVAL_REQUESTED/GRANTED/REJECTED/TIMEOUT
+                # case handlers never fire (the backend never publishes to Redis pub/sub).
+                try:
+                    from app.org.events import (
+                        configure_org_event_publisher,
+                        get_org_event_publisher,
+                    )
+
+                    _notif_router = getattr(app.state, "notification_router", None)
+                    configure_org_event_publisher(
+                        redis_client=redis_for_runtime,
+                        audit_service=getattr(app.state, "audit_log", None),
+                        notification_router=_notif_router,
+                    )
+                    app.state.org_event_publisher = get_org_event_publisher()
+                    logger.info("org_event_publisher_wired")
+                except Exception as _oep_exc:
+                    logger.warning("org_event_publisher_wire_failed", error=str(_oep_exc))
+
+                # ── G-20: ApprovalChainEngine — Redis-backed persistence ──────────
+                # Persist cross-department approval requests across replicas + restarts.
+                try:
+                    from app.org.approval_chain import get_approval_engine
+
+                    _approval_engine = get_approval_engine()
+                    _approval_engine.set_redis(redis_for_runtime)
+                    app.state.approval_chain_engine = _approval_engine
+                    logger.info("approval_chain_engine_redis_wired")
+                except Exception as _ace_exc:
+                    logger.warning("approval_chain_engine_wire_failed", error=str(_ace_exc))
 
                 # ── CRDT manager: wire Redis for multi-process Yjs sync ───────────────
                 try:

@@ -297,7 +297,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             if tool_name == "openai_chat_completion":
                 messages = list(arguments.get("messages", []))
                 if sys := arguments.get("system"):
-                    messages = [{"role": "system", "content": sys}] + messages
+                    messages = [{"role": "system", "content": sys}, *messages]
                 payload: dict[str, Any] = {
                     "model": arguments.get("model", "gpt-4o"),
                     "messages": messages,

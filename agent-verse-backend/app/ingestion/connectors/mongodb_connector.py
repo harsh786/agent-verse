@@ -6,6 +6,7 @@ Supports: MongoDB Atlas, self-hosted, and DocumentDB-compatible.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import uuid
 from collections.abc import AsyncIterator
@@ -97,10 +98,8 @@ class MongoDBConnector(BaseConnector):
             col = db[collection_name]
             query: dict = {}
             if cursor and cursor_field == "_id":
-                try:
+                with contextlib.suppress(Exception):
                     query["_id"] = {"$gt": ObjectId(cursor)}
-                except Exception:
-                    pass
             elif cursor and cursor_field != "_id":
                 query[cursor_field] = {"$gt": cursor}
             return list(col.find(query).sort(cursor_field, 1).limit(batch_size))

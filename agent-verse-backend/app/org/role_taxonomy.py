@@ -8,7 +8,7 @@ from the spec. Also provides the OrgAgent status state machine (PART 6).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 import structlog
 from opentelemetry import trace
@@ -20,7 +20,7 @@ _tracer = trace.get_tracer(__name__)
 # ── PART 6: Agent Status State Machine ───────────────────────────────────────
 
 
-class AgentStatus(str, Enum):
+class AgentStatus(StrEnum):
     """
     Spec PART 6 agent status state machine:
     IDLE → PLANNING → PLAN_READY → EXECUTING → [WAITING_TOOL | WAITING_APPROVAL

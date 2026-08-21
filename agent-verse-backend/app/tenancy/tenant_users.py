@@ -21,7 +21,7 @@ import secrets
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +31,7 @@ from app.observability.logging import get_logger
 _log = get_logger(__name__)
 
 
-class TenantRole(str, Enum):
+class TenantRole(StrEnum):
     TENANT_ADMIN = "tenant_admin"  # full access to all orgs + billing
     ORG_ADMIN = "org_admin"  # full access to specific org(s)
     ORG_MEMBER = "org_member"  # can use org, create missions

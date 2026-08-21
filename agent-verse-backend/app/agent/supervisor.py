@@ -7,6 +7,7 @@ Each sub-agent runs with full governance, memory, and tool context inheritance.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -74,10 +75,8 @@ class SupervisorAgent:
 
         async def emit(event: dict) -> None:
             if event_callback:
-                try:
+                with contextlib.suppress(Exception):
                     await event_callback(event)
-                except Exception:
-                    pass
 
         # Step 1: Decompose goal into sub-tasks
         sub_tasks = await self._decompose(goal, tenant_ctx)

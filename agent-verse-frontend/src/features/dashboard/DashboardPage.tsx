@@ -159,6 +159,7 @@ function QuickGoalSubmit() {
 export function DashboardPage() {
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const qc = useQueryClient();
   const [activeTab, setActiveTab] = useState<"mission" | "ai-ops">("mission");
 
   // ── Data fetching ──────────────────────────────────────────────────────
@@ -198,6 +199,19 @@ export function DashboardPage() {
     ["planning", "executing", "verifying"].includes(g.status),
   );
   const pendingApprovals = (approvals as any[]).filter((a: any) => a.status === "pending"); // eslint-disable-line @typescript-eslint/no-explicit-any
+  // G-09: Risk breakdown + highest-priority item for the banner
+  const _riskRank: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
+  const _byRisk = (a: any) => _riskRank[String(a?.risk_level ?? "").toLowerCase()] ?? 0; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const _riskCounts = pendingApprovals.reduce<Record<string, number>>((acc, a) => {
+    const lvl = String(a?.risk_level ?? "medium").toLowerCase();
+    acc[lvl] = (acc[lvl] ?? 0) + 1;
+    return acc;
+  }, {});
+  const _topItem = [...pendingApprovals].sort((a, b) => _byRisk(b) - _byRisk(a))[0];
+  const _riskSummary = (["critical", "high", "medium", "low"] as const)
+    .filter((lvl) => _riskCounts[lvl])
+    .map((lvl) => `${_riskCounts[lvl]} ${lvl}`)
+    .join(" · ");
   const completedGoals = goalsArr.filter(
     (g: any) => g.status === "complete" || g.status === "completed", // eslint-disable-line @typescript-eslint/no-explicit-any
   );
@@ -298,22 +312,95 @@ export function DashboardPage() {
 
       {/* ── Pending approvals banner ──────────────────────────────────── */}
       {pendingApprovals.length > 0 && (
-        <button
-          onClick={() => navigate("/approvals")}
-          className="w-full flex items-center justify-between p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl text-amber-800 dark:text-amber-300 hover:opacity-90 transition-opacity"
+        <div
+          className="w-full flex flex-col gap-2 p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl text-amber-800 dark:text-amber-300"
+          role="status"
           aria-label={`${pendingApprovals.length} pending approvals`}
         >
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
-            <span className="text-sm font-medium">
-              {pendingApprovals.length} action
-              {pendingApprovals.length !== 1 ? "s require" : " requires"} your approval
-            </span>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span className="text-sm font-medium">
+                {pendingApprovals.length} action
+                {pendingApprovals.length !== 1 ? "s require" : " requires"} your approval
+                {_riskSummary && (
+                  <span className="ml-2 text-xs text-amber-700 dark:text-amber-400">
+                    ({_riskSummary})
+                  </span>
+                )}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate("/approvals")}
+              className="flex items-center gap-1 text-xs rounded-md px-2 py-1 hover:bg-amber-100 dark:hover:bg-amber-900/50 transition-colors"
+            >
+              Review all <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
           </div>
-          <div className="flex items-center gap-1 text-xs">
-            Review <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
-          </div>
-        </button>
+          {_topItem && (
+            <div className="flex items-center justify-between gap-3 rounded-lg bg-amber-100/70 dark:bg-amber-900/40 px-3 py-2">
+              <div className="min-w-0 flex-1">
+                <span
+                  className={`inline-block mr-2 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                    _byRisk(_topItem) >= 3
+                      ? "bg-red-600 text-white"
+                      : _byRisk(_topItem) === 2
+                        ? "bg-amber-500 text-white"
+                        : "bg-amber-200 text-amber-900 dark:bg-amber-800 dark:text-amber-100"
+                  }`}
+                >
+                  {String(_topItem.risk_level ?? "medium")}
+                </span>
+                <span className="text-sm text-amber-900 dark:text-amber-200 truncate">
+                  Awaiting: {String(_topItem.action ?? "action")}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    try {
+                      await governanceApi.approve(
+                        String(_topItem.request_id),
+                        "dashboard",
+                        "Approved via dashboard quick action",
+                      );
+                      toast({ kind: "success", message: "Approved — the action was approved." });
+                      qc.invalidateQueries({ queryKey: ["approvals"] });
+                    } catch (err) {
+                      toast({ kind: "error", message: `Approve failed: ${err}` });
+                    }
+                  }}
+                >
+                  Approve
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md bg-red-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-red-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    try {
+                      await governanceApi.reject(
+                        String(_topItem.request_id),
+                        "dashboard",
+                        "Rejected via dashboard quick action",
+                      );
+                      toast({ kind: "error", message: "Rejected — the action was rejected." });
+                      qc.invalidateQueries({ queryKey: ["approvals"] });
+                    } catch (err) {
+                      toast({ kind: "error", message: `Reject failed: ${err}` });
+                    }
+                  }}
+                >
+                  Reject
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       {/* ── Onboarding banner — shown when platform looks empty ───────── */}

@@ -83,15 +83,7 @@ class RoutingMixin:
                 )
                 # Emit is async; record intent in context and let the execute
                 # node pick it up at start of next iteration via event_callback.
-                agent_state.context["_pending_events"] = agent_state.context.get(
-                    "_pending_events", []
-                ) + [
-                    {
-                        "type": "stuck_loop_detected",
-                        "goal_id": agent_state.goal_id,
-                        "message": "3 consecutive step failures — forcing replan",
-                    }
-                ]
+                agent_state.context["_pending_events"] = [*agent_state.context.get("_pending_events", []), {"type": "stuck_loop_detected", "goal_id": agent_state.goal_id, "message": "3 consecutive step failures — forcing replan"}]
                 return "replan"
         except Exception:
             pass  # never crash routing
@@ -102,7 +94,7 @@ class RoutingMixin:
         _feedback_history: list[str] = agent_state.context.get("_feedback_history", [])
         _current_feedback = agent_state.verification_feedback or ""
         if _current_feedback:
-            _feedback_history = (_feedback_history + [_current_feedback])[-6:]
+            _feedback_history = ([*_feedback_history, _current_feedback])[-6:]
             agent_state.context["_feedback_history"] = _feedback_history
 
         if len(_feedback_history) >= 3 and len(set(_feedback_history[-3:])) == 1:
@@ -119,7 +111,7 @@ class RoutingMixin:
         _plan_history: list[str] = agent_state.context.get("_plan_history", [])
         _current_plan_key = "|".join(agent_state.plan[:3]) if agent_state.plan else ""
         if _current_plan_key:
-            _plan_history = (_plan_history + [_current_plan_key])[-4:]
+            _plan_history = ([*_plan_history, _current_plan_key])[-4:]
             agent_state.context["_plan_history"] = _plan_history
 
         if len(_plan_history) >= 3 and len(set(_plan_history[-3:])) == 1:

@@ -176,6 +176,4 @@ class BaseConnector(ABC):
 
         if include and not any(fnmatch.fnmatch(name, p) for p in include):
             return False
-        if exclude and any(fnmatch.fnmatch(name, p) for p in exclude):
-            return False
-        return True
+        return not (exclude and any(fnmatch.fnmatch(name, p) for p in exclude))

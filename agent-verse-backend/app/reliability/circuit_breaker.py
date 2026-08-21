@@ -57,9 +57,7 @@ class CircuitBreaker:
                 self._state = CircuitState.HALF_OPEN
                 return True
             return False
-        if self._state == CircuitState.HALF_OPEN:
-            return True
-        return False
+        return self._state == CircuitState.HALF_OPEN
 
     def record_failure(self) -> None:
         self._failure_count += 1

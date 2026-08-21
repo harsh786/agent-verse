@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 from typing import Any
 
 
-class RerankStrategy(str, enum.Enum):
+class RerankStrategy(enum.StrEnum):
     SCORE = "score"
     RRF = "rrf"
     DIVERSITY = "diversity"
@@ -121,7 +121,7 @@ class RerankPolicy:
         """Compute cosine similarity between two vectors."""
         if not a or not b or len(a) != len(b):
             return 0.0
-        dot = sum(x * y for x, y in zip(a, b))
+        dot = sum(x * y for x, y in zip(a, b, strict=False))
         mag_a = sum(x * x for x in a) ** 0.5
         mag_b = sum(x * x for x in b) ** 0.5
         if mag_a == 0 or mag_b == 0:
@@ -231,7 +231,7 @@ class RerankPolicy:
             for chunk, ce_score, orig_score in zip(
                 chunks,
                 norm_scores,
-                [float(c.get("score", 0.5)) for c in chunks],
+                [float(c.get("score", 0.5)) for c in chunks], strict=False,
             ):
                 blended = 0.6 * ce_score + 0.4 * orig_score
                 scored.append({**chunk, "score": blended, "ce_score": ce_score})

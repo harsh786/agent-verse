@@ -353,19 +353,15 @@ async def _run_with_signals(
         if sync_r:
             if is_cancelled_sync(goal_id, sync_r):
                 run_task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
                     await run_task
-                except (asyncio.CancelledError, Exception):
-                    pass
                 raise GoalCancelledError(f"Goal {goal_id} cancelled during execution")
 
             if is_paused_sync(goal_id, sync_r):
                 # Pause: cancel current run and wait for resume signal
                 run_task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
                     await run_task
-                except (asyncio.CancelledError, Exception):
-                    pass
                 logger.info("goal_paused_in_worker goal_id=%s", goal_id)
                 while is_paused_sync(goal_id, sync_r):
                     await asyncio.sleep(5)
@@ -1294,7 +1290,9 @@ def run_goal(
                     # Resolve scoped LLM key (G-28)
                     _iso_llm_key = ""
                     try:
-                        _iso_llm_key = _get_llm_api_key_for_tenant(tenant_id)  # type: ignore[name-defined]
+                        from app.services.llm_config_store import get_llm_api_key_for_tenant
+
+                        _iso_llm_key = get_llm_api_key_for_tenant(tenant_id)
                     except Exception:
                         pass
 
@@ -1431,15 +1429,13 @@ def run_goal(
             raise self.retry(exc=exc, countdown=2**self.request.retries) from exc
         except self.MaxRetriesExceededError:
             # Route to dead-letter queue
-            try:
+            with contextlib.suppress(Exception):
                 run_goal_dlq.delay(
                     goal_id=goal_id,
                     tenant_id=tenant_id,
                     goal_text=effective_goal,
                     reason="max_retries_exceeded",
                 )
-            except Exception:
-                pass
             # Still update DB to failed
             _run_async(
                 mark_worker_failed(
@@ -1597,18 +1593,18 @@ async def _build_goal_kwargs_for_alert(
         agent_id = sched.get("agent_id")
         priority = sched.get("priority", default_priority)
 
-        return dict(
-            goal=goal_text[:500],
-            priority=priority,
-            dry_run=False,
-            tenant_ctx=tenant_ctx,
-            agent_id=agent_id,
-            execution_context={
+        return {
+            "goal": goal_text[:500],
+            "priority": priority,
+            "dry_run": False,
+            "tenant_ctx": tenant_ctx,
+            "agent_id": agent_id,
+            "execution_context": {
                 "trigger_type": trigger_type,
                 "trigger_source": "automated",
                 "alert_context": alert_context,
             },
-        )
+        }
     except Exception as exc:
         logger.warning(
             "build_goal_kwargs_for_alert_failed",
@@ -2474,16 +2470,79 @@ async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
 
 @celery_app.task(name="app.scaling.tasks.expire_hitl_approvals", bind=True, max_retries=0)
 def expire_hitl_approvals(self: Any) -> dict[str, Any]:
-    """Auto-reject HITL approval requests that have passed their expires_at."""
+    """Auto-reject HITL approval requests that have passed their expires_at.
+
+    G-12/G-16: After marking each request as timed_out, fire
+    NotificationService.notify_approval_timeout() so users are alerted that
+    their action was auto-rejected.
+    """
     from datetime import UTC, datetime
 
     expired_count = 0
+    notified: list[str] = []
     try:
         expired_ids = _run_async(_expire_db_approvals())
         expired_count = len(expired_ids)
+        # G-12: notify on each expired request
+        if expired_ids:
+            try:
+                notified = _run_async(_notify_expired_approvals(expired_ids))
+            except Exception as _n_exc:
+                logger.warning("expire_hitl_approvals_notify_failed: %s", _n_exc)
     except Exception as exc:
         logger.warning("expire_hitl_approvals failed: %s", exc)
-    return {"expired": expired_count, "checked_at": datetime.now(UTC).isoformat()}
+    return {
+        "expired": expired_count,
+        "notified": len(notified),
+        "checked_at": datetime.now(UTC).isoformat(),
+    }
+
+
+async def _notify_expired_approvals(expired_ids: list[str]) -> list[str]:
+    """G-12: Send notification for each expired approval request."""
+    if not expired_ids:
+        return []
+    try:
+        from sqlalchemy import text
+
+        from app.db.session import get_session_factory as _get_fresh_db
+
+        db = _get_fresh_db()
+        notified: list[str] = []
+        async with db() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT id, tenant_id, goal_id, action FROM approval_requests "
+                        "WHERE id = ANY(:ids)"
+                    ),
+                    {"ids": list(expired_ids)},
+                )
+            ).fetchall()
+        try:
+            from app.main import app as _app  # type: ignore[attr-defined]
+
+            _notif = getattr(getattr(_app, "state", None), "notification_service", None)
+        except Exception:
+            _notif = None
+        if _notif is None or not hasattr(_notif, "notify_approval_timeout"):
+            return []
+        for row in rows:
+            req_id, tenant_id, goal_id, action = row
+            try:
+                await _notif.notify_approval_timeout(
+                    request_id=str(req_id),
+                    goal_id=str(goal_id),
+                    action=str(action),
+                    tenant_id=str(tenant_id),
+                )
+                notified.append(str(req_id))
+            except Exception as exc:
+                logger.warning("notify_expired_failed id=%s: %s", req_id, exc)
+        return notified
+    except Exception as exc:
+        logger.warning("_notify_expired_approvals failed: %s", exc)
+        return []
 
 
 async def _expire_db_approvals() -> list[str]:
@@ -2509,6 +2568,23 @@ async def _expire_db_approvals() -> list[str]:
     except Exception as exc:
         logger.warning("expire_db_approvals failed: %s", exc)
         return []
+
+
+# G-16: Register the HITL expiry task in Celery's beat schedule so approvals
+# auto-expire every 60 seconds without manual intervention. Also routes it to
+# the governance queue so it never competes with tenant goal throughput.
+try:
+    celery_app.conf.beat_schedule["expire-hitl-approvals-every-60s"] = {
+        "task": "app.scaling.tasks.expire_hitl_approvals",
+        "schedule": 60.0,
+        "options": {"queue": "governance"},
+    }
+    celery_app.conf.task_routes.update(
+        {"app.scaling.tasks.expire_hitl_approvals": {"queue": "governance"}}
+    )
+    logger.info("beat_schedule_registered: expire-hitl-approvals-every-60s")
+except Exception as _hitl_beat_exc:
+    logger.warning("Failed to register expire_hitl_approvals beat schedule: %s", _hitl_beat_exc)
 
 
 @celery_app.task(name="app.scaling.tasks.check_email_goals", bind=True, max_retries=1)
@@ -3289,7 +3365,7 @@ def re_embed_collection(
                     embeddings = await embedding_router.embed_texts(
                         texts, provider=provider, model=model
                     )
-                    for row, vec in zip(batch, embeddings):
+                    for row, vec in zip(batch, embeddings, strict=False):
                         await session.execute(
                             text("UPDATE knowledge_chunks SET embedding = :vec WHERE id = :id"),
                             {"vec": str(vec), "id": row[0]},
@@ -3414,7 +3490,7 @@ def delta_reingest_files(
 
             settings = get_settings()
             engine = create_async_engine(str(settings.database_url), pool_pre_ping=True)
-            db_factory = async_sessionmaker(engine, expire_on_commit=False)
+            async_sessionmaker(engine, expire_on_commit=False)
 
             # Very simple dispatch — real connectors do the heavy lifting
             chunks_ingested = 0

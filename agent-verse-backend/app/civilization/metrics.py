@@ -7,6 +7,7 @@ at import time). Civilization metrics use their own lazy registry.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from app.observability.logging import get_logger
@@ -165,10 +166,8 @@ def record_agents_active(
     count: int,
 ) -> None:
     """Update active agent gauge for a civilization."""
-    try:
+    with contextlib.suppress(Exception):
         civ_agents_active().labels(tenant_id=tenant_id, civilization_id=civilization_id).set(count)
-    except Exception:
-        pass
 
 
 def record_budget_spent(
@@ -178,20 +177,16 @@ def record_budget_spent(
     amount_usd: float,
 ) -> None:
     """Update budget-spent gauge for a civilization."""
-    try:
+    with contextlib.suppress(Exception):
         civ_budget_spent_usd().labels(tenant_id=tenant_id, civilization_id=civilization_id).set(
             amount_usd
         )
-    except Exception:
-        pass
 
 
 def record_debate(*, tenant_id: str) -> None:
     """Increment the debate counter."""
-    try:
+    with contextlib.suppress(Exception):
         civ_debates_total().labels(tenant_id=tenant_id).inc()
-    except Exception:
-        pass
 
 
 def record_learning_outcome(*, tenant_id: str, outcome: str) -> None:

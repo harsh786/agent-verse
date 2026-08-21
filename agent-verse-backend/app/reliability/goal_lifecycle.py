@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 from app.observability.logging import get_logger
@@ -73,13 +74,11 @@ async def signal_cancel(goal_id: str, redis: Any) -> None:
 
 async def clear_signals(goal_id: str, redis: Any) -> None:
     """Clear all signals for a completed/failed goal."""
-    try:
+    with contextlib.suppress(Exception):
         await redis.delete(
             _PAUSE_FLAG.format(goal_id=goal_id),
             _CANCEL_FLAG.format(goal_id=goal_id),
         )
-    except Exception:
-        pass
 
 
 def is_paused_sync(goal_id: str, redis_sync: Any) -> bool:

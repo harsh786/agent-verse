@@ -1355,7 +1355,7 @@ class MarketplaceV2:
         yaml_ids = {t["template_id"] for t in yaml_agents}
         for tpl in _BUILTIN_TEMPLATES:
             if tpl.get("template_id") not in yaml_ids:
-                all_templates = all_templates + [tpl]
+                all_templates = [*all_templates, tpl]
 
         for tpl in all_templates:
             template_id = str(tpl["template_id"])

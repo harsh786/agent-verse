@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Any
 
 import structlog
@@ -22,7 +22,7 @@ from app.observability.logging import get_logger
 _log = get_logger(__name__)
 
 
-class ConnectorCategory(str, Enum):
+class ConnectorCategory(StrEnum):
     COMMUNICATION = "communication"
     CRM = "crm"
     DEVELOPMENT = "development"
