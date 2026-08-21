@@ -4,6 +4,7 @@ All types in this module are plain dataclasses / enums — zero external
 dependencies — so they can be imported in both the control plane and any
 isolated runner without pulling in the full app dependency tree.
 """
+
 from __future__ import annotations
 
 import enum
@@ -34,8 +35,8 @@ class ExecutionFailureReason(enum.StrEnum):
 
 
 class RunnerType(enum.StrEnum):
-    FAKE = "fake"          # In-process fake runner (tests / default)
-    LOCAL = "local"        # Subprocess runner
+    FAKE = "fake"  # In-process fake runner (tests / default)
+    LOCAL = "local"  # Subprocess runner
     KUBERNETES = "kubernetes"  # Kubernetes Job runner
 
 
@@ -160,12 +161,12 @@ class CodeCancellationReceipt(_FrozenCodeModel):
 class ExecutionResourceLimits:
     """Hard resource caps enforced inside the isolated environment."""
 
-    cpu_cores: float = 1.0          # fractional vCPU (e.g. 0.5)
-    memory_mb: int = 512            # RSS ceiling in MiB
+    cpu_cores: float = 1.0  # fractional vCPU (e.g. 0.5)
+    memory_mb: int = 512  # RSS ceiling in MiB
     wall_clock_seconds: int = 1800  # overall wall-clock timeout
     output_bytes: int = 10_485_760  # 10 MiB max stdout/result payload
     artifact_bytes: int = 52_428_800  # 50 MiB max artifact store
-    max_processes: int = 64         # process/thread ceiling (ulimit -u)
+    max_processes: int = 64  # process/thread ceiling (ulimit -u)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -189,9 +190,7 @@ class ExecutionEnvironmentPolicy:
 
     network_policy: NetworkPolicy = NetworkPolicy.DENY_ALL
     filesystem_policy: FilesystemPolicy = FilesystemPolicy.READ_ONLY_ROOT
-    resource_limits: ExecutionResourceLimits = field(
-        default_factory=ExecutionResourceLimits
-    )
+    resource_limits: ExecutionResourceLimits = field(default_factory=ExecutionResourceLimits)
     # Explicit tool/capability allow / deny lists (mirror of GovernancePolicy)
     allowed_capabilities: list[str] = field(default_factory=list)
     denied_capabilities: list[str] = field(default_factory=list)
@@ -228,8 +227,8 @@ class ExecutionEnvironmentSpec:
     """Describes the environment image / version that should run the workload."""
 
     runner_type: RunnerType = RunnerType.FAKE
-    image: str = ""       # container image (for LOCAL / KUBERNETES runners)
-    image_tag: str = ""   # e.g. "sha256:…" for pinned immutable image
+    image: str = ""  # container image (for LOCAL / KUBERNETES runners)
+    image_tag: str = ""  # e.g. "sha256:…" for pinned immutable image
     # Labels / annotations propagated to the container or K8s pod
     labels: dict[str, str] = field(default_factory=dict)
 
@@ -279,12 +278,8 @@ class ExecutionEnvelope:
     priority: str = "normal"
 
     # --- Policy ---
-    policy: ExecutionEnvironmentPolicy = field(
-        default_factory=ExecutionEnvironmentPolicy
-    )
-    spec: ExecutionEnvironmentSpec = field(
-        default_factory=ExecutionEnvironmentSpec
-    )
+    policy: ExecutionEnvironmentPolicy = field(default_factory=ExecutionEnvironmentPolicy)
+    spec: ExecutionEnvironmentSpec = field(default_factory=ExecutionEnvironmentSpec)
 
     # --- Governance state snapshot ---
     # Serialised HITL state for in-flight approval requests
@@ -295,9 +290,9 @@ class ExecutionEnvelope:
     feature_flags: dict[str, bool] = field(default_factory=dict)
 
     # --- Scoped credentials (populated by scheduler, never persisted) ---
-    scoped_llm_api_key: str = ""      # tenant's LLM key (decrypted for this execution)
-    scoped_db_url: str = ""           # scoped DB URL (RLS-only user or same URL + GUC)
-    scoped_redis_prefix: str = ""     # key prefix for Redis isolation
+    scoped_llm_api_key: str = ""  # tenant's LLM key (decrypted for this execution)
+    scoped_db_url: str = ""  # scoped DB URL (RLS-only user or same URL + GUC)
+    scoped_redis_prefix: str = ""  # key prefix for Redis isolation
 
     # --- Envelope integrity ---
     issued_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
@@ -372,7 +367,7 @@ class ExecutionEvent:
     payload: dict[str, Any] = field(default_factory=dict)
     # Isolation metadata (optional — not present on core agent events)
     runner_type: str = ""
-    capsule_id: str = ""      # container/pod/process ID
+    capsule_id: str = ""  # container/pod/process ID
     attempt_id: str = ""
     emitted_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
@@ -398,7 +393,7 @@ class ExecutionArtifact:
     name: str = ""
     mime_type: str = "application/octet-stream"
     size_bytes: int = 0
-    storage_url: str = ""    # internal storage location (MinIO/S3)
+    storage_url: str = ""  # internal storage location (MinIO/S3)
     checksum_sha256: str = ""
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
@@ -411,7 +406,7 @@ class ExecutionResult:
     tenant_id: str
     attempt_id: str
     success: bool
-    status: str               # mirrors GoalStatus values
+    status: str  # mirrors GoalStatus values
     iterations: int = 0
     error_message: str = ""
     failure_reason: ExecutionFailureReason | None = None

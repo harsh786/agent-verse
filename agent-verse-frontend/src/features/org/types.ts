@@ -52,9 +52,24 @@ export interface OrgTeam {
   purpose:      string;
   team_type:    string;
   status:       string;
-  agent_ids:    string[];
+  member_agent_ids: string[];
+  agent_ids?:   string[];
   created_at:   string;
   updated_at:   string;
+}
+
+export interface TeamMemberProfile {
+  id: string;
+  name: string;
+  role?: string;
+  status?: string;
+  current_task?: string;
+}
+
+export interface TeamMembersResponse {
+  team_id: string;
+  member_ids: string[];
+  members: TeamMemberProfile[];
 }
 
 export interface OrgMission {

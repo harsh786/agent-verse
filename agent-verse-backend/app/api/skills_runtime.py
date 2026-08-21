@@ -1,4 +1,5 @@
 """Skills Runtime API."""
+
 from __future__ import annotations
 
 import datetime
@@ -86,6 +87,7 @@ class PermissionToggleRequest(BaseModel):
 
 # ── Helper: dict → SkillDefinition ────────────────────────────────────────────
 
+
 def _dict_to_skill_def(skill_dict: dict[str, Any]) -> SkillDefinition:
     """Convert an in-memory skill dict to a SkillDefinition dataclass."""
     return SkillDefinition(
@@ -109,6 +111,7 @@ def _dict_to_skill_def(skill_dict: dict[str, Any]) -> SkillDefinition:
 
 
 # ── DB persistence helpers (write-through cache for custom tenant skills) ──────
+
 
 async def _db_save_skill(skill_dict: dict[str, Any], db_factory: Any) -> None:
     """Persist a custom tenant skill to the skills table.
@@ -203,26 +206,28 @@ async def _load_tenant_skills_from_db(tenant_id: str, db_factory: Any) -> None:
                     standard_id = row.id
                 if standard_id in existing_ids:
                     continue
-                _tenant_skills.setdefault(tenant_id, []).append({
-                    "skill_id": standard_id,
-                    "tenant_id": row.tenant_id,
-                    "name": row.name,
-                    "description": row.description,
-                    "trigger_hints": (
-                        row.trigger_hints if isinstance(row.trigger_hints, list) else []
-                    ),
-                    "instructions": row.instructions or "",
-                    "allowed_tools": (
-                        row.allowed_tools if isinstance(row.allowed_tools, list) else []
-                    ),
-                    "permissions_required": [],
-                    "version": row.version or "1.0.0",
-                    "scope": "tenant",
-                    "status": "active",
-                    "is_builtin": False,
-                    "author": row.tenant_id[:12] if row.tenant_id else "system",
-                    "created_at": str(row.created_at) if row.created_at else None,
-                })
+                _tenant_skills.setdefault(tenant_id, []).append(
+                    {
+                        "skill_id": standard_id,
+                        "tenant_id": row.tenant_id,
+                        "name": row.name,
+                        "description": row.description,
+                        "trigger_hints": (
+                            row.trigger_hints if isinstance(row.trigger_hints, list) else []
+                        ),
+                        "instructions": row.instructions or "",
+                        "allowed_tools": (
+                            row.allowed_tools if isinstance(row.allowed_tools, list) else []
+                        ),
+                        "permissions_required": [],
+                        "version": row.version or "1.0.0",
+                        "scope": "tenant",
+                        "status": "active",
+                        "is_builtin": False,
+                        "author": row.tenant_id[:12] if row.tenant_id else "system",
+                        "created_at": str(row.created_at) if row.created_at else None,
+                    }
+                )
         _loaded_tenants.add(tenant_id)
     except Exception as exc:
         _log.debug("skill_db_load_failed tenant=%s error=%s", tenant_id, exc)
@@ -244,11 +249,13 @@ async def list_skills(
         for s in _platform_skills.values():
             if status and s.get("status") != status:
                 continue
-            skills.append({
-                **s,
-                "enabled": s["skill_id"] in _enabled_skills.get(tenant.tenant_id, set()),
-                "is_platform": True,
-            })
+            skills.append(
+                {
+                    **s,
+                    "enabled": s["skill_id"] in _enabled_skills.get(tenant.tenant_id, set()),
+                    "is_platform": True,
+                }
+            )
 
     # Tenant skills
     for s in _tenant_skills.get(tenant.tenant_id, []):
@@ -260,6 +267,7 @@ async def list_skills(
 
 
 # ── Executor-backed endpoints (declared before /{skill_id} for routing priority) ──
+
 
 @router.get("/match")
 async def match_skills(
@@ -475,6 +483,7 @@ async def execute_skill(
         raise HTTPException(404, f"Skill {skill_id} not found")
 
     import time
+
     start = time.monotonic()
     execution_id = str(uuid.uuid4())
     now = datetime.datetime.now(datetime.UTC).isoformat()
@@ -489,16 +498,19 @@ async def execute_skill(
     if provider:
         try:
             from app.providers.base import CompletionRequest, Message
+
             prompt = (
                 f"You are a specialized {skill['name']} skill.\n\n"
                 f"Instructions: {skill['instructions']}\n\n"
                 f"Input: {body.input_context[:2000]}"
             )
-            resp = await provider.complete(CompletionRequest(
-                messages=[Message(role="user", content=prompt)],
-                model="",
-                max_tokens=1000,
-            ))
+            resp = await provider.complete(
+                CompletionRequest(
+                    messages=[Message(role="user", content=prompt)],
+                    model="",
+                    max_tokens=1000,
+                )
+            )
             output = resp.content
             success = True
             model_used = resp.model
@@ -542,10 +554,7 @@ async def execute_skill(
 async def list_skill_executions(request: Request, skill_id: str) -> dict[str, Any]:
     """List execution history for a skill."""
     tenant = _require_tenant(request)
-    executions = [
-        e for e in _executions.get(tenant.tenant_id, [])
-        if e["skill_id"] == skill_id
-    ]
+    executions = [e for e in _executions.get(tenant.tenant_id, []) if e["skill_id"] == skill_id]
     return {"executions": list(reversed(executions))[:20], "total": len(executions)}
 
 
@@ -569,10 +578,13 @@ async def update_tenant_skill(request: Request, skill_id: str) -> dict[str, Any]
     _skill_versions.setdefault(skill_id, []).append(old_version)
 
     # Update skill fields
-    skill.update({
-        k: v for k, v in body.items()
-        if k in ("name", "description", "trigger_hints", "instructions", "allowed_tools")
-    })
+    skill.update(
+        {
+            k: v
+            for k, v in body.items()
+            if k in ("name", "description", "trigger_hints", "instructions", "allowed_tools")
+        }
+    )
 
     # Increment patch version
     current_version = skill.get("version", "1.0.0")
@@ -615,23 +627,28 @@ async def match_skill_by_trigger(request: Request) -> dict[str, Any]:
     for skill in _platform_skills.values():
         for hint in skill.get("trigger_hints", []):
             if hint.lower() in trigger or trigger in hint.lower():
-                matches.append({
-                    "skill_id": skill["skill_id"],
-                    "name": skill["name"],
-                    "matched_hint": hint,
-                    "enabled": skill["skill_id"] in _enabled_skills.get(tenant.tenant_id, set()),
-                })
+                matches.append(
+                    {
+                        "skill_id": skill["skill_id"],
+                        "name": skill["name"],
+                        "matched_hint": hint,
+                        "enabled": skill["skill_id"]
+                        in _enabled_skills.get(tenant.tenant_id, set()),
+                    }
+                )
                 break
 
     for skill in _tenant_skills.get(tenant.tenant_id, []):
         for hint in skill.get("trigger_hints", []):
             if hint.lower() in trigger or trigger in hint.lower():
-                matches.append({
-                    "skill_id": skill["skill_id"],
-                    "name": skill["name"],
-                    "matched_hint": hint,
-                    "enabled": True,
-                })
+                matches.append(
+                    {
+                        "skill_id": skill["skill_id"],
+                        "name": skill["name"],
+                        "matched_hint": hint,
+                        "enabled": True,
+                    }
+                )
                 break
 
     return {"matches": matches, "trigger": trigger}

@@ -42,7 +42,10 @@ async def preview_training_data(
     scores = [e["eval_score"] for e in examples]
     # Use ASCII hyphens in bucket keys (ruff RUF001)
     buckets: dict[str, int] = {
-        "0.80-0.85": 0, "0.85-0.90": 0, "0.90-0.95": 0, "0.95-1.00": 0,
+        "0.80-0.85": 0,
+        "0.85-0.90": 0,
+        "0.90-0.95": 0,
+        "0.95-1.00": 0,
     }
     for s in scores:
         if s < 0.85:

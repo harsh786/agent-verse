@@ -3,6 +3,7 @@
 Environment:
   FEEDLY_ACCESS_TOKEN: Feedly OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -30,8 +31,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "stream_id": {"type": "string", "description": "Stream ID (feed URL or category ID)"},
-                "count": {"type": "integer", "description": "Number of articles to return (max 250)"},
+                "stream_id": {
+                    "type": "string",
+                    "description": "Stream ID (feed URL or category ID)",
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Number of articles to return (max 250)",
+                },
                 "ranked": {"type": "string", "description": "Sort order: newest or oldest"},
                 "unread_only": {"type": "boolean", "description": "Only return unread articles"},
                 "continuation": {"type": "string", "description": "Pagination token"},
@@ -74,8 +81,14 @@ TOOL_DEFINITIONS = [
                     "description": "List of entry IDs to mark as read",
                     "items": {"type": "string"},
                 },
-                "stream_id": {"type": "string", "description": "Mark all entries in a stream as read"},
-                "last_read_entry_id": {"type": "string", "description": "Mark all entries up to this ID as read"},
+                "stream_id": {
+                    "type": "string",
+                    "description": "Mark all entries in a stream as read",
+                },
+                "last_read_entry_id": {
+                    "type": "string",
+                    "description": "Mark all entries up to this ID as read",
+                },
             },
         },
     },

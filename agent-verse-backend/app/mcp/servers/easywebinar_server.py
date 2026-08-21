@@ -3,6 +3,7 @@
 Environment:
   EASYWEBINAR_API_KEY: EasyWebinar API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -23,7 +24,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "page": {"type": "integer", "description": "Page number"},
-                "type": {"type": "string", "description": "Filter by type: live, automated, hybrid"},
+                "type": {
+                    "type": "string",
+                    "description": "Filter by type: live, automated, hybrid",
+                },
             },
         },
     },
@@ -36,7 +40,10 @@ TOOL_DEFINITIONS = [
                 "title": {"type": "string", "description": "Webinar title"},
                 "description": {"type": "string", "description": "Webinar description"},
                 "webinar_type": {"type": "string", "description": "Type: live, automated"},
-                "schedule_date": {"type": "string", "description": "Scheduled date/time in ISO format"},
+                "schedule_date": {
+                    "type": "string",
+                    "description": "Scheduled date/time in ISO format",
+                },
                 "timezone": {"type": "string", "description": "Timezone (e.g. America/New_York)"},
             },
             "required": ["title", "webinar_type"],
@@ -132,7 +139,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 r = await client.post(
                     f"{BASE_URL}/webinars/{webinar_id}/registrants",
                     headers=headers,
-                    json={k: v for k, v in arguments.items() if k != "webinar_id" and v is not None},
+                    json={
+                        k: v for k, v in arguments.items() if k != "webinar_id" and v is not None
+                    },
                 )
                 r.raise_for_status()
                 return r.json()

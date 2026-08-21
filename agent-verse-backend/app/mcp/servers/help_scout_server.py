@@ -3,6 +3,7 @@
 Environment:
   HELP_SCOUT_API_KEY: Help Scout API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -22,7 +23,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter by status: active, closed, pending, spam"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: active, closed, pending, spam",
+                },
                 "mailbox_id": {"type": "integer", "description": "Filter by mailbox ID"},
                 "page": {"type": "integer", "description": "Page number"},
                 "sort_field": {"type": "string", "description": "Sort by: createdAt, updatedAt"},
@@ -37,7 +41,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "subject": {"type": "string", "description": "Subject of the conversation"},
-                "mailbox_id": {"type": "integer", "description": "ID of the mailbox to create it in"},
+                "mailbox_id": {
+                    "type": "integer",
+                    "description": "ID of the mailbox to create it in",
+                },
                 "customer_email": {"type": "string", "description": "Customer email address"},
                 "text": {"type": "string", "description": "Initial message text"},
                 "status": {"type": "string", "description": "Initial status: active, pending"},
@@ -54,7 +61,10 @@ TOOL_DEFINITIONS = [
                 "conversation_id": {"type": "integer", "description": "ID of the conversation"},
                 "text": {"type": "string", "description": "Reply message text"},
                 "user_id": {"type": "integer", "description": "ID of the agent sending the reply"},
-                "status": {"type": "string", "description": "Update conversation status after reply"},
+                "status": {
+                    "type": "string",
+                    "description": "Update conversation status after reply",
+                },
             },
             "required": ["conversation_id", "text"],
         },
@@ -173,7 +183,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "helpscout_get_stats":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/reports/conversation", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/reports/conversation", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

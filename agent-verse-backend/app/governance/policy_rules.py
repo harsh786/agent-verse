@@ -15,7 +15,9 @@ Rule format (JSON):
 Operators: eq, ne, contains, not_contains, ends_with, not_ends_with,
            starts_with, not_starts_with, in, not_in, gt, lt, gte, lte, regex
 """
+
 from __future__ import annotations
+
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -43,14 +45,22 @@ def _get_field(context: dict[str, Any], field_path: str) -> Any:
 def _matches(val: Any, op: str, target: Any) -> bool:
     s = str(val or "").lower()
     t = str(target or "").lower()
-    if op == "eq": return s == t
-    if op == "ne": return s != t
-    if op == "contains": return t in s
-    if op == "not_contains": return t not in s
-    if op == "ends_with": return s.endswith(t)
-    if op == "not_ends_with": return not s.endswith(t)
-    if op == "starts_with": return s.startswith(t)
-    if op == "not_starts_with": return not s.startswith(t)
+    if op == "eq":
+        return s == t
+    if op == "ne":
+        return s != t
+    if op == "contains":
+        return t in s
+    if op == "not_contains":
+        return t not in s
+    if op == "ends_with":
+        return s.endswith(t)
+    if op == "not_ends_with":
+        return not s.endswith(t)
+    if op == "starts_with":
+        return s.startswith(t)
+    if op == "not_starts_with":
+        return not s.startswith(t)
     if op == "in":
         items = [str(x).lower() for x in (target if isinstance(target, list) else [target])]
         return s in items
@@ -58,10 +68,14 @@ def _matches(val: Any, op: str, target: Any) -> bool:
         items = [str(x).lower() for x in (target if isinstance(target, list) else [target])]
         return s not in items
     try:
-        if op == "gt": return float(val or 0) > float(target or 0)
-        if op == "lt": return float(val or 0) < float(target or 0)
-        if op == "gte": return float(val or 0) >= float(target or 0)
-        if op == "lte": return float(val or 0) <= float(target or 0)
+        if op == "gt":
+            return float(val or 0) > float(target or 0)
+        if op == "lt":
+            return float(val or 0) < float(target or 0)
+        if op == "gte":
+            return float(val or 0) >= float(target or 0)
+        if op == "lte":
+            return float(val or 0) <= float(target or 0)
     except (TypeError, ValueError):
         return False
     if op == "regex":
@@ -90,7 +104,9 @@ def evaluate_rule(rule: dict[str, Any], context: dict[str, Any]) -> PolicyRuleRe
 
     if triggered and action == "deny":
         return PolicyRuleResult(
-            allowed=False, rule_name=name, message=message,
+            allowed=False,
+            rule_name=name,
+            message=message,
             matched_conditions=[c.get("field", "") for c in conditions],
         )
     return PolicyRuleResult(allowed=True, rule_name=name)

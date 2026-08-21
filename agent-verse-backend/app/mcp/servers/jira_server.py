@@ -5,6 +5,7 @@ Environment variables:
   JIRA_EMAIL: Atlassian account email
   JIRA_API_TOKEN: Atlassian API token
 """
+
 from __future__ import annotations
 
 import base64
@@ -26,6 +27,7 @@ def _absolute_http_url(url: str) -> str:
     if not stripped or "://" in stripped:
         return stripped
     return f"https://{stripped}"
+
 
 TOOL_DEFINITIONS = [
     {
@@ -236,8 +238,7 @@ async def call_tool(
         with suppress(Exception):
             error_body = exc.response.text[:500]
         return {
-            "error": f"HTTP {exc.response.status_code}: "
-            f"{error_body or exc.response.reason_phrase}",
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
             "status_code": exc.response.status_code,
         }
     except Exception as exc:
@@ -258,11 +259,7 @@ async def _call_tool_inner(
     if not base:
         return {"error": "JIRA_BASE_URL not configured"}
 
-    email = (
-        creds.get("username")
-        or creds.get("email")
-        or os.getenv("JIRA_EMAIL", "")
-    )
+    email = creds.get("username") or creds.get("email") or os.getenv("JIRA_EMAIL", "")
     token = (
         creds.get("password")
         or creds.get("api_token")
@@ -309,7 +306,9 @@ async def _call_tool_inner(
             # Always include default fields — merge with any caller-specified fields
             # to ensure status/priority/assignee are always returned.
             _caller_fields = arguments.get("fields", [])
-            _effective_fields = list({*default_fields, *(_caller_fields if isinstance(_caller_fields, list) else [])})
+            _effective_fields = list(
+                {*default_fields, *(_caller_fields if isinstance(_caller_fields, list) else [])}
+            )
             payload: dict[str, Any] = {
                 "jql": jql,
                 "maxResults": min(int(arguments.get("max_results", 10)), 50),
@@ -348,7 +347,12 @@ async def _call_tool_inner(
             }
 
         elif tool_name == "jira_get_issue":
-            key = arguments.get("issue_id_or_key") or arguments.get("issue_key") or arguments.get("key") or ""
+            key = (
+                arguments.get("issue_id_or_key")
+                or arguments.get("issue_key")
+                or arguments.get("key")
+                or ""
+            )
             resp = await client.get(f"/rest/api/3/issue/{key}")
             resp.raise_for_status()
             i = resp.json()
@@ -400,7 +404,12 @@ async def _call_tool_inner(
             return {"id": data["id"], "key": data["key"], "self": data.get("self", "")}
 
         elif tool_name == "jira_update_issue":
-            key = arguments.get("issue_id_or_key") or arguments.get("issue_key") or arguments.get("key") or ""
+            key = (
+                arguments.get("issue_id_or_key")
+                or arguments.get("issue_key")
+                or arguments.get("key")
+                or ""
+            )
             fields = {}
             if "summary" in arguments:
                 fields["summary"] = arguments["summary"]
@@ -427,7 +436,12 @@ async def _call_tool_inner(
             return {"updated": True, "key": key}
 
         elif tool_name == "jira_add_comment":
-            key = arguments.get("issue_id_or_key") or arguments.get("issue_key") or arguments.get("key") or ""
+            key = (
+                arguments.get("issue_id_or_key")
+                or arguments.get("issue_key")
+                or arguments.get("key")
+                or ""
+            )
             payload = {
                 "body": {
                     "type": "doc",
@@ -446,7 +460,12 @@ async def _call_tool_inner(
             return {"comment_id": data.get("id"), "created": data.get("created", "")}
 
         elif tool_name == "jira_transition_issue":
-            key = arguments.get("issue_id_or_key") or arguments.get("issue_key") or arguments.get("key") or ""
+            key = (
+                arguments.get("issue_id_or_key")
+                or arguments.get("issue_key")
+                or arguments.get("key")
+                or ""
+            )
             payload: dict[str, Any] = {"transition": {"id": arguments["transition_id"]}}
             if arguments.get("comment"):
                 payload["update"] = {
@@ -474,7 +493,12 @@ async def _call_tool_inner(
             return {"transitioned": True, "key": key, "transition_id": arguments["transition_id"]}
 
         elif tool_name == "jira_get_transitions":
-            key = arguments.get("issue_id_or_key") or arguments.get("issue_key") or arguments.get("key") or ""
+            key = (
+                arguments.get("issue_id_or_key")
+                or arguments.get("issue_key")
+                or arguments.get("key")
+                or ""
+            )
             resp = await client.get(f"/rest/api/3/issue/{key}/transitions")
             resp.raise_for_status()
             data = resp.json()
@@ -486,7 +510,12 @@ async def _call_tool_inner(
             }
 
         elif tool_name == "jira_assign_issue":
-            key = arguments.get("issue_id_or_key") or arguments.get("issue_key") or arguments.get("key") or ""
+            key = (
+                arguments.get("issue_id_or_key")
+                or arguments.get("issue_key")
+                or arguments.get("key")
+                or ""
+            )
             account_id = arguments["account_id"]
             payload = {"accountId": account_id if account_id != "null" else None}
             resp = await client.put(f"/rest/api/3/issue/{key}/assignee", json=payload)

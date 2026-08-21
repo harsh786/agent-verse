@@ -3,6 +3,7 @@
 Environment:
   CONSTANT_CONTACT_API_KEY: OAuth2 access token from Constant Contact developer account
 """
+
 from __future__ import annotations
 
 import os
@@ -31,9 +32,16 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "description": "Max contacts to return (max 500)", "default": 50},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max contacts to return (max 500)",
+                    "default": 50,
+                },
                 "email": {"type": "string", "description": "Filter by email address"},
-                "status": {"type": "string", "description": "Filter by status: active, unsubscribed, removed, deleted"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: active, unsubscribed, removed, deleted",
+                },
             },
         },
     },
@@ -47,7 +55,11 @@ TOOL_DEFINITIONS = [
                 "first_name": {"type": "string", "description": "Contact first name"},
                 "last_name": {"type": "string", "description": "Contact last name"},
                 "phone_number": {"type": "string", "description": "Contact phone number"},
-                "list_memberships": {"type": "array", "items": {"type": "string"}, "description": "List UUIDs to add the contact to"},
+                "list_memberships": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List UUIDs to add the contact to",
+                },
             },
             "required": ["email"],
         },
@@ -62,7 +74,11 @@ TOOL_DEFINITIONS = [
                 "first_name": {"type": "string", "description": "Updated first name"},
                 "last_name": {"type": "string", "description": "Updated last name"},
                 "phone_number": {"type": "string", "description": "Updated phone number"},
-                "list_memberships": {"type": "array", "items": {"type": "string"}, "description": "Updated list UUID memberships"},
+                "list_memberships": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Updated list UUID memberships",
+                },
             },
             "required": ["contact_id"],
         },
@@ -99,7 +115,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "campaign_activity_id": {"type": "string", "description": "Constant Contact campaign activity UUID"},
+                "campaign_activity_id": {
+                    "type": "string",
+                    "description": "Constant Contact campaign activity UUID",
+                },
             },
             "required": ["campaign_activity_id"],
         },
@@ -140,7 +159,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "constant_contact_create_contact":
                 payload: dict[str, Any] = {
-                    "email_address": {"address": arguments["email"], "permission_to_send": "implicit"},
+                    "email_address": {
+                        "address": arguments["email"],
+                        "permission_to_send": "implicit",
+                    },
                 }
                 for field in ("first_name", "last_name", "phone_number"):
                     if field in arguments:
@@ -150,7 +172,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r = await client.post(f"{BASE_URL}/contacts", headers=_headers(), json=payload)
                 r.raise_for_status()
                 c = r.json()
-                return {"contact_id": c.get("contact_id"), "email": c.get("email_address", {}).get("address")}
+                return {
+                    "contact_id": c.get("contact_id"),
+                    "email": c.get("email_address", {}).get("address"),
+                }
 
             elif tool_name == "constant_contact_update_contact":
                 contact_id = arguments["contact_id"]
@@ -163,7 +188,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                         existing[field] = arguments[field]
                 if "list_memberships" in arguments:
                     existing["list_memberships"] = arguments["list_memberships"]
-                r = await client.put(f"{BASE_URL}/contacts/{contact_id}", headers=_headers(), json=existing)
+                r = await client.put(
+                    f"{BASE_URL}/contacts/{contact_id}", headers=_headers(), json=existing
+                )
                 r.raise_for_status()
                 c = r.json()
                 return {"contact_id": c.get("contact_id")}
@@ -178,7 +205,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "lists": [
-                        {"list_id": lst.get("list_id"), "name": lst.get("name"), "membership_count": lst.get("membership_count")}
+                        {
+                            "list_id": lst.get("list_id"),
+                            "name": lst.get("name"),
+                            "membership_count": lst.get("membership_count"),
+                        }
                         for lst in data.get("lists", [])
                     ]
                 }

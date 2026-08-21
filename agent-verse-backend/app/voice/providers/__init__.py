@@ -6,6 +6,7 @@ Usage (everywhere in the voice layer):
 Swapping providers:
     Set VOICE_STT_PROVIDER or VOICE_TTS_PROVIDER env var. No code changes required.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,18 +23,18 @@ log = logging.getLogger(__name__)
 
 STT_REGISTRY: dict[str, str] = {
     "faster_whisper": "app.voice.providers.stt.faster_whisper.FasterWhisperSTT",
-    "whisper_api":    "app.voice.providers.stt.whisper_api.WhisperAPISTT",
-    "assemblyai":     "app.voice.providers.stt.assemblyai.AssemblyAISTT",
+    "whisper_api": "app.voice.providers.stt.whisper_api.WhisperAPISTT",
+    "assemblyai": "app.voice.providers.stt.assemblyai.AssemblyAISTT",
 }
 
 TTS_REGISTRY: dict[str, str] = {
-    "omnivoice":   "app.voice.providers.tts.omnivoice.OmniVoiceTTS",
-    "kokoro":      "app.voice.providers.tts.kokoro.KokoroTTS",
-    "macos_say":   "app.voice.providers.tts.macos_say.MacOSSayTTS",
-    "browser":     "app.voice.providers.tts.browser_fallback.BrowserFallbackTTS",
-    "elevenlabs":  "app.voice.providers.tts.elevenlabs.ElevenLabsTTS",
-    "openai_tts":  "app.voice.providers.tts.openai_tts.OpenAITTS",
-    "azure_tts":   "app.voice.providers.tts.azure_tts.AzureTTS",
+    "omnivoice": "app.voice.providers.tts.omnivoice.OmniVoiceTTS",
+    "kokoro": "app.voice.providers.tts.kokoro.KokoroTTS",
+    "macos_say": "app.voice.providers.tts.macos_say.MacOSSayTTS",
+    "browser": "app.voice.providers.tts.browser_fallback.BrowserFallbackTTS",
+    "elevenlabs": "app.voice.providers.tts.elevenlabs.ElevenLabsTTS",
+    "openai_tts": "app.voice.providers.tts.openai_tts.OpenAITTS",
+    "azure_tts": "app.voice.providers.tts.azure_tts.AzureTTS",
 }
 
 # ── Singletons ────────────────────────────────────────────────────────────────
@@ -81,7 +82,9 @@ async def get_tts() -> TTSProvider:
     async with _tts_lock:
         if _tts_instance is not None:
             return _tts_instance
-        provider_name = os.getenv("VOICE_TTS_PROVIDER", "macos_say" if os.path.exists("/usr/bin/say") else "kokoro")
+        provider_name = os.getenv(
+            "VOICE_TTS_PROVIDER", "macos_say" if os.path.exists("/usr/bin/say") else "kokoro"
+        )
         dotted = TTS_REGISTRY.get(provider_name)
         if dotted is None:
             raise ValueError(
@@ -114,8 +117,7 @@ async def warmup_providers() -> None:
     stt = await get_stt()
     tts = await get_tts()
     await asyncio.gather(stt.warmup(), tts.warmup(), return_exceptions=True)
-    log.info("voice.providers.warmup_complete stt=%s tts=%s",
-             stt.provider_name, tts.provider_name)
+    log.info("voice.providers.warmup_complete stt=%s tts=%s", stt.provider_name, tts.provider_name)
 
 
 async def get_capabilities() -> dict:
@@ -124,16 +126,16 @@ async def get_capabilities() -> dict:
     tts = await get_tts()
     return {
         "stt": {
-            "provider":  stt.provider_name,
-            "ready":     await stt.is_ready(),
+            "provider": stt.provider_name,
+            "ready": await stt.is_ready(),
             "streaming": stt.supports_streaming,
         },
         "tts": {
-            "provider":       tts.provider_name,
-            "ready":          await tts.is_ready(),
-            "voice_cloning":  tts.supports_voice_cloning,
-            "nonverbal":      tts.supports_nonverbal,
-            "sample_rate":    tts.sample_rate,
+            "provider": tts.provider_name,
+            "ready": await tts.is_ready(),
+            "voice_cloning": tts.supports_voice_cloning,
+            "nonverbal": tts.supports_nonverbal,
+            "sample_rate": tts.sample_rate,
         },
     }
 

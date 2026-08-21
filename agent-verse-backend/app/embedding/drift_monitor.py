@@ -1,5 +1,7 @@
 """EmbeddingDriftMonitor — monitors cosine similarity drift."""
+
 from __future__ import annotations
+
 import enum
 
 

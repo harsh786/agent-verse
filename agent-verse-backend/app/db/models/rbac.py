@@ -1,4 +1,5 @@
 """ORM models for RBAC: user roles and IP allowlist."""
+
 from __future__ import annotations
 
 import uuid
@@ -15,9 +16,7 @@ class UserRole(Base):
 
     __tablename__ = "user_roles"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     # user_id is the Keycloak `sub` claim or the api_key_id for API key users
     user_id: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
@@ -32,9 +31,7 @@ class IPAllowlistEntry(Base):
 
     __tablename__ = "ip_allowlist"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     cidr: Mapped[str] = mapped_column(String(50), nullable=False)
     description: Mapped[str] = mapped_column(String(200), nullable=False, default="")

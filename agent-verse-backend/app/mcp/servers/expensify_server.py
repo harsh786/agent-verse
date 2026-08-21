@@ -4,6 +4,7 @@ Environment:
   EXPENSIFY_PARTNER_USER_ID:     Expensify API partner user ID
   EXPENSIFY_PARTNER_USER_SECRET: Expensify API partner secret
 """
+
 from __future__ import annotations
 
 import json
@@ -23,13 +24,13 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "email":          {"type": "string", "description": "Employee email"},
-                "merchant":       {"type": "string"},
-                "amount":         {"type": "number", "description": "Amount in cents"},
-                "currency":       {"type": "string", "default": "USD"},
-                "created":        {"type": "string", "description": "Date YYYY-MM-DD"},
-                "category":       {"type": "string"},
-                "comment":        {"type": "string"},
+                "email": {"type": "string", "description": "Employee email"},
+                "merchant": {"type": "string"},
+                "amount": {"type": "number", "description": "Amount in cents"},
+                "currency": {"type": "string", "default": "USD"},
+                "created": {"type": "string", "description": "Date YYYY-MM-DD"},
+                "category": {"type": "string"},
+                "comment": {"type": "string"},
             },
             "required": ["email", "merchant", "amount", "created"],
         },
@@ -40,10 +41,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "email":       {"type": "string"},
-                "start_date":  {"type": "string"},
-                "end_date":    {"type": "string"},
-                "status":      {"type": "string", "enum": ["OPEN", "SUBMITTED", "APPROVED", "REIMBURSED"], "description": "Filter by status"},
+                "email": {"type": "string"},
+                "start_date": {"type": "string"},
+                "end_date": {"type": "string"},
+                "status": {
+                    "type": "string",
+                    "enum": ["OPEN", "SUBMITTED", "APPROVED", "REIMBURSED"],
+                    "description": "Filter by status",
+                },
             },
         },
     },
@@ -54,16 +59,16 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "report_id": {"type": "string"},
-                "approver":  {"type": "string", "description": "Approver email"},
+                "approver": {"type": "string", "description": "Approver email"},
             },
             "required": ["report_id", "approver"],
         },
     },
 ]
 
-_PARTNER_USER_ID     = os.getenv("EXPENSIFY_PARTNER_USER_ID", "")
+_PARTNER_USER_ID = os.getenv("EXPENSIFY_PARTNER_USER_ID", "")
 _PARTNER_USER_SECRET = os.getenv("EXPENSIFY_PARTNER_USER_SECRET", "")
-_API_URL             = "https://integrations.expensify.com/Integration-Server/ExpensifyIntegrations"
+_API_URL = "https://integrations.expensify.com/Integration-Server/ExpensifyIntegrations"
 
 
 async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -76,20 +81,22 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
                 request_json = {
                     "type": "create",
                     "credentials": {
-                        "partnerUserID":     _PARTNER_USER_ID,
+                        "partnerUserID": _PARTNER_USER_ID,
                         "partnerUserSecret": _PARTNER_USER_SECRET,
                     },
                     "inputSettings": {
-                        "type":        "expenses",
+                        "type": "expenses",
                         "employeeEmail": params["email"],
-                        "expenses": [{
-                            "merchant": params["merchant"],
-                            "amount":   int(params["amount"]),
-                            "currency": params.get("currency", "USD"),
-                            "created":  params["created"],
-                            "category": params.get("category", ""),
-                            "comment":  params.get("comment", ""),
-                        }],
+                        "expenses": [
+                            {
+                                "merchant": params["merchant"],
+                                "amount": int(params["amount"]),
+                                "currency": params.get("currency", "USD"),
+                                "created": params["created"],
+                                "category": params.get("category", ""),
+                                "comment": params.get("comment", ""),
+                            }
+                        ],
                     },
                 }
                 resp = await client.post(
@@ -103,16 +110,16 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
                 request_json = {
                     "type": "get",
                     "credentials": {
-                        "partnerUserID":     _PARTNER_USER_ID,
+                        "partnerUserID": _PARTNER_USER_ID,
                         "partnerUserSecret": _PARTNER_USER_SECRET,
                     },
                     "inputSettings": {
-                        "type":         "reportInfos",
+                        "type": "reportInfos",
                         "filters": {
                             "startDate": params.get("start_date", ""),
-                            "endDate":   params.get("end_date", ""),
-                            "email":     params.get("email", ""),
-                            "status":    params.get("status", ""),
+                            "endDate": params.get("end_date", ""),
+                            "email": params.get("email", ""),
+                            "status": params.get("status", ""),
                         },
                     },
                 }
@@ -127,13 +134,13 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
                 request_json = {
                     "type": "update",
                     "credentials": {
-                        "partnerUserID":     _PARTNER_USER_ID,
+                        "partnerUserID": _PARTNER_USER_ID,
                         "partnerUserSecret": _PARTNER_USER_SECRET,
                     },
                     "inputSettings": {
-                        "type":     "report",
+                        "type": "report",
                         "reportID": params["report_id"],
-                        "status":   "APPROVED",
+                        "status": "APPROVED",
                         "approver": params["approver"],
                     },
                 }

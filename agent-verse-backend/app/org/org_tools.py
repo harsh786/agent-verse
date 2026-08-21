@@ -15,6 +15,7 @@ New tools available to agents operating in an org context:
 
 Each tool has: risk_level, requires_approval, audit flag.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -28,10 +29,11 @@ _log = structlog.get_logger(__name__)
 @dataclass
 class OrgToolSpec:
     """Specification for an org-level tool."""
+
     name: str
     description: str
-    risk: str              # low | medium | high | critical
-    approval: bool | str   # False | True | "always" | "L3+"
+    risk: str  # low | medium | high | critical
+    approval: bool | str  # False | True | "always" | "L3+"
     audit: bool = False
     rate_limit_per_hour: int = 100
     requires_scope: str = "orgs:read"
@@ -43,70 +45,87 @@ ORG_TOOL_DEFINITIONS: dict[str, OrgToolSpec] = {
     "org_memory_read": OrgToolSpec(
         name="org_memory_read",
         description="Read from org or department memory. Returns relevant memory items.",
-        risk="low", approval=False, audit=False,
+        risk="low",
+        approval=False,
+        audit=False,
         rate_limit_per_hour=200,
         requires_scope="orgs:read",
     ),
     "org_memory_write": OrgToolSpec(
         name="org_memory_write",
         description="Write a new lesson or fact to org/dept memory tier.",
-        risk="medium", approval=False, audit=True,
+        risk="medium",
+        approval=False,
+        audit=True,
         rate_limit_per_hour=50,
         requires_scope="missions:write",
     ),
     "cross_dept_message": OrgToolSpec(
         name="cross_dept_message",
         description="Send a message or work artifact to another department.",
-        risk="low", approval=False, audit=True,
+        risk="low",
+        approval=False,
+        audit=True,
         rate_limit_per_hour=30,
         requires_scope="missions:write",
     ),
     "task_delegate": OrgToolSpec(
         name="task_delegate",
         description="Delegate a sub-task to another agent or department.",
-        risk="medium", approval=False,
+        risk="medium",
+        approval=False,
         rate_limit_per_hour=20,
         requires_scope="missions:write",
     ),
     "approval_request": OrgToolSpec(
         name="approval_request",
         description="Request human approval before executing a high-risk action.",
-        risk="high", approval="always", audit=True,
+        risk="high",
+        approval="always",
+        audit=True,
         rate_limit_per_hour=10,
         requires_scope="approve",
     ),
     "org_knowledge_search": OrgToolSpec(
         name="org_knowledge_search",
         description="Search the org's knowledge base for relevant information.",
-        risk="low", approval=False,
+        risk="low",
+        approval=False,
         rate_limit_per_hour=200,
         requires_scope="orgs:read",
     ),
     "budget_check": OrgToolSpec(
         name="budget_check",
         description="Check remaining budget for this mission or department.",
-        risk="low", approval=False,
+        risk="low",
+        approval=False,
         rate_limit_per_hour=100,
         requires_scope="orgs:read",
     ),
     "compliance_check": OrgToolSpec(
         name="compliance_check",
         description="Validate a proposed action against org policies and GDPR/SOC2.",
-        risk="low", approval=False, audit=True,
+        risk="low",
+        approval=False,
+        audit=True,
         rate_limit_per_hour=100,
         requires_scope="orgs:read",
     ),
     "performance_record": OrgToolSpec(
         name="performance_record",
         description="Record agent task performance score for reputation tracking.",
-        risk="low", approval=False, audit=True,
+        risk="low",
+        approval=False,
+        audit=True,
         rate_limit_per_hour=50,
         requires_scope="missions:write",
     ),
     "artifact_store": OrgToolSpec(
         name="artifact_store",
         description="Store and version a mission artifact (document, code, report).",
-        risk="medium", approval=False, audit=True,
+        risk="medium",
+        approval=False,
+        audit=True,
         rate_limit_per_hour=30,
         requires_scope="missions:write",
     ),
@@ -122,8 +141,7 @@ def list_tools_for_risk(max_risk: str = "medium") -> list[str]:
     order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
     threshold = order.get(max_risk, 1)
     return [
-        name for name, spec in ORG_TOOL_DEFINITIONS.items()
-        if order.get(spec.risk, 99) <= threshold
+        name for name, spec in ORG_TOOL_DEFINITIONS.items() if order.get(spec.risk, 99) <= threshold
     ]
 
 
@@ -144,18 +162,19 @@ def tool_allowed_for_autonomy(tool_name: str, autonomy_level: int) -> bool:
 
 # ── MCP tool schema generator ─────────────────────────────────────────────────
 
+
 def to_mcp_tool_schema(spec: OrgToolSpec) -> dict[str, Any]:
     """Convert OrgToolSpec to MCP tool definition format."""
     return {
-        "name":         spec.name,
-        "description":  spec.description,
+        "name": spec.name,
+        "description": spec.description,
         "inputSchema": {
             "type": "object",
             "properties": {
-                "org_id":    {"type": "string", "description": "Organization ID"},
-                "query":     {"type": "string", "description": "Query or content"},
-                "dept_id":   {"type": "string", "description": "Department ID (optional)"},
-                "mission_id":{"type": "string", "description": "Mission ID (optional)"},
+                "org_id": {"type": "string", "description": "Organization ID"},
+                "query": {"type": "string", "description": "Query or content"},
+                "dept_id": {"type": "string", "description": "Department ID (optional)"},
+                "mission_id": {"type": "string", "description": "Mission ID (optional)"},
             },
             "required": ["org_id"],
         },

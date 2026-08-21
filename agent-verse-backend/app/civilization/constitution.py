@@ -1,4 +1,5 @@
 """Constitution — pure policy evaluator. Zero I/O. Fully unit-testable."""
+
 from __future__ import annotations
 
 from app.civilization.models import (
@@ -20,9 +21,7 @@ def evaluate_spawn(ctx: SpawnContext, constitution: Constitution) -> SpawnVerdic
 
     # Depth check
     if ctx.depth >= constitution.max_depth:
-        reasons.append(
-            f"depth {ctx.depth} >= max_depth {constitution.max_depth}"
-        )
+        reasons.append(f"depth {ctx.depth} >= max_depth {constitution.max_depth}")
 
     # Total agents check
     if ctx.current_total_agents >= constitution.max_total_agents:
@@ -49,9 +48,7 @@ def evaluate_spawn(ctx: SpawnContext, constitution: Constitution) -> SpawnVerdic
     child_budget = constitution.compute_child_budget(ctx.parent_budget_usd, ctx.depth)
     remaining = constitution.total_budget_usd - ctx.civilization_budget_spent_usd
     if child_budget > remaining:
-        reasons.append(
-            f"child_budget ${child_budget:.4f} > remaining ${remaining:.4f}"
-        )
+        reasons.append(f"child_budget ${child_budget:.4f} > remaining ${remaining:.4f}")
 
     snapshot = {
         "depth": ctx.depth,
@@ -113,8 +110,6 @@ def evaluate_breach(ctx: BreachContext, constitution: Constitution) -> BreachVer
         )
 
     if ctx.total_agents > constitution.max_total_agents:
-        reasons.append(
-            f"total agents {ctx.total_agents} > max {constitution.max_total_agents}"
-        )
+        reasons.append(f"total agents {ctx.total_agents} > max {constitution.max_total_agents}")
 
     return BreachVerdict(breached=bool(reasons), reasons=reasons)

@@ -4,6 +4,7 @@ Environment:
   FRESHSERVICE_DOMAIN:  Freshservice subdomain (e.g. 'mycompany')
   FRESHSERVICE_API_KEY: API key
 """
+
 from __future__ import annotations
 
 import base64

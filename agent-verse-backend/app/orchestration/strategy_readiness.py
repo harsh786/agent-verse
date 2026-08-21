@@ -120,4 +120,3 @@ class ReadinessEvaluator:
                 degraded.append(f"{dependency_id}:{result.reason}")
 
         return ReadinessDecision(not blocking, tuple(blocking), tuple(degraded), now)
-

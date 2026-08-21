@@ -1,6 +1,8 @@
 """ToolTrace — per-goal observability trace for tool calls."""
+
 from __future__ import annotations
-from dataclasses import dataclass, field
+
+from dataclasses import dataclass
 from typing import Any
 
 

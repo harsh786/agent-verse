@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import enum
 import re
 from dataclasses import dataclass
@@ -27,28 +28,46 @@ class FailureResult:
 
 
 _PATTERNS: list[tuple[FailureClass, re.Pattern[str]]] = [
-    (FailureClass.AUTH_FAILURE,
-     re.compile(r"(?i)(401|unauthorized|invalid api key|authentication failed)")),
-    (FailureClass.RATE_LIMIT,
-     re.compile(r"(?i)(429|rate limit|too many requests|throttl)")),
-    (FailureClass.TIMEOUT,
-     re.compile(r"(?i)(timeout|timed out|deadline exceeded)")),
-    (FailureClass.TOOL_UNAVAILABLE,
-     re.compile(r"(?i)(connection error|tool.*not.*respond|service unavailable|503)")),
-    (FailureClass.PROVIDER_UNAVAILABLE,
-     re.compile(r"(?i)(provider.*unavailable|llm.*down|openai.*error|anthropic.*error)")),
-    (FailureClass.CONTEXT_GAP,
-     re.compile(r"(?i)(insufficient data|cannot determine|lack of context|not found|more context)")),
-    (FailureClass.POLICY_REJECTION,
-     re.compile(r"(?i)(policy.*denied|policyengine|denied by policy|not allowed)")),
-    (FailureClass.SAFETY_VIOLATION,
-     re.compile(r"(?i)(guardrail|injection detected|safety violation|blocked by)")),
-    (FailureClass.MISSING_CREDENTIAL,
-     re.compile(r"(?i)(missing.*credential|no.*api key|credential not found)")),
-    (FailureClass.USER_AMBIGUITY,
-     re.compile(r"(?i)(ambiguous|requires clarification|unclear goal|do the thing)")),
-    (FailureClass.CODE_TEST_FAILURE,
-     re.compile(r"(?i)(test.*fail|assertion error|syntax error|compilation error)")),
+    (
+        FailureClass.AUTH_FAILURE,
+        re.compile(r"(?i)(401|unauthorized|invalid api key|authentication failed)"),
+    ),
+    (FailureClass.RATE_LIMIT, re.compile(r"(?i)(429|rate limit|too many requests|throttl)")),
+    (FailureClass.TIMEOUT, re.compile(r"(?i)(timeout|timed out|deadline exceeded)")),
+    (
+        FailureClass.TOOL_UNAVAILABLE,
+        re.compile(r"(?i)(connection error|tool.*not.*respond|service unavailable|503)"),
+    ),
+    (
+        FailureClass.PROVIDER_UNAVAILABLE,
+        re.compile(r"(?i)(provider.*unavailable|llm.*down|openai.*error|anthropic.*error)"),
+    ),
+    (
+        FailureClass.CONTEXT_GAP,
+        re.compile(
+            r"(?i)(insufficient data|cannot determine|lack of context|not found|more context)"
+        ),
+    ),
+    (
+        FailureClass.POLICY_REJECTION,
+        re.compile(r"(?i)(policy.*denied|policyengine|denied by policy|not allowed)"),
+    ),
+    (
+        FailureClass.SAFETY_VIOLATION,
+        re.compile(r"(?i)(guardrail|injection detected|safety violation|blocked by)"),
+    ),
+    (
+        FailureClass.MISSING_CREDENTIAL,
+        re.compile(r"(?i)(missing.*credential|no.*api key|credential not found)"),
+    ),
+    (
+        FailureClass.USER_AMBIGUITY,
+        re.compile(r"(?i)(ambiguous|requires clarification|unclear goal|do the thing)"),
+    ),
+    (
+        FailureClass.CODE_TEST_FAILURE,
+        re.compile(r"(?i)(test.*fail|assertion error|syntax error|compilation error)"),
+    ),
 ]
 
 

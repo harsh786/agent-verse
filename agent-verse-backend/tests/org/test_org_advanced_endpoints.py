@@ -98,6 +98,7 @@ def _fake_team() -> MagicMock:
     m.id = uuid.UUID(TEAM_ID)
     m.name = "Alpha Team"
     m.metadata = {}
+    m.extra_data = {}
     return m
 
 
@@ -129,6 +130,7 @@ def mock_svc() -> MagicMock:
     svc.list_departments    = AsyncMock(return_value=[_fake_dept()])
     svc.get_team            = AsyncMock(return_value=_fake_team())
     svc.update_team         = AsyncMock(return_value=_fake_team())
+    svc.get_team_member_profiles = AsyncMock(return_value=[])
     return svc
 
 
@@ -218,6 +220,66 @@ async def test_work_discovery_returns_items(client: AsyncClient) -> None:
 @pytest.mark.anyio
 async def test_work_discovery_with_health_issues(client: AsyncClient, mock_svc: MagicMock) -> None:
     """Work discovery returns items when health shows problems."""
+
+
+# ── Mission execute + team materialization ───────────────────────────────────
+
+@pytest.mark.anyio
+async def test_mission_execute_returns_team_and_agents(
+    client: AsyncClient,
+    mock_svc: MagicMock,
+) -> None:
+    """POST /missions/execute includes materialized team + agents in response."""
+    mission = MagicMock()
+    mission.id = uuid.uuid4()
+    mission.title = "Launch DACH market"
+    mission.status = "active"
+
+    mock_svc.create_mission_and_execute = AsyncMock(return_value=(mission, {
+        "goal_id": "goal-123",
+        "topology": "hierarchical",
+        "departments": ["executive", "engineering", "research"],
+        "agent_count": 4,
+        "autonomy_level": 3,
+        "estimated_cost_usd": 2.75,
+        "team_id": "team-xyz",
+        "agent_ids": ["a-1", "a-2", "a-3", "a-4"],
+    }))
+
+    resp = await client.post(f"/v1/org/{ORG_ID}/missions/execute", json={
+        "title": "Launch DACH market",
+        "objective": "Ship entry strategy and execution plan",
+        "priority": "high",
+    })
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["team_id"] == "team-xyz"
+    assert data["agent_ids"] == ["a-1", "a-2", "a-3", "a-4"]
+
+
+@pytest.mark.anyio
+async def test_team_members_endpoint_returns_profiles(
+    client: AsyncClient,
+    mock_svc: MagicMock,
+) -> None:
+    """GET /teams/{team_id}/members returns resolved agent member profiles."""
+    team = _fake_team()
+    team.member_agent_ids = ["a-1", "a-2"]
+    mock_svc.get_team = AsyncMock(return_value=team)
+    mock_svc.get_team_member_profiles = AsyncMock(return_value=[
+        {"id": "a-1", "name": "Agent 1", "status": "executing", "role": "Mission specialist"},
+        {"id": "a-2", "name": "Agent 2", "status": "idle", "role": "Mission specialist"},
+    ])
+
+    resp = await client.get(f"/v1/org/{ORG_ID}/teams/{TEAM_ID}/members")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["team_id"] == TEAM_ID
+    assert data["member_ids"] == ["a-1", "a-2"]
+    assert "members" in data
+    assert len(data["members"]) == 2
+    assert data["members"][0]["id"] == "a-1"
     mock_svc.get_org_health = AsyncMock(return_value={
         **_fake_health(),
         "task_counts": {"failed": 3, "blocked": 5},

@@ -107,9 +107,7 @@ class DurableConsensusRuntime:
                 return await self._escalate(state, "deadline_exceeded")
             try:
                 raw = await invoke(verify, verifier_id)
-                vote = ConsensusVote.model_validate(
-                    {"verifier_id": verifier_id, **dict(raw)}
-                )
+                vote = ConsensusVote.model_validate({"verifier_id": verifier_id, **dict(raw)})
             except Exception as exc:
                 vote = ConsensusVote(
                     verifier_id=verifier_id,
@@ -161,9 +159,7 @@ class DurableConsensusRuntime:
         await self._store.save(completed_state)
         return completed_state
 
-    async def _escalate(
-        self, state: DurableConsensusState, reason: str
-    ) -> DurableConsensusState:
+    async def _escalate(self, state: DurableConsensusState, reason: str) -> DurableConsensusState:
         escalated = state.model_copy(
             update={
                 "phase": "escalated",

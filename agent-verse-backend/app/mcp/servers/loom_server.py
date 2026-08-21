@@ -3,6 +3,7 @@
 Environment:
   LOOM_API_KEY: Loom API key
 """
+
 from __future__ import annotations
 
 import os
@@ -161,8 +162,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "folders": [
-                        {"id": f.get("id"), "name": f.get("name")}
-                        for f in data.get("data", [])
+                        {"id": f.get("id"), "name": f.get("name")} for f in data.get("data", [])
                     ]
                 }
 

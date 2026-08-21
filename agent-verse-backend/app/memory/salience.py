@@ -9,6 +9,7 @@ recency     : exponential decay of age since last access
 relevance   : cosine-like TF-IDF overlap between query and memory content
 access_freq : logarithmic boost for memories accessed many times
 """
+
 from __future__ import annotations
 
 import math
@@ -20,10 +21,32 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     pass
 
-_STOP_WORDS: frozenset[str] = frozenset({
-    "the", "a", "an", "is", "it", "in", "on", "at", "to", "of", "and", "or",
-    "for", "with", "that", "this", "was", "are", "be", "by", "as", "from",
-})
+_STOP_WORDS: frozenset[str] = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "is",
+        "it",
+        "in",
+        "on",
+        "at",
+        "to",
+        "of",
+        "and",
+        "or",
+        "for",
+        "with",
+        "that",
+        "this",
+        "was",
+        "are",
+        "be",
+        "by",
+        "as",
+        "from",
+    }
+)
 
 # Half-life for recency decay in hours (memories lose half relevance every N hours)
 _RECENCY_HALF_LIFE_HOURS: float = 168.0  # 7 days
@@ -64,16 +87,18 @@ class SalienceScorer:
         self._fw = frequency_weight
         self._half_life = half_life_hours
 
-    def score(self, content: str, query: str, access_count: int = 1, last_accessed_at: datetime | None = None) -> float:
+    def score(
+        self,
+        content: str,
+        query: str,
+        access_count: int = 1,
+        last_accessed_at: datetime | None = None,
+    ) -> float:
         """Return a salience score in [0, 1]."""
         recency = self._recency_score(last_accessed_at)
         relevance = self._relevance_score(query, content)
         frequency = self._frequency_score(access_count)
-        raw = (
-            self._rw * recency
-            + self._rv * relevance
-            + self._fw * frequency
-        )
+        raw = self._rw * recency + self._rv * relevance + self._fw * frequency
         return round(min(1.0, max(0.0, raw)), 4)
 
     def _recency_score(self, last_accessed_at: datetime | None) -> float:

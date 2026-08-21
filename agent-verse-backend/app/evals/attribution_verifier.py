@@ -4,6 +4,7 @@ For each citation in the answer, checks whether the cited chunk's text
 sufficiently overlaps with the part of the answer that references it.
 This catches hallucinations where citations are present but irrelevant.
 """
+
 from __future__ import annotations
 
 import re
@@ -85,10 +86,7 @@ class AttributionVerifier:
                 # Citation exists but no sentence refers to it — still verify against answer
                 citing_sentences = [answer[:300]]
 
-            max_score = max(
-                self._jaccard_score(sentence, chunk)
-                for sentence in citing_sentences
-            )
+            max_score = max(self._jaccard_score(sentence, chunk) for sentence in citing_sentences)
 
             if max_score >= self._threshold:
                 verified += 1
@@ -98,7 +96,9 @@ class AttributionVerifier:
                 unsupported.append(
                     f"Citation [{idx + 1}] has low overlap with cited chunk (jaccard={max_score:.3f})"
                 )
-                details.append({"citation": idx + 1, "valid": False, "jaccard": round(max_score, 3)})
+                details.append(
+                    {"citation": idx + 1, "valid": False, "jaccard": round(max_score, 3)}
+                )
 
         total = verified + failed
         precision = verified / max(total, 1)
@@ -129,6 +129,7 @@ class AttributionVerifier:
 
     def _jaccard_score(self, text_a: str, text_b: str) -> float:
         """Jaccard similarity of 4+-character word sets."""
+
         def tok(t: str) -> set[str]:
             return {w.lower() for w in re.findall(r"\b\w{4,}\b", t)}
 

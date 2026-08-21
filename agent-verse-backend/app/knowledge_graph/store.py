@@ -1,4 +1,5 @@
 """In-memory knowledge graph store with optional DB persistence."""
+
 from __future__ import annotations
 
 import asyncio
@@ -83,9 +84,7 @@ class KnowledgeGraphStore:
 
                 task = asyncio.ensure_future(self.load_from_db(tenant_id))
                 task.add_done_callback(
-                    lambda completed: completed.exception()
-                    if not completed.cancelled()
-                    else None
+                    lambda completed: completed.exception() if not completed.cancelled() else None
                 )
             except RuntimeError:
                 pass  # no event loop running (e.g. tests)
@@ -195,15 +194,15 @@ class KnowledgeGraphStore:
         communities = []
         for c in raw_communities:
             central = c.get("central_node", "")
-            label = (
-                self._nodes[central].label if central in self._nodes else "Community"
+            label = self._nodes[central].label if central in self._nodes else "Community"
+            communities.append(
+                {
+                    **c,
+                    "tenant_id": tenant_id,
+                    "name": f"Cluster: {label}",
+                    "summary": f"Connected component with {c['size']} nodes",
+                }
             )
-            communities.append({
-                **c,
-                "tenant_id": tenant_id,
-                "name": f"Cluster: {label}",
-                "summary": f"Connected component with {c['size']} nodes",
-            })
 
         return communities
 

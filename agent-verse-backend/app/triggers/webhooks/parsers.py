@@ -1,4 +1,5 @@
 """Typed webhook payload parsers for Phase 4."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

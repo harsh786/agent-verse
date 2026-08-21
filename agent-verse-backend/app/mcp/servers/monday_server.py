@@ -3,6 +3,7 @@
 Environment variables:
   MONDAY_API_KEY: monday.com personal API token
 """
+
 from __future__ import annotations
 
 import os
@@ -63,7 +64,7 @@ TOOL_DEFINITIONS = [
                 "group_id": {"type": "string", "description": "Group to add item to"},
                 "column_values": {
                     "type": "string",
-                    "description": "JSON string of column values, e.g. '{\"status\":{\"label\":\"Done\"}}'",
+                    "description": 'JSON string of column values, e.g. \'{"status":{"label":"Done"}}\'',
                 },
             },
             "required": ["board_id", "item_name"],
@@ -136,7 +137,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}

@@ -22,8 +22,20 @@ _JIRA_CONTEXT_TOKENS = frozenset({"jira", "atlassian"})
 
 _JIRA_READ_VERBS = frozenset(
     {
-        "get", "list", "search", "find", "fetch", "query", "show", "browse",
-        "describe", "count", "summary", "check", "view", "inspect",
+        "get",
+        "list",
+        "search",
+        "find",
+        "fetch",
+        "query",
+        "show",
+        "browse",
+        "describe",
+        "count",
+        "summary",
+        "check",
+        "view",
+        "inspect",
     }
 )
 
@@ -31,15 +43,33 @@ _JIRA_WRITE_LOW_VERBS = frozenset({"comment"})
 
 _JIRA_WRITE_HIGH_VERBS = frozenset(
     {
-        "assign", "create", "edit", "label", "labels", "merge", "resolve",
-        "sprint", "status", "transition", "update",
+        "assign",
+        "create",
+        "edit",
+        "label",
+        "labels",
+        "merge",
+        "resolve",
+        "sprint",
+        "status",
+        "transition",
+        "update",
     }
 )
 
 _JIRA_DESTRUCTIVE_VERBS = frozenset(
     {
-        "bulk", "close", "closed", "delete", "destroy", "done", "remove",
-        "terminate", "revoke", "purge", "wipe",
+        "bulk",
+        "close",
+        "closed",
+        "delete",
+        "destroy",
+        "done",
+        "remove",
+        "terminate",
+        "revoke",
+        "purge",
+        "wipe",
     }
 )
 

@@ -1,4 +1,5 @@
 """OpenAPI 3.x spec importer — creates MCP connector registrations + tool definitions."""
+
 from __future__ import annotations
 
 import json
@@ -9,13 +10,7 @@ from typing import Any
 def _to_tool_name(method: str, path: str) -> str:
     """Convert HTTP method + path to a valid snake_case tool name."""
     # Remove leading slash, replace / { } - with _
-    cleaned = (
-        path.lstrip("/")
-        .replace("/", "_")
-        .replace("{", "")
-        .replace("}", "")
-        .replace("-", "_")
-    )
+    cleaned = path.lstrip("/").replace("/", "_").replace("{", "").replace("}", "").replace("-", "_")
     return f"{method.lower()}_{cleaned}".rstrip("_")
 
 
@@ -34,6 +29,7 @@ def parse_openapi_spec(spec_text: str) -> dict[str, Any]:
     # Try YAML
     try:
         import yaml
+
         parsed = yaml.safe_load(spec_text)
         if not isinstance(parsed, dict):
             raise ValueError("OpenAPI spec must be a YAML/JSON object")
@@ -108,21 +104,23 @@ def extract_tools_from_spec(
                             required.append("body")
                     break  # Only use first media type
 
-            tools.append({
-                "id": uuid.uuid4().hex,
-                "tenant_id": tenant_id,
-                "connector_id": connector_id,
-                "tool_name": tool_name,
-                "description": description[:500],
-                "http_method": method.upper(),
-                "http_path": path,
-                "parameters_schema": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                },
-                "response_schema": None,
-            })
+            tools.append(
+                {
+                    "id": uuid.uuid4().hex,
+                    "tenant_id": tenant_id,
+                    "connector_id": connector_id,
+                    "tool_name": tool_name,
+                    "description": description[:500],
+                    "http_method": method.upper(),
+                    "http_path": path,
+                    "parameters_schema": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                    },
+                    "response_schema": None,
+                }
+            )
 
     return tools
 
@@ -141,6 +139,7 @@ async def persist_tools(
 
     from app.db.models.mcp import ToolCapability
     from app.db.rls import sqlalchemy_rls_context
+
     try:
         async with db_session_factory() as session, session.begin():
             async with sqlalchemy_rls_context(session, tenant_id):
@@ -160,6 +159,7 @@ async def persist_tools(
         return len(tools)
     except Exception as exc:
         import logging
+
         logging.getLogger(__name__).warning("persist_tools failed: %s", exc)
         return 0
 
@@ -186,7 +186,7 @@ async def import_and_register(
     Returns:
         {"server_id": ..., "tool_count": ...} or {"error": ..., "server_id": None}
     """
-    from app.mcp.registry import MCPServerConfig, AuthType
+    from app.mcp.registry import AuthType, MCPServerConfig
 
     # 1. Parse the spec
     try:
@@ -215,9 +215,7 @@ async def import_and_register(
     ]
 
     # 4. Build MCPServerConfig
-    auth_type = (
-        AuthType.API_KEY if auth_config and "api_key" in auth_config else AuthType.NONE
-    )
+    auth_type = AuthType.API_KEY if auth_config and "api_key" in auth_config else AuthType.NONE
     server_config = MCPServerConfig(
         server_id=server_id,
         name=server_name,

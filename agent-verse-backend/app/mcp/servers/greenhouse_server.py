@@ -3,6 +3,7 @@
 Environment:
   GREENHOUSE_API_KEY: Greenhouse Harvest API key
 """
+
 from __future__ import annotations
 
 import os
@@ -56,7 +57,10 @@ TOOL_DEFINITIONS = [
                 "last_name": {"type": "string"},
                 "email_addresses": {
                     "type": "array",
-                    "items": {"type": "object", "properties": {"value": {"type": "string"}, "type": {"type": "string"}}},
+                    "items": {
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}, "type": {"type": "string"}},
+                    },
                 },
                 "phone_numbers": {"type": "array", "items": {"type": "object"}},
                 "company": {"type": "string"},
@@ -142,7 +146,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "first_name": arguments["first_name"],
                     "last_name": arguments["last_name"],
                 }
-                for field in ("email_addresses", "phone_numbers", "company", "title", "website_addresses"):
+                for field in (
+                    "email_addresses",
+                    "phone_numbers",
+                    "company",
+                    "title",
+                    "website_addresses",
+                ):
                     if v := arguments.get(field):
                         payload[field] = v
                 r = await c.post(f"{BASE}/candidates", json=payload)

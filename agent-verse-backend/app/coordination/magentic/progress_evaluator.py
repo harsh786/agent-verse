@@ -10,9 +10,7 @@ def _new(current: tuple[str, ...], previous: tuple[str, ...]) -> bool:
     return bool(set(current) - set(previous))
 
 
-def evaluate_progress(
-    previous: LedgerRevision, current: LedgerRevision
-) -> ProgressAssessment:
+def evaluate_progress(previous: LedgerRevision, current: LedgerRevision) -> ProgressAssessment:
     accepted: list[str] = []
     newly_completed = set(current.completed_work) - set(previous.completed_work)
     if newly_completed and newly_completed <= set(previous.open_work):

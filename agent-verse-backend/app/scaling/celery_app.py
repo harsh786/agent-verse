@@ -1,4 +1,5 @@
 """Celery application — task queues for goals, schedules, and maintenance."""
+
 from __future__ import annotations
 
 import os
@@ -247,6 +248,7 @@ celery_app.conf.update(
 # Requires: pip install celery-redbeat
 try:
     import redbeat  # type: ignore[import]  # noqa: F401
+
     celery_app.conf.beat_scheduler = "redbeat.RedBeatScheduler"
     celery_app.conf.redbeat_redis_url = REDIS_URL
     celery_app.conf.redbeat_lock_key = "agentverse:beat:lock"

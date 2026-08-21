@@ -16,15 +16,12 @@ OrgSimulationEngine:
     simulate_full     — replay similar missions with reputation adjustments
     chaos_test        — simulate failure scenarios
 """
+
 from __future__ import annotations
 
-import asyncio
 import random
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
-from typing import Any
 
-import structlog
 from opentelemetry import trace
 
 from app.observability.logging import get_logger
@@ -35,29 +32,30 @@ _tracer = trace.get_tracer(__name__)
 
 # ── OrgLoopDetector (SUPPLEMENT G) ────────────────────────────────────────────
 
+
 @dataclass
 class LoopPattern:
     pattern_id: str
-    detect: str           # detection strategy
+    detect: str  # detection strategy
     threshold: int | float
 
 
 LOOP_PATTERNS: dict[str, LoopPattern] = {
-    "agent_pingpong":     LoopPattern("agent_pingpong",     "circular_delegation",   3),
-    "duplicate_tasks":    LoopPattern("duplicate_tasks",    "semantic_similarity",   0.92),
-    "stalled_approval":   LoopPattern("stalled_approval",   "timeout_hours",         4),
-    "cost_runaway":       LoopPattern("cost_runaway",       "spend_vs_budget",        3.0),
-    "agent_obsession":    LoopPattern("agent_obsession",    "repeated_tool_calls",   5),
-    "circular_dep":       LoopPattern("circular_dep",       "dep_cycle",             1),
-    "infinite_replan":    LoopPattern("infinite_replan",    "replan_count",          3),
+    "agent_pingpong": LoopPattern("agent_pingpong", "circular_delegation", 3),
+    "duplicate_tasks": LoopPattern("duplicate_tasks", "semantic_similarity", 0.92),
+    "stalled_approval": LoopPattern("stalled_approval", "timeout_hours", 4),
+    "cost_runaway": LoopPattern("cost_runaway", "spend_vs_budget", 3.0),
+    "agent_obsession": LoopPattern("agent_obsession", "repeated_tool_calls", 5),
+    "circular_dep": LoopPattern("circular_dep", "dep_cycle", 1),
+    "infinite_replan": LoopPattern("infinite_replan", "replan_count", 3),
 }
 
 EXECUTION_BUDGETS = {
-    "max_steps_per_task":            50,
-    "max_tool_calls_per_step":       10,
-    "max_replans_per_task":          3,
-    "max_delegation_depth":          4,
-    "max_task_duration_hours":       4,
+    "max_steps_per_task": 50,
+    "max_tool_calls_per_step": 10,
+    "max_replans_per_task": 3,
+    "max_delegation_depth": 4,
+    "max_task_duration_hours": 4,
     "max_concurrent_agents_per_mission": 50,
     "max_cross_dept_messages_per_hour": 100,
 }
@@ -78,9 +76,9 @@ class OrgLoopDetector:
     """
 
     def __init__(self) -> None:
-        self._delegation_chains: dict[str, list[str]] = {}   # agent_id → [delegated_to]
-        self._tool_call_counts:  dict[str, dict[str, int]] = {}  # agent_id → {tool: count}
-        self._replan_counts:     dict[str, int] = {}          # task_id → count
+        self._delegation_chains: dict[str, list[str]] = {}  # agent_id → [delegated_to]
+        self._tool_call_counts: dict[str, dict[str, int]] = {}  # agent_id → {tool: count}
+        self._replan_counts: dict[str, int] = {}  # task_id → count
 
     def check_delegation(self, from_agent: str, to_agent: str) -> LoopDetection:
         """Detect circular delegation (agent A → B → C → A)."""
@@ -135,7 +133,7 @@ class OrgLoopDetector:
             return LoopDetection(
                 detected=True,
                 pattern="cost_runaway",
-                details=f"Spent ${spent_usd:.2f} vs budget ${budget_usd:.2f} ({spent_usd/budget_usd:.1f}x)",
+                details=f"Spent ${spent_usd:.2f} vs budget ${budget_usd:.2f} ({spent_usd / budget_usd:.1f}x)",
                 recommended_action="pause_and_alert",
             )
         return LoopDetection(detected=False)
@@ -147,6 +145,7 @@ class OrgLoopDetector:
 
 
 # ── OrgSimulationEngine (SUPPLEMENT I) ────────────────────────────────────────
+
 
 @dataclass
 class MissionEstimate:
@@ -215,7 +214,7 @@ class OrgSimulationEngine:
             complexity = len(depts)
             agents = max(2, complexity * 3)
             duration = max(2.0, complexity * 8.0)
-            cost = agents * duration * 0.05   # $0.05/agent-hour estimate
+            cost = agents * duration * 0.05  # $0.05/agent-hour estimate
             risk = "high" if complexity >= 4 else ("medium" if complexity >= 2 else "low")
             confidence = max(0.50, 0.90 - (complexity * 0.05))
 
@@ -243,8 +242,7 @@ class OrgSimulationEngine:
             goal = mission.get("goal", "")
             agents = team.get("agents", [])
             avg_reputation = (
-                sum(a.get("reputation", 0.8) for a in agents) / len(agents)
-                if agents else 0.8
+                sum(a.get("reputation", 0.8) for a in agents) / len(agents) if agents else 0.8
             )
             estimate = await self.estimate_mission(goal)
             # Adjust by agent reputation
@@ -291,9 +289,12 @@ class OrgSimulationEngine:
                 can_auto_recover=True,
             ),
         }
-        return scenarios.get(failure_scenario, ChaosResult(
-            scenario=failure_scenario,
-            impact="Unknown impact",
-            recovery_strategy="Manual intervention required",
-            can_auto_recover=False,
-        ))
+        return scenarios.get(
+            failure_scenario,
+            ChaosResult(
+                scenario=failure_scenario,
+                impact="Unknown impact",
+                recovery_strategy="Manual intervention required",
+                can_auto_recover=False,
+            ),
+        )

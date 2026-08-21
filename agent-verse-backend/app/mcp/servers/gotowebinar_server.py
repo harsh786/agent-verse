@@ -4,6 +4,7 @@ Environment:
   GOTOWEBINAR_ACCESS_TOKEN: OAuth2 access token for GoToWebinar API
   GOTOWEBINAR_ORGANIZER_KEY: Organizer key for the GoToWebinar account
 """
+
 from __future__ import annotations
 
 import os
@@ -23,7 +24,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "from_time": {"type": "string", "description": "Start time filter in ISO 8601 format"},
+                "from_time": {
+                    "type": "string",
+                    "description": "Start time filter in ISO 8601 format",
+                },
                 "to_time": {"type": "string", "description": "End time filter in ISO 8601 format"},
                 "page": {"type": "integer", "description": "Page number for pagination"},
                 "size": {"type": "integer", "description": "Results per page"},
@@ -37,13 +41,19 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "subject": {"type": "string", "description": "Title of the webinar"},
-                "description": {"type": "string", "description": "Description of the webinar content"},
+                "description": {
+                    "type": "string",
+                    "description": "Description of the webinar content",
+                },
                 "times": {
                     "type": "array",
                     "description": "Array of scheduled time blocks with startTime and endTime",
                     "items": {"type": "object"},
                 },
-                "timezone": {"type": "string", "description": "Timezone for the webinar (e.g. America/New_York)"},
+                "timezone": {
+                    "type": "string",
+                    "description": "Timezone for the webinar (e.g. America/New_York)",
+                },
             },
             "required": ["subject", "times"],
         },
@@ -93,7 +103,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "webinar_key": {"type": "string", "description": "Unique webinar key to cancel"},
-                "send_cancellation_emails": {"type": "boolean", "description": "Send cancellation emails to registrants"},
+                "send_cancellation_emails": {
+                    "type": "boolean",
+                    "description": "Send cancellation emails to registrants",
+                },
             },
             "required": ["webinar_key"],
         },
@@ -187,7 +200,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "gotowebinar_cancel_webinar":
                 webinar_key = arguments["webinar_key"]
-                params = {"sendCancellationEmails": str(arguments.get("send_cancellation_emails", True)).lower()}
+                params = {
+                    "sendCancellationEmails": str(
+                        arguments.get("send_cancellation_emails", True)
+                    ).lower()
+                }
                 r = await client.delete(
                     f"{BASE_URL}/organizers/{organizer_key}/webinars/{webinar_key}",
                     headers=headers,

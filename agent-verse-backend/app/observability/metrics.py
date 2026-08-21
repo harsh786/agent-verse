@@ -20,13 +20,9 @@ _logger = _get_logger(__name__)
 
 # A dedicated registry keeps test isolation clean and avoids clobbering the global default.
 REGISTRY = CollectorRegistry()
-_LABEL_CATEGORIES = frozenset(
-    {"jira", "rpa", "confluence", "email", "policy", "rag", "unknown"}
-)
+_LABEL_CATEGORIES = frozenset({"jira", "rpa", "confluence", "email", "policy", "rag", "unknown"})
 _QUEUE_LABELS = frozenset({"goals", "schedules", "maintenance", "default", "unknown"})
-_PROVIDER_LABELS = frozenset(
-    {"openai", "azure_openai", "anthropic", "google", "local", "unknown"}
-)
+_PROVIDER_LABELS = frozenset({"openai", "azure_openai", "anthropic", "google", "local", "unknown"})
 _PROVIDER_LABEL_ALIASES = {
     "azure": "azure_openai",
     "azure-openai": "azure_openai",
@@ -44,9 +40,7 @@ _MODEL_HINTS = (
     ("embedding", frozenset({"embedding", "embed"})),
     ("local", frozenset({"local", "ollama"})),
 )
-_TOKEN_TYPE_LABELS = frozenset(
-    {"prompt", "completion", "cached", "reasoning", "total", "unknown"}
-)
+_TOKEN_TYPE_LABELS = frozenset({"prompt", "completion", "cached", "reasoning", "total", "unknown"})
 _TOKEN_TYPE_LABEL_ALIASES = {
     "input": "prompt",
     "output": "completion",
@@ -200,17 +194,44 @@ _STRATEGY_FAMILIES = frozenset(
 )
 _STRATEGIES = frozenset(
     {
-        "react", "plan_and_execute", "parallel_execution", "reflection", "reflexion",
-        "tree_of_thoughts", "graph_of_thoughts", "least_to_most", "rewoo",
-        "program_of_thought", "codeact", "constitutional_ai", "babyagi", "autogpt",
-        "voyager", "magentic_one", "mixture_of_agents", "camel", "generative_agents",
-        "decentralized_swarm", "market_auction", "unknown",
+        "react",
+        "plan_and_execute",
+        "parallel_execution",
+        "reflection",
+        "reflexion",
+        "tree_of_thoughts",
+        "graph_of_thoughts",
+        "least_to_most",
+        "rewoo",
+        "program_of_thought",
+        "codeact",
+        "constitutional_ai",
+        "babyagi",
+        "autogpt",
+        "voyager",
+        "magentic_one",
+        "mixture_of_agents",
+        "camel",
+        "generative_agents",
+        "decentralized_swarm",
+        "market_auction",
+        "unknown",
     }
 )
 _COORDINATION_EVENTS = frozenset(
     {
-        "session", "handoff", "message", "speaker", "claim", "ledger", "bid",
-        "allocation", "checkpoint", "fallback", "outbox", "unknown",
+        "session",
+        "handoff",
+        "message",
+        "speaker",
+        "claim",
+        "ledger",
+        "bid",
+        "allocation",
+        "checkpoint",
+        "fallback",
+        "outbox",
+        "unknown",
     }
 )
 
@@ -275,8 +296,13 @@ def render_metrics() -> tuple[bytes, str]:
 
 
 def record_strategy_execution(
-    *, family: str, strategy: str, status: str, duration_seconds: float,
-    cost_usd: float, tokens: int,
+    *,
+    family: str,
+    strategy: str,
+    status: str,
+    duration_seconds: float,
+    cost_usd: float,
+    tokens: int,
 ) -> None:
     """Record a strategy outcome without accepting cardinality-bearing identifiers."""
     family_label = _normalize_exact_label(family, _STRATEGY_FAMILIES)
@@ -302,6 +328,7 @@ def record_coordination_event(event: str, status: str) -> None:
 
 
 # ── Recording helpers ─────────────────────────────────────────────────────────
+
 
 @asynccontextmanager
 async def track_tool_call(
@@ -374,9 +401,7 @@ def _normalize_model_label(model: str) -> str:
     return "unknown"
 
 
-def record_goal_duration(
-    status: str, duration_seconds: float, priority: str = "normal"
-) -> None:
+def record_goal_duration(status: str, duration_seconds: float, priority: str = "normal") -> None:
     """Record terminal goal count and duration without tenant labels."""
     priority_label = _normalize_priority_label(priority)
     status_label = _normalize_status_label(status)
@@ -405,21 +430,15 @@ def record_tool_call(
 
 def record_queue_depth(queue: str, depth: float) -> None:
     """Record current queue depth using a bounded queue label."""
-    QUEUE_DEPTH.labels(queue=_normalize_exact_label(queue, _QUEUE_LABELS)).set(
-        _non_negative(depth)
-    )
+    QUEUE_DEPTH.labels(queue=_normalize_exact_label(queue, _QUEUE_LABELS)).set(_non_negative(depth))
 
 
 def record_llm_tokens(provider: str, model: str, token_type: str, count: int) -> None:
     """Record LLM token usage without exposing raw provider or model strings."""
     LLM_TOKENS_TOTAL.labels(
-        provider=_normalize_exact_label(
-            provider, _PROVIDER_LABELS, _PROVIDER_LABEL_ALIASES
-        ),
+        provider=_normalize_exact_label(provider, _PROVIDER_LABELS, _PROVIDER_LABEL_ALIASES),
         model=_normalize_model_label(model),
-        type=_normalize_exact_label(
-            token_type, _TOKEN_TYPE_LABELS, _TOKEN_TYPE_LABEL_ALIASES
-        ),
+        type=_normalize_exact_label(token_type, _TOKEN_TYPE_LABELS, _TOKEN_TYPE_LABEL_ALIASES),
     ).inc(_non_negative(float(count)))
 
 
@@ -473,9 +492,9 @@ def record_verify_duration(seconds: float) -> None:
 
 
 def record_queue_wait(priority: str, seconds: float) -> None:
-    QUEUE_WAIT_DURATION.labels(
-        priority=_normalize_priority_label(priority)
-    ).observe(max(0.0, seconds))
+    QUEUE_WAIT_DURATION.labels(priority=_normalize_priority_label(priority)).observe(
+        max(0.0, seconds)
+    )
 
 
 def record_desired_workers(plan: str, count: int) -> None:
@@ -494,6 +513,7 @@ def record_desired_workers(plan: str, count: int) -> None:
 def record_prompt_tokens_saved(amount: int) -> None:
     """Record how many tokens were saved by prompt compression."""
     import contextlib
+
     with contextlib.suppress(Exception):
         PROMPT_TOKENS_SAVED_TOTAL.inc(max(0, amount))
 

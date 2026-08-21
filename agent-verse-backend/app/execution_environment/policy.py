@@ -15,6 +15,7 @@ Rules evaluated (fail-closed — first matching DENY wins):
 7. Resource limit sanity: memory_mb must be > 0.
 8. Resource limit upper bounds enforced to prevent resource exhaustion.
 """
+
 from __future__ import annotations
 
 import logging
@@ -30,8 +31,8 @@ from app.execution_environment.models import (
 logger = logging.getLogger(__name__)
 
 # Hard caps — tenants cannot exceed these even with explicit envelope fields.
-_MAX_WALL_CLOCK_SECONDS = 3600 * 6    # 6 hours
-_MAX_MEMORY_MB = 16_384               # 16 GiB
+_MAX_WALL_CLOCK_SECONDS = 3600 * 6  # 6 hours
+_MAX_MEMORY_MB = 16_384  # 16 GiB
 
 
 @dataclass
@@ -133,6 +134,8 @@ def evaluate_policy(envelope: ExecutionEnvelope) -> PolicyDecision:
 
     logger.debug(
         "isolated_policy_allowed tenant=%s goal=%s runner=%s",
-        envelope.tenant_id, envelope.goal_id, envelope.spec.runner_type,
+        envelope.tenant_id,
+        envelope.goal_id,
+        envelope.spec.runner_type,
     )
     return PolicyDecision(allowed=True)

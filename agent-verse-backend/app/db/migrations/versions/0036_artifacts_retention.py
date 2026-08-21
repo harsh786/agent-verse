@@ -1,5 +1,6 @@
 # app/db/migrations/versions/0036_artifacts_retention.py
 """Create artifacts table with retention policy support."""
+
 from alembic import op
 
 revision = "0036"
@@ -22,9 +23,15 @@ def upgrade() -> None:
             created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
     """)
-    op.execute("CREATE INDEX IF NOT EXISTS ix_artifacts_tenant ON artifacts (tenant_id, created_at DESC)")
-    op.execute("CREATE INDEX IF NOT EXISTS ix_artifacts_goal ON artifacts (goal_id) WHERE goal_id != ''")
-    op.execute("CREATE INDEX IF NOT EXISTS ix_artifacts_expires ON artifacts (expires_at) WHERE expires_at IS NOT NULL")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_artifacts_tenant ON artifacts (tenant_id, created_at DESC)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_artifacts_goal ON artifacts (goal_id) WHERE goal_id != ''"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_artifacts_expires ON artifacts (expires_at) WHERE expires_at IS NOT NULL"
+    )
 
 
 def downgrade() -> None:

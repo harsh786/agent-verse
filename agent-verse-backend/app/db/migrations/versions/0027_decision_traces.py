@@ -23,7 +23,9 @@ def upgrade() -> None:
         )
     """)
     op.execute("CREATE INDEX IF NOT EXISTS ix_decision_traces_goal_id ON decision_traces (goal_id)")
-    op.execute("CREATE INDEX IF NOT EXISTS ix_decision_traces_tenant_id ON decision_traces (tenant_id)")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_decision_traces_tenant_id ON decision_traces (tenant_id)"
+    )
     op.execute("ALTER TABLE decision_traces ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE decision_traces FORCE ROW LEVEL SECURITY")
     op.execute("DROP POLICY IF EXISTS decision_traces_tenant_isolation ON decision_traces")

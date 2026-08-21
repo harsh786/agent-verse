@@ -16,17 +16,13 @@ branch_labels = None
 depends_on = None
 
 
-def _json(
-    name: str, *, nullable: bool = False, list_default: bool = False
-) -> sa.Column[object]:
+def _json(name: str, *, nullable: bool = False, list_default: bool = False) -> sa.Column[object]:
     return sa.Column(
         name,
         postgresql.JSONB(),
         nullable=nullable,
         server_default=(
-            None
-            if nullable
-            else sa.text("'[]'::jsonb" if list_default else "'{}'::jsonb")
+            None if nullable else sa.text("'[]'::jsonb" if list_default else "'{}'::jsonb")
         ),
     )
 
@@ -89,13 +85,26 @@ def downgrade() -> None:
     op.drop_index("ix_handoffs_tenant_session_state", table_name="handoffs")
     op.drop_constraint("uq_handoffs_tenant_session_idempotency", "handoffs", type_="unique")
     for name in (
-        "trust_label", "compacts_to_sequence", "compacts_from_sequence", "source_digest",
-        "taint_chain", "clearance_decision", "artifact_reference", "encrypted_content_reference",
+        "trust_label",
+        "compacts_to_sequence",
+        "compacts_from_sequence",
+        "source_digest",
+        "taint_chain",
+        "clearance_decision",
+        "artifact_reference",
+        "encrypted_content_reference",
     ):
         op.drop_column("context_messages", name)
     for name in (
-        "deadline", "idempotency_key", "schema_version", "transition_audit",
-        "acceptance_token_digest", "result_reference", "classification",
-        "connector_allowlist", "target_membership_snapshot", "civilization_id",
+        "deadline",
+        "idempotency_key",
+        "schema_version",
+        "transition_audit",
+        "acceptance_token_digest",
+        "result_reference",
+        "classification",
+        "connector_allowlist",
+        "target_membership_snapshot",
+        "civilization_id",
     ):
         op.drop_column("handoffs", name)

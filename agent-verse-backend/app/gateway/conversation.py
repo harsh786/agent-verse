@@ -1,14 +1,14 @@
 """Multi-turn ConversationManager — maintains context across channels."""
+
 from __future__ import annotations
 
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 from opentelemetry import trace
-from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 _log = structlog.get_logger(__name__)
@@ -17,9 +17,9 @@ _tracer = trace.get_tracer(__name__)
 
 @dataclass
 class ConversationTurn:
-    role: str         # "user" | "assistant"
+    role: str  # "user" | "assistant"
     content: str
-    timestamp: str    # ISO 8601
+    timestamp: str  # ISO 8601
     channel: str
     command_id: str | None = None
 
@@ -60,7 +60,8 @@ class ConversationManager:
             span.set_attribute("org_id", org_id)
 
             try:
-                from sqlalchemy import text  # noqa: PLC0415
+                from sqlalchemy import text
+
                 # Try to find existing conversation
                 q = text("""
                     SELECT id, turns, context_summary, last_command_at, created_at
@@ -71,10 +72,16 @@ class ConversationManager:
                     ORDER BY last_command_at DESC NULLS LAST
                     LIMIT 1
                 """)
-                res = await self._s.execute(q, {
-                    "tid": tenant_id, "oid": org_id, "ch": channel,
-                    "cuid": channel_user_id, "ckey": conversation_key,
-                })
+                res = await self._s.execute(
+                    q,
+                    {
+                        "tid": tenant_id,
+                        "oid": org_id,
+                        "ch": channel,
+                        "cuid": channel_user_id,
+                        "ckey": conversation_key,
+                    },
+                )
                 row = res.fetchone()
                 if row:
                     turns_raw: list[dict[str, Any]] = row[1] or []
@@ -125,7 +132,8 @@ class ConversationManager:
             command_id=command_id,
         )
         try:
-            from sqlalchemy import text  # noqa: PLC0415
+            from sqlalchemy import text
+
             q = text("""
                 UPDATE gateway_conversations
                 SET turns = turns || :new_turn::jsonb,
@@ -133,21 +141,28 @@ class ConversationManager:
                     updated_at = NOW()
                 WHERE id = :cid AND tenant_id = :tid
             """)
-            import json  # noqa: PLC0415
-            await self._s.execute(q, {
-                "cid": conversation_id,
-                "tid": tenant_id,
-                "new_turn": json.dumps(asdict(turn)),
-            })
+            import json
+
+            await self._s.execute(
+                q,
+                {
+                    "cid": conversation_id,
+                    "tid": tenant_id,
+                    "new_turn": json.dumps(asdict(turn)),
+                },
+            )
             await self._s.commit()
         except Exception as exc:
             _log.warning("conversation_manager.add_turn_failed", error=str(exc))
 
     async def get_context(
-        self, conversation_id: str, last_n: int = 10,
+        self,
+        conversation_id: str,
+        last_n: int = 10,
     ) -> list[ConversationTurn]:
         try:
-            from sqlalchemy import text  # noqa: PLC0415
+            from sqlalchemy import text
+
             q = text("SELECT turns FROM gateway_conversations WHERE id = :cid")
             res = await self._s.execute(q, {"cid": conversation_id})
             row = res.fetchone()

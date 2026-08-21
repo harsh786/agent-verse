@@ -3,6 +3,7 @@
 Environment:
   GOOGLE_ACCESS_TOKEN: OAuth2 access token with business.manage scope
 """
+
 from __future__ import annotations
 
 import os
@@ -37,8 +38,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "location_name": {"type": "string", "description": "Location resource name (locations/*)"},
-                "read_mask": {"type": "string", "description": "Fields to return (e.g. name,title,websiteUri)"},
+                "location_name": {
+                    "type": "string",
+                    "description": "Location resource name (locations/*)",
+                },
+                "read_mask": {
+                    "type": "string",
+                    "description": "Fields to return (e.g. name,title,websiteUri)",
+                },
             },
             "required": ["location_name"],
         },
@@ -53,7 +60,10 @@ TOOL_DEFINITIONS = [
                 "title": {"type": "string", "description": "Business name"},
                 "website_uri": {"type": "string", "description": "Business website URL"},
                 "phone_numbers": {"type": "object", "description": "Phone number details"},
-                "update_mask": {"type": "string", "description": "Comma-separated fields to update"},
+                "update_mask": {
+                    "type": "string",
+                    "description": "Comma-separated fields to update",
+                },
             },
             "required": ["location_name"],
         },
@@ -78,8 +88,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "review_name": {"type": "string", "description": "Review resource name (locations/*/reviews/*)"},
-                "comment": {"type": "string", "description": "Reply text to post as the business owner"},
+                "review_name": {
+                    "type": "string",
+                    "description": "Review resource name (locations/*/reviews/*)",
+                },
+                "comment": {
+                    "type": "string",
+                    "description": "Reply text to post as the business owner",
+                },
             },
             "required": ["review_name", "comment"],
         },
@@ -129,7 +145,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 return r.json()
 
             if tool_name == "google_mybusiness_get_location":
-                params = {"readMask": arguments.get("read_mask", "name,title,websiteUri,phoneNumbers")}
+                params = {
+                    "readMask": arguments.get("read_mask", "name,title,websiteUri,phoneNumbers")
+                }
                 r = await client.get(
                     f"{BUSINESS_INFO_URL}/{arguments['location_name']}",
                     headers=headers,
@@ -193,7 +211,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     "locationNames": [loc],
                     "basicRequest": {
                         "metricRequests": [
-                            {"metric": m} for m in arguments.get("metric_requests", ["QUERIES_DIRECT"])
+                            {"metric": m}
+                            for m in arguments.get("metric_requests", ["QUERIES_DIRECT"])
                         ],
                         "timeRange": {
                             "startTime": arguments.get("start_date", "2024-01-01") + "T00:00:00Z",

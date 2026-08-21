@@ -9,6 +9,7 @@ Environment variables:
 Uses Bearer token from service account JSON when available; falls back to API key for
 simple GCS operations that support it.
 """
+
 from __future__ import annotations
 
 import json
@@ -371,11 +372,7 @@ async def call_tool(
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                return {
-                    "topics": [
-                        t["name"].split("/")[-1] for t in data.get("topics", [])
-                    ]
-                }
+                return {"topics": [t["name"].split("/")[-1] for t in data.get("topics", [])]}
 
             # ── BigQuery: run query ──────────────────────────────────────────────
             elif tool_name == "gcp_run_bigquery":
@@ -395,14 +392,9 @@ async def call_tool(
                 )
                 resp.raise_for_status()
                 data = resp.json()
-                schema = [
-                    f["name"] for f in data.get("schema", {}).get("fields", [])
-                ]
+                schema = [f["name"] for f in data.get("schema", {}).get("fields", [])]
                 rows = [
-                    {
-                        schema[i]: cell.get("v")
-                        for i, cell in enumerate(row.get("f", []))
-                    }
+                    {schema[i]: cell.get("v") for i, cell in enumerate(row.get("f", []))}
                     for row in data.get("rows", [])
                 ]
                 return {

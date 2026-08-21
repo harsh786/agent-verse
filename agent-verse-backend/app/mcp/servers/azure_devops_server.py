@@ -5,6 +5,7 @@ Environment variables:
   AZURE_DEVOPS_ORG:     Organization name (e.g. mycompany)
   AZURE_DEVOPS_PROJECT: Default project name
 """
+
 from __future__ import annotations
 
 import base64
@@ -51,7 +52,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "project": {"type": "string", "description": "Project name (overrides AZURE_DEVOPS_PROJECT)"},
+                "project": {
+                    "type": "string",
+                    "description": "Project name (overrides AZURE_DEVOPS_PROJECT)",
+                },
             },
         },
     },
@@ -82,8 +86,14 @@ TOOL_DEFINITIONS = [
                 "repository_id": {"type": "string"},
                 "title": {"type": "string"},
                 "description": {"type": "string", "default": ""},
-                "source_ref_name": {"type": "string", "description": "Source branch (e.g. refs/heads/feature)"},
-                "target_ref_name": {"type": "string", "description": "Target branch (e.g. refs/heads/main)"},
+                "source_ref_name": {
+                    "type": "string",
+                    "description": "Source branch (e.g. refs/heads/feature)",
+                },
+                "target_ref_name": {
+                    "type": "string",
+                    "description": "Target branch (e.g. refs/heads/main)",
+                },
                 "reviewers": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -178,7 +188,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
@@ -295,7 +308,9 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
                         "title": wi.get("fields", {}).get("System.Title"),
                         "state": wi.get("fields", {}).get("System.State"),
                         "type": wi.get("fields", {}).get("System.WorkItemType"),
-                        "assigned_to": (wi.get("fields", {}).get("System.AssignedTo") or {}).get("displayName"),
+                        "assigned_to": (wi.get("fields", {}).get("System.AssignedTo") or {}).get(
+                            "displayName"
+                        ),
                         "tags": wi.get("fields", {}).get("System.Tags", ""),
                     }
                     for wi in details.get("value", [])
@@ -311,15 +326,45 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
                 {"op": "add", "path": "/fields/System.Title", "value": arguments["title"]},
             ]
             if arguments.get("description"):
-                ops.append({"op": "add", "path": "/fields/System.Description", "value": arguments["description"]})
+                ops.append(
+                    {
+                        "op": "add",
+                        "path": "/fields/System.Description",
+                        "value": arguments["description"],
+                    }
+                )
             if arguments.get("assigned_to"):
-                ops.append({"op": "add", "path": "/fields/System.AssignedTo", "value": arguments["assigned_to"]})
+                ops.append(
+                    {
+                        "op": "add",
+                        "path": "/fields/System.AssignedTo",
+                        "value": arguments["assigned_to"],
+                    }
+                )
             if arguments.get("priority"):
-                ops.append({"op": "add", "path": "/fields/Microsoft.VSTS.Common.Priority", "value": arguments["priority"]})
+                ops.append(
+                    {
+                        "op": "add",
+                        "path": "/fields/Microsoft.VSTS.Common.Priority",
+                        "value": arguments["priority"],
+                    }
+                )
             if arguments.get("area_path"):
-                ops.append({"op": "add", "path": "/fields/System.AreaPath", "value": arguments["area_path"]})
+                ops.append(
+                    {
+                        "op": "add",
+                        "path": "/fields/System.AreaPath",
+                        "value": arguments["area_path"],
+                    }
+                )
             if arguments.get("iteration_path"):
-                ops.append({"op": "add", "path": "/fields/System.IterationPath", "value": arguments["iteration_path"]})
+                ops.append(
+                    {
+                        "op": "add",
+                        "path": "/fields/System.IterationPath",
+                        "value": arguments["iteration_path"],
+                    }
+                )
             if arguments.get("tags"):
                 ops.append({"op": "add", "path": "/fields/System.Tags", "value": arguments["tags"]})
             resp = await client.post(
@@ -377,8 +422,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             }
             if arguments.get("variables"):
                 payload["variables"] = {
-                    k: {"value": v, "isSecret": False}
-                    for k, v in arguments["variables"].items()
+                    k: {"value": v, "isSecret": False} for k, v in arguments["variables"].items()
                 }
             if arguments.get("stages_to_skip"):
                 payload["stagesToSkip"] = arguments["stages_to_skip"]

@@ -1,4 +1,5 @@
 """User management service — upsert, lookup, membership management."""
+
 from __future__ import annotations
 
 import uuid
@@ -27,9 +28,7 @@ async def upsert_google_user(
     async with db_factory() as session, session.begin():
         # Check for existing user by google_sub or email
         result = await session.execute(
-            select(User).where(
-                (User.google_sub == google_sub) | (User.email == email)
-            ).limit(1)
+            select(User).where((User.google_sub == google_sub) | (User.email == email)).limit(1)
         )
         user = result.scalar_one_or_none()
 
@@ -58,10 +57,12 @@ async def upsert_google_user(
 
         # Check membership
         mem_result = await session.execute(
-            select(TenantMembership).where(
+            select(TenantMembership)
+            .where(
                 TenantMembership.user_id == user_id,
                 TenantMembership.tenant_id == tenant_id,
-            ).limit(1)
+            )
+            .limit(1)
         )
         membership = mem_result.scalar_one_or_none()
 

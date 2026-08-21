@@ -4,6 +4,7 @@ Environment variables:
   GONG_ACCESS_KEY: Gong API access key
   GONG_ACCESS_KEY_SECRET: Gong API access key secret
 """
+
 from __future__ import annotations
 
 import os
@@ -92,9 +93,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "GONG_ACCESS_KEY and GONG_ACCESS_KEY_SECRET required"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=GONG_BASE, auth=_auth(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=GONG_BASE, auth=_auth(), timeout=30.0) as c:
             if tool_name == "gong_list_calls":
                 params: dict[str, Any] = {}
                 for k in ("fromDateTime", "toDateTime", "cursor", "workspaceId"):

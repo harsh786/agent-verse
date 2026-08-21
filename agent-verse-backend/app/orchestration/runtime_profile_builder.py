@@ -1,4 +1,5 @@
 """RuntimeProfileBuilder — assembles GoalRuntimeProfile for a goal."""
+
 from __future__ import annotations
 
 import hashlib
@@ -44,9 +45,7 @@ class RuntimeProfileBuilder:
                 "schema": capability.state_schema_version,
                 "state": capability.state.value,
             }
-            for capability in sorted(
-                self._registry.list_all(), key=lambda item: item.strategy_id
-            )
+            for capability in sorted(self._registry.list_all(), key=lambda item: item.strategy_id)
         ]
         digest = hashlib.sha256(
             json.dumps(revision_payload, sort_keys=True, separators=(",", ":")).encode()
@@ -63,9 +62,7 @@ class RuntimeProfileBuilder:
         ceiling = PatternLimits.model_validate(ceiling_payload)
         effective = PatternLimits.model_validate(
             {
-                field_name: min(
-                    getattr(requested, field_name), getattr(ceiling, field_name)
-                )
+                field_name: min(getattr(requested, field_name), getattr(ceiling, field_name))
                 for field_name in PatternLimits.model_fields
             }
         )
@@ -124,9 +121,7 @@ class RuntimeProfileBuilder:
         if "persistence_mode" in config:
             agent_cfg.persistence_mode = bool(config["persistence_mode"])
         if "max_persistence_attempts" in config:
-            agent_cfg.max_persistence_attempts = max(
-                1, int(config["max_persistence_attempts"])
-            )
+            agent_cfg.max_persistence_attempts = max(1, int(config["max_persistence_attempts"]))
         trace.add(
             "PatternSelector",
             "agent_patterns",
@@ -196,9 +191,7 @@ class RuntimeProfileBuilder:
                 "requested_id": resolution.requested_id,
                 "resolved_id": resolution.canonical_id,
                 "configuration": (
-                    {"mode": "zero_shot"}
-                    if resolution.requested_id == "zero_shot_cot"
-                    else {}
+                    {"mode": "zero_shot"} if resolution.requested_id == "zero_shot_cot" else {}
                 ),
             },
             "canonical alias resolution"
@@ -221,9 +214,7 @@ class RuntimeProfileBuilder:
             )
 
         auxiliary_candidates = list(agent_cfg.reasoning[1:])
-        auxiliary_candidates.extend(
-            str(item) for item in config.get("auxiliary_strategies", ())
-        )
+        auxiliary_candidates.extend(str(item) for item in config.get("auxiliary_strategies", ()))
         pre_rejections: list[StrategyRejection] = []
         if "peer_review" in auxiliary_candidates:
             reviewer_identity = str(config.get("reviewer_model", ""))
@@ -232,9 +223,7 @@ class RuntimeProfileBuilder:
                 auxiliary_candidates = [
                     item for item in auxiliary_candidates if item != "peer_review"
                 ]
-                pre_rejections.append(
-                    StrategyRejection("peer_review", "reviewer_not_independent")
-                )
+                pre_rejections.append(StrategyRejection("peer_review", "reviewer_not_independent"))
         auxiliary_ids = tuple(dict.fromkeys(auxiliary_candidates))
         compatibility = self._compatibility.compose(
             primary_id=requested_primary,
@@ -263,9 +252,7 @@ class RuntimeProfileBuilder:
             )
         )
         profile_id = uuid.uuid5(uuid.NAMESPACE_URL, profile_identity).hex
-        readiness_digest = hashlib.sha256(
-            "\n".join(sorted(ready_ids)).encode()
-        ).hexdigest()
+        readiness_digest = hashlib.sha256("\n".join(sorted(ready_ids)).encode()).hexdigest()
 
         profile = GoalRuntimeProfile(
             goal_id=goal_id,
@@ -312,6 +299,7 @@ class RuntimeProfileBuilder:
                 orchestration_profile_built_total,
                 orchestration_rag_strategy_total,
             )
+
             orchestration_profile_built_total.labels(
                 complexity=props.complexity.value,
                 risk=props.risk.value,

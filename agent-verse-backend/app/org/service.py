@@ -8,6 +8,7 @@ infrastructure. It delegates to existing services where possible:
 - Knowledge → app.knowledge
 - Policy → app.governance
 """
+
 from __future__ import annotations
 
 import uuid
@@ -36,16 +37,39 @@ _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
 # ── Task status constants ─────────────────────────────────────────────────────
-TASK_STATUSES = frozenset({
-    "draft", "queued", "planned", "assigned", "running",
-    "waiting", "blocked", "review", "approval_required",
-    "completed", "failed", "cancelled", "expired", "archived",
-})
+TASK_STATUSES = frozenset(
+    {
+        "draft",
+        "queued",
+        "planned",
+        "assigned",
+        "running",
+        "waiting",
+        "blocked",
+        "review",
+        "approval_required",
+        "completed",
+        "failed",
+        "cancelled",
+        "expired",
+        "archived",
+    }
+)
 
-MISSION_STATUSES = frozenset({
-    "draft", "queued", "planned", "active", "paused",
-    "review", "completed", "failed", "cancelled", "archived",
-})
+MISSION_STATUSES = frozenset(
+    {
+        "draft",
+        "queued",
+        "planned",
+        "active",
+        "paused",
+        "review",
+        "completed",
+        "failed",
+        "cancelled",
+        "archived",
+    }
+)
 
 # ── Max recursion / anti-runaway limits ───────────────────────────────────────
 MAX_TASK_DEPTH = 8
@@ -154,8 +178,7 @@ class OrgService:
                 entity_id=str(org.id),
             )
             span.set_attribute("org.id", str(org.id))
-            _log.info("org_created tenant=%s org_id=%s name=%s",
-                      self._tenant_id, org.id, name)
+            _log.info("org_created tenant=%s org_id=%s name=%s", self._tenant_id, org.id, name)
             return org
 
     async def get_organization(self, org_id: str) -> Organization | None:
@@ -176,9 +199,7 @@ class OrgService:
         limit: int = 50,
         offset: int = 0,
     ) -> list[Organization]:
-        q = select(Organization).where(
-            Organization.tenant_id == self._tenant_id
-        )
+        q = select(Organization).where(Organization.tenant_id == self._tenant_id)
         if status:
             q = q.where(Organization.status == status)
         q = q.order_by(Organization.created_at.desc()).limit(limit).offset(offset)
@@ -247,13 +268,15 @@ class OrgService:
 
     async def list_departments(self, org_id: str) -> list[OrgDepartment]:
         result = await self._session.execute(
-            select(OrgDepartment).where(
+            select(OrgDepartment)
+            .where(
                 and_(
                     OrgDepartment.tenant_id == self._tenant_id,
                     OrgDepartment.org_id == uuid.UUID(org_id),
                     OrgDepartment.status == "active",
                 )
-            ).order_by(OrgDepartment.name)
+            )
+            .order_by(OrgDepartment.name)
         )
         return list(result.scalars().all())
 
@@ -314,7 +337,7 @@ class OrgService:
             capability_ids=capability_ids or [],
             tool_ids=tool_ids or [],
             model_config=model_config or {},
-            metadata=metadata or {},
+            extra_data=metadata or {},
         )
         self._session.add(team)
         await self._session.flush()
@@ -358,9 +381,7 @@ class OrgService:
         )
         return result.scalar_one_or_none()
 
-    async def update_team(
-        self, team_id: str, updates: dict[str, Any]
-    ) -> OrgTeam | None:
+    async def update_team(self, team_id: str, updates: dict[str, Any]) -> OrgTeam | None:
         team = await self.get_team(team_id)
         if not team:
             return None
@@ -370,6 +391,84 @@ class OrgService:
         team.updated_at = datetime.now(UTC)
         await self._session.flush()
         return team
+
+    async def get_team_member_profiles(
+        self,
+        *,
+        org_id: str,
+        team_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return best-effort member profiles backed by real org task data.
+
+        The org domain currently persists member IDs on teams but does not own a
+        dedicated agent profile table. This method enriches members with runtime
+        status and current task by looking at active team tasks.
+        """
+        team = await self.get_team(team_id)
+        if team is None:
+            return []
+
+        member_ids = list(getattr(team, "member_agent_ids", None) or [])
+        if not member_ids:
+            return []
+
+        active_task_statuses = [
+            "queued",
+            "planned",
+            "assigned",
+            "running",
+            "waiting",
+            "blocked",
+            "review",
+            "approval_required",
+        ]
+        result = await self._session.execute(
+            select(OrgTask)
+            .where(
+                and_(
+                    OrgTask.tenant_id == self._tenant_id,
+                    OrgTask.org_id == uuid.UUID(org_id),
+                    OrgTask.assigned_team_id == uuid.UUID(team_id),
+                    OrgTask.status.in_(active_task_statuses),
+                )
+            )
+            .order_by(OrgTask.updated_at.desc())
+        )
+        tasks = list(result.scalars().all())
+
+        latest_task_by_member: dict[str, OrgTask] = {}
+        member_set = set(member_ids)
+        for task in tasks:
+            for agent_id in list(task.assigned_agent_ids or []):
+                if agent_id in member_set and agent_id not in latest_task_by_member:
+                    latest_task_by_member[agent_id] = task
+
+        status_map = {
+            "running": "executing",
+            "assigned": "planning",
+            "planned": "planning",
+            "queued": "waiting",
+            "waiting": "waiting",
+            "blocked": "blocked",
+            "review": "waiting",
+            "approval_required": "waiting",
+        }
+
+        role_map = dict((getattr(team, "extra_data", None) or {}).get("member_roles", {}))
+        members: list[dict[str, Any]] = []
+        for index, member_id in enumerate(member_ids):
+            task = latest_task_by_member.get(member_id)
+            status = status_map.get(task.status, "idle") if task else "idle"
+            members.append(
+                {
+                    "id": member_id,
+                    "name": f"Agent {index + 1}",
+                    "role": role_map.get(member_id, "Mission specialist"),
+                    "status": status,
+                    "current_task": task.title if task else None,
+                }
+            )
+        return members
 
     # ── Capability CRUD ───────────────────────────────────────────────────────
 
@@ -412,9 +511,7 @@ class OrgService:
         *,
         domain: str | None = None,
     ) -> list[OrgCapability]:
-        q = select(OrgCapability).where(
-            OrgCapability.tenant_id == self._tenant_id
-        )
+        q = select(OrgCapability).where(OrgCapability.tenant_id == self._tenant_id)
         if org_id:
             q = q.where(OrgCapability.org_id == uuid.UUID(org_id))
         if domain:
@@ -481,8 +578,13 @@ class OrgService:
                 payload={"source": source, "priority": priority},
             )
             span.set_attribute("mission.id", str(mission.id))
-            _log.info("mission_created tenant=%s org=%s mission=%s title=%s",
-                      self._tenant_id, org_id, mission.id, title)
+            _log.info(
+                "mission_created tenant=%s org=%s mission=%s title=%s",
+                self._tenant_id,
+                org_id,
+                mission.id,
+                title,
+            )
             return mission
 
     async def get_mission(self, mission_id: str) -> OrgMission | None:
@@ -522,9 +624,7 @@ class OrgService:
         result = await self._session.execute(q)
         return list(result.scalars().all())
 
-    async def update_mission_status(
-        self, mission_id: str, status: str
-    ) -> OrgMission | None:
+    async def update_mission_status(self, mission_id: str, status: str) -> OrgMission | None:
         with _tracer.start_as_current_span("org.update_mission_status") as span:
             span.set_attribute("tenant_id", self._tenant_id)
             span.set_attribute("mission_id", mission_id)
@@ -592,9 +692,7 @@ class OrgService:
             span.set_attribute("task.depth", depth)
             # Anti-runaway: depth limit
             if depth > MAX_TASK_DEPTH:
-                raise ValueError(
-                    f"Task depth {depth} exceeds maximum {MAX_TASK_DEPTH}"
-                )
+                raise ValueError(f"Task depth {depth} exceeds maximum {MAX_TASK_DEPTH}")
 
             # Anti-runaway: per-mission task count
             if mission_id:
@@ -724,11 +822,13 @@ class OrgService:
         if actual_cost_usd is not None:
             task.actual_cost_usd = actual_cost_usd
         # Append to audit trail
-        task.audit_trail = (task.audit_trail or []) + [{
-            "timestamp": datetime.now(UTC).isoformat(),
-            "old_status": old_status,
-            "new_status": status,
-        }]
+        task.audit_trail = (task.audit_trail or []) + [
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "old_status": old_status,
+                "new_status": status,
+            }
+        ]
         await self._session.flush()
         await self._emit_event(
             task.org_id,
@@ -850,59 +950,64 @@ class OrgService:
 
             # Active missions
             mission_result = await self._session.execute(
-            select(func.count(OrgMission.id)).where(
-                and_(
-                    OrgMission.tenant_id == self._tenant_id,
-                    OrgMission.org_id == uid,
-                    OrgMission.status == "active",
+                select(func.count(OrgMission.id)).where(
+                    and_(
+                        OrgMission.tenant_id == self._tenant_id,
+                        OrgMission.org_id == uid,
+                        OrgMission.status == "active",
+                    )
                 )
-            )
             )
 
             # Tasks by status
             task_result = await self._session.execute(
-            select(OrgTask.status, func.count(OrgTask.id)).where(
-                and_(
-                    OrgTask.tenant_id == self._tenant_id,
-                    OrgTask.org_id == uid,
-                    OrgTask.status.not_in(["archived", "cancelled"]),
+                select(OrgTask.status, func.count(OrgTask.id))
+                .where(
+                    and_(
+                        OrgTask.tenant_id == self._tenant_id,
+                        OrgTask.org_id == uid,
+                        OrgTask.status.not_in(["archived", "cancelled"]),
+                    )
                 )
-            ).group_by(OrgTask.status)
+                .group_by(OrgTask.status)
             )
 
             # Active teams
             team_result = await self._session.execute(
-            select(func.count(OrgTeam.id)).where(
-                and_(
-                    OrgTeam.tenant_id == self._tenant_id,
-                    OrgTeam.org_id == uid,
-                    OrgTeam.status == "active",
+                select(func.count(OrgTeam.id)).where(
+                    and_(
+                        OrgTeam.tenant_id == self._tenant_id,
+                        OrgTeam.org_id == uid,
+                        OrgTeam.status == "active",
+                    )
                 )
-            )
             )
 
             # Recent events (last 24h)
             from datetime import timedelta
+
             since_24h = datetime.now(UTC) - timedelta(hours=24)
             event_result = await self._session.execute(
-            select(OrgEvent.severity, func.count(OrgEvent.id)).where(
-                and_(
-                    OrgEvent.tenant_id == self._tenant_id,
-                    OrgEvent.org_id == uid,
-                    OrgEvent.created_at >= since_24h,
+                select(OrgEvent.severity, func.count(OrgEvent.id))
+                .where(
+                    and_(
+                        OrgEvent.tenant_id == self._tenant_id,
+                        OrgEvent.org_id == uid,
+                        OrgEvent.created_at >= since_24h,
+                    )
                 )
-            ).group_by(OrgEvent.severity)
+                .group_by(OrgEvent.severity)
             )
 
             # Pending approvals
             approval_result = await self._session.execute(
-            select(func.count(OrgTask.id)).where(
-                and_(
-                    OrgTask.tenant_id == self._tenant_id,
-                    OrgTask.org_id == uid,
-                    OrgTask.status == "approval_required",
+                select(func.count(OrgTask.id)).where(
+                    and_(
+                        OrgTask.tenant_id == self._tenant_id,
+                        OrgTask.org_id == uid,
+                        OrgTask.status == "approval_required",
+                    )
                 )
-            )
             )
 
             task_counts: dict[str, int] = {}
@@ -938,9 +1043,7 @@ class OrgService:
 
     # ── Blueprint CRUD ────────────────────────────────────────────────────────
 
-    async def list_blueprints(
-        self, *, domain: str | None = None
-    ) -> list[OrgBlueprint]:
+    async def list_blueprints(self, *, domain: str | None = None) -> list[OrgBlueprint]:
         q = select(OrgBlueprint)
         if domain:
             q = q.where(OrgBlueprint.domain == domain)
@@ -949,16 +1052,12 @@ class OrgService:
 
     async def get_blueprint(self, blueprint_id: str) -> OrgBlueprint | None:
         result = await self._session.execute(
-            select(OrgBlueprint).where(
-                OrgBlueprint.id == uuid.UUID(blueprint_id)
-            )
+            select(OrgBlueprint).where(OrgBlueprint.id == uuid.UUID(blueprint_id))
         )
         return result.scalar_one_or_none()
 
     async def get_blueprint_by_slug(self, slug: str) -> OrgBlueprint | None:
-        result = await self._session.execute(
-            select(OrgBlueprint).where(OrgBlueprint.slug == slug)
-        )
+        result = await self._session.execute(select(OrgBlueprint).where(OrgBlueprint.slug == slug))
         return result.scalar_one_or_none()
 
     # ── Workstream CRUD ───────────────────────────────────────────────────────
@@ -990,12 +1089,14 @@ class OrgService:
 
     async def list_workstreams(self, mission_id: str) -> list[OrgWorkstream]:
         result = await self._session.execute(
-            select(OrgWorkstream).where(
+            select(OrgWorkstream)
+            .where(
                 and_(
                     OrgWorkstream.tenant_id == self._tenant_id,
                     OrgWorkstream.mission_id == uuid.UUID(mission_id),
                 )
-            ).order_by(OrgWorkstream.order_index)
+            )
+            .order_by(OrgWorkstream.order_index)
         )
         return list(result.scalars().all())
 
@@ -1094,6 +1195,7 @@ class OrgService:
                 _llm_provider: Any | None = None
                 try:
                     from app.main import app as _app  # type: ignore[attr-defined]
+
                     _llm_provider = getattr(getattr(_app, "state", None), "planner_provider", None)
                 except Exception:
                     pass
@@ -1106,17 +1208,46 @@ class OrgService:
                     mission,
                 )
 
-                dispatch_result.update({
-                    "topology": orch_plan.topology,
-                    "departments": orch_plan.departments,
-                    "autonomy_level": orch_plan.autonomy_level,
-                    "estimated_cost_usd": orch_plan.estimated_total_cost_usd,
-                    "estimated_duration_hours": orch_plan.estimated_total_duration_hours,
-                    "agent_count": orch_plan.team_manifest.agent_count if orch_plan.team_manifest else 0,
-                    "requires_preview": getattr(
-                        orch_plan.team_manifest, "requires_human_preview", False
-                    ),
-                })
+                dispatch_result.update(
+                    {
+                        "topology": orch_plan.topology,
+                        "departments": orch_plan.departments,
+                        "autonomy_level": orch_plan.autonomy_level,
+                        "estimated_cost_usd": orch_plan.estimated_total_cost_usd,
+                        "estimated_duration_hours": orch_plan.estimated_total_duration_hours,
+                        "agent_count": orch_plan.team_manifest.agent_count
+                        if orch_plan.team_manifest
+                        else 0,
+                        "requires_preview": getattr(
+                            orch_plan.team_manifest, "requires_human_preview", False
+                        ),
+                    }
+                )
+
+                if orch_plan.team_manifest is not None:
+                    team_manifest = orch_plan.team_manifest
+                    agent_ids = [f"agent-{idx + 1}" for idx, _ in enumerate(team_manifest.roles)]
+                    dispatch_result["agent_ids"] = agent_ids
+
+                    resolved_team_id = assigned_team_id
+                    if not resolved_team_id:
+                        materialized_team = await self.create_team(
+                            org_id=org_id,
+                            name=team_manifest.team_name,
+                            purpose=objective or expected_outcome or title,
+                            dept_id=dept_id,
+                            team_type="mission",
+                            member_agent_ids=agent_ids,
+                            metadata={
+                                "mission_id": str(mission.id),
+                                "formation_reasoning": team_manifest.formation_reasoning,
+                            },
+                        )
+                        resolved_team_id = str(materialized_team.id)
+
+                    mission.assigned_team_id = uuid.UUID(resolved_team_id)
+                    dispatch_result["team_id"] = resolved_team_id
+
                 span.set_attribute("topology", orch_plan.topology)
                 span.set_attribute("dept_count", len(orch_plan.departments))
 
@@ -1131,6 +1262,7 @@ class OrgService:
             # ── Step 4: Dispatch to GoalService → AgentGraph (Celery) ─────────
             try:
                 from app.main import app as _app  # type: ignore[attr-defined]
+
                 goal_service = getattr(getattr(_app, "state", None), "goal_service", None)
             except Exception:
                 goal_service = None
@@ -1139,6 +1271,7 @@ class OrgService:
                 # Build a minimal TenantContext when caller didn't provide one
                 if tenant_ctx is None:
                     from app.tenancy.context import PlanTier, TenantContext
+
                     tenant_ctx = TenantContext(
                         tenant_id=self._tenant_id,
                         plan=PlanTier.PROFESSIONAL,
@@ -1162,16 +1295,22 @@ class OrgService:
                 approval_gates = plan_summary.get("approval_gates", [])
                 if approval_gates:
                     # Create tasks for each gate and mark them approval_required
-                    for gate in (approval_gates[:3] if isinstance(approval_gates, list) else []):
+                    for gate in approval_gates[:3] if isinstance(approval_gates, list) else []:
                         try:
-                            gate_title = str(gate) if isinstance(gate, str) else str(gate.get("type", "approval"))
+                            gate_title = (
+                                str(gate)
+                                if isinstance(gate, str)
+                                else str(gate.get("type", "approval"))
+                            )
                             task = await self.create_task(
                                 org_id=org_id,
                                 mission_id=str(mission.id),
                                 title=f"Approval gate: {gate_title}",
                                 description=f"This mission requires approval for: {gate_title}",
                                 task_type="approval_gate",
-                                metadata={"gate": gate if isinstance(gate, dict) else {"type": gate_title}},
+                                metadata={
+                                    "gate": gate if isinstance(gate, dict) else {"type": gate_title}
+                                },
                             )
                             # G-22: Set task status to approval_required
                             await self.update_task_status(str(task.id), "approval_required")

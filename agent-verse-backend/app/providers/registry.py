@@ -11,6 +11,7 @@ First healthy provider wins. Supports:
   - ollama (OLLAMA_BASE_URL, no key needed)
   - groq (GROQ_API_KEY)
 """
+
 from __future__ import annotations
 
 import json
@@ -38,8 +39,10 @@ def _requires_explicit_openai_model(provider_type: str, base_url: str) -> bool:
     if provider_type in {"azure", "together", "openai_compatible"}:
         return True
     normalized_url = base_url.strip().rstrip("/").lower()
-    return provider_type == "openai" and bool(normalized_url) and normalized_url != (
-        _OFFICIAL_OPENAI_BASE_URL.lower()
+    return (
+        provider_type == "openai"
+        and bool(normalized_url)
+        and normalized_url != (_OFFICIAL_OPENAI_BASE_URL.lower())
     )
 
 
@@ -148,16 +151,21 @@ def _detect_providers() -> list[ProviderConfig]:
 
     # Simple OpenAI-compatible providers
     _SIMPLE_PROVIDERS = [
-        ("mistral",     "MISTRAL_API_KEY",     "mistral-large-latest",                              "Mistral AI"),
-        ("deepseek",    "DEEPSEEK_API_KEY",     "deepseek-chat",                                     "DeepSeek"),
-        ("perplexity",  "PERPLEXITY_API_KEY",   "llama-3.1-sonar-large-128k-online",                 "Perplexity"),
-        ("fireworks",   "FIREWORKS_API_KEY",    "accounts/fireworks/models/llama-v3p1-70b-instruct", "Fireworks AI"),
-        ("xai",         "XAI_API_KEY",          "grok-beta",                                         "xAI (Grok)"),
-        ("moonshot",    "MOONSHOT_API_KEY",      "moonshot-v1-8k",                                    "Moonshot AI"),
-        ("cerebras",    "CEREBRAS_API_KEY",      "llama3.1-70b",                                      "Cerebras"),
-        ("yi",          "YI_API_KEY",            "yi-large",                                          "01.AI (Yi)"),
-        ("huggingface", "HF_API_KEY",            "meta-llama/Llama-3.1-70B-Instruct",                "HuggingFace"),
-        ("sambanova",   "SAMBANOVA_API_KEY",     "Meta-Llama-3.1-70B-Instruct",                      "SambaNova"),
+        ("mistral", "MISTRAL_API_KEY", "mistral-large-latest", "Mistral AI"),
+        ("deepseek", "DEEPSEEK_API_KEY", "deepseek-chat", "DeepSeek"),
+        ("perplexity", "PERPLEXITY_API_KEY", "llama-3.1-sonar-large-128k-online", "Perplexity"),
+        (
+            "fireworks",
+            "FIREWORKS_API_KEY",
+            "accounts/fireworks/models/llama-v3p1-70b-instruct",
+            "Fireworks AI",
+        ),
+        ("xai", "XAI_API_KEY", "grok-beta", "xAI (Grok)"),
+        ("moonshot", "MOONSHOT_API_KEY", "moonshot-v1-8k", "Moonshot AI"),
+        ("cerebras", "CEREBRAS_API_KEY", "llama3.1-70b", "Cerebras"),
+        ("yi", "YI_API_KEY", "yi-large", "01.AI (Yi)"),
+        ("huggingface", "HF_API_KEY", "meta-llama/Llama-3.1-70B-Instruct", "HuggingFace"),
+        ("sambanova", "SAMBANOVA_API_KEY", "Meta-Llama-3.1-70B-Instruct", "SambaNova"),
     ]
     for provider_type, env_key, default_model, display_name in _SIMPLE_PROVIDERS:
         if os.getenv(env_key):
@@ -204,9 +212,7 @@ def resolve_provider(
                 )
                 return provider
         except Exception as e:
-            logger.debug(
-                "provider_init_failed", type=cfg.provider_type, error=str(e)[:60]
-            )
+            logger.debug("provider_init_failed", type=cfg.provider_type, error=str(e)[:60])
 
     # Fallback: FakeProvider for dev/test — uses realistic cycling responses so
     # the AgentGraph fully executes (plan → execute → verify → complete) even
@@ -319,8 +325,17 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
         )
 
     elif ptype in (
-        "mistral", "deepseek", "perplexity", "fireworks", "xai",
-        "moonshot", "cerebras", "yi", "huggingface", "sambanova", "azure_openai",
+        "mistral",
+        "deepseek",
+        "perplexity",
+        "fireworks",
+        "xai",
+        "moonshot",
+        "cerebras",
+        "yi",
+        "huggingface",
+        "sambanova",
+        "azure_openai",
     ):
         from app.providers.simple_providers import (
             AzureOpenAIProvider,
@@ -337,16 +352,16 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
         )
 
         _klass_map = {
-            "mistral":     MistralProvider,
-            "deepseek":    DeepSeekProvider,
-            "perplexity":  PerplexityProvider,
-            "fireworks":   FireworksProvider,
-            "xai":         XAIProvider,
-            "moonshot":    MoonshotProvider,
-            "cerebras":    CerebrasProvider,
-            "yi":          YiProvider,
+            "mistral": MistralProvider,
+            "deepseek": DeepSeekProvider,
+            "perplexity": PerplexityProvider,
+            "fireworks": FireworksProvider,
+            "xai": XAIProvider,
+            "moonshot": MoonshotProvider,
+            "cerebras": CerebrasProvider,
+            "yi": YiProvider,
             "huggingface": HuggingFaceProvider,
-            "sambanova":   SambanovaProvider,
+            "sambanova": SambanovaProvider,
             "azure_openai": AzureOpenAIProvider,
         }
         klass = _klass_map[ptype]

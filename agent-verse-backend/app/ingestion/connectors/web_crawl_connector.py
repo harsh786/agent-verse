@@ -3,6 +3,7 @@
 Supports sitemap.xml discovery, robots.txt compliance, incremental
 delta via URL hash + content hash deduplication.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -27,12 +28,14 @@ class WebCrawlConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         seed_urls = config.connection_config.get("seed_urls", [])
         if not seed_urls:
             return ConnectionHealth(ok=False, error="No seed_urls configured")
         try:
             import httpx
+
             url = seed_urls[0]
             async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
                 r = await c.get(url)
@@ -62,10 +65,12 @@ class WebCrawlConnector(BaseConnector):
 
         # Cursor = set of already-seen URL hashes (JSON-serialized)
         import json
+
         seen_hashes: set[str] = set(json.loads(cursor)) if cursor else set()
         new_seen: set[str] = set(seen_hashes)
 
         import re
+
         include_re = re.compile(include_pat) if include_pat else None
         exclude_re = re.compile(exclude_pat) if exclude_pat else None
 
@@ -73,6 +78,7 @@ class WebCrawlConnector(BaseConnector):
         visited = 0
 
         import asyncio
+
         try:
             import httpx
         except ImportError:
@@ -142,16 +148,19 @@ class WebCrawlConnector(BaseConnector):
     def _extract_text(html: str, url: str = "") -> str:
         try:
             import trafilatura
+
             text = trafilatura.extract(html, favor_recall=True, include_tables=True)
             return text or ""
         except Exception:
             import re
+
             text = re.sub(r"<[^>]+>", " ", html)
             return re.sub(r"\s+", " ", text).strip()[:50000]
 
     @staticmethod
     def _extract_title(html: str) -> str:
         import re
+
         m = re.search(r"<title[^>]*>([^<]+)</title>", html, re.I)
         return m.group(1).strip() if m else ""
 
@@ -159,6 +168,7 @@ class WebCrawlConnector(BaseConnector):
     def _extract_links(html: str, base_url: str) -> list[str]:
         import re
         from urllib.parse import urljoin, urlparse
+
         base = urlparse(base_url)
         links: list[str] = []
         for href in re.findall(r'href=["\']([^"\'#?]+)["\']', html):

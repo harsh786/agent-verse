@@ -3,59 +3,176 @@
 Tier 1: Fast keyword-based (<1ms) — always runs.
 Tier 2: LLM-based (~200ms) — only for MEDIUM complexity + confidence <= 0.85.
 """
+
 from __future__ import annotations
 
 import re
-import time
 from typing import Any
 
 from app.agent.pattern_config import Complexity, Domain, GoalProperties, RiskLevel
 
 # Exact keyword sets from doc-4
-_RISK_KEYWORDS = frozenset({
-    "delete", "drop", "truncate", "destroy", "wipe", "purge", "rm -rf",
-    "deploy", "production", "prod", "overwrite", "payment", "charge",
-    "billing", "transfer funds", "admin", "sudo", "root access",
-    "send email", "send sms", "post to", "publish", "release",
-})
+_RISK_KEYWORDS = frozenset(
+    {
+        "delete",
+        "drop",
+        "truncate",
+        "destroy",
+        "wipe",
+        "purge",
+        "rm -rf",
+        "deploy",
+        "production",
+        "prod",
+        "overwrite",
+        "payment",
+        "charge",
+        "billing",
+        "transfer funds",
+        "admin",
+        "sudo",
+        "root access",
+        "send email",
+        "send sms",
+        "post to",
+        "publish",
+        "release",
+    }
+)
 
 _COMPLEXITY_SIGNALS: dict[str, list[str]] = {
     "expert": [
-        "design", "architect", "optimise", "analyse", "analyze", "evaluate",
-        "compare", "strategy", "tradeoff", "tradeoffs", "distributed system",
-        "security audit", "performance", "scalability",
+        "design",
+        "architect",
+        "optimise",
+        "analyse",
+        "analyze",
+        "evaluate",
+        "compare",
+        "strategy",
+        "tradeoff",
+        "tradeoffs",
+        "distributed system",
+        "security audit",
+        "performance",
+        "scalability",
     ],
     "complex": [
-        "explain", "how does", "why", "implement", "create", "build",
-        "write code", "research", "investigate", "integrate",
+        "explain",
+        "how does",
+        "why",
+        "implement",
+        "create",
+        "build",
+        "write code",
+        "research",
+        "investigate",
+        "integrate",
     ],
     "simple": [
-        "list", "show", "get", "fetch", "what is", "how many",
-        "count", "status", "check", "ping", "find",
+        "list",
+        "show",
+        "get",
+        "fetch",
+        "what is",
+        "how many",
+        "count",
+        "status",
+        "check",
+        "ping",
+        "find",
     ],
 }
 
 _DOMAIN_SIGNALS: dict[str, list[str]] = {
-    "technical": ["code", "api", "database", "server", "deploy", "debug", "test",
-                  "sql", "python", "javascript", "docker", "kubernetes", "git"],
-    "creative": ["write", "generate", "draft", "story", "poem", "design",
-                 "create", "compose", "brainstorm"],
-    "analytical": ["analyse", "analyze", "evaluate", "compare", "research",
-                   "explain", "why", "tradeoff", "performance", "metrics", "data"],
-    "operational": ["deploy", "monitor", "alert", "backup", "scale",
-                    "migrate", "operate", "run", "restart"],
+    "technical": [
+        "code",
+        "api",
+        "database",
+        "server",
+        "deploy",
+        "debug",
+        "test",
+        "sql",
+        "python",
+        "javascript",
+        "docker",
+        "kubernetes",
+        "git",
+    ],
+    "creative": [
+        "write",
+        "generate",
+        "draft",
+        "story",
+        "poem",
+        "design",
+        "create",
+        "compose",
+        "brainstorm",
+    ],
+    "analytical": [
+        "analyse",
+        "analyze",
+        "evaluate",
+        "compare",
+        "research",
+        "explain",
+        "why",
+        "tradeoff",
+        "performance",
+        "metrics",
+        "data",
+    ],
+    "operational": [
+        "deploy",
+        "monitor",
+        "alert",
+        "backup",
+        "scale",
+        "migrate",
+        "operate",
+        "run",
+        "restart",
+    ],
 }
 
-_WEB_SIGNALS = frozenset({
-    "latest", "current", "recent", "today", "news", "price",
-    "version", "now", "2024", "2025", "2026", "live",
-})
+_WEB_SIGNALS = frozenset(
+    {
+        "latest",
+        "current",
+        "recent",
+        "today",
+        "news",
+        "price",
+        "version",
+        "now",
+        "2024",
+        "2025",
+        "2026",
+        "live",
+    }
+)
 
-_IRREVERSIBLE_SIGNALS = frozenset({
-    "delete", "drop", "truncate", "destroy", "wipe", "purge",
-    "send email", "send sms", "post", "publish", "release", "deploy",
-    "payment", "transfer", "charge",
-})
+_IRREVERSIBLE_SIGNALS = frozenset(
+    {
+        "delete",
+        "drop",
+        "truncate",
+        "destroy",
+        "wipe",
+        "purge",
+        "send email",
+        "send sms",
+        "post",
+        "publish",
+        "release",
+        "deploy",
+        "payment",
+        "transfer",
+        "charge",
+    }
+)
 
 _CLASSIFIER_SYSTEM = """\
 You are a goal complexity classifier. Analyze the given goal and classify it.
@@ -84,8 +201,18 @@ class GoalClassifier:
         reversibility = "reversible"
         for phrase in _RISK_KEYWORDS:
             if _phrase_in(phrase, lower, tokens):
-                if phrase in ("delete", "drop", "truncate", "destroy", "wipe",
-                              "purge", "payment", "charge", "billing", "transfer funds"):
+                if phrase in (
+                    "delete",
+                    "drop",
+                    "truncate",
+                    "destroy",
+                    "wipe",
+                    "purge",
+                    "payment",
+                    "charge",
+                    "billing",
+                    "transfer funds",
+                ):
                     risk = RiskLevel.CRITICAL
                 else:
                     if risk.value in ("low", "medium"):
@@ -110,7 +237,9 @@ class GoalClassifier:
         expert_hits = sum(1 for s in _COMPLEXITY_SIGNALS["expert"] if s in lower)
         complex_hits = sum(1 for s in _COMPLEXITY_SIGNALS["complex"] if s in lower)
         simple_hits = sum(1 for s in _COMPLEXITY_SIGNALS["simple"] if s in lower)
-        step_count = len(re.findall(r"\band\b|\bthen\b|\bafter\b|\bfollowed by\b|\balso\b", lower)) + 1
+        step_count = (
+            len(re.findall(r"\band\b|\bthen\b|\bafter\b|\bfollowed by\b|\balso\b", lower)) + 1
+        )
 
         if expert_hits >= 2 or step_count >= 5:
             complexity = Complexity.EXPERT
@@ -201,9 +330,7 @@ class GoalClassifier:
                 domain=Domain(data.get("domain", base.domain.value)),
                 risk=RiskLevel(data.get("risk", base.risk.value)),
                 time_sensitivity=data.get("time_sensitivity", base.time_sensitivity),
-                knowledge_requirement=data.get(
-                    "knowledge_requirement", base.knowledge_requirement
-                ),
+                knowledge_requirement=data.get("knowledge_requirement", base.knowledge_requirement),
                 reversibility=data.get("reversibility", base.reversibility),
                 multi_step=int(data.get("estimated_steps", base.estimated_steps)) > 1,
                 is_generative=base.is_generative,

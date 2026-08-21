@@ -15,6 +15,7 @@ The spec defines dept memory as one of the 6 memory tiers:
 5. org (cross-department)
 6. long-term (cross-time-period)
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -33,18 +34,18 @@ _tracer = trace.get_tracer(__name__)
 class MemoryEntry:
     """A single department memory entry."""
 
-    entry_id:      str
-    dept_id:       str
-    org_id:        str
-    tenant_id:     str
-    content:       str
-    source:        str          # who/what wrote this (agent_id, user_id, etc.)
-    confidence:    float = 0.9  # 0-1
-    tags:          list[str] = field(default_factory=list)
-    is_active:     bool = True
-    corrections:   list[dict[str, Any]] = field(default_factory=list)
-    created_at:    str = ""
-    updated_at:    str = ""
+    entry_id: str
+    dept_id: str
+    org_id: str
+    tenant_id: str
+    content: str
+    source: str  # who/what wrote this (agent_id, user_id, etc.)
+    confidence: float = 0.9  # 0-1
+    tags: list[str] = field(default_factory=list)
+    is_active: bool = True
+    corrections: list[dict[str, Any]] = field(default_factory=list)
+    created_at: str = ""
+    updated_at: str = ""
 
     def __post_init__(self) -> None:
         now = datetime.now(UTC).isoformat()
@@ -159,11 +160,13 @@ class DepartmentMemory:
 
             for entry in self._store.get(dept_id, []):
                 if entry.entry_id == entry_id:
-                    entry.corrections.append({
-                        "correction": correction,
-                        "corrector":  corrector,
-                        "corrected_at": datetime.now(UTC).isoformat(),
-                    })
+                    entry.corrections.append(
+                        {
+                            "correction": correction,
+                            "corrector": corrector,
+                            "corrected_at": datetime.now(UTC).isoformat(),
+                        }
+                    )
                     # Reduce confidence slightly after correction
                     entry.confidence = max(0.1, entry.confidence - 0.1)
                     entry.updated_at = datetime.now(UTC).isoformat()
@@ -187,7 +190,9 @@ class DepartmentMemory:
                     entry.is_active = False
                     entry.tags.append(f"deprecated:{reason}")
                     entry.updated_at = datetime.now(UTC).isoformat()
-                    _log.info("dept_memory.deprecated", dept_id=dept_id, entry_id=entry_id, reason=reason)
+                    _log.info(
+                        "dept_memory.deprecated", dept_id=dept_id, entry_id=entry_id, reason=reason
+                    )
                     return entry
             return None
 
@@ -203,12 +208,12 @@ class DepartmentMemory:
             entries = [e for e in entries if e.is_active]
         return [
             {
-                "entry_id":   e.entry_id,
-                "content":    e.content,
-                "source":     e.source,
+                "entry_id": e.entry_id,
+                "content": e.content,
+                "source": e.source,
                 "confidence": e.confidence,
-                "is_active":  e.is_active,
-                "tags":       e.tags,
+                "is_active": e.is_active,
+                "tags": e.tags,
                 "created_at": e.created_at,
             }
             for e in entries[:limit]
@@ -217,13 +222,13 @@ class DepartmentMemory:
     def dept_summary(self, dept_id: str) -> dict[str, Any]:
         """Return summary statistics for a department's memory."""
         entries = self._store.get(dept_id, [])
-        active  = [e for e in entries if e.is_active]
+        active = [e for e in entries if e.is_active]
         avg_conf = sum(e.confidence for e in active) / len(active) if active else 0.0
         return {
-            "dept_id":        dept_id,
-            "total_entries":  len(entries),
+            "dept_id": dept_id,
+            "total_entries": len(entries),
             "active_entries": len(active),
-            "deprecated":     len(entries) - len(active),
+            "deprecated": len(entries) - len(active),
             "avg_confidence": round(avg_conf, 3),
         }
 

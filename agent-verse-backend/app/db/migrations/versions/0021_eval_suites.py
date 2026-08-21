@@ -4,6 +4,7 @@ Revision ID: 0019
 Revises: 0018
 Create Date: 2026-06-27
 """
+
 from __future__ import annotations
 
 import sqlalchemy as sa
@@ -22,12 +23,8 @@ def upgrade() -> None:
         sa.Column("tenant_id", sa.String(32), nullable=False),
         sa.Column("name", sa.String(200), nullable=False),
         sa.Column("tasks", sa.JSON, nullable=False, server_default="[]"),
-        sa.Column(
-            "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()")
-        ),
-        sa.Column(
-            "updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()")
-        ),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()")),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()")),
     )
     op.create_index("ix_eval_suites_tenant", "eval_suites", ["tenant_id"])
 
@@ -42,9 +39,7 @@ def upgrade() -> None:
         sa.Column("failed_tasks", sa.Integer, nullable=False, server_default="0"),
         sa.Column("pass_rate", sa.Float, nullable=False, server_default="0.0"),
         sa.Column("task_results", sa.JSON, nullable=False, server_default="[]"),
-        sa.Column(
-            "run_at", sa.DateTime(timezone=True), server_default=sa.text("now()")
-        ),
+        sa.Column("run_at", sa.DateTime(timezone=True), server_default=sa.text("now()")),
     )
     op.create_index("ix_eval_suite_results_suite", "eval_suite_results", ["suite_id"])
     op.create_index("ix_eval_suite_results_tenant", "eval_suite_results", ["tenant_id"])

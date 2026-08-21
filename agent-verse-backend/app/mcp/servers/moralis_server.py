@@ -3,6 +3,7 @@
 Environment:
   MORALIS_API_KEY: Moralis API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -23,7 +24,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "address": {"type": "string", "description": "Wallet address (0x...)"},
-                "chain": {"type": "string", "description": "Chain identifier: eth, polygon, bsc, etc."},
+                "chain": {
+                    "type": "string",
+                    "description": "Chain identifier: eth, polygon, bsc, etc.",
+                },
             },
             "required": ["address"],
         },
@@ -77,7 +81,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "address": {"type": "string", "description": "Contract address"},
-                "topic": {"type": "string", "description": "Event topic hash (keccak256 of event signature)"},
+                "topic": {
+                    "type": "string",
+                    "description": "Event topic hash (keccak256 of event signature)",
+                },
                 "chain": {"type": "string", "description": "Chain identifier"},
                 "from_block": {"type": "integer", "description": "Start block number"},
                 "to_block": {"type": "integer", "description": "End block number"},
@@ -93,7 +100,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "query": {"type": "string", "description": "Search query for NFT metadata"},
                 "chain": {"type": "string", "description": "Chain to search on"},
-                "filter": {"type": "string", "description": "Filter field: name, description, global"},
+                "filter": {
+                    "type": "string",
+                    "description": "Filter field: name, description, global",
+                },
                 "limit": {"type": "integer", "description": "Maximum results"},
             },
             "required": ["query"],

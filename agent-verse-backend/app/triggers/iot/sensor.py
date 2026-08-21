@@ -1,4 +1,5 @@
 """Sensor threshold trigger evaluator."""
+
 from __future__ import annotations
 
 import logging
@@ -11,7 +12,7 @@ _UNIT_TO_SI = {
     "celsius": 1.0,
     "fahrenheit": None,  # handled specially
     "kelvin": None,
-    "psi": 6894.76,    # to Pascal
+    "psi": 6894.76,  # to Pascal
     "bar": 100000.0,
     "kpa": 1000.0,
     "mpa": 1_000_000.0,
@@ -91,6 +92,7 @@ class SensorThresholdEvaluator:
 
         triggers = await self._store.find_by_type_async("sensor_threshold", tenant_id=tenant_id)
         from types import SimpleNamespace
+
         tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=plan)
         fired = []
         payload = {
@@ -115,7 +117,9 @@ class SensorThresholdEvaluator:
                 continue
 
             crossed = self.check_threshold(
-                value, threshold, comparison,
+                value,
+                threshold,
+                comparison,
                 value_unit=unit,
             )
             if not crossed:

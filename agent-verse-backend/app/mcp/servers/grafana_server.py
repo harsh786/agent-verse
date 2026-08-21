@@ -4,6 +4,7 @@ Environment:
   GRAFANA_URL:     https://your-grafana.example.com
   GRAFANA_API_KEY: Grafana service account token (sa-...)
 """
+
 from __future__ import annotations
 
 import os
@@ -16,7 +17,7 @@ from app.observability.logging import get_logger
 logger = get_logger(__name__)
 
 _BASE_URL = os.getenv("GRAFANA_URL", "").rstrip("/")
-_API_KEY  = os.getenv("GRAFANA_API_KEY", "")
+_API_KEY = os.getenv("GRAFANA_API_KEY", "")
 
 TOOL_DEFINITIONS = [
     {
@@ -48,9 +49,9 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "datasource_uid": {"type": "string"},
-                "query":          {"type": "string", "description": "PromQL, LogQL, or SQL query"},
-                "from":           {"type": "string", "description": "Start time (e.g. 'now-1h')"},
-                "to":             {"type": "string", "description": "End time (e.g. 'now')"},
+                "query": {"type": "string", "description": "PromQL, LogQL, or SQL query"},
+                "from": {"type": "string", "description": "Start time (e.g. 'now-1h')"},
+                "to": {"type": "string", "description": "End time (e.g. 'now')"},
             },
             "required": ["datasource_uid", "query"],
         },
@@ -61,10 +62,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "text":       {"type": "string", "description": "Annotation text"},
-                "tags":       {"type": "array", "items": {"type": "string"}},
+                "text": {"type": "string", "description": "Annotation text"},
+                "tags": {"type": "array", "items": {"type": "string"}},
                 "dashboard_id": {"type": "integer"},
-                "time":       {"type": "integer", "description": "Unix timestamp in ms"},
+                "time": {"type": "integer", "description": "Unix timestamp in ms"},
             },
             "required": ["text"],
         },
@@ -75,7 +76,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "state": {"type": "string", "enum": ["firing", "pending", "inactive", "all"], "default": "all"},
+                "state": {
+                    "type": "string",
+                    "enum": ["firing", "pending", "inactive", "all"],
+                    "default": "all",
+                },
             },
         },
     },
@@ -86,7 +91,7 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "rule_uid": {"type": "string"},
-                "message":  {"type": "string"},
+                "message": {"type": "string"},
             },
             "required": ["rule_uid"],
         },
@@ -103,14 +108,20 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             if tool_name == "grafana_get_dashboard":
-                resp = await client.get(f"{_BASE_URL}/api/dashboards/uid/{params['uid']}", headers=headers)
+                resp = await client.get(
+                    f"{_BASE_URL}/api/dashboards/uid/{params['uid']}", headers=headers
+                )
                 resp.raise_for_status()
                 return resp.json()
 
             if tool_name == "grafana_list_dashboards":
                 resp = await client.get(
                     f"{_BASE_URL}/api/search",
-                    params={"query": params.get("query", ""), "type": "dash-db", "limit": params.get("limit", 20)},
+                    params={
+                        "query": params.get("query", ""),
+                        "type": "dash-db",
+                        "limit": params.get("limit", 20),
+                    },
                     headers=headers,
                 )
                 resp.raise_for_status()
@@ -118,13 +129,15 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
 
             if tool_name == "grafana_query_datasource":
                 body = {
-                    "queries": [{
-                        "datasource": {"uid": params["datasource_uid"]},
-                        "expr":       params["query"],
-                        "refId":      "A",
-                    }],
+                    "queries": [
+                        {
+                            "datasource": {"uid": params["datasource_uid"]},
+                            "expr": params["query"],
+                            "refId": "A",
+                        }
+                    ],
                     "from": params.get("from", "now-1h"),
-                    "to":   params.get("to",   "now"),
+                    "to": params.get("to", "now"),
                 }
                 resp = await client.post(f"{_BASE_URL}/api/ds/query", json=body, headers=headers)
                 resp.raise_for_status()
@@ -132,6 +145,7 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
 
             if tool_name == "grafana_create_annotation":
                 import time as _time
+
                 body = {
                     "text": params["text"],
                     "tags": params.get("tags", []),
@@ -146,7 +160,9 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
             if tool_name == "grafana_get_alert_rules":
                 state = params.get("state", "all")
                 qs = {} if state == "all" else {"state": state}
-                resp = await client.get(f"{_BASE_URL}/api/v1/provisioning/alert-rules", params=qs, headers=headers)
+                resp = await client.get(
+                    f"{_BASE_URL}/api/v1/provisioning/alert-rules", params=qs, headers=headers
+                )
                 resp.raise_for_status()
                 return {"alert_rules": resp.json()}
 

@@ -3,10 +3,12 @@
 Evaluates agents on multi-turn conversations where context carries across
 turns. Scores: coherence, goal achievement, consistency, and relevance.
 """
+
 from __future__ import annotations
 
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Coroutine
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.providers.base import LLMProvider
@@ -24,7 +26,9 @@ class MultiTurnCase:
     name: str
     turns: list[Turn]  # the full expected conversation flow
     expected_final: str  # what the assistant's last turn should achieve
-    eval_criteria: list[str] = field(default_factory=list)  # e.g. ["mentions Python", "asks clarifying question"]
+    eval_criteria: list[str] = field(
+        default_factory=list
+    )  # e.g. ["mentions Python", "asks clarifying question"]
 
 
 @dataclass
@@ -57,13 +61,13 @@ class MultiTurnEvaluator:
         LLM provider used as the judge.
     """
 
-    def __init__(self, provider: "LLMProvider") -> None:
+    def __init__(self, provider: LLMProvider) -> None:
         self._provider = provider
 
     async def evaluate(
         self,
         case: MultiTurnCase,
-        agent_fn: "Callable[[list[Turn]], Coroutine[Any, Any, str]]",
+        agent_fn: Callable[[list[Turn]], Coroutine[Any, Any, str]],
     ) -> MultiTurnResult:
         """Run the case against *agent_fn* and score the conversation.
 
@@ -98,9 +102,9 @@ class MultiTurnEvaluator:
                 )
                 per_turn_scores.append(turn_score)
             except Exception:
-                per_turn_scores.append(TurnScore(
-                    turn_index=i, coherence=0.0, relevance=0.0, content=""
-                ))
+                per_turn_scores.append(
+                    TurnScore(turn_index=i, coherence=0.0, relevance=0.0, content="")
+                )
 
         # Judge overall goal achievement
         final_reply = history[-1].content if history and history[-1].role == "assistant" else ""
@@ -112,7 +116,8 @@ class MultiTurnEvaluator:
 
         coherence = (
             sum(s.coherence for s in per_turn_scores) / len(per_turn_scores)
-            if per_turn_scores else 0.0
+            if per_turn_scores
+            else 0.0
         )
         goal_score = 1.0 if goal_achieved else 0.0
         criteria_score = len(criteria_met) / max(len(case.eval_criteria), 1)
@@ -143,16 +148,14 @@ class MultiTurnEvaluator:
         try:
             from app.providers.base import CompletionRequest, Message
 
-            history_text = "\n".join(
-                f"{t.role.upper()}: {t.content[:200]}" for t in history[-4:]
-            )
+            history_text = "\n".join(f"{t.role.upper()}: {t.content[:200]}" for t in history[-4:])
             req = CompletionRequest(
                 messages=[
                     Message(
                         role="user",
                         content=(
                             "Rate the ASSISTANT turn for COHERENCE (0-10) and RELEVANCE (0-10). "
-                            "Return only JSON: {\"coherence\": 8, \"relevance\": 7}.\n\n"
+                            'Return only JSON: {"coherence": 8, "relevance": 7}.\n\n'
                             f"Conversation:\n{history_text}\n\n"
                             f"ASSISTANT turn to rate: {turn.content[:300]}"
                         ),
@@ -168,9 +171,13 @@ class MultiTurnEvaluator:
             data = _json.loads((resp.content or "{}").strip())
             coh = min(10.0, float(data.get("coherence", 5))) / 10.0
             rel = min(10.0, float(data.get("relevance", 5))) / 10.0
-            return TurnScore(turn_index=turn_index, coherence=coh, relevance=rel, content=turn.content)
+            return TurnScore(
+                turn_index=turn_index, coherence=coh, relevance=rel, content=turn.content
+            )
         except Exception:
-            return TurnScore(turn_index=turn_index, coherence=0.5, relevance=0.5, content=turn.content)
+            return TurnScore(
+                turn_index=turn_index, coherence=0.5, relevance=0.5, content=turn.content
+            )
 
     async def _judge_goal(
         self,
@@ -186,8 +193,8 @@ class MultiTurnEvaluator:
             else:
                 failed.append(criterion)
         # Simple goal achievement: check if expected phrases appear
-        goal_achieved = bool(expected and any(
-            phrase.lower() in final_reply.lower()
-            for phrase in expected.split()[:5]
-        ))
+        goal_achieved = bool(
+            expected
+            and any(phrase.lower() in final_reply.lower() for phrase in expected.split()[:5])
+        )
         return goal_achieved, met, failed

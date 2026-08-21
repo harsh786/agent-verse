@@ -1,5 +1,7 @@
 """VectorIndexPolicy — selects vector index strategy per collection size and dimension."""
+
 from __future__ import annotations
+
 import enum
 
 

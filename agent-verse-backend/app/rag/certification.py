@@ -18,9 +18,7 @@ from app.rag.catalogue import (
 )
 from app.rag.contracts import RAGStrategy
 
-CertificationProbe = Callable[
-    [RAGStrategy], Awaitable[Mapping[str, bool | float | str]]
-]
+CertificationProbe = Callable[[RAGStrategy], Awaitable[Mapping[str, bool | float | str]]]
 _BOOLEAN_CHECKS = (
     "execution_passed",
     "replay_passed",
@@ -222,9 +220,7 @@ class RAGCertificationRunner:
                     observed_at=observed,
                 )
             )
-        return build_report(
-            tuple(results), environment=environment, live=live, now=observed
-        )
+        return build_report(tuple(results), environment=environment, live=live, now=observed)
 
 
 __all__ = [

@@ -4,6 +4,7 @@ Environment:
   ZUORA_CLIENT_ID:     Zuora OAuth client ID
   ZUORA_CLIENT_SECRET: Zuora OAuth client secret
 """
+
 from __future__ import annotations
 
 import os
@@ -50,7 +51,11 @@ TOOL_DEFINITIONS = [
                 "account_key": {"type": "string"},
                 "contract_effective_date": {"type": "string", "description": "YYYY-MM-DD"},
                 "subscribe_to_rate_plans": {"type": "array", "items": {"type": "object"}},
-                "term_type": {"type": "string", "enum": ["TERMED", "EVERGREEN"], "default": "EVERGREEN"},
+                "term_type": {
+                    "type": "string",
+                    "enum": ["TERMED", "EVERGREEN"],
+                    "default": "EVERGREEN",
+                },
             },
             "required": ["account_key", "contract_effective_date", "subscribe_to_rate_plans"],
         },
@@ -62,7 +67,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "page_size": {"type": "integer", "default": 20},
-                "zoql": {"type": "string", "description": "Optional ZOQL filter, e.g. Status='Active'"},
+                "zoql": {
+                    "type": "string",
+                    "description": "Optional ZOQL filter, e.g. Status='Active'",
+                },
             },
         },
     },
@@ -99,7 +107,11 @@ async def _get_token() -> str:
     async with httpx.AsyncClient(timeout=30.0) as c:
         r = await c.post(
             TOKEN_URL,
-            data={"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret},
+            data={
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
         )
         r.raise_for_status()
         return r.json()["access_token"]
@@ -148,7 +160,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "zuora_list_accounts":
                 zoql = arguments.get("zoql", "select Id, Name, Status from Account")
                 payload = {
-                    "queryString": zoql if "select" in zoql.lower() else f"select Id, Name, Status from Account where {zoql}",
+                    "queryString": zoql
+                    if "select" in zoql.lower()
+                    else f"select Id, Name, Status from Account where {zoql}",
                 }
                 r = await c.post(f"{BASE}/action/query", json=payload)
                 r.raise_for_status()

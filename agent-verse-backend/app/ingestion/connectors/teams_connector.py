@@ -4,6 +4,7 @@ Uses Microsoft Graph API.
 Cursor: last message createdDateTime per channel.
 Supports teams, channels, and direct messages.
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,9 +32,11 @@ class TeamsConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             import httpx
+
             token = await self._get_token(config)
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(
@@ -44,7 +47,8 @@ class TeamsConnector(BaseConnector):
                 user = resp.json()
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
-                ok=True, latency_ms=latency,
+                ok=True,
+                latency_ms=latency,
                 metadata={"user": user.get("displayName"), "email": user.get("mail")},
             )
         except Exception as exc:
@@ -94,7 +98,9 @@ class TeamsConnector(BaseConnector):
                             doc_id=str(uuid.uuid4()),
                             source_id=config.source_id,
                             tenant_id=config.tenant_id,
-                            source_url=msg.get("webUrl", f"teams://{team_id}/{channel_id}/{msg.get('id')}"),
+                            source_url=msg.get(
+                                "webUrl", f"teams://{team_id}/{channel_id}/{msg.get('id')}"
+                            ),
                             content=text.encode(),
                             content_type="text/plain",
                             metadata={"author": author, "channel": channel_id, "ts": ts},
@@ -105,6 +111,7 @@ class TeamsConnector(BaseConnector):
     async def _get_token(self, config: SourceConfig) -> str:
         """Acquire OAuth2 token via client credentials flow."""
         import httpx
+
         cc = config.connection_config
         tenant = cc.get("tenant_id", "")
         client_id = cc.get("client_id", "")

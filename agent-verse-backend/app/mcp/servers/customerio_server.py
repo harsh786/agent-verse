@@ -5,6 +5,7 @@ Environment:
   CUSTOMERIO_API_KEY: Customer.io API key (for tracking API)
   CUSTOMERIO_APP_API_KEY: Customer.io App API key (for app API v1)
 """
+
 from __future__ import annotations
 
 import os
@@ -64,7 +65,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "to": {"type": "string", "description": "Recipient email"},
-                "transactional_message_id": {"type": "string", "description": "Customer.io transactional message ID"},
+                "transactional_message_id": {
+                    "type": "string",
+                    "description": "Customer.io transactional message ID",
+                },
                 "message_data": {"type": "object", "description": "Template variable values"},
                 "from_email": {"type": "string"},
                 "reply_to": {"type": "string"},
@@ -103,6 +107,7 @@ TOOL_DEFINITIONS = [
 
 def _track_headers() -> dict[str, str]:
     import base64
+
     site_id = os.getenv("CUSTOMERIO_SITE_ID", "")
     api_key = os.getenv("CUSTOMERIO_API_KEY", "")
     creds = base64.b64encode(f"{site_id}:{api_key}".encode()).decode()
@@ -125,7 +130,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "CUSTOMERIO_SITE_ID/CUSTOMERIO_API_KEY or CUSTOMERIO_APP_API_KEY required"}
 
     try:
-        if tool_name in ("customerio_identify", "customerio_track_event", "customerio_delete_customer"):
+        if tool_name in (
+            "customerio_identify",
+            "customerio_track_event",
+            "customerio_delete_customer",
+        ):
             async with httpx.AsyncClient(
                 base_url=TRACK_BASE, headers=_track_headers(), timeout=30.0
             ) as c:
@@ -143,9 +152,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                         "name": arguments["event_name"],
                         "data": arguments.get("data", {}),
                     }
-                    r = await c.post(
-                        f"/customers/{arguments['customer_id']}/events", json=payload
-                    )
+                    r = await c.post(f"/customers/{arguments['customer_id']}/events", json=payload)
                     return {"success": r.status_code == 200, "status_code": r.status_code}
 
                 elif tool_name == "customerio_delete_customer":

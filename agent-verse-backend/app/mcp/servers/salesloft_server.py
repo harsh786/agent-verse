@@ -3,6 +3,7 @@
 Environment variables:
   SALESLOFT_API_KEY: Salesloft API key
 """
+
 from __future__ import annotations
 
 import os
@@ -43,7 +44,10 @@ TOOL_DEFINITIONS = [
                 "title": {"type": "string"},
                 "company": {"type": "string"},
                 "phone": {"type": "string"},
-                "owner_id": {"type": "integer", "description": "Salesloft user ID to assign ownership"},
+                "owner_id": {
+                    "type": "integer",
+                    "description": "Salesloft user ID to assign ownership",
+                },
             },
             "required": ["email_address"],
         },
@@ -67,9 +71,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "person_id": {"type": "integer", "description": "Salesloft person ID"},
-                "cadence_id": {"type": "integer", "description": "Cadence ID to enrol the person in"},
+                "cadence_id": {
+                    "type": "integer",
+                    "description": "Cadence ID to enrol the person in",
+                },
                 "user_id": {"type": "integer", "description": "Sending user ID"},
-                "step_id": {"type": "integer", "description": "Specific step to start at (optional)"},
+                "step_id": {
+                    "type": "integer",
+                    "description": "Specific step to start at (optional)",
+                },
             },
             "required": ["person_id", "cadence_id"],
         },
@@ -82,7 +92,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "per_page": {"type": "integer", "default": 25},
                 "page": {"type": "integer", "default": 1},
-                "updated_at[gt]": {"type": "string", "description": "Filter calls updated after date (ISO 8601)"},
+                "updated_at[gt]": {
+                    "type": "string",
+                    "description": "Filter calls updated after date (ISO 8601)",
+                },
                 "person_id": {"type": "integer", "description": "Filter by person ID"},
             },
         },
@@ -98,7 +111,10 @@ TOOL_DEFINITIONS = [
                     "items": {"type": "integer"},
                     "description": "Filter by specific user IDs",
                 },
-                "date_range_start": {"type": "string", "description": "Report start date (YYYY-MM-DD)"},
+                "date_range_start": {
+                    "type": "string",
+                    "description": "Report start date (YYYY-MM-DD)",
+                },
                 "date_range_end": {"type": "string", "description": "Report end date (YYYY-MM-DD)"},
             },
         },

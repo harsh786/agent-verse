@@ -1,22 +1,23 @@
 """Structured error classification for agent execution."""
+
 from __future__ import annotations
 
 import enum
 
 
 class ErrorClass(enum.StrEnum):
-    TOOL_TIMEOUT       = "tool_timeout"
-    LLM_REFUSAL        = "llm_refusal"
-    PERMISSION_DENIED  = "permission_denied"
-    BUDGET_EXCEEDED    = "budget_exceeded"
-    MAX_ITERATIONS     = "max_iterations"
-    GUARDRAIL_BLOCKED  = "guardrail_blocked"
-    CIRCUIT_OPEN       = "circuit_open"
-    TOOL_NOT_FOUND     = "tool_not_found"
-    AUTH_FAILED        = "auth_failed"
-    CHECKPOINT_FAILED  = "checkpoint_failed"
-    VALIDATION_ERROR   = "validation_error"
-    UNKNOWN            = "unknown"
+    TOOL_TIMEOUT = "tool_timeout"
+    LLM_REFUSAL = "llm_refusal"
+    PERMISSION_DENIED = "permission_denied"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    MAX_ITERATIONS = "max_iterations"
+    GUARDRAIL_BLOCKED = "guardrail_blocked"
+    CIRCUIT_OPEN = "circuit_open"
+    TOOL_NOT_FOUND = "tool_not_found"
+    AUTH_FAILED = "auth_failed"
+    CHECKPOINT_FAILED = "checkpoint_failed"
+    VALIDATION_ERROR = "validation_error"
+    UNKNOWN = "unknown"
 
 
 def classify_error(exc: Exception) -> str:

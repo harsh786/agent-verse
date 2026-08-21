@@ -1,7 +1,10 @@
 """Public status page API — no authentication required."""
+
 from __future__ import annotations
+
 import time
 from typing import Any
+
 from fastapi import APIRouter, Request
 
 router = APIRouter(prefix="/status", tags=["status"])

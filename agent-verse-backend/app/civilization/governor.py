@@ -3,6 +3,7 @@
 The ONLY component that may create or retire a society member.
 Every decision is audited. Stateless across calls except via DB/Redis.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -220,18 +221,25 @@ class Governor:
         retired = []
         try:
             from sqlalchemy import text
+
             async with self._db() as session:
-                rows = (await session.execute(text("""
+                rows = (
+                    await session.execute(
+                        text("""
                     SELECT id, agent_id, reputation, last_active_at
                     FROM civilization_agents
                     WHERE civilization_id = :cid AND tenant_id = :tid
                       AND status = 'active'
                     ORDER BY reputation ASC, last_active_at ASC
-                """), {"cid": self._civilization_id, "tid": self._tenant_id})).fetchall()
+                """),
+                        {"cid": self._civilization_id, "tid": self._tenant_id},
+                    )
+                ).fetchall()
 
             # Count active members to ensure min_viable_roster
             active_count = len(rows)
             from datetime import timedelta
+
             idle_cutoff = datetime.now(UTC) - timedelta(seconds=self._constitution.idle_ttl_seconds)
 
             for row in rows:
@@ -242,9 +250,8 @@ class Governor:
                 if last_active is not None and last_active.tzinfo is None:
                     last_active = last_active.replace(tzinfo=UTC)
                 should_retire = (
-                    (reputation is not None and reputation < self._constitution.reputation_floor) or
-                    (last_active is not None and last_active < idle_cutoff)
-                )
+                    reputation is not None and reputation < self._constitution.reputation_floor
+                ) or (last_active is not None and last_active < idle_cutoff)
                 if should_retire:
                     await self._retire_member(member_id, agent_id)
                     retired.append(agent_id)
@@ -278,6 +285,7 @@ class Governor:
         # GAP 2: Emit CIVILIZATION_PAUSED event
         try:
             from app.civilization.events import CivEventType, emit_event
+
             await emit_event(
                 civilization_id=self._civilization_id,
                 tenant_id=self._tenant_id,
@@ -294,14 +302,13 @@ class Governor:
         await self._set_civilization_status("active")
         if self._redis is not None:
             try:
-                await self._redis.delete(
-                    f"civ_paused:{self._tenant_id}:{self._civilization_id}"
-                )
+                await self._redis.delete(f"civ_paused:{self._tenant_id}:{self._civilization_id}")
             except Exception as exc:
                 logger.warning("governor_resume_redis_failed", error=str(exc))
         # GAP 2: Emit CIVILIZATION_RESUMED event
         try:
             from app.civilization.events import CivEventType, emit_event
+
             await emit_event(
                 civilization_id=self._civilization_id,
                 tenant_id=self._tenant_id,
@@ -318,9 +325,7 @@ class Governor:
         if redis_sync is None:
             return False
         try:
-            return bool(redis_sync.get(
-                f"civ_paused:{self._tenant_id}:{self._civilization_id}"
-            ))
+            return bool(redis_sync.get(f"civ_paused:{self._tenant_id}:{self._civilization_id}"))
         except Exception:
             return False
 
@@ -338,8 +343,11 @@ class Governor:
             return metrics
         try:
             from sqlalchemy import text
+
             async with self._db() as session:
-                row = (await session.execute(text("""
+                row = (
+                    await session.execute(
+                        text("""
                     SELECT
                         COUNT(*) FILTER (WHERE status != 'retired') as total,
                         COUNT(*) FILTER (WHERE status = 'active') as concurrent,
@@ -349,7 +357,10 @@ class Governor:
                         ) as spawn_rate
                     FROM civilization_agents
                     WHERE civilization_id = :cid AND tenant_id = :tid
-                """), {"cid": self._civilization_id, "tid": self._tenant_id})).fetchone()
+                """),
+                        {"cid": self._civilization_id, "tid": self._tenant_id},
+                    )
+                ).fetchone()
             if row:
                 metrics["total_agents"] = int(row[0] or 0)
                 metrics["concurrent_agents"] = int(row[1] or 0)
@@ -366,10 +377,9 @@ class Governor:
         try:
             agents = await self._agent_store.list_async(tenant_ctx=tenant_ctx)
             for agent in agents:
-                if (
-                    agent.get("goal_template", "").lower().find(capability.lower()) != -1
-                    and await self._is_idle_member(agent.get("agent_id", ""))
-                ):
+                if agent.get("goal_template", "").lower().find(
+                    capability.lower()
+                ) != -1 and await self._is_idle_member(agent.get("agent_id", "")):
                     return agent
         except Exception:
             pass
@@ -380,15 +390,21 @@ class Governor:
             return False
         try:
             from sqlalchemy import text
+
             async with self._db() as session:
-                row = (await session.execute(text(
-                    "SELECT status FROM civilization_agents "
-                    "WHERE agent_id=:aid AND civilization_id=:cid AND tenant_id=:tid"
-                ), {
-                    "aid": agent_id,
-                    "cid": self._civilization_id,
-                    "tid": self._tenant_id,
-                })).fetchone()
+                row = (
+                    await session.execute(
+                        text(
+                            "SELECT status FROM civilization_agents "
+                            "WHERE agent_id=:aid AND civilization_id=:cid AND tenant_id=:tid"
+                        ),
+                        {
+                            "aid": agent_id,
+                            "cid": self._civilization_id,
+                            "tid": self._tenant_id,
+                        },
+                    )
+                ).fetchone()
             return row is not None and row[0] == "idle"
         except Exception:
             return False
@@ -406,8 +422,7 @@ class Governor:
             try:
                 raw_config = await self._planner.plan(
                     command=(
-                        f"Create an agent for capability: {requested_capability}."
-                        f" Goal: {goal_text}"
+                        f"Create an agent for capability: {requested_capability}. Goal: {goal_text}"
                     ),
                     tenant_ctx=tenant_ctx,
                 )
@@ -455,8 +470,10 @@ class Governor:
             return
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
-                await session.execute(text("""
+                await session.execute(
+                    text("""
                     INSERT INTO civilization_agents
                         (id, civilization_id, tenant_id, agent_id, role, parent_agent_id,
                          reputation, status, depth, budget_usd, budget_spent_usd,
@@ -466,11 +483,17 @@ class Governor:
                          :depth, :budget, 0.0, NOW(), NOW())
                     ON CONFLICT (civilization_id, agent_id) DO UPDATE
                         SET status = 'active', last_active_at = NOW()
-                """), {
-                    "id": uuid.uuid4().hex, "cid": self._civilization_id,
-                    "tid": self._tenant_id, "aid": agent_id,
-                    "parent": parent_agent_id, "depth": depth, "budget": budget_usd,
-                })
+                """),
+                    {
+                        "id": uuid.uuid4().hex,
+                        "cid": self._civilization_id,
+                        "tid": self._tenant_id,
+                        "aid": agent_id,
+                        "parent": parent_agent_id,
+                        "depth": depth,
+                        "budget": budget_usd,
+                    },
+                )
         except Exception as exc:
             logger.warning("governor_register_member_failed", error=str(exc))
 
@@ -479,12 +502,16 @@ class Governor:
             return
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
-                await session.execute(text("""
+                await session.execute(
+                    text("""
                     UPDATE civilization_agents
                     SET status = 'retired', retired_at = NOW()
                     WHERE id = :id AND tenant_id = :tid
-                """), {"id": member_id, "tid": self._tenant_id})
+                """),
+                    {"id": member_id, "tid": self._tenant_id},
+                )
         except Exception as exc:
             logger.warning("governor_retire_failed", member_id=member_id, error=str(exc))
 
@@ -493,12 +520,16 @@ class Governor:
             return
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
-                await session.execute(text("""
+                await session.execute(
+                    text("""
                     UPDATE civilization_agents
                     SET status = 'retired', retired_at = NOW()
                     WHERE agent_id = :aid AND civilization_id = :cid AND tenant_id = :tid
-                """), {"aid": agent_id, "cid": self._civilization_id, "tid": self._tenant_id})
+                """),
+                    {"aid": agent_id, "cid": self._civilization_id, "tid": self._tenant_id},
+                )
         except Exception as exc:
             logger.warning("governor_retire_by_agent_failed", error=str(exc))
 
@@ -507,6 +538,7 @@ class Governor:
         # GAP 2: Emit BREACH_DETECTED and CIVILIZATION_PAUSED events
         try:
             from app.civilization.events import CivEventType, emit_event
+
             await emit_event(
                 civilization_id=self._civilization_id,
                 tenant_id=self._tenant_id,
@@ -529,6 +561,7 @@ class Governor:
         if self._hitl is not None:
             try:
                 from app.tenancy.context import PlanTier, TenantContext
+
                 tenant_ctx = TenantContext(
                     tenant_id=self._tenant_id,
                     plan=PlanTier.ENTERPRISE,
@@ -551,11 +584,15 @@ class Governor:
             return
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
-                await session.execute(text(
-                    "UPDATE civilizations SET status=:status, updated_at=NOW() "
-                    "WHERE id=:id AND tenant_id=:tid"
-                ), {"status": status, "id": self._civilization_id, "tid": self._tenant_id})
+                await session.execute(
+                    text(
+                        "UPDATE civilizations SET status=:status, updated_at=NOW() "
+                        "WHERE id=:id AND tenant_id=:tid"
+                    ),
+                    {"status": status, "id": self._civilization_id, "tid": self._tenant_id},
+                )
         except Exception as exc:
             logger.warning("governor_set_status_failed", error=str(exc))
 
@@ -568,6 +605,7 @@ class Governor:
         verdict: SpawnVerdict,
     ) -> None:
         from app.civilization.metrics import record_spawn
+
         record_spawn(
             tenant_id=self._tenant_id,
             civilization_id=self._civilization_id,
@@ -581,6 +619,7 @@ class Governor:
                     from app.governance.audit import AuditEvent
                     from app.governance.permissions import ActionLevel
                     from app.tenancy.context import PlanTier, TenantContext
+
                     self._audit_log.record(
                         AuditEvent(
                             goal_id=f"spawn_{self._civilization_id}",
@@ -602,30 +641,35 @@ class Governor:
                     )
                 except Exception as exc:
                     import logging
+
                     logging.getLogger(__name__).warning("governor_audit_log_failed: %s", exc)
             return
         try:
             import json
 
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
-                await session.execute(text("""
+                await session.execute(
+                    text("""
                     INSERT INTO spawn_requests
                         (id, civilization_id, tenant_id, requester_agent_id, requested_capability,
                          goal_text, decision, reason, verdict, created_at)
                     VALUES
                         (:id, :cid, :tid, :req, :cap, :goal, :dec, :reason, CAST(:verdict AS jsonb), NOW())
-                """), {
-                    "id": uuid.uuid4().hex,
-                    "cid": self._civilization_id,
-                    "tid": self._tenant_id,
-                    "req": requester_agent_id,
-                    "cap": requested_capability[:200],
-                    "goal": goal_text[:500],
-                    "dec": verdict.decision.value,
-                    "reason": verdict.reason[:500],
-                    "verdict": json.dumps(verdict.snapshot),
-                })
+                """),
+                    {
+                        "id": uuid.uuid4().hex,
+                        "cid": self._civilization_id,
+                        "tid": self._tenant_id,
+                        "req": requester_agent_id,
+                        "cap": requested_capability[:200],
+                        "goal": goal_text[:500],
+                        "dec": verdict.decision.value,
+                        "reason": verdict.reason[:500],
+                        "verdict": json.dumps(verdict.snapshot),
+                    },
+                )
         except Exception as exc:
             logger.warning("governor_audit_spawn_failed", error=str(exc))
 
@@ -635,6 +679,7 @@ class Governor:
                 from app.governance.audit import AuditEvent
                 from app.governance.permissions import ActionLevel
                 from app.tenancy.context import PlanTier, TenantContext
+
                 self._audit_log.record(
                     AuditEvent(
                         goal_id=f"spawn_{self._civilization_id}",
@@ -656,4 +701,5 @@ class Governor:
                 )
             except Exception as exc:
                 import logging
+
                 logging.getLogger(__name__).warning("governor_audit_log_failed: %s", exc)

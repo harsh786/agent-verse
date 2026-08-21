@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import enum
 from dataclasses import dataclass
 
@@ -21,7 +22,7 @@ class DependencyHealth:
     kg_store: DepStatus = DepStatus.UNKNOWN
 
     @classmethod
-    def all_healthy(cls) -> "DependencyHealth":
+    def all_healthy(cls) -> DependencyHealth:
         return cls(
             postgres=DepStatus.HEALTHY,
             redis=DepStatus.HEALTHY,

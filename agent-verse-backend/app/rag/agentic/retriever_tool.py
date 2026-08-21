@@ -46,9 +46,7 @@ class RetrievalResult:
 
     def __post_init__(self) -> None:
         if not self.context_text:
-            self.context_text = "\n\n".join(
-                str(chunk.get("content", "")) for chunk in self.chunks
-            )
+            self.context_text = "\n\n".join(str(chunk.get("content", "")) for chunk in self.chunks)
 
 
 class RetrieverTool:
@@ -131,9 +129,7 @@ class RetrieverTool:
             )
             for collection_id, citation in ordered
         ]
-        resolved_ids = sorted(
-            {result.resolved_strategy_id.value for result in gateway_results}
-        )
+        resolved_ids = sorted({result.resolved_strategy_id.value for result in gateway_results})
         return RetrievalResult(
             query=query,
             source="knowledge_base",

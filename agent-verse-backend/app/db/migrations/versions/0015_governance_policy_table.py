@@ -1,4 +1,5 @@
 """Add governance_policies table for DB-backed policy persistence."""
+
 import sqlalchemy as sa
 from alembic import op
 

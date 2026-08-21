@@ -3,6 +3,7 @@
 Allows goals to carry visual context (screenshots, diagrams, documents)
 that the vision LLM can analyze before planning.
 """
+
 from __future__ import annotations
 
 import base64
@@ -13,9 +14,10 @@ from dataclasses import dataclass, field
 @dataclass
 class PerceptionInput:
     """Represents a goal with optional visual context."""
+
     goal_text: str
     images: list[ImageAttachment] = field(default_factory=list)
-    urls: list[str] = field(default_factory=list)   # URLs to screenshot before planning
+    urls: list[str] = field(default_factory=list)  # URLs to screenshot before planning
 
     def has_visual_context(self) -> bool:
         return bool(self.images or self.urls)
@@ -26,7 +28,7 @@ class PerceptionInput:
             return ""
         parts = ["\n## Visual Context"]
         for i, img in enumerate(self.images):
-            parts.append(f"- Image {i+1}: {img.description or 'attached image'}")
+            parts.append(f"- Image {i + 1}: {img.description or 'attached image'}")
         for url in self.urls:
             parts.append(f"- URL to analyze: {url}")
         return "\n".join(parts)
@@ -34,7 +36,7 @@ class PerceptionInput:
 
 @dataclass
 class ImageAttachment:
-    data_b64: str          # Base64-encoded image data
+    data_b64: str  # Base64-encoded image data
     mime_type: str = "image/png"
     description: str = ""  # Optional human-provided description
     width: int = 0
@@ -69,6 +71,7 @@ def resize_image_b64(data_b64: str, max_size: int = 1_000_000) -> str:
         # Try to import Pillow for resizing
         try:
             from PIL import Image  # type: ignore[import]
+
             img = Image.open(io.BytesIO(raw))
             # Scale down proportionally
             ratio = (max_size / len(raw)) ** 0.5

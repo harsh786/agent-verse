@@ -1,4 +1,5 @@
 """RAGStepNode — knowledge retrieval + LLM synthesis."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -21,6 +22,7 @@ class RAGStepNode(LLMStepNode):
         # Ensure rag is enabled even if not set in DSL (step type forces it)
         if not self.step.rag and self.step.input.get("collection"):
             from app.workflow.dsl import RAGConfig
+
             self.step = self.step.model_copy(
                 update={"rag": RAGConfig(collection=str(self.step.input.get("collection", "")))}
             )

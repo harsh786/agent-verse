@@ -4,6 +4,7 @@ All ``app.state.*`` assignments extracted from ``app/main.py``
 so the application factory stays slim.  Receives the FastAPI app
 instance and populates app.state with every service.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -25,15 +26,14 @@ def build_services(
     """
     # ── Import everything that was previously imported at module level ─────
     from app.main import (  # type: ignore[import]  # re-use main imports
-        _register_error_handlers,
         AgentStore,
         AuditLog,
         CostController,
+        FakeProvider,
         GoalService,
         HITLGateway,
         PolicyEngine,
         TenantService,
-        FakeProvider,
         logger,
     )
     # Note: the body below is verbatim from create_app() — no semantic changes.
@@ -48,10 +48,12 @@ def build_services(
     # C6: Use the declarative provider registry directly; fall back to wrapper on error
     try:
         from app.providers.registry import resolve_provider as _resolve_provider_registry
+
         _app_provider = _resolve_provider_registry()
         # Production safety guard: refuse FakeProvider in production
         if isinstance(_app_provider, FakeProvider):
             import os as _os
+
             if _os.getenv("ENVIRONMENT", "development").lower() == "production":
                 raise RuntimeError(
                     "FATAL: No LLM provider configured for production. "
@@ -62,11 +64,13 @@ def build_services(
                 "fake_provider_active_dev_only",
                 message="FakeProvider active — set ANTHROPIC_API_KEY or OPENAI_API_KEY.",
             )
-            _app_provider = FakeProvider(responses=[
-                '{"steps": ["Complete the requested task"]}',
-                "Task executed successfully",
-                '{"success": true, "reason": "Goal achieved"}',
-            ])
+            _app_provider = FakeProvider(
+                responses=[
+                    '{"steps": ["Complete the requested task"]}',
+                    "Task executed successfully",
+                    '{"success": true, "reason": "Goal achieved"}',
+                ]
+            )
         logger.info("provider_resolved_via_registry")
     except Exception as _reg_exc:
         logger.warning("provider_registry_failed_fallback", error=str(_reg_exc)[:60])
@@ -79,6 +83,7 @@ def build_services(
     # In-memory ToolResultCache (upgraded with Redis in lifespan)
     try:
         from app.mcp.tool_cache import ToolResultCache
+
         _tool_cache_inmem = ToolResultCache()
     except Exception:
         _tool_cache_inmem = None
@@ -117,6 +122,7 @@ def build_services(
     # OpenAICompatibleProvider if OPENAI_API_KEY set,
     # LocalEmbedProvider if SENTENCE_TRANSFORMERS_MODEL set, else None.
     import os
+
     _embedder: Any = None
     from app.core.config import get_provider_env
 
@@ -126,12 +132,14 @@ def build_services(
     if _voyage_key:
         try:
             from app.providers.voyage_provider import VoyageProvider
+
             _embedder = VoyageProvider(api_key=_voyage_key)
         except Exception:
             pass
     elif _openai_key:
         try:
             from app.providers.openai_compatible import OpenAICompatibleProvider
+
             _embedder = OpenAICompatibleProvider(
                 api_key=_openai_key, default_model="text-embedding-3-small"
             )
@@ -140,12 +148,14 @@ def build_services(
     elif get_provider_env("GOOGLE_API_KEY"):
         try:
             from app.providers.gemini_provider import GeminiProvider
+
             _embedder = GeminiProvider(api_key=get_provider_env("GOOGLE_API_KEY"))
         except Exception:
             pass
     elif os.getenv("SENTENCE_TRANSFORMERS_MODEL", ""):
         try:
             from app.providers.voyage_provider import LocalEmbedProvider
+
             _embedder = LocalEmbedProvider(
                 model_name=os.getenv("SENTENCE_TRANSFORMERS_MODEL", "all-MiniLM-L6-v2")
             )
@@ -159,6 +169,7 @@ def build_services(
 
     # Wire ModelRouter: selects optimal model per task type based on available provider
     from app.agent.model_router import ModelRouter
+
     try:
         _mr_provider = "openai" if _openai_key else ("anthropic" if _anthropic_key else "anthropic")
         _model_router: Any = ModelRouter(provider_name=_mr_provider)
@@ -176,17 +187,13 @@ def build_services(
         if config_store is not None:
             tenant_config = await config_store.get_config(tenant_context.tenant_id)
         if tenant_config is None:
-            tenant_config = getattr(app.state, "_llm_configs", {}).get(
-                tenant_context.tenant_id
-            )
+            tenant_config = getattr(app.state, "_llm_configs", {}).get(tenant_context.tenant_id)
 
         if tenant_config is not None:
             encrypted_key = str(tenant_config.get("encrypted_key") or "")
             provider_name = str(tenant_config.get("provider") or "")
             configured_model = str(
-                tenant_config.get("model")
-                or tenant_config.get("default_model")
-                or ""
+                tenant_config.get("model") or tenant_config.get("default_model") or ""
             ).strip()
             if not encrypted_key or not provider_name:
                 return None
@@ -232,9 +239,7 @@ def build_services(
         return ResolvedLLM(
             provider=_app_provider,
             model=model,
-            provider_type=str(
-                getattr(_app_provider, "_agentverse_provider_type", "")
-            ),
+            provider_type=str(getattr(_app_provider, "_agentverse_provider_type", "")),
         )
 
     _web_search_capability = build_safe_web_search_capability(
@@ -261,16 +266,12 @@ def build_services(
             policy_services=(_policy_engine, _cost, _hitl),
             cost_controller=_cost,
             collection_authorizer=KnowledgeStoreCollectionAuthorizer(_knowledge_store),
-            strategy_capabilities=core_strategy_capabilities(
-                _rag_adapter_configuration
-            ),
+            strategy_capabilities=core_strategy_capabilities(_rag_adapter_configuration),
             raft_service=_raft_service,
             colbert_checkpoint=settings.colbert_checkpoint,
         )
     )
-    _retrieval_gateways_to_close: dict[int, object] = {
-        id(_retrieval_gateway): _retrieval_gateway
-    }
+    _retrieval_gateways_to_close: dict[int, object] = {id(_retrieval_gateway): _retrieval_gateway}
 
     from app.rpa.executor import RPAExecutor
     from app.rpa.session import RPASessionStore
@@ -295,9 +296,7 @@ def build_services(
     from app.perception.browser_agent import BrowserAgent
     from app.perception.page_analyzer import PageAnalyzer
 
-    _browser_agent = BrowserAgent(
-        vision_provider=_embedder if _supports_vision else None
-    )
+    _browser_agent = BrowserAgent(vision_provider=_embedder if _supports_vision else None)
     _page_analyzer = PageAnalyzer(browser_agent=_browser_agent)
 
     _task_queue = CeleryGoalTaskQueue() if manage_pools and settings.redis_url else None
@@ -314,7 +313,6 @@ def build_services(
         schedule_store=_schedule_store,
         knowledge_store=_knowledge_store,
     )
-
 
     # Attach all services to app.state (delegated from caller's namespace)
     # This module mutates app.state directly via the extracted code above.

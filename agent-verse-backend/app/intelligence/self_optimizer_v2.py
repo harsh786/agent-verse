@@ -13,6 +13,7 @@ Additional fixes:
 Integration point (Amendment 9.4):
   In graph.py _node_initialize() / _node_verify() — record experiment arm and result.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -30,11 +31,11 @@ DEFAULT_MIN_GOALS: int = 5
 
 # Domain-specific success metric defaults
 DOMAIN_METRICS: dict[str, str] = {
-    "legal":      "citation_accuracy",
-    "healthcare": "eval_score",       # HIPAA-safe: no PHI in eval
-    "finance":    "compliance_rate",
-    "education":  "resolution_rate",
-    "ecommerce":  "conversion_rate",
+    "legal": "citation_accuracy",
+    "healthcare": "eval_score",  # HIPAA-safe: no PHI in eval
+    "finance": "compliance_rate",
+    "education": "resolution_rate",
+    "ecommerce": "conversion_rate",
 }
 
 
@@ -251,11 +252,15 @@ Respond with ONLY valid JSON:
                 await db.commit()
 
             # Reset tenant state for next optimization cycle
-            await self._state.update(tenant_id, agent_id, {
-                "current_experiment_id": None,
-                "goals_completed": 0,
-                "last_optimized_at": datetime.now(UTC).isoformat(),
-            })
+            await self._state.update(
+                tenant_id,
+                agent_id,
+                {
+                    "current_experiment_id": None,
+                    "goals_completed": 0,
+                    "last_optimized_at": datetime.now(UTC).isoformat(),
+                },
+            )
 
             logger.info(
                 "optimization_applied",
@@ -322,9 +327,13 @@ Respond with ONLY valid JSON:
                 )
                 await db.commit()
 
-            await self._state.update(tenant_id, agent_id, {
-                "current_experiment_id": None,
-            })
+            await self._state.update(
+                tenant_id,
+                agent_id,
+                {
+                    "current_experiment_id": None,
+                },
+            )
             logger.info(
                 "optimization_rolled_back",
                 tenant_id=tenant_id,
@@ -336,9 +345,7 @@ Respond with ONLY valid JSON:
             logger.error("rollback_error", error=str(exc))
             return False
 
-    async def get_arm_config(
-        self, tenant_id: str, agent_id: str, goal_id: str
-    ) -> dict[str, Any]:
+    async def get_arm_config(self, tenant_id: str, agent_id: str, goal_id: str) -> dict[str, Any]:
         """Return the agent config for a specific goal (control or candidate arm)."""
         arm = await self._get_arm_for_goal(tenant_id, agent_id, goal_id)
         if arm == "control":
@@ -449,22 +456,27 @@ Respond with ONLY valid JSON:
                 k: (v[:500] + "..." if isinstance(v, str) and len(v) > 500 else v)
                 for k, v in current_config.items()
             }
-            user_content = json.dumps({
-                "current_config": config_excerpt,
-                "performance_metrics": metrics,
-                "target_metric": success_metric,
-                "goal": f"Improve {success_metric}",
-            }, indent=2)
+            user_content = json.dumps(
+                {
+                    "current_config": config_excerpt,
+                    "performance_metrics": metrics,
+                    "target_metric": success_metric,
+                    "goal": f"Improve {success_metric}",
+                },
+                indent=2,
+            )
 
-            response = await provider.complete(CompletionRequest(
-                model="claude-haiku-3-5",
-                messages=[
-                    Message(role="system", content=self.OPTIMIZER_PROMPT),
-                    Message(role="user", content=user_content),
-                ],
-                max_tokens=500,
-                temperature=0.7,
-            ))
+            response = await provider.complete(
+                CompletionRequest(
+                    model="claude-haiku-3-5",
+                    messages=[
+                        Message(role="system", content=self.OPTIMIZER_PROMPT),
+                        Message(role="user", content=user_content),
+                    ],
+                    max_tokens=500,
+                    temperature=0.7,
+                )
+            )
             suggestion = json.loads(response.content.strip())
             if not isinstance(suggestion, dict):
                 return None
@@ -504,9 +516,7 @@ Respond with ONLY valid JSON:
 
         return candidate
 
-    async def _maybe_conclude_experiment(
-        self, tenant_id: str, experiment_id: str
-    ) -> None:
+    async def _maybe_conclude_experiment(self, tenant_id: str, experiment_id: str) -> None:
         """
         Fix 5: All DB operations in ONE session — no stale session after commit.
         apply_suggestion() called OUTSIDE the session (fresh connection).
@@ -555,13 +565,13 @@ Respond with ONLY valid JSON:
             threshold = float(row[1])
             agent_id_str = str(row[3])
             raw_cfg = row[4]
-            candidate_config = (
-                raw_cfg if isinstance(raw_cfg, dict) else json.loads(raw_cfg or "{}")
-            )
+            candidate_config = raw_cfg if isinstance(raw_cfg, dict) else json.loads(raw_cfg or "{}")
 
             posterior_prob = self._bayesian_prob_better(
-                ctrl_n=ctrl_n, ctrl_mean=ctrl_mean,
-                cand_n=cand_n, cand_mean=cand_mean,
+                ctrl_n=ctrl_n,
+                ctrl_mean=ctrl_mean,
+                cand_n=cand_n,
+                cand_mean=cand_mean,
             )
             uplift_pct = ((cand_mean - ctrl_mean) / max(ctrl_mean, 1e-9)) * 100
 
@@ -587,8 +597,10 @@ Respond with ONLY valid JSON:
                     WHERE id = :exp_id
                 """),
                 {
-                    "ctrl_n": ctrl_n, "cand_n": cand_n,
-                    "ctrl_mean": ctrl_mean, "cand_mean": cand_mean,
+                    "ctrl_n": ctrl_n,
+                    "cand_n": cand_n,
+                    "ctrl_mean": ctrl_mean,
+                    "cand_mean": cand_mean,
                     "uplift": round(uplift_pct, 4),
                     "prob": round(posterior_prob, 3),
                     "winner": winner,
@@ -598,9 +610,7 @@ Respond with ONLY valid JSON:
             await db.commit()
         # Apply suggestion OUTSIDE the session (fresh connection) — Fix 5
         if winner == "candidate" and agent_id_str and candidate_config is not None:
-            await self.apply_suggestion(
-                tenant_id, agent_id_str, experiment_id, candidate_config
-            )
+            await self.apply_suggestion(tenant_id, agent_id_str, experiment_id, candidate_config)
 
     @staticmethod
     def _bayesian_prob_better(
@@ -621,12 +631,8 @@ Respond with ONLY valid JSON:
             rng = np.random.default_rng()  # thread-safe: new Generator per call
             ctrl_std = max(ctrl_mean * 0.3, 1e-9)
             cand_std = max(cand_mean * 0.3, 1e-9)
-            ctrl_samples = rng.normal(
-                ctrl_mean, ctrl_std / max(ctrl_n ** 0.5, 1), n_samples
-            )
-            cand_samples = rng.normal(
-                cand_mean, cand_std / max(cand_n ** 0.5, 1), n_samples
-            )
+            ctrl_samples = rng.normal(ctrl_mean, ctrl_std / max(ctrl_n**0.5, 1), n_samples)
+            cand_samples = rng.normal(cand_mean, cand_std / max(cand_n**0.5, 1), n_samples)
             return float(np.mean(cand_samples > ctrl_samples))
         except ImportError:
             # Fallback: pure-Python (less accurate but works without numpy)
@@ -635,17 +641,16 @@ Respond with ONLY valid JSON:
             ctrl_std = max(ctrl_mean * 0.3, 1e-9)
             cand_std = max(cand_mean * 0.3, 1e-9)
             wins = sum(
-                1 for _ in range(n_samples)
+                1
+                for _ in range(n_samples)
                 if (
-                    _r.gauss(cand_mean, cand_std / max(cand_n ** 0.5, 1))
-                    > _r.gauss(ctrl_mean, ctrl_std / max(ctrl_n ** 0.5, 1))
+                    _r.gauss(cand_mean, cand_std / max(cand_n**0.5, 1))
+                    > _r.gauss(ctrl_mean, ctrl_std / max(ctrl_n**0.5, 1))
                 )
             )
             return wins / n_samples
 
-    async def _get_arm_for_goal(
-        self, tenant_id: str, agent_id: str, goal_id: str
-    ) -> str:
+    async def _get_arm_for_goal(self, tenant_id: str, agent_id: str, goal_id: str) -> str:
         """
         Deterministic arm assignment via goal_id hash.
         50/50 split by default; respects experiment traffic_split_pct.
@@ -720,9 +725,7 @@ Respond with ONLY valid JSON:
         except Exception as exc:
             logger.warning("record_result_failed", error=str(exc))
 
-    async def _get_recent_metrics(
-        self, tenant_id: str, agent_id: str
-    ) -> dict[str, Any]:
+    async def _get_recent_metrics(self, tenant_id: str, agent_id: str) -> dict[str, Any]:
         from sqlalchemy import text as _t
 
         try:
@@ -807,9 +810,7 @@ Respond with ONLY valid JSON:
                     "id": exp_id,
                     "tenant_id": tenant_id,
                     "agent_id": agent_id,
-                    "name": (
-                        f"Auto-optimization {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')}"
-                    ),
+                    "name": (f"Auto-optimization {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')}"),
                     "control": json.dumps(control_config),
                     "candidate": json.dumps(candidate_config),
                     "rationale": suggestion.get("rationale", ""),
@@ -821,9 +822,7 @@ Respond with ONLY valid JSON:
         return exp_id
 
     @staticmethod
-    def _compute_delta(
-        before: dict[str, Any], after: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _compute_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         delta: dict[str, Any] = {}
         for k in set(before) | set(after):
             if before.get(k) != after.get(k):
@@ -847,14 +846,20 @@ Respond with ONLY valid JSON:
             return []
         try:
             from sqlalchemy import text as _t
+
             async with self._db() as session:
-                rows = (await session.execute(_t("""
+                rows = (
+                    await session.execute(
+                        _t("""
                     SELECT id, agent_id, name, status,
                            candidate_config, control_config,
                            bayesian_uplift, started_at, completed_at
                     FROM improvement_experiments
                     WHERE tenant_id = :tid ORDER BY started_at DESC LIMIT 50
-                """), {"tid": tenant_id})).fetchall()
+                """),
+                        {"tid": tenant_id},
+                    )
+                ).fetchall()
             result = []
             for r in rows:
                 raw_status = str(r[3] or "running")
@@ -869,6 +874,7 @@ Respond with ONLY valid JSON:
                 challenger_cfg = r[4]
                 if isinstance(challenger_cfg, str):
                     import json as _json
+
                     try:
                         challenger_cfg = _json.loads(challenger_cfg)
                     except Exception:
@@ -878,23 +884,26 @@ Respond with ONLY valid JSON:
                 control_cfg = r[5]
                 if isinstance(control_cfg, str):
                     import json as _json
+
                     try:
                         control_cfg = _json.loads(control_cfg)
                     except Exception:
                         control_cfg = {}
                 control_cfg = control_cfg or {}
 
-                result.append({
-                    "id": r[0],
-                    "agent_id": r[1],
-                    "name": r[2] or f"Experiment {str(r[0])[:8]}",
-                    "status": fe_status,
-                    "challenger_config": challenger_cfg,
-                    "control_config": control_cfg,
-                    "lift_pct": float(r[6]) if r[6] is not None else None,
-                    "started_at": r[7].isoformat() if r[7] else "",
-                    "concluded_at": r[8].isoformat() if r[8] else None,
-                })
+                result.append(
+                    {
+                        "id": r[0],
+                        "agent_id": r[1],
+                        "name": r[2] or f"Experiment {str(r[0])[:8]}",
+                        "status": fe_status,
+                        "challenger_config": challenger_cfg,
+                        "control_config": control_cfg,
+                        "lift_pct": float(r[6]) if r[6] is not None else None,
+                        "started_at": r[7].isoformat() if r[7] else "",
+                        "concluded_at": r[8].isoformat() if r[8] else None,
+                    }
+                )
             return result
         except Exception:
             return []

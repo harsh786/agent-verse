@@ -12,15 +12,15 @@ Notification severities:
 Quiet hours: configurable per org (default 22:00–07:00 local)
 Critical notifications bypass quiet hours.
 """
+
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, time as dt_time
+from datetime import UTC, datetime
+from datetime import time as dt_time
 from enum import Enum
 from typing import Any
 
-import structlog
 from opentelemetry import trace
 
 from app.observability.logging import get_logger
@@ -30,31 +30,33 @@ _tracer = trace.get_tracer(__name__)
 
 
 class NotificationSeverity(str, Enum):
-    SILENT    = "SILENT"
-    DIGEST    = "DIGEST"
+    SILENT = "SILENT"
+    DIGEST = "DIGEST"
     ATTENTION = "ATTENTION"
-    APPROVAL  = "APPROVAL"
-    CRITICAL  = "CRITICAL"
+    APPROVAL = "APPROVAL"
+    CRITICAL = "CRITICAL"
 
 
 @dataclass
 class NotificationRoute:
     severity: str
-    primary_channel: str              # telegram | slack | teams | email | push | none
+    primary_channel: str  # telegram | slack | teams | email | push | none
     fallback_channels: list[str]
     quiet_hours_start: str = "22:00"  # HH:MM
-    quiet_hours_end:   str = "07:00"
+    quiet_hours_end: str = "07:00"
     override_quiet_for_critical: bool = True
 
 
 # ── Default routing (user-configurable per org) ───────────────────────────────
 
 DEFAULT_ROUTES: dict[str, NotificationRoute] = {
-    NotificationSeverity.SILENT:    NotificationRoute("SILENT",    "none",      []),
-    NotificationSeverity.DIGEST:    NotificationRoute("DIGEST",    "email",     []),
-    NotificationSeverity.ATTENTION: NotificationRoute("ATTENTION", "slack",     ["telegram"]),
-    NotificationSeverity.APPROVAL:  NotificationRoute("APPROVAL",  "telegram",  ["slack", "email"]),
-    NotificationSeverity.CRITICAL:  NotificationRoute("CRITICAL",  "telegram",  ["slack", "email", "sms"]),
+    NotificationSeverity.SILENT: NotificationRoute("SILENT", "none", []),
+    NotificationSeverity.DIGEST: NotificationRoute("DIGEST", "email", []),
+    NotificationSeverity.ATTENTION: NotificationRoute("ATTENTION", "slack", ["telegram"]),
+    NotificationSeverity.APPROVAL: NotificationRoute("APPROVAL", "telegram", ["slack", "email"]),
+    NotificationSeverity.CRITICAL: NotificationRoute(
+        "CRITICAL", "telegram", ["slack", "email", "sms"]
+    ),
 }
 
 
@@ -62,24 +64,24 @@ DEFAULT_ROUTES: dict[str, NotificationRoute] = {
 
 EVENT_SEVERITY_MAP: dict[str, str] = {
     # Critical
-    "org.security.anomaly_detected":  NotificationSeverity.CRITICAL,
-    "org.budget.exceeded":            NotificationSeverity.CRITICAL,
-    "org.mission.failed":             NotificationSeverity.CRITICAL,
+    "org.security.anomaly_detected": NotificationSeverity.CRITICAL,
+    "org.budget.exceeded": NotificationSeverity.CRITICAL,
+    "org.mission.failed": NotificationSeverity.CRITICAL,
     # Approval
-    "org.approval.requested":         NotificationSeverity.APPROVAL,
-    "org.budget.threshold_80":        NotificationSeverity.APPROVAL,
+    "org.approval.requested": NotificationSeverity.APPROVAL,
+    "org.budget.threshold_80": NotificationSeverity.APPROVAL,
     # Attention
-    "org.mission.blocked":            NotificationSeverity.ATTENTION,
-    "org.agent.escalated":            NotificationSeverity.ATTENTION,
-    "org.model.fallback":             NotificationSeverity.ATTENTION,
+    "org.mission.blocked": NotificationSeverity.ATTENTION,
+    "org.agent.escalated": NotificationSeverity.ATTENTION,
+    "org.model.fallback": NotificationSeverity.ATTENTION,
     # Digest
-    "org.mission.completed":          NotificationSeverity.DIGEST,
-    "org.mission.started":            NotificationSeverity.DIGEST,
-    "org.learning.promoted":          NotificationSeverity.DIGEST,
-    "org.digest.ready":               NotificationSeverity.DIGEST,
+    "org.mission.completed": NotificationSeverity.DIGEST,
+    "org.mission.started": NotificationSeverity.DIGEST,
+    "org.learning.promoted": NotificationSeverity.DIGEST,
+    "org.digest.ready": NotificationSeverity.DIGEST,
     # Silent
-    "org.agent.activated":            NotificationSeverity.SILENT,
-    "org.agent.idle":                 NotificationSeverity.SILENT,
+    "org.agent.activated": NotificationSeverity.SILENT,
+    "org.agent.idle": NotificationSeverity.SILENT,
 }
 
 
@@ -107,13 +109,13 @@ class OutboundNotificationRouter:
         routes: dict[str, NotificationRoute] | None = None,
         # Injected channel senders (set by dependency injection at startup)
         telegram_sender: Any | None = None,
-        slack_sender:    Any | None = None,
-        email_sender:    Any | None = None,
+        slack_sender: Any | None = None,
+        email_sender: Any | None = None,
     ) -> None:
-        self._routes   = routes or DEFAULT_ROUTES
+        self._routes = routes or DEFAULT_ROUTES
         self._telegram = telegram_sender
-        self._slack    = slack_sender
-        self._email    = email_sender
+        self._slack = slack_sender
+        self._email = email_sender
 
     def severity_for_event(self, event_type: str) -> str:
         return EVENT_SEVERITY_MAP.get(event_type, NotificationSeverity.DIGEST)
@@ -122,7 +124,7 @@ class OutboundNotificationRouter:
         """Check if current time falls within quiet hours."""
         now = datetime.now(UTC).time()
         start = dt_time.fromisoformat(route.quiet_hours_start)
-        end   = dt_time.fromisoformat(route.quiet_hours_end)
+        end = dt_time.fromisoformat(route.quiet_hours_end)
         if start > end:
             # Wraps midnight (e.g. 22:00 – 07:00)
             return now >= start or now <= end
@@ -138,7 +140,9 @@ class OutboundNotificationRouter:
             span.set_attribute("severity", notification.severity)
             span.set_attribute("event_type", notification.event_type)
 
-            route = self._routes.get(notification.severity, DEFAULT_ROUTES[NotificationSeverity.DIGEST])
+            route = self._routes.get(
+                notification.severity, DEFAULT_ROUTES[NotificationSeverity.DIGEST]
+            )
 
             if route.primary_channel == "none":
                 return []
@@ -158,7 +162,7 @@ class OutboundNotificationRouter:
                 if sent:
                     notified.append(channel)
                     if not is_critical:
-                        break   # Stop at first success for non-critical
+                        break  # Stop at first success for non-critical
 
             if not notified:
                 _log.warning("notification.all_channels_failed", event=notification.event_type)
@@ -190,14 +194,16 @@ class OutboundNotificationRouter:
 
 # ── Usage alert system (QA2) ─────────────────────────────────────────────────
 
+
 @dataclass
 class UsageAlert:
     """Fired when tenant approaches or exceeds a quota."""
-    alert_type: str    # quota_warning | quota_exceeded | budget_warning
-    resource: str      # agents | missions | monthly_budget | api_calls
+
+    alert_type: str  # quota_warning | quota_exceeded | budget_warning
+    resource: str  # agents | missions | monthly_budget | api_calls
     current: float
     limit: float
-    pct_used: float    # 0-1
+    pct_used: float  # 0-1
     tenant_id: str
     org_id: str | None = None
     delivered_to: list[str] = field(default_factory=list)
@@ -214,12 +220,12 @@ class UsageAlert:
 
 
 ALERT_THRESHOLDS = {
-    "quota_warning":  0.80,   # 80% → warn
-    "quota_critical": 0.95,   # 95% → urgent
-    "quota_exceeded": 1.00,   # 100% → block + alert
-    "budget_warning": 0.70,   # 70% → warn
-    "budget_critical":0.90,   # 90% → start pausing low-priority
-    "budget_exceeded":1.00,   # 100% → pause all non-critical
+    "quota_warning": 0.80,  # 80% → warn
+    "quota_critical": 0.95,  # 95% → urgent
+    "quota_exceeded": 1.00,  # 100% → block + alert
+    "budget_warning": 0.70,  # 70% → warn
+    "budget_critical": 0.90,  # 90% → start pausing low-priority
+    "budget_exceeded": 1.00,  # 100% → pause all non-critical
 }
 
 
@@ -246,9 +252,7 @@ class UsageAlertService:
             return None
 
         alert_type = (
-            "quota_exceeded" if pct >= 1.0
-            else "quota_critical" if pct >= 0.95
-            else "quota_warning"
+            "quota_exceeded" if pct >= 1.0 else "quota_critical" if pct >= 0.95 else "quota_warning"
         )
         alert = UsageAlert(
             alert_type=alert_type,
@@ -264,10 +268,10 @@ class UsageAlertService:
             org_id=org_id or tenant_id,
             event_type=f"org.{alert_type}",
             severity=alert.severity,
-            title=f"Usage Alert: {resource} at {pct*100:.0f}%",
+            title=f"Usage Alert: {resource} at {pct * 100:.0f}%",
             body=(
                 f"{'⚠️' if pct < 1.0 else '🚨'} {resource.title()} usage: "
-                f"{current:.0f}/{limit:.0f} ({pct*100:.0f}%)\n"
+                f"{current:.0f}/{limit:.0f} ({pct * 100:.0f}%)\n"
                 f"{'Upgrade plan or increase limit to avoid service interruption.' if pct >= 0.95 else 'Consider upgrading.'}"
             ),
             requires_action=pct >= 0.95,
@@ -275,5 +279,11 @@ class UsageAlertService:
 
         notified = await self._router.route(notif)
         alert.delivered_to = notified
-        _log.info("usage_alert.fired", alert_type=alert_type, resource=resource, pct=pct, notified=notified)
+        _log.info(
+            "usage_alert.fired",
+            alert_type=alert_type,
+            resource=resource,
+            pct=pct,
+            notified=notified,
+        )
         return alert

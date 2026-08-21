@@ -62,9 +62,7 @@ def upgrade() -> None:
         ),
     )
     op.create_index("idx_raft_datasets_tenant", "raft_datasets", ["tenant_id"])
-    op.create_index(
-        "idx_raft_datasets_collection", "raft_datasets", ["collection_id"]
-    )
+    op.create_index("idx_raft_datasets_collection", "raft_datasets", ["collection_id"])
     op.create_index(
         "idx_raft_datasets_tenant_collection",
         "raft_datasets",
@@ -111,8 +109,7 @@ def upgrade() -> None:
             server_default=sa.func.now(),
         ),
         sa.CheckConstraint(
-            "status IN ('pending', 'reconciling', 'submitted', 'running', "
-            "'completed', 'failed')",
+            "status IN ('pending', 'reconciling', 'submitted', 'running', 'completed', 'failed')",
             name="ck_raft_jobs_status",
         ),
         sa.CheckConstraint("version >= 0", name="ck_raft_jobs_version_nonnegative"),
@@ -138,8 +135,7 @@ def upgrade() -> None:
             name="ck_raft_jobs_completed_model",
         ),
         sa.CheckConstraint(
-            "status NOT IN ('submitted', 'running', 'completed') "
-            "OR provider_job_id IS NOT NULL",
+            "status NOT IN ('submitted', 'running', 'completed') OR provider_job_id IS NOT NULL",
             name="ck_raft_jobs_provider_identity",
         ),
         sa.Column(
@@ -156,9 +152,7 @@ def upgrade() -> None:
         "raft_fine_tune_jobs",
         ["tenant_id", "dataset_id"],
     )
-    op.create_index(
-        "idx_raft_jobs_compatibility", "raft_fine_tune_jobs", ["compatibility_key"]
-    )
+    op.create_index("idx_raft_jobs_compatibility", "raft_fine_tune_jobs", ["compatibility_key"])
     op.create_index(
         "idx_raft_jobs_compatible_model",
         "raft_fine_tune_jobs",
@@ -195,17 +189,13 @@ def upgrade() -> None:
             "estimated_amount::text NOT IN ('NaN', 'Infinity', '-Infinity')",
             name="ck_raft_grants_amount_nonnegative",
         ),
-        sa.CheckConstraint(
-            "currency ~ '^[A-Z]{3}$'", name="ck_raft_grants_currency"
-        ),
+        sa.CheckConstraint("currency ~ '^[A-Z]{3}$'", name="ck_raft_grants_currency"),
         sa.CheckConstraint(
             "length(token_hash) = 64 AND length(binding_digest) = 64",
             name="ck_raft_grants_durable_hashes",
         ),
     )
-    op.create_index(
-        "idx_raft_confirmations_tenant", "raft_confirmation_grants", ["tenant_id"]
-    )
+    op.create_index("idx_raft_confirmations_tenant", "raft_confirmation_grants", ["tenant_id"])
     op.create_index(
         "idx_raft_grants_tenant_dataset",
         "raft_confirmation_grants",
@@ -299,9 +289,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "DROP TRIGGER IF EXISTS raft_job_transition_guard ON raft_fine_tune_jobs"
-    )
+    op.execute("DROP TRIGGER IF EXISTS raft_job_transition_guard ON raft_fine_tune_jobs")
     op.execute("DROP FUNCTION IF EXISTS enforce_raft_job_transition()")
     for table in (
         "raft_confirmation_grants",

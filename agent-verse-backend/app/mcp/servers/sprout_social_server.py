@@ -3,6 +3,7 @@
 Environment:
   SPROUT_SOCIAL_ACCESS_TOKEN: Sprout Social OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -23,7 +24,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "network": {"type": "string", "description": "Filter by network: twitter, facebook, instagram, linkedin"},
+                "network": {
+                    "type": "string",
+                    "description": "Filter by network: twitter, facebook, instagram, linkedin",
+                },
             },
         },
     },
@@ -39,7 +43,10 @@ TOOL_DEFINITIONS = [
                     "description": "Sprout Social profile IDs to post to",
                 },
                 "text": {"type": "string", "description": "Message text content"},
-                "scheduled_at": {"type": "string", "description": "ISO 8601 scheduled send datetime"},
+                "scheduled_at": {
+                    "type": "string",
+                    "description": "ISO 8601 scheduled send datetime",
+                },
                 "media_attachments": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -55,7 +62,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter by status: sent, scheduled, draft, failed"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: sent, scheduled, draft, failed",
+                },
                 "page": {"type": "integer", "description": "Page number", "default": 1},
                 "per_page": {"type": "integer", "description": "Results per page", "default": 20},
             },
@@ -101,7 +111,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "subject": {"type": "string", "description": "Task subject/title"},
                 "message": {"type": "string", "description": "Task description or notes"},
-                "assignee_id": {"type": "string", "description": "Sprout Social user ID to assign task to"},
+                "assignee_id": {
+                    "type": "string",
+                    "description": "Sprout Social user ID to assign task to",
+                },
                 "due_at": {"type": "string", "description": "ISO 8601 due date for the task"},
             },
             "required": ["subject"],

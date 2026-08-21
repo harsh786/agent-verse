@@ -3,6 +3,7 @@
 Environment:
   GETRESPONSE_API_KEY: GetResponse API key from Integrations & API > API
 """
+
 from __future__ import annotations
 
 import os
@@ -31,9 +32,16 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "query[email]": {"type": "string", "description": "Filter contacts by email address"},
+                "query[email]": {
+                    "type": "string",
+                    "description": "Filter contacts by email address",
+                },
                 "page": {"type": "integer", "description": "Page number (1-based)", "default": 1},
-                "perPage": {"type": "integer", "description": "Contacts per page (max 1000)", "default": 100},
+                "perPage": {
+                    "type": "integer",
+                    "description": "Contacts per page (max 1000)",
+                    "default": 100,
+                },
             },
         },
     },
@@ -44,9 +52,16 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "email": {"type": "string", "description": "Contact email address"},
-                "campaign_id": {"type": "string", "description": "GetResponse campaign (list) ID to add the contact to"},
+                "campaign_id": {
+                    "type": "string",
+                    "description": "GetResponse campaign (list) ID to add the contact to",
+                },
                 "name": {"type": "string", "description": "Contact full name"},
-                "dayOfCycle": {"type": "integer", "description": "Day of autoresponder cycle to place contact on", "default": 0},
+                "dayOfCycle": {
+                    "type": "integer",
+                    "description": "Day of autoresponder cycle to place contact on",
+                    "default": 0,
+                },
             },
             "required": ["email", "campaign_id"],
         },
@@ -68,8 +83,15 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Campaign name (unique, alphanumeric+underscore)"},
-                "language_code": {"type": "string", "description": "ISO 639-1 language code", "default": "EN"},
+                "name": {
+                    "type": "string",
+                    "description": "Campaign name (unique, alphanumeric+underscore)",
+                },
+                "language_code": {
+                    "type": "string",
+                    "description": "ISO 639-1 language code",
+                    "default": "EN",
+                },
                 "from_email": {"type": "string", "description": "Sender email address"},
                 "from_name": {"type": "string", "description": "Sender display name"},
                 "reply_to_email": {"type": "string", "description": "Reply-to email address"},
@@ -86,7 +108,10 @@ TOOL_DEFINITIONS = [
                 "campaign_id": {"type": "string", "description": "Target campaign (list) ID"},
                 "subject": {"type": "string", "description": "Newsletter subject line"},
                 "html_content": {"type": "string", "description": "HTML body of the newsletter"},
-                "from_field_id": {"type": "string", "description": "GetResponse from-field ID for sender"},
+                "from_field_id": {
+                    "type": "string",
+                    "description": "GetResponse from-field ID for sender",
+                },
             },
             "required": ["campaign_id", "subject", "html_content"],
         },
@@ -123,7 +148,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 contacts = r.json()
                 return {
                     "contacts": [
-                        {"contactId": c.get("contactId"), "email": c.get("email"), "name": c.get("name")}
+                        {
+                            "contactId": c.get("contactId"),
+                            "email": c.get("email"),
+                            "name": c.get("name"),
+                        }
                         for c in (contacts if isinstance(contacts, list) else [])
                     ]
                 }
@@ -143,7 +172,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r = await client.get(
                     f"{BASE_URL}/campaigns",
                     headers=_headers(),
-                    params={"page": arguments.get("page", 1), "perPage": arguments.get("perPage", 100)},
+                    params={
+                        "page": arguments.get("page", 1),
+                        "perPage": arguments.get("perPage", 100),
+                    },
                 )
                 r.raise_for_status()
                 campaigns = r.json()
@@ -186,7 +218,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     params["dateFrom"] = arguments["date_from"]
                 if "date_to" in arguments:
                     params["dateTo"] = arguments["date_to"]
-                r = await client.get(f"{BASE_URL}/statistics/emails", headers=_headers(), params=params)
+                r = await client.get(
+                    f"{BASE_URL}/statistics/emails", headers=_headers(), params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

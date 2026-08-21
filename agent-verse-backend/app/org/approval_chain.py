@@ -3,6 +3,7 @@
 Defines approval chains for high-risk actions (e.g. prod deployment, large spend)
 and provides runtime methods to create/check/escalate approval requests.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -21,17 +22,18 @@ _tracer = trace.get_tracer(__name__)
 #  Schema
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class ApprovalChain:
     id: str
     name: str
-    trigger_pattern: str        # keyword pattern or exact action name
-    required_roles: list[str]   # role names or dept_kind:role patterns
-    strategy: str               # "all" | "any" | "majority"
+    trigger_pattern: str  # keyword pattern or exact action name
+    required_roles: list[str]  # role names or dept_kind:role patterns
+    strategy: str  # "all" | "any" | "majority"
     timeout_hours: float
     escalation_path: list[str]  # roles to escalate to on timeout
     requires_human: bool
-    risk_threshold: str         # minimum risk level: "low"|"medium"|"high"|"critical"
+    risk_threshold: str  # minimum risk level: "low"|"medium"|"high"|"critical"
     description: str = ""
 
     # Convenience aliases used by ApprovalChainRegistry consumers
@@ -60,11 +62,11 @@ class ApprovalRequest:
     agent_id: str | None
     tenant_id: str
     org_id: str | None
-    approvers_needed: list[str]   # role names required
+    approvers_needed: list[str]  # role names required
     approvers_responded: list[str] = field(default_factory=list)
     approved_by: list[str] = field(default_factory=list)
     rejected_by: list[str] = field(default_factory=list)
-    status: str = "pending"       # pending|approved|rejected|escalated|expired|cancelled
+    status: str = "pending"  # pending|approved|rejected|escalated|expired|cancelled
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     expires_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     escalated_at: datetime | None = None
@@ -242,6 +244,7 @@ _RISK_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 #  Engine
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class ApprovalChainEngine:
     """Runtime engine for approval chain matching and request management."""
 
@@ -344,7 +347,9 @@ class ApprovalChainEngine:
             return req
 
     async def check_approval_complete(
-        self, request_id: str, approvals: list[str],
+        self,
+        request_id: str,
+        approvals: list[str],
     ) -> bool:
         req = self._store.get(request_id)
         if req is None:
@@ -385,10 +390,13 @@ class ApprovalChainEngine:
         return self._store.get(request_id)
 
     async def list_pending(
-        self, tenant_id: str, org_id: str | None = None,
+        self,
+        tenant_id: str,
+        org_id: str | None = None,
     ) -> list[ApprovalRequest]:
         return [
-            r for r in self._store.values()
+            r
+            for r in self._store.values()
             if r.tenant_id == tenant_id
             and r.status == "pending"
             and (org_id is None or r.org_id == org_id)

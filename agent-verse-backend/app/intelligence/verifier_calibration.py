@@ -5,6 +5,7 @@ Enables the Phase 3 Track E goal: false-confirm rate ≤ 2%.
 A false-positive (false-confirm) occurs when:
   verifier_verdict = True  AND  actual_outcome = False
 """
+
 from __future__ import annotations
 
 import uuid
@@ -66,6 +67,7 @@ class VerifierCalibrationStore:
         if self._db is not None:
             try:
                 from sqlalchemy import text
+
                 async with self._db() as session, session.begin():
                     await session.execute(
                         text("""
@@ -105,6 +107,7 @@ class VerifierCalibrationStore:
         if self._db is not None:
             try:
                 from sqlalchemy import text
+
                 async with self._db() as session, session.begin():
                     await session.execute(
                         text("""
@@ -132,7 +135,8 @@ class VerifierCalibrationStore:
           - ``on_target``: bool
         """
         records = [
-            r for r in self._records
+            r
+            for r in self._records
             if r.get("actual_outcome") is not None
             and (tenant_id is None or r["tenant_id"] == tenant_id)
         ]
@@ -148,12 +152,10 @@ class VerifierCalibrationStore:
             }
 
         false_positives = sum(
-            1 for r in records
-            if r["verifier_verdict"] is True and r["actual_outcome"] is False
+            1 for r in records if r["verifier_verdict"] is True and r["actual_outcome"] is False
         )
         false_negatives = sum(
-            1 for r in records
-            if r["verifier_verdict"] is False and r["actual_outcome"] is True
+            1 for r in records if r["verifier_verdict"] is False and r["actual_outcome"] is True
         )
         rate = false_positives / len(records)
 

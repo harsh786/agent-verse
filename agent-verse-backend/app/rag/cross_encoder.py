@@ -86,28 +86,19 @@ class CrossEncoderReranker:
                 except RerankerLoadError:
                     raise
                 except Exception as exc:
-                    raise RerankerLoadError(
-                        "Cross-encoder model could not be loaded"
-                    ) from exc
+                    raise RerankerLoadError("Cross-encoder model could not be loaded") from exc
             return self._model
 
     def _score_blocking(self, query: str, documents: list[str]) -> list[float]:
         model = self._get_model()
         pairs = [(query, document) for document in documents]
         try:
-            inference_guard = (
-                nullcontext() if self._backend_thread_safe else self._inference_lock
-            )
+            inference_guard = nullcontext() if self._backend_thread_safe else self._inference_lock
             with inference_guard:
                 scores = model.predict(pairs, batch_size=self._batch_size)
             raw_scores = list(scores)
-            if any(
-                isinstance(score, bool) or not isinstance(score, Real)
-                for score in raw_scores
-            ):
-                raise RerankerInferenceError(
-                    "Cross-encoder scores must be real numbers"
-                )
+            if any(isinstance(score, bool) or not isinstance(score, Real) for score in raw_scores):
+                raise RerankerInferenceError("Cross-encoder scores must be real numbers")
             values = [float(score) for score in raw_scores]
         except (RerankerLoadError, RerankerInferenceError):
             raise
@@ -162,9 +153,7 @@ def cross_encode(
     if not documents:
         return []
     default_reranker = _get_default_reranker()
-    reranker = default_reranker if batch_size == 32 else CrossEncoderReranker(
-        batch_size=batch_size
-    )
+    reranker = default_reranker if batch_size == 32 else CrossEncoderReranker(batch_size=batch_size)
     try:
         return reranker.score_sync(query, documents)
     except (RerankerLoadError, RerankerInferenceError):
@@ -185,9 +174,7 @@ async def close_default_cross_encoder() -> None:
 
 def _tfidf_scores(query: str, documents: list[str]) -> list[float]:
     query_tokens = set(re.findall(r"\b\w+\b", query.lower()))
-    all_document_tokens = [
-        re.findall(r"\b\w+\b", document.lower()) for document in documents
-    ]
+    all_document_tokens = [re.findall(r"\b\w+\b", document.lower()) for document in documents]
     document_count = len(documents)
 
     def inverse_document_frequency(token: str) -> float:
@@ -202,9 +189,7 @@ def _tfidf_scores(query: str, documents: list[str]) -> list[float]:
         total = len(tokens) or 1
         values.append(
             sum(
-                frequencies.get(token, 0)
-                / total
-                * inverse_document_frequency(token)
+                frequencies.get(token, 0) / total * inverse_document_frequency(token)
                 for token in query_tokens
             )
         )

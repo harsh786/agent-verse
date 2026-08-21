@@ -130,7 +130,7 @@ class CitationVerifier:
                             role="user",
                             content=(
                                 "Is the answer fully supported by the context? Return JSON "
-                                'with supported and unsupported_claims.\n\n'
+                                "with supported and unsupported_claims.\n\n"
                                 f"Context:\n{context}\n\nAnswer:\n{answer[:500]}"
                             ),
                         )

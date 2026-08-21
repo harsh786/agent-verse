@@ -3,6 +3,7 @@
 Environment variables:
   CAPSULE_API_TOKEN: Capsule CRM API token
 """
+
 from __future__ import annotations
 
 import os
@@ -25,8 +26,15 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "q": {"type": "string", "description": "Search query to filter contacts"},
                 "page": {"type": "integer", "description": "Page number (1-based)", "default": 1},
-                "perPage": {"type": "integer", "description": "Results per page (max 100)", "default": 50},
-                "embed": {"type": "string", "description": "Comma-separated embedded resources, e.g. 'tags,fields'"},
+                "perPage": {
+                    "type": "integer",
+                    "description": "Results per page (max 100)",
+                    "default": 50,
+                },
+                "embed": {
+                    "type": "string",
+                    "description": "Comma-separated embedded resources, e.g. 'tags,fields'",
+                },
             },
         },
     },
@@ -44,7 +52,10 @@ TOOL_DEFINITIONS = [
                 },
                 "firstName": {"type": "string"},
                 "lastName": {"type": "string"},
-                "name": {"type": "string", "description": "Organisation name (for type=organisation)"},
+                "name": {
+                    "type": "string",
+                    "description": "Organisation name (for type=organisation)",
+                },
                 "emailAddresses": {
                     "type": "array",
                     "items": {"type": "object"},
@@ -98,7 +109,10 @@ TOOL_DEFINITIONS = [
                 "party_id": {"type": "integer", "description": "Associated contact/party ID"},
                 "value": {"type": "number", "description": "Opportunity value"},
                 "currency": {"type": "string", "description": "ISO currency code, e.g. USD"},
-                "expectedCloseOn": {"type": "string", "description": "Expected close date (YYYY-MM-DD)"},
+                "expectedCloseOn": {
+                    "type": "string",
+                    "description": "Expected close date (YYYY-MM-DD)",
+                },
                 "milestone": {"type": "string", "description": "Pipeline milestone name"},
             },
             "required": ["name"],
@@ -111,7 +125,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "party_id": {"type": "integer", "description": "Contact ID to attach note to"},
-                "opportunity_id": {"type": "integer", "description": "Opportunity ID to attach note to"},
+                "opportunity_id": {
+                    "type": "integer",
+                    "description": "Opportunity ID to attach note to",
+                },
                 "note": {"type": "string", "description": "Note content"},
             },
             "required": ["note"],
@@ -153,7 +170,15 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "capsule_create_contact":
                 contact_type = arguments.get("type", "person")
                 body: dict[str, Any] = {"type": contact_type}
-                for k in ("firstName", "lastName", "name", "emailAddresses", "phoneNumbers", "title", "jobTitle"):
+                for k in (
+                    "firstName",
+                    "lastName",
+                    "name",
+                    "emailAddresses",
+                    "phoneNumbers",
+                    "title",
+                    "jobTitle",
+                ):
                     if k in arguments:
                         body[k] = arguments[k]
                 r = await c.post("/parties", json={"party": body})

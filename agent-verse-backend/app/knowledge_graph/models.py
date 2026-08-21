@@ -1,5 +1,7 @@
 """Knowledge Graph data models."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -34,6 +36,7 @@ class EdgeType(str, Enum):
 @dataclass
 class GraphNode:
     """A node in the knowledge graph."""
+
     node_id: str
     tenant_id: str
     node_type: NodeType
@@ -50,6 +53,7 @@ class GraphNode:
 @dataclass
 class GraphEdge:
     """A directed edge between two graph nodes."""
+
     edge_id: str
     tenant_id: str
     source_node_id: str
@@ -66,6 +70,7 @@ class GraphEdge:
 @dataclass
 class GraphCommunity:
     """A cluster of closely related nodes."""
+
     community_id: str
     tenant_id: str
     name: str

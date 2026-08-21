@@ -3,6 +3,7 @@
 All ``app.include_router()`` calls extracted from ``app/main.py`` so the
 factory function stays slim.  Import paths mirror the originals exactly.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -203,52 +204,62 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
 
     # MFA (TOTP-based 2FA)
     from app.api.mfa import router as mfa_router
+
     app.include_router(mfa_router)
     logger.info("mfa_router_registered")
 
     # Phase 13/14 — new capability routers
     try:
         from app.api.marketplace_monetization import router as _mktplace_mon
+
         app.include_router(_mktplace_mon)
     except Exception as _e:
         logger.warning("marketplace_monetization_router_failed", error=str(_e))
     try:
         from app.api.dpdp import router as _dpdp_router
+
         app.include_router(_dpdp_router)
     except Exception as _e:
         logger.warning("dpdp_router_failed", error=str(_e))
     try:
         from app.api.gst_billing import router as _gst_router
+
         app.include_router(_gst_router)
     except Exception as _e:
         logger.warning("gst_billing_router_failed", error=str(_e))
     try:
         from app.api.sla import router as _sla_router
+
         app.include_router(_sla_router)
     except Exception as _e:
         logger.warning("sla_router_failed", error=str(_e))
     try:
         from app.api.sessions import router as _sessions_router
+
         app.include_router(_sessions_router)
     except Exception as _e:
         logger.warning("sessions_router_failed", error=str(_e))
     try:
         from app.api.sandbox import router as _sandbox_router
+
         app.include_router(_sandbox_router)
     except Exception as _e:
         logger.warning("sandbox_router_failed", error=str(_e))
     try:
         from app.api.policy_rules import router as _policy_rules_router
+
         app.include_router(_policy_rules_router)
     except Exception as _e:
         logger.warning("policy_rules_router_failed", error=str(_e))
     try:
         from app.api.v1.router import v1_router
+
         app.include_router(v1_router)
     except Exception as _e:
         logger.warning("v1_router_failed", error=str(_e))
     try:
         from app.api.model_registry import router as model_registry_router
+
         app.include_router(model_registry_router)
     except Exception as _e:
         logger.warning("model_registry_router_failed", error=str(_e))
@@ -256,6 +267,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # Phase 3: Embedding Platform
     try:
         from app.api.embeddings import router as embeddings_router
+
         app.include_router(embeddings_router)
         logger.info("embeddings_router_registered")
     except Exception as _e:
@@ -264,6 +276,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # Phase 4: Multimodal Intelligence
     try:
         from app.api.multimodal import router as multimodal_router
+
         app.include_router(multimodal_router)
         logger.info("multimodal_router_registered")
     except Exception as _e:
@@ -272,6 +285,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # Phase 5: Tenant Knowledge Graph
     try:
         from app.api.knowledge_graph import router as knowledge_graph_router
+
         app.include_router(knowledge_graph_router)
         logger.info("knowledge_graph_router_registered")
     except Exception as _e:
@@ -280,6 +294,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # Phase 6: GraphRAG / RAG Platform
     try:
         from app.api.rag_platform import router as rag_platform_router
+
         app.include_router(rag_platform_router)
         logger.info("rag_platform_router_registered")
     except Exception as _e:
@@ -288,6 +303,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # Phase 7: Agent Runtime 2.0
     try:
         from app.api.agent_runtime import router as agent_runtime_router
+
         app.include_router(agent_runtime_router)
         logger.info("agent_runtime_router_registered")
     except Exception as _e:
@@ -296,6 +312,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # Phase 8: Guardrails 2.0
     try:
         from app.api.guardrails_v2 import router as guardrails_v2_router
+
         app.include_router(guardrails_v2_router)
         logger.info("guardrails_v2_router_registered")
     except Exception as _e:
@@ -304,6 +321,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # Phase 9: Trust and Governance 2.0
     try:
         from app.api.trust_governance import router as trust_governance_router
+
         app.include_router(trust_governance_router)
         logger.info("trust_governance_router_registered")
     except Exception as _e:
@@ -312,6 +330,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # Phase 12: Skills Runtime (composable skill execution engine)
     try:
         from app.api.skills_runtime import router as skills_runtime_router
+
         app.include_router(skills_runtime_router)
         logger.info("skills_runtime_router_registered")
     except Exception as _e:
@@ -320,6 +339,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # Phase 10: AI Ops (Evals, Drift, Regression)
     try:
         from app.api.ai_ops import router as ai_ops_router
+
         app.include_router(ai_ops_router)
         logger.info("ai_ops_router_registered")
     except Exception as _e:
@@ -328,6 +348,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # Phase 11: Agent Memory 2.0
     try:
         from app.api.memory_v2 import router as memory_v2_router
+
         app.include_router(memory_v2_router)
         logger.info("memory_v2_router_registered")
     except Exception as _e:
@@ -336,6 +357,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # Phase 6 OCR: document text extraction
     try:
         from app.api.ocr import router as ocr_router
+
         app.include_router(ocr_router)
         logger.info("ocr_router_registered")
     except Exception as _e:
@@ -348,6 +370,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
         from app.workflow.router_runs import router as workflow_runs_router
         from app.workflow.router_templates import router as workflow_templates_router
         from app.workflow.router_versions import router as workflow_versions_router
+
         app.include_router(workflow_engine_router, prefix="/api/v1")
         app.include_router(workflow_runs_router, prefix="/api/v1")
         app.include_router(workflow_hitl_router, prefix="/api/v1")
@@ -367,6 +390,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # ── Voice (STT + goal refinement) ─────────────────────────────────────────
     try:
         from app.voice.router import router as voice_router
+
         app.include_router(voice_router)
         logger.info("voice_router_registered")
     except Exception as _voice_err:

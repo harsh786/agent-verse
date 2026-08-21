@@ -100,9 +100,7 @@ async def resolve_web_policy(
     tenant_context: TenantContext,
 ) -> WebPolicyDecision:
     evaluators = [
-        service
-        for service in policy_services
-        if callable(getattr(service, "evaluate", None))
+        service for service in policy_services if callable(getattr(service, "evaluate", None))
     ]
     if not evaluators:
         return WebPolicyDecision(False, "web_policy_unavailable")
@@ -183,9 +181,7 @@ class GovernedWebSearchCapability:
         self._default_allowed_domains = tuple(
             sorted({domain.lower().strip(".") for domain in default_allowed_domains if domain})
         )
-        self._fetch_transport_factory = (
-            fetch_transport_factory or httpx.AsyncHTTPTransport
-        )
+        self._fetch_transport_factory = fetch_transport_factory or httpx.AsyncHTTPTransport
 
     async def _validate_url(
         self,
@@ -386,13 +382,7 @@ def build_safe_web_search_capability(
 
 def parse_allowed_domains(value: str) -> tuple[str, ...]:
     return tuple(
-        sorted(
-            {
-                domain.strip().lower().strip(".")
-                for domain in value.split(",")
-                if domain.strip()
-            }
-        )
+        sorted({domain.strip().lower().strip(".") for domain in value.split(",") if domain.strip()})
     )
 
 

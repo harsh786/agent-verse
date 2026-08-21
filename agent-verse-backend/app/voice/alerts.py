@@ -16,31 +16,30 @@ Architecture:
 The alert manager runs as a background task started from app lifespan.
 Clients receive audio via GET /v1/voice/alerts/stream (SSE).
 """
+
 from __future__ import annotations
 
 import asyncio
 import base64
 import json
-import logging
-import os
 from typing import Any
 
 import structlog
 from opentelemetry import trace
 
-log    = structlog.get_logger(__name__)
+log = structlog.get_logger(__name__)
 tracer = trace.get_tracer(__name__)
 
 # ── Alert event types ─────────────────────────────────────────────────────────
 
 ALERT_TEMPLATES: dict[str, str] = {
-    "mission_failed":     "Alert: Mission {title} has failed and requires your attention.",
-    "mission_blocked":    "Heads up: Mission {title} is blocked and waiting for input.",
-    "approval_urgent":    "Urgent: You have a pending approval for {title} that is time-sensitive.",
-    "budget_exceeded":    "Budget alert: Mission {title} has exceeded its budget limit.",
-    "agent_error":        "Agent error in {title}. Human intervention may be required.",
-    "mission_completed":  "Great news: Mission {title} has completed successfully.",
-    "goal_failed":        "Goal execution failed for {title}. Please review.",
+    "mission_failed": "Alert: Mission {title} has failed and requires your attention.",
+    "mission_blocked": "Heads up: Mission {title} is blocked and waiting for input.",
+    "approval_urgent": "Urgent: You have a pending approval for {title} that is time-sensitive.",
+    "budget_exceeded": "Budget alert: Mission {title} has exceeded its budget limit.",
+    "agent_error": "Agent error in {title}. Human intervention may be required.",
+    "mission_completed": "Great news: Mission {title} has completed successfully.",
+    "goal_failed": "Goal execution failed for {title}. Please review.",
 }
 
 
@@ -55,6 +54,7 @@ def build_alert_text(event_type: str, context: dict[str, Any]) -> str:
 
 # ── Background alert listener ──────────────────────────────────────────────────
 
+
 class VoiceAlertManager:
     """Listens to Redis pub/sub and synthesises TTS for proactive alerts.
 
@@ -63,10 +63,10 @@ class VoiceAlertManager:
     """
 
     def __init__(self, redis: Any, tts_factory: Any | None = None) -> None:
-        self._redis       = redis
+        self._redis = redis
         self._tts_factory = tts_factory
-        self._subscribers: dict[str, list[asyncio.Queue]] = {}   # tenant_id → queues
-        self._running     = False
+        self._subscribers: dict[str, list[asyncio.Queue]] = {}  # tenant_id → queues
+        self._running = False
 
     async def start(self) -> None:
         """Start the pub/sub listener loop."""
@@ -109,16 +109,20 @@ class VoiceAlertManager:
     async def _handle_alert_message(self, raw: dict) -> None:
         with tracer.start_as_current_span("voice.alerts.handle") as span:
             try:
-                data      = json.loads(raw.get("data", "{}"))
-                channel   = raw.get("channel", b"").decode() if isinstance(raw.get("channel"), bytes) else raw.get("channel", "")
+                data = json.loads(raw.get("data", "{}"))
+                channel = (
+                    raw.get("channel", b"").decode()
+                    if isinstance(raw.get("channel"), bytes)
+                    else raw.get("channel", "")
+                )
                 tenant_id = channel.split(":")[-1] if channel else ""
                 if not tenant_id or tenant_id not in self._subscribers:
                     return
 
                 event_type = data.get("event", "alert")
-                context    = data.get("context", {})
+                context = data.get("context", {})
                 context.setdefault("message", data.get("message", "Alert"))
-                context.setdefault("title",   data.get("title", "mission"))
+                context.setdefault("title", data.get("title", "mission"))
 
                 span.set_attribute("event_type", event_type)
                 span.set_attribute("tenant_id", tenant_id)
@@ -128,6 +132,7 @@ class VoiceAlertManager:
 
                 # Synthesise TTS for the alert
                 from app.voice.tts_engine import synthesize_streaming
+
                 chunks = []
                 async for chunk in synthesize_streaming(alert_text, language="en"):
                     chunks.append(base64.b64encode(chunk).decode())
@@ -135,11 +140,13 @@ class VoiceAlertManager:
                 # Push to all subscribers for this tenant
                 for q in list(self._subscribers.get(tenant_id, [])):
                     try:
-                        await q.put({
-                            "event_type": event_type,
-                            "text":       alert_text,
-                            "chunks":     chunks,
-                        })
+                        await q.put(
+                            {
+                                "event_type": event_type,
+                                "text": alert_text,
+                                "chunks": chunks,
+                            }
+                        )
                     except asyncio.QueueFull:
                         log.warning("voice.alerts.queue_full", tenant_id=tenant_id)
             except Exception as exc:
@@ -163,12 +170,14 @@ async def publish_voice_alert(
     """
     if redis is None:
         return
-    payload = json.dumps({
-        "event":   event_type,
-        "context": context,
-        "title":   title or context.get("title", ""),
-        "message": message,
-    })
+    payload = json.dumps(
+        {
+            "event": event_type,
+            "context": context,
+            "title": title or context.get("title", ""),
+            "message": message,
+        }
+    )
     channel = f"voice:alerts:{tenant_id}"
     await redis.publish(channel, payload)
     log.info("voice.alerts.published", tenant_id=tenant_id, event=event_type)

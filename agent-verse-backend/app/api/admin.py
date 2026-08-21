@@ -11,6 +11,7 @@ Endpoints:
   GET  /admin/usage                   — aggregated platform usage
   GET  /admin/incidents               — guardrail incident feed
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -101,9 +102,9 @@ async def get_tenant_detail(tenant_id: str, request: Request) -> dict[str, Any]:
 
     return {
         "tenant_id": tenant_id,
-        "plan": tenant.get("plan", "unknown") if isinstance(tenant, dict) else (
-            tenant.plan.value if hasattr(tenant, "plan") else "unknown"
-        ),
+        "plan": tenant.get("plan", "unknown")
+        if isinstance(tenant, dict)
+        else (tenant.plan.value if hasattr(tenant, "plan") else "unknown"),
         "usage": usage,
     }
 

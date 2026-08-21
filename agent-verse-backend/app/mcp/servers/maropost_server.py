@@ -4,6 +4,7 @@ Environment:
   MAROPOST_ACCOUNT_ID: Maropost account ID
   MAROPOST_API_KEY: Maropost API key
 """
+
 from __future__ import annotations
 
 import os
@@ -110,6 +111,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
     headers = {"Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=30) as client:
         try:
+
             def _params(**extra: Any) -> dict[str, Any]:
                 return {"auth_token": api_key, **extra}
 
@@ -141,7 +143,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     f"{base_url}/lists/{list_id}/contacts.json",
                     headers=headers,
                     params={"auth_token": api_key},
-                    json={"contact": {"email": arguments["email"], "subscribed": arguments.get("subscribed", True)}},
+                    json={
+                        "contact": {
+                            "email": arguments["email"],
+                            "subscribed": arguments.get("subscribed", True),
+                        }
+                    },
                 )
                 r.raise_for_status()
                 return r.json()

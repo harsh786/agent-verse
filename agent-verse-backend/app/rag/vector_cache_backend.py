@@ -8,6 +8,7 @@ Backends:
 
 `select_cache_backend()` probes capabilities and returns the best available.
 """
+
 from __future__ import annotations
 
 import time
@@ -89,12 +90,14 @@ class InMemoryCacheBackend:
     ) -> None:
         if tenant_id not in self._store:
             self._store[tenant_id] = []
-        self._store[tenant_id].append({
-            "query": query,
-            "embedding": embedding,
-            "response": response,
-            "created_at": time.time(),
-        })
+        self._store[tenant_id].append(
+            {
+                "query": query,
+                "embedding": embedding,
+                "response": response,
+                "created_at": time.time(),
+            }
+        )
 
     async def clear(self, tenant_id: str) -> None:
         self._store.pop(tenant_id, None)
@@ -115,6 +118,7 @@ def _get_rls_imports() -> tuple[Any, Any]:
     from sqlalchemy import text
 
     from app.db.rls import sqlalchemy_rls_context
+
     return text, sqlalchemy_rls_context
 
 
@@ -170,6 +174,7 @@ class PgVectorCacheBackend:
             return
         try:
             import uuid
+
             text, sqlalchemy_rls_context = _get_rls_imports()
             async with (
                 self._db() as session,
@@ -219,8 +224,8 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     if len(a) != len(b) or not a:
         return 0.0
     dot = sum(x * y for x, y in zip(a, b, strict=False))
-    norm_a = sum(x ** 2 for x in a) ** 0.5
-    norm_b = sum(x ** 2 for x in b) ** 0.5
+    norm_a = sum(x**2 for x in a) ** 0.5
+    norm_b = sum(x**2 for x in b) ** 0.5
     denom = norm_a * norm_b
     return dot / denom if denom > 0 else 0.0
 
@@ -236,6 +241,7 @@ async def select_cache_backend(
     if db_factory is not None:
         try:
             from sqlalchemy import text
+
             async with db_factory() as session, session.begin():
                 await session.execute(text("SELECT 1 FROM semantic_cache_entries LIMIT 1"))
             logger.info("semantic_cache_backend_pgvector")

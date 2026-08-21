@@ -4,6 +4,7 @@ Environment variables:
   RAZORPAY_KEY_ID:     Razorpay Key ID
   RAZORPAY_KEY_SECRET: Razorpay Key Secret
 """
+
 from __future__ import annotations
 
 import os
@@ -24,7 +25,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "amount": {"type": "integer", "description": "Amount in smallest currency unit (paise for INR)"},
+                "amount": {
+                    "type": "integer",
+                    "description": "Amount in smallest currency unit (paise for INR)",
+                },
                 "currency": {"type": "string", "default": "INR"},
                 "receipt": {"type": "string", "description": "Order receipt ID (max 40 chars)"},
                 "notes": {"type": "object", "description": "Key-value metadata"},
@@ -77,7 +81,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "payment_id": {"type": "string"},
-                "amount": {"type": "integer", "description": "Amount to refund in paise; omit for full refund"},
+                "amount": {
+                    "type": "integer",
+                    "description": "Amount to refund in paise; omit for full refund",
+                },
                 "speed": {"type": "string", "enum": ["normal", "optimum"], "default": "optimum"},
                 "notes": {"type": "object"},
             },
@@ -94,7 +101,11 @@ TOOL_DEFINITIONS = [
                 "fund_account_id": {"type": "string"},
                 "amount": {"type": "integer", "description": "Amount in paise"},
                 "currency": {"type": "string", "default": "INR"},
-                "mode": {"type": "string", "enum": ["NEFT", "RTGS", "IMPS", "IFT", "UPI"], "default": "IMPS"},
+                "mode": {
+                    "type": "string",
+                    "enum": ["NEFT", "RTGS", "IMPS", "IFT", "UPI"],
+                    "default": "IMPS",
+                },
                 "purpose": {"type": "string", "default": "payout"},
                 "narration": {"type": "string"},
             },
@@ -144,9 +155,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     hdrs = {"Content-Type": "application/json"}
 
     try:
-        async with httpx.AsyncClient(
-            timeout=30.0, auth=(key_id, key_secret)
-        ) as c:
+        async with httpx.AsyncClient(timeout=30.0, auth=(key_id, key_secret)) as c:
             if tool_name == "razorpay_create_order":
                 body: dict[str, Any] = {
                     "amount": arguments["amount"],

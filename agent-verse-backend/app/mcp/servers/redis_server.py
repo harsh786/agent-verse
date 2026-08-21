@@ -6,6 +6,7 @@ NOTE: This server treats Redis as an external tool/data store.
 Environment:
   REDIS_MCP_URL: Redis connection URL (e.g. redis://[:password@]host:6379/0)
 """
+
 from __future__ import annotations
 
 import os

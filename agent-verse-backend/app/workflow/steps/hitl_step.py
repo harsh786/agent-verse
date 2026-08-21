@@ -1,4 +1,5 @@
 """HITLStepNode — human-in-the-loop gate with suspend/resume pattern."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -31,13 +32,15 @@ class HITLStepNode:
         # ── First pass — create approval request and suspend ─────────────
         resolved_context = []
         for ctx_item in self.step.context:
-            resolved_context.append({
-                "label":            ctx_item.label,
-                "value":            self.ctx.resolve(ctx_item.value, state),
-                "display_type":     ctx_item.display_type,
-                "threshold_red":    ctx_item.threshold_red,
-                "threshold_yellow": ctx_item.threshold_yellow,
-            })
+            resolved_context.append(
+                {
+                    "label": ctx_item.label,
+                    "value": self.ctx.resolve(ctx_item.value, state),
+                    "display_type": ctx_item.display_type,
+                    "threshold_red": ctx_item.threshold_red,
+                    "threshold_yellow": ctx_item.threshold_yellow,
+                }
+            )
 
         actions_config = [a.model_dump() for a in self.step.actions]
 
@@ -95,10 +98,10 @@ class HITLStepNode:
         )
 
         output = {
-            "action":      action,
-            "note":        state.get("hitl_note"),
-            "reviewer":    state.get("hitl_reviewer"),
-            "form_data":   state.get("hitl_form_data"),
+            "action": action,
+            "note": state.get("hitl_note"),
+            "reviewer": state.get("hitl_reviewer"),
+            "form_data": state.get("hitl_form_data"),
         }
 
         # Find which step to route to based on chosen action
@@ -109,12 +112,12 @@ class HITLStepNode:
                 break
 
         return {
-            "status":            WorkflowRunStatus.RUNNING,
-            "hitl_request_id":   None,
-            "hitl_action":       None,
-            "hitl_note":         None,
-            "hitl_reviewer":     None,
-            "hitl_form_data":    None,
+            "status": WorkflowRunStatus.RUNNING,
+            "hitl_request_id": None,
+            "hitl_action": None,
+            "hitl_note": None,
+            "hitl_reviewer": None,
+            "hitl_form_data": None,
             "step_outputs": {
                 **(state.get("step_outputs") or {}),
                 self.step.id: output,

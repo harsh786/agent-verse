@@ -1,5 +1,7 @@
 """CacheOptimizer — identifies caching opportunities to reduce redundant LLM calls."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass
 
 
@@ -11,7 +13,7 @@ class CacheDecisionResult:
 
 @dataclass
 class CacheOpportunity:
-    cache_type: str   # "semantic" | "exact" | "plan"
+    cache_type: str  # "semantic" | "exact" | "plan"
     estimated_hit_rate: float
     description: str
 
@@ -34,9 +36,7 @@ class CacheOptimizer:
             return CacheDecisionResult(False, "realtime/time-sensitive — do not cache")
         if result_count == 0:
             return CacheDecisionResult(False, "empty result — do not cache")
-        return CacheDecisionResult(
-            True, f"stable query latency={latency_ms:.0f}ms — eligible"
-        )
+        return CacheDecisionResult(True, f"stable query latency={latency_ms:.0f}ms — eligible")
 
     # ── New interface (pattern-based opportunity detection) ───────────────────
 
@@ -51,13 +51,19 @@ class CacheOptimizer:
             return []
         hit_rate = repeat_calls / total
         if hit_rate > 0.3:
-            opportunities.append(CacheOpportunity(
-                "semantic", hit_rate,
-                f"{repeat_calls}/{total} calls are repeated — semantic cache recommended",
-            ))
+            opportunities.append(
+                CacheOpportunity(
+                    "semantic",
+                    hit_rate,
+                    f"{repeat_calls}/{total} calls are repeated — semantic cache recommended",
+                )
+            )
         if hit_rate > 0.6:
-            opportunities.append(CacheOpportunity(
-                "exact", hit_rate * 0.5,
-                "High repeat rate — exact-match cache for identical prompts",
-            ))
+            opportunities.append(
+                CacheOpportunity(
+                    "exact",
+                    hit_rate * 0.5,
+                    "High repeat rate — exact-match cache for identical prompts",
+                )
+            )
         return opportunities

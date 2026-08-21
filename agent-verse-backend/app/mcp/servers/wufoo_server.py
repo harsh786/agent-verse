@@ -4,6 +4,7 @@ Environment:
   WUFOO_API_KEY: Wufoo API key for authentication
   WUFOO_SUBDOMAIN: Wufoo account subdomain (e.g. mycompany)
 """
+
 from __future__ import annotations
 
 import os
@@ -42,7 +43,10 @@ TOOL_DEFINITIONS = [
                 "page_start": {"type": "integer", "description": "Pagination start index"},
                 "page_size": {"type": "integer", "description": "Entries per page (max 100)"},
                 "filter_field": {"type": "string", "description": "Filter by field ID"},
-                "filter_operator": {"type": "string", "description": "Filter operator: Is, Is_not, Begins_with"},
+                "filter_operator": {
+                    "type": "string",
+                    "description": "Filter operator: Is, Is_not, Begins_with",
+                },
                 "filter_value": {"type": "string", "description": "Filter value"},
             },
             "required": ["form_hash"],
@@ -55,7 +59,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "form_hash": {"type": "string", "description": "Hash ID of the form"},
-                "fields": {"type": "object", "description": "Form field ID to value mappings (e.g. Field1: 'value')"},
+                "fields": {
+                    "type": "object",
+                    "description": "Form field ID to value mappings (e.g. Field1: 'value')",
+                },
             },
             "required": ["form_hash", "fields"],
         },
@@ -119,7 +126,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 if "page_size" in arguments:
                     params["pageSize"] = arguments["page_size"]
                 if "filter_field" in arguments:
-                    params["Filter1"] = f"{arguments['filter_field']} {arguments.get('filter_operator', 'Is')} {arguments.get('filter_value', '')}"
+                    params["Filter1"] = (
+                        f"{arguments['filter_field']} {arguments.get('filter_operator', 'Is')} {arguments.get('filter_value', '')}"
+                    )
                 r = await client.get(
                     f"{base_url}/forms/{form_hash}/entries.json",
                     auth=auth,

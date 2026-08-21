@@ -72,9 +72,7 @@ class DurableExecutionArtifactStore:
             chunks.append(chunk)
         payload = b"".join(chunks)
         object_name = f"{tenant_id}/{workload_id}/{safe_name}"
-        stored = self._backend.write_bytes(
-            goal_id=goal_id, name=object_name, content=payload
-        )
+        stored = self._backend.write_bytes(goal_id=goal_id, name=object_name, content=payload)
         if inspect.isawaitable(stored):
             stored = await stored
         storage_ref = str(getattr(stored, "uri", "") or getattr(stored, "path", ""))

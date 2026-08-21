@@ -3,9 +3,9 @@
 All operations are restricted to /tmp/agentverse-workspace/{tenant_id}/.
 Path traversal attempts raise PermissionError.
 """
+
 from __future__ import annotations
 
-import os
 import pathlib
 from typing import Any
 
@@ -45,7 +45,8 @@ class FileOps:
             raise FileNotFoundError(f"File not found: {path!r}")
         try:
             import aiofiles
-            async with aiofiles.open(safe, "r", encoding="utf-8") as f:
+
+            async with aiofiles.open(safe, encoding="utf-8") as f:
                 return await f.read()
         except ImportError:
             return safe.read_text(encoding="utf-8")
@@ -59,6 +60,7 @@ class FileOps:
         safe.parent.mkdir(parents=True, exist_ok=True)
         try:
             import aiofiles
+
             async with aiofiles.open(safe, "w", encoding="utf-8") as f:
                 await f.write(content)
         except ImportError:
@@ -76,14 +78,18 @@ class FileOps:
         entries = []
         for entry in safe.iterdir():
             stat = entry.stat()
-            entries.append({
-                "name": entry.name,
-                "path": str(entry.relative_to(self._workspace)),  # relative path for open/delete
-                "type": "directory" if entry.is_dir() else "file",
-                "is_dir": entry.is_dir(),
-                "size_bytes": stat.st_size if entry.is_file() else 0,
-                "modified_at": stat.st_mtime,
-            })
+            entries.append(
+                {
+                    "name": entry.name,
+                    "path": str(
+                        entry.relative_to(self._workspace)
+                    ),  # relative path for open/delete
+                    "type": "directory" if entry.is_dir() else "file",
+                    "is_dir": entry.is_dir(),
+                    "size_bytes": stat.st_size if entry.is_file() else 0,
+                    "modified_at": stat.st_mtime,
+                }
+            )
         return sorted(entries, key=lambda e: e["name"])
 
     async def delete(self, path: str) -> bool:
@@ -96,6 +102,7 @@ class FileOps:
             return False
         if safe.is_dir():
             import shutil
+
             shutil.rmtree(safe)
         else:
             safe.unlink()

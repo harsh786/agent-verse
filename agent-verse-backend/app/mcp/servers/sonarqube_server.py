@@ -4,6 +4,7 @@ Environment:
   SONARQUBE_TOKEN: SonarQube authentication token
   SONARQUBE_URL:   SonarQube server base URL (e.g. https://sonarcloud.io)
 """
+
 from __future__ import annotations
 
 import os

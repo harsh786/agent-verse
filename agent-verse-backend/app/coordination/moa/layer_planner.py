@@ -50,9 +50,7 @@ class LayerPlanner:
             raise ValueError("MoA worst-case latency exceeds deadline")
         planned = tuple(
             MoALayer(
-                layer_id=uuid.uuid5(
-                    uuid.NAMESPACE_URL, f"moa-layer:{index}:{aggregator_id}"
-                ).hex,
+                layer_id=uuid.uuid5(uuid.NAMESPACE_URL, f"moa-layer:{index}:{aggregator_id}").hex,
                 tenant_id="pending",
                 session_id="pending",
                 strategy_execution_id="pending",

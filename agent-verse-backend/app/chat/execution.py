@@ -58,8 +58,7 @@ class ChatCodeExecutor:
                 exit_code=1,
                 stdout="",
                 stderr=(
-                    f"Unsupported language: {language}. "
-                    f"Supported: {', '.join(SUPPORTED_LANGUAGES)}"
+                    f"Unsupported language: {language}. Supported: {', '.join(SUPPORTED_LANGUAGES)}"
                 ),
                 language=language,
                 duration_ms=0,

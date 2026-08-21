@@ -16,6 +16,7 @@ Audit Events:
 Event Taxonomy:
   All events with severity routing
 """
+
 from __future__ import annotations
 
 import json
@@ -24,7 +25,6 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-import structlog
 from opentelemetry import trace
 
 from app.observability.logging import get_logger
@@ -35,33 +35,56 @@ _tracer = trace.get_tracer(__name__)
 
 # ── PART 18: Org RBAC ─────────────────────────────────────────────────────────
 
+
 class OrgRole(str, Enum):
-    ORG_ADMIN   = "org_admin"    # full access to org
-    DEPT_ADMIN  = "dept_admin"   # full access to specific department
-    TEAM_LEAD   = "team_lead"    # manages a team
-    AGENT       = "agent"        # can view org, execute tasks
-    VIEWER      = "viewer"       # read-only
-    APPROVER    = "approver"     # can only approve/reject HITL items
+    ORG_ADMIN = "org_admin"  # full access to org
+    DEPT_ADMIN = "dept_admin"  # full access to specific department
+    TEAM_LEAD = "team_lead"  # manages a team
+    AGENT = "agent"  # can view org, execute tasks
+    VIEWER = "viewer"  # read-only
+    APPROVER = "approver"  # can only approve/reject HITL items
 
 
 # Permissions per role
 ORG_ROLE_PERMISSIONS: dict[OrgRole, list[str]] = {
-    OrgRole.ORG_ADMIN:  [
-        "read", "write", "create_mission", "update_org", "manage_agents",
-        "approve", "reject", "change_autonomy", "view_budget", "change_budget",
-        "view_memory", "write_memory", "view_audit", "manage_knowledge",
+    OrgRole.ORG_ADMIN: [
+        "read",
+        "write",
+        "create_mission",
+        "update_org",
+        "manage_agents",
+        "approve",
+        "reject",
+        "change_autonomy",
+        "view_budget",
+        "change_budget",
+        "view_memory",
+        "write_memory",
+        "view_audit",
+        "manage_knowledge",
     ],
     OrgRole.DEPT_ADMIN: [
-        "read", "write", "create_mission", "manage_agents",
-        "approve", "reject", "view_budget", "view_memory", "write_memory",
+        "read",
+        "write",
+        "create_mission",
+        "manage_agents",
+        "approve",
+        "reject",
+        "view_budget",
+        "view_memory",
+        "write_memory",
     ],
-    OrgRole.TEAM_LEAD:  [
-        "read", "write", "create_mission", "manage_team",
-        "approve", "view_memory",
+    OrgRole.TEAM_LEAD: [
+        "read",
+        "write",
+        "create_mission",
+        "manage_team",
+        "approve",
+        "view_memory",
     ],
-    OrgRole.AGENT:      ["read", "create_mission", "view_memory"],
-    OrgRole.VIEWER:     ["read"],
-    OrgRole.APPROVER:   ["read", "approve", "reject"],
+    OrgRole.AGENT: ["read", "create_mission", "view_memory"],
+    OrgRole.VIEWER: ["read"],
+    OrgRole.APPROVER: ["read", "approve", "reject"],
 }
 
 
@@ -78,9 +101,7 @@ def has_permission(role: OrgRole | str, permission: str) -> bool:
 def assert_permission(role: OrgRole | str, permission: str) -> None:
     """Raise PermissionError if role doesn't have permission."""
     if not has_permission(role, permission):
-        raise PermissionError(
-            f"Role '{role}' does not have permission '{permission}'"
-        )
+        raise PermissionError(f"Role '{role}' does not have permission '{permission}'")
 
 
 # ── PART 21: Org Audit Event Types ────────────────────────────────────────────
@@ -137,7 +158,7 @@ ORG_AUDIT_EVENTS = [
 ]
 
 # Map each event to its notification severity
-from app.gateway.notification_router import NotificationSeverity, EVENT_SEVERITY_MAP
+from app.gateway.notification_router import EVENT_SEVERITY_MAP, NotificationSeverity
 
 
 @dataclass
@@ -146,6 +167,7 @@ class OrgAuditRecord:
     Full audit record per spec PART 21.
     Written to audit trail on every org event.
     """
+
     id: str
     tenant_id: str
     org_id: str
@@ -173,6 +195,7 @@ class OrgAuditRecord:
 
 # ── PART 29: Event Publisher ──────────────────────────────────────────────────
 
+
 class OrgEventPublisher:
     """
     Publishes org events to:
@@ -187,8 +210,8 @@ class OrgEventPublisher:
         audit_service: Any | None = None,
         notification_router: Any | None = None,
     ) -> None:
-        self._redis    = redis_client
-        self._audit    = audit_service
+        self._redis = redis_client
+        self._audit = audit_service
         self._notifier = notification_router
 
     async def publish(
@@ -212,13 +235,13 @@ class OrgEventPublisher:
             span.set_attribute("org_id", org_id)
 
             envelope = {
-                "tenant_id":      tenant_id,
-                "org_id":         org_id,
-                "event_type":     event_type,
-                "payload":        payload or {},
-                "timestamp":      datetime.now(UTC).isoformat(),
+                "tenant_id": tenant_id,
+                "org_id": org_id,
+                "event_type": event_type,
+                "payload": payload or {},
+                "timestamp": datetime.now(UTC).isoformat(),
                 "correlation_id": correlation_id,
-                "version":        "1.0",
+                "version": "1.0",
             }
 
             # 1. Redis pub/sub (powers real-time SSE)
@@ -242,6 +265,7 @@ class OrgEventPublisher:
                 if severity != NotificationSeverity.SILENT:
                     try:
                         from app.gateway.notification_router import OutboundNotification
+
                         notif = OutboundNotification(
                             org_id=org_id,
                             event_type=event_type,
@@ -264,7 +288,11 @@ class OrgEventPublisher:
     @staticmethod
     def _event_title(event_type: str) -> str:
         parts = event_type.split(".")
-        return " ".join(p.replace("_", " ").title() for p in parts[1:]) if len(parts) > 1 else event_type
+        return (
+            " ".join(p.replace("_", " ").title() for p in parts[1:])
+            if len(parts) > 1
+            else event_type
+        )
 
     @staticmethod
     def _event_body(event_type: str, payload: dict) -> str:

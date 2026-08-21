@@ -12,9 +12,7 @@ from typing import Any, Protocol
 class ArtifactStoreProtocol(Protocol):
     """Common interface for all artifact backends."""
 
-    async def write_bytes(
-        self, *, goal_id: str, name: str, content: bytes
-    ) -> RPAArtifact: ...
+    async def write_bytes(self, *, goal_id: str, name: str, content: bytes) -> RPAArtifact: ...
 
     async def read_bytes(self, *, artifact_id: str) -> bytes: ...
 
@@ -54,7 +52,9 @@ class RPAArtifactStore:
         if not path.resolve().is_relative_to(base_dir_resolved):
             raise ValueError("RPA artifact path escapes base directory")
         path.write_bytes(content)
-        return RPAArtifact(uri=path.as_uri(), path=str(path), name=safe_name, size_bytes=len(content))
+        return RPAArtifact(
+            uri=path.as_uri(), path=str(path), name=safe_name, size_bytes=len(content)
+        )
 
 
 def _safe_path_component(value: str, *, default: str) -> str:
@@ -85,9 +85,7 @@ class MinIOArtifactStore:
         prefix: str = "",
     ) -> None:
         self._bucket = bucket
-        self._endpoint_url = endpoint_url or _os.getenv(
-            "MINIO_ENDPOINT", "http://minio:9000"
-        )
+        self._endpoint_url = endpoint_url or _os.getenv("MINIO_ENDPOINT", "http://minio:9000")
         self._access_key = access_key or _os.getenv("MINIO_ACCESS_KEY", "minioadmin")
         self._secret_key = secret_key or _os.getenv("MINIO_SECRET_KEY", "minioadmin")
         self._prefix = prefix.rstrip("/")
@@ -185,9 +183,7 @@ class MinIOArtifactStore:
         except Exception:
             return b""
 
-    async def presign_url(
-        self, *, artifact_id: str, name: str, expires_seconds: int = 3600
-    ) -> str:
+    async def presign_url(self, *, artifact_id: str, name: str, expires_seconds: int = 3600) -> str:
         """Generate a pre-signed URL for direct download."""
         key = self._key(artifact_id, name)
         try:
@@ -212,13 +208,17 @@ class MinIOArtifactStore:
             prefix = f"{prefix}/{workspace_id}".lstrip("/")
         try:
             async with await self._get_client() as client:
-                response = await client.list_objects_v2(Bucket=self._bucket, Prefix=prefix, MaxKeys=200)
+                response = await client.list_objects_v2(
+                    Bucket=self._bucket, Prefix=prefix, MaxKeys=200
+                )
                 contents = response.get("Contents", [])
                 return [
-                    {"id": obj["Key"].split("/")[1] if "/" in obj["Key"] else obj["Key"],
-                     "name": obj["Key"].split("/")[-1],
-                     "size_bytes": obj.get("Size", 0),
-                     "key": obj["Key"]}
+                    {
+                        "id": obj["Key"].split("/")[1] if "/" in obj["Key"] else obj["Key"],
+                        "name": obj["Key"].split("/")[-1],
+                        "size_bytes": obj.get("Size", 0),
+                        "key": obj["Key"],
+                    }
                     for obj in contents
                 ]
         except Exception:
@@ -228,9 +228,7 @@ class MinIOArtifactStore:
 class _RPAArtifactStoreFallback:
     """Fallback to /tmp when MinIO is not available (CI, local dev without Docker)."""
 
-    async def write_bytes(
-        self, *, goal_id: str, name: str, content: bytes
-    ) -> RPAArtifact:
+    async def write_bytes(self, *, goal_id: str, name: str, content: bytes) -> RPAArtifact:
         artifact_id = uuid.uuid4().hex
         base = Path(f"/tmp/agentverse-rpa/{goal_id}/{artifact_id}")
         base.mkdir(parents=True, exist_ok=True)
@@ -264,12 +262,14 @@ class _RPAArtifactStoreFallback:
                         continue
                     for f in artifact_dir.iterdir():
                         if f.is_file():
-                            results.append({
-                                "id": artifact_dir.name,
-                                "name": f.name,
-                                "size_bytes": f.stat().st_size,
-                                "path": str(f),
-                            })
+                            results.append(
+                                {
+                                    "id": artifact_dir.name,
+                                    "name": f.name,
+                                    "size_bytes": f.stat().st_size,
+                                    "path": str(f),
+                                }
+                            )
         except Exception:
             pass
         return results

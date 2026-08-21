@@ -4,6 +4,7 @@ Supports Slack webhooks and generic HTTP webhooks out of the box.
 Designed to be extended with email, PagerDuty, etc.
 Uses only open-source libraries (httpx).
 """
+
 from __future__ import annotations
 
 import json
@@ -21,7 +22,7 @@ logger = get_logger(__name__)
 class NotificationChannel:
     channel_id: str
     tenant_id: str
-    channel_type: str   # "slack" | "webhook" | "teams"
+    channel_type: str  # "slack" | "webhook" | "teams"
     config: dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
 
@@ -46,9 +47,12 @@ class NotificationService:
             return
         try:
             from sqlalchemy import text as _t
+
             async with self._db() as session:
                 if tenant_id:
-                    await session.execute(_t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
+                    await session.execute(
+                        _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+                    )
                 query = (
                     "SELECT channel_id, tenant_id, channel_type, config, enabled"
                     " FROM notification_channels"
@@ -76,6 +80,7 @@ class NotificationService:
         self._channels.setdefault(channel.tenant_id, []).append(channel)
         if self._db is not None:
             import asyncio
+
             asyncio.create_task(self._persist_channel(channel))  # noqa: RUF006
 
     async def _persist_channel(self, channel: NotificationChannel) -> None:
@@ -84,20 +89,24 @@ class NotificationService:
             import json as _json
 
             from sqlalchemy import text as _t
+
             async with self._db() as session, session.begin():
-                await session.execute(_t("""
+                await session.execute(
+                    _t("""
                     INSERT INTO notification_channels
                         (channel_id, tenant_id, channel_type, config, enabled)
                     VALUES (:cid, :tid, :ctype, CAST(:cfg AS jsonb), :enabled)
                     ON CONFLICT (channel_id) DO UPDATE
                         SET config = EXCLUDED.config, enabled = EXCLUDED.enabled
-                """), {
-                    "cid": channel.channel_id,
-                    "tid": channel.tenant_id,
-                    "ctype": channel.channel_type,
-                    "cfg": _json.dumps(channel.config),
-                    "enabled": channel.enabled,
-                })
+                """),
+                    {
+                        "cid": channel.channel_id,
+                        "tid": channel.tenant_id,
+                        "ctype": channel.channel_type,
+                        "cfg": _json.dumps(channel.config),
+                        "enabled": channel.enabled,
+                    },
+                )
         except Exception as exc:
             logger.warning("notification_persist_failed", error=str(exc))
 
@@ -111,6 +120,7 @@ class NotificationService:
         removed = len(self._channels[tenant_id]) < before
         if removed and self._db is not None:
             import asyncio
+
             asyncio.create_task(self._delete_channel(channel_id))  # noqa: RUF006
         return removed
 
@@ -118,6 +128,7 @@ class NotificationService:
         """Remove a channel from the DB (fire-and-forget)."""
         try:
             from sqlalchemy import text as _t
+
             async with self._db() as session, session.begin():
                 await session.execute(
                     _t("DELETE FROM notification_channels WHERE channel_id = :cid"),
@@ -127,8 +138,14 @@ class NotificationService:
             logger.warning("notification_delete_failed", error=str(exc))
 
     async def notify_approval_required(
-        self, *, request_id: str, goal_id: str, action: str,
-        risk_level: str, tenant_id: str, approval_token: str = "",
+        self,
+        *,
+        request_id: str,
+        goal_id: str,
+        action: str,
+        risk_level: str,
+        tenant_id: str,
+        approval_token: str = "",
     ) -> dict[str, Any]:
         """Send notification to all tenant channels."""
         channels = self.get_channels(tenant_id)
@@ -137,13 +154,14 @@ class NotificationService:
 
         # G-17: Build magic link URLs for one-click approve/reject from email/Slack
         from app.core.config import get_settings as _get_settings
+
         try:
             _base = _get_settings().public_base_url
         except Exception:
             _base = "http://localhost:5173"
         _token = approval_token if approval_token else ""
         approve_url = f"{_base}/hitl/{request_id}/approve?token={_token}"
-        reject_url  = f"{_base}/hitl/{request_id}/reject?token={_token}"
+        reject_url = f"{_base}/hitl/{request_id}/reject?token={_token}"
 
         message = {
             "type": "approval_required",
@@ -170,10 +188,10 @@ class NotificationService:
                 await self._send(channel, message)
                 results.append({"channel_id": channel.channel_id, "status": "sent"})
             except Exception as exc:
-                logger.warning("notification_failed",
-                               channel_id=channel.channel_id, error=str(exc))
-                results.append({"channel_id": channel.channel_id, "status": "failed",
-                                "error": str(exc)})
+                logger.warning("notification_failed", channel_id=channel.channel_id, error=str(exc))
+                results.append(
+                    {"channel_id": channel.channel_id, "status": "failed", "error": str(exc)}
+                )
 
         return {"sent": sum(1 for r in results if r["status"] == "sent"), "channels": results}
 
@@ -213,15 +231,13 @@ class NotificationService:
                 await self._send(channel, message)
                 results.append({"channel_id": channel.channel_id, "status": "sent"})
             except Exception as exc:
-                logger.warning("notification_failed",
-                               channel_id=channel.channel_id, error=str(exc))
-                results.append({"channel_id": channel.channel_id, "status": "failed",
-                                "error": str(exc)})
+                logger.warning("notification_failed", channel_id=channel.channel_id, error=str(exc))
+                results.append(
+                    {"channel_id": channel.channel_id, "status": "failed", "error": str(exc)}
+                )
         return {"sent": sum(1 for r in results if r["status"] == "sent"), "channels": results}
 
-    async def notify_goal_complete(
-        self, *, goal_id: str, status: str, tenant_id: str
-    ) -> None:
+    async def notify_goal_complete(self, *, goal_id: str, status: str, tenant_id: str) -> None:
         """Notify when a goal reaches a terminal state."""
         channels = self.get_channels(tenant_id)
         message = {
@@ -242,8 +258,7 @@ class NotificationService:
             if webhook_url:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     resp = await client.post(
-                        webhook_url,
-                        json={"text": message.get("text", json.dumps(message))}
+                        webhook_url, json={"text": message.get("text", json.dumps(message))}
                     )
                     resp.raise_for_status()
         elif channel.channel_type in {"webhook", "teams"}:

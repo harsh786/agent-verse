@@ -8,6 +8,7 @@ Features used for scoring:
 - Negation count
 - Length relative to a baseline
 """
+
 from __future__ import annotations
 
 import re

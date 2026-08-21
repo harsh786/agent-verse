@@ -8,9 +8,7 @@ from dataclasses import dataclass
 
 _ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_SECRET = re.compile(
-    r"(?i)(?:api[_-]?key|token|password|secret)\s*[:=]\s*['\"]?[^\s,'\"]+"
-)
+_SECRET = re.compile(r"(?i)(?:api[_-]?key|token|password|secret)\s*[:=]\s*['\"]?[^\s,'\"]+")
 _HOST_PATH = re.compile(r"(?:/Users/|/home/|/root/|/proc/|/sys/)[^\s:]+")
 _INJECTION = re.compile(
     r"(?i)(?:ignore (?:all |your )?previous instructions|reveal (?:the )?system prompt|"

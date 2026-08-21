@@ -3,6 +3,7 @@
 Environment variables:
   ENCHARGE_API_KEY: Encharge API key from account settings
 """
+
 from __future__ import annotations
 
 import os
@@ -23,7 +24,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "email": {"type": "string", "description": "User's email address (required identifier)"},
+                "email": {
+                    "type": "string",
+                    "description": "User's email address (required identifier)",
+                },
                 "firstName": {"type": "string"},
                 "lastName": {"type": "string"},
                 "userId": {"type": "string", "description": "Your internal user ID"},
@@ -32,7 +36,10 @@ TOOL_DEFINITIONS = [
                     "items": {"type": "string"},
                     "description": "Tags to apply to the user",
                 },
-                "fields": {"type": "object", "description": "Additional custom field key-value pairs"},
+                "fields": {
+                    "type": "object",
+                    "description": "Additional custom field key-value pairs",
+                },
             },
             "required": ["email"],
         },
@@ -47,7 +54,10 @@ TOOL_DEFINITIONS = [
                 "firstName": {"type": "string"},
                 "lastName": {"type": "string"},
                 "phone": {"type": "string"},
-                "fields": {"type": "object", "description": "Custom field key-value pairs to update"},
+                "fields": {
+                    "type": "object",
+                    "description": "Custom field key-value pairs to update",
+                },
             },
             "required": ["email"],
         },
@@ -91,8 +101,14 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "email": {"type": "string", "description": "User's email address"},
-                "name": {"type": "string", "description": "Event name, e.g. 'Signed Up' or 'Upgraded Plan'"},
-                "properties": {"type": "object", "description": "Event properties as key-value pairs"},
+                "name": {
+                    "type": "string",
+                    "description": "Event name, e.g. 'Signed Up' or 'Upgraded Plan'",
+                },
+                "properties": {
+                    "type": "object",
+                    "description": "Event properties as key-value pairs",
+                },
             },
             "required": ["email", "name"],
         },
@@ -152,7 +168,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "encharge_add_tag":
                 body = {
                     "person": {"email": arguments["email"]},
-                    "tag": arguments["tags"] if isinstance(arguments["tags"], str)
+                    "tag": arguments["tags"]
+                    if isinstance(arguments["tags"], str)
                     else ",".join(arguments["tags"]),
                 }
                 r = await c.post("/tags", json=body)
@@ -162,7 +179,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "encharge_remove_tag":
                 body = {
                     "person": {"email": arguments["email"]},
-                    "tag": arguments["tags"] if isinstance(arguments["tags"], str)
+                    "tag": arguments["tags"]
+                    if isinstance(arguments["tags"], str)
                     else ",".join(arguments["tags"]),
                 }
                 r = await c.delete("/tags", json=body)

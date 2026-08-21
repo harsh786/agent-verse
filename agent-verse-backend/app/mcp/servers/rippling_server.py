@@ -3,6 +3,7 @@
 Environment:
   RIPPLING_API_KEY: Rippling API key (Bearer token)
 """
+
 from __future__ import annotations
 
 import os
@@ -29,7 +30,11 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "enum": ["EMPLOYEE", "CONTRACTOR"],
                 },
-                "status": {"type": "string", "enum": ["ACTIVE", "INACTIVE", "ALL"], "default": "ACTIVE"},
+                "status": {
+                    "type": "string",
+                    "enum": ["ACTIVE", "INACTIVE", "ALL"],
+                    "default": "ACTIVE",
+                },
             },
         },
     },

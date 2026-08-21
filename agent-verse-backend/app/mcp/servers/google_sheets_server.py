@@ -4,6 +4,7 @@ Environment variables (one required):
   GOOGLE_ACCESS_TOKEN:         OAuth2 bearer token
   GOOGLE_SERVICE_ACCOUNT_JSON: JSON string of a service-account key file
 """
+
 from __future__ import annotations
 
 import json
@@ -49,7 +50,11 @@ TOOL_DEFINITIONS = [
                     "items": {"type": "array"},
                     "description": "2-D array of values to write",
                 },
-                "major_dimension": {"type": "string", "enum": ["ROWS", "COLUMNS"], "default": "ROWS"},
+                "major_dimension": {
+                    "type": "string",
+                    "enum": ["ROWS", "COLUMNS"],
+                    "default": "ROWS",
+                },
             },
             "required": ["spreadsheet_id", "range", "values"],
         },
@@ -61,7 +66,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "spreadsheet_id": {"type": "string"},
-                "range": {"type": "string", "default": "Sheet1!A1", "description": "Sheet range hint"},
+                "range": {
+                    "type": "string",
+                    "default": "Sheet1!A1",
+                    "description": "Sheet range hint",
+                },
                 "values": {"type": "array", "items": {"type": "array"}},
             },
             "required": ["spreadsheet_id", "values"],
@@ -252,9 +261,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "sheets_create_spreadsheet":
                 body: dict[str, Any] = {"properties": {"title": arguments["title"]}}
                 if sheet_titles := arguments.get("sheet_titles"):
-                    body["sheets"] = [
-                        {"properties": {"title": t}} for t in sheet_titles
-                    ]
+                    body["sheets"] = [{"properties": {"title": t}} for t in sheet_titles]
                 r = await c.post(
                     f"{SHEETS_BASE}/spreadsheets",
                     headers=hdrs,

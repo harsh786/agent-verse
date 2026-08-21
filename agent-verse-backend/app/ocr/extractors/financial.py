@@ -1,4 +1,5 @@
 """Financial document field extractor (Invoice, Bank Statement, Receipt)."""
+
 from __future__ import annotations
 
 import re

@@ -71,15 +71,11 @@ class CompatibilityEvaluator:
                 ExecutionTier.CROSS_CUTTING,
                 primary_capability.execution_tier,
             }:
-                rejected.append(
-                    StrategyRejection(candidate_id, "incompatible_primary_tier")
-                )
+                rejected.append(StrategyRejection(candidate_id, "incompatible_primary_tier"))
             elif canonical_id in primary_capability.excluded_strategies:
                 rejected.append(StrategyRejection(candidate_id, "explicitly_excluded"))
             else:
-                accepted.append(
-                    StrategySelection(canonical_id, capability.adapter_version)
-                )
+                accepted.append(StrategySelection(canonical_id, capability.adapter_version))
                 seen.add(canonical_id)
 
         return CompatibilityDecision(

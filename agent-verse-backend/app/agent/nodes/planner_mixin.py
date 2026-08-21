@@ -1,70 +1,28 @@
 """Mixin extracted from app.agent.graph — zero semantic changes."""
+
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
-import re
 import time
-import uuid
-from collections.abc import Awaitable, Callable
-from typing import Any, TypedDict
-
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, START, StateGraph
+from typing import Any
 
 from app.agent.prompts import (
-    CHAIN_OF_THOUGHT_SYSTEM,
-    EXECUTOR_SYSTEM,
     PLANNER_SYSTEM,
-    REFLECTION_SYSTEM,
     STRUCTURED_PLANNER_SYSTEM,
-    VERIFIER_SYSTEM,
 )
-from app.agent.sanitization import (
-    _EXECUTOR_CONTEXT_MAX_LENGTH,
-    sanitize_event,
-    sanitize_event_value,
-    sanitize_tool_event_value,
-    sanitize_tool_raw_output,
-)
-from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus, SubGoal
-from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_arguments
-from app.agent.tool_risk import classify_tool_risk
-from app.governance.audit import AuditEvent, AuditLog
-from app.governance.cost import CostController
-from app.governance.hitl import ApprovalStatus, HITLGateway
-from app.governance.permissions import ActionLevel, PermissionMatrix
-from app.governance.policies import PolicyEngine, PolicyResult
-from app.intelligence.eval_runner import EvalRunner
-from app.intelligence.explainability import DecisionTrace
-from app.intelligence.guardrails import GuardrailChecker
-from app.memory.execution import ExecutionMemory
-from app.memory.long_term import LongTermMemoryStore
+from app.agent.state import AgentState, GoalStatus
 from app.observability.metrics import (
-    record_approval_wait,
-    record_goal_completed,
-    record_goal_failed,
     record_plan_duration,
-    record_tool_call,
-    record_verify_duration,
-    track_tool_call,
 )
-from app.pipeline.steps import smart_context_fetch
-from app.providers.base import CompletionRequest, LLMProvider, Message, ToolDefinition
+from app.providers.base import CompletionRequest, Message
 from app.providers.circuit_breaker import call_with_circuit_breaker
-from app.rag.contracts import RAGExecutionResult, RAGStrategy, resolve_rag_strategy
-from app.rag.store import KnowledgeStore
-from app.reliability.circuit_breaker import CircuitBreaker
-from app.reliability.dedup import DeduplicationCache
-from app.reliability.result_processor import ResultProcessor
-from app.reliability.rollback import RollbackEngine
 from app.tenancy.context import TenantContext
 
 # Guardrails 2.0 integration
 try:
     from app.guardrails_v2.engine import guardrails_engine
     from app.guardrails_v2.models import GuardrailLayer
+
     _GUARDRAILS_AVAILABLE = True
 except ImportError:
     _GUARDRAILS_AVAILABLE = False
@@ -72,17 +30,10 @@ except ImportError:
     GuardrailLayer = None  # type: ignore[assignment]
 
 from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
-
-
 from app.agent.nodes._helpers import (
-    _is_high_risk_step,
-    _is_ungrounded_status,
-    _build_verifier_summary,
     _parse_json,
-    _parse_verifier_response,
-    _extract_tool_name as _extract_tool_name_fn,
-    _extract_scope_value,
 )
+
 
 class PlannerMixin:
     """Mixin: _node_plan."""
@@ -100,6 +51,7 @@ class PlannerMixin:
         try:
             from app.context.context_pipeline import ContextPipeline
             from app.context.rerank_policy import RerankStrategy
+
             runtime_profile = agent_state.context.get("_runtime_profile")
             rerank_strategy = RerankStrategy.SCORE
             if runtime_profile is not None:
@@ -123,8 +75,7 @@ class PlannerMixin:
                 if pipeline_result.planner_context:
                     rag_context = pipeline_result.planner_context
                     agent_state.context["_pipeline_citations"] = [
-                        {"index": c.index, "url": c.source_url}
-                        for c in pipeline_result.citations
+                        {"index": c.index, "url": c.source_url} for c in pipeline_result.citations
                     ]
                 # N9: Store executor and verifier contexts for downstream nodes
                 if pipeline_result.executor_context:
@@ -133,6 +84,7 @@ class PlannerMixin:
                     agent_state.context["_verifier_context"] = pipeline_result.verifier_context
         except Exception as _ctx_exc:
             from app.observability.logging import get_logger
+
             get_logger(__name__).warning("context_pipeline_failed_in_plan", error=str(_ctx_exc))
         # ── end ContextPipeline ────────────────────────────────────────────────
 
@@ -157,6 +109,7 @@ class PlannerMixin:
                 _tools = getattr(_tool_ctx, "tools", []) or []
                 if _tools:
                     from app.mcp.tool_intelligence import SchemaAwarePromptInjector
+
                     _schema_block = SchemaAwarePromptInjector.build_tool_schema_block(_tools)
                     if _schema_block:
                         extra_parts.append(_schema_block)
@@ -179,9 +132,7 @@ class PlannerMixin:
             extra_parts.append(f"[Visual context]\n{image_context}")
 
         if agent_state.verification_feedback:
-            extra_parts.append(
-                f"[Previous attempt feedback]\n{agent_state.verification_feedback}"
-            )
+            extra_parts.append(f"[Previous attempt feedback]\n{agent_state.verification_feedback}")
 
         if state.get("reasoning_evidence"):
             extra_parts.append(
@@ -191,10 +142,9 @@ class PlannerMixin:
         # ── Skill selection ────────────────────────────────────────────────────
         try:
             from app.agent.skill_selector import SkillSelector
+
             _skill_sel = SkillSelector()
-            _selected_skills = _skill_sel.select(
-                agent_state.goal, max_skills=2, max_tokens=400
-            )
+            _selected_skills = _skill_sel.select(agent_state.goal, max_skills=2, max_tokens=400)
             if _selected_skills:
                 _skills_block = _skill_sel.build_skills_context(_selected_skills)
                 extra_parts.append(_skills_block)
@@ -210,6 +160,7 @@ class PlannerMixin:
         # OutputContractBuilder — add output format constraint to planner prompt (M5c)
         try:
             from app.context.output_contract_builder import OutputContractBuilder
+
             _ocb = OutputContractBuilder()
             _contract = _ocb.build(goal=agent_state.goal)
             if _contract.instructions:
@@ -253,17 +204,25 @@ class PlannerMixin:
         # Use PromptOptimizer variant when wired (Task 7)
         _plan_optimizer = getattr(self, "_prompt_optimizer", None)
         if _plan_optimizer is not None:
-            _plan_variant = _plan_optimizer.select_variant("planner", tenant_id=tenant_ctx.tenant_id)
-            _planner_prompt = _plan_variant.prompt_text if _plan_variant is not None else PLANNER_SYSTEM
+            _plan_variant = _plan_optimizer.select_variant(
+                "planner", tenant_id=tenant_ctx.tenant_id
+            )
+            _planner_prompt = (
+                _plan_variant.prompt_text if _plan_variant is not None else PLANNER_SYSTEM
+            )
             # Store variant ID for A/B feedback in verify node (BUG 4 fix)
             if _plan_variant is not None:
                 agent_state.context["planner_variant_id"] = _plan_variant.variant_id
         else:
             # Use structured planner when goal-tree is enabled for dependency-aware parallel execution
-            _planner_prompt = STRUCTURED_PLANNER_SYSTEM if self._enable_goal_tree else PLANNER_SYSTEM
+            _planner_prompt = (
+                STRUCTURED_PLANNER_SYSTEM if self._enable_goal_tree else PLANNER_SYSTEM
+            )
         agent_system_prompt = agent_state.context.get("system_prompt", "")
         system_content = (
-            f"{agent_system_prompt}\n\n{_planner_prompt}" if agent_system_prompt else _planner_prompt
+            f"{agent_system_prompt}\n\n{_planner_prompt}"
+            if agent_system_prompt
+            else _planner_prompt
         )
 
         # P1.3: Inject HITL rejection note so planner avoids repeating the rejected action
@@ -288,10 +247,12 @@ class PlannerMixin:
         # Update ModelOrchestratorAdapter with current runtime profile for budget-aware selection
         try:
             _runtime_profile_for_router = agent_state.context.get("_runtime_profile")
-            if _runtime_profile_for_router is not None and hasattr(self._model_router, "update_from_profile"):
-                _budget_ratio = (
-                    agent_state.context.get("total_cost_usd", 0.0) /
-                    max(getattr(_runtime_profile_for_router.model_plan, "max_cost_usd", 0.10) or 0.10, 0.001)
+            if _runtime_profile_for_router is not None and hasattr(
+                self._model_router, "update_from_profile"
+            ):
+                _budget_ratio = agent_state.context.get("total_cost_usd", 0.0) / max(
+                    getattr(_runtime_profile_for_router.model_plan, "max_cost_usd", 0.10) or 0.10,
+                    0.001,
                 )
                 self._model_router.update_from_profile(
                     _runtime_profile_for_router,
@@ -326,7 +287,7 @@ class PlannerMixin:
                                 "cost_downgrade_standard",
                                 original=planning_model,
                                 downgraded=_standard_model,
-                             )
+                            )
                             planning_model = _standard_model
                 except Exception:
                     pass
@@ -335,24 +296,29 @@ class PlannerMixin:
         try:
             if self._event_callback is not None:
                 from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+
                 _sse_mr = RuntimeSSEEmitter()
                 _runtime_prof_mr = agent_state.context.get("_runtime_profile")
-                await self._emit(_sse_mr.model_route_selected(
-                    goal_id=agent_state.goal_id,
-                    planner=planning_model,
-                    executor=getattr(self._executor, "_default_model", "") or "",
-                    verifier=getattr(self._verifier, "_default_model", "") or "",
-                    cost_class=(
-                        _runtime_prof_mr.model_plan.cost_class
-                        if _runtime_prof_mr is not None else "unknown"
-                    ),
-                ))
+                await self._emit(
+                    _sse_mr.model_route_selected(
+                        goal_id=agent_state.goal_id,
+                        planner=planning_model,
+                        executor=getattr(self._executor, "_default_model", "") or "",
+                        verifier=getattr(self._verifier, "_default_model", "") or "",
+                        cost_class=(
+                            _runtime_prof_mr.model_plan.cost_class
+                            if _runtime_prof_mr is not None
+                            else "unknown"
+                        ),
+                    )
+                )
         except Exception:
             pass
 
         # ── Prompt Compression: reduce token count before LLM call ────────────
         try:
             from app.agent.prompt_compressor import _default_compressor as _compressor
+
             system_content = _compressor.compress(system_content)
             user_content = _compressor.compress(user_content)
         except Exception:
@@ -374,9 +340,11 @@ class PlannerMixin:
                     # Use cached response directly — skip the LLM call
                     # Jump straight to parsing (replicate post-resp.content code)
                     resp_content = _cached_plan
+
                     # Store locally so the existing parse block below can use it
                     class _FakeResp:
                         content = resp_content
+
                     resp = _FakeResp()
                     record_plan_duration(agent_state.iterations, 0.0)
                     # bypass the real LLM call below
@@ -393,6 +361,7 @@ class PlannerMixin:
             _response_schema = None
             try:
                 from app.agent.schemas import planner_schema
+
                 if (
                     hasattr(self._planner, "supports_structured_output")
                     and self._planner.supports_structured_output()
@@ -416,7 +385,9 @@ class PlannerMixin:
                 _plan_start = time.monotonic()
                 try:
                     resp = await call_with_circuit_breaker(
-                        self._planner, "complete", req,
+                        self._planner,
+                        "complete",
+                        req,
                         provider_name=type(self._planner).__name__,
                     )
                 except RuntimeError as cb_exc:
@@ -425,6 +396,7 @@ class PlannerMixin:
             # 2.3: Per-goal planner cost tracking
             try:
                 from app.observability.cost_breakdown import record_role_cost as _rrc
+
                 _rrc(
                     goal_id=agent_state.goal_id,
                     role="planner",
@@ -441,7 +413,7 @@ class PlannerMixin:
                     _is_error_resp = (
                         not resp.content
                         or "error" in resp.content.lower()[:40]
-                        or resp.content.strip().startswith("{\"error")
+                        or resp.content.strip().startswith('{"error')
                     )
                     if not _is_error_resp:
                         await _llm_rc.set(
@@ -464,8 +436,7 @@ class PlannerMixin:
             # it via StructuredPlan.from_llm_response (dependency-aware parallel waves)
             plan = [resp.content]
             _plan_display = [
-                str(s.get("description", s.get("id", f"step{i}")))
-                for i, s in enumerate(raw_steps)
+                str(s.get("description", s.get("id", f"step{i}"))) for i, s in enumerate(raw_steps)
             ]
         else:
             plan = [str(s) for s in raw_steps] if raw_steps else [resp.content]
@@ -485,6 +456,7 @@ class PlannerMixin:
         # ── Predictive Prefetch: embed all step descriptions now so semantic
         # cache lookups during execution are instant (sub-millisecond) ──────────
         if self._embedder is not None and self._semantic_cache is not None:
+
             async def _prefetch_steps() -> None:
                 try:
                     step_texts = []
@@ -516,4 +488,3 @@ class PlannerMixin:
             self._background_tasks.add(_pf_task)
             _pf_task.add_done_callback(self._background_tasks.discard)
         return {"agent_state": agent_state, "plan": plan, "iteration": iteration}
-

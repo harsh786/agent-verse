@@ -3,6 +3,7 @@
 Environment variables:
   VERO_AUTH_TOKEN: Vero API authentication token
 """
+
 from __future__ import annotations
 
 import os
@@ -47,7 +48,10 @@ TOOL_DEFINITIONS = [
                     "type": "object",
                     "description": "User identity — {id: '...', email: '...'}",
                 },
-                "event_name": {"type": "string", "description": "Event name, e.g. 'Purchased Product'"},
+                "event_name": {
+                    "type": "string",
+                    "description": "Event name, e.g. 'Purchased Product'",
+                },
                 "data": {"type": "object", "description": "Event-level data/properties"},
                 "extras": {"type": "object", "description": "Extra metadata for the event"},
             },
@@ -92,7 +96,10 @@ TOOL_DEFINITIONS = [
                 "from_name": {"type": "string", "description": "Sender name"},
                 "from_address": {"type": "string", "description": "Sender email address"},
                 "reply_to": {"type": "string"},
-                "trigger_event": {"type": "string", "description": "Event name that triggers the campaign"},
+                "trigger_event": {
+                    "type": "string",
+                    "description": "Event name that triggers the campaign",
+                },
                 "segment_ids": {
                     "type": "array",
                     "items": {"type": "integer"},

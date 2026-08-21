@@ -1,4 +1,5 @@
 """Parquet parser — column schema + row sampling for analytics tables."""
+
 from __future__ import annotations
 
 import logging

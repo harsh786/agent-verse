@@ -1,4 +1,5 @@
 """Embedding Platform API."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -53,6 +54,7 @@ async def list_embedding_providers(request: Request) -> dict[str, Any]:
     """List available embedding providers and models."""
     _require_tenant(request)
     from app.embedding.router import BUILTIN_EMBEDDING_CONFIGS
+
     return {
         "providers": [
             {
@@ -85,7 +87,8 @@ async def validate_dimension(request: Request) -> dict[str, Any]:
         "model_dimension": config.dimension,
         "collection_dimension": collection_dim,
         "warning": (
-            None if matches
+            None
+            if matches
             else f"Dimension mismatch: model={config.dimension}, collection={collection_dim}"
         ),
     }
@@ -96,6 +99,7 @@ async def get_embedding_usage(request: Request) -> dict[str, Any]:
     """Get embedding usage statistics for the current session."""
     _require_tenant(request)
     from app.embedding.router import embedding_router
+
     return embedding_router.get_usage_stats()
 
 

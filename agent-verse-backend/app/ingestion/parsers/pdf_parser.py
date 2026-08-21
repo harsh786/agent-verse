@@ -1,4 +1,5 @@
 """PDFParser — extracts text with page numbers using pdfminer.six → pymupdf → text fallback."""
+
 from __future__ import annotations
 
 import io
@@ -31,17 +32,27 @@ class PDFParseResult:
         for i, page in enumerate(self.pages):
             if not page.content.strip():
                 continue
-            chunks.append({
-                "content": page.content.strip(),
-                "chunk_index": i,
-                "page_number": page.page_number,
-                "source_name": self.source_name,
-                "content_type": "pdf",
-            })
+            chunks.append(
+                {
+                    "content": page.content.strip(),
+                    "chunk_index": i,
+                    "page_number": page.page_number,
+                    "source_name": self.source_name,
+                    "content_type": "pdf",
+                }
+            )
         return chunks or (
-            [{"content": self.full_text, "chunk_index": 0, "page_number": 1,
-              "source_name": self.source_name, "content_type": "pdf"}]
-            if self.full_text else []
+            [
+                {
+                    "content": self.full_text,
+                    "chunk_index": 0,
+                    "page_number": 1,
+                    "source_name": self.source_name,
+                    "content_type": "pdf",
+                }
+            ]
+            if self.full_text
+            else []
         )
 
 
@@ -85,15 +96,20 @@ class PDFParser:
     def _parse_with_pymupdf(self, pdf_bytes: bytes, source_name: str) -> PDFParseResult | None:
         try:
             import fitz  # type: ignore[import]
+
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             pages = []
             for page_num, page in enumerate(doc, start=1):
                 text = page.get_text("text")
                 if text.strip():
-                    pages.append(PDFPage(
-                        page_number=page_num, content=text.strip(),
-                        width=page.rect.width, height=page.rect.height,
-                    ))
+                    pages.append(
+                        PDFPage(
+                            page_number=page_num,
+                            content=text.strip(),
+                            width=page.rect.width,
+                            height=page.rect.height,
+                        )
+                    )
             doc.close()
             return PDFParseResult(source_name=source_name, pages=pages) if pages else None
         except (ImportError, Exception):
@@ -103,6 +119,7 @@ class PDFParser:
         try:
             from pdfminer.high_level import extract_pages  # type: ignore[import]
             from pdfminer.layout import LTFigure, LTTextContainer  # type: ignore[import]
+
             pages = []
             for page_num, page_layout in enumerate(extract_pages(io.BytesIO(pdf_bytes)), start=1):
                 text_parts: list[str] = []
@@ -114,7 +131,9 @@ class PDFParser:
                         has_images = True
                 page_text = "".join(text_parts).strip()
                 if page_text:
-                    pages.append(PDFPage(page_number=page_num, content=page_text, has_images=has_images))
+                    pages.append(
+                        PDFPage(page_number=page_num, content=page_text, has_images=has_images)
+                    )
             return PDFParseResult(source_name=source_name, pages=pages) if pages else None
         except (ImportError, Exception):
             return None

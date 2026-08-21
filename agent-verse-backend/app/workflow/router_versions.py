@@ -9,6 +9,7 @@ Endpoints:
   POST   /workflows/{id}/approve-publish         Approve a submitted workflow
   POST   /workflows/{id}/reject-publish          Reject a submitted workflow
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -59,15 +60,11 @@ async def list_versions(workflow_id: str, request: Request) -> list[dict[str, An
 
 
 @router.get("/{workflow_id}/versions/{version}")
-async def get_version(
-    workflow_id: str, version: int, request: Request
-) -> dict[str, Any]:
+async def get_version(workflow_id: str, version: int, request: Request) -> dict[str, Any]:
     """Get a specific workflow version."""
     svc = _svc(request)
     tenant_id = _tenant_id(request)
-    ver = await svc.get_version(
-        tenant_id=tenant_id, workflow_id=workflow_id, version=version
-    )
+    ver = await svc.get_version(tenant_id=tenant_id, workflow_id=workflow_id, version=version)
     if ver is None:
         raise HTTPException(status_code=404, detail="Version not found")
     return ver
@@ -78,9 +75,7 @@ async def get_version(
     status_code=status.HTTP_200_OK,
     operation_id="workflow_versions_restore",
 )
-async def restore_version(
-    workflow_id: str, version: int, request: Request
-) -> dict[str, Any]:
+async def restore_version(workflow_id: str, version: int, request: Request) -> dict[str, Any]:
     """Restore a workflow to a specific historical version (creates new draft)."""
     svc = _svc(request)
     tenant_id = _tenant_id(request)
@@ -136,9 +131,7 @@ async def submit_for_approval(workflow_id: str, request: Request) -> dict[str, A
     svc = _svc(request)
     tenant_id = _tenant_id(request)
     try:
-        result = await svc.submit_for_approval(
-            tenant_id=tenant_id, workflow_id=workflow_id
-        )
+        result = await svc.submit_for_approval(tenant_id=tenant_id, workflow_id=workflow_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return result
@@ -196,6 +189,7 @@ async def export_yaml(workflow_id: str, request: Request) -> str:
     if item is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
     from app.workflow.dsl import WorkflowDefinition
+
     raw_def = item.definition if hasattr(item, "definition") else item["definition"]
     wf = WorkflowDefinition(**raw_def)
     return wf.to_yaml()
@@ -205,6 +199,7 @@ async def export_yaml(workflow_id: str, request: Request) -> str:
 async def import_yaml(request: Request) -> dict[str, Any]:
     """Import a workflow definition from a YAML body."""
     import yaml as _yaml  # type: ignore[import]
+
     body_bytes = await request.body()
     try:
         data = _yaml.safe_load(body_bytes.decode())
@@ -212,6 +207,7 @@ async def import_yaml(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}") from exc
 
     from app.workflow.dsl import WorkflowDefinition
+
     try:
         wf = WorkflowDefinition(**data)
     except Exception as exc:

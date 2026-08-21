@@ -4,6 +4,7 @@ Uses imaplib for generic IMAP access.
 Cursor: UID of the last fetched message.
 Supports: Gmail (IMAP enabled), Outlook, Exchange (IMAP), and any RFC 3501 server.
 """
+
 from __future__ import annotations
 
 import email
@@ -65,6 +66,7 @@ class EmailIMAPConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             cc = config.connection_config
@@ -84,7 +86,8 @@ class EmailIMAPConnector(BaseConnector):
             conn.logout()
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
-                ok=True, latency_ms=latency,
+                ok=True,
+                latency_ms=latency,
                 metadata={"mailboxes": len(mboxes or []), "user": user},
             )
         except Exception as exc:
@@ -116,7 +119,7 @@ class EmailIMAPConnector(BaseConnector):
             conn.select(mailbox)
 
             last_uid = cursor or "0"
-            typ, data = conn.uid("SEARCH", None, f"UID {int(last_uid)+1}:*")
+            typ, data = conn.uid("SEARCH", None, f"UID {int(last_uid) + 1}:*")
             uids = data[0].split() if data and data[0] else []
             uids = uids[:batch_size]
 

@@ -1,4 +1,5 @@
 """Dead Letter Queue (DLQ) helpers for trigger firings."""
+
 from __future__ import annotations
 
 import logging
@@ -6,19 +7,21 @@ from datetime import UTC, datetime
 
 _log = logging.getLogger(__name__)
 
-FAILURE_TYPES = frozenset([
-    "SIGNATURE_INVALID",
-    "PAYLOAD_TOO_LARGE",
-    "CONDITION_ERROR",
-    "TEMPLATE_RENDER_ERROR",
-    "GOAL_ENQUEUE_FAILED",
-    "RATE_LIMITED",
-    "DEDUP_BLOCKED",
-    "BULKHEAD_FULL",
-    "CIRCUIT_OPEN",
-    "QUOTA_EXCEEDED",
-    "RBAC_DENIED",
-])
+FAILURE_TYPES = frozenset(
+    [
+        "SIGNATURE_INVALID",
+        "PAYLOAD_TOO_LARGE",
+        "CONDITION_ERROR",
+        "TEMPLATE_RENDER_ERROR",
+        "GOAL_ENQUEUE_FAILED",
+        "RATE_LIMITED",
+        "DEDUP_BLOCKED",
+        "BULKHEAD_FULL",
+        "CIRCUIT_OPEN",
+        "QUOTA_EXCEEDED",
+        "RBAC_DENIED",
+    ]
+)
 
 # Retry delays in seconds (exponential backoff: 5s, 15s, 45s)
 RETRY_DELAYS = [5, 15, 45]
@@ -38,7 +41,9 @@ async def write_to_dlq(
     if db_session is None:
         _log.warning(
             "dlq_no_db tenant_id=%s trigger_id=%s failure=%s",
-            tenant_id, trigger_id, failure_type,
+            tenant_id,
+            trigger_id,
+            failure_type,
         )
         return
 
@@ -46,6 +51,7 @@ async def write_to_dlq(
         import uuid
 
         from sqlalchemy import text
+
         await db_session.execute(
             text(
                 "INSERT INTO trigger_dlq "

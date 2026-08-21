@@ -10,6 +10,7 @@ Responsibilities:
   7. Operator pause check before each step
   8. Enforce max 1MB trigger payload
 """
+
 from __future__ import annotations
 
 import json
@@ -86,38 +87,38 @@ class WorkflowRunner:
         # 5. Build initial state
         run_id = str(uuid.uuid4())
         initial_state: WorkflowState = {
-            "run_id":         run_id,
-            "workflow_id":    workflow_id,
-            "tenant_id":      tenant_id,
-            "workflow_name":  definition.name,
-            "inputs":         inputs,
-            "raw_trigger":    trigger_payload or {},
-            "step_outputs":   {},
-            "outputs":        {},
-            "vars":           dict(definition.vars),
-            "status":         WorkflowRunStatus.PENDING,
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "tenant_id": tenant_id,
+            "workflow_name": definition.name,
+            "inputs": inputs,
+            "raw_trigger": trigger_payload or {},
+            "step_outputs": {},
+            "outputs": {},
+            "vars": dict(definition.vars),
+            "status": WorkflowRunStatus.PENDING,
             "current_step_id": None,
             "completed_branch": None,
-            "error":          None,
-            "error_step_id":  None,
+            "error": None,
+            "error_step_id": None,
             "hitl_request_id": None,
-            "hitl_action":    None,
-            "hitl_note":      None,
-            "hitl_reviewer":  None,
+            "hitl_action": None,
+            "hitl_note": None,
+            "hitl_reviewer": None,
             "hitl_form_data": None,
             "foreach_progress": {},
-            "cost_usd":       0.0,
-            "tokens_used":    0,
-            "step_timings":   {},
-            "paused_by":      None,
-            "paused_at":      None,
-            "pause_reason":   None,
-            "is_test_run":    is_test_run,
+            "cost_usd": 0.0,
+            "tokens_used": 0,
+            "step_timings": {},
+            "paused_by": None,
+            "paused_at": None,
+            "pause_reason": None,
+            "is_test_run": is_test_run,
             "mock_overrides": mock_overrides or {},
-            "labels":         {**definition.run_labels, **(labels or {})},
-            "run_metadata":   run_metadata or {},
+            "labels": {**definition.run_labels, **(labels or {})},
+            "run_metadata": run_metadata or {},
             "vault_refs_used": set(),
-            "_env":           definition.env,
+            "_env": definition.env,
         }
 
         # 6. Persist run record
@@ -139,6 +140,7 @@ class WorkflowRunner:
         else:
             plan_tier = await self._get_plan_tier(tenant_id)
             from app.workflow.celery_tasks import execute_workflow_run
+
             execute_workflow_run.apply_async(
                 args=[run_id, workflow_id, tenant_id],
                 kwargs={"is_test_run": is_test_run, "mock_overrides": mock_overrides or {}},
@@ -183,11 +185,11 @@ class WorkflowRunner:
 
         config = {"configurable": {"thread_id": run_id}}
         state_update: dict[str, Any] = {
-            "status":         WorkflowRunStatus.RUNNING,
+            "status": WorkflowRunStatus.RUNNING,
             "hitl_request_id": None,
-            "hitl_action":    action,
-            "hitl_note":      note,
-            "hitl_reviewer":  actor_id,
+            "hitl_action": action,
+            "hitl_note": note,
+            "hitl_reviewer": actor_id,
             "hitl_form_data": form_data,
         }
         await compiled.aupdate_state(config, state_update)
@@ -195,6 +197,7 @@ class WorkflowRunner:
         # Re-dispatch to continue execution
         if self._celery:
             from app.workflow.celery_tasks import execute_workflow_run
+
             execute_workflow_run.apply_async(
                 args=[run_id, workflow_id, tenant_id],
                 kwargs={"resume": True},
@@ -207,9 +210,7 @@ class WorkflowRunner:
                 state.update(state_update)
                 await compiled.ainvoke(state, config)
 
-    async def _load_definition(
-        self, workflow_id: str, tenant_id: str
-    ) -> WorkflowDefinition:
+    async def _load_definition(self, workflow_id: str, tenant_id: str) -> WorkflowDefinition:
         if self._run_store is not None:
             data = await self._run_store.get_definition(workflow_id, tenant_id)
             return WorkflowDefinition.from_json(data)
@@ -217,14 +218,10 @@ class WorkflowRunner:
         return WorkflowDefinition(name="test", id=workflow_id)
 
     @staticmethod
-    def _validate_inputs(
-        definition: WorkflowDefinition, inputs: dict[str, Any]
-    ) -> None:
+    def _validate_inputs(definition: WorkflowDefinition, inputs: dict[str, Any]) -> None:
         for name, input_def in definition.inputs.items():
             if input_def.required and name not in inputs and input_def.default is None:
-                raise WorkflowValidationError(
-                    f"Required input {name!r} is missing"
-                )
+                raise WorkflowValidationError(f"Required input {name!r} is missing")
             if name in inputs and input_def.enum and inputs[name] not in input_def.enum:
                 raise WorkflowValidationError(
                     f"Input {name!r} value {inputs[name]!r} not in enum {input_def.enum}"
@@ -252,10 +249,10 @@ class WorkflowRunner:
 
         cb_url = self._ctx.resolve(definition.callback.url, state)
         payload = {
-            "run_id":   state.get("run_id"),
-            "status":   str(state.get("status", "")),
-            "outputs":  state.get("outputs", {}),
-            "labels":   state.get("labels", {}),
+            "run_id": state.get("run_id"),
+            "status": str(state.get("status", "")),
+            "outputs": state.get("outputs", {}),
+            "labels": state.get("labels", {}),
             "cost_usd": state.get("cost_usd", 0.0),
         }
 

@@ -10,6 +10,7 @@ Strategy:
 Falls back to the tenant's configured default_model when a specific
 task-type model is not configured.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ logger = get_logger(__name__)
 @dataclass
 class ModelRouterConfig:
     """Per-tenant model routing configuration."""
+
     planning_model: str = ""
     execution_model: str = ""
     verification_model: str = ""
@@ -140,12 +142,12 @@ class ModelRouter:
                 return cheaper
         return base_model
 
-
     def with_override(self, model: str) -> "ModelRouter":  # noqa: UP037
         """Return a NEW ModelRouter (copy-on-write) with all task types overridden to `model`.
         The original router is unchanged — prevents per-goal override from leaking across goals.
         """
         from copy import copy
+
         new_router = copy(self)
         new_config = ModelRouterConfig(
             planning_model=model,

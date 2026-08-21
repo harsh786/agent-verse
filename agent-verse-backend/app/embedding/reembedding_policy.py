@@ -1,5 +1,7 @@
 """ReembeddingPolicy — decides when to re-embed a collection."""
+
 from __future__ import annotations
+
 import enum
 
 

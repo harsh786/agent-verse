@@ -4,6 +4,7 @@ Environment:
   FACEBOOK_ACCESS_TOKEN: Facebook Page access token or user token with pages_manage_posts scope
   FACEBOOK_PAGE_ID: Facebook Page ID to manage
 """
+
 from __future__ import annotations
 
 import os
@@ -24,7 +25,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "fields": {"type": "string", "description": "Comma-separated fields: id,name,fan_count,category,picture"},
+                "fields": {
+                    "type": "string",
+                    "description": "Comma-separated fields: id,name,fan_count,category,picture",
+                },
             },
         },
     },
@@ -34,12 +38,19 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "page_id": {"type": "string", "description": "Facebook Page ID (uses FACEBOOK_PAGE_ID if omitted)"},
+                "page_id": {
+                    "type": "string",
+                    "description": "Facebook Page ID (uses FACEBOOK_PAGE_ID if omitted)",
+                },
                 "metric": {
                     "type": "string",
                     "description": "Comma-separated metrics: page_impressions, page_reach, page_engaged_users, page_fan_adds",
                 },
-                "period": {"type": "string", "description": "Time period: day, week, days_28, month", "default": "day"},
+                "period": {
+                    "type": "string",
+                    "description": "Time period: day, week, days_28, month",
+                    "default": "day",
+                },
             },
             "required": ["metric"],
         },
@@ -52,8 +63,15 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "message": {"type": "string", "description": "Post text content"},
                 "link": {"type": "string", "description": "URL to attach as a link preview"},
-                "page_id": {"type": "string", "description": "Facebook Page ID (uses FACEBOOK_PAGE_ID if omitted)"},
-                "published": {"type": "boolean", "description": "Whether to publish immediately", "default": True},
+                "page_id": {
+                    "type": "string",
+                    "description": "Facebook Page ID (uses FACEBOOK_PAGE_ID if omitted)",
+                },
+                "published": {
+                    "type": "boolean",
+                    "description": "Whether to publish immediately",
+                    "default": True,
+                },
             },
             "required": ["message"],
         },
@@ -64,9 +82,20 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "page_id": {"type": "string", "description": "Facebook Page ID (uses FACEBOOK_PAGE_ID if omitted)"},
-                "fields": {"type": "string", "description": "Fields: id,message,created_time,likes,comments", "default": "id,message,created_time"},
-                "limit": {"type": "integer", "description": "Number of posts to return", "default": 25},
+                "page_id": {
+                    "type": "string",
+                    "description": "Facebook Page ID (uses FACEBOOK_PAGE_ID if omitted)",
+                },
+                "fields": {
+                    "type": "string",
+                    "description": "Fields: id,message,created_time,likes,comments",
+                    "default": "id,message,created_time",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of posts to return",
+                    "default": 25,
+                },
                 "after": {"type": "string", "description": "Pagination cursor for next page"},
             },
         },
@@ -77,7 +106,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "comment_id": {"type": "string", "description": "Facebook comment ID to respond to"},
+                "comment_id": {
+                    "type": "string",
+                    "description": "Facebook comment ID to respond to",
+                },
                 "message": {"type": "string", "description": "Reply message text"},
             },
             "required": ["comment_id", "message"],
@@ -90,9 +122,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "message": {"type": "string", "description": "Post text content"},
-                "scheduled_publish_time": {"type": "integer", "description": "Unix timestamp for when to publish"},
+                "scheduled_publish_time": {
+                    "type": "integer",
+                    "description": "Unix timestamp for when to publish",
+                },
                 "link": {"type": "string", "description": "URL to attach as link preview"},
-                "page_id": {"type": "string", "description": "Facebook Page ID (uses FACEBOOK_PAGE_ID if omitted)"},
+                "page_id": {
+                    "type": "string",
+                    "description": "Facebook Page ID (uses FACEBOOK_PAGE_ID if omitted)",
+                },
             },
             "required": ["message", "scheduled_publish_time"],
         },

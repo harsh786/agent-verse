@@ -1,4 +1,5 @@
 """RolePolicy and AgentRole enum — defines which roles are required per PatternConfig."""
+
 from __future__ import annotations
 
 import enum
@@ -19,7 +20,7 @@ class AgentRole(str, enum.Enum):
 
 
 class RolePolicy:
-    def get_required_roles(self, config: "PatternConfig") -> list[AgentRole]:
+    def get_required_roles(self, config: PatternConfig) -> list[AgentRole]:
         roles = [
             AgentRole.PLANNER,
             AgentRole.EXECUTOR,

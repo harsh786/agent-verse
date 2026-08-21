@@ -230,9 +230,7 @@ async def query_graph_evidence(
                 "community_id": str(row[0]),
                 "labels": str(row[1] or ""),
                 "member_node_ids": sorted(str(node_id) for node_id in (row[4] or [])),
-                "source_document_chunk_ids": sorted(
-                    str(source_id) for source_id in (row[5] or [])
-                ),
+                "source_document_chunk_ids": sorted(str(source_id) for source_id in (row[5] or [])),
             },
         )
         for row in community_rows

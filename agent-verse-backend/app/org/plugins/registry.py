@@ -1,4 +1,5 @@
 """Plugin registry — manages installed plugins at runtime."""
+
 from __future__ import annotations
 
 from typing import Any

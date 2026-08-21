@@ -1,4 +1,5 @@
 """FallbackChain — tracks fallback attempts per doc-2 §4 exact order."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -61,7 +62,7 @@ class FallbackChain:
         except ValueError:
             idx = -1
 
-        for s in self.FALLBACK_ORDER[idx + 1:]:
+        for s in self.FALLBACK_ORDER[idx + 1 :]:
             required = self.REQUIRES_INFRA.get(s)
             if required is None or required in available_infra:
                 return s
@@ -91,4 +92,3 @@ class FallbackChain:
             "final_source": self.final_source,
             "fallback_used": len(self.attempts) > 1,
         }
-

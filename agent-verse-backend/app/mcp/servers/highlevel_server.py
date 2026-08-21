@@ -3,6 +3,7 @@
 Environment variables:
   HIGHLEVEL_API_KEY: GoHighLevel API key
 """
+
 from __future__ import annotations
 
 import os
@@ -23,9 +24,20 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Search query for name, email, or phone"},
-                "limit": {"type": "integer", "description": "Max contacts to return", "default": 20},
-                "skip": {"type": "integer", "description": "Number of records to skip", "default": 0},
+                "query": {
+                    "type": "string",
+                    "description": "Search query for name, email, or phone",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max contacts to return",
+                    "default": 20,
+                },
+                "skip": {
+                    "type": "integer",
+                    "description": "Number of records to skip",
+                    "default": 0,
+                },
                 "locationId": {"type": "string", "description": "Sub-account/location ID"},
             },
         },
@@ -55,7 +67,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "contact_id": {"type": "string", "description": "GoHighLevel contact ID"},
-                "campaign_id": {"type": "string", "description": "Campaign ID to enroll the contact in"},
+                "campaign_id": {
+                    "type": "string",
+                    "description": "Campaign ID to enroll the contact in",
+                },
             },
             "required": ["contact_id", "campaign_id"],
         },
@@ -140,7 +155,15 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "highlevel_create_contact":
                 body: dict[str, Any] = {"email": arguments["email"]}
-                for k in ("firstName", "lastName", "phone", "companyName", "tags", "source", "locationId"):
+                for k in (
+                    "firstName",
+                    "lastName",
+                    "phone",
+                    "companyName",
+                    "tags",
+                    "source",
+                    "locationId",
+                ):
                     if k in arguments:
                         body[k] = arguments[k]
                 r = await c.post("/contacts/", json=body)
@@ -168,7 +191,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "name": arguments["name"],
                     "status": arguments.get("status", "open"),
                 }
-                for k in ("locationId", "pipelineStageId", "monetaryValue", "assignedTo", "contactId"):
+                for k in (
+                    "locationId",
+                    "pipelineStageId",
+                    "monetaryValue",
+                    "assignedTo",
+                    "contactId",
+                ):
                     if k in arguments:
                         body[k] = arguments[k]
                 r = await c.post("/opportunities/", json=body)

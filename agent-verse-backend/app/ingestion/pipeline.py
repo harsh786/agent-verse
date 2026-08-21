@@ -24,6 +24,7 @@ Stage order:
   12 INDEX         — write to pgvector + BM25 + update indexed_documents
   13 EMIT          — cursor update, Redis event, Prometheus metrics
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -51,13 +52,13 @@ class IngestionPipeline:
     def __init__(
         self,
         *,
-        knowledge_store: Any = None,        # app.rag.store.KnowledgeStore
-        embedder: Any = None,               # LLMProvider with embedding support
-        pii_analyzer: Any = None,           # presidio.AnalyzerEngine (optional)
-        quota_enforcer: Any = None,         # TenantQuotaEnforcer (optional)
-        metrics: Any = None,               # Prometheus metrics registry
-        tracer: Any = None,                # OTel tracer (optional)
-        dry_run: bool = False,             # LAW-22: parse+chunk but skip embed/index
+        knowledge_store: Any = None,  # app.rag.store.KnowledgeStore
+        embedder: Any = None,  # LLMProvider with embedding support
+        pii_analyzer: Any = None,  # presidio.AnalyzerEngine (optional)
+        quota_enforcer: Any = None,  # TenantQuotaEnforcer (optional)
+        metrics: Any = None,  # Prometheus metrics registry
+        tracer: Any = None,  # OTel tracer (optional)
+        dry_run: bool = False,  # LAW-22: parse+chunk but skip embed/index
     ) -> None:
         self._kb = knowledge_store
         self._embedder = embedder
@@ -107,7 +108,8 @@ class IngestionPipeline:
                     result.skip_reason = "quota_exceeded"
                     _log.warning(
                         "pipeline_stage=receive quota_exceeded tenant=%s: %s",
-                        source_config.tenant_id, e,
+                        source_config.tenant_id,
+                        e,
                     )
                     return result
 
@@ -118,7 +120,9 @@ class IngestionPipeline:
                 result.skip_reason = "content_too_large"
                 _log.info(
                     "pipeline_stage=validate skip=too_large doc=%s size=%d limit=%d",
-                    raw_doc.doc_id, size_bytes, source_config.max_doc_size_bytes,
+                    raw_doc.doc_id,
+                    size_bytes,
+                    source_config.max_doc_size_bytes,
                 )
                 return result
             if size_bytes == 0:
@@ -129,9 +133,7 @@ class IngestionPipeline:
             # ── Stage 3: CONTENT HASH (LAW-02: idempotency) ──────────────────
             content_hash = raw_doc.compute_hash()
             if self._kb is not None and not self._dry_run:
-                existing = await self._check_existing_hash(
-                    content_hash, source_config
-                )
+                existing = await self._check_existing_hash(content_hash, source_config)
                 if existing:
                     result.status = "skipped"
                     result.skip_reason = "dedup"
@@ -145,6 +147,7 @@ class IngestionPipeline:
             except Exception as e:
                 _log.warning("pipeline_stage=classify error doc=%s: %s", raw_doc.doc_id, e)
                 from app.ingestion.content_classifier import ContentType
+
                 content_type = ContentType.TEXT
 
             # ── Stage 5: PARSE ────────────────────────────────────────────────
@@ -179,12 +182,15 @@ class IngestionPipeline:
                 result.skip_reason = "quality_rejected"
                 _log.debug(
                     "pipeline_stage=quality_gate skip doc=%s score=%.2f min=%.2f",
-                    raw_doc.doc_id, quality_score, source_config.min_quality_score,
+                    raw_doc.doc_id,
+                    quality_score,
+                    source_config.min_quality_score,
                 )
                 return result
 
             # ── Stage 8: CHUNK ────────────────────────────────────────────────
             from app.ingestion.content_classifier import ContentType
+
             chunks_text = self._chunk(
                 text,
                 content_type,
@@ -214,9 +220,7 @@ class IngestionPipeline:
                 return result
 
             embedded_chunks = await self._embed(enriched_chunks, source_config)
-            result.tokens_consumed = sum(
-                len(c["text"].split()) for c in embedded_chunks
-            )
+            result.tokens_consumed = sum(len(c["text"].split()) for c in embedded_chunks)
 
             # ── Stage 11: DEDUP CHUNKS ────────────────────────────────────────
             unique_chunks = self._dedup_chunks(embedded_chunks)
@@ -240,7 +244,9 @@ class IngestionPipeline:
         except Exception as exc:
             _log.exception(
                 "pipeline_error doc=%s source=%s correlation=%s",
-                raw_doc.doc_id, source_config.source_id, raw_doc.correlation_id,
+                raw_doc.doc_id,
+                source_config.source_id,
+                raw_doc.correlation_id,
             )
             result.status = "failed"
             result.error = str(exc)[:500]
@@ -253,9 +259,7 @@ class IngestionPipeline:
 
     # ── Stage helpers ─────────────────────────────────────────────────────────
 
-    async def _check_existing_hash(
-        self, content_hash: str, config: SourceConfig
-    ) -> bool:
+    async def _check_existing_hash(self, content_hash: str, config: SourceConfig) -> bool:
         """Return True if this content hash is already indexed for this tenant."""
         try:
             if hasattr(self._kb, "exists_by_hash"):
@@ -268,9 +272,7 @@ class IngestionPipeline:
             _log.debug("pipeline_dedup_check_error: %s", e)
         return False
 
-    def _run_pii(
-        self, text: str, pii_action: str
-    ) -> tuple[str | None, bool]:
+    def _run_pii(self, text: str, pii_action: str) -> tuple[str | None, bool]:
         """Detect and handle PII.
 
         Returns (text_after_action, pii_was_detected).
@@ -289,6 +291,7 @@ class IngestionPipeline:
 
             if pii_action == "redact":
                 from presidio_anonymizer import AnonymizerEngine  # type: ignore
+
                 anonymizer = AnonymizerEngine()
                 redacted = anonymizer.anonymize(text=text, analyzer_results=results)
                 return redacted.text, True
@@ -303,6 +306,7 @@ class IngestionPipeline:
         """Compute a quality score 0.0–1.0 for the text."""
         try:
             from app.ingestion.quality_checks import QualityChecker
+
             checker = QualityChecker(min_length=_MIN_TEXT_LENGTH)
             result = checker.check(text)
             return 1.0 if result.passed else 0.1
@@ -321,9 +325,7 @@ class IngestionPipeline:
         """Dispatch to appropriate chunking strategy."""
         try:
             strategy_override = strategy if strategy != "auto" else None
-            chunks = self._chunker_selector.select_and_chunk(
-                text, content_type, strategy_override
-            )
+            chunks = self._chunker_selector.select_and_chunk(text, content_type, strategy_override)
             return [c for c in chunks if c.strip()]
         except Exception as e:
             _log.warning("pipeline_chunk_error: %s — falling back to fixed", e)
@@ -332,7 +334,7 @@ class IngestionPipeline:
             result = []
             step = max(1, chunk_size - overlap)
             for i in range(0, len(words), step):
-                chunk = " ".join(words[i: i + chunk_size])
+                chunk = " ".join(words[i : i + chunk_size])
                 if chunk.strip():
                     result.append(chunk)
             return result
@@ -346,32 +348,33 @@ class IngestionPipeline:
         """Add metadata to each chunk before embedding."""
         enriched = []
         for i, text in enumerate(chunks_text):
-            enriched.append({
-                "text": text,
-                "chunk_index": i,
-                "total_chunks": len(chunks_text),
-                "doc_id": raw_doc.doc_id,
-                "source_id": config.source_id,
-                "source_type": config.source_type,
-                "source_url": raw_doc.source_url,
-                "doc_title": raw_doc.title,
-                "doc_author": raw_doc.author,
-                "doc_modified_at": raw_doc.modified_at,
-                "language": raw_doc.language or "",
-                "acl": raw_doc.acl,
-                "collection_id": config.collection_id,
-                "content_hash": hashlib.sha256(text.encode()).hexdigest(),
-                "correlation_id": raw_doc.correlation_id,
-            })
+            enriched.append(
+                {
+                    "text": text,
+                    "chunk_index": i,
+                    "total_chunks": len(chunks_text),
+                    "doc_id": raw_doc.doc_id,
+                    "source_id": config.source_id,
+                    "source_type": config.source_type,
+                    "source_url": raw_doc.source_url,
+                    "doc_title": raw_doc.title,
+                    "doc_author": raw_doc.author,
+                    "doc_modified_at": raw_doc.modified_at,
+                    "language": raw_doc.language or "",
+                    "acl": raw_doc.acl,
+                    "collection_id": config.collection_id,
+                    "content_hash": hashlib.sha256(text.encode()).hexdigest(),
+                    "correlation_id": raw_doc.correlation_id,
+                }
+            )
         return enriched
 
-    async def _embed(
-        self, enriched_chunks: list[dict], config: SourceConfig
-    ) -> list[dict]:
+    async def _embed(self, enriched_chunks: list[dict], config: SourceConfig) -> list[dict]:
         """Embed all chunks, returning chunks with 'embedding' field added."""
         texts = [c["text"] for c in enriched_chunks]
         try:
             from app.providers.base import embed_texts
+
             embeddings = await embed_texts(texts, provider=self._embedder)
             for chunk, embedding in zip(enriched_chunks, embeddings, strict=False):
                 chunk["embedding"] = embedding
@@ -439,6 +442,7 @@ class IngestionPipeline:
 
         try:
             from app.tenancy.context import TenantContext
+
             tenant_ctx = TenantContext(
                 tenant_id=config.tenant_id,
                 plan="free",
@@ -463,18 +467,23 @@ class IngestionPipeline:
         """Emit knowledge.updated Redis event and update stats (Stage 13)."""
         try:
             import json
+
             # LAW-23: semantic cache invalidation key published
-            event = json.dumps({
-                "source_id": config.source_id,
-                "doc_id": raw_doc.doc_id,
-                "collection_id": config.collection_id,
-                "chunks_added": chunk_count,
-                "tenant_id": config.tenant_id,
-            })
+            event = json.dumps(
+                {
+                    "source_id": config.source_id,
+                    "doc_id": raw_doc.doc_id,
+                    "collection_id": config.collection_id,
+                    "chunks_added": chunk_count,
+                    "tenant_id": config.tenant_id,
+                }
+            )
             # Redis publish is best-effort; failure doesn't break ingestion
             _log.debug(
                 "pipeline_stage=emit doc=%s chunks=%d collection=%s",
-                raw_doc.doc_id, chunk_count, config.collection_id,
+                raw_doc.doc_id,
+                chunk_count,
+                config.collection_id,
             )
         except Exception as e:
             _log.debug("pipeline_emit_error: %s", e)
@@ -488,5 +497,8 @@ class IngestionPipeline:
             pass
         _log.debug(
             "pipeline_result doc=%s status=%s chunks=%d ms=%.0f",
-            result.doc_id, result.status, result.chunks_created, result.processing_ms,
+            result.doc_id,
+            result.status,
+            result.chunks_created,
+            result.processing_ms,
         )

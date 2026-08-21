@@ -7,6 +7,7 @@ error budget is being consumed relative to the expected pace.
 burn_rate = 1.0  → budget depleting exactly at the allowed pace
 burn_rate > 1.0  → budget will be exhausted before the window ends
 """
+
 from __future__ import annotations
 
 import time
@@ -93,7 +94,9 @@ class SLOTracker:
             # Minutes until error budget is exhausted at current burn rate
             window_minutes = slo.window_hours * 60
             budget_consumed = actual_error_rate / error_budget if error_budget > 0 else 1.0
-            minutes_to_exhaustion = window_minutes * (1.0 - budget_consumed) / max(burn_rate_multiple - 1.0, 1e-6)
+            minutes_to_exhaustion = (
+                window_minutes * (1.0 - budget_consumed) / max(burn_rate_multiple - 1.0, 1e-6)
+            )
         else:
             minutes_to_exhaustion = float("inf")
 
@@ -117,12 +120,14 @@ class SLOTracker:
                 continue
             total = len(events)
             successes = sum(1 for _, ok in events if ok)
-            results.append({
-                "tenant_id": tid,
-                "slo_name": slo_name,
-                "total_events": total,
-                "success_rate": round(successes / max(total, 1), 5),
-            })
+            results.append(
+                {
+                    "tenant_id": tid,
+                    "slo_name": slo_name,
+                    "total_events": total,
+                    "success_rate": round(successes / max(total, 1), 5),
+                }
+            )
         return results
 
 

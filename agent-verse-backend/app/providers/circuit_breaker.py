@@ -1,4 +1,5 @@
 """Circuit breaker for LLM provider calls."""
+
 from __future__ import annotations
 
 import asyncio
@@ -52,9 +53,7 @@ class ProviderCircuitBreaker:
         self._failures[provider_name] += 1
         self._last_failure[provider_name] = time.monotonic()
         state = self._state.get(provider_name, "closed")
-        if state == "half-open":
-            self._state[provider_name] = "open"
-        elif self._failures[provider_name] >= self._failure_threshold:
+        if state == "half-open" or self._failures[provider_name] >= self._failure_threshold:
             self._state[provider_name] = "open"
 
     def before_call(self, provider_name: str) -> None:

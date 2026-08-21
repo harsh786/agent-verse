@@ -7,6 +7,7 @@ then POSTed to this endpoint as JSON with `transcript` field.
 Setup: VOICE_WEBHOOK_SECRET for HMAC verification.
 Webhook URL: POST /v1/gateway/{org_id}/voice/webhook
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -46,29 +47,27 @@ class VoiceWebhookAdapter(ChannelAdapter):
     ) -> bool:
         """Verify HMAC-SHA256 signature on the payload."""
         if not self._secret:
-            return True   # no secret = dev mode
+            return True  # no secret = dev mode
         sig = request_headers.get("X-Voice-Signature", "")
         body_str = raw_payload.get("_raw_body", "")
-        expected = hmac.new(
-            self._secret.encode(), body_str.encode(), hashlib.sha256
-        ).hexdigest()
+        expected = hmac.new(self._secret.encode(), body_str.encode(), hashlib.sha256).hexdigest()
         return hmac.compare_digest(sig, f"sha256={expected}")
 
     async def normalize(
         self, raw_payload: dict[str, Any], tenant_id: str, org_id: str
     ) -> OrgCommand:
         with _tracer.start_as_current_span("voice_webhook.normalize") as span:
-            command_id  = str(uuid.uuid4())
-            transcript  = (
+            command_id = str(uuid.uuid4())
+            transcript = (
                 raw_payload.get("transcript")
                 or raw_payload.get("text")
                 or raw_payload.get("transcription", "")
             ).strip()
-            actor_id    = raw_payload.get("user_id", "voice_user")
-            actor_name  = raw_payload.get("user_name")
-            origin_chan  = raw_payload.get("origin_channel", "voice")  # e.g. "telegram_voice"
-            urgency     = raw_payload.get("urgency", "normal")
-            confidence  = raw_payload.get("confidence", 1.0)
+            actor_id = raw_payload.get("user_id", "voice_user")
+            actor_name = raw_payload.get("user_name")
+            origin_chan = raw_payload.get("origin_channel", "voice")  # e.g. "telegram_voice"
+            urgency = raw_payload.get("urgency", "normal")
+            confidence = raw_payload.get("confidence", 1.0)
 
             if confidence < 0.70:
                 # Low confidence transcript — add note to prompt clarification
@@ -94,8 +93,8 @@ class VoiceWebhookAdapter(ChannelAdapter):
         """Return a TTS-optimised response (shorter, conversational)."""
         voice_text = response.voice_text or self._trim_for_tts(response.text)
         return {
-            "text":       voice_text,
-            "ssml":       f"<speak>{voice_text}</speak>",
+            "text": voice_text,
+            "ssml": f"<speak>{voice_text}</speak>",
             "tts_engine": "auto",
         }
 

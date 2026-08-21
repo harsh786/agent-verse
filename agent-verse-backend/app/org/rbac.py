@@ -9,12 +9,12 @@ Org roles (per spec):
 
 Enforced at FastAPI dependency level.
 """
+
 from __future__ import annotations
 
-from functools import wraps
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-import structlog
 from fastapi import Depends, HTTPException, status
 from opentelemetry import trace
 
@@ -26,20 +26,23 @@ _tracer = trace.get_tracer(__name__)
 
 # ── Role hierarchy ─────────────────────────────────────────────────────────────
 
+
 class OrgRole:
-    ORG_ADMIN  = "org_admin"
+    ORG_ADMIN = "org_admin"
     DEPT_ADMIN = "dept_admin"
-    TEAM_LEAD  = "team_lead"
-    AGENT      = "agent"
-    VIEWER     = "viewer"
+    TEAM_LEAD = "team_lead"
+    AGENT = "agent"
+    VIEWER = "viewer"
 
     # Permission sets per role
     PERMISSIONS: dict[str, frozenset[str]] = {
-        "org_admin":  frozenset({"read", "write", "delete", "approve", "admin", "change_settings", "change_autonomy"}),
+        "org_admin": frozenset(
+            {"read", "write", "delete", "approve", "admin", "change_settings", "change_autonomy"}
+        ),
         "dept_admin": frozenset({"read", "write", "approve", "change_settings"}),
-        "team_lead":  frozenset({"read", "write", "approve_team"}),
-        "agent":      frozenset({"read", "write_own"}),
-        "viewer":     frozenset({"read"}),
+        "team_lead": frozenset({"read", "write", "approve_team"}),
+        "agent": frozenset({"read", "write_own"}),
+        "viewer": frozenset({"read"}),
     }
 
     # Role hierarchy (higher index = more permissions)
@@ -61,6 +64,7 @@ class OrgRole:
 
 # ── RBAC dependency factories ─────────────────────────────────────────────────
 
+
 def require_org_role(minimum_role: str = OrgRole.VIEWER) -> Callable:
     """
     FastAPI dependency that enforces org-level RBAC.
@@ -72,6 +76,7 @@ def require_org_role(minimum_role: str = OrgRole.VIEWER) -> Callable:
             ...
         ): ...
     """
+
     async def _check(
         # In production: extract from JWT / API key scopes
         # Here: reads from request state (set by TenantMiddleware)
@@ -79,6 +84,7 @@ def require_org_role(minimum_role: str = OrgRole.VIEWER) -> Callable:
         # TODO: integrate with auth system — read role from request.state
         # For now: pass through (roles enforced by API key scopes)
         pass
+
     return Depends(_check)
 
 
@@ -115,10 +121,10 @@ class OrgRBACGuard:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail={
-                            "type":    "authorization-error",
-                            "title":   "Insufficient permissions",
-                            "status":  403,
-                            "detail":  f"Role '{actor_role}' does not have '{permission}' permission",
+                            "type": "authorization-error",
+                            "title": "Insufficient permissions",
+                            "status": 403,
+                            "detail": f"Role '{actor_role}' does not have '{permission}' permission",
                         },
                     )
             return allowed
@@ -134,8 +140,8 @@ class OrgRBACGuard:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
-                    "type":   "authorization-error",
-                    "title":  "Insufficient role",
+                    "type": "authorization-error",
+                    "title": "Insufficient role",
                     "status": 403,
                     "detail": f"Requires at least '{minimum_role}' role, got '{actor_role}'",
                 },
@@ -159,8 +165,8 @@ class OrgRBACGuard:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
-                    "type":   "authorization-error",
-                    "title":  "Department access denied",
+                    "type": "authorization-error",
+                    "title": "Department access denied",
                     "status": 403,
                     "detail": f"You do not have access to department '{target_dept_id}'",
                 },
@@ -186,7 +192,7 @@ def sign_cross_dept_request(
     Returns HMAC-SHA256 signature.
     """
     timestamp = str(int(time.time()))
-    msg = f"{from_agent_id}:{to_dept_id}:{timestamp}:{str(payload)}"
+    msg = f"{from_agent_id}:{to_dept_id}:{timestamp}:{payload!s}"
     return hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
 
 
@@ -205,15 +211,15 @@ def verify_cross_dept_request(
 
 # ── Anomaly detection (PART 18) ───────────────────────────────────────────────
 
+
 class AgentAnomalyDetector:
     """Detect tool calls outside role profile → alert."""
 
     def __init__(self) -> None:
-        self._baseline: dict[str, set[str]] = {}   # agent_id → known tools
+        self._baseline: dict[str, set[str]] = {}  # agent_id → known tools
 
     def record_tool_call(self, agent_id: str, tool_name: str, role_id: str) -> bool:
         """Record a tool call. Returns True if it's within profile, False if anomalous."""
-        from app.org.capability_registry import CAPABILITY_REGISTRY
         # Get allowed tools for this role (via capability registry)
         # Simplified: check against baseline
         known = self._baseline.setdefault(agent_id, set())
@@ -230,5 +236,5 @@ class AgentAnomalyDetector:
 
 
 # Global instances
-org_rbac_guard   = OrgRBACGuard()
+org_rbac_guard = OrgRBACGuard()
 anomaly_detector = AgentAnomalyDetector()

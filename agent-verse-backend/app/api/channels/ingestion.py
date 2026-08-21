@@ -1,4 +1,5 @@
 """Channel Ingestion API — routes for Slack, Teams, Discord, email, SMS, voice, forms."""
+
 from __future__ import annotations
 
 import hashlib
@@ -16,6 +17,7 @@ router = APIRouter(prefix="/channels", tags=["channels"])
 
 # ── Dependency helpers ────────────────────────────────────────────────────────
 
+
 def _get_gateway(request: Request) -> Any:
     return getattr(request.app.state, "channel_gateway", None)
 
@@ -30,6 +32,7 @@ def _get_dispatcher(request: Request) -> Any:
 
 # ── Tenant resolution via channel mapping ────────────────────────────────────
 
+
 async def _resolve_tenant_from_channel(
     channel_type: str,
     channel_id: str,
@@ -40,6 +43,7 @@ async def _resolve_tenant_from_channel(
         return None
     try:
         from sqlalchemy import text
+
         async with db() as session:
             row = await session.execute(
                 text(
@@ -55,6 +59,7 @@ async def _resolve_tenant_from_channel(
 
 
 # ── Slack Events API ──────────────────────────────────────────────────────────
+
 
 @router.post("/slack/events")
 async def slack_events(
@@ -74,9 +79,10 @@ async def slack_events(
     signing_secret = getattr(request.app.state, "slack_signing_secret", "")
     if signing_secret and x_slack_signature:
         sig_basestring = f"v0:{x_slack_request_timestamp}:{body_bytes.decode()}"
-        computed = "v0=" + hmac.new(
-            signing_secret.encode(), sig_basestring.encode(), hashlib.sha256
-        ).hexdigest()
+        computed = (
+            "v0="
+            + hmac.new(signing_secret.encode(), sig_basestring.encode(), hashlib.sha256).hexdigest()
+        )
         if not hmac.compare_digest(computed, x_slack_signature):
             raise HTTPException(status_code=401, detail="Invalid Slack signature")
 
@@ -95,6 +101,7 @@ async def slack_events(
 
 # ── Microsoft Teams ───────────────────────────────────────────────────────────
 
+
 @router.post("/teams/events")
 async def teams_events(request: Request) -> dict:
     """Handle Microsoft Teams webhook."""
@@ -112,6 +119,7 @@ async def teams_events(request: Request) -> dict:
 
 # ── Discord ───────────────────────────────────────────────────────────────────
 
+
 @router.post("/discord/events")
 async def discord_events(request: Request) -> dict:
     """Handle Discord Interactions webhook."""
@@ -128,6 +136,7 @@ async def discord_events(request: Request) -> dict:
 
 
 # ── Email ─────────────────────────────────────────────────────────────────────
+
 
 @router.post("/email/inbound")
 async def email_inbound(request: Request) -> dict:
@@ -151,6 +160,7 @@ async def email_inbound(request: Request) -> dict:
 
 # ── SMS (Twilio) ──────────────────────────────────────────────────────────────
 
+
 @router.post("/sms/inbound")
 async def sms_inbound(request: Request) -> str:
     """Handle Twilio SMS webhook."""
@@ -173,6 +183,7 @@ async def sms_inbound(request: Request) -> str:
 
 # ── Voice transcript ──────────────────────────────────────────────────────────
 
+
 @router.post("/voice/transcript")
 async def voice_transcript(request: Request) -> dict:
     """Handle voice transcript webhook (Twilio, Deepgram, etc.)."""
@@ -187,6 +198,7 @@ async def voice_transcript(request: Request) -> dict:
 
 
 # ── Forms ─────────────────────────────────────────────────────────────────────
+
 
 @router.post("/forms/{form_id}")
 async def form_submission(form_id: str, request: Request) -> dict:
@@ -207,6 +219,7 @@ async def form_submission(form_id: str, request: Request) -> dict:
 
 # ── Channel mappings CRUD ─────────────────────────────────────────────────────
 
+
 @router.post("/mappings")
 async def create_channel_mapping(request: Request) -> dict:
     """Register a channel (Slack workspace, Teams, etc.) to a tenant."""
@@ -217,10 +230,16 @@ async def create_channel_mapping(request: Request) -> dict:
     db = getattr(request.app.state, "db", None)
     if db is None:
         # In-memory fallback
-        return {"status": "mapped", "channel_type": body.get("channel_type"), "channel_id": body.get("channel_id")}
+        return {
+            "status": "mapped",
+            "channel_type": body.get("channel_type"),
+            "channel_id": body.get("channel_id"),
+        }
     try:
         import uuid
+
         from sqlalchemy import text
+
         async with db() as session, session.begin():
             await session.execute(
                 text(
@@ -250,9 +269,12 @@ async def list_channel_mappings(request: Request) -> list[dict]:
         return []
     try:
         from sqlalchemy import text
+
         async with db() as session:
             rows = await session.execute(
-                text("SELECT id, channel_type, channel_id, created_at FROM channel_tenant_mappings WHERE tenant_id = :tid"),
+                text(
+                    "SELECT id, channel_type, channel_id, created_at FROM channel_tenant_mappings WHERE tenant_id = :tid"
+                ),
                 {"tid": tenant_id},
             )
             return [dict(r._mapping) for r in rows]

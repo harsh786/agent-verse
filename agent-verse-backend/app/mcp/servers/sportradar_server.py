@@ -3,6 +3,7 @@
 Environment:
   SPORTRADAR_API_KEY: Sportradar API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -22,8 +23,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "sport": {"type": "string", "description": "Sport identifier (nfl, nba, nhl, mlb, soccer)"},
-                "date": {"type": "string", "description": "Date in YYYY-MM-DD format (default: today)"},
+                "sport": {
+                    "type": "string",
+                    "description": "Sport identifier (nfl, nba, nhl, mlb, soccer)",
+                },
+                "date": {
+                    "type": "string",
+                    "description": "Date in YYYY-MM-DD format (default: today)",
+                },
             },
             "required": ["sport"],
         },

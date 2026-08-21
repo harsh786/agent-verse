@@ -1,4 +1,5 @@
 """ParserRegistry — maps ContentType to parser implementation."""
+
 from __future__ import annotations
 
 from app.ingestion.content_classifier import ContentType
@@ -15,6 +16,7 @@ class CodeParser:
     def parse(self, content: str, **kwargs: object) -> list[str]:
         """Split by function/class definitions."""
         import re
+
         blocks = re.split(r"(?m)^(?=def |class |function |const |let )", content)
         return [b.strip() for b in blocks if b.strip()] or [content]
 
@@ -23,6 +25,7 @@ class HTMLParser:
     def parse(self, content: str, **kwargs: object) -> list[str]:
         """Strip HTML tags and split into paragraphs."""
         import re
+
         text = re.sub(r"<[^>]+>", " ", content)
         text = re.sub(r"\s+", " ", text).strip()
         return [text] if text else [content]
@@ -31,6 +34,7 @@ class HTMLParser:
 class DOCXParser:
     def parse(self, content: str, **kwargs: object) -> list[str]:
         import re
+
         clean = re.sub(r"<[^>]+>", " ", content).strip()
         paragraphs = [p.strip() for p in clean.split("\n\n") if p.strip()]
         return paragraphs or [content]
@@ -63,6 +67,7 @@ class JSONParser:
     def parse(self, content: str, **kwargs: object) -> list[str]:
         try:
             import json
+
             data = json.loads(content)
             if isinstance(data, list):
                 return [json.dumps(item, indent=2) for item in data]
@@ -81,46 +86,57 @@ class VisionParser:
 
 # ── Bridge adapters: wrap bytes-based parsers into the str-based interface ────
 
+
 class _ExcelBridge:
-    def __init__(self, parser): self._p = parser  # noqa: E704
-    def parse(self, content: str, **kwargs) -> list[str]:  # noqa: E704
+    def __init__(self, parser):
+        self._p = parser
+
+    def parse(self, content: str, **kwargs) -> list[str]:
         return [self._p.parse(content.encode("utf-8") if isinstance(content, str) else content)]
 
 
 class _YAMLBridge:
-    def __init__(self, parser): self._p = parser  # noqa: E704
-    def parse(self, content: str, **kwargs) -> list[str]:  # noqa: E704
+    def __init__(self, parser):
+        self._p = parser
+
+    def parse(self, content: str, **kwargs) -> list[str]:
         return [self._p.parse(content)]
 
 
 class _ParquetBridge:
-    def __init__(self, parser): self._p = parser  # noqa: E704
-    def parse(self, content: str, **kwargs) -> list[str]:  # noqa: E704
+    def __init__(self, parser):
+        self._p = parser
+
+    def parse(self, content: str, **kwargs) -> list[str]:
         raw = content.encode("latin-1") if isinstance(content, str) else content
         return [self._p.parse(raw)]
 
 
 class _AvroBridge:
-    def __init__(self, parser): self._p = parser  # noqa: E704
-    def parse(self, content: str, **kwargs) -> list[str]:  # noqa: E704
+    def __init__(self, parser):
+        self._p = parser
+
+    def parse(self, content: str, **kwargs) -> list[str]:
         raw = content.encode("latin-1") if isinstance(content, str) else content
         return [self._p.parse(raw)]
 
 
 class _LaTeXBridge:
-    def __init__(self, parser): self._p = parser  # noqa: E704
-    def parse(self, content: str, **kwargs) -> list[str]:  # noqa: E704
+    def __init__(self, parser):
+        self._p = parser
+
+    def parse(self, content: str, **kwargs) -> list[str]:
         result = self._p.parse(content)
         return [result] if result else [content]
 
 
 class ParserRegistry:
     def __init__(self) -> None:
-        from app.ingestion.parsers.excel_parser import ExcelParser
-        from app.ingestion.parsers.yaml_parser import YAMLParser
-        from app.ingestion.parsers.parquet_parser import ParquetParser
         from app.ingestion.parsers.avro_parser import AvroParser
+        from app.ingestion.parsers.excel_parser import ExcelParser
         from app.ingestion.parsers.latex_parser import LaTeXParser
+        from app.ingestion.parsers.parquet_parser import ParquetParser
+        from app.ingestion.parsers.yaml_parser import YAMLParser
 
         self._parsers: dict[ContentType, object] = {
             ContentType.TEXT: TextParser(),
@@ -154,6 +170,7 @@ class ParserRegistry:
         Falls back to UTF-8 decode if parser raises.
         """
         from app.ingestion.content_classifier import ContentType as CT
+
         ct = content_type if isinstance(content_type, CT) else CT.TEXT  # fixed: was CT.PLAIN_TEXT
         parser = self._parsers.get(ct, TextParser())
 

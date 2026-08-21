@@ -4,6 +4,7 @@ Environment variables:
   SUGARCRM_ACCESS_TOKEN: SugarCRM OAuth 2.0 access token
   SUGARCRM_INSTANCE_URL: SugarCRM instance URL, e.g. https://mycompany.sugarcrm.com
 """
+
 from __future__ import annotations
 
 import os
@@ -103,7 +104,10 @@ TOOL_DEFINITIONS = [
                 "phone_work": {"type": "string"},
                 "company": {"type": "string"},
                 "title": {"type": "string"},
-                "lead_source": {"type": "string", "description": "Lead source, e.g. 'Web Site', 'Cold Call'"},
+                "lead_source": {
+                    "type": "string",
+                    "description": "Lead source, e.g. 'Web Site', 'Cold Call'",
+                },
             },
             "required": ["last_name"],
         },
@@ -130,9 +134,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     base_url = f"{instance_url}/rest/v11_1"
 
     try:
-        async with httpx.AsyncClient(
-            base_url=base_url, headers=_headers(token), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=base_url, headers=_headers(token), timeout=30.0) as c:
             if tool_name == "sugarcrm_list_accounts":
                 params: dict[str, Any] = {
                     "offset": arguments.get("offset", 0),
@@ -150,8 +152,14 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "sugarcrm_create_account":
                 body: dict[str, Any] = {"name": arguments["name"]}
-                for k in ("phone_office", "website", "industry", "employees",
-                          "billing_address_city", "billing_address_country"):
+                for k in (
+                    "phone_office",
+                    "website",
+                    "industry",
+                    "employees",
+                    "billing_address_city",
+                    "billing_address_country",
+                ):
                     if k in arguments:
                         body[k] = arguments[k]
                 r = await c.post("/Accounts", json=body)

@@ -5,6 +5,7 @@ Environment variables:
   AWS_SECRET_ACCESS_KEY: AWS secret key
   AWS_REGION:            AWS region (default: us-east-1)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,7 +23,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "path_prefix": {"type": "string", "default": "/", "description": "Path prefix filter"},
+                "path_prefix": {
+                    "type": "string",
+                    "default": "/",
+                    "description": "Path prefix filter",
+                },
                 "max_items": {"type": "integer", "default": 50},
             },
         },
@@ -168,8 +173,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                             "user_id": u.get("UserId"),
                             "arn": u.get("Arn"),
                             "path": u.get("Path"),
-                            "created_date": u.get("CreateDate").isoformat() if u.get("CreateDate") else None,
-                            "password_last_used": u.get("PasswordLastUsed").isoformat() if u.get("PasswordLastUsed") else None,
+                            "created_date": u.get("CreateDate").isoformat()
+                            if u.get("CreateDate")
+                            else None,
+                            "password_last_used": u.get("PasswordLastUsed").isoformat()
+                            if u.get("PasswordLastUsed")
+                            else None,
                         }
                         for u in resp.get("Users", [])
                     ],
@@ -190,7 +199,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                             "arn": r.get("Arn"),
                             "path": r.get("Path"),
                             "description": r.get("Description", ""),
-                            "created_date": r.get("CreateDate").isoformat() if r.get("CreateDate") else None,
+                            "created_date": r.get("CreateDate").isoformat()
+                            if r.get("CreateDate")
+                            else None,
                         }
                         for r in resp.get("Roles", [])
                     ],
@@ -211,20 +222,34 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "user_id": user.get("UserId"),
                     "arn": user.get("Arn"),
                     "path": user.get("Path"),
-                    "created_date": user.get("CreateDate").isoformat() if user.get("CreateDate") else None,
+                    "created_date": user.get("CreateDate").isoformat()
+                    if user.get("CreateDate")
+                    else None,
                 }
 
             elif tool_name == "iam_attach_policy":
                 policy_arn = arguments["policy_arn"]
                 if arguments.get("user_name"):
                     c.attach_user_policy(UserName=arguments["user_name"], PolicyArn=policy_arn)
-                    return {"attached": True, "target": arguments["user_name"], "policy_arn": policy_arn}
+                    return {
+                        "attached": True,
+                        "target": arguments["user_name"],
+                        "policy_arn": policy_arn,
+                    }
                 elif arguments.get("role_name"):
                     c.attach_role_policy(RoleName=arguments["role_name"], PolicyArn=policy_arn)
-                    return {"attached": True, "target": arguments["role_name"], "policy_arn": policy_arn}
+                    return {
+                        "attached": True,
+                        "target": arguments["role_name"],
+                        "policy_arn": policy_arn,
+                    }
                 elif arguments.get("group_name"):
                     c.attach_group_policy(GroupName=arguments["group_name"], PolicyArn=policy_arn)
-                    return {"attached": True, "target": arguments["group_name"], "policy_arn": policy_arn}
+                    return {
+                        "attached": True,
+                        "target": arguments["group_name"],
+                        "policy_arn": policy_arn,
+                    }
                 else:
                     return {"error": "Must provide user_name, role_name, or group_name"}
 
@@ -244,7 +269,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                             "description": p.get("Description", ""),
                             "default_version_id": p.get("DefaultVersionId"),
                             "attachment_count": p.get("AttachmentCount"),
-                            "created_date": p.get("CreateDate").isoformat() if p.get("CreateDate") else None,
+                            "created_date": p.get("CreateDate").isoformat()
+                            if p.get("CreateDate")
+                            else None,
                         }
                         for p in resp.get("Policies", [])
                     ],
@@ -259,8 +286,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "user_id": user.get("UserId"),
                     "arn": user.get("Arn"),
                     "path": user.get("Path"),
-                    "created_date": user.get("CreateDate").isoformat() if user.get("CreateDate") else None,
-                    "password_last_used": user.get("PasswordLastUsed").isoformat() if user.get("PasswordLastUsed") else None,
+                    "created_date": user.get("CreateDate").isoformat()
+                    if user.get("CreateDate")
+                    else None,
+                    "password_last_used": user.get("PasswordLastUsed").isoformat()
+                    if user.get("PasswordLastUsed")
+                    else None,
                     "tags": user.get("Tags", []),
                 }
 

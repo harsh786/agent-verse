@@ -26,6 +26,7 @@ Key improvements over v1:
   • Cache warming API
   • Rich stats: hit_rate, bytes_saved, avg_similarity, p50/p95 latency
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -44,6 +45,7 @@ logger = get_logger(__name__)
 
 
 # ── Maths helpers ─────────────────────────────────────────────────────────────
+
 
 def _cosine(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two float vectors. Returns 0.0 for zero vectors."""
@@ -81,6 +83,7 @@ def _decompress(data: bytes) -> str:
 
 
 # ── In-process LRU cache ───────────────────────────────────────────────────────
+
 
 @dataclass
 class _L1Entry:
@@ -158,6 +161,7 @@ class _LRUCache:
 
 # ── Main SemanticCache ────────────────────────────────────────────────────────
 
+
 class SemanticCache:
     """
     World-class semantic cache with true cosine-similarity matching.
@@ -184,8 +188,8 @@ class SemanticCache:
     """
 
     # Redis key prefixes
-    _PREFIX_ENTRY = "scv2:entry:"    # scv2:entry:{tenant}:{entry_id}   HASH
-    _PREFIX_INDEX = "scv2:idx:"      # scv2:idx:{tenant}                 SET of entry_ids
+    _PREFIX_ENTRY = "scv2:entry:"  # scv2:entry:{tenant}:{entry_id}   HASH
+    _PREFIX_INDEX = "scv2:idx:"  # scv2:idx:{tenant}                 SET of entry_ids
 
     def __init__(
         self,
@@ -313,6 +317,7 @@ class SemanticCache:
         block or break goal execution.
         """
         import uuid
+
         response = response[: self._max_response]  # cap length
         entry_id = uuid.uuid4().hex[:16]
 
@@ -360,6 +365,7 @@ class SemanticCache:
     ) -> None:
         """Legacy sync store. Stores in L1 only (no Redis without async)."""
         import uuid
+
         self._l1._put(query_embedding, response, tenant_ctx.tenant_id, key=uuid.uuid4().hex[:16])
         self._get_stats(tenant_ctx.tenant_id)["bytes_saved"] += len(response)
 
@@ -492,6 +498,7 @@ class SemanticCache:
             return 0
         try:
             from app.providers.base import EmbedRequest
+
             texts = [p["query"] for p in patterns]
             resp = await embedder.embed(EmbedRequest(texts=texts))
             count = 0
@@ -589,20 +596,21 @@ class SemanticCache:
         pipe = self._redis.pipeline()
         if asyncio.iscoroutine(pipe):
             pipe = await pipe
-        pipe.hset(entry_key, mapping={
-            "emb":   emb_bytes,
-            "resp":  resp_bytes,
-            "query": query[:200].encode(),
-            "ts":    str(int(time.time())).encode(),
-        })
+        pipe.hset(
+            entry_key,
+            mapping={
+                "emb": emb_bytes,
+                "resp": resp_bytes,
+                "query": query[:200].encode(),
+                "ts": str(int(time.time())).encode(),
+            },
+        )
         pipe.expire(entry_key, self._ttl)
         pipe.sadd(idx_key, entry_id)
         pipe.expire(idx_key, self._ttl + 60)  # index lives a bit longer than entries
         await pipe.execute()
 
-    async def _redis_load_all_entries(
-        self, tenant_id: str
-    ) -> list[tuple[list[float], str]]:
+    async def _redis_load_all_entries(self, tenant_id: str) -> list[tuple[list[float], str]]:
         """
         Load all (embedding, response) tuples for a tenant from Redis.
         Uses a pipeline to batch all HGET calls into one round-trip.
@@ -620,8 +628,7 @@ class SemanticCache:
             if asyncio.iscoroutine(pipe):
                 pipe = await pipe
             entry_keys = [
-                f"{self._PREFIX_ENTRY}{tenant_id}:"
-                f"{eid.decode() if isinstance(eid, bytes) else eid}"
+                f"{self._PREFIX_ENTRY}{tenant_id}:{eid.decode() if isinstance(eid, bytes) else eid}"
                 for eid in entry_ids
             ]
             for key in entry_keys:
@@ -641,9 +648,7 @@ class SemanticCache:
                     continue
         return entries
 
-    async def _redis_lookup(
-        self, embedding: list[float], tenant_id: str
-    ) -> _CacheHit | None:
+    async def _redis_lookup(self, embedding: list[float], tenant_id: str) -> _CacheHit | None:
         """
         Load all tenant entries from Redis and find the most similar one.
         O(n) scan in Python — acceptable for n < 10,000.
@@ -711,11 +716,12 @@ class SemanticCache:
 
 # ── Supporting types ──────────────────────────────────────────────────────────
 
+
 @dataclass
 class _CacheHit:
     response: str
-    similarity: float    # 0.92-1.00 for L2; 1.0 for L1
-    source: str          # "l1" | "l2"
+    similarity: float  # 0.92-1.00 for L2; 1.0 for L1
+    source: str  # "l1" | "l2"
     latency_ms: float
 
 

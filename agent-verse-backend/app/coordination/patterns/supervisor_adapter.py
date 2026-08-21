@@ -60,9 +60,7 @@ class DurableSupervisorRuntime:
                 work_items=items,
             )
             await self._store.save(state)
-        completed = {
-            item.work_item_id for item in state.work_items if item.state == "completed"
-        }
+        completed = {item.work_item_id for item in state.work_items if item.state == "completed"}
         items_by_id = {item.work_item_id: item for item in state.work_items}
         while len(completed) < len(items_by_id):
             if cancelled is not None and cancelled.is_set():

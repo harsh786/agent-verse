@@ -39,8 +39,7 @@ def _get_master_key() -> str:
     env = os.getenv("ENVIRONMENT", "development").lower()
     if env == "production":
         raise RuntimeError(
-            "VAULT_MASTER_KEY must be set in production. "
-            "Set VAULT_MASTER_KEY environment variable."
+            "VAULT_MASTER_KEY must be set in production. Set VAULT_MASTER_KEY environment variable."
         )
     allow_dev = os.getenv("ALLOW_DEV_VAULT", "").lower() in ("true", "1", "yes")
     if not allow_dev:
@@ -89,7 +88,7 @@ def resolve_connector_secret_ref(
 def _connector_secret_ref_parts(ref: str) -> tuple[str, str]:
     if not is_connector_secret_ref(ref):
         raise ValueError("not a connector secret reference")
-    remainder = ref[len(_CONNECTOR_SECRET_PREFIX):]
+    remainder = ref[len(_CONNECTOR_SECRET_PREFIX) :]
     server_id, separator, key = remainder.partition("/")
     if not server_id or not separator or not key:
         raise ValueError("invalid connector secret reference")
@@ -116,9 +115,9 @@ class RedisConnectorSecretStore:
         # Handle both "vault://connectors/<server>/<key>" and
         # "secret://connector/<server>/<key>" formats.
         if ref.startswith("secret://connector/"):
-            remainder = ref[len("secret://connector/"):]
+            remainder = ref[len("secret://connector/") :]
         elif is_connector_secret_ref(ref):
-            remainder = ref[len(_CONNECTOR_SECRET_PREFIX):]
+            remainder = ref[len(_CONNECTOR_SECRET_PREFIX) :]
         else:
             raise ValueError(f"Unrecognized secret ref format: {ref!r}")
         server_id, separator, key = remainder.partition("/")
@@ -206,7 +205,9 @@ class CredentialVault:
         """
         return self._fernet.decrypt(ciphertext.encode()).decode()
 
-    async def rotate_key(self, new_master_key: bytes, db: Any = None, redis: Any = None) -> dict[str, Any]:
+    async def rotate_key(
+        self, new_master_key: bytes, db: Any = None, redis: Any = None
+    ) -> dict[str, Any]:
         """Re-encrypt all stored secrets with a new master key.
 
         Process (transactional):
@@ -311,16 +312,22 @@ class CredentialVault:
                 import uuid
 
                 from sqlalchemy import text
+
                 key_hash = _hashlib.sha256(new_master_key).hexdigest()[:16] + "..."
                 async with db() as session, session.begin():
-                    await session.execute(text(
-                        "UPDATE vault_key_versions SET is_current = FALSE, retired_at = NOW() "
-                        "WHERE is_current = TRUE"
-                    ))
-                    await session.execute(text("""
+                    await session.execute(
+                        text(
+                            "UPDATE vault_key_versions SET is_current = FALSE, retired_at = NOW() "
+                            "WHERE is_current = TRUE"
+                        )
+                    )
+                    await session.execute(
+                        text("""
                         INSERT INTO vault_key_versions (id, key_hash, activated_at, is_current)
                         VALUES (:id, :hash, NOW(), TRUE)
-                    """), {"id": uuid.uuid4().hex, "hash": key_hash})
+                    """),
+                        {"id": uuid.uuid4().hex, "hash": key_hash},
+                    )
                 logger.info("vault_key_rotated", rotated=rotated, failed=failed)
             except Exception as exc:
                 logger.warning("vault_key_version_record_failed", error=str(exc))

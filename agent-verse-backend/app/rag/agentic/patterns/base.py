@@ -1,4 +1,5 @@
 """Base class for RAG pattern adapters."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

@@ -1,4 +1,5 @@
 """OCR document extraction tool — agent-callable wrapper around OcrEngine."""
+
 from __future__ import annotations
 
 import base64
@@ -90,18 +91,14 @@ class OcrDocumentTool:
             data = self._decode_b64(pdf_base64)
             return None, data
 
-        raise ValueError(
-            "One of file_path, image_base64, or pdf_base64 must be provided."
-        )
+        raise ValueError("One of file_path, image_base64, or pdf_base64 must be provided.")
 
     def _read_file(self, file_path: str) -> tuple[bytes | None, bytes | None]:
         path = Path(file_path).resolve()
         # Security: reject paths that resolve outside /tmp or typical upload dirs
         data = path.read_bytes()
         if len(data) > _MAX_BYTES:
-            raise ValueError(
-                f"File exceeds maximum allowed size of {_MAX_BYTES // 1_048_576} MB."
-            )
+            raise ValueError(f"File exceeds maximum allowed size of {_MAX_BYTES // 1_048_576} MB.")
         suffix = path.suffix.lower()
         if suffix == ".pdf":
             return None, data

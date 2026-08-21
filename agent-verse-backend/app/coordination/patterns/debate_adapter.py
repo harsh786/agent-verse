@@ -94,16 +94,8 @@ class DurableDebateRuntime:
                 refs: list[str] = []
                 for other in state.proposals:
                     if other.agent_id != proposal.agent_id:
-                        refs.append(
-                            str(
-                                await invoke(
-                                    critique, proposal.agent_id, other.agent_id
-                                )
-                            )
-                        )
-                updated.append(
-                    proposal.model_copy(update={"critique_references": tuple(refs)})
-                )
+                        refs.append(str(await invoke(critique, proposal.agent_id, other.agent_id)))
+                updated.append(proposal.model_copy(update={"critique_references": tuple(refs)}))
             state = state.model_copy(update={"phase": "critiqued", "proposals": tuple(updated)})
             await self._store.save(state)
         if state.phase == "critiqued":

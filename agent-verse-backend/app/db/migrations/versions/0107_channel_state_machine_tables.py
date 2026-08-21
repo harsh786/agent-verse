@@ -4,10 +4,11 @@ Revision ID: 0107
 Revises: 0106
 Create Date: 2026-08-17
 """
+
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 # ── Alembic metadata ──────────────────────────────────────────────────────────
@@ -26,10 +27,20 @@ def upgrade() -> None:
         sa.Column("channel_type", sa.String(32), nullable=False),
         sa.Column("channel_config", postgresql.JSONB, nullable=False, server_default="{}"),
         sa.Column("enabled", sa.Boolean, nullable=False, server_default="true"),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            onupdate=sa.func.now(),
+            nullable=False,
+        ),
     )
-    op.create_index("ix_channel_tenant_mappings_tenant_id", "channel_tenant_mappings", ["tenant_id"])
+    op.create_index(
+        "ix_channel_tenant_mappings_tenant_id", "channel_tenant_mappings", ["tenant_id"]
+    )
     op.create_index(
         "ix_channel_tenant_unique",
         "channel_tenant_mappings",
@@ -54,8 +65,12 @@ def upgrade() -> None:
         sa.Column("states", postgresql.JSONB, nullable=False, server_default="[]"),
         sa.Column("transitions", postgresql.JSONB, nullable=False, server_default="[]"),
         sa.Column("initial_state", sa.String(128), nullable=False, server_default="start"),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
     )
     op.create_index("ix_state_machines_tenant_id", "state_machines", ["tenant_id"])
 
@@ -75,8 +90,12 @@ def upgrade() -> None:
         sa.Column("context", postgresql.JSONB, nullable=False, server_default="{}"),
         sa.Column("history", postgresql.JSONB, nullable=False, server_default="[]"),
         sa.Column("status", sa.String(32), nullable=False, server_default="running"),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.ForeignKeyConstraint(["machine_id"], ["state_machines.id"], ondelete="CASCADE"),
     )
     op.create_index("ix_smi_tenant_id", "state_machine_instances", ["tenant_id"])

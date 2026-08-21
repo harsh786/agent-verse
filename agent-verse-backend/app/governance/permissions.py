@@ -63,6 +63,7 @@ class PermissionMatrix:
         If scope_value is None, scope_pattern is not evaluated.
         """
         import fnmatch
+
         rule = self.get_rule(tool_name, tenant_ctx=tenant_ctx)
         if rule is None:
             return self._DEFAULT
@@ -97,8 +98,4 @@ class PermissionMatrix:
         return base
 
     def list_rules(self, *, tenant_ctx: TenantContext) -> list[PermissionRule]:
-        return [
-            rule
-            for (tid, _), rule in self._rules.items()
-            if tid == tenant_ctx.tenant_id
-        ]
+        return [rule for (tid, _), rule in self._rules.items() if tid == tenant_ctx.tenant_id]

@@ -1,4 +1,5 @@
 """Embedding Router - vendor-agnostic embedding with fallbacks."""
+
 from __future__ import annotations
 
 import logging
@@ -12,6 +13,7 @@ _log = logging.getLogger(__name__)
 @dataclass
 class EmbeddingConfig:
     """Configuration for an embedding provider/model."""
+
     provider: str
     model: str
     dimension: int
@@ -75,6 +77,7 @@ class EmbeddingRouter:
                 # C7 fix: use embed(EmbedRequest) — the required Protocol method.
                 # embed_batch() is an optional default that some provider ducks may not have.
                 from app.providers.base import EmbedRequest
+
                 resp = await self._provider.embed(EmbedRequest(texts=texts))
                 embeddings = resp.embeddings if resp.embeddings else []
                 token_count = sum(len(t.split()) for t in texts)

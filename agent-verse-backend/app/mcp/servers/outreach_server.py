@@ -3,6 +3,7 @@
 Environment variables:
   OUTREACH_ACCESS_TOKEN: Outreach OAuth 2.0 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -90,7 +91,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "prospect_id": {"type": "integer", "description": "Prospect ID to enrol"},
-                "sequence_id": {"type": "integer", "description": "Sequence ID to enrol the prospect in"},
+                "sequence_id": {
+                    "type": "integer",
+                    "description": "Sequence ID to enrol the prospect in",
+                },
                 "mailbox_id": {"type": "integer", "description": "Mailbox to use for sending"},
             },
             "required": ["prospect_id", "sequence_id"],
@@ -151,7 +155,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 body: dict[str, Any] = {"data": {"type": "prospect", "attributes": attrs}}
                 if "ownerEmail" in arguments:
                     body["data"]["relationships"] = {
-                        "owner": {"data": {"type": "user", "attributes": {"email": arguments["ownerEmail"]}}}
+                        "owner": {
+                            "data": {
+                                "type": "user",
+                                "attributes": {"email": arguments["ownerEmail"]},
+                            }
+                        }
                     }
                 r = await c.post("/prospects", json=body)
                 r.raise_for_status()
@@ -184,8 +193,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "data": {
                         "type": "sequenceState",
                         "relationships": {
-                            "prospect": {"data": {"type": "prospect", "id": arguments["prospect_id"]}},
-                            "sequence": {"data": {"type": "sequence", "id": arguments["sequence_id"]}},
+                            "prospect": {
+                                "data": {"type": "prospect", "id": arguments["prospect_id"]}
+                            },
+                            "sequence": {
+                                "data": {"type": "sequence", "id": arguments["sequence_id"]}
+                            },
                         },
                     }
                 }

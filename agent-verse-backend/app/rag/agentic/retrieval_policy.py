@@ -1,4 +1,5 @@
 """RetrievalPolicy — selects retrieval strategy based on query + source availability."""
+
 from __future__ import annotations
 
 from enum import StrEnum

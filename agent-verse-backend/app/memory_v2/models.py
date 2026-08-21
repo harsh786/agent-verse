@@ -1,5 +1,7 @@
 """Agent Memory 2.0 - provenance, lifecycle, conflict detection."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum
 
@@ -23,6 +25,7 @@ class MemoryPrivacyClass(str, Enum):
 @dataclass
 class MemoryProvenance:
     """Provenance tracking for a memory entry."""
+
     created_from_goal_id: str | None = None
     created_from_tool: str | None = None
     extracted_from_document: str | None = None
@@ -34,6 +37,7 @@ class MemoryProvenance:
 @dataclass
 class MemoryConflict:
     """A detected conflict between two memory entries."""
+
     conflict_id: str
     tenant_id: str
     memory_id_a: str

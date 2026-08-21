@@ -1,17 +1,19 @@
 """ProvenanceExport — exports provenance records in various formats."""
+
 from __future__ import annotations
+
 import json
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.provenance.claim_trace import ProvenanceRecord
 
 
 class ProvenanceExport:
-    def to_json(self, records: "list[ProvenanceRecord]") -> str:
+    def to_json(self, records: list[ProvenanceRecord]) -> str:
         return json.dumps([r.to_dict() for r in records], indent=2)
 
-    def to_citation_list(self, records: "list[ProvenanceRecord]") -> list[dict[str, Any]]:
+    def to_citation_list(self, records: list[ProvenanceRecord]) -> list[dict[str, Any]]:
         return [
             {
                 "claim": r.claim_text[:200],
@@ -22,7 +24,7 @@ class ProvenanceExport:
             for r in records
         ]
 
-    def to_summary(self, records: "list[ProvenanceRecord]") -> dict[str, Any]:
+    def to_summary(self, records: list[ProvenanceRecord]) -> dict[str, Any]:
         if not records:
             return {"total": 0, "supported": 0, "unsupported": 0, "unknown": 0}
         supported = sum(1 for r in records if r.verification_status == "supported")

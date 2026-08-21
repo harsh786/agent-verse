@@ -4,8 +4,9 @@ Revision ID: 0077
 Revises: 0076
 Create Date: 2026-07-04
 """
-from alembic import op
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "0077"
@@ -21,7 +22,9 @@ def upgrade() -> None:
         sa.Column("id", sa.String(32), primary_key=True),
         sa.Column("tenant_id", sa.String(32), nullable=False),
         sa.Column("goal_id", sa.String(32), nullable=True),
-        sa.Column("metric", sa.String(64), nullable=False),  # goals | llm_tokens | tool_calls | storage_mb
+        sa.Column(
+            "metric", sa.String(64), nullable=False
+        ),  # goals | llm_tokens | tool_calls | storage_mb
         sa.Column("quantity", sa.Numeric(18, 4), nullable=False),
         sa.Column("unit_cost_usd", sa.Numeric(18, 8), nullable=False, server_default="0"),
         sa.Column("total_cost_usd", sa.Numeric(18, 8), nullable=False, server_default="0"),

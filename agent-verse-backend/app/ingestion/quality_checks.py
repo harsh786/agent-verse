@@ -1,4 +1,5 @@
 """QualityChecker — validates chunks before ingestion."""
+
 from __future__ import annotations
 
 import hashlib

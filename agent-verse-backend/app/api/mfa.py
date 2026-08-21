@@ -120,8 +120,7 @@ def _is_totp_replayed(tenant_id: str, code: str) -> bool:
         return True
     # Clean old entries (keep current and previous window only)
     _used_totp_codes[tenant_id] = {
-        k for k in _used_totp_codes[tenant_id]
-        if int(k.split(":")[1]) >= int(now // 30) - 1
+        k for k in _used_totp_codes[tenant_id] if int(k.split(":")[1]) >= int(now // 30) - 1
     }
     _used_totp_codes[tenant_id].add(key)
     return False
@@ -221,9 +220,7 @@ class MFAStore:
 
             async with self._db() as session:
                 row = (
-                    await session.execute(
-                        select(TenantMFA).where(TenantMFA.tenant_id == tenant_id)
-                    )
+                    await session.execute(select(TenantMFA).where(TenantMFA.tenant_id == tenant_id))
                 ).scalar_one_or_none()
 
             if row is None:
@@ -240,9 +237,7 @@ class MFAStore:
             # Parse hashed recovery codes
             codes_hashed: list[str] = []
             if row.recovery_codes_hashed:
-                codes_hashed = [
-                    c for c in row.recovery_codes_hashed.split("\n") if c.strip()
-                ]
+                codes_hashed = [c for c in row.recovery_codes_hashed.split("\n") if c.strip()]
 
             # Merge DB state with in-memory pending_secret (never stored in DB)
             pending = self._cache_entry(tenant_id).get("pending_secret")
@@ -287,9 +282,7 @@ class MFAStore:
 
             async with self._db() as session, session.begin():
                 row = (
-                    await session.execute(
-                        select(TenantMFA).where(TenantMFA.tenant_id == tenant_id)
-                    )
+                    await session.execute(select(TenantMFA).where(TenantMFA.tenant_id == tenant_id))
                 ).scalar_one_or_none()
 
                 if row is None:
@@ -334,10 +327,7 @@ _mfa_verified_sessions: dict[str, dict] = {}
 def _cleanup_mfa_sessions() -> None:
     """Remove expired MFA session tokens (>1 hour old)."""
     now = time.monotonic()
-    expired = [
-        k for k, v in _mfa_verified_sessions.items()
-        if now - v.get("created_at", 0) > 3600
-    ]
+    expired = [k for k, v in _mfa_verified_sessions.items() if now - v.get("created_at", 0) > 3600]
     for k in expired:
         del _mfa_verified_sessions[k]
 

@@ -4,6 +4,7 @@ Environment:
   CONVERTKIT_API_KEY: ConvertKit API key (v3)
   CONVERTKIT_API_SECRET: ConvertKit API secret (for admin operations)
 """
+
 from __future__ import annotations
 
 import os
@@ -111,9 +112,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "CONVERTKIT_API_KEY not configured"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=CONVERTKIT_BASE, timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=CONVERTKIT_BASE, timeout=30.0) as c:
             if tool_name == "convertkit_list_subscribers":
                 params: dict[str, Any] = {
                     "api_secret": api_secret or api_key,
@@ -127,7 +126,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "subscribers": [
-                        {"id": s.get("id"), "email": s.get("email_address"), "state": s.get("state")}
+                        {
+                            "id": s.get("id"),
+                            "email": s.get("email_address"),
+                            "state": s.get("state"),
+                        }
                         for s in data.get("subscribers", [])
                     ],
                     "total_subscribers": data.get("total_subscribers", 0),
@@ -169,8 +172,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "tags": [
-                        {"id": t.get("id"), "name": t.get("name")}
-                        for t in data.get("tags", [])
+                        {"id": t.get("id"), "name": t.get("name")} for t in data.get("tags", [])
                     ]
                 }
 
@@ -181,9 +183,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
                 if "first_name" in arguments:
                     payload["first_name"] = arguments["first_name"]
-                r = await c.post(
-                    f"/tags/{arguments['tag_id']}/subscribe", json=payload
-                )
+                r = await c.post(f"/tags/{arguments['tag_id']}/subscribe", json=payload)
                 r.raise_for_status()
                 data = r.json()
                 return {
@@ -197,8 +197,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "sequences": [
-                        {"id": s.get("id"), "name": s.get("name")}
-                        for s in data.get("courses", [])
+                        {"id": s.get("id"), "name": s.get("name")} for s in data.get("courses", [])
                     ]
                 }
 

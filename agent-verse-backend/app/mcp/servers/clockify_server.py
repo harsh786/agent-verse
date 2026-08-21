@@ -3,6 +3,7 @@
 Environment:
   CLOCKIFY_API_KEY: Clockify API key (from Profile Settings → API)
 """
+
 from __future__ import annotations
 
 import os
@@ -48,7 +49,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "workspace_id": {"type": "string"},
-                "start": {"type": "string", "description": "ISO 8601 start time (e.g. 2024-01-15T09:00:00Z)"},
+                "start": {
+                    "type": "string",
+                    "description": "ISO 8601 start time (e.g. 2024-01-15T09:00:00Z)",
+                },
                 "end": {"type": "string", "description": "ISO 8601 end time"},
                 "project_id": {"type": "string"},
                 "description": {"type": "string"},
@@ -77,7 +81,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "workspace_id": {"type": "string"},
-                "status": {"type": "string", "enum": ["ACTIVE", "INACTIVE", "PENDING"], "default": "ACTIVE"},
+                "status": {
+                    "type": "string",
+                    "enum": ["ACTIVE", "INACTIVE", "PENDING"],
+                    "default": "ACTIVE",
+                },
             },
             "required": ["workspace_id"],
         },

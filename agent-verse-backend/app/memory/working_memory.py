@@ -4,12 +4,14 @@ Analogous to human working memory: a small, fast, volatile store that holds
 the most recently observed facts/tool outputs during a single goal execution.
 Items are evicted (oldest first) when capacity is exceeded.
 """
+
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Iterator
+from typing import Any
 
 
 @dataclass

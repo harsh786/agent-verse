@@ -3,6 +3,7 @@
 Environment:
   GOOGLE_ACCESS_TOKEN: OAuth2 access token with chat.messages scope
 """
+
 from __future__ import annotations
 
 import os
@@ -22,9 +23,15 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "page_size": {"type": "integer", "description": "Maximum number of spaces to return"},
+                "page_size": {
+                    "type": "integer",
+                    "description": "Maximum number of spaces to return",
+                },
                 "page_token": {"type": "string", "description": "Pagination token"},
-                "filter": {"type": "string", "description": "Filter query (e.g. spaceType = SPACE)"},
+                "filter": {
+                    "type": "string",
+                    "description": "Filter query (e.g. spaceType = SPACE)",
+                },
             },
         },
     },
@@ -34,9 +41,15 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "space_name": {"type": "string", "description": "Space name (e.g. spaces/AAAABBBCCC)"},
+                "space_name": {
+                    "type": "string",
+                    "description": "Space name (e.g. spaces/AAAABBBCCC)",
+                },
                 "text": {"type": "string", "description": "Text content of the message"},
-                "thread_key": {"type": "string", "description": "Thread key to reply in an existing thread"},
+                "thread_key": {
+                    "type": "string",
+                    "description": "Thread key to reply in an existing thread",
+                },
                 "cards": {
                     "type": "array",
                     "description": "Rich card attachments to include with the message",
@@ -51,10 +64,16 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "space_name": {"type": "string", "description": "Space name (e.g. spaces/AAAABBBCCC)"},
+                "space_name": {
+                    "type": "string",
+                    "description": "Space name (e.g. spaces/AAAABBBCCC)",
+                },
                 "page_size": {"type": "integer", "description": "Maximum messages to return"},
                 "page_token": {"type": "string", "description": "Pagination token"},
-                "filter": {"type": "string", "description": "Filter query (e.g. createTime > 2023-01-01T00:00:00Z)"},
+                "filter": {
+                    "type": "string",
+                    "description": "Filter query (e.g. createTime > 2023-01-01T00:00:00Z)",
+                },
             },
             "required": ["space_name"],
         },
@@ -67,7 +86,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "display_name": {"type": "string", "description": "Display name of the new space"},
                 "space_type": {"type": "string", "description": "Type: SPACE or GROUP_CHAT"},
-                "threaded": {"type": "boolean", "description": "Whether space uses threaded replies"},
+                "threaded": {
+                    "type": "boolean",
+                    "description": "Whether space uses threaded replies",
+                },
             },
             "required": ["display_name"],
         },
@@ -79,8 +101,14 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "space_name": {"type": "string", "description": "Space name to add member to"},
-                "user_name": {"type": "string", "description": "User resource name (e.g. users/user@example.com)"},
-                "role": {"type": "string", "description": "Member role: ROLE_MEMBER or ROLE_MANAGER"},
+                "user_name": {
+                    "type": "string",
+                    "description": "User resource name (e.g. users/user@example.com)",
+                },
+                "role": {
+                    "type": "string",
+                    "description": "Member role: ROLE_MEMBER or ROLE_MANAGER",
+                },
             },
             "required": ["space_name", "user_name"],
         },
@@ -91,7 +119,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "message_name": {"type": "string", "description": "Full message resource name (spaces/*/messages/*)"},
+                "message_name": {
+                    "type": "string",
+                    "description": "Full message resource name (spaces/*/messages/*)",
+                },
             },
             "required": ["message_name"],
         },
@@ -145,7 +176,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     "spaceType": arguments.get("space_type", "SPACE"),
                 }
                 if "threaded" in arguments:
-                    payload["spaceThreadingState"] = "THREADED_MESSAGES" if arguments["threaded"] else "UNTHREADED_MESSAGES"
+                    payload["spaceThreadingState"] = (
+                        "THREADED_MESSAGES" if arguments["threaded"] else "UNTHREADED_MESSAGES"
+                    )
                 r = await client.post(f"{BASE_URL}/spaces", headers=headers, json=payload)
                 r.raise_for_status()
                 return r.json()

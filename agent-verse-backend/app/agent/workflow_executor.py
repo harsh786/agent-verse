@@ -39,6 +39,7 @@ WorkflowEventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 # Parallel DAG executor (new — Phase 6)
 # ---------------------------------------------------------------------------
 
+
 class WorkflowExecutor:
     """Parallel workflow executor using asyncio.gather() for independent steps.
 
@@ -112,9 +113,7 @@ class WorkflowExecutor:
                     previous_outputs=results,
                 )
             else:
-                result = await self._execute_step(
-                    step, tenant_ctx, prior_results=results
-                )
+                result = await self._execute_step(step, tenant_ctx, prior_results=results)
             results[step.id] = result
             if event_callback is not None:
                 await self._emit(
@@ -208,10 +207,7 @@ class WorkflowExecutor:
         # Build context from prior dependent step outputs
         prior_context = ""
         if step.depends_on and prior_results:
-            dep_outputs = [
-                prior_results.get(dep, {}).get("output", "")
-                for dep in step.depends_on
-            ]
+            dep_outputs = [prior_results.get(dep, {}).get("output", "") for dep in step.depends_on]
             prior_context = "\n".join(filter(None, dep_outputs))
 
         try:
@@ -239,9 +235,7 @@ class WorkflowExecutor:
             }
 
             if node_type == "decision":
-                edge = await execute_decision_node(
-                    node_cfg, ctx, llm_provider=self._llm_provider
-                )
+                edge = await execute_decision_node(node_cfg, ctx, llm_provider=self._llm_provider)
                 step.status = "complete"
                 step.result = str(edge)
                 return {
@@ -307,7 +301,7 @@ class WorkflowExecutor:
                                 tenant_ctx=tenant_ctx
                             )
                             for srv in all_servers:
-                                for tdef in (srv.tool_definitions or []):
+                                for tdef in srv.tool_definitions or []:
                                     if tdef.get("name") == step.tool:
                                         server_id = srv.id
                                         break
@@ -329,26 +323,27 @@ class WorkflowExecutor:
                     return {"status": "complete", "output": str(result), "tool": step.tool}
                 except Exception as tool_exc:
                     import logging
-                    logging.getLogger(__name__).warning(
-                        "workflow_step_tool_failed: %s", tool_exc
-                    )
+
+                    logging.getLogger(__name__).warning("workflow_step_tool_failed: %s", tool_exc)
 
             # Fall back to LLM completion
             if self._provider is not None:
                 from app.providers.base import CompletionRequest, Message
 
-                context_text = (
-                    f"\nPrior context:\n{prior_context}" if prior_context else ""
-                )
+                context_text = f"\nPrior context:\n{prior_context}" if prior_context else ""
                 model = getattr(self._provider, "_default_model", "")
-                resp = await self._provider.complete(CompletionRequest(
-                    messages=[Message(
-                        role="user",
-                        content=f"Execute this task: {step.description}{context_text}",
-                    )],
-                    model=model,
-                    max_tokens=1000,
-                ))
+                resp = await self._provider.complete(
+                    CompletionRequest(
+                        messages=[
+                            Message(
+                                role="user",
+                                content=f"Execute this task: {step.description}{context_text}",
+                            )
+                        ],
+                        model=model,
+                        max_tokens=1000,
+                    )
+                )
                 step.status = "complete"
                 step.result = resp.content
                 return {"status": "complete", "output": resp.content}
@@ -383,9 +378,7 @@ class WorkflowExecutor:
             goal=goal,
         )
 
-    async def _emit(
-        self, event_callback: WorkflowEventCallback, event: dict[str, Any]
-    ) -> None:
+    async def _emit(self, event_callback: WorkflowEventCallback, event: dict[str, Any]) -> None:
         await event_callback(sanitize_event(event))
 
     async def _run_step(

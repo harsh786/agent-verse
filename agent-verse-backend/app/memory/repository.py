@@ -41,6 +41,7 @@ class InMemoryMemoryRepository:
 
     async def write(self, request: MemoryWriteRequest) -> MemoryRecord:
         from opentelemetry import trace as _trace
+
         _tracer = _trace.get_tracer(__name__)
         with _tracer.start_as_current_span("memory.write") as span:
             span.set_attribute("tenant_id", request.tenant_id)
@@ -96,6 +97,7 @@ class InMemoryMemoryRepository:
 
     async def recall(self, request: MemoryRecallRequest) -> tuple[MemoryRecallHit, ...]:
         from opentelemetry import trace as _trace
+
         _tracer = _trace.get_tracer(__name__)
         with _tracer.start_as_current_span("memory.recall") as span:
             span.set_attribute("tenant_id", request.tenant_id)

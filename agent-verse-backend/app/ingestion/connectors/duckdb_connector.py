@@ -7,6 +7,7 @@ Modes:
 
 Cursor: last row's ORDER BY column value.
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,9 +32,11 @@ class DuckDBConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             import duckdb  # type: ignore[import-not-found]
+
             db_path = config.connection_config.get("database", ":memory:")
             con = duckdb.connect(db_path, read_only=True)
             con.execute("SELECT 1")
@@ -49,10 +52,12 @@ class DuckDBConnector(BaseConnector):
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
+
         try:
             import duckdb  # type: ignore[import-not-found]
         except ImportError:
-            _log.error("duckdb not installed"); return
+            _log.error("duckdb not installed")
+            return
 
         cc = config.connection_config
         db_path = cc.get("database", ":memory:")

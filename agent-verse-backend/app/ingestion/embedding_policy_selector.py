@@ -1,4 +1,5 @@
 """EmbeddingPolicySelector — selects embedding model and index strategy per content type."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -3,6 +3,7 @@
 Cursor: last document's sort value (typically a timestamp or _id).
 Uses search_after for deep pagination (no 10k limit).
 """
+
 from __future__ import annotations
 
 import json
@@ -31,6 +32,7 @@ class ElasticsearchConnector(BaseConnector):
         import time
 
         import httpx
+
         t0 = time.perf_counter()
         try:
             cc = config.connection_config
@@ -42,8 +44,12 @@ class ElasticsearchConnector(BaseConnector):
                 info = r.json()
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
-                ok=True, latency_ms=latency,
-                metadata={"version": info.get("version", {}).get("number"), "cluster": info.get("cluster_name")},
+                ok=True,
+                latency_ms=latency,
+                metadata={
+                    "version": info.get("version", {}).get("number"),
+                    "cluster": info.get("cluster_name"),
+                },
             )
         except Exception as exc:
             return ConnectionHealth(ok=False, error=str(exc))
@@ -95,9 +101,11 @@ class ElasticsearchConnector(BaseConnector):
                     text = json.dumps(source, ensure_ascii=False, indent=2)
                     doc = RawDocument(
                         doc_id=str(uuid.uuid4()),
-                        source_id=config.source_id, tenant_id=config.tenant_id,
+                        source_id=config.source_id,
+                        tenant_id=config.tenant_id,
                         source_url=f"{base_url}/{index}/_doc/{hit.get('_id')}",
-                        content=text.encode(), content_type="application/json",
+                        content=text.encode(),
+                        content_type="application/json",
                         metadata={"index": index, "_id": hit.get("_id")},
                     )
                     yield doc, json.dumps(new_cursor)

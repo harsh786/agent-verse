@@ -11,6 +11,7 @@ Validation rules enforced at parse time:
   - Required inputs have no defaults
   - Enum inputs validate against allowed values
 """
+
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -21,6 +22,7 @@ from pydantic import BaseModel, Field, model_validator
 # ─────────────────────────────────────────────────────────────────────────────
 # Trigger DSL
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class WebhookTriggerConfig(BaseModel):
     path: str = ""
@@ -48,6 +50,7 @@ class FileDropTriggerConfig(BaseModel):
 
 class AlertTriggerConfig(BaseModel):
     """Shared config for alertmanager/datadog/pagerduty triggers."""
+
     payload_mapping: dict[str, str] = Field(default_factory=dict)
 
 
@@ -58,8 +61,15 @@ class NLTriggerConfig(BaseModel):
 
 class TriggerDefinition(BaseModel):
     type: Literal[
-        "webhook", "schedule", "api", "nl", "event",
-        "file_drop", "alertmanager", "datadog", "pagerduty"
+        "webhook",
+        "schedule",
+        "api",
+        "nl",
+        "event",
+        "file_drop",
+        "alertmanager",
+        "datadog",
+        "pagerduty",
     ] = "api"
     webhook: WebhookTriggerConfig | None = None
     schedule: ScheduleTriggerConfig | None = None
@@ -75,6 +85,7 @@ class TriggerDefinition(BaseModel):
 # Input DSL
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class InputDefinition(BaseModel):
     type: Literal["string", "number", "boolean", "object", "array"] = "string"
     required: bool = True
@@ -86,6 +97,7 @@ class InputDefinition(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 # Step DSL
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class RetryConfig(BaseModel):
     max_attempts: int = 1
@@ -120,10 +132,10 @@ class HITLContextItem(BaseModel):
     label: str = ""
     value: str = ""  # {{...}} expression
     title: str = ""  # alias for label in newer templates
-    data: str = ""   # alias for value in newer templates
-    display_type: Literal[
-        "image", "json", "table", "diff", "chart", "number", "text", "list"
-    ] = "text"
+    data: str = ""  # alias for value in newer templates
+    display_type: Literal["image", "json", "table", "diff", "chart", "number", "text", "list"] = (
+        "text"
+    )
     threshold_red: float | None = None
     threshold_yellow: float | None = None
 
@@ -147,7 +159,7 @@ class HITLAction(BaseModel):
 
 class ConditionalBranch(BaseModel):
     condition: str  # expression or "default"
-    next: str       # step_id
+    next: str  # step_id
 
 
 class StepDefinition(BaseModel):
@@ -199,7 +211,7 @@ class StepDefinition(BaseModel):
 
     # foreach step config
     iterate_over: str = ""  # {{...}} expression resolving to list
-    as_var: str = "item"    # loop variable name: {{foreach.item}}
+    as_var: str = "item"  # loop variable name: {{foreach.item}}
     max_concurrency: int = 5
     body: list[StepDefinition] = Field(default_factory=list)
     collect_output_as: str = ""
@@ -230,6 +242,7 @@ class StepDefinition(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 # Top-level Workflow Definition
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class ConcurrencyConfig(BaseModel):
     max_concurrent_runs: int = 10
@@ -302,9 +315,7 @@ class WorkflowDefinition(BaseModel):
         for step in self.steps:
             for dep in step.depends_on:
                 if dep not in ids:
-                    raise ValueError(
-                        f"Step {step.id!r} depends_on unknown step {dep!r}"
-                    )
+                    raise ValueError(f"Step {step.id!r} depends_on unknown step {dep!r}")
 
         # 3. No circular dependencies (Kahn's algorithm)
         # in_degree[v] = number of steps that v directly depends on
@@ -341,18 +352,21 @@ class WorkflowDefinition(BaseModel):
     def from_json(cls, json_data: str | dict[str, Any]) -> WorkflowDefinition:
         """Parse from JSON string or dict (API payload)."""
         import json as _json
+
         if isinstance(json_data, str):
             json_data = _json.loads(json_data)
         return cls.model_validate(json_data)
 
     def to_yaml(self) -> str:
         """Export canonical YAML."""
-        return str(yaml.dump(
-            self.model_dump(exclude_none=True),
-            default_flow_style=False,
-            allow_unicode=True,
-            sort_keys=False,
-        ))
+        return str(
+            yaml.dump(
+                self.model_dump(exclude_none=True),
+                default_flow_style=False,
+                allow_unicode=True,
+                sort_keys=False,
+            )
+        )
 
     def to_json(self) -> dict[str, Any]:
         """Export JSON dict."""

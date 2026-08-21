@@ -6,7 +6,7 @@ the registry instantiates an MCPServerConfig from the spec + their auth config.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -22,15 +22,44 @@ class AuthFieldSpec:
 # Per-connector auth field overrides (richer hints than generic)
 _CONNECTOR_AUTH_FIELDS: dict[str, list[AuthFieldSpec]] = {
     "jira": [
-        AuthFieldSpec("url", "Jira URL", "https://mycompany.atlassian.net", "url", hint="Your Atlassian Cloud or Server instance URL"),
-        AuthFieldSpec("username", "Email", "you@company.com", "email", hint="Your Atlassian account email address"),
-        AuthFieldSpec("password", "API Token", "ATATT3xFfGF0...", "password", hint="Create at id.atlassian.com/manage-profile/security/api-tokens"),
+        AuthFieldSpec(
+            "url",
+            "Jira URL",
+            "https://mycompany.atlassian.net",
+            "url",
+            hint="Your Atlassian Cloud or Server instance URL",
+        ),
+        AuthFieldSpec(
+            "username",
+            "Email",
+            "you@company.com",
+            "email",
+            hint="Your Atlassian account email address",
+        ),
+        AuthFieldSpec(
+            "password",
+            "API Token",
+            "ATATT3xFfGF0...",
+            "password",
+            hint="Create at id.atlassian.com/manage-profile/security/api-tokens",
+        ),
     ],
     "github": [
-        AuthFieldSpec("token", "Personal Access Token", "ghp_xxxxxxxxxxxx", "password",
-                      hint="Create at github.com/settings/tokens — needs repo, read:org scopes. Used for both REST API and MCP server authentication."),
-        AuthFieldSpec("url", "GitHub MCP URL", "https://api.githubcopilot.com/mcp/", "url",
-                      required=False, hint="Official GitHub MCP server. Use https://api.githubcopilot.com/mcp/ (default) or your GitHub Enterprise MCP endpoint."),
+        AuthFieldSpec(
+            "token",
+            "Personal Access Token",
+            "ghp_xxxxxxxxxxxx",
+            "password",
+            hint="Create at github.com/settings/tokens — needs repo, read:org scopes. Used for both REST API and MCP server authentication.",
+        ),
+        AuthFieldSpec(
+            "url",
+            "GitHub MCP URL",
+            "https://api.githubcopilot.com/mcp/",
+            "url",
+            required=False,
+            hint="Official GitHub MCP server. Use https://api.githubcopilot.com/mcp/ (default) or your GitHub Enterprise MCP endpoint.",
+        ),
     ],
     "confluence": [
         AuthFieldSpec("url", "Confluence URL", "https://mycompany.atlassian.net", "url"),
@@ -38,20 +67,44 @@ _CONNECTOR_AUTH_FIELDS: dict[str, list[AuthFieldSpec]] = {
         AuthFieldSpec("password", "API Token", "ATATT3x...", "password"),
     ],
     "slack": [
-        AuthFieldSpec("token", "Bot Token", "xoxb-xxxxxxxxxxxx", "password", hint="Create a Slack App and use the Bot Token from OAuth & Permissions"),
+        AuthFieldSpec(
+            "token",
+            "Bot Token",
+            "xoxb-xxxxxxxxxxxx",
+            "password",
+            hint="Create a Slack App and use the Bot Token from OAuth & Permissions",
+        ),
     ],
     "linear": [
-        AuthFieldSpec("api_key", "API Key", "lin_api_xxxxxxxx", "password", hint="Create at linear.app/settings/api"),
+        AuthFieldSpec(
+            "api_key",
+            "API Key",
+            "lin_api_xxxxxxxx",
+            "password",
+            hint="Create at linear.app/settings/api",
+        ),
     ],
     "gitlab": [
         AuthFieldSpec("token", "Personal Access Token", "glpat-xxxx", "password"),
         AuthFieldSpec("url", "GitLab URL", "https://gitlab.com/api/v4", "url", required=False),
     ],
     "hubspot": [
-        AuthFieldSpec("api_key", "Access Token", "pat-na1-xxxxxxxx", "password", hint="Use a Private App token from your HubSpot account"),
+        AuthFieldSpec(
+            "api_key",
+            "Access Token",
+            "pat-na1-xxxxxxxx",
+            "password",
+            hint="Use a Private App token from your HubSpot account",
+        ),
     ],
     "stripe": [
-        AuthFieldSpec("token", "Secret Key", "sk_live_xxxxxxxx", "password", hint="Find in Stripe Dashboard > Developers > API keys"),
+        AuthFieldSpec(
+            "token",
+            "Secret Key",
+            "sk_live_xxxxxxxx",
+            "password",
+            hint="Find in Stripe Dashboard > Developers > API keys",
+        ),
     ],
     "datadog": [
         AuthFieldSpec("DD-API-KEY", "API Key", "your-api-key", "password"),

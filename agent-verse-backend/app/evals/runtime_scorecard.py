@@ -128,8 +128,7 @@ class RuntimeScorecard:
         )
         rag_score = self._rag_scorer.score(retrieval_result)
         retrieval_ref = str(
-            context.get("retrieval_evidence_ref")
-            or getattr(retrieval_result, "evidence_ref", "")
+            context.get("retrieval_evidence_ref") or getattr(retrieval_result, "evidence_ref", "")
         )
         retrieval_refs = [retrieval_ref] if retrieval_ref else ["retrieval_result"]
         record(
@@ -202,8 +201,7 @@ class RuntimeScorecard:
 
         available_weight = sum(DIMENSION_WEIGHTS[name] for name in scores)
         overall = (
-            sum(scores[name] * DIMENSION_WEIGHTS[name] for name in scores)
-            / available_weight
+            sum(scores[name] * DIMENSION_WEIGHTS[name] for name in scores) / available_weight
             if available_weight
             else 0.0
         )
@@ -220,10 +218,7 @@ class RuntimeScorecard:
             suggestions.append("Safety violations detected — review guardrail configuration")
         if statuses["grounding"] == "measured" and scores["grounding"] < 0.7:
             suggestions.append("High hallucination rate — improve grounding or retrieval")
-        if (
-            statuses["tool_success_rate"] == "measured"
-            and scores["tool_success_rate"] < 0.5
-        ):
+        if statuses["tool_success_rate"] == "measured" and scores["tool_success_rate"] < 0.5:
             suggestions.append(
                 "Low tool success rate — check tool trust scores and circuit breakers"
             )
@@ -240,8 +235,7 @@ class RuntimeScorecard:
             primary_strategy_id=primary.strategy_id,
             primary_strategy_version=primary.adapter_version,
             auxiliary_strategy_versions={
-                item.strategy_id: item.adapter_version
-                for item in profile.auxiliary_strategies
+                item.strategy_id: item.adapter_version for item in profile.auxiliary_strategies
             },
             profile_id=profile.profile_id,
             profile_version=profile.profile_version,

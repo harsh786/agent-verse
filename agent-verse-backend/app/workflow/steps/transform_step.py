@@ -1,4 +1,5 @@
 """TransformStepNode — pure data mapping using ContextResolver."""
+
 from __future__ import annotations
 
 from typing import Any

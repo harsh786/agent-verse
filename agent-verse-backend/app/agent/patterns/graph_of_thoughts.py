@@ -104,16 +104,10 @@ class GraphOfThoughtsRuntime:
             nodes = [scored_by_id.get(node.node_id, node) for node in proposed_nodes]
             edges = proposed_edges
             frontier = self.select_frontier(tuple(nodes))
-            cursor = self.serialize_cursor(
-                round_number, tuple(node.node_id for node in frontier)
-            )
+            cursor = self.serialize_cursor(round_number, tuple(node.node_id for node in frontier))
             await self._save(cursor)
             terminal = next(
-                (
-                    node
-                    for node in frontier
-                    if node.status == "terminal" and node.score >= 0.85
-                ),
+                (node for node in frontier if node.status == "terminal" and node.score >= 0.85),
                 None,
             )
             if terminal is not None:

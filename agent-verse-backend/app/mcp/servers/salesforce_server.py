@@ -4,6 +4,7 @@ Environment variables:
   SALESFORCE_INSTANCE_URL: e.g. https://yourorg.my.salesforce.com
   SALESFORCE_ACCESS_TOKEN: OAuth2 bearer token
 """
+
 from __future__ import annotations
 
 import os
@@ -39,7 +40,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "object_type": {"type": "string", "description": "Salesforce object API name"},
-                "fields": {"type": "object", "description": "Field name-value pairs for the new record"},
+                "fields": {
+                    "type": "object",
+                    "description": "Field name-value pairs for the new record",
+                },
             },
             "required": ["object_type", "fields"],
         },
@@ -51,7 +55,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "object_type": {"type": "string"},
-                "record_id": {"type": "string", "description": "Salesforce record Id (15 or 18 chars)"},
+                "record_id": {
+                    "type": "string",
+                    "description": "Salesforce record Id (15 or 18 chars)",
+                },
                 "fields": {"type": "object", "description": "Fields to update"},
             },
             "required": ["object_type", "record_id", "fields"],
@@ -158,17 +165,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "salesforce_delete_record":
                 obj, rid = arguments["object_type"], arguments["record_id"]
-                r = await c.delete(
-                    f"{base}/services/data/{API_VERSION}/sobjects/{obj}/{rid}"
-                )
+                r = await c.delete(f"{base}/services/data/{API_VERSION}/sobjects/{obj}/{rid}")
                 r.raise_for_status()
                 return {"success": r.status_code == 204}
 
             elif tool_name == "salesforce_describe_object":
                 obj = arguments["object_type"]
-                r = await c.get(
-                    f"{base}/services/data/{API_VERSION}/sobjects/{obj}/describe/"
-                )
+                r = await c.get(f"{base}/services/data/{API_VERSION}/sobjects/{obj}/describe/")
                 r.raise_for_status()
                 data = r.json()
                 return {

@@ -3,6 +3,7 @@
 Environment:
   DELIGHTED_API_KEY: Delighted API key for authentication (HTTP Basic)
 """
+
 from __future__ import annotations
 
 import os
@@ -36,8 +37,14 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "email": {"type": "string", "description": "Email address of the person"},
                 "name": {"type": "string", "description": "Full name of the person"},
-                "delay": {"type": "integer", "description": "Delay in seconds before sending survey (0 = send now)"},
-                "properties": {"type": "object", "description": "Custom properties to store with the person"},
+                "delay": {
+                    "type": "integer",
+                    "description": "Delay in seconds before sending survey (0 = send now)",
+                },
+                "properties": {
+                    "type": "object",
+                    "description": "Custom properties to store with the person",
+                },
             },
             "required": ["email"],
         },
@@ -50,8 +57,14 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "page": {"type": "integer", "description": "Page number"},
                 "per_page": {"type": "integer", "description": "Responses per page"},
-                "since": {"type": "integer", "description": "Filter responses after this Unix timestamp"},
-                "until": {"type": "integer", "description": "Filter responses before this Unix timestamp"},
+                "since": {
+                    "type": "integer",
+                    "description": "Filter responses after this Unix timestamp",
+                },
+                "until": {
+                    "type": "integer",
+                    "description": "Filter responses before this Unix timestamp",
+                },
             },
         },
     },
@@ -73,7 +86,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "resolution": {"type": "string", "description": "Time resolution: day, week, month"},
+                "resolution": {
+                    "type": "string",
+                    "description": "Time resolution: day, week, month",
+                },
                 "since": {"type": "integer", "description": "Start Unix timestamp"},
                 "until": {"type": "integer", "description": "End Unix timestamp"},
             },
@@ -128,7 +144,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "delighted_list_trends":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/survey_responses/trends.json", auth=auth, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/survey_responses/trends.json", auth=auth, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

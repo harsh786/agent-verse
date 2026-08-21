@@ -4,6 +4,7 @@ Environment:
   FIREBASE_PROJECT_ID:   Firebase project ID
   FIREBASE_ACCESS_TOKEN: OAuth2 bearer token for Firestore/FCM APIs
 """
+
 from __future__ import annotations
 
 import os
@@ -96,7 +97,9 @@ TOOL_DEFINITIONS = [
 
 
 def _fs_base(project_id: str) -> str:
-    return f"https://firestore.googleapis.com/v1/projects/{project_id}/databases/(default)/documents"
+    return (
+        f"https://firestore.googleapis.com/v1/projects/{project_id}/databases/(default)/documents"
+    )
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -168,9 +171,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "firestore_create_document":
                 collection = arguments["collection"]
-                fields = {
-                    k: _to_firestore_value(v) for k, v in arguments["data"].items()
-                }
+                fields = {k: _to_firestore_value(v) for k, v in arguments["data"].items()}
                 r = await c.post(
                     f"{fs_base}/{collection}",
                     headers=hdrs,
@@ -185,12 +186,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "firestore_update_document":
                 collection = arguments["collection"]
                 doc_id = arguments["document_id"]
-                fields = {
-                    k: _to_firestore_value(v) for k, v in arguments["data"].items()
-                }
-                update_mask = "&".join(
-                    f"updateMask.fieldPaths={k}" for k in arguments["data"]
-                )
+                fields = {k: _to_firestore_value(v) for k, v in arguments["data"].items()}
+                update_mask = "&".join(f"updateMask.fieldPaths={k}" for k in arguments["data"])
                 r = await c.patch(
                     f"{fs_base}/{collection}/{doc_id}?{update_mask}",
                     headers=hdrs,

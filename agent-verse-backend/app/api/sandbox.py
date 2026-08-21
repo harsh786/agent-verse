@@ -3,8 +3,11 @@
 Provides a sandboxed copy of the tenant's agent configuration where goals
 run against mock tools (SimulationRunner) not production connectors.
 """
+
 from __future__ import annotations
+
 from typing import Any
+
 from fastapi import APIRouter, HTTPException, Request
 
 router = APIRouter(prefix="/sandbox", tags=["sandbox"])
@@ -22,7 +25,7 @@ async def submit_sandbox_goal(request: Request, body: dict[str, Any]) -> dict[st
     result = await svc.submit_goal(
         goal=body.get("goal", ""),
         priority="low",
-        dry_run=True,           # SimulationRunner path
+        dry_run=True,  # SimulationRunner path
         tenant_ctx=tenant,
         execution_context={
             "sandbox_mode": True,
@@ -30,8 +33,11 @@ async def submit_sandbox_goal(request: Request, body: dict[str, Any]) -> dict[st
             "agent_id": body.get("agent_id"),
         },
     )
-    return {**result, "sandbox": True,
-            "message": "Goal ran in sandbox mode — no real tools were called"}
+    return {
+        **result,
+        "sandbox": True,
+        "message": "Goal ran in sandbox mode — no real tools were called",
+    }
 
 
 @router.get("/config")

@@ -6,6 +6,7 @@ Environment:
   PROMETHEUS_PASSWORD: Basic auth password (optional)
   PROMETHEUS_TOKEN:    Bearer token (optional, takes precedence over basic auth)
 """
+
 from __future__ import annotations
 
 import os
@@ -62,8 +63,15 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "label_name": {"type": "string", "description": "Label name to get values for (omit for all labels)"},
-                "match": {"type": "array", "items": {"type": "string"}, "description": "Series selectors"},
+                "label_name": {
+                    "type": "string",
+                    "description": "Label name to get values for (omit for all labels)",
+                },
+                "match": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Series selectors",
+                },
                 "start": {"type": "string"},
                 "end": {"type": "string"},
             },
@@ -139,7 +147,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 resp.raise_for_status()
                 data = resp.json()
                 if data.get("status") == "error":
-                    return {"error": data.get("error", "Unknown error"), "errorType": data.get("errorType")}
+                    return {
+                        "error": data.get("error", "Unknown error"),
+                        "errorType": data.get("errorType"),
+                    }
                 result = data.get("data", {})
                 return {
                     "resultType": result.get("resultType"),
@@ -176,6 +187,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 metrics = data.get("data", [])
                 if match_filter := arguments.get("match"):
                     import re
+
                     try:
                         metrics = [m for m in metrics if re.search(match_filter, m)]
                     except re.error:

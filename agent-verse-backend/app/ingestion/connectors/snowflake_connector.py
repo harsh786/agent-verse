@@ -6,6 +6,7 @@ Modes:
 
 Cursor: last row's ORDER BY column value (typically a timestamp).
 """
+
 from __future__ import annotations
 
 import logging
@@ -34,9 +35,11 @@ class SnowflakeConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             import snowflake.connector  # type: ignore[import-not-found]
+
             cc = config.connection_config
             conn = snowflake.connector.connect(
                 user=cc.get("user"),
@@ -62,10 +65,12 @@ class SnowflakeConnector(BaseConnector):
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
+
         try:
             import snowflake.connector  # type: ignore[import-not-found]
         except ImportError:
-            _log.error("snowflake-connector-python not installed"); return
+            _log.error("snowflake-connector-python not installed")
+            return
 
         cc = config.connection_config
         mode = cc.get("mode", "query")
@@ -74,9 +79,12 @@ class SnowflakeConnector(BaseConnector):
         batch_size = int(cc.get("batch_size", 1000))
 
         conn = snowflake.connector.connect(
-            user=cc.get("user"), password=cc.get("password"),
-            account=cc.get("account"), warehouse=cc.get("warehouse"),
-            database=cc.get("database"), schema=cc.get("schema", "PUBLIC"),
+            user=cc.get("user"),
+            password=cc.get("password"),
+            account=cc.get("account"),
+            warehouse=cc.get("warehouse"),
+            database=cc.get("database"),
+            schema=cc.get("schema", "PUBLIC"),
         )
         try:
             cur = conn.cursor(snowflake.connector.DictCursor)

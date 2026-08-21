@@ -3,6 +3,7 @@
 Environment:
   BUFFER_ACCESS_TOKEN: Buffer OAuth2 access token from developer portal
 """
+
 from __future__ import annotations
 
 import os
@@ -37,7 +38,10 @@ TOOL_DEFINITIONS = [
                     "description": "Buffer profile IDs to post to",
                 },
                 "text": {"type": "string", "description": "Post text content"},
-                "scheduled_at": {"type": "string", "description": "ISO 8601 datetime to schedule the post"},
+                "scheduled_at": {
+                    "type": "string",
+                    "description": "ISO 8601 datetime to schedule the post",
+                },
                 "media": {
                     "type": "object",
                     "properties": {
@@ -48,7 +52,11 @@ TOOL_DEFINITIONS = [
                     },
                     "description": "Media attachment for the post",
                 },
-                "now": {"type": "boolean", "description": "Post immediately without scheduling", "default": False},
+                "now": {
+                    "type": "boolean",
+                    "description": "Post immediately without scheduling",
+                    "default": False,
+                },
             },
             "required": ["profile_ids", "text"],
         },
@@ -60,8 +68,16 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "profile_id": {"type": "string", "description": "Buffer profile ID"},
-                "page": {"type": "integer", "description": "Page number for pagination", "default": 1},
-                "count": {"type": "integer", "description": "Number of updates per page", "default": 20},
+                "page": {
+                    "type": "integer",
+                    "description": "Page number for pagination",
+                    "default": 1,
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Number of updates per page",
+                    "default": 20,
+                },
                 "utc": {"type": "boolean", "description": "Return times in UTC", "default": True},
             },
             "required": ["profile_id"],
@@ -86,7 +102,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "profile_id": {"type": "string", "description": "Buffer profile ID"},
                 "page": {"type": "integer", "description": "Page number", "default": 1},
-                "count": {"type": "integer", "description": "Number of sent updates per page", "default": 20},
+                "count": {
+                    "type": "integer",
+                    "description": "Number of sent updates per page",
+                    "default": 20,
+                },
                 "filter": {"type": "string", "description": "Filter type: engagement"},
             },
             "required": ["profile_id"],
@@ -104,7 +124,11 @@ TOOL_DEFINITIONS = [
                     "items": {"type": "string"},
                     "description": "Ordered list of update IDs defining the new queue order",
                 },
-                "offset": {"type": "integer", "description": "Position offset to start reordering at", "default": 0},
+                "offset": {
+                    "type": "integer",
+                    "description": "Position offset to start reordering at",
+                    "default": 0,
+                },
                 "utc": {"type": "boolean", "description": "Times in UTC", "default": True},
             },
             "required": ["profile_id", "order"],
@@ -147,7 +171,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "access_token": access_token,
                 }
                 for pid in arguments["profile_ids"]:
-                    payload[f"profile_ids[]"] = pid
+                    payload["profile_ids[]"] = pid
                 if "scheduled_at" in arguments:
                     payload["scheduled_at"] = arguments["scheduled_at"]
                 if arguments.get("now"):
@@ -157,7 +181,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                         payload[f"media[{k}]"] = v
                 r = await client.post(
                     f"{BASE}/updates/create.json",
-                    data={k: (v if not isinstance(v, bool) else str(v).lower()) for k, v in payload.items()},
+                    data={
+                        k: (v if not isinstance(v, bool) else str(v).lower())
+                        for k, v in payload.items()
+                    },
                 )
                 r.raise_for_status()
                 data = r.json()

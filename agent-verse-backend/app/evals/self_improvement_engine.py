@@ -1,4 +1,5 @@
 """SelfImprovementEngine — translates scorecard results into improvement actions."""
+
 from __future__ import annotations
 
 import enum
@@ -44,41 +45,53 @@ class SelfImprovementEngine:
             return []
 
         if scores.get("rag_quality", 1.0) < 0.5 or scores.get("retrieval_confidence", 1.0) < 0.4:
-            actions.append(ImprovementDecision(
-                action_type=ImprovementAction.UPDATE_RAG_STRATEGY,
-                reason=f"rag_quality={scores.get('rag_quality', 0):.2f} below 0.5",
-                metadata={"current_rag_strategy": profile.rag_strategy.strategy},
-            ))
+            actions.append(
+                ImprovementDecision(
+                    action_type=ImprovementAction.UPDATE_RAG_STRATEGY,
+                    reason=f"rag_quality={scores.get('rag_quality', 0):.2f} below 0.5",
+                    metadata={"current_rag_strategy": profile.rag_strategy.strategy},
+                )
+            )
 
         if scores.get("goal_success", 1.0) < 0.7 or scores.get("tool_success_rate", 1.0) < 0.5:
             if state and (state.verification_feedback or "").strip():
-                actions.append(ImprovementDecision(
-                    action_type=ImprovementAction.STORE_REFLEXION_LESSON,
-                    reason="goal failed with actionable feedback",
-                    metadata={"feedback": (state.verification_feedback or "")[:200]},
-                ))
-            actions.append(ImprovementDecision(
-                action_type=ImprovementAction.UPDATE_PROMPT_VARIANT,
-                reason=f"goal_success={scores.get('goal_success', 0):.2f} below 0.7",
-            ))
+                actions.append(
+                    ImprovementDecision(
+                        action_type=ImprovementAction.STORE_REFLEXION_LESSON,
+                        reason="goal failed with actionable feedback",
+                        metadata={"feedback": (state.verification_feedback or "")[:200]},
+                    )
+                )
+            actions.append(
+                ImprovementDecision(
+                    action_type=ImprovementAction.UPDATE_PROMPT_VARIANT,
+                    reason=f"goal_success={scores.get('goal_success', 0):.2f} below 0.7",
+                )
+            )
 
         if scores.get("tool_success_rate", 1.0) < 0.3:
-            actions.append(ImprovementDecision(
-                action_type=ImprovementAction.BLACKLIST_TOOL_PATTERN,
-                reason=f"tool_success_rate={scores.get('tool_success_rate', 0):.2f} critically low",
-            ))
+            actions.append(
+                ImprovementDecision(
+                    action_type=ImprovementAction.BLACKLIST_TOOL_PATTERN,
+                    reason=f"tool_success_rate={scores.get('tool_success_rate', 0):.2f} critically low",
+                )
+            )
 
         if scores.get("cost_efficiency", 1.0) < 0.3 or scores.get("latency", 1.0) < 0.3:
-            actions.append(ImprovementDecision(
-                action_type=ImprovementAction.UPDATE_MODEL_ROUTING,
-                reason="cost/latency score critically low",
-            ))
+            actions.append(
+                ImprovementDecision(
+                    action_type=ImprovementAction.UPDATE_MODEL_ROUTING,
+                    reason="cost/latency score critically low",
+                )
+            )
 
         if scorecard.overall_score < 0.4:
-            actions.append(ImprovementDecision(
-                action_type=ImprovementAction.CREATE_REGRESSION_CASE,
-                reason=f"overall_score={scorecard.overall_score:.2f} below 0.4",
-            ))
+            actions.append(
+                ImprovementDecision(
+                    action_type=ImprovementAction.CREATE_REGRESSION_CASE,
+                    reason=f"overall_score={scorecard.overall_score:.2f} below 0.4",
+                )
+            )
 
         return actions
 
@@ -105,18 +118,19 @@ class SelfImprovementEngine:
 
             from app.db.rls import sqlalchemy_rls_context
 
-            async with db_session_factory() as session, \
-                       sqlalchemy_rls_context(session, tenant_id):
-                rows = (await session.execute(
-                    _t(
-                        "SELECT id, goal_id, rating, feedback_text, metadata "
-                        "FROM goal_feedback "
-                        "WHERE tenant_id = :tid AND processed_at IS NULL "
-                        "ORDER BY created_at ASC "
-                        "LIMIT :lim"
-                    ),
-                    {"tid": tenant_id, "lim": batch_size},
-                )).fetchall()
+            async with db_session_factory() as session, sqlalchemy_rls_context(session, tenant_id):
+                rows = (
+                    await session.execute(
+                        _t(
+                            "SELECT id, goal_id, rating, feedback_text, metadata "
+                            "FROM goal_feedback "
+                            "WHERE tenant_id = :tid AND processed_at IS NULL "
+                            "ORDER BY created_at ASC "
+                            "LIMIT :lim"
+                        ),
+                        {"tid": tenant_id, "lim": batch_size},
+                    )
+                ).fetchall()
 
                 for row in rows:
                     try:
@@ -128,6 +142,7 @@ class SelfImprovementEngine:
                             # Persist lesson into long-term memory if available
                             try:
                                 from app.memory.long_term_memory import LongTermMemoryStore
+
                                 ltm = LongTermMemoryStore(db_session_factory)
                                 await ltm.store_lesson(
                                     tenant_id=tenant_id,
@@ -137,10 +152,7 @@ class SelfImprovementEngine:
                             except Exception:
                                 pass
                         await session.execute(
-                            _t(
-                                "UPDATE goal_feedback SET processed_at = NOW() "
-                                "WHERE id = :id"
-                            ),
+                            _t("UPDATE goal_feedback SET processed_at = NOW() WHERE id = :id"),
                             {"id": row.id},
                         )
                         processed += 1

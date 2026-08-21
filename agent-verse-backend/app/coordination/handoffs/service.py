@@ -16,9 +16,7 @@ from app.coordination.handoffs.repository import HandoffRepository
 
 
 class HandoffMembership(Protocol):
-    async def active_member(
-        self, tenant_id: str, civilization_id: str, agent_id: str
-    ) -> bool: ...
+    async def active_member(self, tenant_id: str, civilization_id: str, agent_id: str) -> bool: ...
 
     async def connector_allowlist(
         self, tenant_id: str, civilization_id: str, agent_id: str
@@ -73,12 +71,8 @@ class HandoffService:
         if not source_active or not target_active:
             raise PermissionError("handoff participants must be active civilization members")
         source_tools, target_tools = await asyncio.gather(
-            self._membership.connector_allowlist(
-                tenant_id, civilization_id, source_agent_id
-            ),
-            self._membership.connector_allowlist(
-                tenant_id, civilization_id, target_agent_id
-            ),
+            self._membership.connector_allowlist(tenant_id, civilization_id, source_agent_id),
+            self._membership.connector_allowlist(tenant_id, civilization_id, target_agent_id),
         )
         now = datetime.now(UTC)
         record = HandoffRecord(

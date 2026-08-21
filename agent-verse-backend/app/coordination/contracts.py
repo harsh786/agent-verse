@@ -134,4 +134,3 @@ class StateCommand(Contract):
     expected_version: int = Field(gt=0)
     idempotency_key: str
     authorization: AuthorizationContext
-

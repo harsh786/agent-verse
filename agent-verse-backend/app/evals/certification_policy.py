@@ -66,9 +66,7 @@ class RolloutDecision(BaseModel):
     reasons: tuple[str, ...]
 
 
-def decide_rollout(
-    policy: CertificationPolicy, evidence: CanaryEvidence | None
-) -> RolloutDecision:
+def decide_rollout(policy: CertificationPolicy, evidence: CanaryEvidence | None) -> RolloutDecision:
     """Return a deterministic promotion decision; absent trust evidence always holds."""
     if evidence is None:
         return RolloutDecision(
@@ -77,9 +75,7 @@ def decide_rollout(
     trust_reasons: list[str] = []
     if not evidence.signed:
         trust_reasons.append("unsigned_evidence")
-    if datetime.now(UTC) - evidence.captured_at > timedelta(
-        hours=policy.evidence_max_age_hours
-    ):
+    if datetime.now(UTC) - evidence.captured_at > timedelta(hours=policy.evidence_max_age_hours):
         trust_reasons.append("stale_evidence")
     if not evidence.baseline_digest.startswith("sha256:"):
         trust_reasons.append("invalid_baseline_digest")
@@ -91,9 +87,7 @@ def decide_rollout(
         )
 
     security_events = (
-        evidence.isolation_events
-        + evidence.sandbox_escape_events
-        + evidence.approval_bypass_events
+        evidence.isolation_events + evidence.sandbox_escape_events + evidence.approval_bypass_events
     )
     regressions = {
         "quality_regression": evidence.quality_regression > policy.max_quality_regression,
@@ -106,12 +100,8 @@ def decide_rollout(
         ),
         "policy_denial_rate": evidence.policy_denial_rate > policy.max_policy_denial_rate,
         "outbox_lag": evidence.outbox_lag_seconds > policy.max_outbox_lag_seconds,
-        "lease_reclaim_rate": (
-            evidence.lease_reclaim_rate > policy.max_lease_reclaim_rate
-        ),
-        "rollback_slo": (
-            evidence.rollback_success_rate < policy.min_rollback_success_rate
-        ),
+        "lease_reclaim_rate": (evidence.lease_reclaim_rate > policy.max_lease_reclaim_rate),
+        "rollback_slo": (evidence.rollback_success_rate < policy.min_rollback_success_rate),
     }
     breach_reasons = [name for name, breached in regressions.items() if breached]
     if security_events:

@@ -1,4 +1,5 @@
 """Add citation metadata and freshness tracking to knowledge documents."""
+
 from alembic import op
 
 revision = "0035"
@@ -26,8 +27,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    for col in ["source_url", "source_type", "source_doc_id", "page_number",
-                "last_modified", "freshness_ttl_hours", "needs_reindex", "updated_at"]:
+    for col in [
+        "source_url",
+        "source_type",
+        "source_doc_id",
+        "page_number",
+        "last_modified",
+        "freshness_ttl_hours",
+        "needs_reindex",
+        "updated_at",
+    ]:
         op.execute(f"ALTER TABLE documents DROP COLUMN IF EXISTS {col}")
     op.execute("DROP INDEX IF EXISTS ix_documents_needs_reindex")
     op.execute("DROP INDEX IF EXISTS ix_documents_source_type")

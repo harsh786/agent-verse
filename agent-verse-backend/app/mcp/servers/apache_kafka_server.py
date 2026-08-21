@@ -5,6 +5,7 @@ Environment:
   KAFKA_API_SECRET:      Confluent Cloud API secret
   KAFKA_REST_ENDPOINT:   Confluent REST Proxy base URL (e.g. https://pkc-xxx.region.confluent.cloud)
 """
+
 from __future__ import annotations
 
 import os
@@ -106,7 +107,9 @@ def _auth() -> tuple[str, str]:
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     base = os.getenv("KAFKA_REST_ENDPOINT", "").rstrip("/")
     if not base:
-        return {"error": "KAFKA_REST_ENDPOINT environment variable not set. Set it to your Confluent REST Proxy or Kafka REST endpoint URL (e.g. https://pkc-xxxxx.region.confluent.cloud)"}
+        return {
+            "error": "KAFKA_REST_ENDPOINT environment variable not set. Set it to your Confluent REST Proxy or Kafka REST endpoint URL (e.g. https://pkc-xxxxx.region.confluent.cloud)"
+        }
     api_key = os.getenv("KAFKA_API_KEY", "")
     if not api_key:
         return {"error": "KAFKA_API_KEY not configured"}
@@ -133,8 +136,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
                 if arguments.get("configs"):
                     body["configs"] = [
-                        {"name": k, "value": str(v)}
-                        for k, v in arguments["configs"].items()
+                        {"name": k, "value": str(v)} for k, v in arguments["configs"].items()
                     ]
                 r = await c.post(
                     f"{base}/kafka/v3/clusters/{cluster_id}/topics",
@@ -160,9 +162,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r.raise_for_status()
                 data = r.json()
                 return {
-                    "consumer_groups": [
-                        g.get("consumer_group_id") for g in data.get("data", [])
-                    ]
+                    "consumer_groups": [g.get("consumer_group_id") for g in data.get("data", [])]
                 }
 
             elif tool_name == "kafka_get_topic_config":
@@ -173,10 +173,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r.raise_for_status()
                 data = r.json()
                 return {
-                    "configs": {
-                        cfg.get("name"): cfg.get("value")
-                        for cfg in data.get("data", [])
-                    }
+                    "configs": {cfg.get("name"): cfg.get("value") for cfg in data.get("data", [])}
                 }
 
             elif tool_name == "kafka_describe_cluster":

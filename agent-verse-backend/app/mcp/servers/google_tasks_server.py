@@ -3,6 +3,7 @@
 Environment:
   GOOGLE_ACCESS_TOKEN: OAuth2 bearer token with tasks scope
 """
+
 from __future__ import annotations
 
 import os
@@ -33,7 +34,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "tasklist_id": {"type": "string", "description": "Task list ID (@default for default)"},
+                "tasklist_id": {
+                    "type": "string",
+                    "description": "Task list ID (@default for default)",
+                },
                 "show_completed": {"type": "boolean", "default": False},
                 "show_hidden": {"type": "boolean", "default": False},
                 "max_results": {"type": "integer", "default": 100},

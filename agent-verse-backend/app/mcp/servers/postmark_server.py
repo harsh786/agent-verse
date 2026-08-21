@@ -3,6 +3,7 @@
 Environment:
   POSTMARK_SERVER_TOKEN: Postmark server API token from Server Settings > API Tokens
 """
+
 from __future__ import annotations
 
 import os
@@ -32,13 +33,23 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "from_email": {"type": "string", "description": "Sender email address (must be a verified sender signature)"},
-                "to": {"type": "string", "description": "Recipient email address(es), comma-separated"},
+                "from_email": {
+                    "type": "string",
+                    "description": "Sender email address (must be a verified sender signature)",
+                },
+                "to": {
+                    "type": "string",
+                    "description": "Recipient email address(es), comma-separated",
+                },
                 "subject": {"type": "string", "description": "Email subject line"},
                 "html_body": {"type": "string", "description": "HTML email body content"},
                 "text_body": {"type": "string", "description": "Plain text email body content"},
                 "reply_to": {"type": "string", "description": "Reply-to email address"},
-                "message_stream": {"type": "string", "description": "Message stream ID (default: outbound)", "default": "outbound"},
+                "message_stream": {
+                    "type": "string",
+                    "description": "Message stream ID (default: outbound)",
+                    "default": "outbound",
+                },
                 "tag": {"type": "string", "description": "Optional tag for categorizing the email"},
             },
             "required": ["from_email", "to", "subject"],
@@ -52,10 +63,23 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "from_email": {"type": "string", "description": "Verified sender email address"},
                 "to": {"type": "string", "description": "Recipient email address"},
-                "template_id": {"type": "integer", "description": "Postmark template ID (use instead of template_alias)"},
-                "template_alias": {"type": "string", "description": "Postmark template alias (use instead of template_id)"},
-                "template_model": {"type": "object", "description": "Key-value pairs to populate template variables"},
-                "message_stream": {"type": "string", "description": "Message stream ID", "default": "outbound"},
+                "template_id": {
+                    "type": "integer",
+                    "description": "Postmark template ID (use instead of template_alias)",
+                },
+                "template_alias": {
+                    "type": "string",
+                    "description": "Postmark template alias (use instead of template_id)",
+                },
+                "template_model": {
+                    "type": "object",
+                    "description": "Key-value pairs to populate template variables",
+                },
+                "message_stream": {
+                    "type": "string",
+                    "description": "Message stream ID",
+                    "default": "outbound",
+                },
             },
             "required": ["from_email", "to"],
         },
@@ -66,7 +90,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "include_archived": {"type": "boolean", "description": "Include archived streams", "default": False},
+                "include_archived": {
+                    "type": "boolean",
+                    "description": "Include archived streams",
+                    "default": False,
+                },
             },
         },
     },
@@ -88,10 +116,20 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "count": {"type": "integer", "description": "Number of bounces to return (max 500)", "default": 25},
+                "count": {
+                    "type": "integer",
+                    "description": "Number of bounces to return (max 500)",
+                    "default": 25,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
-                "type": {"type": "string", "description": "Bounce type filter: HardBounce, SoftBounce, etc."},
-                "email_filter": {"type": "string", "description": "Filter bounces by email address"},
+                "type": {
+                    "type": "string",
+                    "description": "Bounce type filter: HardBounce, SoftBounce, etc.",
+                },
+                "email_filter": {
+                    "type": "string",
+                    "description": "Filter bounces by email address",
+                },
                 "message_stream": {"type": "string", "description": "Filter by message stream ID"},
             },
         },
@@ -146,7 +184,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     payload["TemplateId"] = arguments["template_id"]
                 if "template_alias" in arguments:
                     payload["TemplateAlias"] = arguments["template_alias"]
-                r = await client.post(f"{BASE_URL}/email/withTemplate", headers=_headers(), json=payload)
+                r = await client.post(
+                    f"{BASE_URL}/email/withTemplate", headers=_headers(), json=payload
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -154,13 +194,21 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r = await client.get(
                     f"{BASE_URL}/message-streams",
                     headers=_headers(),
-                    params={"IncludeArchivedStreams": str(arguments.get("include_archived", False)).lower()},
+                    params={
+                        "IncludeArchivedStreams": str(
+                            arguments.get("include_archived", False)
+                        ).lower()
+                    },
                 )
                 r.raise_for_status()
                 data = r.json()
                 return {
                     "streams": [
-                        {"ID": s.get("ID"), "Name": s.get("Name"), "MessageStreamType": s.get("MessageStreamType")}
+                        {
+                            "ID": s.get("ID"),
+                            "Name": s.get("Name"),
+                            "MessageStreamType": s.get("MessageStreamType"),
+                        }
                         for s in data.get("MessageStreams", [])
                     ]
                 }
@@ -173,7 +221,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     params["fromdate"] = arguments["from_date"]
                 if "to_date" in arguments:
                     params["todate"] = arguments["to_date"]
-                r = await client.get(f"{BASE_URL}/stats/outbound", headers=_headers(), params=params)
+                r = await client.get(
+                    f"{BASE_URL}/stats/outbound", headers=_headers(), params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -182,7 +232,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "count": arguments.get("count", 25),
                     "offset": arguments.get("offset", 0),
                 }
-                for field, api_field in [("type", "type"), ("email_filter", "emailFilter"), ("message_stream", "messagestream")]:
+                for field, api_field in [
+                    ("type", "type"),
+                    ("email_filter", "emailFilter"),
+                    ("message_stream", "messagestream"),
+                ]:
                     if field in arguments:
                         params[api_field] = arguments[field]
                 r = await client.get(f"{BASE_URL}/bounces", headers=_headers(), params=params)

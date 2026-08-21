@@ -1,4 +1,5 @@
 """HTTPStepNode — authenticated HTTP call with SSRF guard + circuit breaker."""
+
 from __future__ import annotations
 
 import time
@@ -35,15 +36,13 @@ class HTTPStepNode:
             return {"step_outputs": {**(state.get("step_outputs") or {}), self.step.id: output}}
 
         # Resolve all dynamic values
-        url     = str(self.ctx.resolve(self.step.url, state))
-        method  = self.step.method
+        url = str(self.ctx.resolve(self.step.url, state))
+        method = self.step.method
         headers = self.ctx.resolve_dict(self.step.headers, state)
         body = (
-            self.ctx.resolve_dict(self.step.request_body, state)
-            if self.step.request_body
-            else None
+            self.ctx.resolve_dict(self.step.request_body, state) if self.step.request_body else None
         )
-        auth    = self.ctx.resolve_dict(self.step.auth, state)
+        auth = self.ctx.resolve_dict(self.step.auth, state)
 
         # SSRF check — raises SSRFBlockedError if unsafe
         _ssrf_guard.validate(url)
@@ -53,6 +52,7 @@ class HTTPStepNode:
             headers["Authorization"] = f"Bearer {auth['token']}"
         elif auth.get("type") == "basic":
             import base64
+
             creds = base64.b64encode(
                 f"{auth.get('username', '')}:{auth.get('password', '')}".encode()
             ).decode()

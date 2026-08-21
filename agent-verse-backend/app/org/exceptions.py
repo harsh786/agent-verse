@@ -1,4 +1,5 @@
 """Typed exceptions for the org domain."""
+
 from __future__ import annotations
 
 
@@ -28,17 +29,20 @@ class OrgTaskNotFoundError(Exception):
 
 class OrgTaskDepthExceededError(Exception):
     """Raised when task depth exceeds anti-runaway limit."""
+
     def __init__(self, depth: int, max_depth: int) -> None:
         super().__init__(f"Task depth {depth} exceeds maximum {max_depth}")
 
 
 class OrgTaskLimitExceededError(Exception):
     """Raised when per-mission task count exceeds limit."""
+
     def __init__(self, count: int, limit: int) -> None:
         super().__init__(f"Mission has {count} tasks, limit is {limit}")
 
 
 class OrgInvalidStatusError(Exception):
     """Raised when an invalid status transition is attempted."""
+
     def __init__(self, resource: str, status: str) -> None:
         super().__init__(f"Invalid status {status!r} for {resource}")

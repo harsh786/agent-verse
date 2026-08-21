@@ -22,7 +22,7 @@ import {
 } from '@/components/ui/JARVISPageShell';
 import { KanbanBoard } from './KanbanBoard';
 import { ActivityFeed } from './components/ActivityFeed';
-import { useOrgTasks, useOrgEvents } from './hooks/useOrg';
+import { useOrgTasks, useOrgEvents, useTeamMembers } from './hooks/useOrg';
 
 // ── Member status ──────────────────────────────────────────────────────────
 
@@ -84,7 +84,7 @@ function MemberCard({ member, onClick }: { member: TeamMember; onClick?: () => v
 // ── Main ───────────────────────────────────────────────────────────────────
 
 export function TeamPage() {
-  const { orgId } = useParams<{ orgId: string; teamId: string }>();
+  const { orgId, teamId } = useParams<{ orgId: string; teamId: string }>();
   const navigate = useNavigate();
   const reduce   = useReducedMotion();
 
@@ -93,15 +93,9 @@ export function TeamPage() {
   // For a real team, we'd fetch team-specific data. Using org tasks as approximation.
   useOrgTasks(orgId, {});
   useOrgEvents(orgId);
+  const { data: teamMembersResponse } = useTeamMembers(orgId, teamId);
 
-  // Mock members until team endpoint is available
-  const members: TeamMember[] = [
-    { id: '1', name: 'Market Intel Agent', role: 'Market Intelligence',  status: 'executing', current_task: 'Competitive analysis DE market' },
-    { id: '2', name: 'Legal Agent',        role: 'Compliance Officer',   status: 'executing', current_task: 'GDPR data flows review' },
-    { id: '3', name: 'Backend Agent',      role: 'Principal Engineer',   status: 'idle' },
-    { id: '4', name: 'Content Agent',      role: 'Content Writer',       status: 'executing', current_task: 'German landing page copy' },
-    { id: '5', name: 'QA Agent',           role: 'QA Engineer',          status: 'waiting',   current_task: '→ awaiting Backend task' },
-  ];
+  const members: TeamMember[] = teamMembersResponse?.members ?? [];
 
   const TABS = [
     { id: 'members', label: `Members (${members.length})` },
@@ -128,7 +122,7 @@ export function TeamPage() {
 
         <div className="min-w-0 flex-1">
           <h1 className="text-base font-semibold text-[#F1F5F9] truncate">Mission Team</h1>
-          <p className="text-[11px] text-[#475569]">Formed 2h ago · {members.length} agents</p>
+          <p className="text-[11px] text-[#475569]">{members.length} agents</p>
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -192,13 +186,17 @@ export function TeamPage() {
               transition={SPRING_FAST}
               className="h-full overflow-y-auto px-6 py-4"
             >
-              <JARVISStagger className="space-y-2">
-                {members.map(m => (
-                  <JARVISStaggerItem key={m.id} interactive>
-                    <MemberCard member={m} />
-                  </JARVISStaggerItem>
-                ))}
-              </JARVISStagger>
+              {members.length === 0 ? (
+                <div className="text-sm text-[#94A3B8]">No team members available yet.</div>
+              ) : (
+                <JARVISStagger className="space-y-2">
+                  {members.map(m => (
+                    <JARVISStaggerItem key={m.id} interactive>
+                      <MemberCard member={m} />
+                    </JARVISStaggerItem>
+                  ))}
+                </JARVISStagger>
+              )}
             </motion.div>
           )}
 

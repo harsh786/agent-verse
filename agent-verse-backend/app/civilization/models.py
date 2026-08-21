@@ -1,4 +1,5 @@
 """Civilization domain models — pure data types, no I/O."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ class LearningStatus(StrEnum):
 @dataclass
 class Constitution:
     """Immutable per-civilization policy. Pure data — no I/O."""
+
     max_depth: int = 4
     max_total_agents: int = 50
     max_concurrent_agents: int = 10
@@ -57,16 +59,18 @@ class Constitution:
 
     def to_dict(self) -> dict:
         import dataclasses
+
         return dataclasses.asdict(self)
 
     def compute_child_budget(self, parent_budget: float, depth: int) -> float:
         """Exponential budget decay per depth level."""
-        return parent_budget * (self.budget_decay ** depth)
+        return parent_budget * (self.budget_decay**depth)
 
 
 @dataclass
 class SpawnContext:
     """Everything the Governor needs to evaluate a spawn request."""
+
     civilization_id: str
     tenant_id: str
     requester_agent_id: str
@@ -111,6 +115,7 @@ class BreachVerdict:
 @dataclass
 class MetaAgentConfigValidated:
     """Result of Governor validating a MetaAgentPlanner output."""
+
     name: str
     goal_template: str
     autonomy_mode: str

@@ -13,9 +13,9 @@ from typing import Any
 
 # Patterns that look like secret values (whole-match replacement)
 _SECRET_PATTERNS = [
-    re.compile(r"sk-[A-Za-z0-9]{8,}"),          # OpenAI-style keys
-    re.compile(r"ghp_[A-Za-z0-9]{36,}"),        # GitHub personal tokens
-    re.compile(r"xoxb-[A-Za-z0-9\-]+"),         # Slack bot tokens
+    re.compile(r"sk-[A-Za-z0-9]{8,}"),  # OpenAI-style keys
+    re.compile(r"ghp_[A-Za-z0-9]{36,}"),  # GitHub personal tokens
+    re.compile(r"xoxb-[A-Za-z0-9\-]+"),  # Slack bot tokens
     re.compile(r"Bearer [A-Za-z0-9\-._~+/]+=*"),  # Bearer tokens
 ]
 
@@ -23,7 +23,7 @@ _SECRET_PATTERNS = [
 # keyword so commit SHAs, UUIDs, and other legitimate base64-ish strings are
 # left untouched.  Group 1 captures the value portion that gets replaced.
 _BASE64_PATTERN = re.compile(
-    r'(?:password|secret|token|key|credential|auth|bearer)\s*[=:]\s*'
+    r"(?:password|secret|token|key|credential|auth|bearer)\s*[=:]\s*"
     r'["\']?([A-Za-z0-9+/]{20,}={0,2})["\']?',
     re.IGNORECASE,
 )

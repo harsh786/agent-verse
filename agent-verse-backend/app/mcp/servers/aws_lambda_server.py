@@ -5,6 +5,7 @@ Environment variables:
   AWS_SECRET_ACCESS_KEY: AWS secret key
   AWS_REGION:            AWS region (default: us-east-1)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -35,7 +36,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "function_name": {"type": "string"},
-                "payload": {"type": "object", "description": "JSON payload to pass to the function"},
+                "payload": {
+                    "type": "object",
+                    "description": "JSON payload to pass to the function",
+                },
                 "invocation_type": {
                     "type": "string",
                     "enum": ["RequestResponse", "Event", "DryRun"],

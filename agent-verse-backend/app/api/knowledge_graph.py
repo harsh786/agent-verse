@@ -1,7 +1,10 @@
 """Tenant Knowledge Graph API."""
+
 from __future__ import annotations
+
 from typing import Any
-from fastapi import APIRouter, Request, HTTPException, Query
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/knowledge-graph", tags=["knowledge-graph"])
@@ -74,15 +77,19 @@ async def extract_from_text(request: Request, body: ExtractRequest) -> dict[str,
         "relationships_extracted": len(edges),
         "nodes": [
             {
-                "node_id": n.node_id, "label": n.label,
-                "type": n.node_type.value, "confidence": n.confidence,
+                "node_id": n.node_id,
+                "label": n.label,
+                "type": n.node_type.value,
+                "confidence": n.confidence,
             }
             for n in entities
         ],
         "edges": [
             {
-                "edge_id": e.edge_id, "type": e.edge_type.value,
-                "source": e.source_node_id, "target": e.target_node_id,
+                "edge_id": e.edge_id,
+                "type": e.edge_type.value,
+                "source": e.source_node_id,
+                "target": e.target_node_id,
             }
             for e in edges
         ],
@@ -99,8 +106,8 @@ async def query_nodes(
 ) -> dict[str, Any]:
     """Query nodes in the tenant knowledge graph."""
     tenant = _require_tenant(request)
-    from app.knowledge_graph.store import kg_store
     from app.knowledge_graph.models import NodeType
+    from app.knowledge_graph.store import kg_store
 
     nt = None
     if node_type:
@@ -110,8 +117,11 @@ async def query_nodes(
             raise HTTPException(400, f"Invalid node_type: {node_type}")
 
     nodes = kg_store.query_nodes(
-        tenant.tenant_id, node_type=nt, search=search,
-        min_confidence=min_confidence, limit=limit,
+        tenant.tenant_id,
+        node_type=nt,
+        search=search,
+        min_confidence=min_confidence,
+        limit=limit,
     )
 
     return {
@@ -173,10 +183,11 @@ async def get_node(request: Request, node_id: str) -> dict[str, Any]:
 async def add_node(request: Request, body: AddNodeRequest) -> dict[str, Any]:
     """Manually add a node to the knowledge graph."""
     tenant = _require_tenant(request)
-    from app.knowledge_graph.store import kg_store
-    from app.knowledge_graph.models import GraphNode, NodeType
-    import uuid
     import datetime
+    import uuid
+
+    from app.knowledge_graph.models import GraphNode, NodeType
+    from app.knowledge_graph.store import kg_store
 
     try:
         nt = NodeType(body.node_type)
@@ -191,7 +202,7 @@ async def add_node(request: Request, body: AddNodeRequest) -> dict[str, Any]:
         content=body.content,
         confidence=body.confidence,
         metadata=body.metadata,
-        created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        created_at=datetime.datetime.now(datetime.UTC).isoformat(),
     )
     kg_store.add_node(node)
     return {"node_id": node.node_id, "status": "added"}
@@ -201,10 +212,11 @@ async def add_node(request: Request, body: AddNodeRequest) -> dict[str, Any]:
 async def add_edge(request: Request, body: AddEdgeRequest) -> dict[str, Any]:
     """Manually add an edge to the knowledge graph."""
     tenant = _require_tenant(request)
-    from app.knowledge_graph.store import kg_store
-    from app.knowledge_graph.models import GraphEdge, EdgeType
-    import uuid
     import datetime
+    import uuid
+
+    from app.knowledge_graph.models import EdgeType, GraphEdge
+    from app.knowledge_graph.store import kg_store
 
     try:
         et = EdgeType(body.edge_type)
@@ -220,7 +232,7 @@ async def add_edge(request: Request, body: AddEdgeRequest) -> dict[str, Any]:
         label=body.label,
         confidence=body.confidence,
         evidence=body.evidence,
-        created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        created_at=datetime.datetime.now(datetime.UTC).isoformat(),
     )
     kg_store.add_edge(edge)
     return {"edge_id": edge.edge_id, "status": "added"}
@@ -251,6 +263,7 @@ async def get_graph_stats(request: Request) -> dict[str, Any]:
     """Get knowledge graph statistics for the tenant."""
     tenant = _require_tenant(request)
     from app.knowledge_graph.store import kg_store
+
     return kg_store.get_graph_stats(tenant.tenant_id)
 
 
@@ -259,6 +272,7 @@ async def rebuild_graph(request: Request) -> dict[str, Any]:
     """Delete and rebuild the tenant's knowledge graph (idempotent)."""
     tenant = _require_tenant(request)
     from app.knowledge_graph.store import kg_store
+
     kg_store.delete_tenant_graph(tenant.tenant_id)
     return {"status": "cleared", "tenant_id": tenant.tenant_id}
 
@@ -268,6 +282,7 @@ async def get_communities(request: Request) -> dict[str, Any]:
     """Detect and return knowledge graph communities (connected components)."""
     tenant = _require_tenant(request)
     from app.knowledge_graph.store import kg_store
+
     communities = kg_store.detect_communities(tenant.tenant_id)
     return {"communities": communities, "total": len(communities)}
 
@@ -288,7 +303,7 @@ async def export_graph(request: Request) -> dict[str, Any]:
 
     return {
         "tenant_id": tenant.tenant_id,
-        "exported_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "exported_at": datetime.datetime.now(datetime.UTC).isoformat(),
         "nodes": [
             {
                 "node_id": n.node_id,

@@ -1,4 +1,5 @@
 """Workflow Celery tasks — execution, HITL resume, periodic maintenance."""
+
 # mypy: disable-error-code="misc,no-untyped-def,type-arg,union-attr"
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ def _get_runner() -> Any:
     """Lazily import runner from app.state to avoid circular imports."""
     try:
         from app.main import app as fastapi_app  # type: ignore[import]
+
         return fastapi_app.state.workflow_runner
     except Exception:
         return None
@@ -26,6 +28,7 @@ def _run_async(coro: Any) -> Any:
         loop = asyncio.get_event_loop()
         if loop.is_running():
             import concurrent.futures
+
             with concurrent.futures.ThreadPoolExecutor() as pool:
                 future = pool.submit(asyncio.run, coro)
                 return future.result(timeout=7200)
@@ -84,9 +87,11 @@ def execute_workflow_run(
 @celery_app.task(name="workflow.check_hitl_escalations")
 def check_hitl_escalations() -> None:
     """Run every 15 minutes to auto-escalate overdue HITL requests."""
+
     async def _check() -> None:
         try:
             from app.main import app as fastapi_app  # type: ignore[import]
+
             gateway = getattr(fastapi_app.state, "hitl_workflow_gateway", None)
             if gateway:
                 await gateway.check_and_escalate_overdue()
@@ -99,9 +104,11 @@ def check_hitl_escalations() -> None:
 @celery_app.task(name="workflow.retry_dead_letter_webhooks")
 def retry_dead_letter_webhooks() -> None:
     """Run every 5 minutes to retry failed webhook deliveries."""
+
     async def _retry() -> None:
         try:
             from app.main import app as fastapi_app  # type: ignore[import]
+
             runner = getattr(fastapi_app.state, "workflow_runner", None)
             run_store = getattr(runner, "_run_store", None) if runner else None
             if run_store and hasattr(run_store, "get_retryable_webhooks"):
@@ -122,9 +129,11 @@ def retry_dead_letter_webhooks() -> None:
 @celery_app.task(name="workflow.cleanup_expired_runs")
 def cleanup_expired_runs() -> None:
     """Run daily to delete runs older than workflow's run_retention_days."""
+
     async def _cleanup() -> None:
         try:
             from app.main import app as fastapi_app  # type: ignore[import]
+
             runner = getattr(fastapi_app.state, "workflow_runner", None)
             run_store = getattr(runner, "_run_store", None) if runner else None
             if run_store and hasattr(run_store, "delete_expired_runs"):

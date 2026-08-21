@@ -4,6 +4,7 @@ Environment:
   ALCHEMY_API_KEY: Alchemy API key
   ALCHEMY_NETWORK: Alchemy network identifier (e.g. eth-mainnet, polygon-mainnet)
 """
+
 from __future__ import annotations
 
 import os
@@ -63,7 +64,10 @@ TOOL_DEFINITIONS = [
                     "description": "Filter by specific NFT contract addresses",
                     "items": {"type": "string"},
                 },
-                "page_key": {"type": "string", "description": "Pagination key from previous response"},
+                "page_key": {
+                    "type": "string",
+                    "description": "Pagination key from previous response",
+                },
                 "page_size": {"type": "integer", "description": "NFTs per page (max 100)"},
             },
             "required": ["owner"],

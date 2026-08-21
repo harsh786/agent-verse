@@ -4,6 +4,7 @@ Environment:
   HARVEST_ACCESS_TOKEN: Harvest personal access token
   HARVEST_ACCOUNT_ID:   Harvest account ID
 """
+
 from __future__ import annotations
 
 import os
@@ -193,7 +194,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "budget": data.get("budget"),
                     "budget_by": data.get("budget_by"),
                     "budget_is_monthly": data.get("budget_is_monthly"),
-                    "over_budget_notification_percentage": data.get("over_budget_notification_percentage"),
+                    "over_budget_notification_percentage": data.get(
+                        "over_budget_notification_percentage"
+                    ),
                     "cost_budget": data.get("cost_budget"),
                     "fee": data.get("fee"),
                 }

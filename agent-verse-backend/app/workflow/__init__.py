@@ -14,6 +14,7 @@ KnowledgeStore, HITLGateway, Redis checkpointer, Celery queues, AuditLog.
 
 Step types are registered at import time via StepTypeRegistry.
 """
+
 from __future__ import annotations
 
 # Registry import triggers built-in step type registration

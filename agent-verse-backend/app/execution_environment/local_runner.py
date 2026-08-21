@@ -33,6 +33,7 @@ Security notes
   (not URL + query param); key-prefix isolation is the responsibility of
   the worker entrypoint which reads ``scoped_redis_prefix`` from the envelope.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -63,22 +64,24 @@ logger = logging.getLogger(__name__)
 # Environment variables explicitly passed to the subprocess.
 # CRITICAL: This list must NOT include DATABASE_URL, REDIS_URL, any .env
 # file path, SSH_AUTH_SOCK, DOCKER_HOST, or any cloud credential key names.
-_ALLOWED_ENV_KEYS: frozenset[str] = frozenset({
-    "PATH",
-    "PYTHONPATH",
-    "HOME",
-    "LANG",
-    "LC_ALL",
-    "TZ",
-    "ENVIRONMENT",
-    # Injected explicitly by the runner at dispatch time (never inherited):
-    "_ISOLATED_WORKER_ENVELOPE",
-    "_ISOLATED_WORKER_DB_URL",
-    "_ISOLATED_WORKER_REDIS_URL",
-    "_ISOLATED_WORKER_LLM_KEY",
-    # Signing key so the worker can verify the envelope's HMAC
-    "ISOLATED_EXECUTION_SIGNING_KEY",
-})
+_ALLOWED_ENV_KEYS: frozenset[str] = frozenset(
+    {
+        "PATH",
+        "PYTHONPATH",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "TZ",
+        "ENVIRONMENT",
+        # Injected explicitly by the runner at dispatch time (never inherited):
+        "_ISOLATED_WORKER_ENVELOPE",
+        "_ISOLATED_WORKER_DB_URL",
+        "_ISOLATED_WORKER_REDIS_URL",
+        "_ISOLATED_WORKER_LLM_KEY",
+        # Signing key so the worker can verify the envelope's HMAC
+        "ISOLATED_EXECUTION_SIGNING_KEY",
+    }
+)
 
 
 class LocalSubprocessHealthCheck(RunnerHealthCheck):
@@ -92,7 +95,8 @@ class LocalSubprocessHealthCheck(RunnerHealthCheck):
         t0 = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_exec(
-                sys.executable, "-c",
+                sys.executable,
+                "-c",
                 "import app.execution_environment.worker_entrypoint; print('ok')",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -138,6 +142,7 @@ def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
         logger.warning("process_group_kill_failed pid=%s error=%s", proc.pid, exc)
         # Fall back to killing only the direct subprocess
         import contextlib
+
         with contextlib.suppress(Exception):
             proc.kill()
 
@@ -268,7 +273,8 @@ class LocalSubprocessRunner(BaseRunner):
                         resource_limit_hit = True
                         logger.warning(
                             "isolated_runner_output_limit_hit capsule=%s limit=%d",
-                            capsule_id, max_output,
+                            capsule_id,
+                            max_output,
                         )
                         _kill_process_group(proc)
                         return
@@ -294,7 +300,9 @@ class LocalSubprocessRunner(BaseRunner):
             if stderr_text:
                 logger.warning(
                     "isolated_worker_stderr capsule=%s exit=%d\n%s",
-                    capsule_id, exit_code, stderr_text[:2000],
+                    capsule_id,
+                    exit_code,
+                    stderr_text[:2000],
                 )
 
             if resource_limit_hit:
@@ -318,11 +326,13 @@ class LocalSubprocessRunner(BaseRunner):
             if proc is not None:
                 _kill_process_group(proc)
                 import contextlib
+
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(proc.wait(), timeout=5.0)
             logger.warning(
                 "isolated_runner_timeout capsule=%s timeout=%ds",
-                capsule_id, timeout,
+                capsule_id,
+                timeout,
             )
             return ExecutionResult(
                 goal_id=envelope.goal_id,
@@ -395,6 +405,7 @@ class LocalSubprocessRunner(BaseRunner):
 def _encode_envelope(payload: dict[str, Any]) -> str:
     """Base64-encode the envelope payload for passing as an env var."""
     import base64
+
     return base64.b64encode(json.dumps(payload).encode()).decode()
 
 
@@ -418,8 +429,11 @@ def _try_forward_event(line: bytes, callback: Any) -> None:
         # best-effort and must not block the stdout reader.
         _t = asyncio.ensure_future(callback(evt))
         _t.add_done_callback(
-            lambda t: logger.debug("isolated_event_forward_error: %s", t.exception())
-            if not t.cancelled() and t.exception() else None
+            lambda t: (
+                logger.debug("isolated_event_forward_error: %s", t.exception())
+                if not t.cancelled() and t.exception()
+                else None
+            )
         )
     except Exception as exc:
         logger.debug("isolated_event_forward_error: %s", exc)

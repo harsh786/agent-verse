@@ -12,6 +12,7 @@ Endpoints:
   GET    /runs/{run_id}/debug             Debug info (step outputs, vars)
   GET    /runs                            List all runs for tenant (with filters)
 """
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator

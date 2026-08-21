@@ -1,88 +1,26 @@
 """Mixin extracted from app.agent.graph — zero semantic changes."""
+
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import json
-import re
-import time
-import uuid
-from collections.abc import Awaitable, Callable
-from typing import Any, TypedDict
+from typing import Any
 
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, START, StateGraph
-
-from app.agent.prompts import (
-    CHAIN_OF_THOUGHT_SYSTEM,
-    EXECUTOR_SYSTEM,
-    PLANNER_SYSTEM,
-    REFLECTION_SYSTEM,
-    STRUCTURED_PLANNER_SYSTEM,
-    VERIFIER_SYSTEM,
-)
-from app.agent.sanitization import (
-    _EXECUTOR_CONTEXT_MAX_LENGTH,
-    sanitize_event,
-    sanitize_event_value,
-    sanitize_tool_event_value,
-    sanitize_tool_raw_output,
-)
-from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus, SubGoal
-from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_arguments
-from app.agent.tool_risk import classify_tool_risk
-from app.governance.audit import AuditEvent, AuditLog
-from app.governance.cost import CostController
-from app.governance.hitl import ApprovalStatus, HITLGateway
-from app.governance.permissions import ActionLevel, PermissionMatrix
-from app.governance.policies import PolicyEngine, PolicyResult
-from app.intelligence.eval_runner import EvalRunner
-from app.intelligence.explainability import DecisionTrace
-from app.intelligence.guardrails import GuardrailChecker
-from app.memory.execution import ExecutionMemory
-from app.memory.long_term import LongTermMemoryStore
-from app.observability.metrics import (
-    record_approval_wait,
-    record_goal_completed,
-    record_goal_failed,
-    record_plan_duration,
-    record_tool_call,
-    record_verify_duration,
-    track_tool_call,
-)
-from app.pipeline.steps import smart_context_fetch
-from app.providers.base import CompletionRequest, LLMProvider, Message, ToolDefinition
-from app.providers.circuit_breaker import call_with_circuit_breaker
+from app.agent.state import AgentState, GoalStatus
 from app.rag.contracts import RAGExecutionResult, RAGStrategy, resolve_rag_strategy
-from app.rag.store import KnowledgeStore
-from app.reliability.circuit_breaker import CircuitBreaker
-from app.reliability.dedup import DeduplicationCache
-from app.reliability.result_processor import ResultProcessor
-from app.reliability.rollback import RollbackEngine
 from app.tenancy.context import TenantContext
 
 # Guardrails 2.0 integration
 try:
     from app.guardrails_v2.engine import guardrails_engine
     from app.guardrails_v2.models import GuardrailLayer
+
     _GUARDRAILS_AVAILABLE = True
 except ImportError:
     _GUARDRAILS_AVAILABLE = False
     guardrails_engine = None  # type: ignore[assignment]
     GuardrailLayer = None  # type: ignore[assignment]
 
-from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
+from app.agent.graph_types import GraphState, RetrievalEntryPointError
 
-
-from app.agent.nodes._helpers import (
-    _is_high_risk_step,
-    _is_ungrounded_status,
-    _build_verifier_summary,
-    _parse_json,
-    _parse_verifier_response,
-    _extract_tool_name as _extract_tool_name_fn,
-    _extract_scope_value,
-)
 
 class RAGMixin:
     """Mixin: _node_rag_retrieval, _node_rag_prime, _node_rag_remediate."""
@@ -135,13 +73,16 @@ class RAGMixin:
         try:
             if self._event_callback is not None and _rag_strategy:
                 from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+
                 _sse_cs = RuntimeSSEEmitter()
-                await self._emit(_sse_cs.chunking_strategy_selected(
-                    goal_id=agent_state.goal_id,
-                    content_type="text",
-                    strategy=_rag_strategy or "semantic",
-                    reason="configured canonical strategy",
-                ))
+                await self._emit(
+                    _sse_cs.chunking_strategy_selected(
+                        goal_id=agent_state.goal_id,
+                        content_type="text",
+                        strategy=_rag_strategy or "semantic",
+                        reason="configured canonical strategy",
+                    )
+                )
         except Exception:
             pass
 
@@ -161,9 +102,7 @@ class RAGMixin:
                     goal_hint=agent_state.goal, tenant_ctx=tenant_ctx, top_k=3
                 )
             if exec_plans:
-                mem_text = "\n".join(
-                    f"- Past plan: {m.get('plan', [])}" for m in exec_plans
-                )
+                mem_text = "\n".join(f"- Past plan: {m.get('plan', [])}" for m in exec_plans)
                 context_parts.append(f"[Past winning plans]\n{mem_text}")
 
         # 1b. Execution memory: recall past failure patterns to avoid repeating them
@@ -178,8 +117,7 @@ class RAGMixin:
                         for f in failures[-3:]
                     ]
                     context_parts.append(
-                        "[Previously Failed Approaches — Avoid These]\n"
-                        + "\n".join(failure_lines)
+                        "[Previously Failed Approaches — Avoid These]\n" + "\n".join(failure_lines)
                     )
             except Exception:
                 pass
@@ -207,9 +145,7 @@ class RAGMixin:
 
         if search_collections:
             app_state = getattr(self._app_state, "state", self._app_state)
-            gateway = self._retrieval_gateway or getattr(
-                app_state, "retrieval_gateway", None
-            )
+            gateway = self._retrieval_gateway or getattr(app_state, "retrieval_gateway", None)
             requested_strategy = str(
                 agent_state.context.get("_requested_rag_strategy_id")
                 or agent_state.context.get("retrieval_strategy")
@@ -221,11 +157,7 @@ class RAGMixin:
             try:
                 if gateway is None:
                     raise RuntimeError("Retrieval gateway is not configured")
-                if (
-                    not isinstance(raw_top_k, int)
-                    or isinstance(raw_top_k, bool)
-                    or raw_top_k < 1
-                ):
+                if not isinstance(raw_top_k, int) or isinstance(raw_top_k, bool) or raw_top_k < 1:
                     raise ValueError("Invalid retrieval top_k")
                 if not isinstance(retrieval_filters, dict):
                     raise TypeError("Invalid retrieval filters")
@@ -274,9 +206,7 @@ class RAGMixin:
                     **citation.model_dump(mode="json"),
                     "collection_id": collection_id,
                 }
-                for collection_id, result in zip(
-                    search_collections, gateway_results, strict=True
-                )
+                for collection_id, result in zip(search_collections, gateway_results, strict=True)
                 for citation in result.citations
             ]
             retrieval_legs = [
@@ -310,8 +240,7 @@ class RAGMixin:
             agent_state.context["rag_retrieval_status"] = "complete"
             agent_state.context["retrieval_attempted"] = True
             average_confidence = (
-                sum(float(item["score"]) for item in knowledge_citations)
-                / len(knowledge_citations)
+                sum(float(item["score"]) for item in knowledge_citations) / len(knowledge_citations)
                 if knowledge_citations
                 else 0.0
             )
@@ -319,9 +248,7 @@ class RAGMixin:
                 "source": "knowledge_base",
                 "confidence": average_confidence,
             }
-            agent_state.context["retrieval_evidence_ref"] = (
-                f"goal:{agent_state.goal_id}:rag"
-            )
+            agent_state.context["retrieval_evidence_ref"] = f"goal:{agent_state.goal_id}:rag"
             agent_state.provenance.extend(knowledge_citations)
             success_event = {
                 "type": "knowledge_retrieved",
@@ -341,6 +268,7 @@ class RAGMixin:
         # ── RAGTrace: record retrieval for observability ───────────────────────
         try:
             from app.rag.agentic.rag_trace import RAGTrace
+
             _rag_trace = RAGTrace(goal_id=agent_state.goal_id, tenant_id=tenant_ctx.tenant_id)
             _strategy = agent_state.context.get("_active_rag_strategy", "hybrid")
             _rag_trace.record_retrieval(
@@ -359,16 +287,19 @@ class RAGMixin:
         try:
             if self._event_callback is not None:
                 from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+
                 _sse = RuntimeSSEEmitter()
-                _strategy = agent_state.context.get("_active_rag_strategy") or agent_state.context.get(
-                    "retrieval_strategy", "hybrid"
+                _strategy = agent_state.context.get(
+                    "_active_rag_strategy"
+                ) or agent_state.context.get("retrieval_strategy", "hybrid")
+                await self._emit(
+                    _sse.rag_strategy_selected(
+                        goal_id=agent_state.goal_id,
+                        strategy=str(_strategy),
+                        sources=[],
+                        reranker="score",
+                    )
                 )
-                await self._emit(_sse.rag_strategy_selected(
-                    goal_id=agent_state.goal_id,
-                    strategy=str(_strategy),
-                    sources=[],
-                    reranker="score",
-                ))
         except Exception:
             pass
 
@@ -459,9 +390,6 @@ class RAGMixin:
                 "rag_remediate_failed",
                 error_type=type(exc).__name__,
             )
-            raise RetrievalEntryPointError(
-                "Required retrieval remediation failed"
-            ) from exc
+            raise RetrievalEntryPointError("Required retrieval remediation failed") from exc
 
         return {"agent_state": agent_state}
-

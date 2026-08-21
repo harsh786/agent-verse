@@ -3,6 +3,7 @@
 Environment:
   MENDELEY_ACCESS_TOKEN: Mendeley OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -36,7 +37,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Document/paper title"},
-                "type": {"type": "string", "description": "Document type: journal_article, book, thesis, etc."},
+                "type": {
+                    "type": "string",
+                    "description": "Document type: journal_article, book, thesis, etc.",
+                },
                 "year": {"type": "integer", "description": "Publication year"},
                 "authors": {
                     "type": "array",
@@ -57,7 +61,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "query": {"type": "string", "description": "Search query string"},
                 "limit": {"type": "integer", "description": "Maximum results"},
-                "field": {"type": "string", "description": "Field to search: title, author, abstract"},
+                "field": {
+                    "type": "string",
+                    "description": "Field to search: title, author, abstract",
+                },
                 "min_year": {"type": "integer", "description": "Minimum publication year"},
                 "max_year": {"type": "integer", "description": "Maximum publication year"},
             },
@@ -72,7 +79,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "limit": {"type": "integer", "description": "Maximum groups"},
                 "offset": {"type": "integer", "description": "Pagination offset"},
-                "type": {"type": "string", "description": "Group type: normal, invite_only, public"},
+                "type": {
+                    "type": "string",
+                    "description": "Group type: normal, invite_only, public",
+                },
             },
         },
     },

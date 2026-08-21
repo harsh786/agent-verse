@@ -196,9 +196,7 @@ class RedisCostController:
         now = datetime.now(UTC)
         from datetime import timedelta
 
-        midnight = (now + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         return max(1, int((midnight - now).total_seconds()))
 
     async def check_and_record_async(
@@ -222,11 +220,7 @@ class RedisCostController:
         cfg = self._tenant_configs.get(tenant_ctx.tenant_id, BudgetConfig())
 
         # Idempotency guard — skip re-charging the same attempt
-        idem_key = (
-            f"cost_idem:{tenant_ctx.tenant_id}:{goal_id}:{attempt_id}"
-            if attempt_id
-            else ""
-        )
+        idem_key = f"cost_idem:{tenant_ctx.tenant_id}:{goal_id}:{attempt_id}" if attempt_id else ""
         if idem_key:
             try:
                 if await self._redis.exists(idem_key):
@@ -359,9 +353,7 @@ class RedisCostController:
 
         try:
             daily_spent = _parse_float(await self._redis.get(daily_key))
-            goal_spent = (
-                _parse_float(await self._redis.get(goal_key)) if goal_key else 0.0
-            )
+            goal_spent = _parse_float(await self._redis.get(goal_key)) if goal_key else 0.0
         except Exception:
             daily_spent = 0.0
             goal_spent = 0.0
@@ -377,9 +369,7 @@ class RedisCostController:
             "goal_spent": goal_spent,
         }
 
-    async def get_cost_tier(
-        self, *, goal_id: str, tenant_ctx: Any
-    ) -> str:
+    async def get_cost_tier(self, *, goal_id: str, tenant_ctx: Any) -> str:
         """
         Return cost tier based on budget consumption.
         Used by ModelRouter to auto-downgrade models when budget is tight.
@@ -390,9 +380,7 @@ class RedisCostController:
             'economy'  — > 85% used        → verification model for all
         """
         try:
-            status = await self.get_budget_status(
-                tenant_ctx.tenant_id, goal_id=goal_id
-            )
+            status = await self.get_budget_status(tenant_ctx.tenant_id, goal_id=goal_id)
             pct_used = 1.0 - status.get("budget_pct_remaining", 1.0)
             if pct_used >= 0.85:
                 return "economy"
@@ -445,9 +433,7 @@ class RedisCostController:
 
         # Expiry = next midnight UTC (epoch seconds)
         now = _dt.datetime.now(_dt.UTC)
-        midnight = (now + _dt.timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        midnight = (now + _dt.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         expiry_ts = int(midnight.timestamp())
 
         _atomic_script = """

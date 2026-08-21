@@ -2,11 +2,13 @@
 
 CRITICAL rules: safety_patterns can only ADD, never remove.
 """
+
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from app.agent.pattern_config import Complexity, Domain, GoalProperties, PatternConfig, RiskLevel
 
@@ -61,7 +63,11 @@ _RULES: list[Rule] = [
         condition=lambda p: p.complexity == Complexity.EXPERT,
         add_reasoning=["chain_of_thought", "reflection", "self_refine"],
         add_multi_agent=["goal_tree"],
-        config_overrides={"max_iterations": 50, "persistence_mode": True, "max_persistence_attempts": 5},
+        config_overrides={
+            "max_iterations": 50,
+            "persistence_mode": True,
+            "max_persistence_attempts": 5,
+        },
         reason_key="chain_of_thought",
         reason_value="complexity=expert",
         priority="HIGH",
@@ -113,9 +119,7 @@ _RULES: list[Rule] = [
     ),
     Rule(
         condition=lambda p: (
-            p.complexity == Complexity.EXPERT
-            and p.domain == Domain.ANALYTICAL
-            and p.multi_step
+            p.complexity == Complexity.EXPERT and p.domain == Domain.ANALYTICAL and p.multi_step
         ),
         add_multi_agent=["supervisor"],
         reason_key="supervisor",
@@ -124,10 +128,7 @@ _RULES: list[Rule] = [
     ),
     # NEW: Self-Consistency — high-confidence output needed
     Rule(
-        condition=lambda p: (
-            p.complexity == Complexity.EXPERT
-            and p.domain == Domain.ANALYTICAL
-        ),
+        condition=lambda p: p.complexity == Complexity.EXPERT and p.domain == Domain.ANALYTICAL,
         add_reasoning=["self_consistency"],
         reason_key="self_consistency",
         reason_value="expert analytical — self-consistency improves accuracy",
@@ -147,7 +148,9 @@ _RULES: list[Rule] = [
     ),
     # NEW: Peer Review — expert or critical-risk goals
     Rule(
-        condition=lambda p: p.risk in (RiskLevel.CRITICAL, RiskLevel.HIGH) and p.complexity == Complexity.EXPERT,
+        condition=lambda p: (
+            p.risk in (RiskLevel.CRITICAL, RiskLevel.HIGH) and p.complexity == Complexity.EXPERT
+        ),
         add_reasoning=["peer_review"],
         reason_key="peer_review",
         reason_value="critical/expert goal — peer review before delivery",
@@ -171,7 +174,10 @@ _RULES: list[Rule] = [
     ),
     # NEW: RAPTOR for long-document knowledge goals (ANALYTICAL domain)
     Rule(
-        condition=lambda p: p.domain == Domain.ANALYTICAL and p.complexity in (Complexity.COMPLEX, Complexity.EXPERT),
+        condition=lambda p: (
+            p.domain == Domain.ANALYTICAL
+            and p.complexity in (Complexity.COMPLEX, Complexity.EXPERT)
+        ),
         add_rag=["raptor"],
         reason_key="raptor",
         reason_value="analytical+complex — RAPTOR hierarchical retrieval",
@@ -179,7 +185,9 @@ _RULES: list[Rule] = [
     ),
     # NEW: Corrective RAG for factual high-accuracy goals
     Rule(
-        condition=lambda p: p.domain == Domain.ANALYTICAL and p.risk in (RiskLevel.HIGH, RiskLevel.CRITICAL),
+        condition=lambda p: (
+            p.domain == Domain.ANALYTICAL and p.risk in (RiskLevel.HIGH, RiskLevel.CRITICAL)
+        ),
         add_rag=["corrective_rag"],
         reason_key="corrective_rag",
         reason_value="high-accuracy factual goal — corrective RAG self-correction",

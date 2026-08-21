@@ -3,6 +3,7 @@
 Environment:
   KOALA_API_KEY: Koala API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -72,7 +73,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "domain": {"type": "string", "description": "Company domain to get firmographics for"},
+                "domain": {
+                    "type": "string",
+                    "description": "Company domain to get firmographics for",
+                },
             },
             "required": ["domain"],
         },

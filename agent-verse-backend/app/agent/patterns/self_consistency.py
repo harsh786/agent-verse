@@ -6,6 +6,7 @@ Steps:
   2. Collect all responses
   3. Return the response that appears most often (or best-representative cluster)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -63,6 +64,7 @@ class SelfConsistencyPattern(AgentPattern):
     def is_compatible(self, goal_properties: Any) -> bool:
         try:
             from app.core.config import get_settings
+
             if not get_settings().enable_self_consistency:
                 return False
         except Exception:
@@ -133,11 +135,7 @@ class SelfConsistencyPattern(AgentPattern):
             result=result,
             evidence=ReasoningEvidence(
                 strategy_id=self.pattern_id,
-                status=(
-                    "exhausted"
-                    if limited
-                    else ("completed" if valid else "degraded")
-                ),
+                status=("exhausted" if limited else ("completed" if valid else "degraded")),
                 call_count=sample_count,
                 valid_samples=len(valid),
                 invalid_samples=sample_count - len(valid),

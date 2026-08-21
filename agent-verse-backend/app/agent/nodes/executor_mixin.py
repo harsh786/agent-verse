@@ -1,63 +1,37 @@
 """Mixin extracted from app.agent.graph — zero semantic changes."""
+
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
-import re
 import time
-import uuid
-from collections.abc import Awaitable, Callable
-from typing import Any, TypedDict
-
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, START, StateGraph
+from typing import Any
 
 from app.agent.prompts import (
-    CHAIN_OF_THOUGHT_SYSTEM,
     EXECUTOR_SYSTEM,
-    PLANNER_SYSTEM,
-    REFLECTION_SYSTEM,
-    STRUCTURED_PLANNER_SYSTEM,
-    VERIFIER_SYSTEM,
 )
 from app.agent.sanitization import (
     _EXECUTOR_CONTEXT_MAX_LENGTH,
-    sanitize_event,
-    sanitize_event_value,
-    sanitize_tool_event_value,
-    sanitize_tool_raw_output,
 )
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus, SubGoal
 from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_arguments
 from app.agent.tool_risk import classify_tool_risk
-from app.governance.audit import AuditEvent, AuditLog
-from app.governance.cost import CostController
-from app.governance.hitl import ApprovalStatus, HITLGateway
-from app.governance.permissions import ActionLevel, PermissionMatrix
-from app.governance.policies import PolicyEngine, PolicyResult
-from app.intelligence.eval_runner import EvalRunner
+from app.governance.audit import AuditEvent
+from app.governance.hitl import ApprovalStatus
+from app.governance.permissions import ActionLevel
+from app.governance.policies import PolicyResult
 from app.intelligence.explainability import DecisionTrace
-from app.intelligence.guardrails import GuardrailChecker
-from app.memory.execution import ExecutionMemory
-from app.memory.long_term import LongTermMemoryStore
 from app.observability.metrics import (
     record_approval_wait,
-    record_goal_completed,
-    record_goal_failed,
-    record_plan_duration,
     record_tool_call,
-    record_verify_duration,
     track_tool_call,
 )
 from app.pipeline.steps import smart_context_fetch
-from app.providers.base import CompletionRequest, LLMProvider, Message, ToolDefinition
-from app.providers.circuit_breaker import call_with_circuit_breaker
-from app.rag.contracts import RAGExecutionResult, RAGStrategy, resolve_rag_strategy
-from app.rag.store import KnowledgeStore
+from app.providers.base import CompletionRequest, Message, ToolDefinition
+from app.rag.contracts import RAGStrategy
 from app.reliability.circuit_breaker import CircuitBreaker
 from app.reliability.dedup import DeduplicationCache
-from app.reliability.result_processor import ResultProcessor
 from app.reliability.rollback import RollbackEngine
 from app.tenancy.context import TenantContext
 
@@ -65,6 +39,7 @@ from app.tenancy.context import TenantContext
 try:
     from app.guardrails_v2.engine import guardrails_engine
     from app.guardrails_v2.models import GuardrailLayer
+
     _GUARDRAILS_AVAILABLE = True
 except ImportError:
     _GUARDRAILS_AVAILABLE = False
@@ -72,17 +47,11 @@ except ImportError:
     GuardrailLayer = None  # type: ignore[assignment]
 
 from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
-
-
 from app.agent.nodes._helpers import (
-    _is_high_risk_step,
-    _is_ungrounded_status,
-    _build_verifier_summary,
-    _parse_json,
-    _parse_verifier_response,
-    _extract_tool_name as _extract_tool_name_fn,
     _extract_scope_value,
+    _is_high_risk_step,
 )
+
 
 class ExecutorMixin:
     """Mixin: _node_execute, _execute_step_with_loop, _execute_step, _execute_step_with_cache."""
@@ -95,15 +64,15 @@ class ExecutorMixin:
         agent_state.status = GoalStatus.EXECUTING
 
         # Goal-tree decomposition: delegate large plans to parallel sub-agents
-        if (
-            self._enable_goal_tree
-            and len(plan) >= self._goal_tree_threshold
-        ):
+        if self._enable_goal_tree and len(plan) >= self._goal_tree_threshold:
             from app.agent.goal_tree import execute_goal_tree
 
-            def _sub_graph_factory() -> "AgentGraph":
-                from app.agent.graph import AgentGraph as AgentGraph_  # local import to avoid circular
+            def _sub_graph_factory() -> AgentGraph:
                 from opentelemetry import context as otel_context
+
+                from app.agent.graph import (
+                    AgentGraph as AgentGraph_,  # local import to avoid circular
+                )
 
                 graph = AgentGraph_(
                     planner=self._planner,
@@ -117,8 +86,8 @@ class ExecutorMixin:
                     hitl_gateway=self._hitl_gateway,
                     policy_engine=self._policy_engine,
                     result_processor=self._result_processor,
-                    dedup_cache=DeduplicationCache(),      # fresh instance per sub-agent
-                    rollback_engine=RollbackEngine(),       # fresh instance per sub-agent
+                    dedup_cache=DeduplicationCache(),  # fresh instance per sub-agent
+                    rollback_engine=RollbackEngine(),  # fresh instance per sub-agent
                     guardrail_checker=self._guardrail_checker,
                     # Inherit memory + RAG
                     exec_memory=self._exec_memory,
@@ -148,16 +117,12 @@ class ExecutorMixin:
                 agent_state.sub_goals = sub_goals
                 if sub_goals:
                     child_failures = [
-                        sub_goal
-                        for sub_goal in sub_goals
-                        if sub_goal.status is GoalStatus.FAILED
+                        sub_goal for sub_goal in sub_goals if sub_goal.status is GoalStatus.FAILED
                     ]
                     for sub_goal in sub_goals:
                         agent_state.provenance.extend(sub_goal.provenance)
                     agent_state.context["child_retrieval_traces"] = [
-                        trace
-                        for sub_goal in sub_goals
-                        for trace in sub_goal.retrieval_trace
+                        trace for sub_goal in sub_goals for trace in sub_goal.retrieval_trace
                     ]
                     # Aggregate sub-goal results as steps so the verifier sees them
                     for sg in sub_goals:
@@ -174,13 +139,10 @@ class ExecutorMixin:
                             {
                                 "type": "nested_goal_failed",
                                 "failed_sub_goals": [
-                                    sub_goal.sub_goal_id
-                                    for sub_goal in child_failures
+                                    sub_goal.sub_goal_id for sub_goal in child_failures
                                 ],
                                 "provenance": agent_state.provenance,
-                                "retrieval_trace": agent_state.context[
-                                    "child_retrieval_traces"
-                                ],
+                                "retrieval_trace": agent_state.context["child_retrieval_traces"],
                             }
                         )
                     return {"agent_state": agent_state}
@@ -206,10 +168,12 @@ class ExecutorMixin:
 
         if _structured is None:
             # Plain string steps — treat as sequential (each depends on the previous)
-            _structured = _SP(steps=[
-                _SS(id=f"s{i}", description=sd, depends_on=[f"s{i - 1}"] if i > 0 else [])
-                for i, sd in enumerate(plan)
-            ])
+            _structured = _SP(
+                steps=[
+                    _SS(id=f"s{i}", description=sd, depends_on=[f"s{i - 1}"] if i > 0 else [])
+                    for i, sd in enumerate(plan)
+                ]
+            )
 
         waves = _structured.execution_waves()
         step_global_index = 0
@@ -225,6 +189,7 @@ class ExecutorMixin:
         if self._semantic_cache is not None and self._embedder is not None:
             try:
                 from app.providers.base import EmbedRequest as _EmbedReq
+
                 _all_descs = [s.description for w in waves for s in w]
                 if _all_descs:
                     _batch_resp = await self._embedder.embed(_EmbedReq(texts=_all_descs))
@@ -238,14 +203,23 @@ class ExecutorMixin:
                             if hit is not None:
                                 # Skip cached empty/error results so they are not
                                 # served on fresh runs — forces a real tool call.
-                                cached_resp = hit.response if hasattr(hit, 'response') else str(hit)
+                                cached_resp = hit.response if hasattr(hit, "response") else str(hit)
                                 _cr_stripped = cached_resp.strip().lower() if cached_resp else ""
                                 _is_llm_reasoning = (
-                                    _cr_stripped.startswith((
-                                        "i'll ", "i will ", "i'll use", "i will use",
-                                        "to complete", "let me ", "i need to ",
-                                        "step 1", "first,", "first i",
-                                    ))
+                                    _cr_stripped.startswith(
+                                        (
+                                            "i'll ",
+                                            "i will ",
+                                            "i'll use",
+                                            "i will use",
+                                            "to complete",
+                                            "let me ",
+                                            "i need to ",
+                                            "step 1",
+                                            "first,",
+                                            "first i",
+                                        )
+                                    )
                                     or ("will use" in _cr_stripped and "tool" in _cr_stripped)
                                     or ("will call" in _cr_stripped and len(_cr_stripped) < 500)
                                 )
@@ -254,7 +228,7 @@ class ExecutorMixin:
                                     or '"total": 0' in cached_resp
                                     or '"issues": []' in cached_resp
                                     or '"projects": []' in cached_resp
-                                    or cached_resp.strip() in ('{}', '[]', '')
+                                    or cached_resp.strip() in ("{}", "[]", "")
                                     or len(cached_resp.strip()) < 10
                                     or _is_llm_reasoning  # Never serve stale LLM text as tool result
                                 )
@@ -299,11 +273,13 @@ class ExecutorMixin:
                         elif step_desc in _batch_cache_results:
                             # Batch prefetch hit — serve from pre-fetched cache result
                             output = _batch_cache_results[step_desc]
-                            await self._emit({
-                                "type": "cache_hit",
-                                "step": step_desc,
-                                "source": "batch_prefetch",
-                            })
+                            await self._emit(
+                                {
+                                    "type": "cache_hit",
+                                    "step": step_desc,
+                                    "source": "batch_prefetch",
+                                }
+                            )
                         elif self._semantic_cache is not None:
                             output = await self._execute_step_with_cache(
                                 step_desc, agent_state, tenant_ctx
@@ -328,13 +304,19 @@ class ExecutorMixin:
                 try:
                     _orch_persist = (
                         getattr(self._app_state, "orchestration_persistence", None)
-                        if self._app_state else None
+                        if self._app_state
+                        else None
                     )
                     if _orch_persist is not None:
                         _tool_nm = self._extract_tool_name(step_desc) or step_desc[:50]
-                        _step_ok = output and "error" not in output.lower()[:50] and "failed" not in output.lower()[:50]
+                        _step_ok = (
+                            output
+                            and "error" not in output.lower()[:50]
+                            and "failed" not in output.lower()[:50]
+                        )
                         _step_lat = float(agent_state.context.get("last_step_latency_ms", 200.0))
                         import asyncio as _tp_asyncio
+
                         _tp_asyncio.ensure_future(
                             _orch_persist.persist_tool_outcome(
                                 tool_name=_tool_nm,
@@ -349,16 +331,22 @@ class ExecutorMixin:
                 if self._step_callback is not None:
                     try:
                         import asyncio as _asyncio_cb
-                        _asyncio_cb.create_task(self._step_callback("step_completed", {
-                            "description": step_desc,
-                            "tool_called": self._extract_tool_name(step_desc),
-                            "output": output[:500] if output else "",
-                            "cost_increment": (
-                                agent_state.context.get("last_step_cost", 0.0)
-                                if isinstance(agent_state.context, dict)
-                                else 0.0
-                            ),
-                        }))
+
+                        _asyncio_cb.create_task(
+                            self._step_callback(
+                                "step_completed",
+                                {
+                                    "description": step_desc,
+                                    "tool_called": self._extract_tool_name(step_desc),
+                                    "output": output[:500] if output else "",
+                                    "cost_increment": (
+                                        agent_state.context.get("last_step_cost", 0.0)
+                                        if isinstance(agent_state.context, dict)
+                                        else 0.0
+                                    ),
+                                },
+                            )
+                        )
                     except Exception:
                         pass
                 await self._write_checkpoint(
@@ -368,12 +356,14 @@ class ExecutorMixin:
 
             else:
                 # Multiple independent steps — execute in parallel via asyncio.gather
-                await self._emit({
-                    "type": "steps_parallel_start",
-                    "wave": wave_idx,
-                    "steps": [s.description for s in eligible_steps],
-                    "count": len(eligible_steps),
-                })
+                await self._emit(
+                    {
+                        "type": "steps_parallel_start",
+                        "wave": wave_idx,
+                        "steps": [s.description for s in eligible_steps],
+                        "count": len(eligible_steps),
+                    }
+                )
 
                 # Pre-create StepResult objects before parallel execution to maintain order
                 parallel_steps: list[StepResult] = []
@@ -386,14 +376,10 @@ class ExecutorMixin:
                 # Lock to protect shared agent_state mutations across concurrent coroutines
                 _state_lock = _asyncio.Lock()
 
-                async def _run_wave_step(
-                    desc: str, sr: StepResult
-                ) -> None:
+                async def _run_wave_step(desc: str, sr: StepResult) -> None:
                     try:
                         if self._semantic_cache is not None:
-                            out = await self._execute_step_with_cache(
-                                desc, agent_state, tenant_ctx
-                            )
+                            out = await self._execute_step_with_cache(desc, agent_state, tenant_ctx)
                         else:
                             out = await self._execute_step(desc, agent_state, tenant_ctx)
                         async with _state_lock:
@@ -404,12 +390,14 @@ class ExecutorMixin:
                         try:
                             _orch_persist_wave = (
                                 getattr(self._app_state, "orchestration_persistence", None)
-                                if self._app_state else None
+                                if self._app_state
+                                else None
                             )
                             if _orch_persist_wave is not None:
                                 _tool_nm_wave = self._extract_tool_name(desc) or desc[:50]
                                 _step_ok_wave = bool(out and "error" not in out.lower()[:50])
                                 import asyncio as _wp_asyncio
+
                                 _wp_asyncio.ensure_future(
                                     _orch_persist_wave.persist_tool_outcome(
                                         tool_name=_tool_nm_wave,
@@ -462,11 +450,13 @@ class ExecutorMixin:
                     )
                 step_global_index += len(eligible_steps)
 
-                await self._emit({
-                    "type": "steps_parallel_complete",
-                    "wave": wave_idx,
-                    "count": len(eligible_steps),
-                })
+                await self._emit(
+                    {
+                        "type": "steps_parallel_complete",
+                        "wave": wave_idx,
+                        "count": len(eligible_steps),
+                    }
+                )
 
         return {"agent_state": agent_state}
 
@@ -488,6 +478,7 @@ class ExecutorMixin:
 
             try:
                 from app.agent.structured_plan import _safe_eval_condition as _loop_eval
+
                 done = _loop_eval(
                     step.loop_until,
                     {"output": output, "iteration": iteration + 1, "iterations": iteration + 1},
@@ -504,7 +495,7 @@ class ExecutorMixin:
                 return output
 
             if iteration < step.max_loop_iter - 1:
-                delay = min(2 ** iteration, 30)  # exponential backoff, max 30s
+                delay = min(2**iteration, 30)  # exponential backoff, max 30s
                 self._logger.info(
                     "loop_step_retry",
                     step_id=step.id,
@@ -521,9 +512,7 @@ class ExecutorMixin:
         )
         return step.output  # Return last output
 
-    async def _execute_step(
-        self, step: str, state: AgentState, tenant_ctx: TenantContext
-    ) -> str:
+    async def _execute_step(self, step: str, state: AgentState, tenant_ctx: TenantContext) -> str:
         """Run the canonical governed per-step execution pipeline."""
         tool_name = self._extract_tool_name(step)
 
@@ -533,6 +522,7 @@ class ExecutorMixin:
                 ActionSafetyLevel,
                 ActionSafetyProfileSelector,
             )
+
             _asp_selector = ActionSafetyProfileSelector()
             _risk = state.context.get("_risk_level", "low")
             _asp = _asp_selector.select(
@@ -566,8 +556,7 @@ class ExecutorMixin:
             step=step,
             tenant_ctx=tenant_ctx,
             retrieval_gateway=(
-                self._retrieval_gateway
-                or getattr(app_state, "retrieval_gateway", None)
+                self._retrieval_gateway or getattr(app_state, "retrieval_gateway", None)
             ),
             collection_ids=list(self._agent_collection_ids),
             strategy=step_strategy,
@@ -622,12 +611,12 @@ class ExecutorMixin:
         try:
             from app.core.runtime_flags import get_runtime_flags as _ge_rtf
             from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
+
             _ge_flags = _ge_rtf()
             _runtime_profile = state.context.get("_runtime_profile")
             if (
-                (_ge_flags.dynamic_orchestration or _ge_flags.enable_guardrail_profile)
-                and _runtime_profile is not None
-            ):
+                _ge_flags.dynamic_orchestration or _ge_flags.enable_guardrail_profile
+            ) and _runtime_profile is not None:
                 _ge = GuardrailEnforcer()
                 _ge_result = _ge.check_tool_args(
                     tool_name=tool_name,
@@ -643,25 +632,28 @@ class ExecutorMixin:
         if self._event_callback is not None and _runtime_profile is not None:
             try:
                 from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+
                 _sse_gps = RuntimeSSEEmitter()
-                _bundle = getattr(
-                    getattr(_runtime_profile, "security", None),
-                    "guardrail_bundle", "default"
-                ) or "default"
-                await self._emit(_sse_gps.guardrail_profile_selected(
-                    goal_id=state.goal_id,
-                    bundle=_bundle,
-                    scanners=["injection", "pii", "tool_args"],
-                ))
+                _bundle = (
+                    getattr(
+                        getattr(_runtime_profile, "security", None), "guardrail_bundle", "default"
+                    )
+                    or "default"
+                )
+                await self._emit(
+                    _sse_gps.guardrail_profile_selected(
+                        goal_id=state.goal_id,
+                        bundle=_bundle,
+                        scanners=["injection", "pii", "tool_args"],
+                    )
+                )
             except Exception:
                 pass
 
         # 6b. Policy engine check (glob-based policies)
         _hitl_already_requested = False
         if self._policy_engine is not None:
-            policy_result = self._policy_engine.evaluate(
-                tool_name=tool_name, tenant_ctx=tenant_ctx
-            )
+            policy_result = self._policy_engine.evaluate(tool_name=tool_name, tenant_ctx=tenant_ctx)
             if policy_result == PolicyResult.DENY:
                 record_tool_call(tool_name, "policy", "denied", 0.0)
                 raise PermissionError(
@@ -669,10 +661,14 @@ class ExecutorMixin:
                     f"for tenant '{tenant_ctx.tenant_id}'."
                 )
             elif policy_result == PolicyResult.REQUIRE_APPROVAL and self._hitl_gateway is not None:
-                req_id = str(self._hitl_gateway.request_approval(
-                    goal_id=state.goal_id, action=step, risk_level="high",
-                    tenant_ctx=tenant_ctx,
-                ))
+                req_id = str(
+                    self._hitl_gateway.request_approval(
+                        goal_id=state.goal_id,
+                        action=step,
+                        risk_level="high",
+                        tenant_ctx=tenant_ctx,
+                    )
+                )
                 _hitl_already_requested = True
                 if self._autonomy_mode == "supervised":
                     await self._emit(
@@ -692,12 +688,14 @@ class ExecutorMixin:
         if not _hitl_already_requested and self._hitl_gateway is not None:
             risk = "high" if _is_high_risk_step(step) else "low"
             if risk == "high":
-                req_id = str(self._hitl_gateway.request_approval(
-                    goal_id=state.goal_id,
-                    action=step,
-                    risk_level=risk,
-                    tenant_ctx=tenant_ctx,
-                ))
+                req_id = str(
+                    self._hitl_gateway.request_approval(
+                        goal_id=state.goal_id,
+                        action=step,
+                        risk_level=risk,
+                        tenant_ctx=tenant_ctx,
+                    )
+                )
                 if self._autonomy_mode == "supervised":
                     # Actually BLOCK until a human approves or rejects
                     await self._emit(
@@ -717,9 +715,7 @@ class ExecutorMixin:
 
         # 8. Execute via LLM executor
         recent_outputs = "\n".join(
-            (s.output or "")[:_EXECUTOR_CONTEXT_MAX_LENGTH]
-            for s in state.steps[-3:]
-            if s.output
+            (s.output or "")[:_EXECUTOR_CONTEXT_MAX_LENGTH] for s in state.steps[-3:] if s.output
         )
         context_parts = []
         if recent_outputs:
@@ -730,14 +726,15 @@ class ExecutorMixin:
         # ── Search directive parsing ───────────────────────────────────────
         try:
             from app.rag.agentic.search_directive_parser import SearchDirectiveParser
+
             _directive_parser = SearchDirectiveParser()
             _directives = _directive_parser.extract(step)
             if _directives and self._agent_collection_ids:
                 from app.rag.agentic.retriever_tool import RetrieverTool
+
                 _retriever = RetrieverTool(
                     retrieval_gateway=(
-                        self._retrieval_gateway
-                        or getattr(app_state, "retrieval_gateway", None)
+                        self._retrieval_gateway or getattr(app_state, "retrieval_gateway", None)
                     )
                 )
                 _directive_contexts: list[str] = []
@@ -776,9 +773,7 @@ class ExecutorMixin:
         # N9: Prepend executor context from ContextPipeline if available
         _exec_ctx = state.context.get("_executor_context", "") or ""
         if _exec_ctx and len(_exec_ctx) > 50:
-            content = (
-                f"[Relevant context for this step]\n{_exec_ctx[:1200]}\n\n{content}"
-            )
+            content = f"[Relevant context for this step]\n{_exec_ctx[:1200]}\n\n{content}"
 
         # Collect available tools for structured tool calling (Task 1)
         # IMPORTANT: OpenAI function names must match ^[a-zA-Z0-9_-]{1,64}$
@@ -789,16 +784,19 @@ class ExecutorMixin:
         if _tc_ctx is not None and hasattr(_tc_ctx, "tools"):
             for _t in _tc_ctx.tools:
                 import re as _re
+
                 # Use only the bare tool name, sanitized to valid function-name chars
                 _raw_name = _t.name if hasattr(_t, "name") else ""
                 _safe_name = _re.sub(r"[^a-zA-Z0-9_-]", "_", _raw_name)[:64]
                 if not _safe_name:
                     continue
-                _tool_defs.append(ToolDefinition(
-                    name=_safe_name,
-                    description=getattr(_t, "description", ""),
-                    input_schema=getattr(_t, "input_schema", {}),
-                ))
+                _tool_defs.append(
+                    ToolDefinition(
+                        name=_safe_name,
+                        description=getattr(_t, "description", ""),
+                        input_schema=getattr(_t, "input_schema", {}),
+                    )
+                )
 
         # Build allowed-tools allowlist for anti-hallucination grounding
         _allowed_tools_set: set[str] = set()
@@ -812,11 +810,11 @@ class ExecutorMixin:
         # ToolPromptBuilder — enrich content with formatted tool descriptions (M5b)
         try:
             from app.context.tool_prompt_builder import ToolPromptBuilder
+
             if _tool_defs:
                 _tpb = ToolPromptBuilder()
                 _defs_as_dicts = [
-                    {"name": td.name, "description": td.description}
-                    for td in _tool_defs
+                    {"name": td.name, "description": td.description} for td in _tool_defs
                 ]
                 _tool_context = _tpb.build(tools=_defs_as_dicts, step_context=step)
                 if _tool_context:
@@ -857,7 +855,9 @@ class ExecutorMixin:
         # Inject allowed-tools list into executor system prompt
         if _allowed_tools_set:
             _tool_lines = "\n".join(f"  - {n}" for n in sorted(_allowed_tools_set)[:30])
-            _executor_prompt = _executor_prompt + f"\n\nALLOWED TOOLS (ONLY use these exact names):\n{_tool_lines}"
+            _executor_prompt = (
+                _executor_prompt + f"\n\nALLOWED TOOLS (ONLY use these exact names):\n{_tool_lines}"
+            )
 
         # Resolve executor model via model_router when available (Bug 3 fix)
         _exec_model = ""
@@ -915,12 +915,14 @@ class ExecutorMixin:
 
         async def _on_token(chunk: str) -> None:
             _token_buffer.append(chunk)
-            await self._emit({
-                "type": "token_chunk",
-                "step": _step_for_token,
-                "token": chunk,
-                "cumulative": "".join(_token_buffer),
-            })
+            await self._emit(
+                {
+                    "type": "token_chunk",
+                    "step": _step_for_token,
+                    "token": chunk,
+                    "cumulative": "".join(_token_buffer),
+                }
+            )
 
         try:
             try:
@@ -945,6 +947,7 @@ class ExecutorMixin:
         # 1. Calculate actual LLM cost from token usage and check budget
         if self._cost_controller is not None:
             from app.governance.pricing import estimate_cost as _estimate_cost
+
             _actual_cost = _estimate_cost(
                 resp.model if hasattr(resp, "model") and resp.model else "",
                 resp.input_tokens,
@@ -966,6 +969,7 @@ class ExecutorMixin:
         if self._cost_tracker is not None and getattr(resp, "usage", None) is not None:
             try:
                 from app.intelligence.cost_tracker import calculate_cost as _calc_cost
+
                 _model_name = resp.model if hasattr(resp, "model") and resp.model else _exec_model
                 _real_cost = _calc_cost(
                     _model_name,
@@ -990,6 +994,7 @@ class ExecutorMixin:
         # 2.3: Per-goal executor cost tracking
         try:
             from app.observability.cost_breakdown import record_role_cost as _rrc
+
             _rrc(
                 goal_id=state.goal_id,
                 role="executor",
@@ -1024,17 +1029,22 @@ class ExecutorMixin:
         # Validate tool name before dispatching
         if tool_call is not None and tool_call.tool:
             from app.agent.tool_calls import validate_tool_name as _validate_tn
+
             _tn_rejection = _validate_tn(tool_call.tool, _allowed_tools_set)
             if _tn_rejection:
                 raw_output = _tn_rejection
                 raw_output_sanitized = True
-                await self._emit({
-                    "type": "tool_call_failed",
-                    "tool": tool_call.tool,
-                    "error": _tn_rejection[:300],
-                })
+                await self._emit(
+                    {
+                        "type": "tool_call_failed",
+                        "tool": tool_call.tool,
+                        "error": _tn_rejection[:300],
+                    }
+                )
                 record_tool_call(
-                    tool_call.tool, "unknown", "rejected",
+                    tool_call.tool,
+                    "unknown",
+                    "rejected",
                     0.0,
                 )
                 tool_call = None  # prevent dispatch
@@ -1046,11 +1056,14 @@ class ExecutorMixin:
             if _guardrail_engine_v2 is not None:
                 try:
                     from app.intelligence.guardrail_engine import GuardrailContext as _GCtx
+
                     _ge_ctx = _GCtx(
                         tenant_id=tenant_ctx.tenant_id if tenant_ctx else "",
                         goal_id=state.goal_id or "",
                         agent_id=self._agent_id or "",
-                        domain=getattr(tenant_ctx, "domain_context", "general") if tenant_ctx else "general",
+                        domain=getattr(tenant_ctx, "domain_context", "general")
+                        if tenant_ctx
+                        else "general",
                     )
                     _ge_args_result = await _guardrail_engine_v2.evaluate_tool_args(
                         tool_name=tool_name,
@@ -1058,7 +1071,9 @@ class ExecutorMixin:
                         context=_ge_ctx,
                     )
                     if not _ge_args_result.allowed:
-                        _ge_viol = _ge_args_result.violations[0] if _ge_args_result.violations else None
+                        _ge_viol = (
+                            _ge_args_result.violations[0] if _ge_args_result.violations else None
+                        )
                         raise PermissionError(
                             f"Guardrail blocked tool call '{tool_name}': "
                             f"{_ge_viol.matched_pattern if _ge_viol else 'policy violation'}"
@@ -1071,7 +1086,11 @@ class ExecutorMixin:
             # Guardrail check: tool_args (Guardrails 2.0)
             if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx:
                 try:
-                    _g2_args_str = json.dumps(tool_call.arguments) if isinstance(tool_call.arguments, dict) else str(tool_call.arguments)
+                    _g2_args_str = (
+                        json.dumps(tool_call.arguments)
+                        if isinstance(tool_call.arguments, dict)
+                        else str(tool_call.arguments)
+                    )
                     _g2_args_result = await guardrails_engine.evaluate(
                         content=_g2_args_str,
                         layer=GuardrailLayer.TOOL_ARGS,
@@ -1080,10 +1099,10 @@ class ExecutorMixin:
                         step_description=step,
                     )
                     if _g2_args_result.get("blocked"):
-                        _g2_viol_name = (_g2_args_result.get("violations") or [{}])[0].get("rule_name", "policy")
-                        raise PermissionError(
-                            f"Tool call blocked by guardrail: {_g2_viol_name}"
+                        _g2_viol_name = (_g2_args_result.get("violations") or [{}])[0].get(
+                            "rule_name", "policy"
                         )
+                        raise PermissionError(f"Tool call blocked by guardrail: {_g2_viol_name}")
                 except PermissionError:
                     raise
                 except Exception:
@@ -1125,6 +1144,7 @@ class ExecutorMixin:
                         try:
                             from app.civilization.governor import Governor
                             from app.civilization.spawn_tool import execute_spawn_tool
+
                             _gov_kwargs: dict[str, Any] = {
                                 "civilization_id": self._civilization_id,
                                 "tenant_id": tenant_ctx.tenant_id,
@@ -1134,6 +1154,7 @@ class ExecutorMixin:
                             _civ_const_placeholder = None
                             try:
                                 from app.civilization.models import Constitution
+
                                 _civ_const_placeholder = Constitution()
                             except Exception:
                                 pass
@@ -1147,29 +1168,38 @@ class ExecutorMixin:
                                 tenant_ctx=tenant_ctx,
                             )
                             raw_output = str(spawn_result)
-                            await self._emit({
-                                "type": "child_agent_spawned",
-                                "parent_agent_id": getattr(state, "agent_id", ""),
-                                "child_agent_id": spawn_result.get("agent_id"),
-                                "child_goal_id": spawn_result.get("goal_id"),
-                                "depth": spawn_result.get("depth", 0),
-                                "capability": (tool_call.arguments or {}).get("requested_capability", ""),
-                            })
+                            await self._emit(
+                                {
+                                    "type": "child_agent_spawned",
+                                    "parent_agent_id": getattr(state, "agent_id", ""),
+                                    "child_agent_id": spawn_result.get("agent_id"),
+                                    "child_goal_id": spawn_result.get("goal_id"),
+                                    "depth": spawn_result.get("depth", 0),
+                                    "capability": (tool_call.arguments or {}).get(
+                                        "requested_capability", ""
+                                    ),
+                                }
+                            )
                             raw_output_sanitized = True
                             record_tool_call(
-                                tool_call.tool, "civilization", "success",
+                                tool_call.tool,
+                                "civilization",
+                                "success",
                                 time.monotonic() - tool_call_started,
                             )
                         except Exception as _spawn_exc:
                             raw_output = f"Civilization spawn error: {_spawn_exc}"
-                            await self._emit({
-                                "type": "tool_call_failed",
-                                "tool": tool_call.tool,
-                                "error": str(_spawn_exc),
-                            })
+                            await self._emit(
+                                {
+                                    "type": "tool_call_failed",
+                                    "tool": tool_call.tool,
+                                    "error": str(_spawn_exc),
+                                }
+                            )
                             raw_output_sanitized = True
                     # Check if it's a built-in RPA tool (rpa_open_url, rpa_click, etc.)
                     from app.rpa.tools import RPA_TOOLS as _RPA_TOOLS
+
                     _rpa_tool_names = {str(t["name"]) for t in _RPA_TOOLS}
                     if tool_call.tool in _rpa_tool_names or any(
                         tool_call.tool.endswith(f".{t}") for t in _rpa_tool_names
@@ -1180,10 +1210,9 @@ class ExecutorMixin:
                             if "." in tool_call.tool
                             else tool_call.tool
                         )
-                        rpa_executor = (
-                            getattr(state.context.get("_app_state"), "rpa_executor", None)
-                            or getattr(self, "_rpa_executor", None)
-                        )
+                        rpa_executor = getattr(
+                            state.context.get("_app_state"), "rpa_executor", None
+                        ) or getattr(self, "_rpa_executor", None)
                         if rpa_executor is not None:
                             try:
                                 goal_id_str = str(getattr(state, "goal_id", ""))
@@ -1198,32 +1227,30 @@ class ExecutorMixin:
                                     if rpa_result.success
                                     else f"RPA error: {rpa_result.error}"
                                 )
-                                await self._emit({
-                                    "type": "tool_call_complete",
-                                    "tool": tool_call.tool,
-                                    "server_id": "rpa",
-                                    "success": rpa_result.success,
-                                    "output": raw_output,
-                                    "artifact_url": rpa_result.artifact_url,
-                                    "artifact_name": rpa_result.artifact_name,
-                                })
+                                await self._emit(
+                                    {
+                                        "type": "tool_call_complete",
+                                        "tool": tool_call.tool,
+                                        "server_id": "rpa",
+                                        "success": rpa_result.success,
+                                        "output": raw_output,
+                                        "artifact_url": rpa_result.artifact_url,
+                                        "artifact_name": rpa_result.artifact_name,
+                                    }
+                                )
                                 record_tool_call(
-                                    rpa_tool_name, "rpa",
+                                    rpa_tool_name,
+                                    "rpa",
                                     "success" if rpa_result.success else "failed",
                                     time.monotonic() - tool_call_started,
                                 )
                                 raw_output_sanitized = True
                                 # ── RPA failure → ExecutionMemory + SelfOptimizer ──
                                 if not rpa_result.success:
-                                    _rpa_url_fail = (
-                                        (tool_call.arguments or {}).get("url", "")
-                                        or (
-                                            agent_state.context.get(
-                                                "_current_rpa_url", ""
-                                            )
-                                            if isinstance(agent_state.context, dict)
-                                            else ""
-                                        )
+                                    _rpa_url_fail = (tool_call.arguments or {}).get("url", "") or (
+                                        agent_state.context.get("_current_rpa_url", "")
+                                        if isinstance(agent_state.context, dict)
+                                        else ""
                                     )
                                     # Record failure in ExecutionMemory for recall
                                     if (
@@ -1243,9 +1270,7 @@ class ExecutorMixin:
                                             )
                                         )
                                         self._background_tasks.add(_fail_task)
-                                        _fail_task.add_done_callback(
-                                            self._background_tasks.discard
-                                        )
+                                        _fail_task.add_done_callback(self._background_tasks.discard)
                                     # Generate RPA-specific suggestions
                                     if self._self_optimizer is not None:
                                         self._self_optimizer.analyze_rpa_failure(
@@ -1261,16 +1286,17 @@ class ExecutorMixin:
                                 if (
                                     rpa_result.success
                                     and self._long_term_memory is not None
-                                    and rpa_tool_name in (
-                                        "rpa_extract_text", "rpa_screenshot"
-                                    )
+                                    and rpa_tool_name in ("rpa_extract_text", "rpa_screenshot")
                                     and rpa_result.output
                                     and len(rpa_result.output) > 50
                                 ):
                                     _rpa_url = (tool_call.arguments or {}).get(
                                         "url",
-                                        (state.context.get("_current_rpa_url", "")
-                                         if isinstance(state.context, dict) else "")
+                                        (
+                                            state.context.get("_current_rpa_url", "")
+                                            if isinstance(state.context, dict)
+                                            else ""
+                                        ),
                                     )
                                     _rpa_src = (
                                         "rpa_vision"
@@ -1281,9 +1307,7 @@ class ExecutorMixin:
                                         self._long_term_memory.store_rpa_extraction(
                                             url=str(_rpa_url or "unknown"),
                                             extracted_text=rpa_result.output,
-                                            goal_id=str(
-                                                getattr(state, "goal_id", "")
-                                            ),
+                                            goal_id=str(getattr(state, "goal_id", "")),
                                             tenant_ctx=tenant_ctx,
                                             db=self._db_session_factory,
                                             embedder=self._embedder,
@@ -1291,9 +1315,7 @@ class ExecutorMixin:
                                         )
                                     )
                                     self._background_tasks.add(_rpa_ltm_task)
-                                    _rpa_ltm_task.add_done_callback(
-                                        self._background_tasks.discard
-                                    )
+                                    _rpa_ltm_task.add_done_callback(self._background_tasks.discard)
                                 # Track current URL for extraction attribution
                                 if rpa_tool_name == "rpa_open_url":
                                     _nav_url = (tool_call.arguments or {}).get("url", "")
@@ -1301,24 +1323,30 @@ class ExecutorMixin:
                                         state.context["_current_rpa_url"] = _nav_url
                             except Exception as _rpa_exc:
                                 raw_output = f"RPA execution error: {_rpa_exc}"
-                                await self._emit({
-                                    "type": "tool_call_failed",
-                                    "tool": tool_call.tool,
-                                    "error": str(_rpa_exc),
-                                })
+                                await self._emit(
+                                    {
+                                        "type": "tool_call_failed",
+                                        "tool": tool_call.tool,
+                                        "error": str(_rpa_exc),
+                                    }
+                                )
                                 raw_output_sanitized = True
                         else:
                             raw_output = self._sanitize_tool_raw_output(
                                 f"Tool not found: {tool_call.tool}"
                             )
                             raw_output_sanitized = True
-                            await self._emit({
-                                "type": "tool_call_failed",
-                                "tool": tool_call.tool,
-                                "error": self._sanitize_tool_event_value("Tool not found"),
-                            })
+                            await self._emit(
+                                {
+                                    "type": "tool_call_failed",
+                                    "tool": tool_call.tool,
+                                    "error": self._sanitize_tool_event_value("Tool not found"),
+                                }
+                            )
                             record_tool_call(
-                                tool_call.tool, "unknown", "failed",
+                                tool_call.tool,
+                                "unknown",
+                                "failed",
                                 time.monotonic() - tool_call_started,
                             )
                     else:
@@ -1344,6 +1372,7 @@ class ExecutorMixin:
                     tool_risk = classify_tool_risk(tool_ref.name, tool_ref.server_name)
                     # Gate write_high bypass behind an explicit env flag (default-secure).
                     import os as _os
+
                     _allow_fa_write_high = (
                         _os.getenv("ALLOW_FULLY_AUTONOMOUS_WRITE_HIGH", "false").lower() == "true"
                     )
@@ -1396,12 +1425,14 @@ class ExecutorMixin:
                             raw_output = error
                             raw_output_sanitized = True
                         else:
-                            req_id = str(self._hitl_gateway.request_approval(
-                                goal_id=state.goal_id,
-                                action=tool_ref.name,
-                                risk_level=tool_risk,
-                                tenant_ctx=tenant_ctx,
-                            ))
+                            req_id = str(
+                                self._hitl_gateway.request_approval(
+                                    goal_id=state.goal_id,
+                                    action=tool_ref.name,
+                                    risk_level=tool_risk,
+                                    tenant_ctx=tenant_ctx,
+                                )
+                            )
                             await self._emit(
                                 {
                                     "type": "waiting_approval",
@@ -1469,6 +1500,7 @@ class ExecutorMixin:
                     else:
                         # V4: Validate arguments against JSON schema before MCP dispatch
                         from app.agent.tool_calls import validate_tool_arguments as _validate_args
+
                         _tool_schema = getattr(tool_ref, "input_schema", None) or {}
                         _arg_errors_v4 = _validate_args(tool_call.arguments or {}, _tool_schema)
                         if _arg_errors_v4:
@@ -1480,11 +1512,13 @@ class ExecutorMixin:
                             )
                             raw_output = self._sanitize_tool_raw_output(_arg_error_msg)
                             raw_output_sanitized = True
-                            await self._emit({
-                                "type": "tool_call_failed",
-                                "tool": tool_call.tool,
-                                "error": _arg_error_msg[:300],
-                            })
+                            await self._emit(
+                                {
+                                    "type": "tool_call_failed",
+                                    "tool": tool_call.tool,
+                                    "error": _arg_error_msg[:300],
+                                }
+                            )
                             record_tool_call(
                                 tool_call.tool,
                                 getattr(tool_ref, "server_id", "unknown"),
@@ -1496,12 +1530,22 @@ class ExecutorMixin:
                             # placeholder values (e.g. "your_organization/your_repository")
                             # from reaching real MCP servers.
                             _PLACEHOLDER_PATTERNS = (
-                                "your_organization", "your_repository",
-                                "your_org", "your_repo", "your_project",
-                                "your_workspace", "your_team", "your_board",
-                                "<organization>", "<repository>", "<repo>",
-                                "{organization}", "{repository}", "{repo}",
-                                "example.com", "placeholder",
+                                "your_organization",
+                                "your_repository",
+                                "your_org",
+                                "your_repo",
+                                "your_project",
+                                "your_workspace",
+                                "your_team",
+                                "your_board",
+                                "<organization>",
+                                "<repository>",
+                                "<repo>",
+                                "{organization}",
+                                "{repository}",
+                                "{repo}",
+                                "example.com",
+                                "placeholder",
                             )
                             _ph_hits = [
                                 f"{k}={v!r}"
@@ -1519,11 +1563,13 @@ class ExecutorMixin:
                                 )
                                 raw_output = self._sanitize_tool_raw_output(_ph_msg)
                                 raw_output_sanitized = True
-                                await self._emit({
-                                    "type": "tool_call_failed",
-                                    "tool": tool_call.tool,
-                                    "error": _ph_msg[:300],
-                                })
+                                await self._emit(
+                                    {
+                                        "type": "tool_call_failed",
+                                        "tool": tool_call.tool,
+                                        "error": _ph_msg[:300],
+                                    }
+                                )
                                 record_tool_call(
                                     tool_call.tool,
                                     getattr(tool_ref, "server_id", "unknown"),
@@ -1533,8 +1579,13 @@ class ExecutorMixin:
                             else:
                                 # No placeholders — dispatch to MCP
                                 try:
-                                    with self._tracer.start_as_current_span("agentverse.tool.call") as span:
-                                        span.set_attribute("tool.name", tool_call.tool if hasattr(tool_call, "tool") else "")
+                                    with self._tracer.start_as_current_span(
+                                        "agentverse.tool.call"
+                                    ) as span:
+                                        span.set_attribute(
+                                            "tool.name",
+                                            tool_call.tool if hasattr(tool_call, "tool") else "",
+                                        )
                                         result = await self._mcp_client.call_tool(
                                             server_id=tool_ref.server_id,
                                             tool_name=tool_ref.name,
@@ -1552,17 +1603,27 @@ class ExecutorMixin:
                             # Apply PII check to raw tool output (H3 fix: result is ToolCallResult not dict)
                             raw_output_text = ""
                             if isinstance(result.output, dict):
-                                raw_output_text = str(result.output.get("content") or result.output.get("result") or "")
+                                raw_output_text = str(
+                                    result.output.get("content")
+                                    or result.output.get("result")
+                                    or ""
+                                )
                             elif isinstance(result.output, str):
                                 raw_output_text = result.output[:500]
                             if self._guardrail_checker and raw_output_text:
-                                pii_issues = self._guardrail_checker.check_output(output=raw_output_text)
+                                pii_issues = self._guardrail_checker.check_output(
+                                    output=raw_output_text
+                                )
                                 if pii_issues:
-                                    await self._emit({
-                                        "type": "pii_redacted",
-                                        "tool": getattr(tool_call, "tool", "") if tool_call else "",
-                                        "issues": pii_issues,
-                                    })
+                                    await self._emit(
+                                        {
+                                            "type": "pii_redacted",
+                                            "tool": getattr(tool_call, "tool", "")
+                                            if tool_call
+                                            else "",
+                                            "issues": pii_issues,
+                                        }
+                                    )
                                     if self._audit_log is not None:
                                         try:
                                             self._audit_log.record(
@@ -1571,8 +1632,13 @@ class ExecutorMixin:
                                                     tool_name="guardrail_checker",
                                                     action_level=ActionLevel.ALLOW_LOG,
                                                     outcome="pii_redacted",
-                                                    step_id=state.steps[-1].step_id if state.steps else "",
-                                                    api_key_id=getattr(tenant_ctx, "api_key_id", None) or "",
+                                                    step_id=state.steps[-1].step_id
+                                                    if state.steps
+                                                    else "",
+                                                    api_key_id=getattr(
+                                                        tenant_ctx, "api_key_id", None
+                                                    )
+                                                    or "",
                                                     note=f"issues_count={len(pii_issues)} step={step[:100]}",
                                                 ),
                                                 tenant_ctx=tenant_ctx,
@@ -1583,9 +1649,15 @@ class ExecutorMixin:
                             raw_result_error = self._sanitize_tool_raw_output(result.error)
 
                             # Guardrail check: tool_output (Guardrails 2.0)
-                            if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx:
+                            if (
+                                _GUARDRAILS_AVAILABLE
+                                and guardrails_engine is not None
+                                and tenant_ctx
+                            ):
                                 try:
-                                    _g2_out_preview = str(raw_result_output)[:500] if raw_result_output else ""
+                                    _g2_out_preview = (
+                                        str(raw_result_output)[:500] if raw_result_output else ""
+                                    )
                                     await guardrails_engine.evaluate(
                                         content=_g2_out_preview,
                                         layer=GuardrailLayer.TOOL_OUTPUT,
@@ -1603,6 +1675,7 @@ class ExecutorMixin:
                                     from app.agent.exfil_guard import (
                                         check_tool_output_for_injection,
                                     )
+
                                     _injection_warning = check_tool_output_for_injection(
                                         tool_ref.name, raw_result_output
                                     )
@@ -1612,25 +1685,33 @@ class ExecutorMixin:
                                             tool=tool_ref.name,
                                             warning=_injection_warning[:120],
                                         )
-                                        raw_result_output = _injection_warning + "\n\n" + raw_result_output
+                                        raw_result_output = (
+                                            _injection_warning + "\n\n" + raw_result_output
+                                        )
                                 except Exception:
                                     pass  # injection scan must never block execution
 
                             # ── C4 Fix: Populate StepResult.tool_calls ─────────────
                             # This allows the verifier's [TOOL FAILED] markers to fire.
                             if state.steps:
-                                state.steps[-1].tool_calls.append({
-                                    "tool_name": tool_ref.name,
-                                    "server_id": tool_ref.server_id,
-                                    "success": result.success,
-                                    "error": result.error or "",
-                                    "output": str(result.output)[:300] if result.output else "",
-                                })
+                                state.steps[-1].tool_calls.append(
+                                    {
+                                        "tool_name": tool_ref.name,
+                                        "server_id": tool_ref.server_id,
+                                        "success": result.success,
+                                        "error": result.error or "",
+                                        "output": str(result.output)[:300] if result.output else "",
+                                    }
+                                )
 
                             # ── H3 Fix: PII check on ToolCallResult (not dict) ──────
                             raw_output_text = ""
                             if isinstance(result.output, dict):
-                                raw_output_text = str(result.output.get("content") or result.output.get("result") or "")
+                                raw_output_text = str(
+                                    result.output.get("content")
+                                    or result.output.get("result")
+                                    or ""
+                                )
                             elif isinstance(result.output, str):
                                 raw_output_text = result.output[:500]
                             await self._emit(
@@ -1643,7 +1724,9 @@ class ExecutorMixin:
                                     "error": self._sanitize_tool_event_value(result.error),
                                     # tool_output preserves the raw structured dict for result_artifacts.py
                                     # without truncation so downstream consumers can access full data.
-                                    "tool_output": result.output if isinstance(result.output, dict) else None,
+                                    "tool_output": result.output
+                                    if isinstance(result.output, dict)
+                                    else None,
                                 }
                             )
                             # Check for artifact capture (RPA screenshot etc.)
@@ -1651,13 +1734,15 @@ class ExecutorMixin:
                             _artifact_uri: str = getattr(result, "artifact_url", "") or ""
                             _artifact_name: str = getattr(result, "artifact_name", "") or ""
                             if _artifact_uri and not _artifact_uri.startswith("data:"):
-                                await self._emit({
-                                    "type": "artifact_captured",
-                                    "artifact_type": "screenshot",
-                                    "artifact_url": _artifact_uri,
-                                    "artifact_name": _artifact_name,
-                                    "tool": tool_ref.name,
-                                })
+                                await self._emit(
+                                    {
+                                        "type": "artifact_captured",
+                                        "artifact_type": "screenshot",
+                                        "artifact_url": _artifact_uri,
+                                        "artifact_name": _artifact_name,
+                                        "tool": tool_ref.name,
+                                    }
+                                )
                             record_tool_call(
                                 tool_ref.name,
                                 tool_ref.server_id,
@@ -1684,11 +1769,14 @@ class ExecutorMixin:
         if _guardrail_engine_v2_out is not None and raw_output:
             try:
                 from app.intelligence.guardrail_engine import GuardrailContext as _GCtxOut
+
                 _ge_out_ctx = _GCtxOut(
                     tenant_id=tenant_ctx.tenant_id if tenant_ctx else "",
                     goal_id=state.goal_id or "",
                     agent_id=self._agent_id or "",
-                    domain=getattr(tenant_ctx, "domain_context", "general") if tenant_ctx else "general",
+                    domain=getattr(tenant_ctx, "domain_context", "general")
+                    if tenant_ctx
+                    else "general",
                 )
                 _ge_out_result = await _guardrail_engine_v2_out.evaluate_tool_output(
                     tool_name=tool_name,
@@ -1698,11 +1786,14 @@ class ExecutorMixin:
                 if _ge_out_result.redacted_content:
                     raw_output = _ge_out_result.redacted_content
             except Exception as _ge_out_exc:
-                self._logger.warning("guardrail_engine_v2_output_check_failed", error=str(_ge_out_exc))
+                self._logger.warning(
+                    "guardrail_engine_v2_output_check_failed", error=str(_ge_out_exc)
+                )
 
         # 10. Record rollback point
         if self._rollback_engine is not None:
             from app.reliability.tool_inverses import get_inverse_fn as _get_inverse_fn
+
             _rb_tool = tool_name
             _rb_args: dict[str, Any] = {}
             if tool_call is not None and tool_call.arguments:
@@ -1728,10 +1819,14 @@ class ExecutorMixin:
         # Persist decision trace to DB
         if self._db_session_factory and hasattr(trace, "trace_id"):
             import asyncio as _asyncio
+
             _task = _asyncio.create_task(self._persist_decision_trace(trace, state, tenant_ctx))
             _task.add_done_callback(
-                lambda t: (not t.cancelled() and t.exception()) and self._logger.warning(
-                    "decision_trace_persist_failed", error=str(t.exception())
+                lambda t: (
+                    (not t.cancelled() and t.exception())
+                    and self._logger.warning(
+                        "decision_trace_persist_failed", error=str(t.exception())
+                    )
                 )
             )
             # Hold a strong reference so the GC doesn't collect the task before it finishes
@@ -1761,8 +1856,9 @@ class ExecutorMixin:
         # as it IS the evidence and cannot be "ungrounded" against itself.
         try:
             from app.agent.grounding import annotate_ungrounded, check_grounding
+
             _raw_stripped = (raw_output or "").strip()
-            _is_structured_tool_output = _raw_stripped.startswith(('{', '[', "{'"))
+            _is_structured_tool_output = _raw_stripped.startswith(("{", "[", "{'"))
             _tool_outputs_for_grounding = [
                 str(tc.get("output", ""))
                 for tc in (state.steps[-1].tool_calls if state.steps else [])
@@ -1786,12 +1882,15 @@ class ExecutorMixin:
                         _last_step = state.steps[-1]
                         if hasattr(_last_step, "status"):
                             from app.agent.state import StepStatus
+
                             _last_step.status = StepStatus.UNGROUNDED
-                    await self._emit({
-                        "type": "grounding_warning",
-                        "ungrounded_claims": _ground_result.ungrounded_claims[:5],
-                        "step": step,
-                    })
+                    await self._emit(
+                        {
+                            "type": "grounding_warning",
+                            "ungrounded_claims": _ground_result.ungrounded_claims[:5],
+                            "step": step,
+                        }
+                    )
                 state.context["grounding_checked"] = True
         except Exception as exc:
             # Log but don't block execution — fail-open only on grounding check errors
@@ -1830,6 +1929,7 @@ class ExecutorMixin:
         if self._semantic_cache is not None and self._embedder is not None:
             try:
                 from app.providers.base import EmbedRequest
+
                 _cache_embed_resp = await self._embedder.embed(EmbedRequest(texts=[step]))
                 _cache_embedding = (
                     _cache_embed_resp.embeddings[0] if _cache_embed_resp.embeddings else None
@@ -1843,13 +1943,15 @@ class ExecutorMixin:
                     # Only serve non-empty, non-error responses from cache.
                     # Empty responses (stored by failed prior runs) must be ignored.
                     if hit is not None and hit.response and len(hit.response.strip()) >= 10:
-                        await self._emit({
-                            "type": "cache_hit",
-                            "step": step,
-                            "similarity": round(hit.similarity, 4),
-                            "source": hit.source,
-                            "latency_ms": round(hit.latency_ms, 1),
-                        })
+                        await self._emit(
+                            {
+                                "type": "cache_hit",
+                                "step": step,
+                                "similarity": round(hit.similarity, 4),
+                                "source": hit.source,
+                                "latency_ms": round(hit.latency_ms, 1),
+                            }
+                        )
                         return hit.response
             except Exception as _ce:
                 _cache_embedding = None
@@ -1866,19 +1968,35 @@ class ExecutorMixin:
         # Only cache actual tool call results (JSON or clearly structured output).
         _out_stripped = (raw_output or "").strip()
         _looks_like_llm_reasoning = (
-            _out_stripped.lower().startswith((
-                "i'll ", "i will ", "i'll use", "i will use",
-                "to complete", "let me ", "i need to ", "i can ", "i should ",
-                "step 1", "first,", "first i", "i'll now",
-                "i'll start", "i'll call", "i'll search",
-                "now i'll", "next, i", "to search",
-            ))
+            _out_stripped.lower().startswith(
+                (
+                    "i'll ",
+                    "i will ",
+                    "i'll use",
+                    "i will use",
+                    "to complete",
+                    "let me ",
+                    "i need to ",
+                    "i can ",
+                    "i should ",
+                    "step 1",
+                    "first,",
+                    "first i",
+                    "i'll now",
+                    "i'll start",
+                    "i'll call",
+                    "i'll search",
+                    "now i'll",
+                    "next, i",
+                    "to search",
+                )
+            )
             or ("will use" in _out_stripped.lower() and "tool" in _out_stripped.lower())
             or ("will call" in _out_stripped.lower() and len(_out_stripped) < 500)
         )
         _is_error_output = (
             not raw_output
-            or raw_output.strip().startswith("{\"error")
+            or raw_output.strip().startswith('{"error')
             or "model_not_found" in raw_output.lower()
             or "invalid model" in raw_output.lower()
             or "rate_limit_exceeded" in raw_output.lower()
@@ -1889,7 +2007,8 @@ class ExecutorMixin:
             or "circuit open" in raw_output.lower()
             or "requires approval" in raw_output.lower()
             # Don't cache empty collection results (Jira 0 issues, empty lists)
-            or raw_output.strip() in ('{"issues": [], "total": 0}', '{"projects": []}', '{"items": []}', '[]', '{}')
+            or raw_output.strip()
+            in ('{"issues": [], "total": 0}', '{"projects": []}', '{"items": []}', "[]", "{}")
             or '"total": 0' in raw_output
             or '"issues": []' in raw_output
             or '"projects": []' in raw_output
@@ -1897,7 +2016,11 @@ class ExecutorMixin:
             # Don't cache plain LLM reasoning text (no actual tool result)
             or _looks_like_llm_reasoning
         )
-        if self._semantic_cache is not None and _cache_embedding is not None and not _is_error_output:
+        if (
+            self._semantic_cache is not None
+            and _cache_embedding is not None
+            and not _is_error_output
+        ):
             try:
                 await self._semantic_cache.store_async(
                     embedding=_cache_embedding,
@@ -1909,4 +2032,3 @@ class ExecutorMixin:
                 pass  # write failures must never block execution
 
         return raw_output
-

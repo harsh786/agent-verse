@@ -5,6 +5,7 @@ Supports:
 - ACL propagation: channel membership → allowed principals
 - Thread inclusion: replies fetched as child documents
 """
+
 from __future__ import annotations
 
 import logging
@@ -32,9 +33,11 @@ class SlackConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             import httpx
+
             token = config.connection_config.get("bot_token", "")
             async with httpx.AsyncClient(timeout=10) as c:
                 r = await c.get(
@@ -49,7 +52,9 @@ class SlackConnector(BaseConnector):
                     latency_ms=latency,
                     metadata={"workspace": data.get("team", ""), "bot": data.get("bot_id", "")},
                 )
-            return ConnectionHealth(ok=False, latency_ms=latency, error=data.get("error", "auth_failed"))
+            return ConnectionHealth(
+                ok=False, latency_ms=latency, error=data.get("error", "auth_failed")
+            )
         except Exception as exc:
             return ConnectionHealth(ok=False, error=str(exc))
 
@@ -68,9 +73,7 @@ class SlackConnector(BaseConnector):
         new_cursor = cursor or ""
         for channel_id in channels:
             try:
-                chunks = await ingestor.ingest_channel(
-                    channel_id, max_messages=max_messages
-                )
+                chunks = await ingestor.ingest_channel(channel_id, max_messages=max_messages)
                 for chunk in chunks:
                     ts = chunk.get("metadata", {}).get("ts", "")
                     if cursor and ts and ts <= cursor:

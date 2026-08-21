@@ -1,4 +1,5 @@
 """A2A (Agent-to-Agent) protocol — full implementation with DB persistence, HMAC auth, callbacks."""
+
 from __future__ import annotations
 
 import hashlib
@@ -62,6 +63,7 @@ async def _persist_task(task_id: str, data: dict[str, Any], db: Any) -> None:
         return
     try:
         from sqlalchemy import text
+
         async with db() as session, session.begin():
             await session.execute(
                 text("""INSERT INTO a2a_tasks
@@ -75,7 +77,7 @@ async def _persist_task(task_id: str, data: dict[str, Any], db: Any) -> None:
                     "status": data.get("status", "pending"),
                     "cb": data.get("callback_url", ""),
                     "req": data.get("requester_agent_id", ""),
-                }
+                },
             )
     except Exception as exc:
         logger.warning("a2a_task_persist_failed", error=str(exc))
@@ -91,10 +93,13 @@ async def _update_task_status(task_id: str, status: str, result: str, db: Any) -
         return
     try:
         from sqlalchemy import text
+
         async with db() as session, session.begin():
             await session.execute(
-                text("UPDATE a2a_tasks SET status=:status, result=:result, updated_at=NOW() WHERE id=:id"),
-                {"id": task_id, "status": status, "result": result[:10000] if result else ""}
+                text(
+                    "UPDATE a2a_tasks SET status=:status, result=:result, updated_at=NOW() WHERE id=:id"
+                ),
+                {"id": task_id, "status": status, "result": result[:10000] if result else ""},
             )
     except Exception as exc:
         logger.warning("a2a_task_update_failed", error=str(exc))
@@ -109,6 +114,7 @@ async def _get_task(task_id: str, db: Any, tenant_id: str | None = None) -> dict
     if db is not None:
         try:
             from sqlalchemy import text
+
             async with db() as session:
                 result = await session.execute(
                     text(
@@ -121,9 +127,12 @@ async def _get_task(task_id: str, db: Any, tenant_id: str | None = None) -> dict
                 row = result.fetchone()
             if row:
                 return {
-                    "task_id": row[0], "goal": row[1], "status": row[2],
-                    "result": row[3], "callback_url": row[4],
-                    "created_at": row[5].isoformat() if row[5] else ""
+                    "task_id": row[0],
+                    "goal": row[1],
+                    "status": row[2],
+                    "result": row[3],
+                    "callback_url": row[4],
+                    "created_at": row[5].isoformat() if row[5] else "",
                 }
         except Exception:
             pass
@@ -142,12 +151,15 @@ async def _send_callback(callback_url: str, task_id: str, status: str, result: s
         return
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(callback_url, json={
-                "task_id": task_id,
-                "status": status,
-                "result": result,
-                "completed_at": datetime.now(UTC).isoformat(),
-            })
+            await client.post(
+                callback_url,
+                json={
+                    "task_id": task_id,
+                    "status": status,
+                    "result": result,
+                    "completed_at": datetime.now(UTC).isoformat(),
+                },
+            )
         logger.info("a2a_callback_sent", task_id=task_id, url=callback_url)
     except Exception as exc:
         logger.warning("a2a_callback_failed", task_id=task_id, error=str(exc))
@@ -173,11 +185,17 @@ async def agent_card(request: Request) -> dict[str, Any]:
         "authentication": {
             "scheme": "hmac-sha256",
             "header": "X-A2A-Signature",
-            "note": "Set A2A_SHARED_SECRET env var. Empty = disabled (dev mode)."
+            "note": "Set A2A_SHARED_SECRET env var. Empty = disabled (dev mode).",
         },
         "capabilities": [
-            "goal_execution", "multi_agent", "rag_search", "connector_tools",
-            "hitl_approval", "audit_log", "persistence", "streaming"
+            "goal_execution",
+            "multi_agent",
+            "rag_search",
+            "connector_tools",
+            "hitl_approval",
+            "audit_log",
+            "persistence",
+            "streaming",
         ],
         "supported_task_types": ["goal", "query", "action"],
     }
@@ -238,8 +256,10 @@ async def receive_a2a_task(
         async def execute_and_callback() -> None:
             try:
                 result = await goal_service.submit_goal(
-                    goal=body.goal, priority=body.priority,
-                    dry_run=False, tenant_ctx=tenant_ctx,
+                    goal=body.goal,
+                    priority=body.priority,
+                    dry_run=False,
+                    tenant_ctx=tenant_ctx,
                 )
                 goal_id = result["goal_id"]
                 final_status = "complete"
@@ -259,7 +279,7 @@ async def receive_a2a_task(
                                 final_status = "failed"
                                 final_result = evt.get("reason", "failed")
                                 break
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     final_status = "timeout"
                     final_result = "Goal timed out"
 
@@ -287,13 +307,11 @@ async def list_a2a_tasks(request: Request, limit: int = 50) -> list[dict[str, An
     tid = tenant_ctx.tenant_id if tenant_ctx else None
     if db is None:
         # In-memory fallback: always filter by tenant_id to prevent IDOR
-        tenant_tasks = [
-            t for t in _tasks.values()
-            if tid is None or t.get("tenant_id") == tid
-        ]
+        tenant_tasks = [t for t in _tasks.values() if tid is None or t.get("tenant_id") == tid]
         return tenant_tasks[-limit:][::-1]
     try:
         from sqlalchemy import text as _t
+
         q = "SELECT id, goal_text, status, callback_url, requester_id, created_at, result FROM a2a_tasks"
         params: dict[str, Any] = {}
         if tid:
@@ -316,10 +334,7 @@ async def list_a2a_tasks(request: Request, limit: int = 50) -> list[dict[str, An
         ]
     except Exception:
         # DB-down fallback: filter by tenant_id to prevent IDOR
-        tenant_tasks = [
-            t for t in _tasks.values()
-            if tid is None or t.get("tenant_id") == tid
-        ]
+        tenant_tasks = [t for t in _tasks.values() if tid is None or t.get("tenant_id") == tid]
         return tenant_tasks[-limit:][::-1]
 
 

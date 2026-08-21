@@ -4,6 +4,7 @@ LAW-03: cursor_value persisted after each batch; resumable on crash.
 LAW-14: distributed lock via Redis SETNX prevents duplicate jobs.
 LAW-18: state changes appended as events (ingestion_events table when DB avail).
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,7 +30,7 @@ class IngestionJobTracker:
         # In-memory fallback
         self._jobs: dict[str, IngestionJob] = {}
         self._source_cursors: dict[str, str] = {}  # source_id → cursor
-        self._locks: dict[str, str] = {}           # source_id → job_id
+        self._locks: dict[str, str] = {}  # source_id → job_id
 
     # ── Distributed locking (LAW-14) ─────────────────────────────────────────
 
@@ -50,14 +51,15 @@ class IngestionJobTracker:
                     existing = await self._redis.get(lock_key)
                     _log.info(
                         "ingestion_lock_held source=%s existing_job=%s",
-                        source_id, existing,
+                        source_id,
+                        existing,
                     )
                     return None
                 return job_id
             except Exception as e:
                 _log.warning("ingestion_lock_redis_error source=%s: %s", source_id, e)
                 # Fall through to in-memory
-        
+
         # In-memory fallback
         if source_id in self._locks:
             return None
@@ -154,11 +156,9 @@ class IngestionJobTracker:
         job.chunks_created += chunks
         job.bytes_processed += bytes_
         job.tokens_consumed += tokens
-        job.docs_discovered += (indexed + skipped + failed)
+        job.docs_discovered += indexed + skipped + failed
 
-    async def complete_job(
-        self, job: IngestionJob, *, error: str = ""
-    ) -> None:
+    async def complete_job(self, job: IngestionJob, *, error: str = "") -> None:
         """Mark the job as completed or failed."""
         job.status = "failed" if error else "completed"
         job.error_message = error[:2048] if error else ""
@@ -166,8 +166,12 @@ class IngestionJobTracker:
 
         _log.info(
             "ingestion_job_complete job=%s status=%s indexed=%d skipped=%d failed=%d chunks=%d",
-            job.job_id, job.status, job.docs_indexed, job.docs_skipped,
-            job.docs_failed, job.chunks_created,
+            job.job_id,
+            job.status,
+            job.docs_indexed,
+            job.docs_skipped,
+            job.docs_failed,
+            job.chunks_created,
         )
 
         if self._db is not None:
@@ -184,6 +188,7 @@ class IngestionJobTracker:
     async def _persist_job_created(self, job: IngestionJob) -> None:
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
                 await session.execute(
                     text("""
@@ -217,6 +222,7 @@ class IngestionJobTracker:
     ) -> None:
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
                 await session.execute(
                     text("""
@@ -240,6 +246,7 @@ class IngestionJobTracker:
     async def _persist_job_completed(self, job: IngestionJob) -> None:
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
                 await session.execute(
                     text("""
@@ -270,9 +277,10 @@ class IngestionJobTracker:
 
     # ── Methods required by scheduler.py ────────────────────────────────────
 
-    async def load_config(self, source_id: str, tenant_id: str) -> "SourceConfig | None":
+    async def load_config(self, source_id: str, tenant_id: str) -> SourceConfig | None:
         """Load a SourceConfig from DB or in-memory store. Returns None if not found."""
         from app.ingestion.source_config import SourceConfig, SourceFamily
+
         # Try in-memory first (populated during sync loop)
         if source_id in self._jobs:
             config = SourceConfig(
@@ -289,6 +297,7 @@ class IngestionJobTracker:
             return config
         try:
             from sqlalchemy import text
+
             async with self._db() as session:
                 row = await session.execute(
                     text("SELECT * FROM source_configs WHERE source_id = :id AND tenant_id = :tid"),
@@ -305,6 +314,7 @@ class IngestionJobTracker:
         """Return list of (source_id, tenant_id) tuples whose next sync is due."""
         try:
             from sqlalchemy import text
+
             async with self._db() as session:
                 result = await session.execute(
                     text("""
@@ -327,9 +337,12 @@ class IngestionJobTracker:
         """Increment consecutive failure counter on a source."""
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
                 await session.execute(
-                    text("UPDATE source_configs SET consecutive_failures = COALESCE(consecutive_failures, 0) + 1 WHERE source_id = :id AND tenant_id = :tid"),
+                    text(
+                        "UPDATE source_configs SET consecutive_failures = COALESCE(consecutive_failures, 0) + 1 WHERE source_id = :id AND tenant_id = :tid"
+                    ),
                     {"id": source_id, "tid": tenant_id},
                 )
         except Exception as exc:
@@ -339,9 +352,12 @@ class IngestionJobTracker:
         """Reset consecutive failure counter after a successful sync."""
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
                 await session.execute(
-                    text("UPDATE source_configs SET consecutive_failures = 0 WHERE source_id = :id AND tenant_id = :tid"),
+                    text(
+                        "UPDATE source_configs SET consecutive_failures = 0 WHERE source_id = :id AND tenant_id = :tid"
+                    ),
                     {"id": source_id, "tid": tenant_id},
                 )
         except Exception as exc:
@@ -359,8 +375,10 @@ class IngestionJobTracker:
         """Add a failed document to the DLQ."""
         import json as _json
         import uuid as _uuid
+
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
                 await session.execute(
                     text("""
@@ -385,6 +403,7 @@ class IngestionJobTracker:
         """Return DLQ entries eligible for retry (retry_count < 5, not permanent)."""
         try:
             from sqlalchemy import text
+
             async with self._db() as session:
                 result = await session.execute(
                     text("""
@@ -405,6 +424,7 @@ class IngestionJobTracker:
         """Mark a DLQ entry as resolved (successfully retried)."""
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
                 await session.execute(
                     text("DELETE FROM ingestion_dlq WHERE dlq_id = :id"),
@@ -417,9 +437,12 @@ class IngestionJobTracker:
         """Increment retry count on a DLQ entry."""
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
                 await session.execute(
-                    text("UPDATE ingestion_dlq SET retry_count = retry_count + 1, last_error = :error, last_retried_at = NOW() WHERE dlq_id = :id"),
+                    text(
+                        "UPDATE ingestion_dlq SET retry_count = retry_count + 1, last_error = :error, last_retried_at = NOW() WHERE dlq_id = :id"
+                    ),
                     {"id": dlq_id, "error": error},
                 )
         except Exception as exc:
@@ -429,6 +452,7 @@ class IngestionJobTracker:
         """Mark a DLQ entry as permanently failed (no more retries)."""
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
                 await session.execute(
                     text("UPDATE ingestion_dlq SET permanent_failure = true WHERE dlq_id = :id"),

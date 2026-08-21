@@ -4,6 +4,7 @@ Called from graph.py _node_complete after every goal execution.
 Writes to: eval_scorecards, reflexion_lessons, tool_trust_records, ab_test_results.
 Degrades gracefully to in-memory when DB is not available.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -25,10 +26,12 @@ class OrchestrationPersistence:
         self._db = db
         if reflexion_store is None:
             from app.state_runtime.reflexion_store import ReflexionStore
+
             reflexion_store = ReflexionStore()
         self._reflexion_store = reflexion_store
         if tool_trust_store is None:
             from app.tool_runtime.tool_trust_store import ToolTrustStore
+
             tool_trust_store = ToolTrustStore()
         self._tool_trust_store = tool_trust_store
 
@@ -126,9 +129,7 @@ class OrchestrationPersistence:
         try:
             from sqlalchemy import text
 
-            lessons = self._reflexion_store.recall(
-                tenant_id=state.tenant_ctx.tenant_id, limit=1
-            )
+            lessons = self._reflexion_store.recall(tenant_id=state.tenant_ctx.tenant_id, limit=1)
             if lessons:
                 latest = lessons[-1]
                 async with effective_db() as session, session.begin():
@@ -153,9 +154,7 @@ class OrchestrationPersistence:
         except Exception as exc:
             from app.observability.logging import get_logger
 
-            get_logger(__name__).warning(
-                "reflexion_lesson_persist_failed", error=str(exc)
-            )
+            get_logger(__name__).warning("reflexion_lesson_persist_failed", error=str(exc))
 
     async def persist_regression_case(
         self,
@@ -173,13 +172,9 @@ class OrchestrationPersistence:
             from sqlalchemy import text
 
             strategy_id = str(regression_candidate.get("strategy_id", "unknown"))
-            strategy_version = str(
-                regression_candidate.get("strategy_version", "unknown")
-            )
+            strategy_version = str(regression_candidate.get("strategy_version", "unknown"))
             profile_version = int(regression_candidate.get("profile_version", 0))
-            evaluator_version = str(
-                regression_candidate.get("evaluator_version", "unknown")
-            )
+            evaluator_version = str(regression_candidate.get("evaluator_version", "unknown"))
             identity = ":".join(
                 (
                     str(regression_candidate.get("tenant_id", "unknown")),
@@ -221,6 +216,7 @@ class OrchestrationPersistence:
                 )
         except Exception as exc:
             from app.observability.logging import get_logger
+
             get_logger(__name__).warning("regression_case_persist_failed", error=str(exc))
 
     async def persist_tool_outcome(
@@ -233,9 +229,7 @@ class OrchestrationPersistence:
         db: Any = None,
     ) -> None:
         """Persist tool trust outcome to in-memory store + Postgres."""
-        self._tool_trust_store.record_outcome(
-            tool_name, success=success, latency_ms=latency_ms
-        )
+        self._tool_trust_store.record_outcome(tool_name, success=success, latency_ms=latency_ms)
         effective_db = db or self._db
         if effective_db is None:
             return
@@ -265,9 +259,7 @@ class OrchestrationPersistence:
 
             get_logger(__name__).warning("tool_trust_persist_failed", error=str(exc))
 
-    async def load_tool_trust_from_db(
-        self, tenant_id: str, db: Any = None
-    ) -> None:
+    async def load_tool_trust_from_db(self, tenant_id: str, db: Any = None) -> None:
         """Load tool trust history from Postgres into in-memory store on startup."""
         effective_db = db or self._db
         if effective_db is None:
@@ -302,8 +294,6 @@ class OrchestrationPersistence:
                         )
                     ).fetchall()
                 for row in rows:
-                    self._tool_trust_store.record_outcome(
-                        row[0], success=row[1], latency_ms=row[2]
-                    )
+                    self._tool_trust_store.record_outcome(row[0], success=row[1], latency_ms=row[2])
         except Exception:
             pass

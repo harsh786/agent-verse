@@ -41,8 +41,7 @@ class NvidiaNIMProvider(OpenAICompatibleProvider):
         super().__init__(
             api_key=api_key or os.getenv("NGC_API_KEY", ""),
             base_url=(
-                base_url
-                or os.getenv("NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+                base_url or os.getenv("NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
             ),
             default_model=default_model,
             supports_vision_flag=False,

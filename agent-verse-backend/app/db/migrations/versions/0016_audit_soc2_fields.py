@@ -1,4 +1,5 @@
 """Add SOC2-required fields to audit_log."""
+
 import sqlalchemy as sa
 from alembic import op
 

@@ -3,6 +3,7 @@
 Environment variables:
   CLICKUP_API_TOKEN: ClickUp personal API token
 """
+
 from __future__ import annotations
 
 import os
@@ -43,7 +44,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "folder_id": {"type": "string", "description": "Folder ID (use clickup_list_folders to get IDs)"},
+                "folder_id": {
+                    "type": "string",
+                    "description": "Folder ID (use clickup_list_folders to get IDs)",
+                },
                 "space_id": {
                     "type": "string",
                     "description": "Space ID to list folderless lists (alternative to folder_id)",
@@ -72,7 +76,10 @@ TOOL_DEFINITIONS = [
                     "items": {"type": "string"},
                     "description": "Filter by assignee user IDs",
                 },
-                "due_date_gt": {"type": "integer", "description": "Due date greater than (Unix ms)"},
+                "due_date_gt": {
+                    "type": "integer",
+                    "description": "Due date greater than (Unix ms)",
+                },
                 "due_date_lt": {"type": "integer", "description": "Due date less than (Unix ms)"},
                 "include_closed": {"type": "boolean", "default": False},
             },
@@ -105,12 +112,18 @@ TOOL_DEFINITIONS = [
                     "enum": [1, 2, 3, 4],
                     "description": "1=Urgent, 2=High, 3=Normal, 4=Low",
                 },
-                "due_date": {"type": "integer", "description": "Due date as Unix timestamp in milliseconds"},
+                "due_date": {
+                    "type": "integer",
+                    "description": "Due date as Unix timestamp in milliseconds",
+                },
                 "due_date_time": {"type": "boolean", "default": False},
                 "assignees": {"type": "array", "items": {"type": "integer"}},
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "parent": {"type": "string", "description": "Parent task ID for subtasks"},
-                "time_estimate": {"type": "integer", "description": "Time estimate in milliseconds"},
+                "time_estimate": {
+                    "type": "integer",
+                    "description": "Time estimate in milliseconds",
+                },
             },
             "required": ["list_id", "name"],
         },
@@ -184,7 +197,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
@@ -256,8 +272,15 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             list_id = arguments["list_id"]
             payload: dict[str, Any] = {"name": arguments["name"]}
             optional = [
-                "description", "status", "priority", "due_date",
-                "due_date_time", "assignees", "tags", "parent", "time_estimate",
+                "description",
+                "status",
+                "priority",
+                "due_date",
+                "due_date_time",
+                "assignees",
+                "tags",
+                "parent",
+                "time_estimate",
             ]
             for field in optional:
                 if field in arguments and arguments[field] is not None:
@@ -276,7 +299,15 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
         elif tool_name == "clickup_update_task":
             task_id = arguments["task_id"]
             payload: dict[str, Any] = {}
-            updatable = ["name", "description", "status", "priority", "due_date", "assignees", "archived"]
+            updatable = [
+                "name",
+                "description",
+                "status",
+                "priority",
+                "due_date",
+                "assignees",
+                "archived",
+            ]
             for field in updatable:
                 if field in arguments:
                     payload[field] = arguments[field]

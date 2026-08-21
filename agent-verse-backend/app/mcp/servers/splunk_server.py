@@ -6,10 +6,10 @@ Environment:
   SPLUNK_USERNAME: Username for basic auth (fallback)
   SPLUNK_PASSWORD: Password for basic auth (fallback)
 """
+
 from __future__ import annotations
 
 import os
-import time
 from typing import Any
 
 import httpx
@@ -29,7 +29,11 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "SPL search string (e.g. 'search index=main error | head 100')",
                 },
-                "earliest_time": {"type": "string", "default": "-1h", "description": "Earliest time (e.g. -1h, -24h, @d)"},
+                "earliest_time": {
+                    "type": "string",
+                    "default": "-1h",
+                    "description": "Earliest time (e.g. -1h, -24h, @d)",
+                },
                 "latest_time": {"type": "string", "default": "now"},
                 "max_count": {"type": "integer", "default": 100},
                 "output_mode": {"type": "string", "default": "json"},
@@ -133,7 +137,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     if not base_url:
         return {"error": "SPLUNK_URL not configured"}
 
-    if not os.getenv("SPLUNK_TOKEN") and not (os.getenv("SPLUNK_USERNAME") and os.getenv("SPLUNK_PASSWORD")):
+    if not os.getenv("SPLUNK_TOKEN") and not (
+        os.getenv("SPLUNK_USERNAME") and os.getenv("SPLUNK_PASSWORD")
+    ):
         return {"error": "SPLUNK_TOKEN or SPLUNK_USERNAME/SPLUNK_PASSWORD not configured"}
 
     try:
@@ -154,6 +160,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 )
                 resp.raise_for_status()
                 import json as _json
+
                 events = []
                 for line in resp.text.strip().splitlines():
                     try:

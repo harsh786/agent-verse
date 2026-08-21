@@ -5,10 +5,11 @@ Pipeline:
   estimate cost/duration → assess risk → compute success probability →
   produce TeamManifest
 """
+
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import structlog
@@ -16,9 +17,6 @@ from opentelemetry import trace
 
 from app.org.capability_registry import (
     CAPABILITY_REGISTRY,
-    DEPT_CAPABILITY_MAP,
-    DEPT_LLM_PROFILES,
-    get_model_profile_for_dept,
 )
 
 _log = structlog.get_logger(__name__)
@@ -60,132 +58,213 @@ class RoleDefinition:
 
 ROLE_DEFINITIONS: dict[str, RoleDefinition] = {
     "research_analyst": RoleDefinition(
-        department_kind="research", seniority="mid", cost_category="analyst",
+        department_kind="research",
+        seniority="mid",
+        cost_category="analyst",
         capabilities=["web_search", "data_analysis", "knowledge_synthesis", "report_generation"],
     ),
     "data_scientist": RoleDefinition(
-        department_kind="data", seniority="senior", cost_category="analyst",
+        department_kind="data",
+        seniority="senior",
+        cost_category="analyst",
         capabilities=["data_analysis", "financial_modeling", "forecasting", "report_generation"],
         model_profile="analytical",
     ),
     "software_engineer": RoleDefinition(
-        department_kind="engineering", seniority="mid", cost_category="engineer",
+        department_kind="engineering",
+        seniority="mid",
+        cost_category="engineer",
         capabilities=["code_generation", "code_review", "api_design"],
         model_profile="coding",
     ),
     "senior_engineer": RoleDefinition(
-        department_kind="engineering", seniority="senior", cost_category="senior_engineer",
-        capabilities=["code_generation", "code_review", "database_design", "api_design",
-                       "infrastructure_management"],
+        department_kind="engineering",
+        seniority="senior",
+        cost_category="senior_engineer",
+        capabilities=[
+            "code_generation",
+            "code_review",
+            "database_design",
+            "api_design",
+            "infrastructure_management",
+        ],
         model_profile="coding",
     ),
     "content_writer": RoleDefinition(
-        department_kind="content", seniority="mid", cost_category="writer",
+        department_kind="content",
+        seniority="mid",
+        cost_category="writer",
         capabilities=["content_writing", "copywriting", "technical_writing"],
         model_profile="creative",
     ),
     "marketing_manager": RoleDefinition(
-        department_kind="marketing", seniority="senior", cost_category="specialist",
-        capabilities=["campaign_management", "seo_optimization", "social_media",
-                       "competitive_intelligence", "email_marketing"],
+        department_kind="marketing",
+        seniority="senior",
+        cost_category="specialist",
+        capabilities=[
+            "campaign_management",
+            "seo_optimization",
+            "social_media",
+            "competitive_intelligence",
+            "email_marketing",
+        ],
         model_profile="creative",
     ),
     "financial_analyst": RoleDefinition(
-        department_kind="finance", seniority="mid", cost_category="analyst",
+        department_kind="finance",
+        seniority="mid",
+        cost_category="analyst",
         capabilities=["financial_modeling", "budget_planning", "forecasting", "data_analysis"],
         model_profile="analytical",
     ),
     "legal_specialist": RoleDefinition(
-        department_kind="legal", seniority="senior", cost_category="specialist",
+        department_kind="legal",
+        seniority="senior",
+        cost_category="specialist",
         capabilities=["legal_review", "contract_analysis", "compliance_check"],
         model_profile="expert",
     ),
     "hr_specialist": RoleDefinition(
-        department_kind="hr", seniority="mid", cost_category="specialist",
+        department_kind="hr",
+        seniority="mid",
+        cost_category="specialist",
         capabilities=["hr_screening", "talent_assessment", "performance_analysis"],
         model_profile="smart",
     ),
     "security_engineer": RoleDefinition(
-        department_kind="security", seniority="senior", cost_category="senior_engineer",
+        department_kind="security",
+        seniority="senior",
+        cost_category="senior_engineer",
         capabilities=["security_audit", "threat_analysis", "incident_response"],
         model_profile="expert",
     ),
     "customer_support_agent": RoleDefinition(
-        department_kind="support", seniority="junior", cost_category="support",
+        department_kind="support",
+        seniority="junior",
+        cost_category="support",
         capabilities=["customer_support", "knowledge_search", "email_outreach"],
         model_profile="fast",
     ),
     "project_manager": RoleDefinition(
-        department_kind="operations", seniority="senior", cost_category="specialist",
-        capabilities=["project_planning", "workflow_optimization", "meeting_facilitation",
-                       "report_generation"],
+        department_kind="operations",
+        seniority="senior",
+        cost_category="specialist",
+        capabilities=[
+            "project_planning",
+            "workflow_optimization",
+            "meeting_facilitation",
+            "report_generation",
+        ],
         model_profile="smart",
     ),
     "executive_assistant": RoleDefinition(
-        department_kind="executive", seniority="mid", cost_category="specialist",
-        capabilities=["calendar_management", "meeting_facilitation", "executive_briefing",
-                       "document_analysis"],
+        department_kind="executive",
+        seniority="mid",
+        cost_category="specialist",
+        capabilities=[
+            "calendar_management",
+            "meeting_facilitation",
+            "executive_briefing",
+            "document_analysis",
+        ],
         model_profile="smart",
     ),
     "strategy_director": RoleDefinition(
-        department_kind="executive", seniority="principal", cost_category="executive",
-        capabilities=["strategy_formulation", "scenario_planning", "decision_analysis",
-                       "executive_briefing", "competitive_intelligence"],
+        department_kind="executive",
+        seniority="principal",
+        cost_category="executive",
+        capabilities=[
+            "strategy_formulation",
+            "scenario_planning",
+            "decision_analysis",
+            "executive_briefing",
+            "competitive_intelligence",
+        ],
         model_profile="premium",
     ),
     "product_manager": RoleDefinition(
-        department_kind="product", seniority="senior", cost_category="specialist",
-        capabilities=["product_analysis", "user_research", "decision_analysis",
-                       "market_research"],
+        department_kind="product",
+        seniority="senior",
+        cost_category="specialist",
+        capabilities=["product_analysis", "user_research", "decision_analysis", "market_research"],
         model_profile="analytical",
     ),
     "rpa_developer": RoleDefinition(
-        department_kind="operations", seniority="mid", cost_category="engineer",
+        department_kind="operations",
+        seniority="mid",
+        cost_category="engineer",
         capabilities=["rpa_automation", "web_scraping", "workflow_optimization"],
         model_profile="worker",
     ),
     "procurement_analyst": RoleDefinition(
-        department_kind="operations", seniority="mid", cost_category="analyst",
+        department_kind="operations",
+        seniority="mid",
+        cost_category="analyst",
         capabilities=["procurement_analysis", "vendor_evaluation", "contract_analysis"],
         model_profile="analytical",
     ),
     "knowledge_manager": RoleDefinition(
-        department_kind="research", seniority="mid", cost_category="analyst",
+        department_kind="research",
+        seniority="mid",
+        cost_category="analyst",
         capabilities=["knowledge_management", "knowledge_synthesis", "document_analysis"],
         model_profile="smart",
     ),
     "compliance_officer": RoleDefinition(
-        department_kind="legal", seniority="senior", cost_category="specialist",
-        capabilities=["compliance_check", "risk_assessment", "audit_support",
-                       "data_governance"],
+        department_kind="legal",
+        seniority="senior",
+        cost_category="specialist",
+        capabilities=["compliance_check", "risk_assessment", "audit_support", "data_governance"],
         model_profile="expert",
     ),
     "seo_specialist": RoleDefinition(
-        department_kind="marketing", seniority="mid", cost_category="analyst",
-        capabilities=["seo_optimization", "content_writing", "web_search",
-                       "competitive_intelligence"],
+        department_kind="marketing",
+        seniority="mid",
+        cost_category="analyst",
+        capabilities=[
+            "seo_optimization",
+            "content_writing",
+            "web_search",
+            "competitive_intelligence",
+        ],
         model_profile="analytical",
     ),
     "lead_generation_agent": RoleDefinition(
-        department_kind="sales", seniority="junior", cost_category="support",
-        capabilities=["lead_generation", "email_outreach", "web_search",
-                       "customer_support"],
+        department_kind="sales",
+        seniority="junior",
+        cost_category="support",
+        capabilities=["lead_generation", "email_outreach", "web_search", "customer_support"],
         model_profile="fast",
     ),
     "financial_controller": RoleDefinition(
-        department_kind="finance", seniority="principal", cost_category="executive",
-        capabilities=["audit_support", "tax_analysis", "financial_modeling",
-                       "risk_assessment", "budget_planning"],
+        department_kind="finance",
+        seniority="principal",
+        cost_category="executive",
+        capabilities=[
+            "audit_support",
+            "tax_analysis",
+            "financial_modeling",
+            "risk_assessment",
+            "budget_planning",
+        ],
         model_profile="expert",
     ),
     "devops_engineer": RoleDefinition(
-        department_kind="engineering", seniority="senior", cost_category="senior_engineer",
-        capabilities=["infrastructure_management", "incident_response", "rpa_automation",
-                       "code_review"],
+        department_kind="engineering",
+        seniority="senior",
+        cost_category="senior_engineer",
+        capabilities=[
+            "infrastructure_management",
+            "incident_response",
+            "rpa_automation",
+            "code_review",
+        ],
         model_profile="coding",
     ),
     "localization_specialist": RoleDefinition(
-        department_kind="content", seniority="mid", cost_category="specialist",
+        department_kind="content",
+        seniority="mid",
+        cost_category="specialist",
         capabilities=["translation", "localization", "content_writing"],
         model_profile="smart",
     ),
@@ -238,8 +317,13 @@ GOAL_CAPABILITY_HEURISTICS: dict[str, list[str]] = {
     "incident": ["incident_response", "threat_analysis", "security_audit"],
     "tax": ["tax_analysis", "financial_modeling", "compliance_check"],
     "audit": ["audit_support", "compliance_check", "data_governance"],
-    "launch": ["campaign_management", "market_research", "strategy_formulation",
-                "content_writing", "legal_review"],
+    "launch": [
+        "campaign_management",
+        "market_research",
+        "strategy_formulation",
+        "content_writing",
+        "legal_review",
+    ],
     "deploy": ["infrastructure_management", "code_review", "incident_response"],
     "germany": ["localization", "translation", "compliance_check", "market_research"],
     "customer": ["customer_support", "user_research", "sales_analysis"],
@@ -324,7 +408,9 @@ class TeamFormationEngine:
             org=_SimpleOrg(org_id=org_id),
         )
         # Attach routing context
-        object.__setattr__(manifest, "org_id", org_id) if dataclasses.is_dataclass(manifest) else None
+        object.__setattr__(manifest, "org_id", org_id) if dataclasses.is_dataclass(
+            manifest
+        ) else None
         try:
             manifest.org_id = org_id
             manifest.tenant_id = tenant_id
@@ -411,7 +497,8 @@ class TeamFormationEngine:
             + f"\n\nMISSION GOAL: {goal_text}\n\n"
             "Return ONLY a JSON array of strings. No explanation."
         )
-        from app.providers.base import CompletionRequest, Message  # noqa: PLC0415
+        from app.providers.base import CompletionRequest, Message
+
         req = CompletionRequest(
             messages=[Message(role="user", content=prompt)],
             model="claude-sonnet-4-5",
@@ -455,7 +542,8 @@ class TeamFormationEngine:
             return assigned
 
     async def _assign_departments(
-        self, roles: list[RoleAssignment],
+        self,
+        roles: list[RoleAssignment],
     ) -> dict[str, list[RoleAssignment]]:
         dept_map: dict[str, list[RoleAssignment]] = {}
         for role in roles:
@@ -463,22 +551,26 @@ class TeamFormationEngine:
         return dept_map
 
     async def _estimate_cost(
-        self, roles: list[RoleAssignment], duration_hours: float,
+        self,
+        roles: list[RoleAssignment],
+        duration_hours: float,
     ) -> float:
         return sum(r.estimated_cost_usd for r in roles)
 
     async def _assess_risk(self, roles: list[RoleAssignment], mission: Any) -> str:
         with _tracer.start_as_current_span("team_formation.assess_risk"):
             high_risk_caps = {
-                cap for cap, spec in CAPABILITY_REGISTRY.items()
+                cap
+                for cap, spec in CAPABILITY_REGISTRY.items()
                 if spec.risk_level in ("high", "critical")
             }
             role_caps = {cap for r in roles for cap in r.capabilities}
             risky = role_caps & high_risk_caps
             critical = {
-                cap for cap in risky
-                if CAPABILITY_REGISTRY.get(cap) and
-                   CAPABILITY_REGISTRY[cap].risk_level == "critical"
+                cap
+                for cap in risky
+                if CAPABILITY_REGISTRY.get(cap)
+                and CAPABILITY_REGISTRY[cap].risk_level == "critical"
             }
             if critical:
                 return "critical"
@@ -553,8 +645,11 @@ def _heuristic_capabilities(goal_text: str) -> list[str]:
 
 def _default_hours(seniority: str) -> float:
     return {
-        "junior": 4.0, "mid": 6.0, "senior": 8.0,
-        "principal": 10.0, "executive": 12.0,
+        "junior": 4.0,
+        "mid": 6.0,
+        "senior": 8.0,
+        "principal": 10.0,
+        "executive": 12.0,
     }.get(seniority, 6.0)
 
 
@@ -570,7 +665,7 @@ def _priority_for_overlap(overlap_count: int, total_required: int) -> int:
         return 1  # essential
     if ratio >= 0.10:
         return 2  # important
-    return 3       # nice-to-have
+    return 3  # nice-to-have
 
 
 def _estimate_success_probability(
@@ -587,6 +682,7 @@ def _estimate_success_probability(
 # ─────────────────────────────────────────────────────────────────────────────
 #  RoleMapper — maps human role labels to RoleDefinitions
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class RoleMapper:
     """Resolves a natural-language role name into a RoleDefinition."""

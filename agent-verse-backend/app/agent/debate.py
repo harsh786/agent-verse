@@ -3,6 +3,7 @@ critique each other, then vote on the best approach.
 
 Reduces hallucination and improves accuracy for high-stakes decisions.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -61,20 +62,26 @@ class DebateOrchestrator:
                 except Exception:
                     pass
 
-        agent_ids = [f"agent_{i+1}" for i in range(self._n_agents)]
+        agent_ids = [f"agent_{i + 1}" for i in range(self._n_agents)]
 
         await emit({"type": "debate_started", "n_agents": self._n_agents, "rounds": self._rounds})
 
         # Round 1: Independent proposals
         async def propose(agent_id: str) -> AgentProposal:
             from app.providers.base import CompletionRequest, Message
+
             req = CompletionRequest(
-                messages=[Message(role="user", content=(
-                    f"You are {agent_id}, an expert agent. "
-                    f"Propose your best solution to this goal:\n\n{goal}"
-                    + (f"\n\nContext: {context}" if context else "")
-                    + "\n\nGive a specific, actionable proposal in 2-3 sentences."
-                ))],
+                messages=[
+                    Message(
+                        role="user",
+                        content=(
+                            f"You are {agent_id}, an expert agent. "
+                            f"Propose your best solution to this goal:\n\n{goal}"
+                            + (f"\n\nContext: {context}" if context else "")
+                            + "\n\nGive a specific, actionable proposal in 2-3 sentences."
+                        ),
+                    )
+                ],
                 model="",
             )
             resp = await self._provider.complete(req)
@@ -85,17 +92,24 @@ class DebateOrchestrator:
 
         # Round 2 (if enabled): Critiques
         if self._rounds >= 2:
+
             async def critique(proposer: AgentProposal) -> None:
                 from app.providers.base import CompletionRequest, Message
+
                 others = [p for p in proposals if p.agent_id != proposer.agent_id]
                 for other in others:
                     req = CompletionRequest(
-                        messages=[Message(role="user", content=(
-                            f"As {proposer.agent_id}, briefly critique this proposal "
-                            f"from {other.agent_id} for solving: {goal}\n\n"
-                            f"Their proposal: {other.proposal}\n\n"
-                            "Give a 1-sentence critique."
-                        ))],
+                        messages=[
+                            Message(
+                                role="user",
+                                content=(
+                                    f"As {proposer.agent_id}, briefly critique this proposal "
+                                    f"from {other.agent_id} for solving: {goal}\n\n"
+                                    f"Their proposal: {other.proposal}\n\n"
+                                    "Give a 1-sentence critique."
+                                ),
+                            )
+                        ],
                         model="",
                     )
                     resp = await self._provider.complete(req)
@@ -106,17 +120,25 @@ class DebateOrchestrator:
         # Final: Vote
         async def vote(voter: AgentProposal) -> str:
             from app.providers.base import CompletionRequest, Message
-            proposal_list = "\n".join([
-                f"{i+1}. [{p.agent_id}] {p.proposal}"
-                for i, p in enumerate(proposals)
-                if p.agent_id != voter.agent_id
-            ])
+
+            proposal_list = "\n".join(
+                [
+                    f"{i + 1}. [{p.agent_id}] {p.proposal}"
+                    for i, p in enumerate(proposals)
+                    if p.agent_id != voter.agent_id
+                ]
+            )
             req = CompletionRequest(
-                messages=[Message(role="user", content=(
-                    f"As {voter.agent_id}, vote for the BEST proposal (not your own) "
-                    f"for: {goal}\n\nProposals:\n{proposal_list}\n\n"
-                    "Reply with just the agent_id of who you vote for (e.g., 'agent_2')."
-                ))],
+                messages=[
+                    Message(
+                        role="user",
+                        content=(
+                            f"As {voter.agent_id}, vote for the BEST proposal (not your own) "
+                            f"for: {goal}\n\nProposals:\n{proposal_list}\n\n"
+                            "Reply with just the agent_id of who you vote for (e.g., 'agent_2')."
+                        ),
+                    )
+                ],
                 model="",
             )
             resp = await self._provider.complete(req)
@@ -126,14 +148,12 @@ class DebateOrchestrator:
 
         # Tally votes
         from collections import Counter
+
         tally = Counter(votes)
         winning_agent_id = tally.most_common(1)[0][0] if tally else agent_ids[0]
 
         # Find winning proposal
-        winner = next(
-            (p for p in proposals if p.agent_id == winning_agent_id),
-            proposals[0]
-        )
+        winner = next((p for p in proposals if p.agent_id == winning_agent_id), proposals[0])
         winner.votes_received = tally.get(winning_agent_id, 0)
 
         # Consensus level = votes for winner / total votes
@@ -147,11 +167,13 @@ class DebateOrchestrator:
             rounds=self._rounds,
         )
 
-        await emit({
-            "type": "debate_complete",
-            "winner": winning_agent_id,
-            "votes": winner.votes_received,
-            "consensus": round(consensus, 2),
-        })
+        await emit(
+            {
+                "type": "debate_complete",
+                "winner": winning_agent_id,
+                "votes": winner.votes_received,
+                "consensus": round(consensus, 2),
+            }
+        )
 
         return result

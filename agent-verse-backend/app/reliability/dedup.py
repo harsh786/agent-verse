@@ -3,6 +3,7 @@
 Hashes expire after `ttl_seconds` (default: 1 hour) so the same operation
 can be retried after the window passes.
 """
+
 from __future__ import annotations
 
 import time

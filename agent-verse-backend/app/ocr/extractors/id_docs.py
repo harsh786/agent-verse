@@ -1,4 +1,5 @@
 """ID document field extractor (PAN, Aadhaar, Passport, Driving License)."""
+
 from __future__ import annotations
 
 import re
@@ -77,8 +78,11 @@ class IdDocExtractor:
             is_valid = validate_aadhaar(val)
             masked = mask_aadhaar(val)
             fields["aadhaar_number"] = ExtractedField(
-                name="aadhaar_number", value=val, confidence=conf,
-                is_valid=is_valid, masked_value=masked
+                name="aadhaar_number",
+                value=val,
+                confidence=conf,
+                is_valid=is_valid,
+                masked_value=masked,
             )
         val, conf = _label_value("DOB", text)
         if not val:

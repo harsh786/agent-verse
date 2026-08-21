@@ -48,6 +48,7 @@ async def jwks_endpoint(request: Request) -> dict[str, Any]:
             cached = await redis_client.get(cache_key)
             if cached:
                 import json as _json
+
                 return _json.loads(cached.decode() if isinstance(cached, bytes) else cached)
         except Exception:
             pass
@@ -68,6 +69,7 @@ async def jwks_endpoint(request: Request) -> dict[str, Any]:
     if redis_client and keys:
         try:
             import json as _json
+
             await redis_client.setex(cache_key, 600, _json.dumps(response_data))
         except Exception:
             pass

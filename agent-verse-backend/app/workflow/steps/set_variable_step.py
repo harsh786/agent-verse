@@ -1,4 +1,5 @@
 """SetVariableStepNode — writes a mutable workflow variable."""
+
 from __future__ import annotations
 
 from typing import Any

@@ -4,6 +4,7 @@ Environment:
   SUBSTACK_API_KEY: Substack API key (from publication settings)
   SUBSTACK_PUBLICATION: Substack publication subdomain (e.g. mypublication)
 """
+
 from __future__ import annotations
 
 import os
@@ -23,7 +24,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
-                "limit": {"type": "integer", "description": "Number of posts to return", "default": 25},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of posts to return",
+                    "default": 25,
+                },
                 "type": {"type": "string", "description": "Post type: post, podcast, thread"},
             },
         },
@@ -37,8 +42,15 @@ TOOL_DEFINITIONS = [
                 "title": {"type": "string", "description": "Post title"},
                 "body": {"type": "string", "description": "Post body content (HTML or Markdown)"},
                 "subtitle": {"type": "string", "description": "Post subtitle/description"},
-                "is_free": {"type": "boolean", "description": "Whether the post is free for all subscribers", "default": True},
-                "audience": {"type": "string", "description": "Audience: everyone, only_paid, only_free"},
+                "is_free": {
+                    "type": "boolean",
+                    "description": "Whether the post is free for all subscribers",
+                    "default": True,
+                },
+                "audience": {
+                    "type": "string",
+                    "description": "Audience: everyone, only_paid, only_free",
+                },
             },
             "required": ["title", "body"],
         },
@@ -50,8 +62,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "post_id": {"type": "string", "description": "Post ID to publish"},
-                "send_email": {"type": "boolean", "description": "Send email notification to subscribers", "default": True},
-                "scheduled_at": {"type": "string", "description": "ISO 8601 scheduled publish date (omit for immediate)"},
+                "send_email": {
+                    "type": "boolean",
+                    "description": "Send email notification to subscribers",
+                    "default": True,
+                },
+                "scheduled_at": {
+                    "type": "string",
+                    "description": "ISO 8601 scheduled publish date (omit for immediate)",
+                },
             },
             "required": ["post_id"],
         },
@@ -63,8 +82,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
-                "limit": {"type": "integer", "description": "Number of subscribers per page", "default": 25},
-                "type": {"type": "string", "description": "Subscription type: free, paid, comp, gift"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of subscribers per page",
+                    "default": 25,
+                },
+                "type": {
+                    "type": "string",
+                    "description": "Subscription type: free, paid, comp, gift",
+                },
             },
         },
     },
@@ -84,7 +110,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "subject": {"type": "string", "description": "Email subject line"},
                 "body": {"type": "string", "description": "Email body content (HTML)"},
-                "audience": {"type": "string", "description": "Audience: everyone, only_paid, only_free"},
+                "audience": {
+                    "type": "string",
+                    "description": "Audience: everyone, only_paid, only_free",
+                },
                 "from_name": {"type": "string", "description": "Sender display name"},
             },
             "required": ["subject", "body"],
@@ -101,7 +130,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     if not publication:
         return {"error": "SUBSTACK_PUBLICATION not configured"}
 
-    base = f"https://substack.com/api/v1"
+    base = "https://substack.com/api/v1"
     pub_base = f"https://{publication}.substack.com/api/v1"
     headers = {
         "Authorization": f"Bearer {api_key}",

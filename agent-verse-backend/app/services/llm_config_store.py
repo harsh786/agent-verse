@@ -11,6 +11,7 @@ The *encrypted_key* field stores the vault-encrypted API key ciphertext — the
 raw key is never written to Redis.  Workers decrypt it via
 :func:`app.providers.vault.get_vault` before calling the LLM provider.
 """
+
 from __future__ import annotations
 
 import json

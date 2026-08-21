@@ -1,4 +1,5 @@
 """Create goal_templates table with RLS."""
+
 from alembic import op
 
 revision = "0048"

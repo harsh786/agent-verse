@@ -3,6 +3,7 @@
 Environment:
   UNBOUNCE_API_KEY: Unbounce API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -23,7 +24,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "page_id": {"type": "string", "description": "Filter by specific page ID"},
-                "state": {"type": "string", "description": "Filter by state: published, unpublished"},
+                "state": {
+                    "type": "string",
+                    "description": "Filter by state: published, unpublished",
+                },
                 "client_id": {"type": "string", "description": "Filter by client/sub-account ID"},
                 "offset": {"type": "integer", "description": "Pagination offset"},
                 "count": {"type": "integer", "description": "Maximum pages to return"},

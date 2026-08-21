@@ -1,4 +1,5 @@
 """Per-tool reliability tracking — success rates and latency across all agent executions."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -30,12 +31,15 @@ class ToolReliabilityStore:
     ) -> None:
         """Record a tool call outcome."""
         key = f"{tenant_id}:{tool_name}"
-        entry = self._cache.setdefault(key, {
-            "tool_name": tool_name,
-            "success_count": 0,
-            "failure_count": 0,
-            "total_latency_ms": 0.0,
-        })
+        entry = self._cache.setdefault(
+            key,
+            {
+                "tool_name": tool_name,
+                "success_count": 0,
+                "failure_count": 0,
+                "total_latency_ms": 0.0,
+            },
+        )
         if success:
             entry["success_count"] += 1
         else:
@@ -46,8 +50,10 @@ class ToolReliabilityStore:
             return
         try:
             from sqlalchemy import text
+
             async with self._db() as session, session.begin():
-                await session.execute(text("""
+                await session.execute(
+                    text("""
                     INSERT INTO tool_reliability_memory
                         (tenant_id, tool_name, success_count, failure_count, total_latency_ms, last_used_at)
                     VALUES (:tid, :tool, :sc, :fc, :lat, NOW())
@@ -56,12 +62,15 @@ class ToolReliabilityStore:
                         failure_count = tool_reliability_memory.failure_count + :fc,
                         total_latency_ms = tool_reliability_memory.total_latency_ms + :lat,
                         last_used_at = NOW()
-                """), {
-                    "tid": tenant_id, "tool": tool_name,
-                    "sc": 1 if success else 0,
-                    "fc": 0 if success else 1,
-                    "lat": latency_ms,
-                })
+                """),
+                    {
+                        "tid": tenant_id,
+                        "tool": tool_name,
+                        "sc": 1 if success else 0,
+                        "fc": 0 if success else 1,
+                        "lat": latency_ms,
+                    },
+                )
         except Exception as exc:
             logger.debug("tool_reliability_record_failed", error=str(exc))
 
@@ -70,12 +79,18 @@ class ToolReliabilityStore:
         if self._db is not None:
             try:
                 from sqlalchemy import text
+
                 async with self._db() as session:
-                    row = (await session.execute(text("""
+                    row = (
+                        await session.execute(
+                            text("""
                         SELECT success_count, failure_count, total_latency_ms, last_used_at
                         FROM tool_reliability_memory
                         WHERE tenant_id = :tid AND tool_name = :tool
-                    """), {"tid": tenant_id, "tool": tool_name})).fetchone()
+                    """),
+                            {"tid": tenant_id, "tool": tool_name},
+                        )
+                    ).fetchone()
                 if row:
                     total = (row[0] or 0) + (row[1] or 0)
                     return {
@@ -109,8 +124,11 @@ class ToolReliabilityStore:
             return []
         try:
             from sqlalchemy import text
+
             async with self._db() as session:
-                rows = (await session.execute(text("""
+                rows = (
+                    await session.execute(
+                        text("""
                     SELECT tool_name, success_count, failure_count,
                            success_count * 1.0 / NULLIF(success_count + failure_count, 0) as rate
                     FROM tool_reliability_memory
@@ -119,7 +137,10 @@ class ToolReliabilityStore:
                       AND success_count * 1.0 / NULLIF(success_count + failure_count, 0) < :max_rate
                     ORDER BY rate ASC
                     LIMIT 10
-                """), {"tid": tenant_id, "min_calls": min_calls, "max_rate": max_success_rate})).fetchall()
+                """),
+                        {"tid": tenant_id, "min_calls": min_calls, "max_rate": max_success_rate},
+                    )
+                ).fetchall()
             return [
                 {
                     "tool_name": r[0],

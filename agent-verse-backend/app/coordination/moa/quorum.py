@@ -13,14 +13,10 @@ class QuorumResult(BaseModel):
     valid_unique_deployments: tuple[str, ...]
 
 
-def evaluate_quorum(
-    proposals: tuple[MoAProposal, ...], *, required: int
-) -> QuorumResult:
+def evaluate_quorum(proposals: tuple[MoAProposal, ...], *, required: int) -> QuorumResult:
     if required <= 0:
         raise ValueError("quorum must be positive")
-    deployments = tuple(
-        sorted({item.deployment_id for item in proposals if item.valid})
-    )
+    deployments = tuple(sorted({item.deployment_id for item in proposals if item.valid}))
     return QuorumResult(
         met=len(deployments) >= required,
         required=required,

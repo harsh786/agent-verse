@@ -4,11 +4,12 @@ Routes every LLM call by role family (executive/engineering/creative/analytical/
 quality requirement, cost budget, latency SLO, and context length.
 Falls back gracefully when primary models are unavailable.
 """
+
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator
 
 import structlog
 from opentelemetry import trace
@@ -21,13 +22,14 @@ _tracer = trace.get_tracer(__name__)
 #  Model profiles
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class ModelProfile:
     primary: str
     fallback: str = ""
-    cost_tier: str = "standard"   # economy | standard | premium
+    cost_tier: str = "standard"  # economy | standard | premium
     min_quality: float = 0.80
-    latency_slo: float = 10.0     # seconds — soft SLO
+    latency_slo: float = 10.0  # seconds — soft SLO
     tools: list[str] = field(default_factory=list)
     context: str = "32k"
     vision: bool = False
@@ -35,45 +37,77 @@ class ModelProfile:
 
 MODEL_PROFILES: dict[str, ModelProfile] = {
     "premium": ModelProfile(
-        primary="claude-opus-4", fallback="gpt-4o",
-        cost_tier="premium", min_quality=0.95, latency_slo=30.0,
+        primary="claude-opus-4",
+        fallback="gpt-4o",
+        cost_tier="premium",
+        min_quality=0.95,
+        latency_slo=30.0,
     ),
     "smart": ModelProfile(
-        primary="claude-sonnet-4-5", fallback="gpt-4o",
-        cost_tier="standard", min_quality=0.85, latency_slo=15.0,
+        primary="claude-sonnet-4-5",
+        fallback="gpt-4o",
+        cost_tier="standard",
+        min_quality=0.85,
+        latency_slo=15.0,
     ),
     "coding": ModelProfile(
-        primary="claude-sonnet-4-5", fallback="gpt-4o",
-        cost_tier="standard", min_quality=0.85, latency_slo=15.0,
+        primary="claude-sonnet-4-5",
+        fallback="gpt-4o",
+        cost_tier="standard",
+        min_quality=0.85,
+        latency_slo=15.0,
     ),
     "creative": ModelProfile(
-        primary="claude-sonnet-4-5", fallback="gpt-4o",
-        cost_tier="standard", min_quality=0.80, latency_slo=20.0,
+        primary="claude-sonnet-4-5",
+        fallback="gpt-4o",
+        cost_tier="standard",
+        min_quality=0.80,
+        latency_slo=20.0,
     ),
     "analytical": ModelProfile(
-        primary="gpt-4o", fallback="claude-sonnet-4-5",
-        cost_tier="standard", min_quality=0.97, latency_slo=20.0,
+        primary="gpt-4o",
+        fallback="claude-sonnet-4-5",
+        cost_tier="standard",
+        min_quality=0.97,
+        latency_slo=20.0,
     ),
     "fast": ModelProfile(
-        primary="gpt-4o-mini", fallback="claude-haiku",
-        cost_tier="economy", min_quality=0.70, latency_slo=2.0,
+        primary="gpt-4o-mini",
+        fallback="claude-haiku",
+        cost_tier="economy",
+        min_quality=0.70,
+        latency_slo=2.0,
     ),
     "research": ModelProfile(
-        primary="claude-sonnet-4-5", fallback="gpt-4o",
-        cost_tier="standard", tools=["web_search"],
-        context="128k", min_quality=0.85, latency_slo=30.0,
+        primary="claude-sonnet-4-5",
+        fallback="gpt-4o",
+        cost_tier="standard",
+        tools=["web_search"],
+        context="128k",
+        min_quality=0.85,
+        latency_slo=30.0,
     ),
     "expert": ModelProfile(
-        primary="claude-opus-4", fallback="gpt-4o",
-        cost_tier="premium", min_quality=0.99, latency_slo=60.0,
+        primary="claude-opus-4",
+        fallback="gpt-4o",
+        cost_tier="premium",
+        min_quality=0.99,
+        latency_slo=60.0,
     ),
     "worker": ModelProfile(
-        primary="gpt-4o-mini", fallback="claude-haiku",
-        cost_tier="economy", min_quality=0.65, latency_slo=5.0,
+        primary="gpt-4o-mini",
+        fallback="claude-haiku",
+        cost_tier="economy",
+        min_quality=0.65,
+        latency_slo=5.0,
     ),
     "vision": ModelProfile(
-        primary="gpt-4o", fallback="claude-opus-4",
-        cost_tier="premium", vision=True, min_quality=0.88, latency_slo=20.0,
+        primary="gpt-4o",
+        fallback="claude-opus-4",
+        cost_tier="premium",
+        vision=True,
+        min_quality=0.88,
+        latency_slo=20.0,
     ),
 }
 
@@ -89,6 +123,7 @@ _COST_TIER_SCORE: dict[str, float] = {
 #  Selection output
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class ModelSelection:
     model_id: str
@@ -102,6 +137,7 @@ class ModelSelection:
 # ─────────────────────────────────────────────────────────────────────────────
 #  Gateway
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class ModelGateway:
     """Select the optimal model profile for an LLM call and handle fallback."""
@@ -159,8 +195,7 @@ class ModelGateway:
             profile = MODEL_PROFILES.get(best_profile_name, MODEL_PROFILES["smart"])
             reasoning = (
                 f"Selected '{best_profile_name}' (score={best_score:.3f}, "
-                f"model={profile.primary}). "
-                + "; ".join(skip_reasons[:2])
+                f"model={profile.primary}). " + "; ".join(skip_reasons[:2])
             )
 
             _log.info(
@@ -189,7 +224,11 @@ class ModelGateway:
         cost_budget_usd: float,
     ) -> float:
         q = min(profile.min_quality / max(quality_req, 0.01), 1.0)
-        lat = min(latency_budget_s / max(profile.latency_slo, 0.01), 1.0) if latency_budget_s > 0 else 1.0
+        lat = (
+            min(latency_budget_s / max(profile.latency_slo, 0.01), 1.0)
+            if latency_budget_s > 0
+            else 1.0
+        )
         cost = _COST_TIER_SCORE.get(profile.cost_tier, 0.5)
         reliability = 1.0 if self._health.get(profile.primary, True) else 0.0
 

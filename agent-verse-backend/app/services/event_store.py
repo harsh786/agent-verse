@@ -41,8 +41,10 @@ class EventStore:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with self._db() as session, session.begin(), sqlalchemy_rls_context(
-                    session, tenant_ctx.tenant_id
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
                 ):
                     await session.execute(
                         text(
@@ -78,17 +80,16 @@ class EventStore:
             except Exception as exc:
                 if attempt == max_retries - 1:
                     from app.observability.logging import get_logger
-                    get_logger(__name__).warning(
-                        "event_append_failed_all_retries", error=str(exc)
-                    )
+
+                    get_logger(__name__).warning("event_append_failed_all_retries", error=str(exc))
                     return
                 await asyncio.sleep(0.05 * (attempt + 1))  # 50 ms, 100 ms backoff
 
-    async def list_events(
-        self, goal_id: str, *, tenant_ctx: TenantContext
-    ) -> list[dict[str, Any]]:
-        async with self._db() as session, session.begin(), sqlalchemy_rls_context(
-            session, tenant_ctx.tenant_id
+    async def list_events(self, goal_id: str, *, tenant_ctx: TenantContext) -> list[dict[str, Any]]:
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
         ):
             result = await session.execute(
                 select(GoalEvent)
@@ -119,8 +120,10 @@ class EventStore:
         if self._db is None or tenant_ctx is None:
             return []
         try:
-            async with self._db() as session, session.begin(), sqlalchemy_rls_context(
-                session, tenant_ctx.tenant_id
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
             ):
                 result = await session.execute(
                     select(GoalEvent)
@@ -136,5 +139,6 @@ class EventStore:
                 return [{**dict(row.payload), "_seq": row.sequence} for row in rows]
         except Exception as exc:
             from app.observability.logging import get_logger
+
             get_logger(__name__).warning("list_events_since_failed", error=str(exc))
             return []

@@ -13,9 +13,7 @@ from app.providers.base import CompletionRequest, EmbedRequest, Message
 from app.rag.contracts import RAGStrategy
 from app.tenancy.context import TenantContext
 
-_SUPPORTED_INDEXING_STRATEGIES = frozenset(
-    {RAGStrategy.RAPTOR, RAGStrategy.AGENTIC_CHUNKING}
-)
+_SUPPORTED_INDEXING_STRATEGIES = frozenset({RAGStrategy.RAPTOR, RAGStrategy.AGENTIC_CHUNKING})
 _RAPTOR_SUMMARY_SYSTEM = (
     "Summarize each input group independently. Preserve facts, entities, and relationships. "
     "Return a JSON array of summary strings in the same order as the input groups."
@@ -190,8 +188,7 @@ class RAGIndexingPipeline:
         if not records:
             return []
         indexed_records = [
-            replace(record, chunk_index=chunk_index)
-            for chunk_index, record in enumerate(records)
+            replace(record, chunk_index=chunk_index) for chunk_index, record in enumerate(records)
         ]
         embedded = await self._embed_records(indexed_records)
         await self._store.persist_index_records(
@@ -266,7 +263,7 @@ class RAGIndexingPipeline:
             if len(current) <= 1:
                 break
             groups = [
-                current[index:index + self._config.raptor_cluster_size]
+                current[index : index + self._config.raptor_cluster_size]
                 for index in range(0, len(current), self._config.raptor_cluster_size)
             ]
             summaries = await self._complete_json_batches(
@@ -282,9 +279,7 @@ class RAGIndexingPipeline:
 
             parents: list[RAGIndexRecord] = []
             child_parent_ids: dict[str, str] = {}
-            for group_index, (group, summary) in enumerate(
-                zip(groups, summaries, strict=True)
-            ):
+            for group_index, (group, summary) in enumerate(zip(groups, summaries, strict=True)):
                 parent_id = self._stable_id(
                     group[0].document_id,
                     RAGStrategy.RAPTOR,
@@ -332,18 +327,14 @@ class RAGIndexingPipeline:
             chunks,
             self._config.proposition_batch_size,
         )
-        if len(payload) != len(chunks) or not all(
-            isinstance(item, list) for item in payload
-        ):
+        if len(payload) != len(chunks) or not all(isinstance(item, list) for item in payload):
             raise RuntimeError("Agentic chunking provider returned an incomplete batch")
         propositions: list[RAGIndexRecord] = []
         for parent_index, raw_propositions in enumerate(payload):
             parent = parents[parent_index]
             for proposition_index, proposition in enumerate(raw_propositions):
                 if not isinstance(proposition, str) or not proposition.strip():
-                    raise RuntimeError(
-                        "Agentic chunking provider returned an invalid proposition"
-                    )
+                    raise RuntimeError("Agentic chunking provider returned an invalid proposition")
                 propositions.append(
                     RAGIndexRecord(
                         chunk_id=self._stable_id(
@@ -380,12 +371,10 @@ class RAGIndexingPipeline:
     ) -> list[Any]:
         completed: list[Any] = []
         for start in range(0, len(payload), batch_size):
-            batch = payload[start:start + batch_size]
+            batch = payload[start : start + batch_size]
             parsed = await self._complete_json_batch(strategy, system, batch)
             if len(parsed) != len(batch):
-                raise RuntimeError(
-                    f"{strategy.value} provider returned an incomplete batch"
-                )
+                raise RuntimeError(f"{strategy.value} provider returned an incomplete batch")
             completed.extend(parsed)
         return completed
 
@@ -421,16 +410,14 @@ class RAGIndexingPipeline:
     ) -> list[RAGIndexRecord]:
         embeddings: list[list[float]] = []
         for start in range(0, len(records), self._config.embedding_batch_size):
-            batch = records[start:start + self._config.embedding_batch_size]
+            batch = records[start : start + self._config.embedding_batch_size]
             response = await self._embedder.embed(
                 EmbedRequest(texts=[record.content for record in batch])
             )
             if len(response.embeddings) != len(batch) or any(
                 not embedding for embedding in response.embeddings
             ):
-                raise RuntimeError(
-                    "Embedding provider returned an incomplete indexing batch"
-                )
+                raise RuntimeError("Embedding provider returned an incomplete indexing batch")
             embeddings.extend(response.embeddings)
         dimensions = {len(embedding) for embedding in embeddings}
         if len(dimensions) != 1:

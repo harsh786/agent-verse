@@ -34,6 +34,7 @@ Expiry / replay protection
 The ``issued_at`` ISO-8601 timestamp is included in the canonical bytes, so
 a replayed envelope with a modified ``issued_at`` fails verification.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -85,7 +86,7 @@ def _get_signing_key() -> bytes:
         if is_production:
             raise RuntimeError(
                 "SECURITY: ISOLATED_EXECUTION_SIGNING_KEY must be set in production. "
-                "Generate a strong key: python -c \"import secrets; print(secrets.token_hex(32))\""
+                'Generate a strong key: python -c "import secrets; print(secrets.token_hex(32))"'
             )
         logger.warning(
             "isolated_execution_signing_key_missing",

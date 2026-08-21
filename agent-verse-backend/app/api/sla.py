@@ -1,7 +1,11 @@
 """SLA tiers — per-plan uptime guarantees and support response times."""
+
 from __future__ import annotations
+
 from typing import Any
+
 from fastapi import APIRouter, Request
+
 from app.tenancy.context import PlanTier
 
 router = APIRouter(prefix="/sla", tags=["sla"])

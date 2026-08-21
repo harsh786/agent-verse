@@ -1,4 +1,5 @@
 """Extractor registry — get_extractor(doc_type) factory."""
+
 from __future__ import annotations
 
 from typing import Any

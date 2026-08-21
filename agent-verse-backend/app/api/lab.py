@@ -1,4 +1,5 @@
 """Agent Lab API — unified playground, simulation, and model comparison."""
+
 from __future__ import annotations
 
 from typing import Any

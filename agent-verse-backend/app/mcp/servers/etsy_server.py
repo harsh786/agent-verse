@@ -4,6 +4,7 @@ Environment:
   ETSY_API_KEY: Etsy API key (keystring) from the Etsy developer portal
   ETSY_ACCESS_TOKEN: OAuth2 access token for authenticated requests
 """
+
 from __future__ import annotations
 
 import os
@@ -24,8 +25,15 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "shop_name": {"type": "string", "description": "Shop name to search for (optional)"},
-                "limit": {"type": "integer", "description": "Number of results to return (max 100)", "default": 25},
+                "shop_name": {
+                    "type": "string",
+                    "description": "Shop name to search for (optional)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of results to return (max 100)",
+                    "default": 25,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
         },
@@ -37,8 +45,16 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "shop_id": {"type": "string", "description": "Etsy shop ID or shop name"},
-                "state": {"type": "string", "description": "Listing state: active, inactive, sold_out, draft, expired", "default": "active"},
-                "limit": {"type": "integer", "description": "Number of listings to return (max 100)", "default": 25},
+                "state": {
+                    "type": "string",
+                    "description": "Listing state: active, inactive, sold_out, draft, expired",
+                    "default": "active",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of listings to return (max 100)",
+                    "default": 25,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
             "required": ["shop_id"],
@@ -56,7 +72,11 @@ TOOL_DEFINITIONS = [
                 "price": {"type": "number", "description": "Listing price in the shop currency"},
                 "quantity": {"type": "integer", "description": "Available quantity", "default": 1},
                 "taxonomy_id": {"type": "integer", "description": "Etsy taxonomy/category ID"},
-                "tags": {"type": "array", "items": {"type": "string"}, "description": "Up to 13 tags"},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Up to 13 tags",
+                },
             },
             "required": ["shop_id", "title", "description", "price", "quantity", "taxonomy_id"],
         },
@@ -87,7 +107,11 @@ TOOL_DEFINITIONS = [
                 "shop_id": {"type": "string", "description": "Etsy shop ID"},
                 "was_paid": {"type": "boolean", "description": "Filter by paid status"},
                 "was_shipped": {"type": "boolean", "description": "Filter by shipped status"},
-                "limit": {"type": "integer", "description": "Number of orders to return (max 100)", "default": 25},
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of orders to return (max 100)",
+                    "default": 25,
+                },
                 "offset": {"type": "integer", "description": "Pagination offset", "default": 0},
             },
             "required": ["shop_id"],

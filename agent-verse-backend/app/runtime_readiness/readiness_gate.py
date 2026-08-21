@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
 from app.runtime_readiness.dependency_health import DependencyHealth, DepStatus
 
 if TYPE_CHECKING:
@@ -32,7 +34,7 @@ class ReadinessGate:
     def __init__(self, health: DependencyHealth) -> None:
         self._health = health
 
-    def check(self, profile: "GoalRuntimeProfile") -> ReadinessResult:
+    def check(self, profile: GoalRuntimeProfile) -> ReadinessResult:
         blocking: list[str] = []
         warnings: list[str] = []
         optional_down: list[str] = []
@@ -66,6 +68,7 @@ class ReadinessGate:
         if not result.ready:
             try:
                 from app.observability.metrics import orchestration_readiness_gate_blocked_total
+
                 for dep in blocking:
                     orchestration_readiness_gate_blocked_total.labels(blocking_dep=dep).inc()
             except Exception:

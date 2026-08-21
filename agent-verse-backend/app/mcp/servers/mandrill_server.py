@@ -3,6 +3,7 @@
 Environment:
   MANDRILL_API_KEY: Mandrill API key
 """
+
 from __future__ import annotations
 
 import os
@@ -116,9 +117,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     default_from = os.getenv("MANDRILL_FROM_EMAIL", "noreply@example.com")
 
     try:
-        async with httpx.AsyncClient(
-            base_url=MANDRILL_BASE, timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=MANDRILL_BASE, timeout=30.0) as c:
             if tool_name == "mandrill_send_email":
                 message: dict[str, Any] = {
                     "to": [{"email": arguments["to_email"], "name": arguments.get("to_name", "")}],
@@ -177,7 +176,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r.raise_for_status()
                 return {
                     "templates": [
-                        {"slug": t.get("slug"), "name": t.get("name"), "labels": t.get("labels", [])}
+                        {
+                            "slug": t.get("slug"),
+                            "name": t.get("name"),
+                            "labels": t.get("labels", []),
+                        }
                         for t in r.json()
                     ]
                 }

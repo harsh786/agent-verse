@@ -3,6 +3,7 @@
 Environment:
   PIVOTAL_TRACKER_TOKEN: Pivotal Tracker API token
 """
+
 from __future__ import annotations
 
 import os
@@ -30,7 +31,16 @@ TOOL_DEFINITIONS = [
                 },
                 "current_state": {
                     "type": "string",
-                    "enum": ["accepted", "delivered", "finished", "started", "rejected", "planned", "unstarted", "unscheduled"],
+                    "enum": [
+                        "accepted",
+                        "delivered",
+                        "finished",
+                        "started",
+                        "rejected",
+                        "planned",
+                        "unstarted",
+                        "unscheduled",
+                    ],
                 },
                 "limit": {"type": "integer", "default": 100},
                 "offset": {"type": "integer", "default": 0},
@@ -47,7 +57,11 @@ TOOL_DEFINITIONS = [
                 "project_id": {"type": "integer"},
                 "name": {"type": "string"},
                 "description": {"type": "string"},
-                "story_type": {"type": "string", "enum": ["feature", "bug", "chore", "release"], "default": "feature"},
+                "story_type": {
+                    "type": "string",
+                    "enum": ["feature", "bug", "chore", "release"],
+                    "default": "feature",
+                },
                 "estimate": {"type": "number", "description": "Story point estimate"},
                 "labels": {"type": "array", "items": {"type": "string"}},
             },
@@ -184,7 +198,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "current_iteration_number": data.get("current_iteration_number"),
                     "start_time": data.get("start_time"),
                     "initial_velocity": data.get("initial_velocity"),
-                    "number_of_done_iterations_to_show": data.get("number_of_done_iterations_to_show"),
+                    "number_of_done_iterations_to_show": data.get(
+                        "number_of_done_iterations_to_show"
+                    ),
                 }
 
             return {"error": f"Unknown tool: {tool_name}"}

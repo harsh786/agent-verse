@@ -4,6 +4,7 @@ Environment:
   PINECONE_API_KEY:     Pinecone API key
   PINECONE_ENVIRONMENT: Pinecone environment (e.g. us-east-1-aws) — used for index host construction
 """
+
 from __future__ import annotations
 
 import os
@@ -199,7 +200,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     body = {"vectors": arguments["vectors"]}
                     if namespace:
                         body["namespace"] = namespace
-                    resp = await client.post(f"{index_base}/vectors/upsert", json=body, headers=index_hdrs)
+                    resp = await client.post(
+                        f"{index_base}/vectors/upsert", json=body, headers=index_hdrs
+                    )
                     resp.raise_for_status()
                     return resp.json()
 
@@ -213,7 +216,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                         body["deleteAll"] = True
                     if namespace:
                         body["namespace"] = namespace
-                    resp = await client.post(f"{index_base}/vectors/delete", json=body, headers=index_hdrs)
+                    resp = await client.post(
+                        f"{index_base}/vectors/delete", json=body, headers=index_hdrs
+                    )
                     resp.raise_for_status()
                     return {"success": True}
 
@@ -221,7 +226,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     params: dict[str, Any] = {"ids": arguments["ids"]}
                     if namespace:
                         params["namespace"] = namespace
-                    resp = await client.get(f"{index_base}/vectors/fetch", params=params, headers=index_hdrs)
+                    resp = await client.get(
+                        f"{index_base}/vectors/fetch", params=params, headers=index_hdrs
+                    )
                     resp.raise_for_status()
                     return resp.json()
 

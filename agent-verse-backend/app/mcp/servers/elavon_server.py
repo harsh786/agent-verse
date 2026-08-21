@@ -5,6 +5,7 @@ Environment:
   ELAVON_USER_ID: Elavon API user ID
   ELAVON_PIN: Elavon transaction PIN
 """
+
 from __future__ import annotations
 
 import os
@@ -24,7 +25,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "amount": {"type": "string", "description": "Transaction amount in dollars (e.g. '10.50')"},
+                "amount": {
+                    "type": "string",
+                    "description": "Transaction amount in dollars (e.g. '10.50')",
+                },
                 "card_number": {"type": "string", "description": "Credit card number"},
                 "exp_date": {"type": "string", "description": "Card expiration date (MMYY)"},
                 "cvv": {"type": "string", "description": "Card verification value"},
@@ -65,7 +69,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "start_date": {"type": "string", "description": "Start date MM/DD/YYYY"},
                 "end_date": {"type": "string", "description": "End date MM/DD/YYYY"},
-                "result_code": {"type": "string", "description": "Filter by result: A (approved), D (declined)"},
+                "result_code": {
+                    "type": "string",
+                    "description": "Filter by result: A (approved), D (declined)",
+                },
                 "page": {"type": "integer", "description": "Page number"},
             },
         },
@@ -127,13 +134,21 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 return {"response": r.text[:500]}
 
             if tool_name == "elavon_void_transaction":
-                params = {**base_params, "ssl_transaction_type": "ccvoid", "ssl_txn_id": arguments["txn_id"]}
+                params = {
+                    **base_params,
+                    "ssl_transaction_type": "ccvoid",
+                    "ssl_txn_id": arguments["txn_id"],
+                }
                 r = await client.post(f"{BASE_URL}/processxml.do", data=params)
                 r.raise_for_status()
                 return {"response": r.text[:500]}
 
             if tool_name == "elavon_refund_transaction":
-                params = {**base_params, "ssl_transaction_type": "ccreturn", "ssl_txn_id": arguments["txn_id"]}
+                params = {
+                    **base_params,
+                    "ssl_transaction_type": "ccreturn",
+                    "ssl_txn_id": arguments["txn_id"],
+                }
                 if "amount" in arguments:
                     params["ssl_amount"] = arguments["amount"]
                 r = await client.post(f"{BASE_URL}/processxml.do", data=params)

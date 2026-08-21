@@ -3,6 +3,7 @@
 Environment:
   PINTEREST_ACCESS_TOKEN: Pinterest OAuth2 access token from developer portal
 """
+
 from __future__ import annotations
 
 import os
@@ -23,9 +24,16 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "page_size": {"type": "integer", "description": "Number of boards per page (max 250)", "default": 25},
+                "page_size": {
+                    "type": "integer",
+                    "description": "Number of boards per page (max 250)",
+                    "default": 25,
+                },
                 "bookmark": {"type": "string", "description": "Pagination cursor for next page"},
-                "privacy": {"type": "string", "description": "Filter by privacy: PUBLIC, PROTECTED, SECRET"},
+                "privacy": {
+                    "type": "string",
+                    "description": "Filter by privacy: PUBLIC, PROTECTED, SECRET",
+                },
             },
         },
     },
@@ -37,7 +45,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "board_id": {"type": "string", "description": "Pinterest board ID to pin to"},
                 "title": {"type": "string", "description": "Pin title (max 100 characters)"},
-                "description": {"type": "string", "description": "Pin description (max 500 characters)"},
+                "description": {
+                    "type": "string",
+                    "description": "Pin description (max 500 characters)",
+                },
                 "link": {"type": "string", "description": "Destination URL when pin is clicked"},
                 "media_source_url": {"type": "string", "description": "Image URL for the pin"},
                 "alt_text": {"type": "string", "description": "Alt text for the pin image"},
@@ -52,7 +63,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "board_id": {"type": "string", "description": "Pinterest board ID"},
-                "page_size": {"type": "integer", "description": "Number of pins per page (max 250)", "default": 25},
+                "page_size": {
+                    "type": "integer",
+                    "description": "Number of pins per page (max 250)",
+                    "default": 25,
+                },
                 "bookmark": {"type": "string", "description": "Pagination cursor"},
             },
             "required": ["board_id"],
@@ -83,8 +98,16 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query for pins"},
-                "scope": {"type": "string", "description": "Search scope: my_pins, my_boards", "default": "my_pins"},
-                "page_size": {"type": "integer", "description": "Number of results per page (max 250)", "default": 25},
+                "scope": {
+                    "type": "string",
+                    "description": "Search scope: my_pins, my_boards",
+                    "default": "my_pins",
+                },
+                "page_size": {
+                    "type": "integer",
+                    "description": "Number of results per page (max 250)",
+                    "default": 25,
+                },
                 "bookmark": {"type": "string", "description": "Pagination cursor"},
             },
             "required": ["query"],
@@ -98,7 +121,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "name": {"type": "string", "description": "Board name"},
                 "description": {"type": "string", "description": "Board description"},
-                "privacy": {"type": "string", "description": "Privacy setting: PUBLIC, PROTECTED, SECRET", "default": "PUBLIC"},
+                "privacy": {
+                    "type": "string",
+                    "description": "Privacy setting: PUBLIC, PROTECTED, SECRET",
+                    "default": "PUBLIC",
+                },
             },
             "required": ["name"],
         },

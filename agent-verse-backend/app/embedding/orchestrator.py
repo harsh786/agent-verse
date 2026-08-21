@@ -1,4 +1,5 @@
 """EmbeddingOrchestrator — selects embedding model per content type and tenant policy."""
+
 from __future__ import annotations
 
 import math
@@ -132,15 +133,14 @@ class EmbeddingOrchestrator:
         for provider in providers:
             try:
                 from app.providers.base import embed_texts as _embed
+
                 result = await _embed([text], provider=provider)
                 if result:
                     return result[0]
             except Exception as exc:
                 last_exc = exc
                 continue
-        raise RuntimeError(
-            f"All embedding providers failed. Last error: {last_exc}"
-        ) from last_exc
+        raise RuntimeError(f"All embedding providers failed. Last error: {last_exc}") from last_exc
 
     async def embed_batch(
         self,
@@ -172,6 +172,7 @@ class EmbeddingOrchestrator:
             for provider in providers:
                 try:
                     from app.providers.base import embed_texts as _embed
+
                     result = await _embed(batch_texts, provider=provider)
                     for i, emb in enumerate(result):
                         all_embeddings[start + i] = emb

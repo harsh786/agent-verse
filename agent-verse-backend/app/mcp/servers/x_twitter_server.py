@@ -7,6 +7,7 @@ Environment:
   TWITTER_ACCESS_TOKEN:        OAuth 1.0a access token (for write operations)
   TWITTER_ACCESS_TOKEN_SECRET: OAuth 1.0a access token secret (for write operations)
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -170,14 +171,17 @@ def _oauth1_header(method: str, url: str, params: dict | None = None) -> dict[st
         f"{urllib.parse.quote(str(k), safe='')}={urllib.parse.quote(str(v), safe='')}"
         for k, v in sorted_params
     )
-    base_string = "&".join([
-        method.upper(),
-        urllib.parse.quote(url, safe=""),
-        urllib.parse.quote(param_string, safe=""),
-    ])
+    base_string = "&".join(
+        [
+            method.upper(),
+            urllib.parse.quote(url, safe=""),
+            urllib.parse.quote(param_string, safe=""),
+        ]
+    )
     signing_key = f"{urllib.parse.quote(api_secret, safe='')}&{urllib.parse.quote(access_token_secret, safe='')}"
     signature = hmac.new(signing_key.encode(), base_string.encode(), hashlib.sha1).digest()
     import base64
+
     oauth_params["oauth_signature"] = base64.b64encode(signature).decode()
 
     auth_header = "OAuth " + ", ".join(
@@ -198,7 +202,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 params: dict[str, Any] = {
                     "query": arguments["query"],
                     "max_results": min(arguments.get("max_results", 10), 100),
-                    "tweet.fields": arguments.get("tweet_fields", "created_at,author_id,public_metrics"),
+                    "tweet.fields": arguments.get(
+                        "tweet_fields", "created_at,author_id,public_metrics"
+                    ),
                 }
                 if exp := arguments.get("expansions"):
                     params["expansions"] = exp
@@ -213,7 +219,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 return r.json()
 
             elif tool_name == "twitter_get_tweet":
-                params = {"tweet.fields": arguments.get("tweet_fields", "created_at,author_id,public_metrics")}
+                params = {
+                    "tweet.fields": arguments.get(
+                        "tweet_fields", "created_at,author_id,public_metrics"
+                    )
+                }
                 r = await c.get(
                     f"{TWITTER_BASE}/tweets/{arguments['tweet_id']}",
                     params=params,
@@ -263,7 +273,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "twitter_lookup_user":
                 r = await c.get(
                     f"{TWITTER_BASE}/users/by/username/{arguments['username']}",
-                    params={"user.fields": arguments.get("user_fields", "name,username,description,public_metrics")},
+                    params={
+                        "user.fields": arguments.get(
+                            "user_fields", "name,username,description,public_metrics"
+                        )
+                    },
                     headers=_bearer_headers(),
                 )
                 r.raise_for_status()

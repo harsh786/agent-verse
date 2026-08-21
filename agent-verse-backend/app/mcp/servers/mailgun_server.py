@@ -4,6 +4,7 @@ Environment:
   MAILGUN_API_KEY: Mailgun private API key (starts with key-)
   MAILGUN_DOMAIN: Default sending domain, e.g. mg.yourdomain.com
 """
+
 from __future__ import annotations
 
 import os
@@ -29,12 +30,21 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "to": {"type": "string", "description": "Recipient email address(es), comma-separated"},
+                "to": {
+                    "type": "string",
+                    "description": "Recipient email address(es), comma-separated",
+                },
                 "subject": {"type": "string", "description": "Email subject line"},
                 "html": {"type": "string", "description": "HTML body content"},
                 "text": {"type": "string", "description": "Plain text body content"},
-                "from_email": {"type": "string", "description": "Sender address (defaults to postmaster@MAILGUN_DOMAIN)"},
-                "domain": {"type": "string", "description": "Mailgun domain to send from (overrides MAILGUN_DOMAIN env var)"},
+                "from_email": {
+                    "type": "string",
+                    "description": "Sender address (defaults to postmaster@MAILGUN_DOMAIN)",
+                },
+                "domain": {
+                    "type": "string",
+                    "description": "Mailgun domain to send from (overrides MAILGUN_DOMAIN env var)",
+                },
             },
             "required": ["to", "subject"],
         },
@@ -45,7 +55,11 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "description": "Max domains to return", "default": 100},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max domains to return",
+                    "default": 100,
+                },
             },
         },
     },
@@ -56,8 +70,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "domain": {"type": "string", "description": "Domain name to fetch stats for"},
-                "event": {"type": "string", "description": "Comma-separated events: accepted,delivered,failed,opened,clicked,unsubscribed,complained"},
-                "duration": {"type": "string", "description": "Time period, e.g. 1m, 7d, 30d", "default": "30d"},
+                "event": {
+                    "type": "string",
+                    "description": "Comma-separated events: accepted,delivered,failed,opened,clicked,unsubscribed,complained",
+                },
+                "duration": {
+                    "type": "string",
+                    "description": "Time period, e.g. 1m, 7d, 30d",
+                    "default": "30d",
+                },
             },
             "required": ["domain"],
         },
@@ -69,7 +90,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "domain": {"type": "string", "description": "Domain to query events for"},
-                "event": {"type": "string", "description": "Event type filter: accepted, rejected, delivered, failed, opened, clicked, unsubscribed, complained"},
+                "event": {
+                    "type": "string",
+                    "description": "Event type filter: accepted, rejected, delivered, failed, opened, clicked, unsubscribed, complained",
+                },
                 "limit": {"type": "integer", "description": "Max events to return", "default": 100},
             },
             "required": ["domain"],
@@ -81,10 +105,17 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "address": {"type": "string", "description": "List email address, e.g. team@mg.yourdomain.com"},
+                "address": {
+                    "type": "string",
+                    "description": "List email address, e.g. team@mg.yourdomain.com",
+                },
                 "name": {"type": "string", "description": "Human-readable list name"},
                 "description": {"type": "string", "description": "Description of the mailing list"},
-                "access_level": {"type": "string", "description": "Access level: readonly, members, everyone", "default": "readonly"},
+                "access_level": {
+                    "type": "string",
+                    "description": "Access level: readonly, members, everyone",
+                    "default": "readonly",
+                },
             },
             "required": ["address"],
         },
@@ -98,7 +129,11 @@ TOOL_DEFINITIONS = [
                 "list_address": {"type": "string", "description": "Mailing list email address"},
                 "email": {"type": "string", "description": "Member email address to add"},
                 "name": {"type": "string", "description": "Member display name"},
-                "subscribed": {"type": "boolean", "description": "Whether the member is subscribed", "default": True},
+                "subscribed": {
+                    "type": "boolean",
+                    "description": "Whether the member is subscribed",
+                    "default": True,
+                },
             },
             "required": ["list_address", "email"],
         },
@@ -117,7 +152,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             if tool_name == "mailgun_send_email":
                 send_domain = arguments.get("domain") or domain
                 if not send_domain:
-                    return {"error": "MAILGUN_DOMAIN not configured and no domain argument provided"}
+                    return {
+                        "error": "MAILGUN_DOMAIN not configured and no domain argument provided"
+                    }
                 from_addr = arguments.get("from_email") or f"postmaster@{send_domain}"
                 data: dict[str, Any] = {
                     "from": from_addr,

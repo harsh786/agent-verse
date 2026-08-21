@@ -3,6 +3,7 @@
 Environment:
   POSTMAN_API_KEY: Postman API key
 """
+
 from __future__ import annotations
 
 import os

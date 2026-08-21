@@ -4,6 +4,7 @@ Environment:
   FRESHCHAT_API_TOKEN: Freshchat API token for authentication
   FRESHCHAT_DOMAIN: Freshchat account domain (e.g. mycompany)
 """
+
 from __future__ import annotations
 
 import os
@@ -28,10 +29,16 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter by status: new, assigned, resolved"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: new, assigned, resolved",
+                },
                 "page": {"type": "integer", "description": "Page number"},
                 "items_per_page": {"type": "integer", "description": "Conversations per page"},
-                "assigned_agent_id": {"type": "string", "description": "Filter by assigned agent ID"},
+                "assigned_agent_id": {
+                    "type": "string",
+                    "description": "Filter by assigned agent ID",
+                },
             },
         },
     },
@@ -42,7 +49,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "channel_id": {"type": "string", "description": "ID of the Freshchat channel"},
-                "user_id": {"type": "string", "description": "ID of the user starting the conversation"},
+                "user_id": {
+                    "type": "string",
+                    "description": "ID of the user starting the conversation",
+                },
                 "messages": {
                     "type": "array",
                     "description": "Initial messages in the conversation",
@@ -58,8 +68,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "conversation_id": {"type": "string", "description": "ID of the target conversation"},
-                "message_type": {"type": "string", "description": "Message type: normal or private"},
+                "conversation_id": {
+                    "type": "string",
+                    "description": "ID of the target conversation",
+                },
+                "message_type": {
+                    "type": "string",
+                    "description": "Message type: normal or private",
+                },
                 "text": {"type": "string", "description": "Text content of the message"},
                 "actor_type": {"type": "string", "description": "Who is sending: agent or user"},
                 "actor_id": {"type": "string", "description": "ID of the sending agent or user"},
@@ -97,7 +113,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "conversation_id": {"type": "string", "description": "ID of the conversation"},
                 "status": {"type": "string", "description": "New status: assigned, resolved, new"},
-                "assigned_agent_id": {"type": "string", "description": "Agent ID to assign conversation to"},
+                "assigned_agent_id": {
+                    "type": "string",
+                    "description": "Agent ID to assign conversation to",
+                },
             },
             "required": ["conversation_id", "status"],
         },

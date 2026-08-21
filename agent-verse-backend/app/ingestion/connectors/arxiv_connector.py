@@ -3,6 +3,7 @@
 Uses arXiv API (no auth required). Cursor: last submission date.
 Fetches abstract + full text via arXiv PDF → text extraction.
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,10 +32,13 @@ class ArXivConnector(BaseConnector):
         import time
 
         import httpx
+
         t0 = time.perf_counter()
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(_ARXIV_BASE, params={"search_query": "all:quantum", "max_results": 1})
+                r = await client.get(
+                    _ARXIV_BASE, params={"search_query": "all:quantum", "max_results": 1}
+                )
                 r.raise_for_status()
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(ok=True, latency_ms=latency, metadata={"api": "arxiv.org"})
@@ -77,6 +81,7 @@ class ArXivConnector(BaseConnector):
 
             # Parse Atom XML response
             from xml.etree import ElementTree as ET
+
             ns = {
                 "atom": "http://www.w3.org/2005/Atom",
                 "arxiv": "http://arxiv.org/schemas/atom",
@@ -106,6 +111,11 @@ class ArXivConnector(BaseConnector):
                     source_url=f"https://arxiv.org/abs/{arxiv_id}",
                     content=text.encode(),
                     content_type="text/plain",
-                    metadata={"arxiv_id": arxiv_id, "title": title, "authors": authors, "published": published},
+                    metadata={
+                        "arxiv_id": arxiv_id,
+                        "title": title,
+                        "authors": authors,
+                        "published": published,
+                    },
                 )
                 yield doc, new_cursor

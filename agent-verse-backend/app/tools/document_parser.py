@@ -4,10 +4,10 @@ All parsing is done locally — no cloud services required.
 Dependencies (optional — graceful degradation if missing):
   pip install pypdf python-docx chardet
 """
+
 from __future__ import annotations
 
 import io
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,13 +48,12 @@ class DocumentParserTool:
         filename: str = "document",
     ) -> dict:
         import asyncio
+
         return await asyncio.get_running_loop().run_in_executor(
             None, self._parse_sync, file_path, content_bytes, filename
         )
 
-    def _parse_sync(
-        self, file_path: str, content_bytes: bytes | None, filename: str
-    ) -> dict:
+    def _parse_sync(self, file_path: str, content_bytes: bytes | None, filename: str) -> dict:
         # Determine format
         name = filename or (Path(file_path).name if file_path else "doc")
         ext = Path(name).suffix.lower()
@@ -102,6 +101,7 @@ class DocumentParserTool:
         except ImportError:
             try:
                 from PyPDF2 import PdfReader  # type: ignore[import]
+
                 reader = PdfReader(io.BytesIO(data))
                 pages = []
                 for i, page in enumerate(reader.pages[:_MAX_PAGES]):
@@ -143,8 +143,10 @@ class DocumentParserTool:
 
     def _parse_csv(self, data: bytes, *, filename: str) -> ParsedDocument:
         import csv
+
         try:
             import chardet
+
             enc = chardet.detect(data)["encoding"] or "utf-8"
         except ImportError:
             enc = "utf-8"
@@ -215,6 +217,7 @@ class DocumentParserTool:
 
     def _parse_json(self, data: bytes, *, filename: str) -> ParsedDocument:
         import json
+
         text = data.decode("utf-8", errors="replace")
         try:
             obj = json.loads(text)
@@ -233,6 +236,7 @@ class DocumentParserTool:
     def _parse_yaml(self, data: bytes, *, filename: str) -> ParsedDocument:
         try:
             import yaml  # type: ignore[import]
+
             text = data.decode("utf-8", errors="replace")
             obj = yaml.safe_load(text)
             formatted = yaml.dump(obj, default_flow_style=False)
@@ -255,7 +259,10 @@ class DocumentParserTool:
                 "type": "object",
                 "properties": {
                     "file_path": {"type": "string", "description": "Absolute path to the file"},
-                    "filename": {"type": "string", "description": "Filename with extension (for format detection)"},
+                    "filename": {
+                        "type": "string",
+                        "description": "Filename with extension (for format detection)",
+                    },
                 },
             },
         }

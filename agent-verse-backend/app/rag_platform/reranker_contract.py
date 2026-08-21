@@ -75,9 +75,7 @@ class BoundedAsyncExecutor:
                 self._admission.release()
                 raise
             self._futures.add(future)
-        future.add_done_callback(
-            lambda completed: self._schedule_completion(loop, completed)
-        )
+        future.add_done_callback(lambda completed: self._schedule_completion(loop, completed))
         try:
             return await asyncio.wrap_future(future)
         except asyncio.CancelledError:

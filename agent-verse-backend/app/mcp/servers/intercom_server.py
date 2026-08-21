@@ -3,6 +3,7 @@
 Environment:
   INTERCOM_ACCESS_TOKEN: Intercom OAuth2 / developer access token
 """
+
 from __future__ import annotations
 
 import os
@@ -130,9 +131,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "INTERCOM_ACCESS_TOKEN not configured"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=INTERCOM_BASE, headers=_headers(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=INTERCOM_BASE, headers=_headers(), timeout=30.0) as c:
             if tool_name == "intercom_list_conversations":
                 r = await c.get(
                     "/conversations",

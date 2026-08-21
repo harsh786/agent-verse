@@ -79,9 +79,7 @@ class AgenticDecision:
                 reason=payload["reason"].strip(),
                 query=payload.get("query", "").strip(),
                 answer=payload.get("answer", "").strip(),
-                verified_claims=tuple(
-                    claim.strip() for claim in raw_claims if claim.strip()
-                ),
+                verified_claims=tuple(claim.strip() for claim in raw_claims if claim.strip()),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("Invalid agentic decision") from exc
@@ -142,9 +140,7 @@ class AgenticRAGRuntimeAdapter(AgenticRAGRuntimeContract):
         )
 
         if context is None or context.llm is None or context.llm.provider is None:
-            raise RetrievalStrategyExecutionError(
-                self.strategy.value, "resolved LLM is required"
-            )
+            raise RetrievalStrategyExecutionError(self.strategy.value, "resolved LLM is required")
 
         provider = context.llm.provider
         model = context.llm.model
@@ -259,9 +255,7 @@ class AgenticRAGRuntimeAdapter(AgenticRAGRuntimeContract):
                     )
                 fallback_dependencies = replace(
                     context.dependencies,
-                    llm=context.dependencies.strategy_llms.get(
-                        fallback_strategy, context.llm
-                    ),
+                    llm=context.dependencies.strategy_llms.get(fallback_strategy, context.llm),
                 )
                 fallback_context = replace(
                     context,
@@ -317,9 +311,7 @@ class AgenticRAGRuntimeAdapter(AgenticRAGRuntimeContract):
             for citation in fallback_result.citations
         ]
         fallback_legs = [
-            leg
-            for fallback_result in fallback_results
-            for leg in fallback_result.retrieval_legs
+            leg for fallback_result in fallback_results for leg in fallback_result.retrieval_legs
         ]
         result = result.model_copy(
             update={

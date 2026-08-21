@@ -4,6 +4,7 @@ Environment:
   CHATFUEL_TOKEN: Chatfuel API token
   CHATFUEL_BOT_ID: Chatfuel bot ID
 """
+
 from __future__ import annotations
 
 import os
@@ -45,8 +46,14 @@ TOOL_DEFINITIONS = [
                     "description": "Messages to send in the broadcast",
                     "items": {"type": "object"},
                 },
-                "tag": {"type": "string", "description": "Facebook message tag for non-promotional broadcasts"},
-                "scheduled_time": {"type": "string", "description": "ISO datetime to send the broadcast"},
+                "tag": {
+                    "type": "string",
+                    "description": "Facebook message tag for non-promotional broadcasts",
+                },
+                "scheduled_time": {
+                    "type": "string",
+                    "description": "ISO datetime to send the broadcast",
+                },
             },
             "required": ["name", "messages"],
         },
@@ -71,7 +78,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "user_id": {"type": "string", "description": "Chatfuel user ID"},
                 "attribute_name": {"type": "string", "description": "Attribute key to set"},
-                "attribute_value": {"type": "string", "description": "Value to set for the attribute"},
+                "attribute_value": {
+                    "type": "string",
+                    "description": "Value to set for the attribute",
+                },
             },
             "required": ["user_id", "attribute_name", "attribute_value"],
         },

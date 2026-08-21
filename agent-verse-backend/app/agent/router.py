@@ -1,4 +1,5 @@
 """Intent-based agent router — picks the best-fit agent for a goal."""
+
 from __future__ import annotations
 
 import re
@@ -73,19 +74,28 @@ class AgentRouter:
 
     # Systems whose names appear explicitly in goal text — used for anti-affinity.
     _SYSTEM_NAMES: dict[str, list[str]] = {
-        "jira":       ["jira", "ticket", "sprint", "backlog", "epic", "assignee",
-                       "assigned to me", "triage", "story point"],
-        "confluence":  ["confluence"],
-        "github":     ["github"],
-        "gitlab":     ["gitlab"],
-        "slack":      ["slack"],
-        "linear":     ["linear"],
-        "datadog":    ["datadog"],
-        "sentry":     ["sentry"],
-        "stripe":     ["stripe"],
-        "hubspot":    ["hubspot"],
-        "notion":     ["notion"],
-        "postgres":   ["postgres", "postgresql"],
+        "jira": [
+            "jira",
+            "ticket",
+            "sprint",
+            "backlog",
+            "epic",
+            "assignee",
+            "assigned to me",
+            "triage",
+            "story point",
+        ],
+        "confluence": ["confluence"],
+        "github": ["github"],
+        "gitlab": ["gitlab"],
+        "slack": ["slack"],
+        "linear": ["linear"],
+        "datadog": ["datadog"],
+        "sentry": ["sentry"],
+        "stripe": ["stripe"],
+        "hubspot": ["hubspot"],
+        "notion": ["notion"],
+        "postgres": ["postgres", "postgresql"],
     }
 
     def _named_system_in_goal(self, goal_lower: str) -> str | None:
@@ -156,19 +166,42 @@ class AgentRouter:
 
         # Domain keyword → connector name mapping for semantic matching
         DOMAIN_KEYWORDS: dict[str, list[str]] = {
-            "jira":       ["jira", "ticket", "issue", "sprint", "project", "backlog",
-                           "epic", "story", "assignee", "assigned", "triage", "kanban"],
+            "jira": [
+                "jira",
+                "ticket",
+                "issue",
+                "sprint",
+                "project",
+                "backlog",
+                "epic",
+                "story",
+                "assignee",
+                "assigned",
+                "triage",
+                "kanban",
+            ],
             "confluence": ["confluence", "wiki", "page", "document", "space", "knowledge"],
-            "github":     ["github", "git", "repo", "repository", "pr", "pullrequest", "commit", "branch", "code", "file"],
-            "gitlab":     ["gitlab", "merge", "pipeline", "ci", "cd"],
-            "slack":      ["slack", "channel", "message", "notify", "post", "chat"],
-            "linear":     ["linear", "issue", "cycle", "roadmap"],
-            "datadog":    ["datadog", "monitor", "alert", "metric", "apm"],
-            "sentry":     ["sentry", "error", "exception", "traceback", "crash"],
-            "stripe":     ["stripe", "payment", "invoice", "charge", "customer", "subscription"],
-            "hubspot":    ["hubspot", "crm", "contact", "deal", "lead", "pipeline"],
-            "notion":     ["notion", "page", "block", "database"],
-            "postgres":   ["postgres", "postgresql", "sql", "database", "query", "table"],
+            "github": [
+                "github",
+                "git",
+                "repo",
+                "repository",
+                "pr",
+                "pullrequest",
+                "commit",
+                "branch",
+                "code",
+                "file",
+            ],
+            "gitlab": ["gitlab", "merge", "pipeline", "ci", "cd"],
+            "slack": ["slack", "channel", "message", "notify", "post", "chat"],
+            "linear": ["linear", "issue", "cycle", "roadmap"],
+            "datadog": ["datadog", "monitor", "alert", "metric", "apm"],
+            "sentry": ["sentry", "error", "exception", "traceback", "crash"],
+            "stripe": ["stripe", "payment", "invoice", "charge", "customer", "subscription"],
+            "hubspot": ["hubspot", "crm", "contact", "deal", "lead", "pipeline"],
+            "notion": ["notion", "page", "block", "database"],
+            "postgres": ["postgres", "postgresql", "sql", "database", "query", "table"],
         }
 
         total_score = 0.0
@@ -222,18 +255,26 @@ class AgentRouter:
             return 0.0
         try:
             from sqlalchemy import text
+
             async with self._db() as session:
-                row = (await session.execute(text("""
+                row = (
+                    await session.execute(
+                        text("""
                     SELECT AVG(average_score) as avg_score, COUNT(*) as run_count
                     FROM evaluations e
                     JOIN goals g ON e.goal_id = g.id
                     WHERE g.agent_id = :aid AND g.tenant_id = :tid
                       AND e.created_at > NOW() - INTERVAL '30 days'
-                """), {"aid": agent_id, "tid": tenant_ctx.tenant_id})).fetchone()
+                """),
+                        {"aid": agent_id, "tid": tenant_ctx.tenant_id},
+                    )
+                ).fetchone()
             if row and row[1] and row[1] > 0:
                 return min(1.0, float(row[0] or 0))
         except Exception as exc:
-            import logging; logging.getLogger(__name__).debug("router_history_score_failed: %s", exc)
+            import logging
+
+            logging.getLogger(__name__).debug("router_history_score_failed: %s", exc)
         return 0.0
 
     async def _score_by_llm(
@@ -247,25 +288,31 @@ class AgentRouter:
             return []
         try:
             from app.providers.base import CompletionRequest, Message
-            agent_summaries = "\n".join([
-                f"- {a.get('agent_id','?')}: {a.get('name','?')} — {a.get('goal_template','')[:100]}"
-                for a in agents[:10]
-            ])
+
+            agent_summaries = "\n".join(
+                [
+                    f"- {a.get('agent_id', '?')}: {a.get('name', '?')} — {a.get('goal_template', '')[:100]}"
+                    for a in agents[:10]
+                ]
+            )
             req = CompletionRequest(
-                messages=[Message(
-                    role="user",
-                    content=(
-                        f"Given this goal: '{goal}'\n\n"
-                        f"Which of these agents is MOST capable?\n{agent_summaries}\n\n"
-                        f"Return JSON: {{\"best_agent_id\": \"...\", \"confidence\": 0.0-1.0, "
-                        f"\"reasoning\": \"...\"}}"
+                messages=[
+                    Message(
+                        role="user",
+                        content=(
+                            f"Given this goal: '{goal}'\n\n"
+                            f"Which of these agents is MOST capable?\n{agent_summaries}\n\n"
+                            f'Return JSON: {{"best_agent_id": "...", "confidence": 0.0-1.0, '
+                            f'"reasoning": "..."}}'
+                        ),
                     )
-                )],
+                ],
                 model="",
             )
             resp = await provider.complete(req)
             import json
-            m = re.search(r'\{[\s\S]*\}', resp.content)
+
+            m = re.search(r"\{[\s\S]*\}", resp.content)
             if m:
                 data = json.loads(m.group())
                 best_id = data.get("best_agent_id", "")
@@ -273,12 +320,14 @@ class AgentRouter:
                 scores = []
                 for a in agents:
                     aid = a.get("agent_id", "")
-                    scores.append(AgentScore(
-                        agent_id=aid,
-                        agent_name=a.get("name", ""),
-                        score=conf if aid == best_id else max(0.0, conf - 0.4),
-                        reasons=[f"LLM-classified: {data.get('reasoning', '')[:100]}"],
-                    ))
+                    scores.append(
+                        AgentScore(
+                            agent_id=aid,
+                            agent_name=a.get("name", ""),
+                            score=conf if aid == best_id else max(0.0, conf - 0.4),
+                            reasons=[f"LLM-classified: {data.get('reasoning', '')[:100]}"],
+                        )
+                    )
                 return scores
         except Exception:
             pass

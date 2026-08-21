@@ -97,9 +97,7 @@ class StructuredPlanExecutor:
             if prior_checkpoint.state_schema_version != self.state_schema_version:
                 raise ResumeMismatchError("checkpoint state schema version does not match")
 
-        completed = set(
-            prior_checkpoint.completed_step_ids if prior_checkpoint is not None else ()
-        )
+        completed = set(prior_checkpoint.completed_step_ids if prior_checkpoint is not None else ())
         loop_iterations = dict(
             prior_checkpoint.loop_iterations if prior_checkpoint is not None else {}
         )
@@ -172,9 +170,7 @@ class StructuredPlanExecutor:
                 ]
                 if not tasks:
                     continue
-                done, pending = await asyncio.wait(
-                    tasks, return_when=asyncio.FIRST_EXCEPTION
-                )
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
                 if any(task.cancelled() for task in done):
                     for task in pending:
                         task.cancel()
@@ -195,9 +191,7 @@ class StructuredPlanExecutor:
                     raise failure
                 await asyncio.gather(*pending)
 
-        ordered_completed = tuple(
-            step.id for step in plan.steps if step.id in completed
-        )
+        ordered_completed = tuple(step.id for step in plan.steps if step.id in completed)
         return StructuredExecutionResult(
             plan_hash=digest,
             completed_step_ids=ordered_completed,

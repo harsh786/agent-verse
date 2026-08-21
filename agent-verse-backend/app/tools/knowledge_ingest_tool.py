@@ -11,6 +11,7 @@ Supports:
   - Raw text input → pipeline
   - Auto-collection routing (uses agent's default collection)
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -71,7 +72,7 @@ class KnowledgeIngestTool:
         wait_for_completion: bool = True,
         dry_run: bool = False,
         tenant_ctx: Any = None,
-        pipeline: Any = None,           # IngestionPipeline
+        pipeline: Any = None,  # IngestionPipeline
         agent_id: str = "",
         **_: Any,
     ) -> dict[str, Any]:
@@ -92,14 +93,13 @@ class KnowledgeIngestTool:
             collection_id = getattr(tenant_ctx, "default_collection_id", "") or ""
 
         # Build RawDocument
-        raw_doc = await self._build_raw_doc(
-            content_or_url, title=title, tenant_id=tenant_id
-        )
+        raw_doc = await self._build_raw_doc(content_or_url, title=title, tenant_id=tenant_id)
         if raw_doc is None:
             return {"error": f"Failed to fetch: {content_or_url}", "job_status": "failed"}
 
         # Build ad-hoc SourceConfig
         from app.ingestion.source_config import SourceConfig, SourceFamily
+
         config = SourceConfig(
             source_id=f"adhoc_{raw_doc.doc_id[:12]}",
             tenant_id=tenant_id,
@@ -131,9 +131,7 @@ class KnowledgeIngestTool:
         }
 
     @staticmethod
-    async def _build_raw_doc(
-        content_or_url: str, *, title: str, tenant_id: str
-    ) -> Any:
+    async def _build_raw_doc(content_or_url: str, *, title: str, tenant_id: str) -> Any:
         """Fetch URL or wrap raw text as RawDocument."""
         from app.ingestion.source_config import RawDocument
 
@@ -143,6 +141,7 @@ class KnowledgeIngestTool:
         if content_or_url.startswith(("http://", "https://")):
             try:
                 import httpx
+
                 async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
                     r = await c.get(content_or_url)
                     r.raise_for_status()

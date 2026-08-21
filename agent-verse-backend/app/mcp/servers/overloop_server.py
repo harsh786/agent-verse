@@ -3,6 +3,7 @@
 Environment variables:
   OVERLOOP_API_KEY: Overloop API key
 """
+
 from __future__ import annotations
 
 import os
@@ -44,7 +45,10 @@ TOOL_DEFINITIONS = [
                 "title": {"type": "string"},
                 "phone": {"type": "string"},
                 "linkedin_url": {"type": "string"},
-                "custom_attributes": {"type": "object", "description": "Custom attribute key-value pairs"},
+                "custom_attributes": {
+                    "type": "object",
+                    "description": "Custom attribute key-value pairs",
+                },
             },
             "required": ["email"],
         },

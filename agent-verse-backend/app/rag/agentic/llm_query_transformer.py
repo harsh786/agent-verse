@@ -7,6 +7,7 @@ decompose   : Break the query into 2-4 simpler sub-questions.
 rewrite     : Fix ambiguities and improve clarity while preserving intent.
 transform   : Apply all three strategies and deduplicate the output set.
 """
+
 from __future__ import annotations
 
 import re

@@ -1,4 +1,5 @@
 """DynamicGraphAssembler — builds a per-goal LangGraph from PatternConfig."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -49,9 +50,7 @@ class DynamicGraphAssembler:
             ),
             rag_strategy=RAGStrategyConfig(
                 strategy=(
-                    pattern_config.rag_patterns[0]
-                    if pattern_config.rag_patterns
-                    else "hybrid"
+                    pattern_config.rag_patterns[0] if pattern_config.rag_patterns else "hybrid"
                 )
             ),
             model_plan=ModelPlanConfig(
@@ -103,16 +102,20 @@ class DynamicGraphAssembler:
             "initialize": ["rag_prime"],
             "rag_prime": (
                 ["think"]
-                if any(
-                    p in ("chain_of_thought", "cot") for p in config.reasoning_patterns
-                )
+                if any(p in ("chain_of_thought", "cot") for p in config.reasoning_patterns)
                 else ["plan"]
             ),
             "think": ["plan"],
             "plan": ["execute"],
             "execute": ["verify"],
-            "verify": ["complete", "replan", "max_iter", "waiting_human",
-                       "rag_remediate", "reflect"],
+            "verify": [
+                "complete",
+                "replan",
+                "max_iter",
+                "waiting_human",
+                "rag_remediate",
+                "reflect",
+            ],
             "rag_remediate": ["plan"],
             "reflect": ["plan", "complete"],
         }

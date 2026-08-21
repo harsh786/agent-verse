@@ -153,9 +153,7 @@ def main() -> int:
         "denial_codes": [],
     }
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
-    observation = CodeExecutionObservation.model_validate(
-        {**payload, "observation_sha256": digest}
-    )
+    observation = CodeExecutionObservation.model_validate({**payload, "observation_sha256": digest})
     _emit(
         {
             "_result": True,

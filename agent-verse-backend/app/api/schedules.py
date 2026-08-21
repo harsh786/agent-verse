@@ -28,6 +28,7 @@ events_router = APIRouter(tags=["schedules"])
 # Request models
 # ---------------------------------------------------------------------------
 
+
 class CreateScheduleRequest(BaseModel):
     trigger_type: str = "once"
     cron_expr: str = ""
@@ -46,6 +47,7 @@ class NLScheduleRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _require_tenant(request: Request) -> Any:
     ctx = getattr(request.state, "tenant", None)
@@ -119,6 +121,7 @@ def _record_to_dict(rec: dict[str, Any]) -> dict[str, Any]:
 # Schedule CRUD
 # ---------------------------------------------------------------------------
 
+
 @router.get("")
 async def list_schedules(request: Request) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
@@ -127,9 +130,7 @@ async def list_schedules(request: Request) -> list[dict[str, Any]]:
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def create_schedule(
-    request: Request, body: CreateScheduleRequest
-) -> dict[str, Any]:
+async def create_schedule(request: Request, body: CreateScheduleRequest) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _schedule_store(request)
     token_map = _token_map(request)
@@ -238,8 +239,11 @@ async def fire_schedule_now(request: Request, schedule_id: str) -> dict[str, Any
     goal_text = rec.get("goal_template") or rec.get("goal_id") or "Execute scheduled task"
     goal_svc = request.app.state.goal_service
     result = await goal_svc.submit_goal(
-        goal=goal_text, priority="normal", dry_run=False,
-        tenant_ctx=tenant, agent_id=rec.get("agent_id") or None,
+        goal=goal_text,
+        priority="normal",
+        dry_run=False,
+        tenant_ctx=tenant,
+        agent_id=rec.get("agent_id") or None,
     )
     return {"fired": True, "schedule_id": schedule_id, "goal_id": result["goal_id"]}
 
@@ -248,10 +252,9 @@ async def fire_schedule_now(request: Request, schedule_id: str) -> dict[str, Any
 # NL schedule creation
 # ---------------------------------------------------------------------------
 
+
 @nl_router.post("/schedule", status_code=status.HTTP_201_CREATED)
-async def nl_create_schedule(
-    request: Request, body: NLScheduleRequest
-) -> list[dict[str, Any]]:
+async def nl_create_schedule(request: Request, body: NLScheduleRequest) -> list[dict[str, Any]]:
     """Parse a NL schedule description and create one or more schedule records."""
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _schedule_store(request)
@@ -289,6 +292,7 @@ async def nl_create_schedule(
 # ---------------------------------------------------------------------------
 # Webhook trigger
 # ---------------------------------------------------------------------------
+
 
 @webhooks_router.post("/alerts/{trigger_type}")
 async def receive_alert_webhook(
@@ -340,6 +344,7 @@ async def webhook_trigger(request: Request, token: str) -> dict[str, Any]:
 # SSE real-time events stream
 # ---------------------------------------------------------------------------
 
+
 @events_router.get("/events")
 async def events_stream(request: Request) -> StreamingResponse:
     """Platform-wide SSE. Uses Redis pub/sub when available, heartbeats as fallback."""
@@ -388,9 +393,10 @@ async def events_stream(request: Request) -> StreamingResponse:
 # Analytics & Intelligence endpoints
 # ---------------------------------------------------------------------------
 
+
 class SuggestScheduleRequest(BaseModel):
     goal_description: str
-    context: str = ""       # optional additional context
+    context: str = ""  # optional additional context
 
 
 @router.get("/analytics")
@@ -441,20 +447,20 @@ async def get_schedule_analytics(request: Request) -> dict[str, Any]:
             {
                 "schedule_id": r.get("schedule_id", ""),
                 "goal_template": r.get("goal_template", ""),
-                "trigger_type": r.get("trigger_type") or (r.get("spec") or {}).get("trigger_type") or "unknown",
+                "trigger_type": r.get("trigger_type")
+                or (r.get("spec") or {}).get("trigger_type")
+                or "unknown",
                 "status": "paused" if r.get("paused") else "active",
                 "last_fired_at": r.get("last_fired_at"),
                 "next_run_at": r.get("next_run_at"),
             }
-            for r in records[:20]   # cap at 20 for response size
+            for r in records[:20]  # cap at 20 for response size
         ],
     }
 
 
 @router.post("/suggest")
-async def suggest_schedule(
-    request: Request, body: SuggestScheduleRequest
-) -> dict[str, Any]:
+async def suggest_schedule(request: Request, body: SuggestScheduleRequest) -> dict[str, Any]:
     """Use the LLM to suggest optimal schedule configurations for a goal.
 
     Returns 3 ranked suggestions with rationale, trigger type, and
@@ -498,7 +504,8 @@ async def suggest_schedule(
             "llm_powered": False,
         }
 
-    from app.providers.base import CompletionRequest, Message  # noqa: PLC0415
+    from app.providers.base import CompletionRequest, Message
+
     system_prompt = (
         "You are a scheduling expert for AI automation systems. "
         "Given a goal description, suggest 3 optimal schedule configurations. "
@@ -521,7 +528,7 @@ async def suggest_schedule(
         raw = resp.content.strip().lstrip("```json").lstrip("```").rstrip("```")
         data = _json.loads(raw)
         suggestions = data.get("suggestions", [])
-    except Exception:  # noqa: BLE001
+    except Exception:
         suggestions = []
 
     return {
@@ -534,6 +541,7 @@ async def suggest_schedule(
 # ---------------------------------------------------------------------------
 # Schedule Run History
 # ---------------------------------------------------------------------------
+
 
 @router.get("/{schedule_id}/history")
 async def get_schedule_history(
@@ -586,9 +594,7 @@ async def get_schedule_history(
                                     else ("failed" if row[1] == "failed" else row[1])
                                 ),
                                 "started_at": row[2].isoformat() if row[2] else None,
-                                "duration_ms": (
-                                    int(float(row[3] or 0) * 1000) if row[3] else None
-                                ),
+                                "duration_ms": (int(float(row[3] or 0) * 1000) if row[3] else None),
                                 "error": row[4],
                             }
                             for row in rows

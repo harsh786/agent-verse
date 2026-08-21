@@ -1,4 +1,5 @@
 """General fallback extractor — returns raw text and optional LLM-structured fields."""
+
 from __future__ import annotations
 
 import json

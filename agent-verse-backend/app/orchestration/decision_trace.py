@@ -1,4 +1,5 @@
 """DecisionTrace — serializable record of every strategy selection decision."""
+
 from __future__ import annotations
 
 import time
@@ -56,9 +57,14 @@ class DecisionTrace:
                 {
                     "selector": d.selector,
                     "dimension": d.dimension,
-                    "selected": d.selected if isinstance(d.selected, (str, int, float, bool, list, dict, type(None))) else str(d.selected),
+                    "selected": d.selected
+                    if isinstance(d.selected, (str, int, float, bool, list, dict, type(None)))
+                    else str(d.selected),
                     "reason": d.reason,
-                    "alternatives": [a if isinstance(a, (str, int, float, bool)) else str(a) for a in d.alternatives],
+                    "alternatives": [
+                        a if isinstance(a, (str, int, float, bool)) else str(a)
+                        for a in d.alternatives
+                    ],
                     "latency_ms": d.latency_ms,
                 }
                 for d in self.decisions

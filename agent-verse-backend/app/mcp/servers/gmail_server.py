@@ -3,6 +3,7 @@
 Environment:
   GMAIL_ACCESS_TOKEN: Google OAuth2 access token with gmail.modify scope
 """
+
 from __future__ import annotations
 
 import base64
@@ -32,10 +33,25 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "user_id": {"type": "string", "description": "Gmail user ID (use 'me' for authenticated user)", "default": "me"},
-                "q": {"type": "string", "description": "Gmail search query, e.g. 'from:alice@example.com is:unread'"},
-                "label_ids": {"type": "array", "items": {"type": "string"}, "description": "Filter by label IDs, e.g. [\"INBOX\", \"UNREAD\"]"},
-                "max_results": {"type": "integer", "description": "Maximum messages to return", "default": 10},
+                "user_id": {
+                    "type": "string",
+                    "description": "Gmail user ID (use 'me' for authenticated user)",
+                    "default": "me",
+                },
+                "q": {
+                    "type": "string",
+                    "description": "Gmail search query, e.g. 'from:alice@example.com is:unread'",
+                },
+                "label_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": 'Filter by label IDs, e.g. ["INBOX", "UNREAD"]',
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum messages to return",
+                    "default": 10,
+                },
             },
         },
     },
@@ -64,7 +80,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "user_id": {"type": "string", "description": "Gmail user ID", "default": "me"},
                 "message_id": {"type": "string", "description": "Gmail message ID"},
-                "format": {"type": "string", "description": "Message format: full, minimal, raw, metadata", "default": "full"},
+                "format": {
+                    "type": "string",
+                    "description": "Message format: full, minimal, raw, metadata",
+                    "default": "full",
+                },
             },
             "required": ["message_id"],
         },
@@ -101,8 +121,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "user_id": {"type": "string", "description": "Gmail user ID", "default": "me"},
-                "query": {"type": "string", "description": "Gmail search query, e.g. 'subject:invoice after:2024/01/01'"},
-                "max_results": {"type": "integer", "description": "Maximum messages to return", "default": 10},
+                "query": {
+                    "type": "string",
+                    "description": "Gmail search query, e.g. 'subject:invoice after:2024/01/01'",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum messages to return",
+                    "default": 10,
+                },
             },
             "required": ["query"],
         },
@@ -110,7 +137,14 @@ TOOL_DEFINITIONS = [
 ]
 
 
-def _build_mime_message(to: str, subject: str, body: str, from_email: str | None = None, cc: str | None = None, bcc: str | None = None) -> str:
+def _build_mime_message(
+    to: str,
+    subject: str,
+    body: str,
+    from_email: str | None = None,
+    cc: str | None = None,
+    bcc: str | None = None,
+) -> str:
     """Build a base64url-encoded RFC 2822 message."""
     headers = []
     if from_email:
@@ -169,7 +203,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 )
                 r.raise_for_status()
                 data = r.json()
-                return {"id": data.get("id"), "threadId": data.get("threadId"), "labelIds": data.get("labelIds")}
+                return {
+                    "id": data.get("id"),
+                    "threadId": data.get("threadId"),
+                    "labelIds": data.get("labelIds"),
+                }
 
             elif tool_name == "gmail_get_message":
                 r = await client.get(

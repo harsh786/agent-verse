@@ -4,6 +4,7 @@ Extracts lessons from goal failures and stores them for future recall.
 The _node_reflect graph node handles failure diagnosis.
 This adapter provides lesson storage + recall as a standalone component.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -91,7 +92,5 @@ class ReflexionPattern(AgentPattern):
             return ""
         lines = ["[Reflexion lessons from past failures — avoid these mistakes:]"]
         for i, item in enumerate(lessons[:5], 1):
-            lines.append(
-                f"  {i}. {item['lesson']} (class: {item.get('failure_class', 'unknown')})"
-            )
+            lines.append(f"  {i}. {item['lesson']} (class: {item.get('failure_class', 'unknown')})")
         return "\n".join(lines)

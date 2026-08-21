@@ -5,6 +5,7 @@ LAW-03: Every connector implements incremental delta with cursor
 LAW-13: No credentials in connector code — vault:// references only
 LAW-21: Every connector exposes validate_connection() health probe
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -19,10 +20,11 @@ if TYPE_CHECKING:
 @dataclass
 class ConnectionHealth:
     """Result of BaseConnector.validate_connection()."""
-    ok:          bool
-    latency_ms:  float = 0.0
-    error:       str = ""
-    metadata:    dict[str, Any] = field(default_factory=dict)
+
+    ok: bool
+    latency_ms: float = 0.0
+    error: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
     # metadata examples:
     #   S3:         {"bucket": "x", "region": "us-east-1", "doc_count_estimate": 12000}
     #   Snowflake:  {"account": "x", "warehouse": "COMPUTE_WH", "tables": ["ORDERS"]}
@@ -58,9 +60,7 @@ class BaseConnector(ABC):
     # ── Subclass MUST implement these ─────────────────────────────────────────
 
     @abstractmethod
-    async def validate_connection(
-        self, config: SourceConfig
-    ) -> ConnectionHealth:
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         """Test connectivity and auth.
 
         Called:
@@ -108,9 +108,7 @@ class BaseConnector(ABC):
 
         Default: raises NotImplementedError (poll-only sources).
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support webhook mode"
-        )
+        raise NotImplementedError(f"{self.__class__.__name__} does not support webhook mode")
 
     async def get_acl(
         self,

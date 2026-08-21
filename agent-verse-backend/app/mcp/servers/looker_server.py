@@ -5,6 +5,7 @@ Environment:
   LOOKER_CLIENT_ID: Looker API3 client ID
   LOOKER_CLIENT_SECRET: Looker API3 client secret
 """
+
 from __future__ import annotations
 
 import os
@@ -23,9 +24,13 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "look_id":        {"type": "integer", "description": "ID of the Look to run"},
-                "result_format":  {"type": "string", "enum": ["json", "csv", "json_detail"], "default": "json"},
-                "limit":          {"type": "integer", "default": 500},
+                "look_id": {"type": "integer", "description": "ID of the Look to run"},
+                "result_format": {
+                    "type": "string",
+                    "enum": ["json", "csv", "json_detail"],
+                    "default": "json",
+                },
+                "limit": {"type": "integer", "default": 500},
             },
             "required": ["look_id"],
         },
@@ -37,7 +42,7 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "fields": {"type": "string", "description": "Comma-separated fields to return"},
-                "limit":  {"type": "integer", "default": 20},
+                "limit": {"type": "integer", "default": 20},
             },
         },
     },
@@ -47,12 +52,12 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "model":      {"type": "string", "description": "LookML model name"},
-                "explore":    {"type": "string", "description": "Explore name"},
-                "dimensions": {"type": "array",  "items": {"type": "string"}},
-                "measures":   {"type": "array",  "items": {"type": "string"}},
-                "filters":    {"type": "object", "description": "Field → value filter map"},
-                "limit":      {"type": "integer", "default": 500},
+                "model": {"type": "string", "description": "LookML model name"},
+                "explore": {"type": "string", "description": "Explore name"},
+                "dimensions": {"type": "array", "items": {"type": "string"}},
+                "measures": {"type": "array", "items": {"type": "string"}},
+                "filters": {"type": "object", "description": "Field → value filter map"},
+                "limit": {"type": "integer", "default": 500},
             },
             "required": ["model", "explore"],
         },
@@ -70,8 +75,8 @@ TOOL_DEFINITIONS = [
     },
 ]
 
-_BASE_URL     = os.getenv("LOOKER_BASE_URL", "").rstrip("/")
-_CLIENT_ID    = os.getenv("LOOKER_CLIENT_ID", "")
+_BASE_URL = os.getenv("LOOKER_BASE_URL", "").rstrip("/")
+_CLIENT_ID = os.getenv("LOOKER_CLIENT_ID", "")
 _CLIENT_SECRET = os.getenv("LOOKER_CLIENT_SECRET", "")
 _token_cache: dict[str, Any] = {}
 
@@ -79,6 +84,7 @@ _token_cache: dict[str, Any] = {}
 async def _get_token(client: httpx.AsyncClient) -> str:
     """Obtain a Looker API bearer token (cached)."""
     import time
+
     if _token_cache.get("token") and _token_cache.get("expires_at", 0) > time.time() + 60:
         return _token_cache["token"]
     resp = await client.post(
@@ -87,7 +93,7 @@ async def _get_token(client: httpx.AsyncClient) -> str:
     )
     resp.raise_for_status()
     data = resp.json()
-    _token_cache["token"]      = data["access_token"]
+    _token_cache["token"] = data["access_token"]
     _token_cache["expires_at"] = time.time() + data.get("token_ttl", 3600)
     return _token_cache["token"]
 
@@ -98,12 +104,12 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            token   = await _get_token(client)
+            token = await _get_token(client)
             headers = {"Authorization": f"token {token}"}
 
             if tool_name == "looker_run_look":
                 resp = await client.get(
-                    f"{_BASE_URL}/api/4.0/looks/{params['look_id']}/run/{params.get('result_format','json')}",
+                    f"{_BASE_URL}/api/4.0/looks/{params['look_id']}/run/{params.get('result_format', 'json')}",
                     params={"limit": params.get("limit", 500)},
                     headers=headers,
                 )
@@ -113,7 +119,10 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
             if tool_name == "looker_list_dashboards":
                 resp = await client.get(
                     f"{_BASE_URL}/api/4.0/dashboards",
-                    params={"fields": params.get("fields", "id,title,description"), "limit": params.get("limit", 20)},
+                    params={
+                        "fields": params.get("fields", "id,title,description"),
+                        "limit": params.get("limit", 20),
+                    },
                     headers=headers,
                 )
                 resp.raise_for_status()
@@ -121,11 +130,11 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
 
             if tool_name == "looker_query_model":
                 body = {
-                    "model":   params["model"],
-                    "view":    params["explore"],
-                    "fields":  params.get("dimensions", []) + params.get("measures", []),
+                    "model": params["model"],
+                    "view": params["explore"],
+                    "fields": params.get("dimensions", []) + params.get("measures", []),
                     "filters": params.get("filters", {}),
-                    "limit":   str(params.get("limit", 500)),
+                    "limit": str(params.get("limit", 500)),
                 }
                 resp = await client.post(
                     f"{_BASE_URL}/api/4.0/queries/run/json",

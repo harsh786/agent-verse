@@ -1,4 +1,5 @@
 """Collaboration endpoints for persisted human-agent sessions."""
+
 from __future__ import annotations
 
 import asyncio
@@ -89,9 +90,7 @@ class _CollabPubSub:
             import redis.asyncio as aioredis  # type: ignore[import]
 
             async with aioredis.from_url(self._redis_url, decode_responses=True) as r:
-                payload = json.dumps(
-                    {"rid": _REPLICA_ID, "sid": session_id, "msg": message}
-                )
+                payload = json.dumps({"rid": _REPLICA_ID, "sid": session_id, "msg": message})
                 await r.publish(f"collab:{session_id}", payload)
         except Exception as exc:
             _logger.debug("collab_pubsub_publish_skipped", error=str(exc))
@@ -398,9 +397,7 @@ async def collab_websocket(websocket: WebSocket, session_id: str) -> None:
         return
 
     # Lazily start Redis pub/sub listener for cross-replica fanout.
-    redis_url: str = getattr(
-        getattr(websocket.app.state, "settings", None), "redis_url", ""
-    )
+    redis_url: str = getattr(getattr(websocket.app.state, "settings", None), "redis_url", "")
     _pub_sub.ensure_started(redis_url)
 
     await websocket.accept()
@@ -520,6 +517,7 @@ async def delegate_task(
 # Session insights — AI-powered post-session analysis
 # ---------------------------------------------------------------------------
 
+
 @router.post("/sessions/{session_id}/insights")
 async def get_session_insights(request: Request, session_id: str) -> dict[str, Any]:
     """Analyse a completed collaboration session and extract:
@@ -550,7 +548,7 @@ async def get_session_insights(request: Request, session_id: str) -> dict[str, A
 
     for r in rounds:
         if isinstance(r, dict) and r.get("content"):
-            content_pieces.append(f"[{r.get('round_type','round')}]: {str(r['content'])[:500]}")
+            content_pieces.append(f"[{r.get('round_type', 'round')}]: {str(r['content'])[:500]}")
 
     session_text = "\n".join(content_pieces[:50])  # cap at 50 entries
     session_name = (
@@ -574,7 +572,8 @@ async def get_session_insights(request: Request, session_id: str) -> dict[str, A
             "llm_powered": False,
         }
 
-    from app.providers.base import CompletionRequest, Message  # noqa: PLC0415
+    from app.providers.base import CompletionRequest, Message
+
     system_prompt = (
         "You are a meeting analyst. Analyse the following collaboration session transcript "
         "and extract structured insights. Respond with valid JSON only:\n"
@@ -595,7 +594,7 @@ async def get_session_insights(request: Request, session_id: str) -> dict[str, A
         )
         raw = resp.content.strip().lstrip("```json").lstrip("```").rstrip("```")
         data = json.loads(raw)
-    except Exception:  # noqa: BLE001
+    except Exception:
         data = {
             "key_decisions": [],
             "action_items": [],
@@ -652,6 +651,7 @@ class CRDTRoomManager:
 
     def __init__(self) -> None:
         from collections import defaultdict
+
         self._local_rooms: dict[str, set[WebSocket]] = defaultdict(set)
         self._lock = asyncio.Lock()
         self._redis: Any = None
@@ -837,21 +837,20 @@ async def yjs_crdt_sync(websocket: WebSocket, room_id: str) -> None:
     await _crdt_manager.join(room_id, websocket)
 
     # Start Redis subscription task (no-op if Redis not available)
-    redis_task = asyncio.create_task(
-        _crdt_manager.subscribe_redis(room_id, websocket)
-    )
+    redis_task = asyncio.create_task(_crdt_manager.subscribe_redis(room_id, websocket))
 
     _crdt_log.debug("crdt_client_joined room_id=%s", room_id)
 
     try:
         async for data in websocket.iter_bytes():
             await _crdt_manager.broadcast(room_id, data, websocket)
-    except Exception:  # noqa: BLE001  # WebSocketDisconnect or network error
+    except Exception:  # WebSocketDisconnect or network error
         pass
     finally:
         redis_task.cancel()
         await _crdt_manager.leave(room_id, websocket)
         _crdt_log.debug("crdt_client_left room_id=%s", room_id)
-        import contextlib  # noqa: PLC0415
+        import contextlib
+
         with contextlib.suppress(Exception):
             await websocket.close()

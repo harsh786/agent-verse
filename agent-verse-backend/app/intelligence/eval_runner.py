@@ -1,4 +1,5 @@
 """Eval runner — scores completed goals on 7 dimensions."""
+
 from __future__ import annotations
 
 import json
@@ -56,9 +57,9 @@ class EvalRunner:
 
         # Count failed calls
         failed = sum(
-            1 for tc in all_calls
-            if isinstance(tc, dict)
-            and (tc.get("error") or tc.get("status") == "failed")
+            1
+            for tc in all_calls
+            if isinstance(tc, dict) and (tc.get("error") or tc.get("status") == "failed")
         )
         total = len(all_calls)
         success_rate = max(0.0, 1.0 - failed / total)
@@ -93,15 +94,12 @@ class EvalRunner:
 
         # 3. accuracy — heuristic placeholder (replaced by LLM scoring in score_async)
         feedback = (state.verification_feedback or "").lower()
-        accuracy = (
-            1.0
-            if state.verification_success
-            else (0.5 if "partial" in feedback else 0.0)
-        )
+        accuracy = 1.0 if state.verification_success else (0.5 if "partial" in feedback else 0.0)
 
         # 4. safety — count DENY/policy-blocked events in the execution trace
         deny_events = [
-            e for e in (getattr(state, "events", None) or [])
+            e
+            for e in (getattr(state, "events", None) or [])
             if isinstance(e, dict)
             and (
                 e.get("action_level") == "DENY"
@@ -116,9 +114,9 @@ class EvalRunner:
         if not state.steps:
             coherence = 0.5
         else:
-            steps_with_output = sum(1 for s in state.steps if getattr(s, 'output', ''))
+            steps_with_output = sum(1 for s in state.steps if getattr(s, "output", ""))
             output_rate = steps_with_output / len(state.steps)
-            unique_descriptions = len({getattr(s, 'description', '') for s in state.steps})
+            unique_descriptions = len({getattr(s, "description", "") for s in state.steps})
             diversity = min(1.0, unique_descriptions / max(len(state.steps), 1))
             coherence = 0.6 * output_rate + 0.4 * diversity
 
@@ -163,9 +161,7 @@ class EvalRunner:
             "safety": isinstance(getattr(state, "events", None), list),
             "coherence": bool(state.steps),
             "sla": "execution_started_at" in context or state.iterations > 0,
-            "tool_relevance": any(
-                bool(getattr(step, "tool_calls", None)) for step in state.steps
-            ),
+            "tool_relevance": any(bool(getattr(step, "tool_calls", None)) for step in state.steps),
         }
 
         return EvalScorecard(
@@ -182,9 +178,7 @@ class EvalRunner:
             goal=state.goal,
             iterations=state.iterations,
             primary_strategy_id=str(getattr(primary, "strategy_id", "unknown")),
-            primary_strategy_version=str(
-                getattr(primary, "adapter_version", "unknown")
-            ),
+            primary_strategy_version=str(getattr(primary, "adapter_version", "unknown")),
             auxiliary_strategy_versions={
                 str(item.strategy_id): str(item.adapter_version) for item in auxiliaries
             },
@@ -197,9 +191,7 @@ class EvalRunner:
             causation_id=str(context.get("causation_id", "")),
         )
 
-    async def _score_coherence(
-        self, goal: str, steps: list[Any], provider: Any
-    ) -> float:
+    async def _score_coherence(self, goal: str, steps: list[Any], provider: Any) -> float:
         """Use LLM to rate how logically coherent the steps are relative to the goal.
 
         Returns a float in [0.0, 1.0].  Conservative default 0.7 on any error.
@@ -215,11 +207,14 @@ class EvalRunner:
                 "Reply with ONLY a decimal number."
             )
             from app.providers.base import CompletionRequest, Message
-            resp = await provider.complete(CompletionRequest(
-                messages=[Message(role="user", content=prompt)],
-                model="",
-                max_tokens=10,
-            ))
+
+            resp = await provider.complete(
+                CompletionRequest(
+                    messages=[Message(role="user", content=prompt)],
+                    model="",
+                    max_tokens=10,
+                )
+            )
             return min(1.0, max(0.0, float(resp.content.strip())))
         except Exception:
             return 0.7  # conservative default on failure
@@ -239,10 +234,7 @@ class EvalRunner:
         """
         # Compute heuristic so we can return it on fallback
         feedback = (verification_feedback or "").lower()
-        heuristic = (
-            1.0 if verification_success
-            else (0.5 if "partial" in feedback else 0.0)
-        )
+        heuristic = 1.0 if verification_success else (0.5 if "partial" in feedback else 0.0)
         if provider is None:
             return heuristic
         try:
@@ -264,11 +256,14 @@ class EvalRunner:
                 "Reply with ONLY a decimal number."
             )
             from app.providers.base import CompletionRequest, Message
-            resp = await provider.complete(CompletionRequest(
-                messages=[Message(role="user", content=prompt)],
-                model="",
-                max_tokens=10,
-            ))
+
+            resp = await provider.complete(
+                CompletionRequest(
+                    messages=[Message(role="user", content=prompt)],
+                    model="",
+                    max_tokens=10,
+                )
+            )
             return min(1.0, max(0.0, float(resp.content.strip())))
         except Exception:
             return heuristic  # conservative fallback
@@ -348,26 +343,26 @@ class EvalRunner:
                             DO NOTHING
                             """),
                             {
-                            "id": eval_id,
-                            "gid": state.goal_id,
-                            "tid": tenant_ctx.tenant_id,
-                            "scores": json.dumps(scorecard.scores),
-                            "avg": round(scorecard.average_score(), 6),
-                            "passed": scorecard.passed(),
-                            "primary_strategy_id": scorecard.primary_strategy_id,
-                            "primary_strategy_version": scorecard.primary_strategy_version,
-                            "auxiliary_strategy_versions": json.dumps(
-                                scorecard.auxiliary_strategy_versions
-                            ),
-                            "profile_id": scorecard.profile_id,
-                            "profile_version": scorecard.profile_version,
-                            "strategy_execution_id": scorecard.strategy_execution_id,
-                            "evaluator_version": scorecard.evaluator_version,
-                            "evidence_completeness": json.dumps(
-                                scorecard.evidence_completeness
-                            ),
-                            "correlation_id": scorecard.correlation_id,
-                            "causation_id": scorecard.causation_id,
+                                "id": eval_id,
+                                "gid": state.goal_id,
+                                "tid": tenant_ctx.tenant_id,
+                                "scores": json.dumps(scorecard.scores),
+                                "avg": round(scorecard.average_score(), 6),
+                                "passed": scorecard.passed(),
+                                "primary_strategy_id": scorecard.primary_strategy_id,
+                                "primary_strategy_version": scorecard.primary_strategy_version,
+                                "auxiliary_strategy_versions": json.dumps(
+                                    scorecard.auxiliary_strategy_versions
+                                ),
+                                "profile_id": scorecard.profile_id,
+                                "profile_version": scorecard.profile_version,
+                                "strategy_execution_id": scorecard.strategy_execution_id,
+                                "evaluator_version": scorecard.evaluator_version,
+                                "evidence_completeness": json.dumps(
+                                    scorecard.evidence_completeness
+                                ),
+                                "correlation_id": scorecard.correlation_id,
+                                "causation_id": scorecard.causation_id,
                             },
                         )
             except Exception as exc:

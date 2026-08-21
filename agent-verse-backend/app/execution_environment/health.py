@@ -4,6 +4,7 @@ Each concrete runner exposes a :class:`RunnerHealthCheck` that the scheduler
 uses to determine whether the runner is available before dispatching.  An
 unhealthy runner + ``ISOLATED_EXECUTION_REQUIRED=true`` triggers fail-closed.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

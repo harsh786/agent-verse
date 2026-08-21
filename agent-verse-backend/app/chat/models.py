@@ -69,9 +69,7 @@ class ChatSession(Base):
     usage: Mapped[list[ChatMessageUsage]] = relationship(
         "ChatMessageUsage", back_populates="session"
     )
-    artifacts: Mapped[list[ChatArtifact]] = relationship(
-        "ChatArtifact", back_populates="session"
-    )
+    artifacts: Mapped[list[ChatArtifact]] = relationship("ChatArtifact", back_populates="session")
 
 
 class ChatMessage(Base):

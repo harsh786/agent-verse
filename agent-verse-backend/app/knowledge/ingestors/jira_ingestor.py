@@ -1,4 +1,5 @@
 """Jira issue ingestor via REST API v3."""
+
 from __future__ import annotations
 
 from typing import Any, cast
@@ -22,6 +23,7 @@ class JiraIngestor:
     @staticmethod
     def _make_basic(user: str, token: str) -> str:
         import base64
+
         return base64.b64encode(f"{user}:{token}".encode()).decode()
 
     async def ingest_project(
@@ -45,8 +47,9 @@ class JiraIngestor:
                 ),
             }
             async with httpx.AsyncClient(timeout=30) as c:
-                r = await c.get(f"{self._base}/rest/api/3/search",
-                               params=params, headers=self._headers)
+                r = await c.get(
+                    f"{self._base}/rest/api/3/search", params=params, headers=self._headers
+                )
                 r.raise_for_status()
                 data = r.json()
                 issues = data.get("issues", [])
@@ -72,15 +75,21 @@ class JiraIngestor:
                     ).strip()
 
                     if len(issue_text) >= 50:
-                        chunks.append({
-                            "content": issue_text,
-                            "source_url": f"{self._base}/browse/{key}",
-                            "source_type": "jira",
-                            "source_doc_id": key,
-                            "page_number": None,
-                            "metadata": {"key": key, "summary": summary,
-                                         "status": status, "project": project_key},
-                        })
+                        chunks.append(
+                            {
+                                "content": issue_text,
+                                "source_url": f"{self._base}/browse/{key}",
+                                "source_type": "jira",
+                                "source_doc_id": key,
+                                "page_number": None,
+                                "metadata": {
+                                    "key": key,
+                                    "summary": summary,
+                                    "status": status,
+                                    "project": project_key,
+                                },
+                            }
+                        )
 
                     # Include comments as separate chunks
                     for comment in (fields.get("comment", {}) or {}).get("comments", [])[:5]:
@@ -88,14 +97,16 @@ class JiraIngestor:
                         if isinstance(body, dict):
                             body = self._adf_to_text(body)
                         if len(body.strip()) >= 50:
-                            chunks.append({
-                                "content": f"Comment on {key}:\n{body[:1000]}",
-                                "source_url": f"{self._base}/browse/{key}",
-                                "source_type": "jira",
-                                "source_doc_id": f"{key}/comment",
-                                "page_number": None,
-                                "metadata": {"key": key, "type": "comment"},
-                            })
+                            chunks.append(
+                                {
+                                    "content": f"Comment on {key}:\n{body[:1000]}",
+                                    "source_url": f"{self._base}/browse/{key}",
+                                    "source_type": "jira",
+                                    "source_doc_id": f"{key}/comment",
+                                    "page_number": None,
+                                    "metadata": {"key": key, "type": "comment"},
+                                }
+                            )
 
                 start += len(issues)
                 if len(issues) < 50:

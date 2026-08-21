@@ -211,7 +211,7 @@ export function JARVISBootScreen({ orgName = 'AgentVerse OS', onComplete, durati
 
   return (
     <AnimatePresence>
-      {!retracting || true ? (
+      {!retracting ? (
         <motion.div
           animate={controls}
           initial={{ y: 0, opacity: 1 }}

@@ -4,6 +4,7 @@ Every strategy selector populates one section of this profile.
 The profile is serialized into goal.execution_context and emitted
 as a runtime_profile_selected SSE event.
 """
+
 from __future__ import annotations
 
 import enum

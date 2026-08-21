@@ -14,9 +14,7 @@ import os
 
 def _get_fernet_key() -> bytes:
     """Derive a URL-safe base64-encoded 32-byte Fernet key from SECRET_KEY."""
-    secret = os.getenv(
-        "SECRET_KEY", "agentverse-dev-secret-key-change-in-production"
-    )
+    secret = os.getenv("SECRET_KEY", "agentverse-dev-secret-key-change-in-production")
     key_bytes = hashlib.sha256(secret.encode()).digest()
     return base64.urlsafe_b64encode(key_bytes)
 

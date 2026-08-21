@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 # Check if Playwright is available at module load time
 try:
     import playwright.async_api as _playwright_api  # type: ignore[import-not-found]
+
     _check_playwright = _playwright_api.async_playwright
     _PLAYWRIGHT_AVAILABLE = True
 except ImportError:
@@ -60,6 +61,7 @@ _EMBEDDING_DIM = 768
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
+
 
 class CreateCollectionRequest(BaseModel):
     name: str
@@ -96,12 +98,13 @@ class UrlIngestRequest(BaseModel):
 
 class RpaUrlIngestRequest(BaseModel):
     """Ingest one or more URLs using headless Playwright for JS-rendered content."""
+
     collection_id: str
-    urls: list[str]              # supports batch ingestion (max 20)
-    selector: str = "body"       # CSS selector for text extraction
-    screenshot: bool = False     # capture screenshot and store as metadata
-    source_type: str = "rpa-web" # stored in metadata for attribution
-    max_chars: int = 50_000      # per-URL char cap
+    urls: list[str]  # supports batch ingestion (max 20)
+    selector: str = "body"  # CSS selector for text extraction
+    screenshot: bool = False  # capture screenshot and store as metadata
+    source_type: str = "rpa-web"  # stored in metadata for attribution
+    max_chars: int = 50_000  # per-URL char cap
     include_links: bool = False  # whether to extract link URLs from the page
 
 
@@ -145,6 +148,7 @@ IndexingStrategy = Literal["raptor", "agentic_chunking"]
 
 class CollectionIngestRequest(BaseModel):
     """Request body for POST /collections/{collection_id}/documents (IngestionOrchestrator path)."""
+
     content: str = Field(min_length=1, max_length=1_000_000)
     content_type: str = "auto"
     source_url: str = ""
@@ -176,6 +180,7 @@ class CollectionIngestRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _require_tenant(request: Request) -> Any:
     ctx = getattr(request.state, "tenant", None)
@@ -235,10 +240,7 @@ async def _resolve_indexing_llm(
     ).strip()
     if provider is None or not model:
         return {}
-    return {
-        RAGStrategy(strategy): IndexingDependency(provider, model)
-        for strategy in strategies
-    }
+    return {RAGStrategy(strategy): IndexingDependency(provider, model) for strategy in strategies}
 
 
 def _parse_retrieval_filters(filters: str | None) -> dict[str, Any]:
@@ -282,7 +284,7 @@ def _fallback_embedding(dim: int = _EMBEDDING_DIM) -> list[float]:
             "Set one of: VOYAGE_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY "
             "(cloud embeddings) or SENTENCE_TRANSFORMERS_MODEL=all-MiniLM-L6-v2 "
             "(local CPU embeddings via sentence-transformers)."
-        )
+        ),
     )
 
 
@@ -331,6 +333,7 @@ async def _embed_texts_or_http(texts: list[str], embedder: Any) -> list[list[flo
 # Endpoints — collections
 # ---------------------------------------------------------------------------
 
+
 @router.get("/collections")
 async def list_collections(request: Request) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
@@ -349,9 +352,7 @@ async def list_collections(request: Request) -> list[dict[str, Any]]:
 
 
 @router.post("/collections", status_code=status.HTTP_201_CREATED)
-async def create_collection(
-    request: Request, body: CreateCollectionRequest
-) -> dict[str, Any]:
+async def create_collection(request: Request, body: CreateCollectionRequest) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _knowledge_store(request)
     collection = KnowledgeCollection(
@@ -423,10 +424,9 @@ async def delete_collection(request: Request, collection_id: str) -> None:
 # Endpoints — ingestion
 # ---------------------------------------------------------------------------
 
+
 @router.post("/ingest", status_code=status.HTTP_201_CREATED)
-async def ingest_document(
-    request: Request, body: IngestRequest
-) -> dict[str, Any]:
+async def ingest_document(request: Request, body: IngestRequest) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _knowledge_store(request)
 
@@ -450,6 +450,7 @@ async def ingest_document(
 
     # Split into token-aware chunks for accurate LLM context window usage.
     from app.knowledge.chunker_v2 import chunk_by_tokens
+
     _raw_chunks = chunk_by_tokens(body.content, max_tokens=512, overlap_tokens=64)
     chunks_text = [
         type("_C", (), {"content": chunk, "start_char": 0, "end_char": len(chunk)})()
@@ -474,13 +475,15 @@ async def ingest_document(
     )
     for idx, text_chunk in enumerate(chunks_text):
         chunk_text = text_chunk.content
-        chunks.append(Chunk(
-            document_id=document.document_id,
-            content=chunk_text,
-            embedding=embeddings[idx],
-            chunk_index=idx,
-            metadata={**str_metadata, "source_type": body.source_type},
-        ))
+        chunks.append(
+            Chunk(
+                document_id=document.document_id,
+                content=chunk_text,
+                embedding=embeddings[idx],
+                chunk_index=idx,
+                metadata={**str_metadata, "source_type": body.source_type},
+            )
+        )
     await _persist_chunks_or_http(
         store,
         chunks,
@@ -499,6 +502,7 @@ async def ingest_document(
 # ---------------------------------------------------------------------------
 # Endpoints — search
 # ---------------------------------------------------------------------------
+
 
 @router.get("/search")
 async def search_knowledge(
@@ -562,6 +566,7 @@ async def search_knowledge(
 # Endpoints — semantic cache
 # ---------------------------------------------------------------------------
 
+
 @router.get("/cache/stats")
 async def get_cache_stats(request: Request) -> dict[str, Any]:
     """Return rich cache stats including hit rate, L1/L2 breakdown, and bytes saved."""
@@ -612,6 +617,7 @@ async def warm_cache(request: Request) -> dict[str, Any]:
 # Endpoints — file upload ingestion
 # ---------------------------------------------------------------------------
 
+
 @router.post("/ingest/file", status_code=201)
 async def ingest_file(
     request: Request,
@@ -638,6 +644,7 @@ async def ingest_file(
             import io
 
             import pypdf  # type: ignore[import-not-found]
+
             reader = pypdf.PdfReader(io.BytesIO(content_bytes))
             text = "\n".join(page.extract_text() or "" for page in reader.pages)
         except ImportError:
@@ -647,6 +654,7 @@ async def ingest_file(
             import io
 
             import docx  # type: ignore[import-not-found]
+
             doc = docx.Document(io.BytesIO(content_bytes))
             text = "\n".join(para.text for para in doc.paragraphs)
         except ImportError:
@@ -659,6 +667,7 @@ async def ingest_file(
 
     # Chunk using token-aware chunker
     from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_file
+
     _raw_file_chunks = _chunk_by_tokens_file(text, max_tokens=512, overlap_tokens=64)
     chunks = [
         type("_C", (), {"content": chunk, "start_char": 0, "end_char": len(chunk)})()
@@ -682,21 +691,21 @@ async def ingest_file(
         [chunk.content for chunk in non_empty_chunks],
         embedder,
     )
-    for idx, (chunk, embedding) in enumerate(
-        zip(non_empty_chunks, embeddings, strict=True)
-    ):
-        rag_chunks.append(Chunk(
-            document_id=document_id,
-            content=chunk.content,
-            embedding=embedding,
-            chunk_index=idx,
-            metadata={
-                "source_file": filename,
-                "ext": ext,
-                "char_offset": str(chunk.start_char),
-                "source_type": source_type,
-            },
-        ))
+    for idx, (chunk, embedding) in enumerate(zip(non_empty_chunks, embeddings, strict=True)):
+        rag_chunks.append(
+            Chunk(
+                document_id=document_id,
+                content=chunk.content,
+                embedding=embedding,
+                chunk_index=idx,
+                metadata={
+                    "source_file": filename,
+                    "ext": ext,
+                    "char_offset": str(chunk.start_char),
+                    "source_type": source_type,
+                },
+            )
+        )
     await _persist_chunks_or_http(
         store,
         rag_chunks,
@@ -716,10 +725,9 @@ async def ingest_file(
 # Endpoints — repository ingestion
 # ---------------------------------------------------------------------------
 
+
 @router.post("/ingest/repo", status_code=202)
-async def ingest_repository(
-    request: Request, body: RepoIngestRequest
-) -> dict[str, Any]:
+async def ingest_repository(request: Request, body: RepoIngestRequest) -> dict[str, Any]:
     """Clone a git repository and ingest all matching files.
 
     Uses git (open source) for cloning. No cloud API calls.
@@ -766,6 +774,7 @@ async def ingest_repository(
         ) from exc
 
     import asyncio
+
     # Run in background task
     task = asyncio.create_task(
         _ingest_repo_background(
@@ -857,6 +866,7 @@ async def _ingest_repo_background(
 
     from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_repo
     from app.observability.logging import get_logger
+
     logger = get_logger(__name__)
     if limits is None:
         settings = get_settings()
@@ -948,10 +958,7 @@ async def _ingest_repo_background(
                 await asyncio.shield(proc.wait())
                 raise RuntimeError("Repository clone timed out")
             file_count, disk_bytes = repository_usage(pathlib.Path(tmpdir))
-            if (
-                file_count > limits.max_repository_files
-                or disk_bytes > limits.max_repository_bytes
-            ):
+            if file_count > limits.max_repository_files or disk_bytes > limits.max_repository_bytes:
                 proc.kill()
                 communicate_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -1101,10 +1108,9 @@ async def _ingest_repo_background(
 # Endpoints — OpenAPI spec ingestion
 # ---------------------------------------------------------------------------
 
+
 @router.post("/ingest/openapi", status_code=201)
-async def ingest_openapi(
-    request: Request, body: OpenAPIIngestRequest
-) -> dict[str, Any]:
+async def ingest_openapi(request: Request, body: OpenAPIIngestRequest) -> dict[str, Any]:
     """Ingest an OpenAPI spec — creates a chunk per endpoint."""
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
@@ -1112,10 +1118,12 @@ async def ingest_openapi(
 
     try:
         import json as _json
+
         try:
             spec = _json.loads(body.content)
         except _json.JSONDecodeError:
             import yaml as _yaml  # type: ignore[import-untyped]
+
             spec = _yaml.safe_load(body.content)
     except Exception as exc:
         raise HTTPException(422, f"Could not parse OpenAPI spec: {exc}") from exc
@@ -1133,8 +1141,7 @@ async def ingest_openapi(
                 continue
             summary = op.get("summary", "")
             description = op.get("description", "")
-            params = [p.get("name", "") for p in op.get("parameters", [])
-                      if isinstance(p, dict)]
+            params = [p.get("name", "") for p in op.get("parameters", []) if isinstance(p, dict)]
 
             chunk_text = (
                 f"{method.upper()} {path}\n"
@@ -1148,18 +1155,20 @@ async def ingest_openapi(
 
             embedding = (await _embed_texts_or_http([chunk_text], embedder))[0]
 
-            rag_chunks.append(Chunk(
-                document_id=source_doc_id,
-                content=chunk_text,
-                embedding=embedding,
-                chunk_index=len(rag_chunks),
-                metadata={
-                    "source_url": body.source_url,
-                    "source_type": "openapi",
-                    "source_doc_id": source_doc_id,
-                    "endpoint": f"{method.upper()} {path}",
-                },
-            ))
+            rag_chunks.append(
+                Chunk(
+                    document_id=source_doc_id,
+                    content=chunk_text,
+                    embedding=embedding,
+                    chunk_index=len(rag_chunks),
+                    metadata={
+                        "source_url": body.source_url,
+                        "source_type": "openapi",
+                        "source_doc_id": source_doc_id,
+                        "endpoint": f"{method.upper()} {path}",
+                    },
+                )
+            )
     await _persist_chunks_or_http(
         store,
         rag_chunks,
@@ -1177,6 +1186,7 @@ async def ingest_openapi(
 # ---------------------------------------------------------------------------
 # Endpoints — URL-based connector ingestion (Phase 9)
 # ---------------------------------------------------------------------------
+
 
 @router.post("/ingest/url", status_code=201)
 async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str, Any]:
@@ -1199,24 +1209,28 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
     try:
         if body.source_type == "web":
             import httpx
+
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.get(body.url, headers={"User-Agent": "AgentVerse/1.0"})
                 resp.raise_for_status()
                 raw = resp.text
                 import re
-                content = re.sub(r'<[^>]+>', ' ', raw)
-                content = re.sub(r'\s+', ' ', content).strip()[:50000]
-                title_match = re.search(r'<title[^>]*>(.*?)</title>', raw, re.IGNORECASE)
+
+                content = re.sub(r"<[^>]+>", " ", raw)
+                content = re.sub(r"\s+", " ", content).strip()[:50000]
+                title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE)
                 metadata["title"] = title_match.group(1) if title_match else body.url
 
         elif body.source_type == "github":
-            raw_url = body.url.replace(
-                "github.com", "raw.githubusercontent.com"
-            ).replace("/blob/", "/")
+            raw_url = body.url.replace("github.com", "raw.githubusercontent.com").replace(
+                "/blob/", "/"
+            )
             import httpx
+
             headers: dict[str, str] = {}
             import os as _os
-            if (token := _os.getenv("GITHUB_TOKEN")):
+
+            if token := _os.getenv("GITHUB_TOKEN"):
                 headers["Authorization"] = f"Bearer {token}"
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(raw_url, headers=headers)
@@ -1235,6 +1249,7 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
         raise
     except Exception as exc:
         import logging as _logging
+
         _logging.getLogger(__name__).warning("ingest_url_fetch_failed: %s", exc)
         raise HTTPException(500, "Failed to fetch content from the requested URL") from exc
 
@@ -1243,6 +1258,7 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
 
     # Chunk and ingest
     from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_url
+
     _raw_url_chunks = _chunk_by_tokens_url(content, max_tokens=512, overlap_tokens=64)
     chunks = [
         type("_C", (), {"content": chunk, "start_char": 0, "end_char": len(chunk)})()
@@ -1268,13 +1284,18 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
         if not chunk.content.strip():
             continue
         embedding = (await _embed_texts_or_http([chunk.content], embedder))[0]
-        rag_chunks.append(RagChunk(
-            document_id=doc_id,
-            content=chunk.content,
-            embedding=embedding,
-            chunk_index=idx,
-            metadata={**{k: str(v) for k, v in metadata.items()}, "source_type": body.source_type},
-        ))
+        rag_chunks.append(
+            RagChunk(
+                document_id=doc_id,
+                content=chunk.content,
+                embedding=embedding,
+                chunk_index=idx,
+                metadata={
+                    **{k: str(v) for k, v in metadata.items()},
+                    "source_type": body.source_type,
+                },
+            )
+        )
     await _persist_chunks_or_http(
         store,
         rag_chunks,
@@ -1294,6 +1315,7 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
 # ---------------------------------------------------------------------------
 # Endpoints — structured source ingestors (PDF, DOCX, GitHub, Confluence, etc.)
 # ---------------------------------------------------------------------------
+
 
 async def _ingest_chunks_from_source(
     store: KnowledgeStore,
@@ -1316,20 +1338,21 @@ async def _ingest_chunks_from_source(
         source_doc_id = str(chunk_data.get("source_doc_id") or fallback_source_doc_id)
         chunk_index = document_chunk_indexes.get(source_doc_id, 0)
         document_chunk_indexes[source_doc_id] = chunk_index + 1
-        rag_chunks.append(Chunk(
-            document_id=source_doc_id,
-            content=content,
-            embedding=embedding,
-            chunk_index=chunk_index,
-            metadata={
-                k: str(v) for k, v in (chunk_data.get("metadata") or {}).items()
-            } | {
-                "source_url": chunk_data.get("source_url", ""),
-                "source_type": chunk_data.get("source_type", ""),
-                "source_doc_id": source_doc_id,
-                "page_number": str(chunk_data.get("page_number") or ""),
-            },
-        ))
+        rag_chunks.append(
+            Chunk(
+                document_id=source_doc_id,
+                content=content,
+                embedding=embedding,
+                chunk_index=chunk_index,
+                metadata={k: str(v) for k, v in (chunk_data.get("metadata") or {}).items()}
+                | {
+                    "source_url": chunk_data.get("source_url", ""),
+                    "source_type": chunk_data.get("source_type", ""),
+                    "source_doc_id": source_doc_id,
+                    "page_number": str(chunk_data.get("page_number") or ""),
+                },
+            )
+        )
     await _persist_chunks_or_http(
         store,
         rag_chunks,
@@ -1355,6 +1378,7 @@ async def ingest_pdf(
     filename = file.filename or "uploaded.pdf"
 
     from app.knowledge.ingestors.pdf_ingestor import PdfIngestor
+
     ingestor = PdfIngestor()
     chunks = ingestor.extract_chunks(
         content=content_bytes,
@@ -1382,6 +1406,7 @@ async def ingest_docx(
     filename = file.filename or "uploaded.docx"
 
     from app.knowledge.ingestors.docx_ingestor import DocxIngestor
+
     ingestor = DocxIngestor()
     chunks = ingestor.extract_chunks(
         content=content_bytes,
@@ -1394,18 +1419,18 @@ async def ingest_docx(
 
 
 @router.post("/ingest/github", status_code=202)
-async def ingest_github(
-    request: Request, body: GitHubIngestRequest
-) -> dict[str, Any]:
+async def ingest_github(request: Request, body: GitHubIngestRequest) -> dict[str, Any]:
     """Ingest a GitHub repository into a knowledge collection via GitHub REST API."""
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
 
     from app.knowledge.ingestors.github_ingestor import GitHubIngestor
+
     ingestor = GitHubIngestor()
     chunks = await ingestor.ingest_repo(
-        body.owner, body.repo,
+        body.owner,
+        body.repo,
         branch=body.branch,
         max_files=body.max_files,
     )
@@ -1419,15 +1444,14 @@ async def ingest_github(
 
 
 @router.post("/ingest/confluence", status_code=202)
-async def ingest_confluence(
-    request: Request, body: ConfluenceIngestRequest
-) -> dict[str, Any]:
+async def ingest_confluence(request: Request, body: ConfluenceIngestRequest) -> dict[str, Any]:
     """Ingest a Confluence space into a knowledge collection."""
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
 
     from app.knowledge.ingestors.confluence_ingestor import ConfluenceIngestor
+
     ingestor = ConfluenceIngestor(
         base_url=body.base_url,
         token=body.token.get_secret_value(),  # SecretStr: extract only at point of use
@@ -1444,15 +1468,14 @@ async def ingest_confluence(
 
 
 @router.post("/ingest/jira", status_code=202)
-async def ingest_jira(
-    request: Request, body: JiraIngestRequest
-) -> dict[str, Any]:
+async def ingest_jira(request: Request, body: JiraIngestRequest) -> dict[str, Any]:
     """Ingest Jira project issues into a knowledge collection."""
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
 
     from app.knowledge.ingestors.jira_ingestor import JiraIngestor
+
     ingestor = JiraIngestor(
         base_url=body.base_url,
         token=body.token.get_secret_value(),  # SecretStr: extract only at point of use
@@ -1473,15 +1496,14 @@ async def ingest_jira(
 
 
 @router.post("/ingest/slack", status_code=202)
-async def ingest_slack(
-    request: Request, body: SlackIngestRequest
-) -> dict[str, Any]:
+async def ingest_slack(request: Request, body: SlackIngestRequest) -> dict[str, Any]:
     """Ingest a Slack channel's message history into a knowledge collection."""
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
 
     from app.knowledge.ingestors.slack_ingestor import SlackIngestor
+
     ingestor = SlackIngestor(token=body.token.get_secret_value())
     chunks = await ingestor.ingest_channel(
         body.channel_id,
@@ -1500,6 +1522,7 @@ async def ingest_slack(
 # ---------------------------------------------------------------------------
 # H-7: Federated search across multiple collections
 # ---------------------------------------------------------------------------
+
 
 @router.post("/search/federated")
 async def federated_search_endpoint(
@@ -1529,6 +1552,7 @@ async def federated_search_endpoint(
         raise HTTPException(status_code=422, detail="filters must be an object")
 
     from app.knowledge.federated_search import federated_search
+
     try:
         resolve_rag_strategy(strategy)
         results = await federated_search(
@@ -1556,6 +1580,7 @@ async def federated_search_endpoint(
 # ---------------------------------------------------------------------------
 # Intelligence: RAG Chat & Collection Analytics
 # ---------------------------------------------------------------------------
+
 
 class RagChatRequest(BaseModel):
     question: str
@@ -1638,14 +1663,10 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
                 resolved_strategy_id=resolved_strategy,
                 citations=canonical_citations,
                 retrieval_legs=[
-                    leg
-                    for result in results
-                    for leg in list(result.get("retrieval_legs", []))
+                    leg for result in results for leg in list(result.get("retrieval_legs", []))
                 ],
                 strategy_trace=[
-                    trace
-                    for result in results
-                    for trace in list(result.get("strategy_trace", []))
+                    trace for result in results for trace in list(result.get("strategy_trace", []))
                 ],
                 answer=answer,
             ),
@@ -1662,8 +1683,7 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
                     ),
                     "requested_strategy_id": body.strategy,
                     "strategy_trace": [
-                        trace.model_dump(mode="json")
-                        for trace in verified.strategy_trace
+                        trace.model_dump(mode="json") for trace in verified.strategy_trace
                     ],
                 },
             )
@@ -1703,20 +1723,14 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
             {str(result["resolved_strategy_id"]) for result in results}
         ),
         "retrieval_legs": [
-            leg
-            for result in results
-            for leg in list(result.get("retrieval_legs", []))
+            leg for result in results for leg in list(result.get("retrieval_legs", []))
         ],
-        "strategy_trace": [
-            trace.model_dump(mode="json") for trace in verified.strategy_trace
-        ],
+        "strategy_trace": [trace.model_dump(mode="json") for trace in verified.strategy_trace],
     }
 
 
 @router.get("/collections/{collection_id}/stats")
-async def get_collection_stats(
-    request: Request, collection_id: str
-) -> dict[str, Any]:
+async def get_collection_stats(request: Request, collection_id: str) -> dict[str, Any]:
     """Return quality and freshness statistics for a knowledge collection."""
     tenant_ctx = _require_tenant(request)
     store = _knowledge_store(request)
@@ -1776,9 +1790,11 @@ async def get_collection_stats(
 # RPA-backed URL ingestion (JavaScript-rendered pages via Playwright)
 # ---------------------------------------------------------------------------
 
+
 @router.post("/ingest/rpa-url", status_code=201)
 async def ingest_from_rpa_url(
-    request: Request, body: RpaUrlIngestRequest,
+    request: Request,
+    body: RpaUrlIngestRequest,
 ) -> dict[str, Any]:
     """Ingest one or more URLs using headless Playwright (Chromium).
 
@@ -1822,11 +1838,15 @@ async def ingest_from_rpa_url(
         try:
             assert_public_url(url, context="/ingest/rpa-url")
         except SSRFError as exc:
-            results.append({
-                "url": url, "success": False,
-                "error": f"URL blocked for security reasons: {exc}",
-                "chunks_ingested": 0, "playwright_used": False,
-            })
+            results.append(
+                {
+                    "url": url,
+                    "success": False,
+                    "error": f"URL blocked for security reasons: {exc}",
+                    "chunks_ingested": 0,
+                    "playwright_used": False,
+                }
+            )
             continue
 
         if _playwright_ok:
@@ -1853,6 +1873,7 @@ async def ingest_from_rpa_url(
 
                     if body.screenshot:
                         import base64 as _b64
+
                         _ss_bytes = await _page.screenshot(full_page=False)
                         screenshot_b64 = _b64.b64encode(_ss_bytes).decode()
 
@@ -1860,6 +1881,7 @@ async def ingest_from_rpa_url(
                 playwright_used = True
             except Exception as exc:
                 import httpx as _httpx
+
                 try:
                     async with _httpx.AsyncClient(timeout=30.0) as _client:
                         _resp = await _client.get(url, headers={"User-Agent": "AgentVerse/1.0"})
@@ -1868,13 +1890,19 @@ async def ingest_from_rpa_url(
                         content = _re.sub(r"<[^>]+>", " ", raw)
                         content = _re.sub(r"\s+", " ", content).strip()[: body.max_chars]
                 except Exception:
-                    results.append({
-                        "url": url, "success": False, "error": str(exc),
-                        "chunks_ingested": 0, "playwright_used": False,
-                    })
+                    results.append(
+                        {
+                            "url": url,
+                            "success": False,
+                            "error": str(exc),
+                            "chunks_ingested": 0,
+                            "playwright_used": False,
+                        }
+                    )
                     continue
         else:
             import httpx as _httpx
+
             try:
                 async with _httpx.AsyncClient(timeout=30.0) as _client:
                     _resp = await _client.get(url, headers={"User-Agent": "AgentVerse/1.0"})
@@ -1883,65 +1911,82 @@ async def ingest_from_rpa_url(
                     content = _re.sub(r"<[^>]+>", " ", raw)
                     content = _re.sub(r"\s+", " ", content).strip()[: body.max_chars]
             except Exception as exc:
-                results.append({
-                    "url": url, "success": False, "error": str(exc),
-                    "chunks_ingested": 0, "playwright_used": False,
-                })
+                results.append(
+                    {
+                        "url": url,
+                        "success": False,
+                        "error": str(exc),
+                        "chunks_ingested": 0,
+                        "playwright_used": False,
+                    }
+                )
                 continue
 
         if not content.strip():
-            results.append({
-                "url": url, "success": False, "error": "No content extracted",
-                "chunks_ingested": 0, "playwright_used": playwright_used,
-            })
+            results.append(
+                {
+                    "url": url,
+                    "success": False,
+                    "error": "No content extracted",
+                    "chunks_ingested": 0,
+                    "playwright_used": playwright_used,
+                }
+            )
             continue
 
         from app.knowledge.chunker_v2 import chunk_by_tokens
+
         raw_chunks = chunk_by_tokens(content, max_tokens=512, overlap_tokens=64)
         if not raw_chunks:
             raw_chunks = [content.strip()]
 
         chunk_dicts: list[dict[str, Any]] = []
         for i, chunk_text in enumerate(raw_chunks):
-            chunk_dicts.append({
-                "content": chunk_text,
-                "source_url": url,
-                "source_type": body.source_type,
-                "source_doc_id": url,
-                "page_number": None,
-                "metadata": {
+            chunk_dicts.append(
+                {
+                    "content": chunk_text,
                     "source_url": url,
                     "source_type": body.source_type,
-                    "playwright_used": str(playwright_used),
-                    "selector": body.selector,
-                    "chunk_index": str(i),
-                },
-            })
+                    "source_doc_id": url,
+                    "page_number": None,
+                    "metadata": {
+                        "source_url": url,
+                        "source_type": body.source_type,
+                        "playwright_used": str(playwright_used),
+                        "selector": body.selector,
+                        "chunk_index": str(i),
+                    },
+                }
+            )
 
         if links:
             link_content = f"Page links from {url}:\n" + "\n".join(links)
-            chunk_dicts.append({
-                "content": link_content,
-                "source_url": url,
-                "source_type": f"{body.source_type}-links",
-                "source_doc_id": f"{url}#links",
-                "page_number": None,
-                "metadata": {"source_url": url, "source_type": f"{body.source_type}-links"},
-            })
+            chunk_dicts.append(
+                {
+                    "content": link_content,
+                    "source_url": url,
+                    "source_type": f"{body.source_type}-links",
+                    "source_doc_id": f"{url}#links",
+                    "page_number": None,
+                    "metadata": {"source_url": url, "source_type": f"{body.source_type}-links"},
+                }
+            )
 
         ingested = await _ingest_chunks_from_source(
             store, chunk_dicts, body.collection_id, tenant_ctx, embedder
         )
         total_chunks += ingested
-        results.append({
-            "url": url,
-            "success": True,
-            "chunks_ingested": ingested,
-            "total_chars": len(content),
-            "playwright_used": playwright_used,
-            "screenshot_captured": bool(screenshot_b64),
-            "links_extracted": len(links),
-        })
+        results.append(
+            {
+                "url": url,
+                "success": True,
+                "chunks_ingested": ingested,
+                "total_chars": len(content),
+                "playwright_used": playwright_used,
+                "screenshot_captured": bool(screenshot_b64),
+                "links_extracted": len(links),
+            }
+        )
 
     return {
         "collection_id": body.collection_id,
@@ -1968,9 +2013,7 @@ def _require_tenant_ctx(request: Request) -> TenantContext:
 async def get_knowledge_analytics(request: Request) -> dict[str, Any]:
     """Return aggregate analytics for all knowledge collections."""
     tenant = _require_tenant_ctx(request)
-    knowledge_store: KnowledgeStore | None = getattr(
-        request.app.state, "knowledge_store", None
-    )
+    knowledge_store: KnowledgeStore | None = getattr(request.app.state, "knowledge_store", None)
 
     if knowledge_store is None:
         return {"collections": [], "total_documents": 0, "total_collections": 0}
@@ -2009,6 +2052,7 @@ async def get_knowledge_analytics(request: Request) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Document browser: list + delete individual documents
 # ---------------------------------------------------------------------------
+
 
 @router.post("/collections/{collection_id}/documents", status_code=status.HTTP_201_CREATED)
 async def ingest_document_into_collection(
@@ -2056,9 +2100,7 @@ async def ingest_document_into_collection(
                 )
 
         indexing_config = RAGIndexingConfig(
-            strategies=frozenset(
-                RAGStrategy(strategy) for strategy in body.indexing_strategies
-            ),
+            strategies=frozenset(RAGStrategy(strategy) for strategy in body.indexing_strategies),
             raptor_cluster_size=body.raptor_cluster_size,
             raptor_max_levels=body.raptor_max_levels,
             parent_window_size=body.parent_window_size,
@@ -2249,14 +2291,14 @@ async def reingest_document(
             return {"status": "reingested", "document_id": document_id}
 
         # Fallback: mark document for re-indexing in DB
-        db = (
-            getattr(knowledge_store, "_db", None)
-            or getattr(knowledge_store, "_session_factory", None)
+        db = getattr(knowledge_store, "_db", None) or getattr(
+            knowledge_store, "_session_factory", None
         )
         if db:
             from sqlalchemy import text as _t
 
             from app.db.rls import sqlalchemy_rls_context
+
             async with (
                 db() as session,
                 sqlalchemy_rls_context(session, tenant.tenant_id),
@@ -2331,9 +2373,7 @@ class NotionIngestRequest(BaseModel):
 class GDriveIngestRequest(BaseModel):
     folder_id: str = Field(..., description="Google Drive folder ID")
     collection_id: str
-    service_account_key_json: str = Field(
-        ..., description="Service account key JSON as a string"
-    )
+    service_account_key_json: str = Field(..., description="Service account key JSON as a string")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -2349,8 +2389,8 @@ async def ingest_email(
         raise HTTPException(status_code=503, detail="Knowledge store not available")
 
     try:
-        from app.ingestion.parsers.email_parser import EmailParser
         from app.ingestion.orchestrator import IngestionOrchestrator
+        from app.ingestion.parsers.email_parser import EmailParser
 
         parser = EmailParser()
         parts = parser.parse(body.raw_email)
@@ -2451,9 +2491,8 @@ async def ingest_gdrive_folder(
         raise HTTPException(status_code=503, detail="Knowledge store not available")
 
     try:
-        import json as _json
-        import tempfile
         import os
+        import tempfile
 
         from app.ingestion.connectors.gdrive_connector import GDriveConnector
         from app.ingestion.orchestrator import IngestionOrchestrator

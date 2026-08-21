@@ -3,6 +3,7 @@
 Environment:
   GUST_ACCESS_TOKEN: Gust OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -44,7 +45,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Search query for investor name or focus"},
+                "query": {
+                    "type": "string",
+                    "description": "Search query for investor name or focus",
+                },
                 "stage": {"type": "string", "description": "Investment stage preference"},
                 "page": {"type": "integer", "description": "Page number"},
             },

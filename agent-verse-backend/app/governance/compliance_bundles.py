@@ -12,6 +12,7 @@ When a tenant enables a compliance bundle, ALL of these settings are automatical
 
 Bundles are additive — a tenant can enable multiple.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -42,7 +43,10 @@ COMPLIANCE_BUNDLES: dict[str, ComplianceBundle] = {
         description="HIPAA-compliant configuration for healthcare agents handling PHI",
         required_guardrail_layers=["pii_scanner", "phi_detector", "output_scanner"],
         required_hitl_for=[
-            "send_email", "send_slack_message", "create_*_record", "update_patient_*",
+            "send_email",
+            "send_slack_message",
+            "create_*_record",
+            "update_patient_*",
         ],
         max_autonomy_mode="supervised",
         audit_retention_days=2190,  # 6 years per HIPAA
@@ -83,7 +87,9 @@ COMPLIANCE_BUNDLES: dict[str, ComplianceBundle] = {
         audit_retention_days=1825,  # 5 years
         pii_fields_masked=["aadhaar", "pan", "phone", "email", "name"],
         required_policies=[
-            "consent_purpose_tracking", "grievance_officer", "data_principal_rights",
+            "consent_purpose_tracking",
+            "grievance_officer",
+            "data_principal_rights",
         ],
         data_residency_required=True,
     ),
@@ -138,9 +144,8 @@ class ComplianceBundleManager:
         for bundle in self.get_active(tenant_id):
             for pattern in bundle.required_hitl_for:
                 if (
-                    (pattern.endswith("*") and tool_name.startswith(pattern[:-1]))
-                    or tool_name == pattern
-                ):
+                    pattern.endswith("*") and tool_name.startswith(pattern[:-1])
+                ) or tool_name == pattern:
                     return True
         return False
 

@@ -1,4 +1,5 @@
 """CEL condition evaluator and Jinja2 sandboxed template renderer."""
+
 from __future__ import annotations
 
 import logging
@@ -14,10 +15,18 @@ class CELEvaluator:
     """
 
     TIMEOUT_SECONDS: float = 0.5
-    BLOCKED_ATTRIBUTES = frozenset([
-        "__class__", "__import__", "eval", "exec", "open",
-        "__builtins__", "globals", "locals",
-    ])
+    BLOCKED_ATTRIBUTES = frozenset(
+        [
+            "__class__",
+            "__import__",
+            "eval",
+            "exec",
+            "open",
+            "__builtins__",
+            "globals",
+            "locals",
+        ]
+    )
 
     def evaluate(self, expression: str, payload: dict) -> bool:
         """Return True if expression evaluates truthy, False otherwise."""
@@ -26,15 +35,18 @@ class CELEvaluator:
         try:
             import celpy  # type: ignore[import]
             import celpy.celtypes as ct  # type: ignore[import]
+
             env = celpy.Environment()
             ast = env.compile(expression)
             prog = env.program(ast)
             activation = {
-                "payload": ct.MapType({
-                    ct.StringType(k): self._to_cel(v, ct)
-                    for k, v in payload.items()
-                    if k not in self.BLOCKED_ATTRIBUTES
-                })
+                "payload": ct.MapType(
+                    {
+                        ct.StringType(k): self._to_cel(v, ct)
+                        for k, v in payload.items()
+                        if k not in self.BLOCKED_ATTRIBUTES
+                    }
+                )
             }
             return bool(prog.evaluate(activation))
         except ImportError:
@@ -72,7 +84,7 @@ class TemplateRenderer:
             key = match.group(1).strip()
             # Support {{payload.field}} notation
             if key.startswith("payload."):
-                field = key[len("payload."):]
+                field = key[len("payload.") :]
                 return str(payload.get(field, ""))
             # Support direct {{field}} that matches extra kwargs
             if key in extra:
@@ -94,6 +106,7 @@ class CounterThresholdEvaluator:
 
     def __init__(self) -> None:
         import time as _time
+
         self._time = _time
         # key → list of timestamps
         self._events: dict[str, list[float]] = {}
@@ -121,6 +134,7 @@ class CounterThresholdEvaluator:
 
     def _count(self, key: str, window_secs: int = 3600) -> int:
         import time as _time
+
         now = _time.monotonic()
         return sum(1 for t in self._events.get(key, []) if t >= now - window_secs)
 
@@ -144,6 +158,7 @@ class WindowAggregateEvaluator:
 
     def __init__(self) -> None:
         import time as _time
+
         self._time = _time
         # key → list of (timestamp, value)
         self._values: dict[str, list[tuple[float, float]]] = {}
@@ -174,9 +189,13 @@ class WindowAggregateEvaluator:
         agg_fn = self.AGGREGATIONS.get(aggregation, self.AGGREGATIONS["avg"])
         aggregate = agg_fn(values)  # type: ignore[operator]
 
-        ops = {">": aggregate > threshold, ">=": aggregate >= threshold,
-               "<": aggregate < threshold, "<=": aggregate <= threshold,
-               "==": aggregate == threshold}
+        ops = {
+            ">": aggregate > threshold,
+            ">=": aggregate >= threshold,
+            "<": aggregate < threshold,
+            "<=": aggregate <= threshold,
+            "==": aggregate == threshold,
+        }
         return ops.get(comparison, False)
 
 

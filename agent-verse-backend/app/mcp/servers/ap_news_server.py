@@ -3,6 +3,7 @@
 Environment:
   AP_NEWS_API_KEY: AP News API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -67,7 +68,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "topic": {"type": "string", "description": "Topic name (e.g. politics, sports, technology)"},
+                "topic": {
+                    "type": "string",
+                    "description": "Topic name (e.g. politics, sports, technology)",
+                },
                 "from_date": {"type": "string", "description": "Start date YYYY-MM-DD"},
                 "page_size": {"type": "integer", "description": "Results per page"},
             },
@@ -81,7 +85,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "limit": {"type": "integer", "description": "Number of breaking news items"},
-                "urgency": {"type": "integer", "description": "Minimum urgency level (1-5, where 1 is most urgent)"},
+                "urgency": {
+                    "type": "integer",
+                    "description": "Minimum urgency level (1-5, where 1 is most urgent)",
+                },
             },
         },
     },

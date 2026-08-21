@@ -60,6 +60,7 @@ class AuditLog:
         self._log.setdefault(tenant_ctx.tenant_id, []).append(event)
         if self._db is not None:
             import asyncio
+
             try:
                 loop = asyncio.get_running_loop()
                 _task = loop.create_task(self._db_record(event, tenant_ctx.tenant_id))  # noqa: RUF006
@@ -68,6 +69,7 @@ class AuditLog:
 
     async def _db_record(self, event: AuditEvent, tenant_id: str) -> None:
         from opentelemetry import trace as _trace
+
         _tracer = _trace.get_tracer(__name__)
         with _tracer.start_as_current_span("governance.audit.db_record") as span:
             span.set_attribute("tenant_id", tenant_id)
@@ -78,6 +80,7 @@ class AuditLog:
         try:
             from app.db.models.governance import AuditLog as AuditLogModel
             from app.db.rls import sqlalchemy_rls_context
+
             async with self._db() as session, session.begin():  # noqa: SIM117
                 async with sqlalchemy_rls_context(session, tenant_id):
                     row = AuditLogModel(
@@ -175,9 +178,7 @@ class AuditLog:
                 LIMIT :limit OFFSET :offset
             """
 
-            async with self._db() as session, sqlalchemy_rls_context(
-                session, tenant_ctx.tenant_id
-            ):
+            async with self._db() as session, sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
                 result = await session.execute(text(sql), params)
                 rows = result.fetchall()
 

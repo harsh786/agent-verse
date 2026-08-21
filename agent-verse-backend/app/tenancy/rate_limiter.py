@@ -96,8 +96,8 @@ class SlidingWindowRateLimiter:
         try:
             result = await self._store.eval(
                 _LUA_RATE_LIMIT,
-                1,          # numkeys
-                key,        # KEYS[1]  (store.eval will tenant-prefix this)
+                1,  # numkeys
+                key,  # KEYS[1]  (store.eval will tenant-prefix this)
                 str(now_ms),
                 str(window_ms),
                 str(limit),

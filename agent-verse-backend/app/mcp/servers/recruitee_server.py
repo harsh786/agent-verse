@@ -4,6 +4,7 @@ Environment:
   RECRUITEE_API_TOKEN:  Recruitee personal API token
   RECRUITEE_COMPANY_ID: Recruitee company subdomain / ID
 """
+
 from __future__ import annotations
 
 import os

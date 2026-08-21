@@ -17,6 +17,7 @@ Usage::
         tenant_ctx=tenant_ctx,
     )
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -67,8 +68,7 @@ def _merge_unique_dicts(
     second: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     by_value = {
-        json.dumps(item, sort_keys=True, separators=(",", ":")): item
-        for item in [*first, *second]
+        json.dumps(item, sort_keys=True, separators=(",", ":")): item for item in [*first, *second]
     }
     return [by_value[key] for key in sorted(by_value)]
 
@@ -187,12 +187,8 @@ async def federated_search(
         existing["collection_ids"] = sorted(
             {*existing["collection_ids"], str(result["collection_id"])}
         )
-        existing["sources"] = sorted(
-            {*existing["sources"], str(result["source"])}
-        )
-        existing["citation_refs"] = sorted(
-            {*existing["citation_refs"], str(result["citation_id"])}
-        )
+        existing["sources"] = sorted({*existing["sources"], str(result["source"])})
+        existing["citation_refs"] = sorted({*existing["citation_refs"], str(result["citation_id"])})
         existing["retrieval_legs"] = _merge_unique_dicts(
             list(existing["retrieval_legs"]),
             list(result["retrieval_legs"]),

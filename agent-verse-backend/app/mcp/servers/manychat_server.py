@@ -3,6 +3,7 @@
 Environment:
   MANYCHAT_API_KEY: ManyChat API key from Settings > API > Access Token
 """
+
 from __future__ import annotations
 
 import os
@@ -42,10 +43,17 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "phone": {"type": "string", "description": "Subscriber phone number in E.164 format"},
+                "phone": {
+                    "type": "string",
+                    "description": "Subscriber phone number in E.164 format",
+                },
                 "first_name": {"type": "string", "description": "Subscriber first name"},
                 "last_name": {"type": "string", "description": "Subscriber last name"},
-                "has_opt_in_sms": {"type": "boolean", "description": "Whether the subscriber has opted in to SMS", "default": True},
+                "has_opt_in_sms": {
+                    "type": "boolean",
+                    "description": "Whether the subscriber has opted in to SMS",
+                    "default": True,
+                },
             },
             "required": ["phone"],
         },
@@ -93,7 +101,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "subscriber_id": {"type": "string", "description": "ManyChat subscriber ID"},
-                "dynamic_block_url": {"type": "string", "description": "URL of the dynamic content block"},
+                "dynamic_block_url": {
+                    "type": "string",
+                    "description": "URL of the dynamic content block",
+                },
             },
             "required": ["subscriber_id", "dynamic_block_url"],
         },
@@ -136,7 +147,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r = await client.post(
                     f"{BASE_URL}/subscriber/addTag",
                     headers=_headers(),
-                    json={"subscriber_id": arguments["subscriber_id"], "tag_id": arguments["tag_id"]},
+                    json={
+                        "subscriber_id": arguments["subscriber_id"],
+                        "tag_id": arguments["tag_id"],
+                    },
                 )
                 r.raise_for_status()
                 return r.json()
@@ -145,7 +159,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r = await client.post(
                     f"{BASE_URL}/subscriber/removeTag",
                     headers=_headers(),
-                    json={"subscriber_id": arguments["subscriber_id"], "tag_id": arguments["tag_id"]},
+                    json={
+                        "subscriber_id": arguments["subscriber_id"],
+                        "tag_id": arguments["tag_id"],
+                    },
                 )
                 r.raise_for_status()
                 return r.json()
@@ -156,7 +173,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     headers=_headers(),
                     json={
                         "subscriber_id": arguments["subscriber_id"],
-                        "data": {"version": "v2", "content": {"messages": [{"type": "flow", "flow_ns": arguments["flow_ns"]}]}},
+                        "data": {
+                            "version": "v2",
+                            "content": {
+                                "messages": [{"type": "flow", "flow_ns": arguments["flow_ns"]}]
+                            },
+                        },
                     },
                 )
                 r.raise_for_status()
@@ -171,7 +193,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                         "data": {
                             "version": "v2",
                             "content": {
-                                "messages": [{"type": "dynamic_block_url", "url": arguments["dynamic_block_url"]}]
+                                "messages": [
+                                    {
+                                        "type": "dynamic_block_url",
+                                        "url": arguments["dynamic_block_url"],
+                                    }
+                                ]
                             },
                         },
                     },

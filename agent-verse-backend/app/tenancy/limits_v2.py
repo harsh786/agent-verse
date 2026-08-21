@@ -11,6 +11,7 @@ New limits vs v1:
 - Concurrent execution per-agent (bulkhead isolation)
 - Burst vs sustained rate limits
 """
+
 from __future__ import annotations
 
 import time
@@ -34,7 +35,7 @@ class LimitsV2Config:
 
     # API rate limits
     requests_per_minute: int = 60
-    burst_requests_per_10s: int = 30          # burst allowance
+    burst_requests_per_10s: int = 30  # burst allowance
 
     # Connector-specific rate limits (connector_name → calls_per_minute)
     connector_rpm: dict[str, int] = field(default_factory=dict)

@@ -23,6 +23,7 @@ _AGENT_SNAPSHOTS: dict[str, list[dict[str, Any]]] = {}
 # DB helpers for snapshot persistence
 # ---------------------------------------------------------------------------
 
+
 async def _save_snapshot_to_db(snapshot: dict[str, Any], db: Any, tenant_id: str) -> None:
     """Persist an agent snapshot to the agent_snapshots table WITH RLS context."""
     if db is None:
@@ -31,6 +32,7 @@ async def _save_snapshot_to_db(snapshot: dict[str, Any], db: Any, tenant_id: str
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
+
         async with db() as session, session.begin():
             async with sqlalchemy_rls_context(session, tenant_id):
                 await session.execute(
@@ -50,12 +52,11 @@ async def _save_snapshot_to_db(snapshot: dict[str, Any], db: Any, tenant_id: str
                 )
     except Exception as exc:
         import logging
+
         logging.getLogger(__name__).warning("snapshot_persist_failed: %s", exc)
 
 
-async def _load_snapshots_from_db(
-    tenant_id: str, agent_id: str, db: Any
-) -> list[dict[str, Any]]:
+async def _load_snapshots_from_db(tenant_id: str, agent_id: str, db: Any) -> list[dict[str, Any]]:
     """Load agent snapshots from DB ordered by version ascending."""
     if db is None:
         return []
@@ -63,6 +64,7 @@ async def _load_snapshots_from_db(
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
+
         async with db() as session, sqlalchemy_rls_context(session, tenant_id):
             result = await session.execute(
                 text(
@@ -73,12 +75,10 @@ async def _load_snapshots_from_db(
                 {"tid": tenant_id, "aid": agent_id},
             )
             rows = result.fetchall()
-        return [
-            (json.loads(r[0]) if isinstance(r[0], str) else r[0])
-            for r in rows
-        ]
+        return [(json.loads(r[0]) if isinstance(r[0], str) else r[0]) for r in rows]
     except Exception as exc:
         import logging
+
         logging.getLogger(__name__).warning("snapshot_load_failed: %s", exc)
         return []
 
@@ -86,6 +86,7 @@ async def _load_snapshots_from_db(
 # ---------------------------------------------------------------------------
 # In-memory AgentStore
 # ---------------------------------------------------------------------------
+
 
 class AgentStore:
     """Per-tenant in-memory agent registry.
@@ -113,8 +114,10 @@ class AgentStore:
         from app.db.rls import sqlalchemy_rls_context
 
         tenant_id = str(record["tenant_id"])
-        async with self._db() as session, session.begin(), sqlalchemy_rls_context(
-            session, tenant_id
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
         ):
             session.add(
                 Agent(
@@ -211,9 +214,7 @@ class AgentStore:
 
     # ── async DB reads ─────────────────────────────────────────────────────────
 
-    async def get_async(
-        self, agent_id: str, *, tenant_ctx: TenantContext
-    ) -> dict[str, Any] | None:
+    async def get_async(self, agent_id: str, *, tenant_ctx: TenantContext) -> dict[str, Any] | None:
         """Read a single agent directly from DB; fall back to memory cache."""
         if self._db is not None:
             try:
@@ -222,8 +223,9 @@ class AgentStore:
                 from app.db.models.agent import Agent
                 from app.db.rls import sqlalchemy_rls_context
 
-                async with self._db() as session, sqlalchemy_rls_context(
-                    session, tenant_ctx.tenant_id
+                async with (
+                    self._db() as session,
+                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
                 ):
                     result = await session.execute(
                         select(Agent).where(
@@ -243,6 +245,7 @@ class AgentStore:
                 return None
             except Exception as exc:
                 from app.observability.logging import get_logger
+
                 get_logger(__name__).warning("agent_get_db_failed", error=str(exc))
 
         return self._data.get((tenant_ctx.tenant_id, agent_id))
@@ -256,8 +259,9 @@ class AgentStore:
                 from app.db.models.agent import Agent
                 from app.db.rls import sqlalchemy_rls_context
 
-                async with self._db() as session, sqlalchemy_rls_context(
-                    session, tenant_ctx.tenant_id
+                async with (
+                    self._db() as session,
+                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
                 ):
                     result = await session.execute(
                         select(Agent)
@@ -276,16 +280,13 @@ class AgentStore:
                 return agents
             except Exception as exc:
                 from app.observability.logging import get_logger
+
                 get_logger(__name__).warning("agent_list_db_failed", error=str(exc))
 
         return self.list_all(tenant_ctx=tenant_ctx)
 
     def list_all(self, *, tenant_ctx: TenantContext) -> list[dict[str, Any]]:
-        return [
-            rec
-            for (tid, _), rec in self._data.items()
-            if tid == tenant_ctx.tenant_id
-        ]
+        return [rec for (tid, _), rec in self._data.items() if tid == tenant_ctx.tenant_id]
 
     def delete(self, agent_id: str, *, tenant_ctx: TenantContext) -> bool:
         """Synchronous in-memory delete (used by tests / no-DB mode)."""
@@ -303,8 +304,11 @@ class AgentStore:
                 from sqlalchemy import text
 
                 from app.db.rls import sqlalchemy_rls_context
-                async with self._db() as session, session.begin(), sqlalchemy_rls_context(
-                    session, tenant_ctx.tenant_id
+
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
                 ):
                     result = await session.execute(
                         text(
@@ -317,6 +321,7 @@ class AgentStore:
                         return False
             except Exception as exc:
                 from app.observability.logging import get_logger
+
                 get_logger(__name__).warning("agent_delete_db_failed", error=str(exc))
                 # Fall through to in-memory-only delete so the endpoint still
                 # returns a meaningful response when DB is temporarily unavailable.
@@ -356,10 +361,18 @@ class AgentStore:
 
                 # Build SET clause dynamically for allowed fields
                 allowed = {
-                    "name", "goal_template", "autonomy_mode", "connector_ids",
-                    "trigger_config", "system_prompt", "model_override",
-                    "max_iterations", "timeout_seconds", "allowed_collection_ids",
-                    "eval_suite_id", "policy_ids",
+                    "name",
+                    "goal_template",
+                    "autonomy_mode",
+                    "connector_ids",
+                    "trigger_config",
+                    "system_prompt",
+                    "model_override",
+                    "max_iterations",
+                    "timeout_seconds",
+                    "allowed_collection_ids",
+                    "eval_suite_id",
+                    "policy_ids",
                 }
                 updates = {k: v for k, v in data.items() if k in allowed}
                 if not updates:
@@ -377,8 +390,10 @@ class AgentStore:
                         set_parts.append(f"{k} = :{k}")
 
                 set_clause = ", ".join(set_parts)
-                async with self._db() as session, session.begin(), sqlalchemy_rls_context(
-                    session, tenant_ctx.tenant_id
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
                 ):
                     result = await session.execute(
                         text(
@@ -390,6 +405,7 @@ class AgentStore:
                     return result.rowcount > 0
             except Exception as exc:
                 from app.observability.logging import get_logger
+
                 get_logger(__name__).warning("agent_update_db_failed", error=str(exc))
         return True
 
@@ -410,6 +426,7 @@ class AgentStore:
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
+
 
 # FIX 8: Add new fields to CreateAgentRequest
 class CreateAgentRequest(BaseModel):
@@ -432,9 +449,7 @@ class CreateAgentRequest(BaseModel):
     def _validate_domain_metadata(self) -> CreateAgentRequest:
         """Legal agents must have bar_number in domain_metadata."""
         if self.domain_context == "legal" and "bar_number" not in self.domain_metadata:
-            raise ValueError(
-                "Legal agents require 'bar_number' in domain_metadata"
-            )
+            raise ValueError("Legal agents require 'bar_number' in domain_metadata")
         return self
 
 
@@ -521,10 +536,7 @@ async def _resolve_connector_ids(
             records = await registry.list_server_records(tenant_ctx=tenant_ctx)
         elif hasattr(registry, "list_servers"):
             servers = await registry.list_servers(tenant_ctx=tenant_ctx)
-            records = [
-                (str(getattr(server, "server_id", "") or ""), server)
-                for server in servers
-            ]
+            records = [(str(getattr(server, "server_id", "") or ""), server) for server in servers]
         else:
             return normalized
     except Exception:
@@ -560,6 +572,7 @@ async def _resolve_connector_ids(
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _require_tenant(request: Request) -> Any:
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
@@ -569,11 +582,13 @@ def _require_tenant(request: Request) -> Any:
 
 def _agent_store(request: Request) -> AgentStore:
     from app.api._deps import get_agent_store
+
     return get_agent_store(request)  # type: ignore[no-any-return]
 
 
 def _meta_agent(request: Request) -> MetaAgentPlanner:
     from app.api._deps import get_meta_agent
+
     return get_meta_agent(request)  # type: ignore[no-any-return]
 
 
@@ -595,6 +610,7 @@ async def _create_agent_record(
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.get("")
 async def list_agents(request: Request) -> list[dict[str, Any]]:
@@ -618,6 +634,7 @@ async def create_agent(request: Request, body: CreateAgentRequest) -> dict[str, 
         )
     # FIX 6: use list_async (DB-backed) for accurate cross-replica limit check
     from app.tenancy.limits import check_agent_limit
+
     existing = await store.list_async(tenant_ctx=tenant_ctx)
     check_agent_limit(tenant_ctx, len(existing))
 
@@ -648,6 +665,7 @@ async def create_agent(request: Request, body: CreateAgentRequest) -> dict[str, 
     if schedule_store is not None and trigger_type in ("cron", "interval", "event"):
         try:
             from app.triggers.models import TriggerSpec, TriggerType
+
             spec = TriggerSpec(
                 trigger_type=TriggerType(trigger_type),
                 cron_expression=trigger_cfg.get("cron_expression", ""),
@@ -663,18 +681,15 @@ async def create_agent(request: Request, body: CreateAgentRequest) -> dict[str, 
             )
         except Exception as _sched_exc:
             import logging
-            logging.getLogger(__name__).warning(
-                "trigger_schedule_create_failed: %s", _sched_exc
-            )
+
+            logging.getLogger(__name__).warning("trigger_schedule_create_failed: %s", _sched_exc)
 
     return store.get(agent_id, tenant_ctx=tenant_ctx)  # type: ignore[return-value]
 
 
 # Note: /create must be declared before /{agent_id} so the exact path wins.
 @router.post("/create", status_code=status.HTTP_201_CREATED)
-async def create_agent_nl(
-    request: Request, body: MetaAgentCreateRequest
-) -> dict[str, Any]:
+async def create_agent_nl(request: Request, body: MetaAgentCreateRequest) -> dict[str, Any]:
     """Meta-agent NL creation — parses one NL command into a full agent config."""
     tenant_ctx = _require_tenant(request)
     store = _agent_store(request)
@@ -684,6 +699,7 @@ async def create_agent_nl(
 
     # FIX 4: enforce agent limit via DB-backed list_async
     from app.tenancy.limits import check_agent_limit
+
     existing = await store.list_async(tenant_ctx=tenant_ctx)
     check_agent_limit(tenant_ctx, len(existing))
 
@@ -750,9 +766,7 @@ async def get_agent(request: Request, agent_id: str) -> dict[str, Any]:
 
 # FIX 2: PUT /{agent_id} — full field update
 @router.put("/{agent_id}")
-async def update_agent(
-    request: Request, agent_id: str, body: UpdateAgentRequest
-) -> dict[str, Any]:
+async def update_agent(request: Request, agent_id: str, body: UpdateAgentRequest) -> dict[str, Any]:
     """Update an agent's configuration. All fields are optional."""
     tenant_ctx = _require_tenant(request)
     store = _agent_store(request)
@@ -806,11 +820,10 @@ async def delete_agent(request: Request, agent_id: str) -> None:
             schedules = schedule_store.list_all(tenant_ctx=tenant_ctx)
             for sched in schedules:
                 if sched.get("agent_id") == agent_id:
-                    await schedule_store.delete_async(
-                        sched["schedule_id"], tenant_ctx=tenant_ctx
-                    )
+                    await schedule_store.delete_async(sched["schedule_id"], tenant_ctx=tenant_ctx)
         except Exception as _se:
             import logging
+
             logging.getLogger(__name__).warning("agent_schedule_cleanup_failed: %s", _se)
 
 
@@ -832,6 +845,7 @@ async def get_permissions(request: Request, agent_id: str) -> dict[str, Any]:
     if db is not None:
         try:
             from sqlalchemy import text
+
             async with db() as session:
                 rows = (
                     await session.execute(
@@ -856,6 +870,7 @@ async def get_permissions(request: Request, agent_id: str) -> dict[str, Any]:
             return {"agent_id": agent_id, "permissions": permissions}
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("permissions_read_failed: %s", exc)
 
     # Fallback to in-memory record
@@ -881,12 +896,12 @@ async def update_permissions(
     if db is not None:
         try:
             from sqlalchemy import text
+
             async with db() as session, session.begin():
                 # Delete existing permissions for this agent+tenant
                 await session.execute(
                     text(
-                        "DELETE FROM agent_permissions "
-                        "WHERE agent_id = :aid AND tenant_id = :tid"
+                        "DELETE FROM agent_permissions WHERE agent_id = :aid AND tenant_id = :tid"
                     ),
                     {"aid": agent_id, "tid": tenant_ctx.tenant_id},
                 )
@@ -918,14 +933,11 @@ async def update_permissions(
                     )
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("permissions_write_failed: %s", exc)
 
     # Also update in-memory cache (legacy path / no-DB mode)
-    in_mem_perms = (
-        body.permissions
-        if isinstance(body.permissions, dict)
-        else {}
-    )
+    in_mem_perms = body.permissions if isinstance(body.permissions, dict) else {}
     store.update_permissions(agent_id, in_mem_perms, tenant_ctx=tenant_ctx)
 
     return {"agent_id": agent_id, "permissions": body.permissions, "status": "updated"}
@@ -955,9 +967,7 @@ async def update_knowledge_binding(
 
 
 @router.post("/{agent_id}/knowledge/{knowledge_id}", status_code=204)
-async def assign_knowledge_collection(
-    request: Request, agent_id: str, knowledge_id: str
-) -> None:
+async def assign_knowledge_collection(request: Request, agent_id: str, knowledge_id: str) -> None:
     """Add a single knowledge collection to this agent's allowed list."""
     tenant = _require_tenant(request)
     store = _agent_store(request)
@@ -973,9 +983,7 @@ async def assign_knowledge_collection(
 
 
 @router.delete("/{agent_id}/knowledge/{knowledge_id}", status_code=204)
-async def remove_knowledge_collection(
-    request: Request, agent_id: str, knowledge_id: str
-) -> None:
+async def remove_knowledge_collection(request: Request, agent_id: str, knowledge_id: str) -> None:
     """Remove a single knowledge collection from this agent's allowed list."""
     tenant = _require_tenant(request)
     store = _agent_store(request)
@@ -1038,9 +1046,7 @@ async def snapshot_agent(request: Request, agent_id: str) -> dict[str, Any]:
 
 # FIX 3: rollback now persists to DB via update_async
 @router.post("/{agent_id}/rollback/{snapshot_id}")
-async def rollback_agent(
-    request: Request, agent_id: str, snapshot_id: str
-) -> dict[str, Any]:
+async def rollback_agent(request: Request, agent_id: str, snapshot_id: str) -> dict[str, Any]:
     """Roll back agent to a previous snapshot."""
     tenant = _require_tenant(request)
     store = _agent_store(request)
@@ -1068,9 +1074,7 @@ async def rollback_agent(
 
 
 @router.get("/{agent_id}/export")
-async def export_agent(
-    request: Request, agent_id: str, format: str = "openai"
-) -> dict[str, Any]:
+async def export_agent(request: Request, agent_id: str, format: str = "openai") -> dict[str, Any]:
     """Export agent config in a provider-specific format (openai | anthropic)."""
     tenant = _require_tenant(request)
     store = _agent_store(request)
@@ -1124,9 +1128,7 @@ async def export_agent(
 
 # FIX 7: clone carries all new fields including eval_suite_id and policy_ids
 @router.post("/{agent_id}/clone", status_code=status.HTTP_201_CREATED)
-async def clone_agent(
-    request: Request, agent_id: str, body: CloneAgentRequest
-) -> dict[str, Any]:
+async def clone_agent(request: Request, agent_id: str, body: CloneAgentRequest) -> dict[str, Any]:
     """Clone an existing agent with optional name override."""
     tenant_ctx = _require_tenant(request)
     store = _agent_store(request)
@@ -1237,9 +1239,7 @@ async def issue_agent_credential(
 
 
 @router.delete("/{agent_id}/credentials/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def revoke_agent_credential(
-    agent_id: str, key_id: str, request: Request
-) -> None:
+async def revoke_agent_credential(agent_id: str, key_id: str, request: Request) -> None:
     """Immediately revoke a service-account credential by key_id."""
     tenant = _require_tenant(request)
     svc = getattr(request.app.state, "agent_identity_service", None)
@@ -1273,9 +1273,7 @@ async def exchange_agent_token(agent_id: str, request: Request) -> dict[str, Any
     if svc is None:
         raise HTTPException(503, "Agent identity service not available")
 
-    token = await svc.issue_agent_jwt(
-        agent_id=agent_id, key_id=key_id, tenant_id=tenant.tenant_id
-    )
+    token = await svc.issue_agent_jwt(agent_id=agent_id, key_id=key_id, tenant_id=tenant.tenant_id)
     if token is None:
         raise HTTPException(404, "Credential not found, expired, or revoked")
 
@@ -1394,8 +1392,7 @@ async def check_readiness(request: Request, agent_id: str) -> dict[str, Any]:
                     "check": "eval_suite",
                     "status": "fail",
                     "message": (
-                        "fully-autonomous mode requires an attached eval suite "
-                        "with passing results"
+                        "fully-autonomous mode requires an attached eval suite with passing results"
                     ),
                 }
             )
@@ -1425,9 +1422,7 @@ async def check_readiness(request: Request, agent_id: str) -> dict[str, Any]:
                         # Connector not yet registered — informational warning, does not
                         # block production (connector may be registered at runtime)
                         check_status_override = "warn"
-                        missing_reason = (
-                            f"Connector '{cid}' not yet registered in MCP registry"
-                        )
+                        missing_reason = f"Connector '{cid}' not yet registered in MCP registry"
                     elif not cfg.enabled:
                         # Explicitly disabled — hard fail
                         connector_ready = False
@@ -1448,9 +1443,7 @@ async def check_readiness(request: Request, agent_id: str) -> dict[str, Any]:
                                     )
                                     if not has_secret:
                                         connector_ready = False
-                                        missing_reason = (
-                                            f"Connector '{cid}' missing API key secret"
-                                        )
+                                        missing_reason = f"Connector '{cid}' missing API key secret"
                                 except Exception:
                                     pass  # Secret store check failed — assume OK
                 except Exception:

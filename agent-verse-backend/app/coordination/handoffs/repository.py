@@ -231,13 +231,17 @@ class PostgresHandoffRepository:
             sqlalchemy_rls_context(db, record.tenant_id),
         ):
             prior = (
-                await db.execute(
-                    select(handoffs).where(
-                        handoffs.c.session_id == record.session_id,
-                        handoffs.c.idempotency_key == record.idempotency_key,
+                (
+                    await db.execute(
+                        select(handoffs).where(
+                            handoffs.c.session_id == record.session_id,
+                            handoffs.c.idempotency_key == record.idempotency_key,
+                        )
                     )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if prior is not None:
                 return _record_from_row(prior), True
             snapshot = {
@@ -290,8 +294,10 @@ class PostgresHandoffRepository:
             sqlalchemy_rls_context(db, tenant_id),
         ):
             row = (
-                await db.execute(select(handoffs).where(handoffs.c.id == handoff_id))
-            ).mappings().one_or_none()
+                (await db.execute(select(handoffs).where(handoffs.c.id == handoff_id)))
+                .mappings()
+                .one_or_none()
+            )
             return _record_from_row(row) if row is not None else None
 
     async def transition(
@@ -320,19 +326,23 @@ class PostgresHandoffRepository:
             ).scalar_one_or_none()
             if prior_event is not None:
                 row = (
-                    await db.execute(select(handoffs).where(handoffs.c.id == handoff_id))
-                ).mappings().one()
+                    (await db.execute(select(handoffs).where(handoffs.c.id == handoff_id)))
+                    .mappings()
+                    .one()
+                )
                 record = _record_from_row(row)
                 audit = prior_event["transition"]
                 event = HandoffTransition.model_validate(audit)
                 return record, event, True
             locked_row = (
-                await db.execute(
-                    select(handoffs)
-                    .where(handoffs.c.id == handoff_id)
-                    .with_for_update()
+                (
+                    await db.execute(
+                        select(handoffs).where(handoffs.c.id == handoff_id).with_for_update()
+                    )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if locked_row is None:
                 raise KeyError(handoff_id)
             record = _record_from_row(locked_row)

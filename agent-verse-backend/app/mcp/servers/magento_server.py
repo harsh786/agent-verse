@@ -4,6 +4,7 @@ Environment:
   MAGENTO_ACCESS_TOKEN: Magento integration access token
   MAGENTO_BASE_URL: Magento store base URL, e.g. https://mystore.example.com
 """
+
 from __future__ import annotations
 
 import os
@@ -22,10 +23,24 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "search_query": {"type": "string", "description": "Search term for product name or SKU"},
-                "page_size": {"type": "integer", "description": "Number of products per page (max 300)", "default": 20},
-                "current_page": {"type": "integer", "description": "Current page number", "default": 1},
-                "status": {"type": "integer", "description": "Product status: 1=enabled, 2=disabled"},
+                "search_query": {
+                    "type": "string",
+                    "description": "Search term for product name or SKU",
+                },
+                "page_size": {
+                    "type": "integer",
+                    "description": "Number of products per page (max 300)",
+                    "default": 20,
+                },
+                "current_page": {
+                    "type": "integer",
+                    "description": "Current page number",
+                    "default": 1,
+                },
+                "status": {
+                    "type": "integer",
+                    "description": "Product status: 1=enabled, 2=disabled",
+                },
             },
         },
     },
@@ -38,9 +53,21 @@ TOOL_DEFINITIONS = [
                 "sku": {"type": "string", "description": "Unique product SKU"},
                 "name": {"type": "string", "description": "Product name"},
                 "price": {"type": "number", "description": "Product price"},
-                "status": {"type": "integer", "description": "Product status: 1=enabled, 2=disabled", "default": 1},
-                "type_id": {"type": "string", "description": "Product type: simple, configurable, virtual, bundle", "default": "simple"},
-                "attribute_set_id": {"type": "integer", "description": "Attribute set ID (default 4 for Default)", "default": 4},
+                "status": {
+                    "type": "integer",
+                    "description": "Product status: 1=enabled, 2=disabled",
+                    "default": 1,
+                },
+                "type_id": {
+                    "type": "string",
+                    "description": "Product type: simple, configurable, virtual, bundle",
+                    "default": "simple",
+                },
+                "attribute_set_id": {
+                    "type": "integer",
+                    "description": "Attribute set ID (default 4 for Default)",
+                    "default": 4,
+                },
                 "weight": {"type": "number", "description": "Product weight"},
             },
             "required": ["sku", "name", "price"],
@@ -52,9 +79,20 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Order status filter: pending, processing, complete, canceled, holded, closed"},
-                "page_size": {"type": "integer", "description": "Number of orders per page", "default": 20},
-                "current_page": {"type": "integer", "description": "Current page number", "default": 1},
+                "status": {
+                    "type": "string",
+                    "description": "Order status filter: pending, processing, complete, canceled, holded, closed",
+                },
+                "page_size": {
+                    "type": "integer",
+                    "description": "Number of orders per page",
+                    "default": 20,
+                },
+                "current_page": {
+                    "type": "integer",
+                    "description": "Current page number",
+                    "default": 1,
+                },
             },
         },
     },
@@ -76,8 +114,16 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "email": {"type": "string", "description": "Filter customers by email"},
-                "page_size": {"type": "integer", "description": "Number of customers per page", "default": 20},
-                "current_page": {"type": "integer", "description": "Current page number", "default": 1},
+                "page_size": {
+                    "type": "integer",
+                    "description": "Number of customers per page",
+                    "default": 20,
+                },
+                "current_page": {
+                    "type": "integer",
+                    "description": "Current page number",
+                    "default": 1,
+                },
             },
         },
     },
@@ -87,8 +133,16 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "root_category_id": {"type": "integer", "description": "Root category ID to start from (default 1)", "default": 1},
-                "depth": {"type": "integer", "description": "Depth of the category tree to retrieve", "default": 3},
+                "root_category_id": {
+                    "type": "integer",
+                    "description": "Root category ID to start from (default 1)",
+                    "default": 1,
+                },
+                "depth": {
+                    "type": "integer",
+                    "description": "Depth of the category tree to retrieve",
+                    "default": 3,
+                },
             },
         },
     },
@@ -119,12 +173,18 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 idx = 0
                 if "search_query" in arguments:
                     params[f"searchCriteria[filterGroups][{idx}][filters][0][field]"] = "name"
-                    params[f"searchCriteria[filterGroups][{idx}][filters][0][value]"] = f"%{arguments['search_query']}%"
-                    params[f"searchCriteria[filterGroups][{idx}][filters][0][conditionType]"] = "like"
+                    params[f"searchCriteria[filterGroups][{idx}][filters][0][value]"] = (
+                        f"%{arguments['search_query']}%"
+                    )
+                    params[f"searchCriteria[filterGroups][{idx}][filters][0][conditionType]"] = (
+                        "like"
+                    )
                     idx += 1
                 if "status" in arguments:
                     params[f"searchCriteria[filterGroups][{idx}][filters][0][field]"] = "status"
-                    params[f"searchCriteria[filterGroups][{idx}][filters][0][value]"] = arguments["status"]
+                    params[f"searchCriteria[filterGroups][{idx}][filters][0][value]"] = arguments[
+                        "status"
+                    ]
                     params[f"searchCriteria[filterGroups][{idx}][filters][0][conditionType]"] = "eq"
                 r = await client.get(f"{base}/products", headers=headers, params=params)
                 r.raise_for_status()
@@ -155,7 +215,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
                 if "weight" in arguments:
                     product["weight"] = arguments["weight"]
-                r = await client.post(f"{base}/products", headers=headers, json={"product": product})
+                r = await client.post(
+                    f"{base}/products", headers=headers, json={"product": product}
+                )
                 r.raise_for_status()
                 data = r.json()
                 return {
@@ -171,7 +233,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
                 if "status" in arguments:
                     params["searchCriteria[filterGroups][0][filters][0][field]"] = "status"
-                    params["searchCriteria[filterGroups][0][filters][0][value]"] = arguments["status"]
+                    params["searchCriteria[filterGroups][0][filters][0][value]"] = arguments[
+                        "status"
+                    ]
                     params["searchCriteria[filterGroups][0][filters][0][conditionType]"] = "eq"
                 r = await client.get(f"{base}/orders", headers=headers, params=params)
                 r.raise_for_status()
@@ -203,7 +267,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
                 if "email" in arguments:
                     params["searchCriteria[filterGroups][0][filters][0][field]"] = "email"
-                    params["searchCriteria[filterGroups][0][filters][0][value]"] = arguments["email"]
+                    params["searchCriteria[filterGroups][0][filters][0][value]"] = arguments[
+                        "email"
+                    ]
                     params["searchCriteria[filterGroups][0][filters][0][conditionType]"] = "eq"
                 r = await client.get(f"{base}/customers/search", headers=headers, params=params)
                 r.raise_for_status()

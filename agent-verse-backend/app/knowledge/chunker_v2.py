@@ -6,6 +6,7 @@ using the cl100k_base encoding (used by GPT-4, text-embedding-3-*, voyage-3).
 Falls back to character-based chunking when tiktoken is not installed so the
 module is safe to import in environments without the tiktoken package.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -35,9 +36,7 @@ def build_parent_windows(chunks: list[str], radius: int = 1) -> list[ParentWindo
         end = min(len(chunks), index + radius + 1)
         windows.append(
             ParentWindow(
-                content="\n\n".join(
-                    chunk.strip() for chunk in chunks[start:end] if chunk.strip()
-                ),
+                content="\n\n".join(chunk.strip() for chunk in chunks[start:end] if chunk.strip()),
                 center_index=index,
                 start_index=start,
                 end_index=end,

@@ -3,6 +3,7 @@
 Environment:
   GOOGLE_ACCESS_TOKEN: OAuth2 bearer token with presentations scope
 """
+
 from __future__ import annotations
 
 import os

@@ -182,9 +182,7 @@ class StrategyRunner:
         *,
         checkpoint: StrategyCheckpoint | None,
     ) -> StrategyExecutionResult:
-        cancelled = self._cancel_events.setdefault(
-            request.cancellation_token, asyncio.Event()
-        )
+        cancelled = self._cancel_events.setdefault(request.cancellation_token, asyncio.Event())
         if cancelled.is_set():
             return self._result(ExecutionTerminalState.CANCELLED)
         if request.deadline <= datetime.now(UTC):

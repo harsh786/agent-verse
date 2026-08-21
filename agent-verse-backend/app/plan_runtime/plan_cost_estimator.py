@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 
 _TOKENS_PER_STEP = {"low": 800, "medium": 1500, "high": 3000}

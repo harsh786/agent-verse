@@ -5,6 +5,7 @@ useful across different goals: tool preferences, common patterns, domain facts.
 
 In production backed by PostgreSQL long_term_memory table.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -101,10 +102,10 @@ class LongTermMemoryStore:
         *,
         goal: str,
         result: str,
-        tenant_ctx: "TenantContext",
+        tenant_ctx: TenantContext,
         db: Any = None,
         embedder: Any = None,
-    ) -> "LongTermMemory":
+    ) -> LongTermMemory:
         """Extract a learning from a completed goal and persist it.
 
         Adds to the in-memory cache immediately (same-session recall) AND
@@ -127,7 +128,7 @@ class LongTermMemoryStore:
     async def store_async(
         self,
         *,
-        memory: "LongTermMemory",
+        memory: LongTermMemory,
         tenant_ctx: Any,
         db: Any = None,
         embedder: Any = None,
@@ -143,6 +144,7 @@ class LongTermMemoryStore:
         if db is not None:
             try:
                 import json as _json
+
                 from sqlalchemy import text
 
                 # Compute embedding when an embedder is provided
@@ -150,6 +152,7 @@ class LongTermMemoryStore:
                 if embedder is not None:
                     try:
                         from app.providers.base import EmbedRequest
+
                         resp = await embedder.embed(EmbedRequest(texts=[memory.content]))
                         if resp.embeddings:
                             vec = resp.embeddings[0]
@@ -201,6 +204,7 @@ class LongTermMemoryStore:
                         )
             except Exception as exc:
                 from app.observability.logging import get_logger
+
                 get_logger(__name__).warning("ltm_db_write_failed", error=str(exc))
         return mid
 
@@ -210,7 +214,7 @@ class LongTermMemoryStore:
         url: str,
         extracted_text: str,
         goal_id: str,
-        tenant_ctx: "TenantContext",
+        tenant_ctx: TenantContext,
         db: Any = None,
         embedder: Any = None,
         chunk_size: int = 500,
@@ -290,9 +294,10 @@ class LongTermMemoryStore:
         # Try pgvector semantic search first
         if db is not None and embedder is not None:
             try:
-                from app.providers.base import EmbedRequest
                 from sqlalchemy import text
+
                 from app.db.rls import sqlalchemy_rls_context
+                from app.providers.base import EmbedRequest
 
                 # Embed the query
                 resp = await embedder.embed(EmbedRequest(texts=[query]))
@@ -300,8 +305,9 @@ class LongTermMemoryStore:
                     query_vec = resp.embeddings[0]
                     vec_str = "[" + ",".join(str(v) for v in query_vec) + "]"
 
-                    async with db() as session, sqlalchemy_rls_context(
-                        session, tenant_ctx.tenant_id
+                    async with (
+                        db() as session,
+                        sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
                     ):
                         result = await session.execute(
                             text(
@@ -350,6 +356,7 @@ class LongTermMemoryStore:
                         return memories
             except Exception as exc:
                 from app.observability.logging import get_logger
+
                 get_logger(__name__).warning("pgvector_recall_failed", error=str(exc))
 
         # Fallback: in-memory keyword search

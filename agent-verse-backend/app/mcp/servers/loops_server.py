@@ -3,6 +3,7 @@
 Environment:
   LOOPS_API_KEY: Loops API key from Settings > API
 """
+
 from __future__ import annotations
 
 import os
@@ -34,8 +35,15 @@ TOOL_DEFINITIONS = [
                 "email": {"type": "string", "description": "Contact email address"},
                 "first_name": {"type": "string", "description": "Contact first name"},
                 "last_name": {"type": "string", "description": "Contact last name"},
-                "user_id": {"type": "string", "description": "Your application's user ID for this contact"},
-                "subscribed": {"type": "boolean", "description": "Whether the contact is subscribed to marketing", "default": True},
+                "user_id": {
+                    "type": "string",
+                    "description": "Your application's user ID for this contact",
+                },
+                "subscribed": {
+                    "type": "boolean",
+                    "description": "Whether the contact is subscribed to marketing",
+                    "default": True,
+                },
                 "user_group": {"type": "string", "description": "User group/segment name"},
             },
             "required": ["email"],
@@ -64,7 +72,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "email": {"type": "string", "description": "Contact email address"},
-                "user_id": {"type": "string", "description": "Application user ID (alternative to email)"},
+                "user_id": {
+                    "type": "string",
+                    "description": "Application user ID (alternative to email)",
+                },
             },
         },
     },
@@ -74,10 +85,20 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "transactional_id": {"type": "string", "description": "Loops transactional email template ID"},
+                "transactional_id": {
+                    "type": "string",
+                    "description": "Loops transactional email template ID",
+                },
                 "email": {"type": "string", "description": "Recipient email address"},
-                "data_variables": {"type": "object", "description": "Template variable key-value pairs"},
-                "attachments": {"type": "array", "items": {"type": "object"}, "description": "List of attachment objects with filename and contentType"},
+                "data_variables": {
+                    "type": "object",
+                    "description": "Template variable key-value pairs",
+                },
+                "attachments": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "List of attachment objects with filename and contentType",
+                },
             },
             "required": ["transactional_id", "email"],
         },
@@ -115,7 +136,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 for field in ("first_name", "last_name", "user_id", "subscribed", "user_group"):
                     if field in arguments:
                         payload[field] = arguments[field]
-                r = await client.post(f"{BASE_URL}/contacts/create", headers=_headers(), json=payload)
+                r = await client.post(
+                    f"{BASE_URL}/contacts/create", headers=_headers(), json=payload
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -124,7 +147,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 for field in ("first_name", "last_name", "user_id", "subscribed", "user_group"):
                     if field in arguments and field != "email":
                         payload[field] = arguments[field]
-                r = await client.put(f"{BASE_URL}/contacts/update", headers=_headers(), json=payload)
+                r = await client.put(
+                    f"{BASE_URL}/contacts/update", headers=_headers(), json=payload
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -136,7 +161,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     payload["userId"] = arguments["user_id"]
                 if not payload:
                     return {"error": "Either email or user_id is required"}
-                r = await client.post(f"{BASE_URL}/contacts/delete", headers=_headers(), json=payload)
+                r = await client.post(
+                    f"{BASE_URL}/contacts/delete", headers=_headers(), json=payload
+                )
                 r.raise_for_status()
                 return r.json()
 

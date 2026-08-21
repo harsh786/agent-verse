@@ -14,6 +14,7 @@ Usage:
         raise GoalCancelledError("Cancelled by operator")
     await check_pause_cancel("goal-123", sync_redis)  # blocks if paused
 """
+
 from __future__ import annotations
 
 import asyncio

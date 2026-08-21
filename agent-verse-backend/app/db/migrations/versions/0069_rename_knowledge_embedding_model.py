@@ -7,6 +7,7 @@ Create Date: 2026-06-29
 The ORM model (app/db/models/knowledge.py) defines the column as `embedder`
 but migrations 0062/0068 created it as `embedding_model`.
 """
+
 from alembic import op
 
 revision = "0069"

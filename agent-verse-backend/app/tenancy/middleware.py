@@ -32,9 +32,7 @@ _fallback_counters: dict[str, tuple[float, int]] = {}
 _FALLBACK_RPM_LIMIT = 120  # conservative cap applied on top of the plan limit
 
 
-async def _check_rate_limit_with_fallback(
-    tenant_id: str, redis: Any, rpm_limit: int
-) -> bool:
+async def _check_rate_limit_with_fallback(tenant_id: str, redis: Any, rpm_limit: int) -> bool:
     """Check rate limit, using in-process counter when Redis is unavailable.
 
     Returns True if the request should be allowed, False if it should be
@@ -67,6 +65,7 @@ async def _check_rate_limit_with_fallback(
     _fallback_counters[tenant_id] = (window_start, count + 1)
     return True
 
+
 # Paths that do not require API-key authentication
 _BYPASS_PREFIXES = (
     "/health",
@@ -76,12 +75,12 @@ _BYPASS_PREFIXES = (
     "/redoc",
     "/openapi.json",
     "/tenants/signup",  # public — no auth yet to sign up
-    "/auth/login",      # SSO redirect initiation
-    "/auth/callback",   # SSO OAuth2 callback
-    "/auth/config",     # frontend SSO config discovery
-    "/auth/token",      # authorization code exchange
-    "/integrations/",   # integration webhooks use their own auth (Slack sig, Zapier secret)
-    "/billing/webhook", # Razorpay webhook — authenticated by HMAC signature, not API key
+    "/auth/login",  # SSO redirect initiation
+    "/auth/callback",  # SSO OAuth2 callback
+    "/auth/config",  # frontend SSO config discovery
+    "/auth/token",  # authorization code exchange
+    "/integrations/",  # integration webhooks use their own auth (Slack sig, Zapier secret)
+    "/billing/webhook",  # Razorpay webhook — authenticated by HMAC signature, not API key
 )
 
 KeyResolver = Callable[[str], Awaitable[TenantContext | None]]
@@ -110,7 +109,7 @@ def _is_cors_preflight(request: Request) -> bool:
     )
 
 
-async def _try_resolve_sso(request: Request) -> "TenantContext | None":
+async def _try_resolve_sso(request: Request) -> TenantContext | None:
     """Attempt to resolve a Keycloak JWT Bearer token to a TenantContext.
 
     Returns None if SSO is disabled, if the token isn't a JWT, or if
@@ -223,11 +222,14 @@ class TenantMiddleware(BaseHTTPMiddleware):
 
         # ── MFA enforcement (when enabled) ───────────────────────────────────
         from app.core.config import get_settings as _get_settings
+
         _settings = _get_settings()
         if _settings.mfa_enforcement_enabled:
             import time as _mfa_time
+
             try:
                 from app.api.mfa import _mfa_db_store, _mfa_verified_sessions
+
                 mfa_state = await _mfa_db_store.get(tenant_ctx.tenant_id)
                 if mfa_state.get("enabled"):
                     mfa_token = request.headers.get("X-MFA-Token", "")
@@ -237,8 +239,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
                                 "error": {
                                     "code": "MFA_REQUIRED",
                                     "message": (
-                                        "MFA verification required. "
-                                        "Include X-MFA-Token header."
+                                        "MFA verification required. Include X-MFA-Token header."
                                     ),
                                     "retryable": False,
                                 }
@@ -246,17 +247,13 @@ class TenantMiddleware(BaseHTTPMiddleware):
                             status_code=401,
                         )
                     session_valid = _mfa_verified_sessions.get(mfa_token)
-                    if (
-                        not session_valid
-                        or session_valid.get("tenant_id") != tenant_ctx.tenant_id
-                    ):
+                    if not session_valid or session_valid.get("tenant_id") != tenant_ctx.tenant_id:
                         return JSONResponse(
                             content={
                                 "error": {
                                     "code": "MFA_REQUIRED",
                                     "message": (
-                                        "MFA verification required. "
-                                        "Include X-MFA-Token header."
+                                        "MFA verification required. Include X-MFA-Token header."
                                     ),
                                     "retryable": False,
                                 }
@@ -269,10 +266,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
                             content={
                                 "error": {
                                     "code": "MFA_SESSION_EXPIRED",
-                                    "message": (
-                                        "MFA session expired. "
-                                        "Please re-authenticate."
-                                    ),
+                                    "message": ("MFA session expired. Please re-authenticate."),
                                     "retryable": False,
                                 }
                             },
@@ -289,10 +283,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
         # Prefer app.state._rate_limiter_redis (upgraded to real Redis in the lifespan)
         # over the construction-time stub so multi-replica rate limiting works without
         # restarting the process.
-        rate_redis = (
-            getattr(request.app.state, "_rate_limiter_redis", None)
-            or self._rate_limiter
-        )
+        rate_redis = getattr(request.app.state, "_rate_limiter_redis", None) or self._rate_limiter
         if rate_redis is not None:
             from app.tenancy.context import PLAN_LIMITS
             from app.tenancy.rate_limiter import SlidingWindowRateLimiter
@@ -304,9 +295,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
             limits = PLAN_LIMITS[tenant_ctx.plan]
             rl_limit = limits.requests_per_minute
 
-            allowed, remaining, reset_at = await limiter.check_and_record(
-                path, limit=rl_limit
-            )
+            allowed, remaining, reset_at = await limiter.check_and_record(path, limit=rl_limit)
             rl_remaining = remaining
             rl_reset = reset_at
 

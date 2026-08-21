@@ -104,9 +104,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "DROP POLICY IF EXISTS approval_requests_tenant_isolation ON approval_requests"
-    )
+    op.execute("DROP POLICY IF EXISTS approval_requests_tenant_isolation ON approval_requests")
     op.drop_table("approval_requests")
 
     op.execute("DROP TRIGGER IF EXISTS audit_log_immutable ON audit_log")

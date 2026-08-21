@@ -18,9 +18,7 @@ class AuditLog(Base):
 
     __tablename__ = "audit_log"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     # No FK to tenants — audit entries survive tenant deletion
     tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     goal_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
@@ -40,9 +38,7 @@ class ApprovalRequest(Base):
 
     __tablename__ = "approval_requests"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     goal_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     action: Mapped[str] = mapped_column(Text, nullable=False)
@@ -53,12 +49,8 @@ class ApprovalRequest(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    resolved_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PolicyVersion(Base):
@@ -66,18 +58,14 @@ class PolicyVersion(Base):
 
     __tablename__ = "policy_versions"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     policy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     rules: Mapped[Any] = mapped_column(JSONB, nullable=False, default=list)
-    metadata_: Mapped[Any] = mapped_column(
-        "metadata", JSONB, nullable=False, default=dict
-    )
+    metadata_: Mapped[Any] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     parent_policy_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     change_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -85,7 +73,4 @@ class PolicyVersion(Base):
     changed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

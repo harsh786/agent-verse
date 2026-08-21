@@ -130,91 +130,137 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
 }
 
 # Paths that bypass scope enforcement entirely
-EXEMPT_PATH_PREFIXES: frozenset[str] = frozenset({
-    "/health",
-    "/metrics",
-    "/status",
-    "/docs",
-    "/redoc",
-    "/openapi.json",
-    "/auth/",
-    "/tenants/signup",
-    "/integrations/",   # webhook receivers use their own auth
-})
+EXEMPT_PATH_PREFIXES: frozenset[str] = frozenset(
+    {
+        "/health",
+        "/metrics",
+        "/status",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        "/auth/",
+        "/tenants/signup",
+        "/integrations/",  # webhook receivers use their own auth
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Role → scope mapping: fallback when no api_key_scopes rows exist
 # ---------------------------------------------------------------------------
-_ALL_SCOPES: frozenset[str] = frozenset({
-    "goals:read", "goals:write", "goals:delete", "goals:execute",
-    "agents:read", "agents:write", "agents:delete",
-    "knowledge:read", "knowledge:write", "knowledge:delete",
-    "governance:read", "governance:write", "governance:approve",
-    "tenancy:read", "tenancy:write",
-    "audit:read", "audit:export",
-    "costs:read", "costs:admin",
-    "mcp:read", "mcp:write",
-    # H5: scopes for previously unprotected routers
-    "a2a:read", "a2a:write",
-    "artifacts:read", "artifacts:write",
-    "memory:read", "memory:write",
-    "collab:read", "collab:write",
-    "rpa:read", "rpa:write",
-    "perception:read", "perception:write",
-    "tools:read", "tools:write",
-    "enterprise:read", "enterprise:write",
-    "guardrails:read", "guardrails:write",
-})
+_ALL_SCOPES: frozenset[str] = frozenset(
+    {
+        "goals:read",
+        "goals:write",
+        "goals:delete",
+        "goals:execute",
+        "agents:read",
+        "agents:write",
+        "agents:delete",
+        "knowledge:read",
+        "knowledge:write",
+        "knowledge:delete",
+        "governance:read",
+        "governance:write",
+        "governance:approve",
+        "tenancy:read",
+        "tenancy:write",
+        "audit:read",
+        "audit:export",
+        "costs:read",
+        "costs:admin",
+        "mcp:read",
+        "mcp:write",
+        # H5: scopes for previously unprotected routers
+        "a2a:read",
+        "a2a:write",
+        "artifacts:read",
+        "artifacts:write",
+        "memory:read",
+        "memory:write",
+        "collab:read",
+        "collab:write",
+        "rpa:read",
+        "rpa:write",
+        "perception:read",
+        "perception:write",
+        "tools:read",
+        "tools:write",
+        "enterprise:read",
+        "enterprise:write",
+        "guardrails:read",
+        "guardrails:write",
+    }
+)
 
 ROLE_SCOPES: dict[str, frozenset[str]] = {
     "admin": _ALL_SCOPES,
-    "operator": frozenset({
-        "goals:read", "goals:write", "goals:execute",
-        "agents:read", "agents:write",
-        "knowledge:read", "knowledge:write",
-        "mcp:read", "mcp:write",
-        "tenancy:read",
-        # H5: operators can use these routers
-        "a2a:read", "a2a:write",
-        "artifacts:read", "artifacts:write",
-        "memory:read", "memory:write",
-        "collab:read", "collab:write",
-        "rpa:read", "rpa:write",
-        "perception:read", "perception:write",
-        "tools:read", "tools:write",
-        "guardrails:read",
-    }),
-    "approver": frozenset({
-        "goals:read",
-        "governance:read", "governance:approve",
-        "tenancy:read",
-        "audit:read",
-    }),
-    "viewer": frozenset({
-        "goals:read",
-        "agents:read",
-        "knowledge:read",
-        "governance:read",
-        "tenancy:read",
-        "costs:read",
-        "audit:read",
-        "mcp:read",
-        # H5: viewers get read-only access
-        "a2a:read",
-        "artifacts:read",
-        "memory:read",
-        "collab:read",
-        "rpa:read",
-        "perception:read",
-        "tools:read",
-        "guardrails:read",
-    }),
+    "operator": frozenset(
+        {
+            "goals:read",
+            "goals:write",
+            "goals:execute",
+            "agents:read",
+            "agents:write",
+            "knowledge:read",
+            "knowledge:write",
+            "mcp:read",
+            "mcp:write",
+            "tenancy:read",
+            # H5: operators can use these routers
+            "a2a:read",
+            "a2a:write",
+            "artifacts:read",
+            "artifacts:write",
+            "memory:read",
+            "memory:write",
+            "collab:read",
+            "collab:write",
+            "rpa:read",
+            "rpa:write",
+            "perception:read",
+            "perception:write",
+            "tools:read",
+            "tools:write",
+            "guardrails:read",
+        }
+    ),
+    "approver": frozenset(
+        {
+            "goals:read",
+            "governance:read",
+            "governance:approve",
+            "tenancy:read",
+            "audit:read",
+        }
+    ),
+    "viewer": frozenset(
+        {
+            "goals:read",
+            "agents:read",
+            "knowledge:read",
+            "governance:read",
+            "tenancy:read",
+            "costs:read",
+            "audit:read",
+            "mcp:read",
+            # H5: viewers get read-only access
+            "a2a:read",
+            "artifacts:read",
+            "memory:read",
+            "collab:read",
+            "rpa:read",
+            "perception:read",
+            "tools:read",
+            "guardrails:read",
+        }
+    ),
 }
 
 
 # ---------------------------------------------------------------------------
 # H3: Trusted-proxy-aware IP extraction
 # ---------------------------------------------------------------------------
+
 
 def _get_client_ip(request: Request) -> str:
     """Extract client IP with trusted-proxy validation.
@@ -226,20 +272,20 @@ def _get_client_ip(request: Request) -> str:
     Additional proxies can be listed in the ``TRUSTED_PROXIES`` env var.
     Prevents IP spoofing via attacker-injected XFF headers.
     """
-    import os as _os
     import ipaddress as _ip
+    import os as _os
 
     trusted_proxies_raw = _os.getenv("TRUSTED_PROXIES", "")
     trusted_proxies = {p.strip() for p in trusted_proxies_raw.split(",") if p.strip()}
 
     # RFC-1918 private ranges + loopback — always trusted as local reverse proxies
     _ALWAYS_TRUSTED_NETWORKS = [
-        _ip.ip_network("127.0.0.0/8"),    # loopback
-        _ip.ip_network("10.0.0.0/8"),     # RFC-1918 private
+        _ip.ip_network("127.0.0.0/8"),  # loopback
+        _ip.ip_network("10.0.0.0/8"),  # RFC-1918 private
         _ip.ip_network("172.16.0.0/12"),  # RFC-1918 private
-        _ip.ip_network("192.168.0.0/16"), # RFC-1918 private
-        _ip.ip_network("::1/128"),        # IPv6 loopback
-        _ip.ip_network("fc00::/7"),       # IPv6 ULA
+        _ip.ip_network("192.168.0.0/16"),  # RFC-1918 private
+        _ip.ip_network("::1/128"),  # IPv6 loopback
+        _ip.ip_network("fc00::/7"),  # IPv6 ULA
     ]
 
     direct_client = ""
@@ -280,6 +326,7 @@ _LOCAL_ALLOWLIST_TTL = 300  # seconds — max age of locally-cached allowlist
 # ABAC condition evaluator
 # ---------------------------------------------------------------------------
 
+
 class ABACEvaluator:
     """Evaluates attribute-based conditions attached to role assignments.
 
@@ -301,14 +348,10 @@ class ABACEvaluator:
         checks: list[bool] = []
 
         if conditions.get("department_match"):
-            checks.append(
-                user_ctx.get("department") == resource_ctx.get("department")
-            )
+            checks.append(user_ctx.get("department") == resource_ctx.get("department"))
 
         if "ownership" in conditions and conditions["ownership"] == "creator":
-            checks.append(
-                str(resource_ctx.get("created_by")) == str(user_ctx.get("user_id"))
-            )
+            checks.append(str(resource_ctx.get("created_by")) == str(user_ctx.get("user_id")))
 
         if "time_window" in conditions:
             import zoneinfo
@@ -326,6 +369,7 @@ class ABACEvaluator:
 # ---------------------------------------------------------------------------
 # Role resolver — full permission set including inheritance chain
 # ---------------------------------------------------------------------------
+
 
 class RoleResolver:
     """Resolve the complete permission set for a role, traversing parent chain."""
@@ -367,6 +411,7 @@ class RoleResolver:
 # Middleware
 # ---------------------------------------------------------------------------
 
+
 class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
     """Enforces API key scopes and IP allowlist on every non-exempt request.
 
@@ -402,6 +447,7 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
             # H4: also populate local cache so we can enforce when Redis goes down
             if cidrs:
                 import time as _time
+
                 _local_ip_allowlist_cache[tenant_id] = (cidrs, _time.monotonic())
             if cidrs:
                 client_ip = _get_client_ip(request)
@@ -416,14 +462,13 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
                         status_code=403,
                         content={
                             "error": "IP_NOT_ALLOWED",
-                            "message": (
-                                f"Source IP {client_ip} is not permitted for this tenant"
-                            ),
+                            "message": (f"Source IP {client_ip} is not permitted for this tenant"),
                         },
                     )
         else:
             # H4: Redis unavailable — enforce from local in-process cache if populated
             import time as _time
+
             cached = _local_ip_allowlist_cache.get(tenant_id)
             if cached:
                 cidrs, ts = cached
@@ -457,6 +502,7 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
             # Check env flag for legacy/migration mode.
             # Env var: SCOPE_ENFORCEMENT_LEGACY_ALLOW=true enables pass-through for role-less keys.
             from app.core.config import get_settings as _gs
+
             _legacy = _gs().scope_enforcement_legacy_allow
             if _legacy:
                 return await call_next(request)
@@ -464,7 +510,10 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
             if request.method in {"GET", "HEAD", "OPTIONS"}:
                 # Allow reads for gradual migration — log warning
                 import logging as _log
-                _log.getLogger(__name__).debug("scope_no_roles_read_allowed path=%s", request.url.path)
+
+                _log.getLogger(__name__).debug(
+                    "scope_no_roles_read_allowed path=%s", request.url.path
+                )
                 return await call_next(request)
             # Block writes/deletes for role-less keys by default
             return JSONResponse(
@@ -570,7 +619,8 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
 
         if db_factory is not None:
             try:
-                from sqlalchemy import select, text as _text
+                from sqlalchemy import select
+                from sqlalchemy import text as _text
 
                 from app.db.models.auth import APIKeyScope, CustomRole, RoleAssignment
 

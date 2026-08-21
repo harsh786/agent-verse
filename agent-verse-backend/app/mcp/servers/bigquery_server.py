@@ -4,6 +4,7 @@ Environment:
   BIGQUERY_ACCESS_TOKEN: OAuth2 bearer token for BigQuery API
   BIGQUERY_PROJECT_ID:   GCP project ID
 """
+
 from __future__ import annotations
 
 import os
@@ -222,11 +223,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "bq_insert_rows":
                 dataset_id = arguments["dataset_id"]
                 table_id = arguments["table_id"]
-                body = {
-                    "rows": [
-                        {"json": row} for row in arguments["rows"]
-                    ]
-                }
+                body = {"rows": [{"json": row} for row in arguments["rows"]]}
                 r = await c.post(
                     f"{BIGQUERY_BASE}/projects/{project_id}/datasets/{dataset_id}/tables/{table_id}/insertAll",
                     headers=hdrs,

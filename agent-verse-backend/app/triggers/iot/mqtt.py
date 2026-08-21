@@ -1,4 +1,5 @@
 """MQTT trigger consumer — subscribes to MQTT topics and fires triggers."""
+
 from __future__ import annotations
 
 import logging
@@ -43,6 +44,7 @@ class MQTTTriggerConsumer:
     ) -> None:
         """Process a single MQTT message and fire matching triggers."""
         import json
+
         try:
             data = json.loads(payload_bytes.decode("utf-8", errors="replace"))
         except Exception:
@@ -53,10 +55,9 @@ class MQTTTriggerConsumer:
         if self._store is None or self._dispatcher is None:
             return
 
-        triggers = await self._store.find_by_type_async(
-            "mqtt", tenant_id=tenant_id
-        )
+        triggers = await self._store.find_by_type_async("mqtt", tenant_id=tenant_id)
         from types import SimpleNamespace
+
         tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=plan)
         for trigger in triggers:
             spec = trigger.get("spec", trigger)

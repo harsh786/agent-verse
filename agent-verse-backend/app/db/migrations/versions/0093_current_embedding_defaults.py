@@ -16,13 +16,9 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute(
-        "ALTER TABLE knowledge_collections "
-        "ALTER COLUMN embedder SET DEFAULT 'voyage-4-large'"
+        "ALTER TABLE knowledge_collections ALTER COLUMN embedder SET DEFAULT 'voyage-4-large'"
     )
 
 
 def downgrade() -> None:
-    op.execute(
-        "ALTER TABLE knowledge_collections "
-        "ALTER COLUMN embedder SET DEFAULT 'voyage-2'"
-    )
+    op.execute("ALTER TABLE knowledge_collections ALTER COLUMN embedder SET DEFAULT 'voyage-2'")

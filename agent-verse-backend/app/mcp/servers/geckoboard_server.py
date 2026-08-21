@@ -3,6 +3,7 @@
 Environment:
   GECKOBOARD_API_KEY: Geckoboard API key for authentication
 """
+
 from __future__ import annotations
 
 import os

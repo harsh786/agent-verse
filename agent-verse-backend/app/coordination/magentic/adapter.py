@@ -142,14 +142,10 @@ class MagenticRuntime:
             )
             await self._checkpoints.save(state)
             current = next_revision
-            criteria_met = set(current.satisfaction_criteria) <= set(
-                current.satisfied_criteria
-            )
+            criteria_met = set(current.satisfaction_criteria) <= set(current.satisfied_criteria)
             if not current.open_work and criteria_met:
                 output = str(await invoke(synthesize, current))[:8_000]
-                state = state.model_copy(
-                    update={"phase": "completed", "safe_output": output}
-                )
+                state = state.model_copy(update={"phase": "completed", "safe_output": output})
                 await self._checkpoints.save(state)
                 return state, output
             stall = detector.observe(
@@ -190,9 +186,7 @@ class MagenticRuntime:
                     }
                 )
                 await self._checkpoints.save(state)
-        state = state.model_copy(
-            update={"phase": "failed", "terminal_reason": "round_limit"}
-        )
+        state = state.model_copy(update={"phase": "failed", "terminal_reason": "round_limit"})
         await self._checkpoints.save(state)
         return state, None
 

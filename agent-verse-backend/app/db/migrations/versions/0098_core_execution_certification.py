@@ -96,12 +96,8 @@ def downgrade() -> None:
         "WITH CHECK (tenant_id = current_setting('app.tenant_id', true))"
     )
     op.drop_index("ix_goal_attempts_tenant_goal_started", table_name="goal_attempts")
-    op.drop_constraint(
-        "uq_goal_attempts_tenant_idempotency", "goal_attempts", type_="unique"
-    )
-    op.drop_constraint(
-        "uq_goal_attempts_tenant_goal_attempt", "goal_attempts", type_="unique"
-    )
+    op.drop_constraint("uq_goal_attempts_tenant_idempotency", "goal_attempts", type_="unique")
+    op.drop_constraint("uq_goal_attempts_tenant_goal_attempt", "goal_attempts", type_="unique")
     for column in (
         "version",
         "idempotency_key",

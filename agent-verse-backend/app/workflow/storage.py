@@ -9,6 +9,7 @@ When the workflow engine needs to read the payload back it calls
 
 Falls back to in-memory dict when no S3 config is present (unit tests / dev).
 """
+
 from __future__ import annotations
 
 import json

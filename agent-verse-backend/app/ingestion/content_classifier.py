@@ -1,4 +1,5 @@
 """ContentClassifier — detects content type from text or filename."""
+
 from __future__ import annotations
 
 import enum
@@ -20,35 +21,61 @@ class ContentType(str, enum.Enum):
     WEB_PAGE = "web_page"
     MIXED = "mixed"
     # Extended types for new parsers
-    EXCEL = "excel"           # .xlsx / .xls / .ods
-    YAML = "yaml"             # .yaml / .yml / .toml / .hcl
-    PARQUET = "parquet"       # Apache Parquet
-    AVRO = "avro"             # Apache Avro
-    LATEX = "latex"           # LaTeX source
-    NOTEBOOK = "notebook"     # Jupyter .ipynb
+    EXCEL = "excel"  # .xlsx / .xls / .ods
+    YAML = "yaml"  # .yaml / .yml / .toml / .hcl
+    PARQUET = "parquet"  # Apache Parquet
+    AVRO = "avro"  # Apache Avro
+    LATEX = "latex"  # LaTeX source
+    NOTEBOOK = "notebook"  # Jupyter .ipynb
 
 
 _EXT_MAP: dict[str, ContentType] = {
-    ".pdf": ContentType.PDF, ".docx": ContentType.DOCX, ".doc": ContentType.DOCX,
-    ".html": ContentType.HTML, ".htm": ContentType.HTML,
-    ".md": ContentType.MARKDOWN, ".markdown": ContentType.MARKDOWN,
-    ".py": ContentType.CODE, ".js": ContentType.CODE, ".ts": ContentType.CODE,
-    ".java": ContentType.CODE, ".go": ContentType.CODE, ".rs": ContentType.CODE,
-    ".cpp": ContentType.CODE, ".c": ContentType.CODE, ".rb": ContentType.CODE,
-    ".sh": ContentType.CODE, ".sql": ContentType.CODE,
-    ".png": ContentType.IMAGE, ".jpg": ContentType.IMAGE, ".jpeg": ContentType.IMAGE,
-    ".gif": ContentType.IMAGE, ".webp": ContentType.IMAGE, ".svg": ContentType.IMAGE,
-    ".mp3": ContentType.AUDIO, ".wav": ContentType.AUDIO, ".ogg": ContentType.AUDIO,
-    ".mp4": ContentType.VIDEO, ".mov": ContentType.VIDEO, ".avi": ContentType.VIDEO,
-    ".csv": ContentType.CSV, ".tsv": ContentType.CSV,
-    ".json": ContentType.JSON, ".jsonl": ContentType.JSON,
+    ".pdf": ContentType.PDF,
+    ".docx": ContentType.DOCX,
+    ".doc": ContentType.DOCX,
+    ".html": ContentType.HTML,
+    ".htm": ContentType.HTML,
+    ".md": ContentType.MARKDOWN,
+    ".markdown": ContentType.MARKDOWN,
+    ".py": ContentType.CODE,
+    ".js": ContentType.CODE,
+    ".ts": ContentType.CODE,
+    ".java": ContentType.CODE,
+    ".go": ContentType.CODE,
+    ".rs": ContentType.CODE,
+    ".cpp": ContentType.CODE,
+    ".c": ContentType.CODE,
+    ".rb": ContentType.CODE,
+    ".sh": ContentType.CODE,
+    ".sql": ContentType.CODE,
+    ".png": ContentType.IMAGE,
+    ".jpg": ContentType.IMAGE,
+    ".jpeg": ContentType.IMAGE,
+    ".gif": ContentType.IMAGE,
+    ".webp": ContentType.IMAGE,
+    ".svg": ContentType.IMAGE,
+    ".mp3": ContentType.AUDIO,
+    ".wav": ContentType.AUDIO,
+    ".ogg": ContentType.AUDIO,
+    ".mp4": ContentType.VIDEO,
+    ".mov": ContentType.VIDEO,
+    ".avi": ContentType.VIDEO,
+    ".csv": ContentType.CSV,
+    ".tsv": ContentType.CSV,
+    ".json": ContentType.JSON,
+    ".jsonl": ContentType.JSON,
     # Extended
-    ".xlsx": ContentType.EXCEL, ".xls": ContentType.EXCEL, ".ods": ContentType.EXCEL,
-    ".yaml": ContentType.YAML, ".yml": ContentType.YAML,
-    ".toml": ContentType.YAML, ".hcl": ContentType.YAML,
+    ".xlsx": ContentType.EXCEL,
+    ".xls": ContentType.EXCEL,
+    ".ods": ContentType.EXCEL,
+    ".yaml": ContentType.YAML,
+    ".yml": ContentType.YAML,
+    ".toml": ContentType.YAML,
+    ".hcl": ContentType.YAML,
     ".parquet": ContentType.PARQUET,
     ".avro": ContentType.AVRO,
-    ".tex": ContentType.LATEX, ".latex": ContentType.LATEX,
+    ".tex": ContentType.LATEX,
+    ".latex": ContentType.LATEX,
     ".ipynb": ContentType.NOTEBOOK,
 }
 
@@ -74,5 +101,6 @@ class ContentClassifier:
 
     def classify_by_filename(self, filename: str) -> ContentType:
         import os
+
         _, ext = os.path.splitext(filename.lower())
         return _EXT_MAP.get(ext, ContentType.TEXT)

@@ -3,6 +3,7 @@
 Environment:
   ANVIL_API_KEY: Anvil API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -23,7 +24,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "template_id": {"type": "string", "description": "Anvil PDF template ID (cast ID)"},
-                "data": {"type": "object", "description": "Key-value pairs mapping template fields to values"},
+                "data": {
+                    "type": "object",
+                    "description": "Key-value pairs mapping template fields to values",
+                },
                 "title": {"type": "string", "description": "Title for the generated document"},
             },
             "required": ["template_id", "data"],
@@ -36,7 +40,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "type": {"type": "string", "description": "Content type: html or markdown"},
-                "data": {"type": "object", "description": "HTML/Markdown content and styling options"},
+                "data": {
+                    "type": "object",
+                    "description": "HTML/Markdown content and styling options",
+                },
                 "title": {"type": "string", "description": "Title for the PDF document"},
             },
             "required": ["type", "data"],
@@ -116,7 +123,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     },
                 )
                 r.raise_for_status()
-                return {"pdf_bytes_length": len(r.content), "content_type": r.headers.get("content-type")}
+                return {
+                    "pdf_bytes_length": len(r.content),
+                    "content_type": r.headers.get("content-type"),
+                }
 
             if tool_name == "anvil_generate_pdf":
                 r = await client.post(
@@ -164,7 +174,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 r = await client.post(
                     "https://app.useanvil.com/graphql",
                     auth=auth,
-                    json={"query": query, "variables": {"slug": arguments["weld_slug"], "page": arguments.get("page", 1)}},
+                    json={
+                        "query": query,
+                        "variables": {
+                            "slug": arguments["weld_slug"],
+                            "page": arguments.get("page", 1),
+                        },
+                    },
                     headers=gql_headers,
                 )
                 r.raise_for_status()

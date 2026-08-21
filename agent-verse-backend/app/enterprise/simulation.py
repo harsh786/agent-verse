@@ -3,14 +3,16 @@
 Allows testing agent behavior without real side effects by replacing
 registered tools with mock implementations.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, AsyncIterator
+from typing import Any
 
 from app.tenancy.context import TenantContext
 
@@ -70,8 +72,7 @@ class MockMCPClient:
             content = mock if isinstance(mock, str) else __import__("json").dumps(mock)
             return {"content": [{"type": "text", "text": content}], "simulated": True}
         return {
-            "content": [{"type": "text",
-                         "text": f"[simulated: no mock for {tool_name}]"}],
+            "content": [{"type": "text", "text": f"[simulated: no mock for {tool_name}]"}],
             "simulated": True,
         }
 
@@ -143,8 +144,11 @@ class SimulationRunner:
             if _provider is None:
                 # No LLM available — use stub simulation
                 return await self._stub_simulation(
-                    goal=goal, run_id=run_id, mock_tools=_mock_tools,
-                    tenant_ctx=tenant_ctx, provider=None,
+                    goal=goal,
+                    run_id=run_id,
+                    mock_tools=_mock_tools,
+                    tenant_ctx=tenant_ctx,
+                    provider=None,
                 )
 
             graph = AgentGraph(
@@ -156,13 +160,12 @@ class SimulationRunner:
                 cost_controller=(
                     getattr(app_state, "cost_controller", None) if app_state else None
                 ),
-                policy_engine=(
-                    getattr(app_state, "policy_engine", None) if app_state else None
-                ),
+                policy_engine=(getattr(app_state, "policy_engine", None) if app_state else None),
             )
 
             if tenant_ctx is None:
                 from app.tenancy.context import PlanTier
+
                 tenant_ctx = TenantContext(
                     tenant_id="simulation",
                     plan=PlanTier.ENTERPRISE,
@@ -177,9 +180,7 @@ class SimulationRunner:
 
             steps_raw = getattr(result, "steps", []) or []
             tools_called = [
-                str(getattr(s, "tool", ""))
-                for s in steps_raw
-                if getattr(s, "tool", "")
+                str(getattr(s, "tool", "")) for s in steps_raw if getattr(s, "tool", "")
             ]
             steps_executed = [
                 {
@@ -225,8 +226,11 @@ class SimulationRunner:
         except Exception as exc:
             logger.warning("simulation_full_pipeline_failed: %s", exc)
             return await self._stub_simulation(
-                goal=goal, run_id=run_id, mock_tools=_mock_tools,
-                tenant_ctx=tenant_ctx, provider=provider,
+                goal=goal,
+                run_id=run_id,
+                mock_tools=_mock_tools,
+                tenant_ctx=tenant_ctx,
+                provider=provider,
             )
 
     async def _stub_simulation(
@@ -247,14 +251,16 @@ class SimulationRunner:
                 from app.providers.base import CompletionRequest, Message
 
                 req = CompletionRequest(
-                    messages=[Message(
-                        role="user",
-                        content=(
-                            f"Goal: {goal}\n\n"
-                            f"Available mock tools: {list(mock_tools.keys())}\n\n"
-                            "Produce a step-by-step plan using these tools."
+                    messages=[
+                        Message(
+                            role="user",
+                            content=(
+                                f"Goal: {goal}\n\n"
+                                f"Available mock tools: {list(mock_tools.keys())}\n\n"
+                                "Produce a step-by-step plan using these tools."
+                            ),
                         )
-                    )],
+                    ],
                     model="",
                 )
                 used_real_llm = False
@@ -276,15 +282,17 @@ class SimulationRunner:
                     steps_with_tools: list[dict[str, Any]] = []
                     for step_line in step_lines:
                         matched_tool = next(
-                            (t for t in mock_tools if any(
-                                word in step_line.lower()
-                                for word in t.lower().split(".")[-1].split("_")
-                            )),
-                            None
+                            (
+                                t
+                                for t in mock_tools
+                                if any(
+                                    word in step_line.lower()
+                                    for word in t.lower().split(".")[-1].split("_")
+                                )
+                            ),
+                            None,
                         )
-                        steps_with_tools.append(
-                            {"description": step_line, "tool": matched_tool}
-                        )
+                        steps_with_tools.append({"description": step_line, "tool": matched_tool})
                 else:
                     steps_with_tools = self._build_plan(goal, mock_tools)
             except Exception:
@@ -366,6 +374,7 @@ class SimulationRunner:
 
         if tenant_ctx is None:
             from app.tenancy.context import PlanTier
+
             tenant_ctx = TenantContext(
                 tenant_id="simulation", plan=PlanTier.ENTERPRISE, api_key_id="sim"
             )
@@ -447,7 +456,7 @@ class SimulationRunner:
                         event["step_number"] = step_counter[0]
                         event.setdefault("mock_hit", mock_client.was_hit(event.get("tool_called")))
                     yield event
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
 
             final_state = await graph_task
@@ -504,4 +513,3 @@ class SimulationRunner:
 
     def list_runs(self, *, tenant_ctx: TenantContext) -> list[SimulationRun]:
         return list(self._runs.values())
-

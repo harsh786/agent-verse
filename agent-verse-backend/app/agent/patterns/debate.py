@@ -1,4 +1,5 @@
 """Debate multi-agent pattern adapter."""
+
 from __future__ import annotations
 
 from app.agent.patterns.base import AgentPattern, PatternState
@@ -16,8 +17,7 @@ class DebatePattern(AgentPattern):
     @property
     def description(self) -> str:
         return (
-            "Debate: adversarial multi-agent debate for quality"
-            " — implemented in app.agent.debate"
+            "Debate: adversarial multi-agent debate for quality — implemented in app.agent.debate"
         )
 
     @property

@@ -15,6 +15,7 @@ Usage in a connector file:
 The registry is populated when connectors are imported. Import all
 connectors in get_all_connectors() to ensure they are registered.
 """
+
 from __future__ import annotations
 
 import logging
@@ -45,6 +46,7 @@ def register(source_type: str, *, feature_flag: str | None = None):
         class S3Connector(BaseConnector):
             source_type = "s3"
     """
+
     def decorator(cls: type[BaseConnector]) -> type[BaseConnector]:
         if source_type in _REGISTRY:
             _log.warning(
@@ -58,6 +60,7 @@ def register(source_type: str, *, feature_flag: str | None = None):
             _FEATURE_FLAGS[source_type] = feature_flag
         _log.debug("connector_registered source_type=%s class=%s", source_type, cls.__name__)
         return cls
+
     return decorator
 
 
@@ -101,14 +104,16 @@ def get_connector_metadata() -> list[dict]:
     result = []
     for source_type, cls in sorted(_REGISTRY.items()):
         instance = cls.__new__(cls)
-        result.append({
-            "source_type": source_type,
-            "class": cls.__name__,
-            "supports_streaming": getattr(instance, "supports_streaming", False),
-            "supports_acl": getattr(instance, "supports_acl_propagation", False),
-            "supports_deletion": getattr(instance, "supports_deletion_tracking", False),
-            "feature_flag": _FEATURE_FLAGS.get(source_type),
-        })
+        result.append(
+            {
+                "source_type": source_type,
+                "class": cls.__name__,
+                "supports_streaming": getattr(instance, "supports_streaming", False),
+                "supports_acl": getattr(instance, "supports_acl_propagation", False),
+                "supports_deletion": getattr(instance, "supports_deletion_tracking", False),
+                "feature_flag": _FEATURE_FLAGS.get(source_type),
+            }
+        )
     return result
 
 
@@ -169,6 +174,7 @@ def load_all_connectors() -> None:
     for module_path in connector_modules:
         try:
             import importlib
+
             importlib.import_module(module_path)
         except ImportError as exc:
             _log.debug("connector_module_not_available %s: %s", module_path, exc)

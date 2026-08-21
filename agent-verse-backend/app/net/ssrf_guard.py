@@ -13,6 +13,7 @@ Features:
 - Per-tenant allowed-domain allowlist (override via env or runtime config)
 - All checks fail-closed (raises on error)
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -25,33 +26,35 @@ logger = get_logger(__name__)
 
 # Private/reserved IPv4 networks
 _BLOCKED_V4 = [
-    ipaddress.ip_network("127.0.0.0/8"),        # loopback
-    ipaddress.ip_network("10.0.0.0/8"),          # RFC-1918
-    ipaddress.ip_network("172.16.0.0/12"),        # RFC-1918
-    ipaddress.ip_network("192.168.0.0/16"),       # RFC-1918
-    ipaddress.ip_network("169.254.0.0/16"),       # link-local / metadata
-    ipaddress.ip_network("0.0.0.0/8"),            # "this" network
-    ipaddress.ip_network("100.64.0.0/10"),        # shared address space
-    ipaddress.ip_network("192.0.0.0/24"),         # IETF protocol assignments
-    ipaddress.ip_network("198.18.0.0/15"),        # benchmarking
-    ipaddress.ip_network("240.0.0.0/4"),          # reserved
-    ipaddress.ip_network("255.255.255.255/32"),   # broadcast
+    ipaddress.ip_network("127.0.0.0/8"),  # loopback
+    ipaddress.ip_network("10.0.0.0/8"),  # RFC-1918
+    ipaddress.ip_network("172.16.0.0/12"),  # RFC-1918
+    ipaddress.ip_network("192.168.0.0/16"),  # RFC-1918
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local / metadata
+    ipaddress.ip_network("0.0.0.0/8"),  # "this" network
+    ipaddress.ip_network("100.64.0.0/10"),  # shared address space
+    ipaddress.ip_network("192.0.0.0/24"),  # IETF protocol assignments
+    ipaddress.ip_network("198.18.0.0/15"),  # benchmarking
+    ipaddress.ip_network("240.0.0.0/4"),  # reserved
+    ipaddress.ip_network("255.255.255.255/32"),  # broadcast
 ]
 
 _BLOCKED_V6 = [
-    ipaddress.ip_network("::1/128"),    # loopback
-    ipaddress.ip_network("fc00::/7"),   # ULA
+    ipaddress.ip_network("::1/128"),  # loopback
+    ipaddress.ip_network("fc00::/7"),  # ULA
     ipaddress.ip_network("fe80::/10"),  # link-local
-    ipaddress.ip_network("::/128"),     # unspecified
+    ipaddress.ip_network("::/128"),  # unspecified
 ]
 
 # Cloud metadata hostnames
-_METADATA_HOSTNAMES = frozenset({
-    "169.254.169.254",            # AWS/GCP/Azure metadata
-    "metadata.google.internal",
-    "metadata.google",
-    "instance-data",              # OpenStack
-})
+_METADATA_HOSTNAMES = frozenset(
+    {
+        "169.254.169.254",  # AWS/GCP/Azure metadata
+        "metadata.google.internal",
+        "metadata.google",
+        "instance-data",  # OpenStack
+    }
+)
 
 # Allowed URL schemes
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
@@ -128,9 +131,7 @@ def assert_public_url(
 
     # Metadata hostname block
     if hostname in _METADATA_HOSTNAMES:
-        raise SSRFError(
-            f"SSRF guard [{context}]: metadata service hostname '{hostname}' blocked"
-        )
+        raise SSRFError(f"SSRF guard [{context}]: metadata service hostname '{hostname}' blocked")
 
     # Try to parse hostname as a literal IP
     try:
@@ -152,9 +153,7 @@ def assert_public_url(
             f"SSRF guard [{context}]: cannot resolve host '{hostname}' — fail closed"
         ) from exc
     if not ips:
-        raise SSRFError(
-            f"SSRF guard [{context}]: cannot resolve host '{hostname}' — fail closed"
-        )
+        raise SSRFError(f"SSRF guard [{context}]: cannot resolve host '{hostname}' — fail closed")
 
     for ip in ips:
         if _is_blocked_ip(ip):
@@ -182,4 +181,4 @@ def is_ssrf_blocked(url: str) -> bool:
         assert_public_url(url)
         return False  # No exception = URL is public = not blocked
     except Exception:
-        return True   # Exception = URL is blocked/private
+        return True  # Exception = URL is blocked/private

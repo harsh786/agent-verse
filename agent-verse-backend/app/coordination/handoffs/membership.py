@@ -17,14 +17,14 @@ class DatabaseHandoffMembership:
     def __init__(self, session_factory: Callable[[], Any | None]) -> None:
         self._session_factory = session_factory
 
-    async def active_member(
-        self, tenant_id: str, civilization_id: str, agent_id: str
-    ) -> bool:
+    async def active_member(self, tenant_id: str, civilization_id: str, agent_id: str) -> bool:
         factory = self._session_factory()
         if factory is None:
             return False
-        async with factory() as session, session.begin(), sqlalchemy_rls_context(
-            session, tenant_id
+        async with (
+            factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
         ):
             value = await session.scalar(
                 select(CivilizationAgent.id).where(
@@ -44,8 +44,10 @@ class DatabaseHandoffMembership:
         factory = self._session_factory()
         if factory is None:
             return frozenset()
-        async with factory() as session, session.begin(), sqlalchemy_rls_context(
-            session, tenant_id
+        async with (
+            factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
         ):
             connectors = await session.scalar(
                 select(Agent.connector_ids).where(
@@ -67,12 +69,12 @@ class DatabaseSessionAuthorizer:
         if factory is None:
             return False
         sessions = COORDINATION_TABLES["coordination_sessions"]
-        async with factory() as session, session.begin(), sqlalchemy_rls_context(
-            session, tenant_id
+        async with (
+            factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
         ):
-            value = await session.scalar(
-                select(sessions.c.id).where(sessions.c.id == session_id)
-            )
+            value = await session.scalar(select(sessions.c.id).where(sessions.c.id == session_id))
             return value is not None
 
 

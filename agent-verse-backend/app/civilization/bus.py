@@ -6,6 +6,7 @@ Channel format: civ:{tenant_id}:{civilization_id}:{topic}
 Every message is persisted to bus_messages for replay.
 No business logic — pure pub/sub + persistence.
 """
+
 from __future__ import annotations
 
 import json

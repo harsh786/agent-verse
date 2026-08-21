@@ -31,9 +31,7 @@ class CustomRole(Base):
 
     __tablename__ = "custom_roles"
 
-    id: Mapped[str] = mapped_column(
-        Text, primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: str(uuid.uuid4()))
     # Nullable: NULL means it's a builtin/template role (all tenants can see it)
     tenant_id: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -52,12 +50,8 @@ class CustomRole(Base):
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
     domain: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_template: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("FALSE")
-    )
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("TRUE")
-    )
+    is_template: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("FALSE"))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("TRUE"))
     created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -65,9 +59,7 @@ class CustomRole(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class RoleAssignment(Base):
@@ -79,9 +71,7 @@ class RoleAssignment(Base):
 
     __tablename__ = "role_assignments"
 
-    id: Mapped[str] = mapped_column(
-        Text, primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: str(uuid.uuid4()))
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     user_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     role_id: Mapped[str | None] = mapped_column(
@@ -99,12 +89,8 @@ class RoleAssignment(Base):
     granted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    revoked_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -118,9 +104,7 @@ class APIKeyScope(Base):
 
     __tablename__ = "api_key_scopes"
 
-    id: Mapped[str] = mapped_column(
-        Text, primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: str(uuid.uuid4()))
     api_key_id: Mapped[str] = mapped_column(
         Text,
         ForeignKey("api_keys.id", ondelete="CASCADE"),
@@ -133,9 +117,7 @@ class APIKeyScope(Base):
     granted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class IPAllowlistEntry(Base):
@@ -148,23 +130,17 @@ class IPAllowlistEntry(Base):
 
     __tablename__ = "ip_allowlist_entries"
 
-    id: Mapped[str] = mapped_column(
-        Text, primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: str(uuid.uuid4()))
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     # Stored as text; validated as CIDR at application layer
     cidr: Mapped[str] = mapped_column(Text, nullable=False)
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("TRUE")
-    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("TRUE"))
     created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ScopeDefinition(Base):
@@ -176,16 +152,12 @@ class ScopeDefinition(Base):
 
     __tablename__ = "scope_definitions"
 
-    id: Mapped[str] = mapped_column(
-        Text, primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: str(uuid.uuid4()))
     scope: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     resource: Mapped[str] = mapped_column(Text, nullable=False)
     action: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    risk_level: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default=text("'low'")
-    )
+    risk_level: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'low'"))
     domain: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -201,17 +173,13 @@ class ScopeGrant(Base):
 
     __tablename__ = "scope_grants"
 
-    id: Mapped[str] = mapped_column(
-        Text, primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: str(uuid.uuid4()))
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     grantor_id: Mapped[str] = mapped_column(Text, nullable=False)
     grantee_id: Mapped[str] = mapped_column(Text, nullable=False)
     scope: Mapped[str] = mapped_column(Text, nullable=False)
     resource_pattern: Mapped[str | None] = mapped_column(Text, nullable=True)
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

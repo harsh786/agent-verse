@@ -4,6 +4,7 @@ Environment variables:
   COPPER_API_KEY: Copper API key
   COPPER_USER_EMAIL: Email address of the Copper user making API calls
 """
+
 from __future__ import annotations
 
 import os
@@ -116,9 +117,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "COPPER_API_KEY and COPPER_USER_EMAIL required"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=COPPER_BASE, headers=_headers(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=COPPER_BASE, headers=_headers(), timeout=30.0) as c:
             if tool_name == "copper_list_people":
                 body: dict[str, Any] = {
                     "page_size": arguments.get("page_size", 20),

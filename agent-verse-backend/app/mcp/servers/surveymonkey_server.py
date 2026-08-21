@@ -3,6 +3,7 @@
 Environment:
   SURVEYMONKEY_ACCESS_TOKEN: SurveyMonkey OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os

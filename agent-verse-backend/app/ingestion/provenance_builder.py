@@ -1,4 +1,5 @@
 """ProvenanceBuilder — attaches provenance metadata to ingested chunks."""
+
 from __future__ import annotations
 
 import uuid

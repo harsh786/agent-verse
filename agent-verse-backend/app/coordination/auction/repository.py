@@ -105,13 +105,9 @@ class PostgresSealedBidInbox:
         signature: str,
         idempotency_key: str,
     ) -> SealedBidReceipt:
-        command_id = uuid.uuid5(
-            uuid.NAMESPACE_URL, f"sealed-bid:{tenant_id}:{idempotency_key}"
-        ).hex
+        command_id = uuid.uuid5(uuid.NAMESPACE_URL, f"sealed-bid:{tenant_id}:{idempotency_key}").hex
         bidder_digest = hashlib.sha256(bidder_id.encode()).hexdigest()
-        envelope_digest = hashlib.sha256(
-            f"{ciphertext}:{nonce}:{signature}".encode()
-        ).hexdigest()
+        envelope_digest = hashlib.sha256(f"{ciphertext}:{nonce}:{signature}".encode()).hexdigest()
         now = datetime.now(UTC)
         async with (
             self._sessions() as db,
@@ -119,14 +115,12 @@ class PostgresSealedBidInbox:
             sqlalchemy_rls_context(db, tenant_id),
         ):
             prior = (
-                await db.execute(
-                    select(self._table).where(self._table.c.id == command_id)
-                )
-            ).mappings().one_or_none()
+                (await db.execute(select(self._table).where(self._table.c.id == command_id)))
+                .mappings()
+                .one_or_none()
+            )
             if prior is not None:
-                return _receipt(
-                    prior, bidder_id=bidder_id, idempotency_key=idempotency_key
-                )
+                return _receipt(prior, bidder_id=bidder_id, idempotency_key=idempotency_key)
             latest = (
                 await db.execute(
                     select(func.max(self._table.c.bid_version)).where(
@@ -187,9 +181,7 @@ class PostgresSealedBidInbox:
         return int(value or 0)
 
 
-def _receipt(
-    row: Any, *, bidder_id: str, idempotency_key: str
-) -> SealedBidReceipt:
+def _receipt(row: Any, *, bidder_id: str, idempotency_key: str) -> SealedBidReceipt:
     return SealedBidReceipt(
         tenant_id=str(row["tenant_id"]),
         session_id=str(row["auction_id"]),

@@ -1,4 +1,5 @@
 """Goal chain trigger consumer — subscribes to Redis goal lifecycle events."""
+
 from __future__ import annotations
 
 import json
@@ -56,9 +57,11 @@ class ChainTriggerConsumer:
         self._running = False
 
     async def _handle(self, message: dict) -> None:
-        channel = message.get("channel", b"").decode() if isinstance(
-            message.get("channel"), bytes
-        ) else message.get("channel", "")
+        channel = (
+            message.get("channel", b"").decode()
+            if isinstance(message.get("channel"), bytes)
+            else message.get("channel", "")
+        )
         raw = message.get("data", b"")
         try:
             data = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
@@ -70,7 +73,8 @@ class ChainTriggerConsumer:
         if chain_depth >= MAX_CHAIN_DEPTH:
             _log.warning(
                 "chain_depth_exceeded depth=%d goal_id=%s",
-                chain_depth, data.get("goal_id"),
+                chain_depth,
+                data.get("goal_id"),
             )
             return
 
@@ -82,17 +86,15 @@ class ChainTriggerConsumer:
 
     def _channel_to_type(self, channel: str) -> str | None:
         return {
-            "goal.completed":  "goal_completed",
-            "goal.failed":     "goal_failed",
+            "goal.completed": "goal_completed",
+            "goal.failed": "goal_failed",
             "goal.score_below": "goal_score_below",
-            "hitl.approved":   "hitl_approved",
-            "hitl.rejected":   "hitl_rejected",
-            "memory.created":  "memory_created",
+            "hitl.approved": "hitl_approved",
+            "hitl.rejected": "hitl_rejected",
+            "memory.created": "memory_created",
         }.get(channel)
 
-    async def _dispatch_matching(
-        self, trigger_type: str, data: dict, chain_depth: int
-    ) -> None:
+    async def _dispatch_matching(self, trigger_type: str, data: dict, chain_depth: int) -> None:
         if self._store is None or self._dispatcher is None:
             return
 
@@ -128,6 +130,7 @@ class ChainTriggerConsumer:
 
             # Build a simple tenant context from the event data
             from types import SimpleNamespace
+
             tenant_ctx = SimpleNamespace(
                 tenant_id=tenant_id,
                 plan=data.get("tenant_plan", "free"),
@@ -136,10 +139,15 @@ class ChainTriggerConsumer:
             enriched = {**data, "trigger_chain_depth": chain_depth + 1}
             try:
                 await self._dispatcher.dispatch(
-                    spec, enriched, tenant_ctx,
+                    spec,
+                    enriched,
+                    tenant_ctx,
                     source_goal_id=goal_id,
                     completion_event_id=data.get("completion_event_id", ""),
                 )
             except Exception as exc:
-                _log.warning("chain_dispatch_error trigger_id=%s: %s",
-                             getattr(trigger, "trigger_id", "?"), exc)
+                _log.warning(
+                    "chain_dispatch_error trigger_id=%s: %s",
+                    getattr(trigger, "trigger_id", "?"),
+                    exc,
+                )

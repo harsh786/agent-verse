@@ -4,6 +4,7 @@ Environment variables (one required):
   GOOGLE_ACCESS_TOKEN:         OAuth2 bearer token
   GOOGLE_SERVICE_ACCOUNT_JSON: JSON string of a service-account key file
 """
+
 from __future__ import annotations
 
 import json
@@ -75,7 +76,10 @@ TOOL_DEFINITIONS = [
                 "name": {"type": "string", "description": "File name"},
                 "content_base64": {"type": "string", "description": "Base64-encoded file content"},
                 "mime_type": {"type": "string", "default": "application/octet-stream"},
-                "parent_folder_id": {"type": "string", "description": "Parent folder ID (optional)"},
+                "parent_folder_id": {
+                    "type": "string",
+                    "description": "Parent folder ID (optional)",
+                },
             },
             "required": ["name", "content_base64"],
         },
@@ -87,7 +91,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "name": {"type": "string"},
-                "parent_folder_id": {"type": "string", "description": "Parent folder ID (optional)"},
+                "parent_folder_id": {
+                    "type": "string",
+                    "description": "Parent folder ID (optional)",
+                },
             },
             "required": ["name"],
         },
@@ -284,7 +291,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r = await c.patch(
                     f"{DRIVE_BASE}/files/{fid}",
                     headers=hdrs,
-                    params={"addParents": new_parent, "removeParents": old_parents, "fields": "id,parents"},
+                    params={
+                        "addParents": new_parent,
+                        "removeParents": old_parents,
+                        "fields": "id,parents",
+                    },
                     json={},
                 )
                 r.raise_for_status()

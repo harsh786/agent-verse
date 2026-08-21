@@ -4,6 +4,7 @@ Uses youtube-transcript-api for transcript extraction.
 Cursor: video publishedAt timestamp or videoId.
 Supports: channel videos, playlists, and individual video URLs.
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,17 +30,20 @@ class YouTubeConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             from youtube_transcript_api import (
                 YouTubeTranscriptApi,  # type: ignore[import-not-found]
             )
+
             # Test with a well-known public video
             test_id = config.connection_config.get("test_video_id", "dQw4w9WgXcQ")
             transcript = YouTubeTranscriptApi.get_transcript(test_id)
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
-                ok=True, latency_ms=latency,
+                ok=True,
+                latency_ms=latency,
                 metadata={"test_video": test_id, "segments": len(transcript)},
             )
         except ImportError:
@@ -51,13 +55,15 @@ class YouTubeConnector(BaseConnector):
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
+
         try:
             from youtube_transcript_api import (  # type: ignore[import-not-found]
                 TranscriptsDisabled,
                 YouTubeTranscriptApi,
             )
         except ImportError:
-            _log.error("youtube-transcript-api not installed"); return
+            _log.error("youtube-transcript-api not installed")
+            return
 
         cc = config.connection_config
         video_ids = cc.get("video_ids") or []
@@ -71,6 +77,7 @@ class YouTubeConnector(BaseConnector):
         # Fetch video IDs from channel if not explicitly provided
         if not video_ids and channel_id and api_key:
             import httpx
+
             async with httpx.AsyncClient(timeout=15) as client:
                 r = await client.get(
                     f"{_YT_API}/search",
@@ -95,6 +102,7 @@ class YouTubeConnector(BaseConnector):
                 title = video_id  # fallback; enrich via API if api_key provided
                 if api_key:
                     import httpx
+
                     async with httpx.AsyncClient(timeout=10) as client:
                         r = await client.get(
                             f"{_YT_API}/videos",

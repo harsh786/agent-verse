@@ -16,9 +16,7 @@ from app.tenancy.context import TenantContext
 class VersionConflictError(Exception):
     """Raised when an optimistic concurrency check fails."""
 
-    def __init__(
-        self, message: str, current_version: int = 0, expected_version: int = 0
-    ) -> None:
+    def __init__(self, message: str, current_version: int = 0, expected_version: int = 0) -> None:
         super().__init__(message)
         self.current_version = current_version
         self.expected_version = expected_version

@@ -9,14 +9,16 @@ Spec §3.3 pipeline order:
   6. thread citations
   7. build planner/executor/verifier-specific context
 """
+
 from __future__ import annotations
-from dataclasses import dataclass, field
+
+from dataclasses import dataclass
 from typing import Any
 
-from app.context.rerank_policy import RerankPolicy, RerankStrategy
+from app.context.citation_manager import Citation, CitationManager
 from app.context.context_budget import ContextBudget
-from app.context.citation_manager import CitationManager, Citation
 from app.context.prompt_builder import PromptBuilder, PromptContextBundle
+from app.context.rerank_policy import RerankPolicy, RerankStrategy
 
 
 @dataclass
@@ -71,6 +73,7 @@ class ContextPipeline:
         # Step: thread citation indices onto chunks before citation extraction
         try:
             from app.rag.agentic.citation_threader import CitationThreader
+
             threader = CitationThreader()
             if included:
                 included = threader.thread(included)

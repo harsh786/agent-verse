@@ -6,6 +6,7 @@ Modes:
 
 Cursor: last row's partition column value.
 """
+
 from __future__ import annotations
 
 import logging
@@ -30,6 +31,7 @@ class BigQueryConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             import json
@@ -37,12 +39,14 @@ class BigQueryConnector(BaseConnector):
             import tempfile
 
             from google.cloud import bigquery  # type: ignore[import-not-found]
+
             creds_json = config.connection_config.get("service_account_json")
             project = config.connection_config.get("project", "")
 
             if isinstance(creds_json, dict):
                 tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-                json.dump(creds_json, tmp); tmp.close()
+                json.dump(creds_json, tmp)
+                tmp.close()
                 client = bigquery.Client.from_service_account_json(tmp.name, project=project)
                 os.unlink(tmp.name)
             else:
@@ -61,14 +65,17 @@ class BigQueryConnector(BaseConnector):
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
+
         try:
             from google.cloud import bigquery  # type: ignore[import-not-found]
         except ImportError:
-            _log.error("google-cloud-bigquery not installed"); return
+            _log.error("google-cloud-bigquery not installed")
+            return
 
         import json
         import os
         import tempfile
+
         cc = config.connection_config
         creds_json = cc.get("service_account_json")
         project = cc.get("project", "")
@@ -78,7 +85,8 @@ class BigQueryConnector(BaseConnector):
 
         if isinstance(creds_json, dict):
             tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-            json.dump(creds_json, tmp); tmp.close()
+            json.dump(creds_json, tmp)
+            tmp.close()
             client = bigquery.Client.from_service_account_json(tmp.name, project=project)
             os.unlink(tmp.name)
         else:

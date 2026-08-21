@@ -6,6 +6,7 @@ All endpoints:
   - Include operation_id for OpenAPI
   - Support cursor-based pagination on list endpoints
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -45,6 +46,7 @@ router = APIRouter(prefix="/v1/org", tags=["org"])
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+
 def _request_id() -> str:
     return str(uuid4())
 
@@ -52,34 +54,50 @@ def _request_id() -> str:
 def _require_tenant(request: Request) -> Any:
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
-        raise HTTPException(status_code=401, detail={
-            "type": "unauthorized", "title": "Unauthorized",
-            "status": 401, "detail": "Missing or invalid API key",
-        })
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "type": "unauthorized",
+                "title": "Unauthorized",
+                "status": 401,
+                "detail": "Missing or invalid API key",
+            },
+        )
     return ctx
 
 
 def _not_found(resource: str, rid: str, request_id: str | None = None) -> HTTPException:
-    return HTTPException(status_code=404, detail={
-        "type": "not-found", "title": "Not Found", "status": 404,
-        "detail": f"{resource} '{rid}' not found",
-        "request_id": request_id or _request_id(),
-    })
+    return HTTPException(
+        status_code=404,
+        detail={
+            "type": "not-found",
+            "title": "Not Found",
+            "status": 404,
+            "detail": f"{resource} '{rid}' not found",
+            "request_id": request_id or _request_id(),
+        },
+    )
 
 
 def _unprocessable(detail: str, request_id: str | None = None) -> HTTPException:
-    return HTTPException(status_code=422, detail={
-        "type": "validation-error", "title": "Validation Error", "status": 422,
-        "detail": detail,
-        "request_id": request_id or _request_id(),
-    })
+    return HTTPException(
+        status_code=422,
+        detail={
+            "type": "validation-error",
+            "title": "Validation Error",
+            "status": 422,
+            "detail": detail,
+            "request_id": request_id or _request_id(),
+        },
+    )
 
 
 def _validate_uuid(value: str, field: str, request_id: str | None = None) -> None:
     """Raise 422 if value is not a valid UUID4 string."""
     import re
+
     uuid_re = re.compile(
-        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
         re.IGNORECASE,
     )
     if not uuid_re.match(value):
@@ -101,10 +119,15 @@ async def get_org_service(request: Request) -> AsyncGenerator[OrgService, None]:
 
     session_factory = getattr(request.app.state, "db_session_factory", None)
     if session_factory is None:
-        raise HTTPException(status_code=503, detail={
-            "type": "service-unavailable", "title": "Service Unavailable",
-            "status": 503, "detail": "Database not initialised yet",
-        })
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "type": "service-unavailable",
+                "title": "Service Unavailable",
+                "status": 503,
+                "detail": "Database not initialised yet",
+            },
+        )
 
     async with (
         session_factory() as session,
@@ -115,6 +138,7 @@ async def get_org_service(request: Request) -> AsyncGenerator[OrgService, None]:
 
 
 # ── Organization Endpoints ────────────────────────────────────────────────────
+
 
 @router.post(
     "",
@@ -227,6 +251,7 @@ async def get_org_health(
 
 # ── Department Endpoints ──────────────────────────────────────────────────────
 
+
 @router.post(
     "/{org_id}/departments",
     status_code=status.HTTP_201_CREATED,
@@ -241,7 +266,9 @@ async def create_department(
     x_request_id: str = Header(default_factory=_request_id),
 ) -> DepartmentResponse:
     dept = await service.create_department(
-        org_id=org_id, name=body.name, purpose=body.purpose,
+        org_id=org_id,
+        name=body.name,
+        purpose=body.purpose,
         capability_domains=body.capability_domains,
         parent_dept_id=body.parent_dept_id,
         manager_agent_id=body.manager_agent_id,
@@ -300,6 +327,7 @@ async def update_department(
 
 # ── Mission Endpoints ─────────────────────────────────────────────────────────
 
+
 @router.post(
     "/{org_id}/missions",
     status_code=status.HTTP_201_CREATED,
@@ -314,12 +342,19 @@ async def create_mission(
     x_request_id: str = Header(default_factory=_request_id),
 ) -> MissionResponse:
     mission = await service.create_mission(
-        org_id=org_id, title=body.title, objective=body.objective,
-        why=body.why, expected_outcome=body.expected_outcome,
-        priority=body.priority, dept_id=body.dept_id,
-        source=body.source, tags=body.tags,
-        budget_usd=body.budget_usd, deadline=body.deadline,
-        autonomy_level=body.autonomy_level, created_by=body.created_by,
+        org_id=org_id,
+        title=body.title,
+        objective=body.objective,
+        why=body.why,
+        expected_outcome=body.expected_outcome,
+        priority=body.priority,
+        dept_id=body.dept_id,
+        source=body.source,
+        tags=body.tags,
+        budget_usd=body.budget_usd,
+        deadline=body.deadline,
+        autonomy_level=body.autonomy_level,
+        created_by=body.created_by,
     )
     return MissionResponse.model_validate(mission)
 
@@ -340,8 +375,12 @@ async def list_missions(
     service: OrgService = Depends(get_org_service),
 ) -> CursorPage[MissionResponse]:
     missions = await service.list_missions(
-        org_id, status=status_filter, priority=priority,
-        dept_id=dept_id, limit=limit, offset=offset,
+        org_id,
+        status=status_filter,
+        priority=priority,
+        dept_id=dept_id,
+        limit=limit,
+        offset=offset,
     )
     data = [MissionResponse.model_validate(m) for m in missions]
     return CursorPage(data=data, cursor=None, hasMore=len(missions) == limit)
@@ -413,6 +452,7 @@ async def update_mission_status(
 
 # ── Task Endpoints ────────────────────────────────────────────────────────────
 
+
 @router.post(
     "/{org_id}/tasks",
     status_code=status.HTTP_201_CREATED,
@@ -428,13 +468,19 @@ async def create_task(
 ) -> TaskResponse:
     try:
         task = await service.create_task(
-            org_id=org_id, title=body.title, objective=body.objective,
-            mission_id=body.mission_id, parent_task_id=body.parent_task_id,
-            priority=body.priority, risk_level=body.risk_level,
-            depth=body.depth, assigned_agent_ids=body.assigned_agent_ids,
+            org_id=org_id,
+            title=body.title,
+            objective=body.objective,
+            mission_id=body.mission_id,
+            parent_task_id=body.parent_task_id,
+            priority=body.priority,
+            risk_level=body.risk_level,
+            depth=body.depth,
+            assigned_agent_ids=body.assigned_agent_ids,
             required_capabilities=body.required_capabilities,
             required_tools=body.required_tools,
-            budget_usd=body.budget_usd, deadline=body.deadline,
+            budget_usd=body.budget_usd,
+            deadline=body.deadline,
             dependencies=body.dependencies,
         )
     except ValueError as exc:
@@ -456,8 +502,11 @@ async def list_tasks(
     service: OrgService = Depends(get_org_service),
 ) -> CursorPage[TaskResponse]:
     tasks = await service.list_tasks(
-        org_id, mission_id=mission_id, status=status_filter,
-        limit=limit, offset=offset,
+        org_id,
+        mission_id=mission_id,
+        status=status_filter,
+        limit=limit,
+        offset=offset,
     )
     data = [TaskResponse.model_validate(t) for t in tasks]
     return CursorPage(data=data, cursor=None, hasMore=len(tasks) == limit)
@@ -494,8 +543,10 @@ async def update_task_status(
 ) -> TaskResponse:
     try:
         task = await service.update_task_status(
-            task_id, body.status,
-            outputs=body.outputs, evidence=body.evidence,
+            task_id,
+            body.status,
+            outputs=body.outputs,
+            evidence=body.evidence,
             actual_cost_usd=body.actual_cost_usd,
         )
     except ValueError as exc:
@@ -511,6 +562,7 @@ class _TaskApprovalDecision(BaseModel):
 
 
 # ── G-28: Task-level approve endpoint ────────────────────────────────────────
+
 
 @router.post(
     "/{org_id}/tasks/{task_id}/approve",
@@ -537,7 +589,8 @@ async def approve_task(
         raise _not_found("Task", task_id, x_request_id)
 
     updated = await service.update_task_status(
-        task_id, "running",
+        task_id,
+        "running",
         outputs={"approved_by": body.approver, "approval_note": body.note},
     )
     if not updated:
@@ -546,6 +599,7 @@ async def approve_task(
     # Publish approval-granted event for OrgRealtimeManager
     try:
         from app.org.events import get_org_event_publisher
+
         pub = get_org_event_publisher()
         if pub:
             await pub.publish(
@@ -561,6 +615,7 @@ async def approve_task(
 
 
 # ── G-28: Task-level reject endpoint ─────────────────────────────────────────
+
 
 @router.post(
     "/{org_id}/tasks/{task_id}/reject",
@@ -587,7 +642,8 @@ async def reject_task(
         raise _not_found("Task", task_id, x_request_id)
 
     updated = await service.update_task_status(
-        task_id, "failed",
+        task_id,
+        "failed",
         outputs={"rejected_by": body.approver, "rejection_reason": body.note},
     )
     if not updated:
@@ -596,6 +652,7 @@ async def reject_task(
     # Publish approval-rejected event for OrgRealtimeManager
     try:
         from app.org.events import get_org_event_publisher
+
         pub = get_org_event_publisher()
         if pub:
             await pub.publish(
@@ -612,6 +669,7 @@ async def reject_task(
 
 # ── Team Endpoints ────────────────────────────────────────────────────────────
 
+
 @router.post(
     "/{org_id}/teams",
     status_code=status.HTTP_201_CREATED,
@@ -624,10 +682,14 @@ async def create_team(
     service: OrgService = Depends(get_org_service),
 ) -> TeamResponse:
     team = await service.create_team(
-        org_id=org_id, name=body.name, purpose=body.purpose,
-        dept_id=body.dept_id, team_type=body.team_type,
+        org_id=org_id,
+        name=body.name,
+        purpose=body.purpose,
+        dept_id=body.dept_id,
+        team_type=body.team_type,
         member_agent_ids=body.member_agent_ids,
-        capability_ids=body.capability_ids, tool_ids=body.tool_ids,
+        capability_ids=body.capability_ids,
+        tool_ids=body.tool_ids,
     )
     return TeamResponse.model_validate(team)
 
@@ -646,7 +708,32 @@ async def list_teams(
     return [TeamResponse.model_validate(t) for t in teams]
 
 
+@router.get(
+    "/{org_id}/teams/{team_id}/members",
+    operation_id="org_team_members",
+    summary="List resolved member profiles for a team",
+)
+async def list_team_members(
+    org_id: str,
+    team_id: str,
+    service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
+) -> dict[str, Any]:
+    team = await service.get_team(team_id)
+    if team is None:
+        raise _not_found("Team", team_id, x_request_id)
+
+    member_ids = list(getattr(team, "member_agent_ids", None) or [])
+    members = await service.get_team_member_profiles(org_id=org_id, team_id=team_id)
+    return {
+        "team_id": team_id,
+        "member_ids": member_ids,
+        "members": members,
+    }
+
+
 # ── Events Endpoints ──────────────────────────────────────────────────────────
+
 
 @router.get(
     "/{org_id}/events",
@@ -663,14 +750,18 @@ async def list_events(
     service: OrgService = Depends(get_org_service),
 ) -> CursorPage[OrgEventResponse]:
     events = await service.list_events(
-        org_id, event_type=event_type, severity=severity,
-        limit=limit, offset=offset,
+        org_id,
+        event_type=event_type,
+        severity=severity,
+        limit=limit,
+        offset=offset,
     )
     data = [OrgEventResponse.model_validate(e) for e in events]
     return CursorPage(data=data, cursor=None, hasMore=len(events) == limit)
 
 
 # ── G-23: Org-level SSE stream (OrgRealtimeManager subscribes here) ──────────
+
 
 @router.get(
     "/{org_id}/events/stream",
@@ -688,8 +779,10 @@ async def org_events_stream(
     OrgRealtimeManager.ts subscribes to this endpoint.
     Publishes: org.approval.*, org.mission.*, org.team.*, org.agent.*
     """
+
     async def event_generator() -> AsyncGenerator[str, None]:
         import asyncio
+
         tenant_ctx = service._tenant_id
         try:
             yield f"data: {json.dumps({'type': 'connected', 'org_id': org_id})}\n\n"
@@ -731,6 +824,7 @@ async def org_events_stream(
 
 # ── G-04: Org-scoped approvals endpoint ──────────────────────────────────────
 
+
 @router.get(
     "/{org_id}/approvals",
     operation_id="org_list_approvals",
@@ -755,7 +849,9 @@ async def list_org_approvals(
 
         # Query approval requests for goals belonging to these missions
         # Fall back to the governance API filtered by org
-        hitl_gateway = getattr(getattr(request.app, "state", None), "hitl_gateway", None) if request else None
+        hitl_gateway = (
+            getattr(getattr(request.app, "state", None), "hitl_gateway", None) if request else None
+        )
 
         if hitl_gateway is None:
             return {"data": [], "org_id": org_id, "total": 0}
@@ -763,7 +859,9 @@ async def list_org_approvals(
         # Build minimal TenantContext for list_pending
         tenant_id = service._tenant_id
         try:
-            from app.tenancy.context import PlanTier, TenantContext as _TC
+            from app.tenancy.context import PlanTier
+            from app.tenancy.context import TenantContext as _TC
+
             _tenant_ctx = _TC(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="org_approvals")
             pending = hitl_gateway.list_pending(tenant_ctx=_tenant_ctx)
         except Exception:
@@ -774,19 +872,22 @@ async def list_org_approvals(
         for req in pending:
             if status and getattr(req, "status", None) and req.status.value != status:
                 continue
-            results.append({
-                "request_id":  getattr(req, "request_id", str(getattr(req, "id", ""))),
-                "goal_id":     req.goal_id,
-                "action":      req.action,
-                "risk_level":  req.risk_level,
-                "status":      req.status.value if hasattr(req.status, "value") else str(req.status),
-                "created_at":  str(getattr(req, "created_at", "")),
-            })
+            results.append(
+                {
+                    "request_id": getattr(req, "request_id", str(getattr(req, "id", ""))),
+                    "goal_id": req.goal_id,
+                    "action": req.action,
+                    "risk_level": req.risk_level,
+                    "status": req.status.value if hasattr(req.status, "value") else str(req.status),
+                    "created_at": str(getattr(req, "created_at", "")),
+                }
+            )
 
         return {"data": results[:limit], "org_id": org_id, "total": len(results)}
 
     except Exception as exc:
         from app.observability.logging import get_logger
+
         get_logger(__name__).warning("org_list_approvals_failed", org_id=org_id, error=str(exc))
         return {"data": [], "org_id": org_id, "total": 0, "error": str(exc)}
 
@@ -797,6 +898,7 @@ class _OrgApprovalDecision(BaseModel):
 
 
 # ── G-24: Org-scoped approve endpoint ────────────────────────────────────────
+
 
 @router.post(
     "/{org_id}/approvals/{approval_id}/approve",
@@ -827,16 +929,22 @@ async def approve_org_request(
             tenant_id=tenant_id,
         )
     except Exception as exc:
-        raise HTTPException(status_code=404, detail={
-            "type": "not-found", "title": "Approval Not Found",
-            "status": 404, "detail": f"Approval '{approval_id}' not found or already resolved",
-            "request_id": x_request_id,
-        }) from exc
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "type": "not-found",
+                "title": "Approval Not Found",
+                "status": 404,
+                "detail": f"Approval '{approval_id}' not found or already resolved",
+                "request_id": x_request_id,
+            },
+        ) from exc
 
     return {"status": "approved", "approval_id": approval_id, "approver": body.approver}
 
 
 # ── G-24: Org-scoped reject endpoint ─────────────────────────────────────────
+
 
 @router.post(
     "/{org_id}/approvals/{approval_id}/reject",
@@ -867,16 +975,22 @@ async def reject_org_request(
             tenant_id=tenant_id,
         )
     except Exception as exc:
-        raise HTTPException(status_code=404, detail={
-            "type": "not-found", "title": "Approval Not Found",
-            "status": 404, "detail": f"Approval '{approval_id}' not found or already resolved",
-            "request_id": x_request_id,
-        }) from exc
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "type": "not-found",
+                "title": "Approval Not Found",
+                "status": 404,
+                "detail": f"Approval '{approval_id}' not found or already resolved",
+                "request_id": x_request_id,
+            },
+        ) from exc
 
     return {"status": "rejected", "approval_id": approval_id, "approver": body.approver}
 
 
 # ── SSE: Mission Progress Stream ──────────────────────────────────────────────
+
 
 @router.get(
     "/{org_id}/missions/{mission_id}/stream",
@@ -894,6 +1008,7 @@ async def mission_stream(
 
     async def event_generator() -> AsyncGenerator[str, None]:
         import asyncio
+
         try:
             # Initial state
             yield f"data: {json.dumps({'type': 'connected', 'mission_id': mission_id})}\n\n"
@@ -901,6 +1016,7 @@ async def mission_stream(
             # Subscribe to Redis pub/sub for this mission's events
             # (Falls back to polling if Redis pub/sub unavailable)
             from app.main import app as _app
+
             redis = getattr(_app.state, "redis", None)
 
             if redis:
@@ -934,6 +1050,7 @@ async def mission_stream(
 
 # ── Graphify: Knowledge-Graph Build ───────────────────────────────────────────
 
+
 @router.post(
     "/{org_id}/graphify",
     operation_id="org_graphify_start",
@@ -953,6 +1070,7 @@ async def org_graphify_start(
     to receive SSE progress events.
     """
     from opentelemetry import trace
+
     tracer = trace.get_tracer(__name__)
     with tracer.start_as_current_span("org.graphify.start") as span:
         ctx = _require_tenant(request)
@@ -967,9 +1085,7 @@ async def org_graphify_start(
 
         job_id = str(uuid4())
         # Fire-and-forget: start the build in the background
-        asyncio.get_event_loop().create_task(
-            _run_graphify_job(org_id, tenant_id, job_id, request)
-        )
+        asyncio.get_event_loop().create_task(_run_graphify_job(org_id, tenant_id, job_id, request))
 
         span.set_attribute("job_id", job_id)
         return {"job_id": job_id, "status": "accepted", "org_id": org_id}
@@ -1000,6 +1116,7 @@ async def org_graphify_stream(
     async def _stream() -> AsyncGenerator[str, None]:
         try:
             from app.main import app as _app
+
             redis = getattr(_app.state, "redis", None)
 
             yield f"data: {json.dumps({'type': 'connected', 'job_id': job_id})}\n\n"
@@ -1031,12 +1148,14 @@ async def org_graphify_stream(
                     if await request.is_disconnected():
                         break
                     evt = {
-                        'type': 'phase', 'phase': idx,
-                        'total_phases': len(phases), 'label': label,
+                        "type": "phase",
+                        "phase": idx,
+                        "total_phases": len(phases),
+                        "label": label,
                     }
                     yield f"data: {json.dumps(evt)}\n\n"
                     await asyncio.sleep(0.8)
-                done_evt = {'type': 'complete', 'nodes': 0, 'edges': 0, 'communities': 0}
+                done_evt = {"type": "complete", "nodes": 0, "edges": 0, "communities": 0}
                 yield f"data: {json.dumps(done_evt)}\n\n"
         except Exception as exc:
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
@@ -1048,9 +1167,7 @@ async def org_graphify_stream(
     )
 
 
-async def _run_graphify_job(
-    org_id: str, tenant_id: str, job_id: str, request: Request
-) -> None:
+async def _run_graphify_job(org_id: str, tenant_id: str, job_id: str, request: Request) -> None:
     """Background coroutine that builds the knowledge graph and emits SSE progress."""
     import structlog
     from opentelemetry import trace
@@ -1064,6 +1181,7 @@ async def _run_graphify_job(
         span.set_attribute("job_id", job_id)
 
         from app.main import app as _app
+
         redis = getattr(_app.state, "redis", None)
         channel = f"graphify:{job_id}:events"
 
@@ -1073,7 +1191,6 @@ async def _run_graphify_job(
             log.info("graphify.event", job_id=job_id, event=payload.get("type"))
 
         try:
-
             phases = [
                 ("Fetching org knowledge", _phase_noop),
                 ("Extracting entities", _phase_noop),
@@ -1083,15 +1200,19 @@ async def _run_graphify_job(
             ]
             for idx, (label, _fn) in enumerate(phases, start=1):
                 await _emit(
-                    {'type': 'phase', 'phase': idx, 'total_phases': len(phases), 'label': label}
+                    {"type": "phase", "phase": idx, "total_phases": len(phases), "label": label}
                 )
                 await asyncio.sleep(0.5)  # simulate work; replace with real calls
-                stats = {'type': 'stats', 'nodes': idx * 10, 'edges': idx * 15,
-                         'communities': max(1, idx // 2)}
+                stats = {
+                    "type": "stats",
+                    "nodes": idx * 10,
+                    "edges": idx * 15,
+                    "communities": max(1, idx // 2),
+                }
                 await _emit(stats)
 
             n = len(phases)
-            await _emit({'type': 'complete', 'nodes': n * 10, 'edges': n * 15, 'communities': 3})
+            await _emit({"type": "complete", "nodes": n * 10, "edges": n * 15, "communities": 3})
         except Exception as exc:
             log.error("graphify.job.failed", job_id=job_id, error=str(exc))
             await _emit({"type": "error", "message": str(exc)})
@@ -1102,6 +1223,7 @@ async def _phase_noop() -> None:
 
 
 # ── Org-scoped RBAC Role Management (AA3) ────────────────────────────────────
+
 
 class _RolePermission(BaseModel):
     feature: str
@@ -1124,16 +1246,25 @@ class _OrgRoleResponse(_OrgRoleCreate):
 
 
 _BUILT_IN_ROLES: list[_OrgRoleResponse] = [
-    _OrgRoleResponse(id="org_owner",    name="Org Owner",
-                     description="Full control.", is_built_in=True),
-    _OrgRoleResponse(id="org_admin",    name="Org Admin",
-                     description="Manage members, connectors, settings.", is_built_in=True),
-    _OrgRoleResponse(id="mission_lead", name="Mission Lead",
-                     description="Create/edit missions and tasks.", is_built_in=True),
-    _OrgRoleResponse(id="agent_runner", name="Agent Runner",
-                     description="Execute missions.", is_built_in=True),
-    _OrgRoleResponse(id="observer",     name="Observer",
-                     description="View only.", is_built_in=True),
+    _OrgRoleResponse(
+        id="org_owner", name="Org Owner", description="Full control.", is_built_in=True
+    ),
+    _OrgRoleResponse(
+        id="org_admin",
+        name="Org Admin",
+        description="Manage members, connectors, settings.",
+        is_built_in=True,
+    ),
+    _OrgRoleResponse(
+        id="mission_lead",
+        name="Mission Lead",
+        description="Create/edit missions and tasks.",
+        is_built_in=True,
+    ),
+    _OrgRoleResponse(
+        id="agent_runner", name="Agent Runner", description="Execute missions.", is_built_in=True
+    ),
+    _OrgRoleResponse(id="observer", name="Observer", description="View only.", is_built_in=True),
 ]
 
 # In-memory store per org (swapped for DB in lifespan when available)
@@ -1153,6 +1284,7 @@ async def org_list_roles(
 ) -> list[_OrgRoleResponse]:
     """Return all roles for this organisation including built-in and custom."""
     from opentelemetry import trace as _trace
+
     with _trace.get_tracer(__name__).start_as_current_span("org.list_roles") as span:
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
@@ -1176,6 +1308,7 @@ async def org_create_role(
 ) -> _OrgRoleResponse:
     """Create a new custom role with granular permissions."""
     from opentelemetry import trace as _trace
+
     with _trace.get_tracer(__name__).start_as_current_span("org.create_role") as span:
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
@@ -1234,6 +1367,7 @@ async def org_delete_role(
 
 # ── Emergency Stop / Pause (QA10) ────────────────────────────────────────────
 
+
 @router.post(
     "/{org_id}/emergency-stop",
     operation_id="org_emergency_stop",
@@ -1254,6 +1388,7 @@ async def org_emergency_stop(
     """
     import structlog as _slog
     from opentelemetry import trace as _trace
+
     _log = _slog.get_logger(__name__)
     with _trace.get_tracer(__name__).start_as_current_span("org.emergency_stop") as span:
         ctx = _require_tenant(request)
@@ -1262,6 +1397,7 @@ async def org_emergency_stop(
         span.set_attribute("org_id", org_id)
 
         from app.main import app as _app
+
         redis = getattr(_app.state, "redis", None)
         stop_key = f"emergency_stop:{tenant_id}:{org_id}"
         if redis:
@@ -1299,6 +1435,7 @@ async def org_emergency_resume(
     """Clears the emergency stop flag, allowing autonomous work to resume."""
     import structlog as _slog
     from opentelemetry import trace as _trace
+
     _log = _slog.get_logger(__name__)
     with _trace.get_tracer(__name__).start_as_current_span("org.emergency_resume") as span:
         ctx = _require_tenant(request)
@@ -1307,6 +1444,7 @@ async def org_emergency_resume(
         span.set_attribute("org_id", org_id)
 
         from app.main import app as _app
+
         redis = getattr(_app.state, "redis", None)
         stop_key = f"emergency_stop:{tenant_id}:{org_id}"
         if redis:
@@ -1322,6 +1460,7 @@ async def org_emergency_resume(
 
 
 # ── Morning Brief (N11) ───────────────────────────────────────────────────────
+
 
 @router.get(
     "/{org_id}/brief/morning",
@@ -1341,6 +1480,7 @@ async def org_morning_brief(
     done when an LLM provider is configured; otherwise returns structured data.
     """
     from opentelemetry import trace as _trace
+
     with _trace.get_tracer(__name__).start_as_current_span("org.morning_brief") as span:
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
@@ -1351,7 +1491,7 @@ async def org_morning_brief(
 
         pending = health.get("pending_approvals", 0)
         blocked = health.get("task_counts", {}).get("blocked", 0)
-        failed  = health.get("task_counts", {}).get("failed", 0)
+        failed = health.get("task_counts", {}).get("failed", 0)
         active_missions = health.get("active_missions", 0)
 
         return {
@@ -1364,21 +1504,25 @@ async def org_morning_brief(
             "priorities": [
                 *(
                     [{"urgency": "critical", "text": f"{pending} approvals awaiting your decision"}]
-                    if pending > 0 else []
+                    if pending > 0
+                    else []
                 ),
                 *(
                     [{"urgency": "warning", "text": f"{blocked} tasks are blocked"}]
-                    if blocked > 0 else []
+                    if blocked > 0
+                    else []
                 ),
                 *(
                     [{"urgency": "info", "text": f"{active_missions} missions running smoothly"}]
-                    if active_missions > 0 and pending == 0 and blocked == 0 else []
+                    if active_missions > 0 and pending == 0 and blocked == 0
+                    else []
                 ),
             ],
             "risks": [
                 *(
                     [{"severity": "high", "text": f"{failed} tasks failed today — review required"}]
-                    if failed > 0 else []
+                    if failed > 0
+                    else []
                 ),
             ],
             "cost_overview": health.get("event_counts_24h", {}),
@@ -1387,6 +1531,7 @@ async def org_morning_brief(
 
 
 # ── Q2/Q3: Universal Command Gateway — REST intake (QA10) ────────────────────
+
 
 class _OrgCommandRequest(BaseModel):
     command: str
@@ -1420,6 +1565,7 @@ async def org_universal_command(
 
     import structlog as _sl
     from opentelemetry import trace as _trace
+
     _log = _sl.get_logger(__name__)
     with _trace.get_tracer(__name__).start_as_current_span("org.command_gateway") as span:
         ctx = _require_tenant(request)
@@ -1481,8 +1627,8 @@ async def org_universal_command(
             "channel": body.channel,
             "message": (
                 "Command queued for 2FA confirmation before execution."
-                if high_risk else
-                "Command accepted and routing to agent loop."
+                if high_risk
+                else "Command accepted and routing to agent loop."
             ),
         }
 
@@ -1492,9 +1638,11 @@ async def _route_command_to_agent(
 ) -> None:
     """Route an accepted UCG command to the agent goal loop."""
     import structlog as _sl
+
     _log = _sl.get_logger(__name__)
     try:
         from app.main import app as _app
+
         goal_service = getattr(_app.state, "goal_service", None)
         if goal_service and hasattr(goal_service, "submit_goal"):
             await goal_service.submit_goal(
@@ -1517,6 +1665,7 @@ async def _route_command_to_agent(
 
 
 # ── N2: Org Composer — NL to Organisation ────────────────────────────────────
+
 
 class _OrgComposeRequest(BaseModel):
     description: str = Field(min_length=1, max_length=2000)
@@ -1547,6 +1696,7 @@ async def org_compose(
     structure. Falls back to a template-based composition for the given industry.
     """
     from opentelemetry import trace as _trace
+
     with _trace.get_tracer(__name__).start_as_current_span("org.compose") as span:
         _require_tenant(request)
         span.set_attribute("industry", body.industry)
@@ -1570,18 +1720,26 @@ async def org_compose(
 
 # ── P13: Team Lifecycle State Machine ────────────────────────────────────────
 
-_TEAM_LIFECYCLE_STATES = frozenset({
-    "create", "staff", "brief", "execute", "review", "complete", "archive",
-})
+_TEAM_LIFECYCLE_STATES = frozenset(
+    {
+        "create",
+        "staff",
+        "brief",
+        "execute",
+        "review",
+        "complete",
+        "archive",
+    }
+)
 
 _TEAM_LIFECYCLE_TRANSITIONS: dict[str, list[str]] = {
-    "create":   ["staff"],
-    "staff":    ["brief"],
-    "brief":    ["execute"],
-    "execute":  ["review"],
-    "review":   ["complete"],
+    "create": ["staff"],
+    "staff": ["brief"],
+    "brief": ["execute"],
+    "execute": ["review"],
+    "review": ["complete"],
     "complete": ["archive"],
-    "archive":  [],
+    "archive": [],
 }
 
 
@@ -1604,6 +1762,7 @@ async def org_team_lifecycle_transition(
     The transition emits a ``team.lifecycle.{state}`` org event.
     """
     from opentelemetry import trace as _trace
+
     with _trace.get_tracer(__name__).start_as_current_span("org.team_lifecycle") as span:
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
@@ -1613,7 +1772,10 @@ async def org_team_lifecycle_transition(
         if team is None:
             raise _not_found("Team", team_id, x_request_id)
 
-        current = (getattr(team, "metadata", None) or {}).get("lifecycle_state", "create")
+        existing_meta = dict(
+            getattr(team, "extra_data", None) or getattr(team, "metadata", None) or {}
+        )
+        current = existing_meta.get("lifecycle_state", "create")
         allowed = _TEAM_LIFECYCLE_TRANSITIONS.get(current, [])
 
         if not allowed:
@@ -1629,9 +1791,8 @@ async def org_team_lifecycle_transition(
             )
 
         next_state = allowed[0]
-        existing_meta = dict(getattr(team, "metadata", None) or {})
         existing_meta["lifecycle_state"] = next_state
-        await service.update_team(team_id, {"metadata": existing_meta})
+        await service.update_team(team_id, {"extra_data": existing_meta})
         span.set_attribute("transition", f"{current} -> {next_state}")
 
         return {
@@ -1661,7 +1822,9 @@ async def org_team_lifecycle_get(
     if team is None:
         raise _not_found("Team", team_id, x_request_id)
 
-    current = (getattr(team, "metadata", None) or {}).get("lifecycle_state", "create")
+    current = (getattr(team, "extra_data", None) or getattr(team, "metadata", None) or {}).get(
+        "lifecycle_state", "create"
+    )
     return {
         "team_id": team_id,
         "current_state": current,
@@ -1727,6 +1890,7 @@ async def org_get_command(
 
 # ── SUPP-H: Digital Twin endpoints ───────────────────────────────────────────
 
+
 class _SimulateRequest(BaseModel):
     title: str
     priority: str = "medium"
@@ -1755,6 +1919,7 @@ async def org_twin_simulate(
     current org health, team capacity, and active workloads to estimate.
     """
     from opentelemetry import trace as _trace
+
     with _trace.get_tracer(__name__).start_as_current_span("org.twin.simulate") as span:
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
@@ -1765,6 +1930,7 @@ async def org_twin_simulate(
             raise _not_found("Organization", org_id)
 
         from app.org.digital_twin import get_twin
+
         twin = get_twin()
         result = await twin.simulate_mission(
             org_id=org_id,
@@ -1807,6 +1973,7 @@ async def org_twin_capacity(
     and predicted time-to-clear.  Never modifies production state.
     """
     from opentelemetry import trace as _trace
+
     with _trace.get_tracer(__name__).start_as_current_span("org.twin.capacity") as span:
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
@@ -1841,7 +2008,8 @@ async def org_twin_capacity(
             "recommendations": [
                 f"Redistribute work from {o} — at {utilisation[o]:.0%} capacity."
                 for o in overloaded[:2]
-            ] + [
+            ]
+            + [
                 f"{u} is underutilised ({utilisation[u]:.0%}) — assign more work."
                 for u in underutilised[:2]
             ],
@@ -1867,19 +2035,21 @@ async def org_twin_what_if(
       - {"add_agents": 3, "team": "Finance"}
     """
     from opentelemetry import trace as _trace
+
     with _trace.get_tracer(__name__).start_as_current_span("org.twin.what_if") as span:
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
         span.set_attribute("scenario", str(list(body.scenario.keys())))
 
         from app.org.digital_twin import get_twin
+
         twin = get_twin()
         result = await twin.what_if(org_id=org_id, scenario=dict(body.scenario))
         return result
 
 
-
 # ── P4: Strategic Advisor endpoint ──────────────────────────────────────────
+
 
 @router.get(
     "/{org_id}/brief/strategic",
@@ -1898,6 +2068,7 @@ async def org_strategic_brief(
     Designed to be called by Celery Beat every Sunday, or on demand.
     """
     from opentelemetry import trace as _trace
+
     with _trace.get_tracer(__name__).start_as_current_span("org.strategic_brief") as span:
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
@@ -1909,6 +2080,7 @@ async def org_strategic_brief(
         health = await service.get_org_health(org_id)
 
         from app.org.advanced_services import get_strategic_advisor
+
         advisor = get_strategic_advisor()
         brief = await advisor.generate_weekly_brief(
             org_id=org_id,
@@ -1916,21 +2088,22 @@ async def org_strategic_brief(
             health=health,
         )
         return {
-            "org_id":             org_id,
-            "org_name":           org.name,
-            "week_ending":        brief.week_ending,
-            "health_summary":     brief.health_summary,
-            "accomplishments":    brief.accomplishments,
-            "risks":              brief.risks,
-            "opportunities":      brief.opportunities,
-            "recommendations":    brief.recommendations,
-            "kpi_trends":         brief.kpi_trends,
-            "generation_method":  brief.generation_method,
-            "generated_at":       brief.generated_at,
+            "org_id": org_id,
+            "org_name": org.name,
+            "week_ending": brief.week_ending,
+            "health_summary": brief.health_summary,
+            "accomplishments": brief.accomplishments,
+            "risks": brief.risks,
+            "opportunities": brief.opportunities,
+            "recommendations": brief.recommendations,
+            "kpi_trends": brief.kpi_trends,
+            "generation_method": brief.generation_method,
+            "generated_at": brief.generated_at,
         }
 
 
 # ── N5/N6/N9: Intelligence endpoints ────────────────────────────────────────
+
 
 @router.get(
     "/{org_id}/intelligence/work",
@@ -1946,6 +2119,7 @@ async def org_discover_work(
     """Run the Work Discovery Pipeline (N9) and return ranked work items
     scored by the Work Value Engine (N6)."""
     from opentelemetry import trace as _trace
+
     with _trace.get_tracer(__name__).start_as_current_span("org.discover_work") as span:
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
@@ -1953,6 +2127,7 @@ async def org_discover_work(
         health = await service.get_org_health(org_id)
 
         from app.org.intelligence import get_work_discovery
+
         pipeline = get_work_discovery()
         items = await pipeline.discover(org_id, health)
 
@@ -1986,16 +2161,20 @@ async def org_discover_work(
 async def org_capability_graph(
     org_id: str,
     request: Request,
-    required: str = Query(default="", description="Comma-separated required capabilities for gap analysis"),  # noqa: E501
+    required: str = Query(
+        default="", description="Comma-separated required capabilities for gap analysis"
+    ),
     service: OrgService = Depends(get_org_service),
 ) -> dict[str, object]:
     """Return the org capability graph and optional gap analysis."""
     from opentelemetry import trace as _trace
+
     with _trace.get_tracer(__name__).start_as_current_span("org.capability_graph") as span:
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
 
         from app.org.intelligence import get_capability_graph
+
         graph = get_capability_graph()
         caps = graph.all_capabilities()
 
@@ -2027,20 +2206,23 @@ async def org_decision_history(
     """Return recent autonomous decisions with quality scores and
     overall calibration metrics for the organisation."""
     from opentelemetry import trace as _trace
+
     with _trace.get_tracer(__name__).start_as_current_span("org.decision_history") as span:
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
 
         from app.org.decision_intelligence import get_decision_intelligence
+
         intel = get_decision_intelligence()
         return {
-            "org_id":          org_id,
-            "decisions":       intel.list_decisions(org_id, limit=limit),
-            "quality_report":  intel.decision_quality_report(org_id),
+            "org_id": org_id,
+            "decisions": intel.list_decisions(org_id, limit=limit),
+            "quality_report": intel.decision_quality_report(org_id),
         }
 
 
 # ── W6: Batch Operations ────────────────────────────────────────────────────
+
 
 class _BatchMissionCreate(BaseModel):
     missions: list[dict[str, object]]
@@ -2063,6 +2245,7 @@ async def org_batch_create_missions(
     Ideal for initialising orgs from templates or importing existing plans.
     """
     from opentelemetry import trace as _trace
+
     with _trace.get_tracer(__name__).start_as_current_span("org.batch_create_missions") as span:
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
@@ -2102,6 +2285,7 @@ async def org_batch_create_missions(
 
 # ── U8: KG Versioning / Time Travel ─────────────────────────────────────────
 
+
 @router.post(
     "/{org_id}/graph/version",
     operation_id="org_graph_snapshot",
@@ -2118,15 +2302,18 @@ async def org_graph_snapshot(
     Supports rollback and time-travel queries via version history.
     """
     from opentelemetry import trace as _trace
+
     with _trace.get_tracer(__name__).start_as_current_span("org.graph_snapshot") as span:
         ctx = _require_tenant(request)
         tenant_id: str = getattr(ctx, "tenant_id", str(ctx))
         span.set_attribute("org_id", org_id)
 
         from app.knowledge_graph.store import kg_store
+
         node_ids = list(kg_store._tenant_nodes.get(tenant_id, set()))
 
         from app.org.decision_intelligence import get_version_store
+
         vs = get_version_store()
         rec = vs.save(
             entity_type="knowledge_graph",
@@ -2139,11 +2326,11 @@ async def org_graph_snapshot(
         span.set_attribute("version_num", rec.version_num)
         return {
             "org_id": org_id,
-            "version_id":  rec.version_id,
+            "version_id": rec.version_id,
             "version_num": rec.version_num,
-            "node_count":  len(node_ids),
+            "node_count": len(node_ids),
             "content_hash": rec.content_hash,
-            "created_at":  rec.created_at,
+            "created_at": rec.created_at,
         }
 
 
@@ -2162,14 +2349,16 @@ async def org_graph_version_history(
     """Return the version history of the org's knowledge graph."""
     _require_tenant(request)
     from app.org.decision_intelligence import get_version_store
+
     vs = get_version_store()
     return {
-        "org_id":   org_id,
+        "org_id": org_id,
         "versions": vs.history("knowledge_graph", org_id, limit=limit),
     }
 
 
 # ── PART 14: Department Memory (6th memory tier) ─────────────────────────────
+
 
 class _DeptMemoryAdd(BaseModel):
     content: str
@@ -2194,6 +2383,7 @@ async def org_dept_memory_list(
     """Return the persistent knowledge stored for this department."""
     _require_tenant(request)
     from app.memory.dept_memory import get_dept_memory
+
     dm = get_dept_memory()
     entries = dm.list_entries(dept_id, active_only=active_only, limit=limit)
     summary = dm.dept_summary(dept_id)
@@ -2215,12 +2405,14 @@ async def org_dept_memory_add(
 ) -> dict[str, object]:
     """Add new persistent knowledge to a department's memory store."""
     from opentelemetry import trace as _trace
+
     with _trace.get_tracer(__name__).start_as_current_span("org.dept_memory.add") as span:
         ctx = _require_tenant(request)
         tenant_id: str = getattr(ctx, "tenant_id", str(ctx))
         span.set_attribute("dept_id", dept_id)
 
         from app.memory.dept_memory import get_dept_memory
+
         dm = get_dept_memory()
         entry = await dm.add(
             dept_id=dept_id,
@@ -2232,8 +2424,8 @@ async def org_dept_memory_add(
             tags=body.tags,
         )
         return {
-            "entry_id":   entry.entry_id,
-            "dept_id":    dept_id,
+            "entry_id": entry.entry_id,
+            "dept_id": dept_id,
             "confidence": entry.confidence,
             "created_at": entry.created_at,
         }
@@ -2246,6 +2438,7 @@ async def org_dept_memory_add(
 # Auth: "Authorization: Bearer <api_key>" header or ?api_key= query param.
 
 from fastapi import WebSocket, WebSocketDisconnect
+
 
 @router.websocket("/{org_id}/mcp")
 async def org_mcp_websocket(
@@ -2263,6 +2456,7 @@ async def org_mcp_websocket(
       ← { "id": 2, "result": { "content": [...] } }
     """
     import json as _json
+
     from app.gateway.mcp_server import OrgMCPServer
 
     await websocket.accept()
@@ -2279,6 +2473,7 @@ async def org_mcp_websocket(
     _app_state = None
     try:
         from app.main import app as _av_app  # type: ignore[attr-defined]
+
         _app_state = getattr(_av_app, "state", None)
     except Exception:
         pass
@@ -2299,14 +2494,18 @@ async def org_mcp_websocket(
             try:
                 msg = _json.loads(raw)
             except Exception:
-                await websocket.send_text(_json.dumps({
-                    "error": {"code": -32700, "message": "Parse error"},
-                }))
+                await websocket.send_text(
+                    _json.dumps(
+                        {
+                            "error": {"code": -32700, "message": "Parse error"},
+                        }
+                    )
+                )
                 continue
 
-            msg_id     = msg.get("id")
-            method     = msg.get("method", "")
-            params     = msg.get("params", {})
+            msg_id = msg.get("id")
+            method = msg.get("method", "")
+            params = msg.get("params", {})
 
             # ── MCP protocol methods ──────────────────────────────────────────
             if method == "initialize":
@@ -2327,6 +2526,7 @@ async def org_mcp_websocket(
             elif method == "resources/list":
                 try:
                     from app.gateway.mcp_server.resources import OrgMCPResources
+
                     res_server = OrgMCPResources(org_id)
                     resp = {"resources": res_server.list_resources()}
                 except Exception:
@@ -2335,6 +2535,7 @@ async def org_mcp_websocket(
             elif method == "resources/read":
                 try:
                     from app.gateway.mcp_server.resources import OrgMCPResources
+
                     res_server = OrgMCPResources(org_id)
                     resp = await res_server.read_resource(params.get("uri", ""))
                 except Exception as exc:
@@ -2343,6 +2544,7 @@ async def org_mcp_websocket(
             elif method == "prompts/list":
                 try:
                     from app.gateway.mcp_server.resources import OrgMCPPrompts
+
                     prompt_server = OrgMCPPrompts(org_id)
                     resp = {"prompts": prompt_server.list_prompts()}
                 except Exception:
@@ -2351,6 +2553,7 @@ async def org_mcp_websocket(
             elif method == "prompts/get":
                 try:
                     from app.gateway.mcp_server.resources import OrgMCPPrompts
+
                     prompt_server = OrgMCPPrompts(org_id)
                     resp = await prompt_server.get_prompt(
                         params.get("name", ""), params.get("arguments", {})
@@ -2378,15 +2581,20 @@ async def org_mcp_websocket(
     except Exception as exc:
         _log.error("mcp.ws.error", org_id=org_id, error=str(exc)[:150])
         try:
-            await websocket.send_text(_json.dumps({
-                "jsonrpc": "2.0",
-                "error": {"code": -32603, "message": "Internal error"},
-            }))
+            await websocket.send_text(
+                _json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "error": {"code": -32603, "message": "Internal error"},
+                    }
+                )
+            )
         except Exception:
             pass
 
 
 # ── create_mission_and_execute REST endpoint ─────────────────────────────────
+
 
 class _MissionExecuteRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
@@ -2440,16 +2648,18 @@ async def org_create_mission_execute(
     )
 
     return {
-        "mission_id":      str(mission.id),
-        "title":           mission.title,
-        "status":          mission.status,
-        "goal_id":         dispatch.get("goal_id"),
-        "topology":        dispatch.get("topology"),
-        "departments":     dispatch.get("departments", []),
-        "agent_count":     dispatch.get("agent_count", 0),
-        "autonomy_level":  dispatch.get("autonomy_level"),
+        "mission_id": str(mission.id),
+        "title": mission.title,
+        "status": mission.status,
+        "goal_id": dispatch.get("goal_id"),
+        "team_id": dispatch.get("team_id"),
+        "agent_ids": dispatch.get("agent_ids", []),
+        "topology": dispatch.get("topology"),
+        "departments": dispatch.get("departments", []),
+        "agent_count": dispatch.get("agent_count", 0),
+        "autonomy_level": dispatch.get("autonomy_level"),
         "estimated_cost_usd": dispatch.get("estimated_cost_usd", 0.0),
-        "dispatched":      dispatch.get("goal_id") is not None,
-        "warning":         dispatch.get("warning"),
-        "error":           dispatch.get("error"),
+        "dispatched": dispatch.get("goal_id") is not None,
+        "warning": dispatch.get("warning"),
+        "error": dispatch.get("error"),
     }

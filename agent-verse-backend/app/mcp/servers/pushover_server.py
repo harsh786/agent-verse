@@ -4,6 +4,7 @@ Environment:
   PUSHOVER_TOKEN: Pushover application/API token
   PUSHOVER_USER: Pushover user or group key
 """
+
 from __future__ import annotations
 
 import os
@@ -25,14 +26,34 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "message": {"type": "string", "description": "Notification message body (required)"},
-                "title": {"type": "string", "description": "Notification title (defaults to app name)"},
-                "url": {"type": "string", "description": "Supplementary URL to show with the message"},
+                "message": {
+                    "type": "string",
+                    "description": "Notification message body (required)",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Notification title (defaults to app name)",
+                },
+                "url": {
+                    "type": "string",
+                    "description": "Supplementary URL to show with the message",
+                },
                 "url_title": {"type": "string", "description": "Title for the supplementary URL"},
-                "priority": {"type": "integer", "description": "Message priority: -2 (lowest) to 2 (emergency)", "default": 0},
+                "priority": {
+                    "type": "integer",
+                    "description": "Message priority: -2 (lowest) to 2 (emergency)",
+                    "default": 0,
+                },
                 "sound": {"type": "string", "description": "Notification sound name"},
-                "device": {"type": "string", "description": "Target specific device name (omit for all devices)"},
-                "html": {"type": "integer", "description": "Set to 1 to enable HTML formatting in message", "default": 0},
+                "device": {
+                    "type": "string",
+                    "description": "Target specific device name (omit for all devices)",
+                },
+                "html": {
+                    "type": "integer",
+                    "description": "Set to 1 to enable HTML formatting in message",
+                    "default": 0,
+                },
             },
             "required": ["message"],
         },
@@ -52,7 +73,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "user": {"type": "string", "description": "Pushover user or group key to validate"},
-                "device": {"type": "string", "description": "Optional specific device name to validate"},
+                "device": {
+                    "type": "string",
+                    "description": "Optional specific device name to validate",
+                },
             },
             "required": ["user"],
         },
@@ -63,7 +87,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "receipt": {"type": "string", "description": "Receipt token returned when sending an emergency priority message"},
+                "receipt": {
+                    "type": "string",
+                    "description": "Receipt token returned when sending an emergency priority message",
+                },
             },
             "required": ["receipt"],
         },

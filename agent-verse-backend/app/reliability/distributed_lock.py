@@ -1,4 +1,5 @@
 """Redis-backed distributed lock for at-most-once goal execution."""
+
 from __future__ import annotations
 
 import uuid

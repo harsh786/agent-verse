@@ -3,6 +3,7 @@
 Uses A2A data model + HMAC signing but dispatches through the
 tenant-scoped Celery path (NOT the public POST /a2a/tasks ingress).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -51,9 +52,7 @@ async def dispatch_internal_task(
         if not source_active or not target_active:
             raise PermissionError("A2A agents must be active in the same civilization")
     command_key = idempotency_key or uuid.uuid4().hex
-    task_id = uuid.uuid5(
-        uuid.NAMESPACE_URL, f"{tenant_id}:{civilization_id}:{command_key}"
-    ).hex
+    task_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{tenant_id}:{civilization_id}:{command_key}").hex
 
     if repository is not None:
         from app.civilization.a2a_repository import A2ATaskRecord
@@ -103,6 +102,7 @@ async def dispatch_internal_task(
             _trace_ctx: dict[str, str] = {}
             try:
                 from opentelemetry import propagate as _otel_propagate
+
                 _otel_propagate.inject(_trace_ctx)
             except Exception:
                 pass
@@ -125,15 +125,11 @@ async def dispatch_internal_task(
             )
             goal_id = result.get("goal_id")
             if repository is not None:
-                await repository.update(
-                    tenant_id, task_id, status="accepted", goal_id=goal_id
-                )
+                await repository.update(tenant_id, task_id, status="accepted", goal_id=goal_id)
         except Exception as exc:
             if repository is not None:
                 await repository.update(tenant_id, task_id, status="failed")
-            logger.warning(
-                "a2a_internal_dispatch_failed", task_id=task_id, error=str(exc)
-            )
+            logger.warning("a2a_internal_dispatch_failed", task_id=task_id, error=str(exc))
             return {
                 "task_id": task_id,
                 "status": "failed",

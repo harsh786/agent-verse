@@ -5,6 +5,7 @@ Environment variables:
   JENKINS_USER:      Jenkins username
   JENKINS_API_TOKEN: Jenkins API token (not password)
 """
+
 from __future__ import annotations
 
 import base64
@@ -36,7 +37,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Job name (use folder/job for nested jobs)"},
+                "name": {
+                    "type": "string",
+                    "description": "Job name (use folder/job for nested jobs)",
+                },
             },
             "required": ["name"],
         },
@@ -88,7 +92,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "name": {"type": "string"},
                 "number": {"type": "integer"},
-                "max_chars": {"type": "integer", "default": 5000, "description": "Max characters to return"},
+                "max_chars": {
+                    "type": "integer",
+                    "default": 5000,
+                    "description": "Max characters to return",
+                },
             },
             "required": ["name", "number"],
         },
@@ -129,7 +137,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}

@@ -3,10 +3,11 @@
 Setup: WHATSAPP_ACCESS_TOKEN + WHATSAPP_PHONE_NUMBER_ID env vars.
 Webhook: POST /v1/gateway/{org_id}/whatsapp/webhook
 """
+
 from __future__ import annotations
 
-import hmac
 import hashlib
+import hmac
 import os
 import uuid
 from typing import Any
@@ -35,7 +36,10 @@ class WhatsAppChannelAdapter(ChannelAdapter):
         self._app_secret = os.getenv("WHATSAPP_APP_SECRET", "")
 
     async def normalize(
-        self, raw_payload: dict[str, Any], tenant_id: str, org_id: str,
+        self,
+        raw_payload: dict[str, Any],
+        tenant_id: str,
+        org_id: str,
     ) -> OrgCommand:
         with _tracer.start_as_current_span("whatsapp.normalize"):
             command_id = str(uuid.uuid4())
@@ -66,8 +70,12 @@ class WhatsAppChannelAdapter(ChannelAdapter):
                 _log.warning("whatsapp.normalize.failed", error=str(exc))
 
             return OrgCommand(
-                command_id=command_id, tenant_id=tenant_id, org_id=org_id,
-                text="", actor_channel="whatsapp", raw_payload=raw_payload,
+                command_id=command_id,
+                tenant_id=tenant_id,
+                org_id=org_id,
+                text="",
+                actor_channel="whatsapp",
+                raw_payload=raw_payload,
             )
 
     def format_response(self, response: OrgResponse) -> dict[str, Any]:
@@ -95,14 +103,22 @@ class WhatsAppChannelAdapter(ChannelAdapter):
             return None
 
     async def verify_auth(
-        self, request_headers: dict[str, str], raw_payload: dict[str, Any],
+        self,
+        request_headers: dict[str, str],
+        raw_payload: dict[str, Any],
     ) -> bool:
         if not self._app_secret:
             return True
         signature = request_headers.get("x-hub-signature-256", "")
-        import json as _json  # noqa: PLC0415
+        import json as _json
+
         body = _json.dumps(raw_payload, separators=(",", ":"))
-        computed = "sha256=" + hmac.new(
-            self._app_secret.encode(), body.encode(), hashlib.sha256,
-        ).hexdigest()
+        computed = (
+            "sha256="
+            + hmac.new(
+                self._app_secret.encode(),
+                body.encode(),
+                hashlib.sha256,
+            ).hexdigest()
+        )
         return hmac.compare_digest(computed, signature)

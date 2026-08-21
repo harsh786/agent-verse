@@ -3,6 +3,7 @@
 Environment variables:
   PODIO_ACCESS_TOKEN: Podio OAuth 2.0 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -24,7 +25,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "space_id": {"type": "integer", "description": "Space ID to list apps for"},
-                "org_id": {"type": "integer", "description": "Organisation ID (used if no space_id)"},
+                "org_id": {
+                    "type": "integer",
+                    "description": "Organisation ID (used if no space_id)",
+                },
             },
         },
     },
@@ -96,7 +100,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "text": {"type": "string", "description": "Task description/title"},
                 "due_date": {"type": "string", "description": "Due date (YYYY-MM-DD)"},
-                "responsible": {"type": "integer", "description": "Podio user ID to assign the task to"},
+                "responsible": {
+                    "type": "integer",
+                    "description": "Podio user ID to assign the task to",
+                },
                 "ref_type": {
                     "type": "string",
                     "enum": ["item", "app", "space"],

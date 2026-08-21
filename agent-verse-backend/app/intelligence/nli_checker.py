@@ -5,6 +5,7 @@ whether a claim is ENTAILED by, CONTRADICTED by, or NEUTRAL to a piece
 of evidence. This is the most reliable hallucination check short of
 specialised NLI models.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -50,7 +51,7 @@ class NLIChecker:
         self,
         claim: str,
         evidence: str,
-        provider: "LLMProvider",
+        provider: LLMProvider,
     ) -> NLIResult:
         """Return an NLI verdict for a single claim–evidence pair.
 
@@ -89,7 +90,7 @@ class NLIChecker:
         self,
         answer: str,
         chunks: list[str],
-        provider: "LLMProvider",
+        provider: LLMProvider,
     ) -> float:
         """Score overall factual consistency of *answer* against *chunks*.
 
@@ -113,7 +114,7 @@ class NLIChecker:
     async def batch_check(
         self,
         claim_evidence_pairs: list[tuple[str, str]],
-        provider: "LLMProvider",
+        provider: LLMProvider,
     ) -> list[NLIResult]:
         """Check multiple claim–evidence pairs sequentially."""
         results: list[NLIResult] = []

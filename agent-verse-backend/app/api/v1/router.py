@@ -1,11 +1,14 @@
 """AgentVerse v1 API router."""
+
 from fastapi import APIRouter
 
 v1_router = APIRouter(prefix="/v1", tags=["v1"])
 
+
 @v1_router.get("/health")
 async def health_v1() -> dict:
     return {"status": "ok", "version": "1", "api": "agentverse"}
+
 
 @v1_router.get("/info")
 async def api_info() -> dict:

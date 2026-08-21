@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -6,7 +7,7 @@ if TYPE_CHECKING:
 
 
 class RuntimeProfileExplainer:
-    def summarize(self, profile: "GoalRuntimeProfile") -> str:
+    def summarize(self, profile: GoalRuntimeProfile) -> str:
         props = profile.properties
         security = profile.security
         rag = profile.rag_strategy

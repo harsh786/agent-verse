@@ -8,6 +8,7 @@ Token-reduction strategy: skills narrow the tool selection (allowed_tools)
 AND provide pre-compressed instructions, so loading a skill typically reduces
 total context tokens vs. monolithic system prompts.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

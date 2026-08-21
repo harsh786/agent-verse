@@ -5,6 +5,7 @@ Enforced at: API layer + SSE stream + S3 file access.
 
 Access is tenant-isolated AND role-based within the tenant.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -19,12 +20,12 @@ _tracer = trace.get_tracer(__name__)
 
 ACCESS_LEVELS: dict[str, list[str]] = {
     "tenant_admin": ["read", "write", "export", "delete", "share"],
-    "org_admin":    ["read", "write", "export"],
-    "org_member":   ["read", "query"],
-    "org_viewer":   ["read"],
-    "approver":     [],               # no knowledge graph access by default
+    "org_admin": ["read", "write", "export"],
+    "org_member": ["read", "query"],
+    "org_viewer": ["read"],
+    "approver": [],  # no knowledge graph access by default
     "agent_runner": ["read", "query"],
-    "observer":     ["read"],
+    "observer": ["read"],
 }
 
 _ALL_OPERATIONS = frozenset({"read", "write", "export", "delete", "share", "query"})

@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import uuid
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
 from app.provenance.claim_trace import ProvenanceRecord
 
 if TYPE_CHECKING:
@@ -15,7 +17,7 @@ class ProvenanceLedger:
         self,
         *,
         claim_text: str,
-        sources: list["SourceRef"],
+        sources: list[SourceRef],
         step_id: str,
         model_id: str,
         confidence: float,

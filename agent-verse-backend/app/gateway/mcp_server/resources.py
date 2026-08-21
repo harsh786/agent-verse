@@ -16,14 +16,13 @@ MCP Prompts provide templated queries:
   suggest_next_actions           — what should the org do next?
   explain_model_usage            — model routing explanation
 """
+
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
-
-import structlog
 
 from app.observability.logging import get_logger
 
@@ -32,19 +31,22 @@ _log = get_logger(__name__)
 
 # ── MCP Resource definitions ───────────────────────────────────────────────────
 
+
 @dataclass
 class MCPResource:
     """An MCP Resource — org state exposed as a readable URI."""
-    uri: str                     # e.g. org://org_abc123/status
-    name: str                    # human-readable name
+
+    uri: str  # e.g. org://org_abc123/status
+    name: str  # human-readable name
     description: str
     mime_type: str = "application/json"
-    template: bool = False       # True if URI has {variable} parts
+    template: bool = False  # True if URI has {variable} parts
 
 
 @dataclass
 class MCPResourceContent:
     """Content returned when a resource is read."""
+
     uri: str
     mime_type: str
     text: str | None = None
@@ -52,6 +54,7 @@ class MCPResourceContent:
 
 
 # ── MCP Prompt definitions ─────────────────────────────────────────────────────
+
 
 @dataclass
 class MCPPromptArgument:
@@ -63,6 +66,7 @@ class MCPPromptArgument:
 @dataclass
 class MCPPrompt:
     """An MCP Prompt — templated query the org can answer."""
+
     name: str
     description: str
     arguments: list[MCPPromptArgument] = field(default_factory=list)
@@ -70,11 +74,12 @@ class MCPPrompt:
 
 @dataclass
 class MCPPromptMessage:
-    role: str      # user | assistant
+    role: str  # user | assistant
     content: str
 
 
 # ── OrgMCPResources ────────────────────────────────────────────────────────────
+
 
 class OrgMCPResources:
     """
@@ -141,10 +146,10 @@ class OrgMCPResources:
         """Return all resource definitions in MCP format."""
         return [
             {
-                "uri":         r.uri.format(org_id=self.org_id, dept_id="{dept_id}"),
-                "name":        r.name,
+                "uri": r.uri.format(org_id=self.org_id, dept_id="{dept_id}"),
+                "name": r.name,
                 "description": r.description,
-                "mimeType":    r.mime_type,
+                "mimeType": r.mime_type,
             }
             for r in self.ORG_RESOURCES
         ]
@@ -210,6 +215,7 @@ class OrgMCPResources:
 
 # ── OrgMCPPrompts ──────────────────────────────────────────────────────────────
 
+
 class OrgMCPPrompts:
     """
     QA11 — Exposes templated prompts the org can answer.
@@ -228,7 +234,9 @@ class OrgMCPPrompts:
             name="summarize_daily_activity",
             description="Generate a 'while you were away' digest of today's org activity",
             arguments=[
-                MCPPromptArgument("since_hours", "Hours to look back (default: 24)", required=False),
+                MCPPromptArgument(
+                    "since_hours", "Hours to look back (default: 24)", required=False
+                ),
             ],
         ),
         MCPPrompt(
@@ -250,7 +258,9 @@ class OrgMCPPrompts:
             description="Generate a concise mission brief for stakeholder communication",
             arguments=[
                 MCPPromptArgument("mission_id", "Mission ID to generate brief for", required=True),
-                MCPPromptArgument("audience", "Target audience (exec/technical/external)", required=False),
+                MCPPromptArgument(
+                    "audience", "Target audience (exec/technical/external)", required=False
+                ),
             ],
         ),
     ]
@@ -262,9 +272,9 @@ class OrgMCPPrompts:
         """Return all prompt definitions in MCP format."""
         return [
             {
-                "name":        p.name,
+                "name": p.name,
                 "description": p.description,
-                "arguments":   [
+                "arguments": [
                     {"name": a.name, "description": a.description, "required": a.required}
                     for a in p.arguments
                 ],
@@ -283,43 +293,57 @@ class OrgMCPPrompts:
             goal = arguments.get("goal", "")
             return [
                 MCPPromptMessage("user", f"Analyze the risk of this mission goal: {goal}"),
-                MCPPromptMessage("assistant",
+                MCPPromptMessage(
+                    "assistant",
                     f"I'll analyze the mission '{goal[:80]}' for org {self.org_id}. "
                     "Please connect the org service for full risk analysis with team availability, "
-                    "budget check, and historical success rates."),
+                    "budget check, and historical success rates.",
+                ),
             ]
 
         if name == "summarize_daily_activity":
             since_hours = arguments.get("since_hours", "24")
             return [
-                MCPPromptMessage("user", f"What happened in the org in the last {since_hours} hours?"),
-                MCPPromptMessage("assistant",
+                MCPPromptMessage(
+                    "user", f"What happened in the org in the last {since_hours} hours?"
+                ),
+                MCPPromptMessage(
+                    "assistant",
                     f"Here's your org activity digest for the last {since_hours}h. "
-                    "Call the /brief/morning endpoint for live data."),
+                    "Call the /brief/morning endpoint for live data.",
+                ),
             ]
 
         if name == "suggest_next_actions":
             role = arguments.get("role", "user")
             return [
                 MCPPromptMessage("user", f"As a {role}, what should I focus on?"),
-                MCPPromptMessage("assistant",
+                MCPPromptMessage(
+                    "assistant",
                     f"Based on current org state, here are priorities for your {role} role. "
-                    "Connect the org intelligence service for real-time recommendations."),
+                    "Connect the org intelligence service for real-time recommendations.",
+                ),
             ]
 
         if name == "generate_mission_brief":
             mission_id = arguments.get("mission_id", "")
-            audience   = arguments.get("audience", "exec")
+            audience = arguments.get("audience", "exec")
             return [
-                MCPPromptMessage("user", f"Generate a brief for mission {mission_id} for {audience} audience"),
-                MCPPromptMessage("assistant",
+                MCPPromptMessage(
+                    "user", f"Generate a brief for mission {mission_id} for {audience} audience"
+                ),
+                MCPPromptMessage(
+                    "assistant",
                     f"Mission Brief — Mission {mission_id}\n"
                     f"Audience: {audience}\n"
-                    "Connect mission service for actual content."),
+                    "Connect mission service for actual content.",
+                ),
             ]
 
         # Default
         return [
             MCPPromptMessage("user", f"Prompt: {name} with args: {arguments}"),
-            MCPPromptMessage("assistant", "Prompt not found. Use list_prompts() to see available prompts."),
+            MCPPromptMessage(
+                "assistant", "Prompt not found. Use list_prompts() to see available prompts."
+            ),
         ]

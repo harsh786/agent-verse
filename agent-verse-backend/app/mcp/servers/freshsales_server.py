@@ -4,6 +4,7 @@ Environment variables:
   FRESHSALES_API_KEY: Freshsales API key
   FRESHSALES_DOMAIN: Your Freshsales subdomain (e.g. 'mycompany' for mycompany.freshsales.io)
 """
+
 from __future__ import annotations
 
 import os
@@ -87,7 +88,10 @@ TOOL_DEFINITIONS = [
                 "sales_account_id": {"type": "integer", "description": "Associated account ID"},
                 "contact_id": {"type": "integer", "description": "Associated contact ID"},
                 "deal_stage_id": {"type": "integer", "description": "Pipeline stage ID"},
-                "expected_close": {"type": "string", "description": "Expected close date (YYYY-MM-DD)"},
+                "expected_close": {
+                    "type": "string",
+                    "description": "Expected close date (YYYY-MM-DD)",
+                },
             },
             "required": ["name"],
         },
@@ -150,7 +154,14 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "freshsales_create_contact":
                 body: dict[str, Any] = {"contact": {"email": arguments["email"]}}
-                for k in ("first_name", "last_name", "phone", "mobile", "job_title", "lead_source_id"):
+                for k in (
+                    "first_name",
+                    "last_name",
+                    "phone",
+                    "mobile",
+                    "job_title",
+                    "lead_source_id",
+                ):
                     if k in arguments:
                         body["contact"][k] = arguments[k]
                 r = await c.post("/contacts", json=body)
@@ -159,11 +170,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "freshsales_update_contact":
                 cid = arguments["contact_id"]
-                body = {"contact": {
-                    k: arguments[k]
-                    for k in ("first_name", "last_name", "email", "phone", "job_title")
-                    if k in arguments
-                }}
+                body = {
+                    "contact": {
+                        k: arguments[k]
+                        for k in ("first_name", "last_name", "email", "phone", "job_title")
+                        if k in arguments
+                    }
+                }
                 r = await c.put(f"/contacts/{cid}", json=body)
                 r.raise_for_status()
                 return r.json()
@@ -183,7 +196,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "freshsales_create_deal":
                 body = {"deal": {"name": arguments["name"]}}
-                for k in ("amount", "sales_account_id", "contact_id", "deal_stage_id", "expected_close"):
+                for k in (
+                    "amount",
+                    "sales_account_id",
+                    "contact_id",
+                    "deal_stage_id",
+                    "expected_close",
+                ):
                     if k in arguments:
                         body["deal"][k] = arguments[k]
                 r = await c.post("/deals", json=body)

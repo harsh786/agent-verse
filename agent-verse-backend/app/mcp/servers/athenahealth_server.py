@@ -4,6 +4,7 @@ Environment:
   ATHENA_ACCESS_TOKEN: Athenahealth OAuth2 access token
   ATHENA_PRACTICE_ID: Practice ID for the Athenahealth account
 """
+
 from __future__ import annotations
 
 import os
@@ -53,7 +54,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "patient_id": {"type": "string", "description": "Patient ID to get appointments for"},
+                "patient_id": {
+                    "type": "string",
+                    "description": "Patient ID to get appointments for",
+                },
                 "startdate": {"type": "string", "description": "Start date MM/DD/YYYY"},
                 "enddate": {"type": "string", "description": "End date MM/DD/YYYY"},
                 "limit": {"type": "integer", "description": "Maximum results"},
@@ -82,7 +86,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "limit": {"type": "integer", "description": "Maximum results"},
                 "offset": {"type": "integer", "description": "Pagination offset"},
-                "showallproviderids": {"type": "boolean", "description": "Include all provider ID types"},
+                "showallproviderids": {
+                    "type": "boolean",
+                    "description": "Include all provider ID types",
+                },
             },
         },
     },

@@ -143,13 +143,8 @@ def validate_patterns(patterns: list[str]) -> list[str]:
 
 
 def _is_secret_or_disallowed(path: PurePosixPath) -> bool:
-    return (
-        path.suffix.lower() not in _ALLOWED_SUFFIXES
-        or any(
-            secret in part.lower()
-            for part in path.parts
-            for secret in _SECRET_NAME_PARTS
-        )
+    return path.suffix.lower() not in _ALLOWED_SUFFIXES or any(
+        secret in part.lower() for part in path.parts for secret in _SECRET_NAME_PARTS
     )
 
 

@@ -1,4 +1,5 @@
 """Jupyter Notebook parser — cell-pair extraction (code + output)."""
+
 from __future__ import annotations
 
 import json
@@ -70,6 +71,7 @@ class ParquetParser:
             import io
 
             import pyarrow.parquet as pq  # type: ignore[import-not-found]
+
             table = pq.read_table(io.BytesIO(content))
             schema = table.schema
 
@@ -89,7 +91,7 @@ class ParquetParser:
 
             # Sample rows
             df = table.slice(0, self.MAX_ROWS).to_pydict()
-            col_names = list(df.keys())[:self.MAX_COLS]
+            col_names = list(df.keys())[: self.MAX_COLS]
             for row_idx in range(min(self.MAX_ROWS, table.num_rows)):
                 row_parts = []
                 for col in col_names:

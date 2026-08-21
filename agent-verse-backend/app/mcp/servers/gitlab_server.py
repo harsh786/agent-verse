@@ -4,6 +4,7 @@ Environment variables:
   GITLAB_TOKEN:    Personal access token or OAuth2 token
   GITLAB_BASE_URL: Override for self-hosted GitLab (default: https://gitlab.com)
 """
+
 from __future__ import annotations
 
 import os
@@ -36,8 +37,15 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Numeric project ID or URL-encoded namespace/project"},
-                "state": {"type": "string", "enum": ["opened", "closed", "all"], "default": "opened"},
+                "project_id": {
+                    "type": "string",
+                    "description": "Numeric project ID or URL-encoded namespace/project",
+                },
+                "state": {
+                    "type": "string",
+                    "enum": ["opened", "closed", "all"],
+                    "default": "opened",
+                },
                 "per_page": {"type": "integer", "default": 20},
             },
             "required": ["project_id"],
@@ -81,7 +89,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "project_id": {"type": "string"},
-                "state": {"type": "string", "enum": ["opened", "closed", "merged", "all"], "default": "opened"},
+                "state": {
+                    "type": "string",
+                    "enum": ["opened", "closed", "merged", "all"],
+                    "default": "opened",
+                },
                 "per_page": {"type": "integer", "default": 20},
             },
             "required": ["project_id"],
@@ -123,7 +135,18 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "project_id": {"type": "string"},
-                "status": {"type": "string", "enum": ["running", "pending", "success", "failed", "canceled", "skipped", "all"]},
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "running",
+                        "pending",
+                        "success",
+                        "failed",
+                        "canceled",
+                        "skipped",
+                        "all",
+                    ],
+                },
                 "per_page": {"type": "integer", "default": 20},
             },
             "required": ["project_id"],
@@ -179,6 +202,7 @@ def _headers() -> dict[str, str]:
 def _encode_id(project_id: str) -> str:
     """URL-encode project namespace/slug if it contains a slash."""
     from urllib.parse import quote
+
     if "/" in project_id:
         return quote(project_id, safe="")
     return project_id
@@ -193,7 +217,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
@@ -314,6 +341,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
 
         elif tool_name == "gitlab_get_file":
             from urllib.parse import quote
+
             pid = _encode_id(arguments["project_id"])
             file_path = quote(arguments["file_path"], safe="")
             ref = arguments.get("ref", "main")
@@ -325,7 +353,9 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
             data = resp.json()
             content = ""
             if data.get("encoding") == "base64":
-                content = base64.b64decode(data.get("content", "")).decode("utf-8", errors="replace")
+                content = base64.b64decode(data.get("content", "")).decode(
+                    "utf-8", errors="replace"
+                )
             else:
                 content = data.get("content", "")
             return {

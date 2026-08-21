@@ -4,6 +4,7 @@ Environment variables:
   ORBIT_API_KEY: Orbit API key
   ORBIT_WORKSPACE: Orbit workspace slug (e.g. 'mycompany')
 """
+
 from __future__ import annotations
 
 import os
@@ -95,12 +96,21 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "member_email": {"type": "string", "description": "Member's email to identify them"},
-                "activity_type": {"type": "string", "description": "Custom activity type key, e.g. 'product:review'"},
+                "member_email": {
+                    "type": "string",
+                    "description": "Member's email to identify them",
+                },
+                "activity_type": {
+                    "type": "string",
+                    "description": "Custom activity type key, e.g. 'product:review'",
+                },
                 "title": {"type": "string", "description": "Activity title/description"},
                 "occurred_at": {"type": "string", "description": "Activity timestamp (ISO 8601)"},
                 "link": {"type": "string", "description": "URL associated with the activity"},
-                "weight": {"type": "number", "description": "Activity weight/love score (default 1.0)"},
+                "weight": {
+                    "type": "number",
+                    "description": "Activity weight/love score (default 1.0)",
+                },
             },
             "required": ["member_email", "activity_type"],
         },
@@ -111,7 +121,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "start_date": {"type": "string", "description": "Stats window start date (YYYY-MM-DD)"},
+                "start_date": {
+                    "type": "string",
+                    "description": "Stats window start date (YYYY-MM-DD)",
+                },
                 "end_date": {"type": "string", "description": "Stats window end date (YYYY-MM-DD)"},
             },
         },

@@ -271,12 +271,14 @@ class TenantService:
                 await self._redis.setex(
                     cache_key,
                     300,
-                    _json.dumps({
-                        "tenant_id": ctx.tenant_id,
-                        "plan": ctx.plan.value,
-                        "api_key_id": ctx.api_key_id,
-                        "roles": list(ctx.roles),
-                    }),
+                    _json.dumps(
+                        {
+                            "tenant_id": ctx.tenant_id,
+                            "plan": ctx.plan.value,
+                            "api_key_id": ctx.api_key_id,
+                            "roles": list(ctx.roles),
+                        }
+                    ),
                 )
             except Exception:
                 pass  # caching is best-effort
@@ -285,9 +287,7 @@ class TenantService:
 
     # ── DB persistence helpers ────────────────────────────────────────────────
 
-    async def _db_create_tenant(
-        self, tenant_id: str, name: str, email: str, plan: str
-    ) -> None:
+    async def _db_create_tenant(self, tenant_id: str, name: str, email: str, plan: str) -> None:
         """Persist tenant to PostgreSQL. No-op if DB not configured."""
         if self._db is None:
             return
@@ -334,9 +334,7 @@ class TenantService:
                         )
                     )
         except Exception as exc:
-            logging.getLogger(__name__).warning(
-                "DB persist tenant/default api_key failed: %s", exc
-            )
+            logging.getLogger(__name__).warning("DB persist tenant/default api_key failed: %s", exc)
 
     async def _db_create_api_key(
         self,
@@ -399,6 +397,7 @@ class TenantService:
         if self._db is not None:
             try:
                 from sqlalchemy import text
+
                 async with self._db() as session:
                     row = (
                         await session.execute(
@@ -469,6 +468,7 @@ class TenantService:
         if self._db is not None:
             try:
                 from sqlalchemy import text
+
                 async with self._db() as session, session.begin():
                     await session.execute(
                         text(
@@ -668,12 +668,14 @@ class TenantService:
                     with suppress(Exception):
                         await redis.set(
                             cache_key,
-                            _json.dumps({
-                                "tenant_id": tenant.tenant_id,
-                                "plan": tenant.plan.value,
-                                "api_key_id": tenant.api_key_id,
-                                "roles": list(tenant.roles),
-                            }),
+                            _json.dumps(
+                                {
+                                    "tenant_id": tenant.tenant_id,
+                                    "plan": tenant.plan.value,
+                                    "api_key_id": tenant.api_key_id,
+                                    "roles": list(tenant.roles),
+                                }
+                            ),
                             ex=300,  # 5-minute TTL
                         )
                 return tenant

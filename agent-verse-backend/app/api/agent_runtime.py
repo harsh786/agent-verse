@@ -1,9 +1,12 @@
 """Agent Runtime 2.0 API - execution plans, traces, subagents."""
+
 from __future__ import annotations
-import uuid
+
 import datetime
+import uuid
 from typing import Any
-from fastapi import APIRouter, Request, HTTPException
+
+from fastapi import APIRouter, HTTPException, Request
 
 router = APIRouter(prefix="/agent-runtime", tags=["agent-runtime"])
 
@@ -27,7 +30,7 @@ async def create_execution_plan(request: Request) -> dict[str, Any]:
     body = await request.json()
     from app.agent_runtime.models import AgentExecutionPlan, AgentRole, PlanStep, RiskLevel
 
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
     plan_id = str(uuid.uuid4())
 
     steps = []

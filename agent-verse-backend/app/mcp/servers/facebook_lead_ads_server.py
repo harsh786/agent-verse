@@ -3,6 +3,7 @@
 Environment:
   FACEBOOK_ACCESS_TOKEN: Facebook access token with ads_management and leads_retrieval permissions
 """
+
 from __future__ import annotations
 
 import os
@@ -23,9 +24,19 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "page_id": {"type": "string", "description": "Facebook Page ID owning the lead forms"},
-                "status": {"type": "string", "description": "Filter by status: ACTIVE, ARCHIVED, DELETED"},
-                "limit": {"type": "integer", "description": "Number of forms to return", "default": 25},
+                "page_id": {
+                    "type": "string",
+                    "description": "Facebook Page ID owning the lead forms",
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: ACTIVE, ARCHIVED, DELETED",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of forms to return",
+                    "default": 25,
+                },
             },
             "required": ["page_id"],
         },
@@ -37,8 +48,16 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "form_id": {"type": "string", "description": "Lead form (leadgen form) ID"},
-                "fields": {"type": "string", "description": "Fields: id,created_time,field_data", "default": "id,created_time,field_data"},
-                "limit": {"type": "integer", "description": "Number of leads to return", "default": 50},
+                "fields": {
+                    "type": "string",
+                    "description": "Fields: id,created_time,field_data",
+                    "default": "id,created_time,field_data",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of leads to return",
+                    "default": 50,
+                },
                 "after": {"type": "string", "description": "Pagination cursor"},
             },
             "required": ["form_id"],
@@ -51,7 +70,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "form_id": {"type": "string", "description": "Lead form ID"},
-                "fields": {"type": "string", "description": "Fields: id,name,status,questions,leads_count,created_time"},
+                "fields": {
+                    "type": "string",
+                    "description": "Fields: id,name,status,questions,leads_count,created_time",
+                },
             },
             "required": ["form_id"],
         },
@@ -62,8 +84,15 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "fields": {"type": "string", "description": "Fields: id,name,account_status,currency,timezone_name"},
-                "limit": {"type": "integer", "description": "Number of ad accounts to return", "default": 25},
+                "fields": {
+                    "type": "string",
+                    "description": "Fields: id,name,account_status,currency,timezone_name",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of ad accounts to return",
+                    "default": 25,
+                },
             },
         },
     },
@@ -73,10 +102,17 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "ad_account_id": {"type": "string", "description": "Facebook ad account ID (act_XXXXX)"},
+                "ad_account_id": {
+                    "type": "string",
+                    "description": "Facebook ad account ID (act_XXXXX)",
+                },
                 "name": {"type": "string", "description": "Audience name"},
                 "description": {"type": "string", "description": "Audience description"},
-                "subtype": {"type": "string", "description": "Audience subtype: CUSTOM, LOOKALIKE", "default": "CUSTOM"},
+                "subtype": {
+                    "type": "string",
+                    "description": "Audience subtype: CUSTOM, LOOKALIKE",
+                    "default": "CUSTOM",
+                },
             },
             "required": ["ad_account_id", "name"],
         },
@@ -87,13 +123,19 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "object_id": {"type": "string", "description": "Ad campaign ID, ad set ID, or ad account ID"},
+                "object_id": {
+                    "type": "string",
+                    "description": "Ad campaign ID, ad set ID, or ad account ID",
+                },
                 "fields": {
                     "type": "string",
                     "description": "Insight fields: impressions,reach,spend,leads,cpl,frequency",
                     "default": "impressions,reach,spend,leads",
                 },
-                "date_preset": {"type": "string", "description": "Date preset: today, yesterday, last_7d, last_30d, this_month"},
+                "date_preset": {
+                    "type": "string",
+                    "description": "Date preset: today, yesterday, last_7d, last_30d, this_month",
+                },
                 "time_range": {
                     "type": "object",
                     "properties": {
@@ -159,7 +201,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
 
             elif tool_name == "facebook_lead_ads_get_form_details":
-                fields = arguments.get("fields", "id,name,status,questions,leads_count,created_time")
+                fields = arguments.get(
+                    "fields", "id,name,status,questions,leads_count,created_time"
+                )
                 r = await client.get(
                     f"{BASE}/{arguments['form_id']}",
                     params={"access_token": access_token, "fields": fields},
@@ -205,6 +249,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     params["date_preset"] = arguments["date_preset"]
                 if "time_range" in arguments:
                     import json as json_lib
+
                     params["time_range"] = json_lib.dumps(arguments["time_range"])
                 r = await client.get(f"{BASE}/{arguments['object_id']}/insights", params=params)
                 r.raise_for_status()

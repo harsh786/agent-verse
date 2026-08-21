@@ -1,7 +1,7 @@
 """Triggers API — CRUD, lifecycle control, simulation, events, and DLQ."""
+
 from __future__ import annotations
 
-import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -9,13 +9,13 @@ from pydantic import BaseModel, Field
 
 from app.tenancy.context import TenantContext
 from app.triggers.models import TriggerSpec, TriggerType
-from app.triggers.dispatcher import TriggerDispatcher
 from app.triggers.simulation import get_sample_payload
 
 router = APIRouter(prefix="/triggers", tags=["triggers"])
 
 
 # ── Dependency helpers ────────────────────────────────────────────────────────
+
 
 def _require_tenant(request: Request) -> TenantContext:
     ctx = getattr(request.state, "tenant", None)
@@ -37,6 +37,7 @@ def _get_db(request: Request) -> Any:
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
+
 
 class TriggerSpecRequest(BaseModel):
     trigger_type: str
@@ -76,6 +77,7 @@ class FireRequest(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _build_spec(req: TriggerSpecRequest) -> TriggerSpec:
     try:
         tt = TriggerType(req.trigger_type)
@@ -86,6 +88,7 @@ def _build_spec(req: TriggerSpecRequest) -> TriggerSpec:
         ) from exc
 
     import dataclasses as _dc
+
     valid_fields = {f.name for f in _dc.fields(TriggerSpec)}
 
     kwargs: dict[str, Any] = {"trigger_type": tt}
@@ -128,6 +131,7 @@ def _serialize_record(rec: dict[str, Any]) -> dict[str, Any]:
     }
     if spec is not None:
         import dataclasses
+
         out["spec"] = {
             k: (v.value if hasattr(v, "value") else v)
             for k, v in dataclasses.asdict(spec).items()
@@ -137,6 +141,7 @@ def _serialize_record(rec: dict[str, Any]) -> dict[str, Any]:
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
 
 @router.get("", response_model=list[dict[str, Any]])
 async def list_triggers(request: Request) -> list[dict[str, Any]]:
@@ -173,6 +178,7 @@ async def create_trigger(request: Request, body: CreateTriggerRequest) -> dict[s
 
 # ── DLQ routes (must be declared BEFORE /{schedule_id} to avoid shadowing) ───
 
+
 @router.get("/dlq", response_model=list[dict[str, Any]])
 async def list_dlq(request: Request) -> list[dict[str, Any]]:
     """Return DLQ entries for the tenant."""
@@ -182,6 +188,7 @@ async def list_dlq(request: Request) -> list[dict[str, Any]]:
         return []
     try:
         from sqlalchemy import text
+
         async with db() as session:
             rows = await session.execute(
                 text(
@@ -204,6 +211,7 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, str]:
 
 
 # ── Per-trigger routes ────────────────────────────────────────────────────────
+
 
 @router.get("/{schedule_id}", response_model=dict[str, Any])
 async def get_trigger(schedule_id: str, request: Request) -> dict[str, Any]:
@@ -261,10 +269,9 @@ async def simulate_trigger(
 
     dispatcher = _get_dispatcher(request)
     if dispatcher is not None:
-        result = await dispatcher.dispatch(
-            spec, sample, tenant_ctx, simulate=True
-        )
+        result = await dispatcher.dispatch(spec, sample, tenant_ctx, simulate=True)
         import dataclasses
+
         return dataclasses.asdict(result) if dataclasses.is_dataclass(result) else vars(result)
 
     return {
@@ -276,9 +283,7 @@ async def simulate_trigger(
 
 
 @router.post("/{schedule_id}/fire", response_model=dict[str, Any])
-async def fire_trigger_now(
-    schedule_id: str, request: Request, body: FireRequest
-) -> dict[str, Any]:
+async def fire_trigger_now(schedule_id: str, request: Request, body: FireRequest) -> dict[str, Any]:
     """Fire a trigger immediately, creating a real goal."""
     tenant_ctx = _require_tenant(request)
     store = _get_store(request)
@@ -296,7 +301,10 @@ async def fire_trigger_now(
         raise HTTPException(status_code=503, detail="Dispatcher unavailable")
 
     event = await dispatcher.dispatch(spec, sample, tenant_ctx)
-    return {"goal_id": getattr(event, "goal_id_created", None), "fired_at": getattr(event, "fired_at", None)}
+    return {
+        "goal_id": getattr(event, "goal_id_created", None),
+        "fired_at": getattr(event, "fired_at", None),
+    }
 
 
 @router.get("/{schedule_id}/events", response_model=list[dict[str, Any]])
@@ -310,6 +318,7 @@ async def list_trigger_events(
         return []
     try:
         from sqlalchemy import text
+
         async with db() as session:
             rows = await session.execute(
                 text(
@@ -326,6 +335,7 @@ async def list_trigger_events(
 
 
 # ── PATCH (partial update) ────────────────────────────────────────────────────
+
 
 class UpdateTriggerRequest(BaseModel):
     goal_template: str | None = None
@@ -357,6 +367,7 @@ async def update_trigger(
 
 # ── Rotate secret ─────────────────────────────────────────────────────────────
 
+
 @router.post("/{schedule_id}/rotate-secret", response_model=dict[str, Any])
 async def rotate_secret(schedule_id: str, request: Request) -> dict[str, Any]:
     """Initiate webhook secret rotation (dual-secret grace period)."""
@@ -367,6 +378,7 @@ async def rotate_secret(schedule_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Trigger not found")
 
     from app.triggers.webhooks.rotation import WebhookSecretRotation
+
     rotation = WebhookSecretRotation()
     result = await rotation.rotate(schedule_id, tenant_id=tenant_ctx.tenant_id)
     # Update spec with new secret
@@ -383,6 +395,7 @@ async def rotate_secret(schedule_id: str, request: Request) -> dict[str, Any]:
 
 # ── Validate condition (CEL) ──────────────────────────────────────────────────
 
+
 class ValidateConditionRequest(BaseModel):
     expression: str
     test_payload: dict[str, Any] = {}
@@ -392,6 +405,7 @@ class ValidateConditionRequest(BaseModel):
 async def validate_condition(body: ValidateConditionRequest) -> dict[str, Any]:
     """Validate a CEL condition expression and evaluate it against a test payload."""
     from app.triggers.condition.evaluator import CELEvaluator
+
     evaluator = CELEvaluator()
     try:
         result = evaluator.evaluate(body.expression, body.test_payload)
@@ -402,10 +416,9 @@ async def validate_condition(body: ValidateConditionRequest) -> dict[str, Any]:
 
 # ── Typed webhook ingest ──────────────────────────────────────────────────────
 
+
 @router.post("/webhooks/{webhook_type}/{token}")
-async def receive_typed_webhook(
-    webhook_type: str, token: str, request: Request
-) -> dict[str, Any]:
+async def receive_typed_webhook(webhook_type: str, token: str, request: Request) -> dict[str, Any]:
     """Unified typed webhook endpoint — routes GitHub, Stripe, Jira, etc."""
     body_bytes = await request.body()
     try:
@@ -431,8 +444,8 @@ async def receive_typed_webhook(
         return {"status": "accepted", "webhook_type": webhook_type}
 
     # Find matching trigger by webhook token (token matches webhook_signature_secret prefix)
-    import dataclasses as _dc
     from types import SimpleNamespace
+
     from app.triggers.webhooks.verifier import WebhookSignatureVerifier
 
     verifier = WebhookSignatureVerifier()
@@ -458,6 +471,7 @@ async def receive_typed_webhook(
 
     # Enrich payload with parsed data
     from app.triggers.webhooks import parsers as _parsers
+
     parse_map = {
         "github": lambda: _parsers.GitHubWebhookPayload.parse(dict(request.headers), body).__dict__,
         "stripe": lambda: _parsers.StripeWebhookPayload.parse(body).__dict__,

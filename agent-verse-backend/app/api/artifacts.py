@@ -1,4 +1,5 @@
 """Artifact REST API — list, get, download, delete agent-produced files."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -33,9 +34,7 @@ async def list_artifacts(
         from app.db.models.artifacts import Artifact
         from app.db.rls import sqlalchemy_rls_context
 
-        async with db() as session, sqlalchemy_rls_context(
-            session, tenant.tenant_id
-        ):
+        async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
             q = select(Artifact).where(Artifact.tenant_id == tenant.tenant_id)
             if goal_id:
                 q = q.where(Artifact.goal_id == goal_id)
@@ -74,9 +73,7 @@ async def get_artifact(request: Request, artifact_id: str) -> dict[str, Any]:
         from app.db.models.artifacts import Artifact
         from app.db.rls import sqlalchemy_rls_context
 
-        async with db() as session, sqlalchemy_rls_context(
-            session, tenant.tenant_id
-        ):
+        async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
             result = await session.execute(
                 select(Artifact).where(
                     Artifact.id == artifact_id,
@@ -114,8 +111,10 @@ async def delete_artifact(request: Request, artifact_id: str) -> None:
         from app.db.models.artifacts import Artifact
         from app.db.rls import sqlalchemy_rls_context
 
-        async with db() as session, session.begin(), sqlalchemy_rls_context(
-            session, tenant.tenant_id
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant.tenant_id),
         ):
             result = await session.execute(
                 delete(Artifact).where(

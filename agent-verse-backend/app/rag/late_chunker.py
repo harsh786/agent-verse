@@ -8,6 +8,7 @@ This dramatically improves retrieval for ambiguous pronouns and references.
 If the provider does not expose token-level embeddings (most don't), this
 module falls back to returning `None` so the caller can use standard embedding.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -39,7 +40,9 @@ class LateChunker:
     @staticmethod
     def is_supported(provider: object) -> bool:
         """Return True if the provider exposes token-level embeddings."""
-        return hasattr(provider, "embed_tokens") and callable(getattr(provider, "embed_tokens", None))
+        return hasattr(provider, "embed_tokens") and callable(
+            getattr(provider, "embed_tokens", None)
+        )
 
     async def chunk_and_embed(
         self,
@@ -82,12 +85,14 @@ class LateChunker:
         result: list[LateChunk] = []
         offset = 0
         for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
-            result.append(LateChunk(
-                content=chunk,
-                embedding=emb,
-                char_start=offset,
-                char_end=offset + len(chunk),
-            ))
+            result.append(
+                LateChunk(
+                    content=chunk,
+                    embedding=emb,
+                    char_start=offset,
+                    char_end=offset + len(chunk),
+                )
+            )
             offset += len(chunk) + 1  # +1 for separator
         return result
 
@@ -134,12 +139,14 @@ class LateChunker:
             else:
                 avg_emb = [0.0] * dim
 
-            result.append(LateChunk(
-                content=chunk,
-                embedding=avg_emb,
-                char_start=char_offset,
-                char_end=char_offset + chunk_chars,
-            ))
+            result.append(
+                LateChunk(
+                    content=chunk,
+                    embedding=avg_emb,
+                    char_start=char_offset,
+                    char_end=char_offset + chunk_chars,
+                )
+            )
             token_offset = end_token
             char_offset += chunk_chars + 1
 

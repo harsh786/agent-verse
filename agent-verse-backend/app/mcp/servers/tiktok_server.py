@@ -3,6 +3,7 @@
 Environment:
   TIKTOK_ACCESS_TOKEN: TikTok Business API access token
 """
+
 from __future__ import annotations
 
 import os
@@ -142,7 +143,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "dimensions": ["video_id"],
                 }
                 if vids := arguments.get("video_ids"):
-                    payload["filtering"] = [{"field_name": "video_id", "filter_type": "IN", "filter_value": vids}]
+                    payload["filtering"] = [
+                        {"field_name": "video_id", "filter_type": "IN", "filter_value": vids}
+                    ]
                 if start := arguments.get("start_date"):
                     payload["start_date"] = start
                 if end := arguments.get("end_date"):
@@ -155,7 +158,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 payload = {
                     "query": {
                         "and": [
-                            {"operation": "IN", "field_name": "keyword", "field_values": [arguments["keywords"]]}
+                            {
+                                "operation": "IN",
+                                "field_name": "keyword",
+                                "field_values": [arguments["keywords"]],
+                            }
                         ]
                     },
                     "max_count": arguments.get("max_count", 20),

@@ -29,12 +29,8 @@ def upgrade() -> None:
         ),
         sa.Column("name", sa.String(200), nullable=False),
         sa.Column("description", sa.Text, nullable=True, server_default=""),
-        sa.Column(
-            "denied_tools", sa.JSON, nullable=False, server_default=sa.text("'[]'")
-        ),
-        sa.Column(
-            "approval_tools", sa.JSON, nullable=False, server_default=sa.text("'[]'")
-        ),
+        sa.Column("denied_tools", sa.JSON, nullable=False, server_default=sa.text("'[]'")),
+        sa.Column("approval_tools", sa.JSON, nullable=False, server_default=sa.text("'[]'")),
         sa.Column("scope", sa.String(50), nullable=True, server_default="global"),
         sa.Column(
             "created_at",
@@ -72,9 +68,7 @@ def upgrade() -> None:
         sa.Column("trigger_type", sa.String(20), nullable=False),
         sa.Column("cron_expression", sa.String(200), nullable=True, server_default=""),
         sa.Column("timezone", sa.String(100), nullable=True, server_default="UTC"),
-        sa.Column(
-            "interval_seconds", sa.Integer, nullable=True, server_default=sa.text("0")
-        ),
+        sa.Column("interval_seconds", sa.Integer, nullable=True, server_default=sa.text("0")),
         sa.Column("webhook_token", sa.String(64), nullable=True, server_default=""),
         sa.Column("event_channel", sa.String(200), nullable=True, server_default=""),
         sa.Column("fire_at_iso", sa.String(100), nullable=True, server_default=""),

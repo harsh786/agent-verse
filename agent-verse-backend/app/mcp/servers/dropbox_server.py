@@ -3,6 +3,7 @@
 Environment variables:
   DROPBOX_ACCESS_TOKEN: Dropbox OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -105,9 +106,17 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
-                "path": {"type": "string", "default": "", "description": "Restrict search to this path"},
+                "path": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Restrict search to this path",
+                },
                 "max_results": {"type": "integer", "default": 20},
-                "file_status": {"type": "string", "enum": ["active", "deleted"], "default": "active"},
+                "file_status": {
+                    "type": "string",
+                    "enum": ["active", "deleted"],
+                    "default": "active",
+                },
             },
             "required": ["query"],
         },
@@ -281,7 +290,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 return {
                     "matches": [
                         {
-                            "path": m.get("metadata", {}).get("metadata", {}).get("path_display", ""),
+                            "path": m.get("metadata", {})
+                            .get("metadata", {})
+                            .get("path_display", ""),
                             "name": m.get("metadata", {}).get("metadata", {}).get("name", ""),
                             "type": m.get("metadata", {}).get(".tag", ""),
                         }
@@ -307,7 +318,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 if r.status_code == 409:
                     # Link already exists — fetch it
                     data = r.json()
-                    if shared_link := data.get("error", {}).get("shared_link_already_exists", {}).get("metadata", {}):
+                    if (
+                        shared_link := data.get("error", {})
+                        .get("shared_link_already_exists", {})
+                        .get("metadata", {})
+                    ):
                         return {"url": shared_link.get("url", "")}
                 r.raise_for_status()
                 return r.json()

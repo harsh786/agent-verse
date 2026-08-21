@@ -3,6 +3,7 @@
 Environment variables:
   LINKEDIN_ACCESS_TOKEN: OAuth2 access token with r_ads / rw_ads scopes
 """
+
 from __future__ import annotations
 
 import os
@@ -138,9 +139,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "LINKEDIN_ACCESS_TOKEN not configured"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=LINKEDIN_BASE, headers=_headers(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=LINKEDIN_BASE, headers=_headers(), timeout=30.0) as c:
             if tool_name == "linkedin_ads_list_accounts":
                 params: dict[str, Any] = {
                     "count": arguments.get("count", 10),

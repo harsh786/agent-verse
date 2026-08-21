@@ -4,6 +4,7 @@ Environment:
   ZOHO_ACCESS_TOKEN:     Zoho OAuth2 access token
   ZOHO_ORGANIZATION_ID:  Zoho Invoice organization ID
 """
+
 from __future__ import annotations
 
 import os

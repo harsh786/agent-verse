@@ -9,6 +9,7 @@ Algorithm:
 Inspired by speculative decoding applied to RAG:
   fast speculation → slow verification → confident answer
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -74,9 +75,7 @@ class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
         )
 
         if context is None or context.llm is None or context.llm.provider is None:
-            raise RetrievalStrategyExecutionError(
-                self.strategy.value, "resolved LLM is required"
-            )
+            raise RetrievalStrategyExecutionError(self.strategy.value, "resolved LLM is required")
 
         provider = context.llm.provider
         model = context.llm.model
@@ -116,8 +115,7 @@ class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
             async with asyncio.TaskGroup() as task_group:
                 retrieval_task = task_group.create_task(retrieve())
                 draft_tasks = [
-                    task_group.create_task(generate_draft())
-                    for _ in range(self._candidate_count)
+                    task_group.create_task(generate_draft()) for _ in range(self._candidate_count)
                 ]
         except BaseExceptionGroup as exc:
             raise first_task_group_exception(exc) from None
@@ -165,8 +163,7 @@ class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
                     or not isinstance(payload.get("supported"), bool)
                     or not isinstance(payload.get("verified_claims", []), list)
                     or not all(
-                        isinstance(claim, str)
-                        for claim in payload.get("verified_claims", [])
+                        isinstance(claim, str) for claim in payload.get("verified_claims", [])
                     )
                 ):
                     raise TypeError("invalid verifier field types")
@@ -194,9 +191,7 @@ class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
                 self.strategy.value, "no speculative candidate was supported"
             )
         best = max(supported, key=lambda candidate: candidate.score)
-        verified_claims = [
-            claim.strip() for claim in best.verified_claims or [] if claim.strip()
-        ]
+        verified_claims = [claim.strip() for claim in best.verified_claims or [] if claim.strip()]
         normalized_draft = best.text.casefold()
         if not verified_claims or any(
             claim.casefold() not in normalized_draft for claim in verified_claims
@@ -257,6 +252,7 @@ class SpeculativeRAGPattern(RAGPattern):
     def is_compatible(self, goal_properties: Any) -> bool:
         try:
             from app.core.config import get_settings
+
             if not get_settings().enable_speculative_rag:
                 return False
         except Exception:
@@ -277,6 +273,7 @@ class SpeculativeRAGPattern(RAGPattern):
         """Generate N candidates, verify each, return best-supported."""
         try:
             from app.observability.logging import get_logger
+
             get_logger(__name__).info("speculative_rag_started", query=query[:60])
         except Exception:
             pass
@@ -286,6 +283,7 @@ class SpeculativeRAGPattern(RAGPattern):
         # Circuit breaker setup
         try:
             from app.reliability.circuit_breaker import CircuitBreaker
+
             _cb_key = f"pattern_{self.pattern_id}"
             if _cb_key not in self._circuit_breakers:
                 self._circuit_breakers[_cb_key] = CircuitBreaker(
@@ -304,15 +302,17 @@ class SpeculativeRAGPattern(RAGPattern):
                     raise RuntimeError("Speculative RAG provider circuit is open")
                 break
             try:
-                resp = await provider.complete(CompletionRequest(
-                    messages=[
-                        Message(role="system", content=_CANDIDATE_SYSTEM),
-                        Message(role="user", content=query),
-                    ],
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=0.7,  # diversity
-                ))
+                resp = await provider.complete(
+                    CompletionRequest(
+                        messages=[
+                            Message(role="system", content=_CANDIDATE_SYSTEM),
+                            Message(role="user", content=query),
+                        ],
+                        model=model,
+                        max_tokens=max_tokens,
+                        temperature=0.7,  # diversity
+                    )
+                )
                 if cb is not None:
                     cb.record_success()
                 text = (resp.content or "").strip()
@@ -327,6 +327,7 @@ class SpeculativeRAGPattern(RAGPattern):
         if not candidates:
             try:
                 from app.observability.logging import get_logger
+
                 get_logger(__name__).warning(
                     "speculative_rag_failed",
                     error="no candidates generated",
@@ -360,29 +361,31 @@ class SpeculativeRAGPattern(RAGPattern):
                 verified.append(candidate)
                 continue
             try:
-                resp = await provider.complete(CompletionRequest(
-                    messages=[
-                        Message(role="system", content=_VERIFY_SYSTEM),
-                        Message(
-                            role="user",
-                            content=(
-                                f"Question: {query[:200]}\n"
-                                f"Candidate: {candidate.text[:400]}\n"
-                                f"Context: {context[:800]}"
+                resp = await provider.complete(
+                    CompletionRequest(
+                        messages=[
+                            Message(role="system", content=_VERIFY_SYSTEM),
+                            Message(
+                                role="user",
+                                content=(
+                                    f"Question: {query[:200]}\n"
+                                    f"Candidate: {candidate.text[:400]}\n"
+                                    f"Context: {context[:800]}"
+                                ),
                             ),
-                        ),
-                    ],
-                    model=model,
-                    max_tokens=100,
-                    temperature=0.0,
-                    response_schema={
-                        "type": "object",
-                        "properties": {
-                            "score": {"type": "number"},
-                            "supported": {"type": "boolean"},
+                        ],
+                        model=model,
+                        max_tokens=100,
+                        temperature=0.0,
+                        response_schema={
+                            "type": "object",
+                            "properties": {
+                                "score": {"type": "number"},
+                                "supported": {"type": "boolean"},
+                            },
                         },
-                    },
-                ))
+                    )
+                )
                 if cb is not None:
                     cb.record_success()
                 raw = (resp.content or "").strip()
@@ -411,6 +414,7 @@ class SpeculativeRAGPattern(RAGPattern):
 
         try:
             from app.observability.logging import get_logger
+
             get_logger(__name__).info("speculative_rag_completed", result_len=len(best.text))
         except Exception:
             pass

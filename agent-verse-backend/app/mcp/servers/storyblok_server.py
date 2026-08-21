@@ -3,6 +3,7 @@
 Environment:
   STORYBLOK_ACCESS_TOKEN: Storyblok Management API OAuth2 token or personal access token
 """
+
 from __future__ import annotations
 
 import os
@@ -24,10 +25,21 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "space_id": {"type": "string", "description": "Storyblok space ID"},
-                "page": {"type": "integer", "description": "Page number for pagination", "default": 1},
-                "per_page": {"type": "integer", "description": "Number of stories per page (max 100)", "default": 25},
+                "page": {
+                    "type": "integer",
+                    "description": "Page number for pagination",
+                    "default": 1,
+                },
+                "per_page": {
+                    "type": "integer",
+                    "description": "Number of stories per page (max 100)",
+                    "default": 25,
+                },
                 "starts_with": {"type": "string", "description": "Filter stories by slug prefix"},
-                "content_type": {"type": "string", "description": "Filter by content type/component name"},
+                "content_type": {
+                    "type": "string",
+                    "description": "Filter by content type/component name",
+                },
             },
             "required": ["space_id"],
         },
@@ -53,7 +65,10 @@ TOOL_DEFINITIONS = [
                 "space_id": {"type": "string", "description": "Storyblok space ID"},
                 "name": {"type": "string", "description": "Story display name"},
                 "slug": {"type": "string", "description": "URL-friendly slug for the story"},
-                "content": {"type": "object", "description": "Story content object (component fields)"},
+                "content": {
+                    "type": "object",
+                    "description": "Story content object (component fields)",
+                },
                 "parent_id": {"type": "integer", "description": "Parent folder ID"},
             },
             "required": ["space_id", "name", "slug", "content"],
@@ -93,7 +108,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "space_id": {"type": "string", "description": "Storyblok space ID"},
                 "story_id": {"type": "string", "description": "Story ID to publish"},
-                "release_id": {"type": "integer", "description": "Release ID to publish to (optional)"},
+                "release_id": {
+                    "type": "integer",
+                    "description": "Release ID to publish to (optional)",
+                },
             },
             "required": ["space_id", "story_id"],
         },
@@ -123,7 +141,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     params["starts_with"] = arguments["starts_with"]
                 if "content_type" in arguments:
                     params["content_type"] = arguments["content_type"]
-                r = await client.get(f"{BASE}/spaces/{space_id}/stories", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE}/spaces/{space_id}/stories", headers=headers, params=params
+                )
                 r.raise_for_status()
                 data = r.json()
                 return {

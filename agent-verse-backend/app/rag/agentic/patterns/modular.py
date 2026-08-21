@@ -96,10 +96,7 @@ class ModularRAGRuntimeAdapter(ModularRAGRuntimeContract):
             if execution.module.module_id == pipeline.output_module_id
         )
         terminal_input = terminal_execution.input_value
-        if (
-            terminal_input is None
-            or terminal_input.value_type is not ModularValueType.DOCUMENTS
-        ):
+        if terminal_input is None or terminal_input.value_type is not ModularValueType.DOCUMENTS:
             raise RetrievalStrategyExecutionError(
                 self.strategy.value,
                 "declared output module did not consume documents",
@@ -149,9 +146,7 @@ class ModularRAGRuntimeAdapter(ModularRAGRuntimeContract):
             ) from exc
 
         filters = {
-            key: value
-            for key, value in request.filters.items()
-            if key != "modular_pipeline"
+            key: value for key, value in request.filters.items() if key != "modular_pipeline"
         }
         return (
             pipeline,
@@ -162,9 +157,7 @@ class ModularRAGRuntimeAdapter(ModularRAGRuntimeContract):
     def _require_capabilities(self, module: ModuleSpec, context: Any) -> None:
         capability = MODULAR_CAPABILITY_REGISTRY[module.capability_id]
         if capability.requires_llm and (
-            context.llm is None
-            or context.llm.provider is None
-            or not context.llm.model
+            context.llm is None or context.llm.provider is None or not context.llm.model
         ):
             raise RetrievalStrategyExecutionError(
                 self.strategy.value,
@@ -256,9 +249,7 @@ class ModularRAGRuntimeAdapter(ModularRAGRuntimeContract):
             raise RetrievalStrategyExecutionError(
                 self.strategy.value, "query_expander exceeded its query bound"
             )
-        return ModuleValue(ModularValueType.QUERIES, queries), {
-            "query_count": len(queries)
-        }
+        return ModuleValue(ModularValueType.QUERIES, queries), {"query_count": len(queries)}
 
     async def _retrieve(
         self,
@@ -358,9 +349,7 @@ class ModularRAGRuntimeAdapter(ModularRAGRuntimeContract):
             raise RetrievalStrategyExecutionError(
                 self.strategy.value, "grader accepted an unknown chunk"
             )
-        accepted = [
-            document for document in documents if document.chunk_id in accepted_ids
-        ]
+        accepted = [document for document in documents if document.chunk_id in accepted_ids]
         return ModuleValue(ModularValueType.GRADED_DOCUMENTS, accepted), {
             "accepted_count": len(accepted),
             "reason": reason.strip(),
@@ -475,9 +464,7 @@ class ModularRAGRuntimeAdapter(ModularRAGRuntimeContract):
             raise RetrievalStrategyExecutionError(
                 self.strategy.value, "synthesizer returned empty content"
             )
-        return ModuleValue(ModularValueType.ANSWER, answer), {
-            "evidence_count": len(documents)
-        }
+        return ModuleValue(ModularValueType.ANSWER, answer), {"evidence_count": len(documents)}
 
 
 __all__ = ["ModularRAGRuntimeAdapter"]

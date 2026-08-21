@@ -9,12 +9,10 @@ Handles:
 Setup: DISCORD_BOT_TOKEN + DISCORD_PUBLIC_KEY env vars.
 Webhook URL: POST /v1/gateway/{org_id}/discord/interactions
 """
+
 from __future__ import annotations
 
-import hashlib
-import hmac
 import os
-import time
 import uuid
 from typing import Any
 
@@ -22,7 +20,7 @@ import structlog
 from opentelemetry import trace
 
 from app.gateway.channels.base import ChannelAdapter
-from app.gateway.command import OrgCommand, OrgResponse, ResponseAction
+from app.gateway.command import OrgCommand, OrgResponse
 
 _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -40,7 +38,7 @@ class DiscordChannelAdapter(ChannelAdapter):
         bot_token: str | None = None,
         public_key: str | None = None,
     ) -> None:
-        self._token      = bot_token  or os.getenv("DISCORD_BOT_TOKEN", "")
+        self._token = bot_token or os.getenv("DISCORD_BOT_TOKEN", "")
         self._public_key = public_key or os.getenv("DISCORD_PUBLIC_KEY", "")
 
     async def verify_auth(
@@ -49,9 +47,9 @@ class DiscordChannelAdapter(ChannelAdapter):
         """Verify Discord Ed25519 signature on interaction payload."""
         if not self._public_key:
             return False
-        signature  = request_headers.get("X-Signature-Ed25519", "")
-        timestamp  = request_headers.get("X-Signature-Timestamp", "")
-        body       = raw_payload.get("_raw_body", "")
+        signature = request_headers.get("X-Signature-Ed25519", "")
+        timestamp = request_headers.get("X-Signature-Timestamp", "")
+        body = raw_payload.get("_raw_body", "")
         # TODO: implement full Ed25519 verify (requires PyNaCl)
         return bool(signature and timestamp and body)
 
@@ -76,22 +74,22 @@ class DiscordChannelAdapter(ChannelAdapter):
 
             # Application command (type 2) — slash commands
             if interaction_type == 2:
-                data   = raw_payload.get("data", {})
-                user   = raw_payload.get("member", {}).get("user", {}) or raw_payload.get("user", {})
-                actor  = str(user.get("id", ""))
-                name   = str(user.get("username", ""))
+                data = raw_payload.get("data", {})
+                user = raw_payload.get("member", {}).get("user", {}) or raw_payload.get("user", {})
+                actor = str(user.get("id", ""))
+                name = str(user.get("username", ""))
 
                 cmd_name = data.get("name", "")
-                options  = {o["name"]: o.get("value", "") for o in data.get("options", [])}
-                text     = options.get("text", options.get("query", cmd_name))
+                options = {o["name"]: o.get("value", "") for o in data.get("options", [])}
+                text = options.get("text", options.get("query", cmd_name))
 
                 # Build natural language text from slash command
                 cmd_map = {
-                    "org-status":   "What is the org status?",
-                    "org-ask":      text,
-                    "org-approve":  "List pending approvals",
-                    "org-mission":  f"Create a mission: {text}",
-                    "org-brief":    "Morning brief",
+                    "org-status": "What is the org status?",
+                    "org-ask": text,
+                    "org-approve": "List pending approvals",
+                    "org-mission": f"Create a mission: {text}",
+                    "org-brief": "Morning brief",
                 }
                 resolved_text = cmd_map.get(cmd_name, text or cmd_name)
 
@@ -111,7 +109,7 @@ class DiscordChannelAdapter(ChannelAdapter):
             # Message component (type 3) — button presses
             if interaction_type == 3:
                 custom_id = raw_payload.get("data", {}).get("custom_id", "")
-                user   = raw_payload.get("member", {}).get("user", {}) or raw_payload.get("user", {})
+                user = raw_payload.get("member", {}).get("user", {}) or raw_payload.get("user", {})
                 return OrgCommand(
                     command_id=command_id,
                     tenant_id=tenant_id,
@@ -143,17 +141,17 @@ class DiscordChannelAdapter(ChannelAdapter):
         if response.actions:
             buttons = [
                 {
-                    "type": 2,    # BUTTON
-                    "style": 1,   # PRIMARY
+                    "type": 2,  # BUTTON
+                    "style": 1,  # PRIMARY
                     "label": a.label[:80],
                     "custom_id": a.action_id[:100],
                 }
-                for a in response.actions[:5]   # Discord max 5 buttons per row
+                for a in response.actions[:5]  # Discord max 5 buttons per row
             ]
-            components = [{"type": 1, "components": buttons}]   # ACTION_ROW
+            components = [{"type": 1, "components": buttons}]  # ACTION_ROW
 
         return {
-            "type": 4,    # CHANNEL_MESSAGE_WITH_SOURCE
+            "type": 4,  # CHANNEL_MESSAGE_WITH_SOURCE
             "data": {
                 "content": content,
                 "components": components,

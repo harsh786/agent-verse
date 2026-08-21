@@ -166,7 +166,13 @@ def upgrade() -> None:
     )
 
     # ── RLS policies ──────────────────────────────────────────────────────────
-    for table in ("chat_session_folders", "chat_sessions", "chat_messages", "chat_message_usage", "chat_artifacts"):
+    for table in (
+        "chat_session_folders",
+        "chat_sessions",
+        "chat_messages",
+        "chat_message_usage",
+        "chat_artifacts",
+    ):
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         op.execute(
             f"""
@@ -178,7 +184,13 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP VIEW IF EXISTS chat_session_usage_summary")
-    for table in ("chat_artifacts", "chat_message_usage", "chat_messages", "chat_sessions", "chat_session_folders"):
+    for table in (
+        "chat_artifacts",
+        "chat_message_usage",
+        "chat_messages",
+        "chat_sessions",
+        "chat_session_folders",
+    ):
         op.execute(f"DROP POLICY IF EXISTS {table}_tenant_isolation ON {table}")
         op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
     op.drop_table("chat_artifacts")

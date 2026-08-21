@@ -93,9 +93,7 @@ class CodeActRuntime:
         observations: list[CodeExecutionObservation] = []
         prior_sources = {item.source_sha256 for item in state.actions}
         prior_observations = {
-            item.observation_sha256
-            for item in state.actions
-            if item.observation_sha256 is not None
+            item.observation_sha256 for item in state.actions if item.observation_sha256 is not None
         }
         for number in range(len(state.actions) + 1, maximum_actions + 1):
             if cancelled is not None and cancelled.is_set():
@@ -147,9 +145,7 @@ class CodeActRuntime:
             )
             await self._save(state)
             try:
-                observation = await self._tool.execute(
-                    invocation=invocation, workload=workload
-                )
+                observation = await self._tool.execute(invocation=invocation, workload=workload)
             except Exception:
                 failed = state.model_copy(update={"phase": CodeActPhase.FAILED})
                 await self._save(failed)

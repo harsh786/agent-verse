@@ -1,10 +1,11 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from app.orchestration.runtime_profile import GoalRuntimeProfile
     from app.orchestration.decision_trace import DecisionTrace
+    from app.orchestration.runtime_profile import GoalRuntimeProfile
 
 
 @dataclass
@@ -32,8 +33,8 @@ class ExplanationBundle:
 class DecisionExplainer:
     def explain(
         self,
-        profile: "GoalRuntimeProfile",
-        trace: "DecisionTrace",
+        profile: GoalRuntimeProfile,
+        trace: DecisionTrace,
     ) -> ExplanationBundle:
         bundle = ExplanationBundle(goal_id=profile.goal_id)
         for decision in trace.decisions:
@@ -54,11 +55,7 @@ class DecisionExplainer:
                 f"audit={security.audit_level}"
             )
         else:
-            bundle.why_this_guardrail = (
-                f"Default guardrails: risk={profile.properties.risk.value}"
-            )
+            bundle.why_this_guardrail = f"Default guardrails: risk={profile.properties.risk.value}"
         if profile.rag_strategy.web_fallback_enabled:
-            bundle.why_this_fallback = (
-                "Web fallback: KB empty/sparse or web signals detected"
-            )
+            bundle.why_this_fallback = "Web fallback: KB empty/sparse or web signals detected"
         return bundle

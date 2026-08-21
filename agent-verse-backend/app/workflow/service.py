@@ -8,9 +8,9 @@ Wire up in main.py:
     from app.workflow.service import WorkflowService
     app.state.workflow_service = WorkflowService(app.state.workflow_store)
 """
+
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -67,9 +67,7 @@ class WorkflowService:
         start = (page - 1) * per_page
         return items[start : start + per_page], total
 
-    async def get(
-        self, tenant_id: str, workflow_id: str
-    ) -> dict[str, Any] | None:
+    async def get(self, tenant_id: str, workflow_id: str) -> dict[str, Any] | None:
         return await self._store.get(tenant_id=tenant_id, workflow_id=workflow_id)
 
     async def update(
@@ -78,9 +76,7 @@ class WorkflowService:
         workflow_id: str,
         **kwargs: Any,
     ) -> dict[str, Any] | None:
-        return await self._store.update(
-            tenant_id=tenant_id, workflow_id=workflow_id, **kwargs
-        )
+        return await self._store.update(tenant_id=tenant_id, workflow_id=workflow_id, **kwargs)
 
     async def archive(self, tenant_id: str, workflow_id: str) -> bool:
         """Archive (soft-delete) a workflow by setting status=archived."""
@@ -95,9 +91,7 @@ class WorkflowService:
         _log.info("workflow.archived", tenant_id=tenant_id, workflow_id=workflow_id)
         return True
 
-    async def publish(
-        self, tenant_id: str, workflow_id: str
-    ) -> dict[str, Any] | None:
+    async def publish(self, tenant_id: str, workflow_id: str) -> dict[str, Any] | None:
         """Publish a draft workflow (status draft → published)."""
         return await self._store.update(
             tenant_id=tenant_id,
@@ -106,9 +100,7 @@ class WorkflowService:
             published_at=datetime.now(UTC).isoformat(),
         )
 
-    async def unpublish(
-        self, tenant_id: str, workflow_id: str
-    ) -> dict[str, Any] | None:
+    async def unpublish(self, tenant_id: str, workflow_id: str) -> dict[str, Any] | None:
         """Unpublish a workflow (status published → draft)."""
         return await self._store.update(
             tenant_id=tenant_id,
@@ -119,9 +111,7 @@ class WorkflowService:
 
     # ── Versions ──────────────────────────────────────────────────────────────
 
-    async def list_versions(
-        self, tenant_id: str, workflow_id: str
-    ) -> list[dict[str, Any]]:
+    async def list_versions(self, tenant_id: str, workflow_id: str) -> list[dict[str, Any]]:
         """Return version history. Returns current version only until full
         version control is implemented."""
         item = await self._store.get(tenant_id=tenant_id, workflow_id=workflow_id)
@@ -145,9 +135,7 @@ class WorkflowService:
 
     # ── Permissions ───────────────────────────────────────────────────────────
 
-    async def get_permissions(
-        self, tenant_id: str, workflow_id: str
-    ) -> list[dict[str, Any]]:
+    async def get_permissions(self, tenant_id: str, workflow_id: str) -> list[dict[str, Any]]:
         return []
 
     async def add_permission(
@@ -155,9 +143,7 @@ class WorkflowService:
     ) -> dict[str, Any]:
         return {"workflow_id": workflow_id, **kwargs, "created_at": datetime.now(UTC).isoformat()}
 
-    async def remove_permission(
-        self, tenant_id: str, workflow_id: str, permission_id: str
-    ) -> bool:
+    async def remove_permission(self, tenant_id: str, workflow_id: str, permission_id: str) -> bool:
         return True
 
     # ── Templates ─────────────────────────────────────────────────────────────
@@ -170,6 +156,7 @@ class WorkflowService:
     ) -> tuple[list[dict[str, Any]], int]:
         """Return workflow templates from SystemTemplateStore if wired."""
         from app.main import app as _app
+
         template_store = getattr(getattr(_app, "state", None), "template_store_we", None)
         if template_store is None:
             return [], 0
@@ -186,6 +173,7 @@ class WorkflowService:
 
     async def get_template(self, slug: str) -> dict[str, Any] | None:
         from app.main import app as _app
+
         template_store = getattr(getattr(_app, "state", None), "template_store_we", None)
         if template_store is None:
             return None
@@ -214,9 +202,7 @@ class WorkflowService:
 
     # ── Analytics ─────────────────────────────────────────────────────────────
 
-    async def analytics_summary(
-        self, tenant_id: str, days: int = 30
-    ) -> dict[str, Any]:
+    async def analytics_summary(self, tenant_id: str, days: int = 30) -> dict[str, Any]:
         items = await self._store.list(tenant_id=tenant_id)
         return {
             "total_workflows": len(items),

@@ -3,6 +3,7 @@
 Environment:
   ZILLOW_API_KEY: Zillow Bridge API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -52,7 +53,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "zpid": {"type": "string", "description": "Zillow Property ID"},
-                "address": {"type": "string", "description": "Full property address as alternative to ZPID"},
+                "address": {
+                    "type": "string",
+                    "description": "Full property address as alternative to ZPID",
+                },
             },
         },
     },
@@ -77,7 +81,10 @@ TOOL_DEFINITIONS = [
                 "city": {"type": "string", "description": "City to search in"},
                 "state": {"type": "string", "description": "State code"},
                 "zipcode": {"type": "string", "description": "ZIP code"},
-                "days_sold": {"type": "integer", "description": "Look back N days for sold properties"},
+                "days_sold": {
+                    "type": "integer",
+                    "description": "Look back N days for sold properties",
+                },
                 "limit": {"type": "integer", "description": "Maximum results"},
             },
         },
@@ -90,7 +97,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "zpid": {"type": "string", "description": "Zillow Property ID"},
                 "zipcode": {"type": "string", "description": "ZIP code for area rent estimates"},
-                "bedrooms": {"type": "integer", "description": "Number of bedrooms for area estimates"},
+                "bedrooms": {
+                    "type": "integer",
+                    "description": "Number of bedrooms for area estimates",
+                },
             },
         },
     },
@@ -114,7 +124,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "zillow_get_property_details":
                 params = {**base_params, "zpid": arguments["zpid"]}
-                r = await client.get(f"{BASE_URL}/pub/listings/{arguments['zpid']}", params=base_params)
+                r = await client.get(
+                    f"{BASE_URL}/pub/listings/{arguments['zpid']}", params=base_params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -131,7 +143,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 return r.json()
 
             if tool_name == "zillow_list_sold_properties":
-                params = {**base_params, "status": "sold", **{k: v for k, v in arguments.items() if v is not None}}
+                params = {
+                    **base_params,
+                    "status": "sold",
+                    **{k: v for k, v in arguments.items() if v is not None},
+                }
                 r = await client.get(f"{BASE_URL}/pub/listings", params=params)
                 r.raise_for_status()
                 return r.json()

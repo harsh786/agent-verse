@@ -1,4 +1,5 @@
 """Agent Memory 2.0 API - governed memory with provenance and lifecycle."""
+
 from __future__ import annotations
 
 import datetime
@@ -16,6 +17,7 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/memory-v2", tags=["memory-v2"])
 
+
 def _require_tenant(request: Request):
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
@@ -29,6 +31,7 @@ def _get_db(request: Request) -> Any:
     if db is None:
         try:
             from app.db.session import get_session_factory
+
             db = get_session_factory()
         except Exception:
             pass
@@ -51,6 +54,7 @@ async def _ensure_loaded_from_db(tenant_id: str, db: Any) -> None:
     _db_loaded_tenants.add(tenant_id)
     try:
         from sqlalchemy import text
+
         async with db() as session:
             result = await session.execute(
                 text(
@@ -80,6 +84,7 @@ async def _db_upsert_memory(db: Any, memory: dict) -> None:
         return
     try:
         from sqlalchemy import text
+
         async with db() as session, session.begin():
             await session.execute(
                 text(
@@ -179,9 +184,9 @@ async def list_memories(
     await _ensure_loaded_from_db(tenant.tenant_id, db)
 
     memories = [
-        v for k, v in _memories.items()
-        if k.startswith(f"{tenant.tenant_id}:")
-        and v.get("lifecycle_state") != "deleted"
+        v
+        for k, v in _memories.items()
+        if k.startswith(f"{tenant.tenant_id}:") and v.get("lifecycle_state") != "deleted"
     ]
 
     if lifecycle_state:
@@ -242,9 +247,9 @@ async def mark_stale_memories(request: Request) -> dict[str, Any]:
         updated = memory.get("updated_at", "")
         if updated:
             try:
-                updated_dt = datetime.datetime.fromisoformat(
-                    updated.rstrip("Z")
-                ).replace(tzinfo=datetime.UTC)
+                updated_dt = datetime.datetime.fromisoformat(updated.rstrip("Z")).replace(
+                    tzinfo=datetime.UTC
+                )
                 if updated_dt < cutoff:
                     memory["lifecycle_state"] = "stale"
                     await _db_upsert_memory(db, memory)
@@ -350,6 +355,7 @@ async def consolidate_memories(request: Request) -> dict[str, Any]:
     db = _get_db(request)
     await _ensure_loaded_from_db(tenant.tenant_id, db)
     from app.memory_v2.consolidation import memory_consolidator
+
     stats = await memory_consolidator.consolidate(tenant.tenant_id, _memories)
     return {"status": "consolidated", **stats}
 

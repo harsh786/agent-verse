@@ -1,7 +1,10 @@
 """Multimodal Intelligence API."""
+
 from __future__ import annotations
+
 from typing import Any
-from fastapi import APIRouter, Request, HTTPException
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/multimodal", tags=["multimodal"])
@@ -16,8 +19,8 @@ def _require_tenant(request: Request) -> Any:
 
 class IngestRequest(BaseModel):
     modality: str  # text | image | pdf | audio | video
-    content: str | None = None       # For text
-    base64_data: str | None = None   # For binary types
+    content: str | None = None  # For text
+    base64_data: str | None = None  # For binary types
     filename: str | None = None
     collection_id: str | None = None
 

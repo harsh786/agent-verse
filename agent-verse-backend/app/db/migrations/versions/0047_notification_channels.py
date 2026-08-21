@@ -1,4 +1,5 @@
 """Persist notification channels to PostgreSQL with RLS."""
+
 from alembic import op
 
 revision = "0047"

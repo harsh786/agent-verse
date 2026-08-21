@@ -4,6 +4,7 @@ Incremental: ListObjectsV2 with StartAfter cursor (LastModified-based).
 Streaming: S3 event notifications via SQS or EventBridge.
 Supports any file format via ParserRegistry dispatch.
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,9 +30,11 @@ class S3Connector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             import boto3  # type: ignore[import-not-found]
+
             bucket = config.connection_config.get("bucket", "")
             region = config.connection_config.get("region", "us-east-1")
             endpoint_url = config.connection_config.get("endpoint_url") or None
@@ -48,7 +51,9 @@ class S3Connector(BaseConnector):
 
             latency = (time.perf_counter() - t0) * 1000
             # Estimate doc count
-            resp = s3.list_objects_v2(Bucket=bucket, Prefix=config.connection_config.get("prefix", ""), MaxKeys=1)
+            resp = s3.list_objects_v2(
+                Bucket=bucket, Prefix=config.connection_config.get("prefix", ""), MaxKeys=1
+            )
             key_count = resp.get("KeyCount", 0)
             return ConnectionHealth(
                 ok=True,
@@ -153,7 +158,6 @@ class S3Connector(BaseConnector):
         """Handle S3 event notifications (SQS or EventBridge)."""
         import json
 
-
         try:
             data = json.loads(payload)
         except Exception:
@@ -177,8 +181,10 @@ class S3Connector(BaseConnector):
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         """Fetch and yield a single S3 object."""
         from app.ingestion.source_config import RawDocument
+
         try:
             import boto3
+
             credentials = config.connection_config.get("credentials", {})
             s3 = boto3.client(
                 "s3",
@@ -206,6 +212,7 @@ class S3Connector(BaseConnector):
     def estimate_doc_count(self, config: SourceConfig) -> int | None:
         try:
             import boto3
+
             credentials = config.connection_config.get("credentials", {})
             s3 = boto3.client(
                 "s3",
@@ -231,6 +238,7 @@ class S3Connector(BaseConnector):
     ) -> bool:
         """Check include/exclude glob/extension patterns."""
         import fnmatch
+
         if exclude:
             for pat in exclude:
                 if fnmatch.fnmatch(key, pat):

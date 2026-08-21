@@ -4,6 +4,7 @@ Uses Salesforce REST API with OAuth 2.0 (username-password or connected app).
 Cursor: last record's SystemModstamp (ISO 8601).
 Supports: any SObject (Account, Contact, Lead, Case, Opportunity, custom).
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,10 +30,12 @@ class SalesforceConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             token, instance_url = await self._authenticate(config)
             import httpx
+
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.get(
                     f"{instance_url}/services/data/v58.0/",
@@ -40,7 +43,9 @@ class SalesforceConnector(BaseConnector):
                 )
                 r.raise_for_status()
             latency = (time.perf_counter() - t0) * 1000
-            return ConnectionHealth(ok=True, latency_ms=latency, metadata={"instance": instance_url})
+            return ConnectionHealth(
+                ok=True, latency_ms=latency, metadata={"instance": instance_url}
+            )
         except Exception as exc:
             return ConnectionHealth(ok=False, error=str(exc))
 
@@ -62,7 +67,9 @@ class SalesforceConnector(BaseConnector):
         async with httpx.AsyncClient(timeout=30) as client:
             for sobject in sobjects:
                 # Discover fields if not specified
-                fields = fields_map.get(sobject) or await self._get_fields(client, instance_url, token, sobject)
+                fields = fields_map.get(sobject) or await self._get_fields(
+                    client, instance_url, token, sobject
+                )
                 soql_fields = ", ".join(fields[:50])  # SOQL field limit
                 soql = f"SELECT {soql_fields} FROM {sobject}"
                 if cursor:
@@ -85,10 +92,16 @@ class SalesforceConnector(BaseConnector):
                         text = f"SObject: {sobject}\n" + "\n".join(text_parts)
                         doc = RawDocument(
                             doc_id=str(uuid.uuid4()),
-                            source_id=config.source_id, tenant_id=config.tenant_id,
+                            source_id=config.source_id,
+                            tenant_id=config.tenant_id,
                             source_url=f"{instance_url}/lightning/r/{sobject}/{record.get('Id')}/view",
-                            content=text.encode(), content_type="text/plain",
-                            metadata={"sobject": sobject, "id": record.get("Id"), "modified": modified},
+                            content=text.encode(),
+                            content_type="text/plain",
+                            metadata={
+                                "sobject": sobject,
+                                "id": record.get("Id"),
+                                "modified": modified,
+                            },
                         )
                         yield doc, new_cursor
                     next_url = data.get("nextRecordsUrl")
@@ -97,6 +110,7 @@ class SalesforceConnector(BaseConnector):
 
     async def _authenticate(self, config: SourceConfig) -> tuple[str, str]:
         import httpx
+
         cc = config.connection_config
         login_url = cc.get("login_url", "https://login.salesforce.com")
         async with httpx.AsyncClient() as client:
@@ -122,5 +136,7 @@ class SalesforceConnector(BaseConnector):
         )
         if r.is_success:
             fields = r.json().get("fields", [])
-            return [f["name"] for f in fields if f.get("type") not in ("base64", "encryptedstring")][:50]
+            return [
+                f["name"] for f in fields if f.get("type") not in ("base64", "encryptedstring")
+            ][:50]
         return ["Id", "Name", "CreatedDate", "SystemModstamp"]

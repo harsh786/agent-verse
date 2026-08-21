@@ -4,6 +4,7 @@ Environment:
   VONAGE_API_KEY: Vonage API key from dashboard.nexmo.com
   VONAGE_API_SECRET: Vonage API secret from dashboard.nexmo.com
 """
+
 from __future__ import annotations
 
 import os
@@ -25,10 +26,17 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "from_number": {"type": "string", "description": "Sender number or alphanumeric ID"},
+                "from_number": {
+                    "type": "string",
+                    "description": "Sender number or alphanumeric ID",
+                },
                 "to": {"type": "string", "description": "Recipient phone number in E.164 format"},
                 "text": {"type": "string", "description": "SMS message body"},
-                "type": {"type": "string", "description": "Message type: text, binary, wappush, unicode", "default": "text"},
+                "type": {
+                    "type": "string",
+                    "description": "Message type: text, binary, wappush, unicode",
+                    "default": "text",
+                },
             },
             "required": ["from_number", "to", "text"],
         },
@@ -51,9 +59,19 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "to": {"type": "string", "description": "Destination phone number in E.164 format"},
-                "from_number": {"type": "string", "description": "Vonage virtual number to call from"},
-                "answer_url": {"type": "string", "description": "URL to fetch the NCCO (Nexmo Call Control Object)"},
-                "answer_method": {"type": "string", "description": "HTTP method for answer_url: GET or POST", "default": "GET"},
+                "from_number": {
+                    "type": "string",
+                    "description": "Vonage virtual number to call from",
+                },
+                "answer_url": {
+                    "type": "string",
+                    "description": "URL to fetch the NCCO (Nexmo Call Control Object)",
+                },
+                "answer_method": {
+                    "type": "string",
+                    "description": "HTTP method for answer_url: GET or POST",
+                    "default": "GET",
+                },
             },
             "required": ["to", "from_number", "answer_url"],
         },
@@ -64,10 +82,23 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter by call status: started, ringing, answered, machine, completed, busy, cancelled, failed, rejected, timeout, unanswered"},
-                "date_start": {"type": "string", "description": "Filter calls starting after this ISO 8601 datetime"},
-                "date_end": {"type": "string", "description": "Filter calls ending before this ISO 8601 datetime"},
-                "page_size": {"type": "integer", "description": "Records per page (max 100)", "default": 10},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by call status: started, ringing, answered, machine, completed, busy, cancelled, failed, rejected, timeout, unanswered",
+                },
+                "date_start": {
+                    "type": "string",
+                    "description": "Filter calls starting after this ISO 8601 datetime",
+                },
+                "date_end": {
+                    "type": "string",
+                    "description": "Filter calls ending before this ISO 8601 datetime",
+                },
+                "page_size": {
+                    "type": "integer",
+                    "description": "Records per page (max 100)",
+                    "default": 10,
+                },
             },
         },
     },
@@ -85,7 +116,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "country": {"type": "string", "description": "Two-letter ISO 3166-1 country code filter"},
+                "country": {
+                    "type": "string",
+                    "description": "Two-letter ISO 3166-1 country code filter",
+                },
                 "pattern": {"type": "string", "description": "Phone number pattern filter"},
                 "index": {"type": "integer", "description": "Page index (1-based)", "default": 1},
                 "size": {"type": "integer", "description": "Numbers per page", "default": 10},
@@ -122,7 +156,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 messages = data.get("messages", [])
                 return {
                     "messages": [
-                        {"message-id": m.get("message-id"), "status": m.get("status"), "to": m.get("to")}
+                        {
+                            "message-id": m.get("message-id"),
+                            "status": m.get("status"),
+                            "to": m.get("to"),
+                        }
                         for m in messages
                     ],
                     "message-count": data.get("message-count"),
@@ -174,7 +212,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 embedded = data.get("_embedded", {})
                 return {
                     "calls": [
-                        {"uuid": c.get("uuid"), "status": c.get("status"), "direction": c.get("direction"), "duration": c.get("duration")}
+                        {
+                            "uuid": c.get("uuid"),
+                            "status": c.get("status"),
+                            "direction": c.get("direction"),
+                            "duration": c.get("duration"),
+                        }
                         for c in embedded.get("calls", [])
                     ],
                     "count": data.get("count", 0),
@@ -207,7 +250,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 data = r.json()
                 return {
                     "numbers": [
-                        {"msisdn": n.get("msisdn"), "country": n.get("country"), "type": n.get("type")}
+                        {
+                            "msisdn": n.get("msisdn"),
+                            "country": n.get("country"),
+                            "type": n.get("type"),
+                        }
                         for n in data.get("numbers", [])
                     ],
                     "count": data.get("count", 0),

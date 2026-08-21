@@ -28,6 +28,7 @@ export const orgKeys = {
   tasks:      (orgId: string, f?: object) => ['orgs', orgId, 'tasks', f]    as const,
   events:     (orgId: string)    => ['orgs', orgId, 'events']            as const,
   departments:(orgId: string)    => ['orgs', orgId, 'departments']       as const,
+  teamMembers:(orgId: string, teamId: string) => ['orgs', orgId, 'teams', teamId, 'members'] as const,
 };
 
 // ── Organization hooks ─────────────────────────────────────────────────────
@@ -177,6 +178,19 @@ export function useCreateDepartment(orgId: string) {
   return useMutation({
     mutationFn: (req: CreateDepartmentRequest) => orgApi.createDepartment(orgId, req),
     onSuccess: () => qc.invalidateQueries({ queryKey: orgKeys.departments(orgId) }),
+  });
+}
+
+export function useTeamMembers(
+  orgId: string | null | undefined,
+  teamId: string | null | undefined,
+) {
+  return useQuery({
+    queryKey: orgKeys.teamMembers(orgId!, teamId!),
+    queryFn: () => orgApi.listTeamMembers(orgId!, teamId!),
+    enabled: !!orgId && !!teamId,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
   });
 }
 

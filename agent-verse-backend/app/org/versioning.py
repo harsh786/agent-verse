@@ -8,6 +8,7 @@ Versioned entities:
   workflows  — semantic, replay-safe
   policies   — semantic, full audit trail
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -22,18 +23,19 @@ _log = structlog.get_logger(__name__)
 
 
 class VersionStrategy(str, Enum):
-    SEMANTIC  = "semantic"    # MAJOR.MINOR.PATCH
-    HASH      = "hash"        # SHA256 of content
-    PROVIDER  = "provider"    # provider-specific versioning
-    TIMESTAMP = "timestamp"   # datetime-based
+    SEMANTIC = "semantic"  # MAJOR.MINOR.PATCH
+    HASH = "hash"  # SHA256 of content
+    PROVIDER = "provider"  # provider-specific versioning
+    TIMESTAMP = "timestamp"  # datetime-based
 
 
 @dataclass
 class EntityVersion:
     """A versioned snapshot of any org entity."""
-    entity_type: str             # agent | role | prompt | model | workflow | policy
+
+    entity_type: str  # agent | role | prompt | model | workflow | policy
     entity_id: str
-    version: str                 # e.g. "1.2.0" or "sha256:abc123"
+    version: str  # e.g. "1.2.0" or "sha256:abc123"
     strategy: VersionStrategy
     content_hash: str
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -42,7 +44,7 @@ class EntityVersion:
     deprecated: bool = False
     fallback_version: str | None = None
     ab_test_enabled: bool = False
-    ab_test_traffic_pct: float = 0.0   # 0-1, portion of traffic to this version
+    ab_test_traffic_pct: float = 0.0  # 0-1, portion of traffic to this version
     notes: str = ""
 
     @property
@@ -53,6 +55,7 @@ class EntityVersion:
 @dataclass
 class VersioningConfig:
     """Per-entity-type versioning configuration."""
+
     entity_type: str
     strategy: VersionStrategy
     history_enabled: bool = True
@@ -66,35 +69,50 @@ class VersioningConfig:
 
 VERSIONED_ENTITIES: dict[str, VersioningConfig] = {
     "agents": VersioningConfig(
-        "agents", VersionStrategy.SEMANTIC,
-        history_enabled=True, immutable_after_deploy=False,
+        "agents",
+        VersionStrategy.SEMANTIC,
+        history_enabled=True,
+        immutable_after_deploy=False,
     ),
     "roles": VersioningConfig(
-        "roles", VersionStrategy.SEMANTIC,
-        history_enabled=True, immutable_after_deploy=True,
+        "roles",
+        VersionStrategy.SEMANTIC,
+        history_enabled=True,
+        immutable_after_deploy=True,
     ),
     "prompts": VersioningConfig(
-        "prompts", VersionStrategy.HASH,
-        history_enabled=True, ab_test_enabled=True,
+        "prompts",
+        VersionStrategy.HASH,
+        history_enabled=True,
+        ab_test_enabled=True,
     ),
     "models": VersioningConfig(
-        "models", VersionStrategy.PROVIDER,
-        history_enabled=True, immutable_after_deploy=False,
+        "models",
+        VersionStrategy.PROVIDER,
+        history_enabled=True,
+        immutable_after_deploy=False,
     ),
     "workflows": VersioningConfig(
-        "workflows", VersionStrategy.SEMANTIC,
-        history_enabled=True, replay_safe=True,
+        "workflows",
+        VersionStrategy.SEMANTIC,
+        history_enabled=True,
+        replay_safe=True,
     ),
     "policies": VersioningConfig(
-        "policies", VersionStrategy.SEMANTIC,
-        history_enabled=True, audit_trail=True, immutable_after_deploy=False,
+        "policies",
+        VersionStrategy.SEMANTIC,
+        history_enabled=True,
+        audit_trail=True,
+        immutable_after_deploy=False,
     ),
     "knowledge_collections": VersioningConfig(
-        "knowledge_collections", VersionStrategy.TIMESTAMP,
+        "knowledge_collections",
+        VersionStrategy.TIMESTAMP,
         history_enabled=True,
     ),
     "capability_registries": VersioningConfig(
-        "capability_registries", VersionStrategy.SEMANTIC,
+        "capability_registries",
+        VersionStrategy.SEMANTIC,
         history_enabled=True,
     ),
 }
@@ -108,10 +126,12 @@ class EntityVersionManager:
     """
 
     def __init__(self) -> None:
-        self._versions: dict[str, list[EntityVersion]] = {}   # entity_id → history
+        self._versions: dict[str, list[EntityVersion]] = {}  # entity_id → history
 
     def _config(self, entity_type: str) -> VersioningConfig:
-        return VERSIONED_ENTITIES.get(entity_type, VersioningConfig(entity_type, VersionStrategy.SEMANTIC))
+        return VERSIONED_ENTITIES.get(
+            entity_type, VersioningConfig(entity_type, VersionStrategy.SEMANTIC)
+        )
 
     def create_version(
         self,

@@ -10,6 +10,7 @@ Handles automated user lifecycle from identity providers:
 
 Authentication: SHA-256 hashed bearer token checked against scim_tokens table.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -210,9 +211,7 @@ class SCIMHandler:
                 ),
             )
 
-        email = scim_data.get("userName") or (
-            scim_data.get("emails") or [{}]
-        )[0].get("value", "")
+        email = scim_data.get("userName") or (scim_data.get("emails") or [{}])[0].get("value", "")
         if not email:
             raise HTTPException(
                 status_code=400,
@@ -220,10 +219,7 @@ class SCIMHandler:
             )
 
         name = scim_data.get("name", {})
-        display_name = (
-            f"{name.get('givenName', '')} {name.get('familyName', '')}".strip()
-            or email
-        )
+        display_name = f"{name.get('givenName', '')} {name.get('familyName', '')}".strip() or email
         groups = scim_data.get("groups", [])
         role = self._map_groups_to_role(groups)
         external_id = scim_data.get("externalId") or scim_data.get("id") or email
@@ -316,8 +312,12 @@ class SCIMHandler:
                         path = op.get("path", "")
                         value = op.get("value")
                         if op_type == "replace" and path == "active":
-                            active_val = value if isinstance(value, bool) else (
-                                value.get("active", True) if isinstance(value, dict) else True
+                            active_val = (
+                                value
+                                if isinstance(value, bool)
+                                else (
+                                    value.get("active", True) if isinstance(value, dict) else True
+                                )
                             )
                             if not active_val and not self._config.get("allow_user_delete", False):
                                 raise HTTPException(

@@ -3,6 +3,7 @@
 Environment:
   MICROSOFT_ACCESS_TOKEN: Microsoft OAuth2 access token with Files.ReadWrite scope
 """
+
 from __future__ import annotations
 
 import os
@@ -125,7 +126,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     r = await c.get(
                         f"{GRAPH_BASE}/me/drive/root/search(q='{arguments['search']}')",
                         headers=hdrs,
-                        params={"$filter": "file/mimeType eq 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"},
+                        params={
+                            "$filter": "file/mimeType eq 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
+                        },
                     )
                 else:
                     folder = arguments.get("folder_path", "root")

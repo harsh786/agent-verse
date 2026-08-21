@@ -1,4 +1,5 @@
 """Redis-backed idempotency store for goal submissions."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -16,9 +17,7 @@ class IdempotencyStore:
     def __init__(self, redis: Any) -> None:
         self._redis = redis
 
-    async def check_and_set(
-        self, key: str, tenant_id: str, ttl_seconds: int = 3600
-    ) -> bool:
+    async def check_and_set(self, key: str, tenant_id: str, ttl_seconds: int = 3600) -> bool:
         """Return True if key is new (should process), False if duplicate."""
         redis_key = f"{self.KEY_PREFIX}{tenant_id}:{key}"
         result = await self._redis.set(redis_key, "1", nx=True, ex=ttl_seconds)

@@ -5,6 +5,7 @@ Environment:
   CLOUDINARY_API_KEY:    Cloudinary API key
   CLOUDINARY_API_SECRET: Cloudinary API secret
 """
+
 from __future__ import annotations
 
 import hashlib

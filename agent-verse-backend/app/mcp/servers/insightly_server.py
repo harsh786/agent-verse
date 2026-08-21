@@ -3,9 +3,9 @@
 Environment variables:
   INSIGHTLY_API_KEY: Insightly API key (base64-encoded as Basic auth password)
 """
+
 from __future__ import annotations
 
-import base64
 import os
 from typing import Any
 
@@ -25,8 +25,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "top": {"type": "integer", "description": "Max contacts to return", "default": 25},
-                "skip": {"type": "integer", "description": "Records to skip for pagination", "default": 0},
-                "search": {"type": "string", "description": "Search term for contact name or email"},
+                "skip": {
+                    "type": "integer",
+                    "description": "Records to skip for pagination",
+                    "default": 0,
+                },
+                "search": {
+                    "type": "string",
+                    "description": "Search term for contact name or email",
+                },
                 "field_name": {"type": "string", "description": "Field name to filter by"},
                 "field_value": {"type": "string", "description": "Field value to filter by"},
             },
@@ -73,7 +80,10 @@ TOOL_DEFINITIONS = [
                 "OPPORTUNITY_NAME": {"type": "string", "description": "Opportunity name"},
                 "BID_AMOUNT": {"type": "number", "description": "Deal value"},
                 "BID_CURRENCY": {"type": "string", "default": "USD"},
-                "FORECAST_CLOSE_DATE": {"type": "string", "description": "Forecast close date (YYYY-MM-DD)"},
+                "FORECAST_CLOSE_DATE": {
+                    "type": "string",
+                    "description": "Forecast close date (YYYY-MM-DD)",
+                },
                 "PROBABILITY": {"type": "integer", "description": "Win probability 0-100"},
                 "PIPELINE_ID": {"type": "integer"},
                 "STAGE_ID": {"type": "integer"},
@@ -103,7 +113,11 @@ TOOL_DEFINITIONS = [
                 "TITLE": {"type": "string", "description": "Task title"},
                 "DUE_DATE": {"type": "string", "description": "Due date/time (ISO 8601)"},
                 "STATUS": {"type": "string", "default": "NOT STARTED"},
-                "PRIORITY": {"type": "integer", "description": "Priority 1 (low) – 3 (high)", "default": 2},
+                "PRIORITY": {
+                    "type": "integer",
+                    "description": "Priority 1 (low) – 3 (high)",
+                    "default": 2,
+                },
                 "RESPONSIBLE_USER_ID": {"type": "integer"},
                 "LINKED_CONTACT_ID": {"type": "integer"},
                 "LINKED_OPPORTUNITY_ID": {"type": "integer"},
@@ -148,7 +162,14 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "insightly_create_contact":
                 body: dict[str, Any] = {}
-                for k in ("FIRST_NAME", "LAST_NAME", "EMAIL_ADDRESS", "PHONE", "TITLE", "ORGANISATION_ID"):
+                for k in (
+                    "FIRST_NAME",
+                    "LAST_NAME",
+                    "EMAIL_ADDRESS",
+                    "PHONE",
+                    "TITLE",
+                    "ORGANISATION_ID",
+                ):
                     if k in arguments:
                         body[k] = arguments[k]
                 r = await c.post("/Contacts", json=body)
@@ -170,8 +191,14 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "insightly_create_opportunity":
                 body = {"OPPORTUNITY_NAME": arguments["OPPORTUNITY_NAME"]}
-                for k in ("BID_AMOUNT", "BID_CURRENCY", "FORECAST_CLOSE_DATE",
-                          "PROBABILITY", "PIPELINE_ID", "STAGE_ID"):
+                for k in (
+                    "BID_AMOUNT",
+                    "BID_CURRENCY",
+                    "FORECAST_CLOSE_DATE",
+                    "PROBABILITY",
+                    "PIPELINE_ID",
+                    "STAGE_ID",
+                ):
                     if k in arguments:
                         body[k] = arguments[k]
                 r = await c.post("/Opportunities", json=body)
@@ -193,8 +220,15 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "insightly_create_task":
                 body = {"TITLE": arguments["TITLE"]}
-                for k in ("DUE_DATE", "STATUS", "PRIORITY", "RESPONSIBLE_USER_ID",
-                          "LINKED_CONTACT_ID", "LINKED_OPPORTUNITY_ID", "DETAILS"):
+                for k in (
+                    "DUE_DATE",
+                    "STATUS",
+                    "PRIORITY",
+                    "RESPONSIBLE_USER_ID",
+                    "LINKED_CONTACT_ID",
+                    "LINKED_OPPORTUNITY_ID",
+                    "DETAILS",
+                ):
                     if k in arguments:
                         body[k] = arguments[k]
                 r = await c.post("/Tasks", json=body)

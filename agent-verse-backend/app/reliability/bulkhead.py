@@ -1,4 +1,5 @@
 """Per-tenant bulkhead semaphores for concurrent tool call limits."""
+
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +14,7 @@ class Bulkhead:
         self._sem = asyncio.Semaphore(max_concurrent)
         self._active = 0  # track ourselves instead of reading private _value attr
 
-    async def __aenter__(self) -> "Bulkhead":
+    async def __aenter__(self) -> Bulkhead:
         await self._sem.acquire()
         self._active += 1
         return self
@@ -130,12 +131,11 @@ class RedisBulkhead:
         except Exception:
             return self._max
 
-    async def __aenter__(self) -> "RedisBulkhead":
+    async def __aenter__(self) -> RedisBulkhead:
         acquired = await self.acquire()
         if not acquired:
             raise RuntimeError(
-                f"Bulkhead full for tenant {self._tenant_id}: "
-                f"at {self._max} concurrent operations"
+                f"Bulkhead full for tenant {self._tenant_id}: at {self._max} concurrent operations"
             )
         return self
 
@@ -165,7 +165,7 @@ class RedisBulkheadRegistry:
         self._limits[tenant_id] = max_concurrent
         self._local.configure_tenant(tenant_id, max_concurrent)
 
-    def get_bulkhead(self, tenant_id: str) -> "RedisBulkhead | asyncio.Semaphore":
+    def get_bulkhead(self, tenant_id: str) -> RedisBulkhead | asyncio.Semaphore:
         """Get a bulkhead for a tenant (Redis if available, local otherwise)."""
         limit = self._limits.get(tenant_id, self._default_max)
         if self._redis is not None:
@@ -173,7 +173,7 @@ class RedisBulkheadRegistry:
         return self._local.get(tenant_id)
 
     # Expose local registry's get() for backward compat
-    def get(self, tenant_id: str) -> "asyncio.Semaphore":
+    def get(self, tenant_id: str) -> asyncio.Semaphore:
         return self._local.get(tenant_id)
 
     def available_slots(self, tenant_id: str) -> int:

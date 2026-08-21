@@ -20,6 +20,7 @@ Endpoints:
   GET  /v1/tenants/{id}/hierarchy
   PATCH /v1/sub-tenants/{id}/budget
 """
+
 from __future__ import annotations
 
 import uuid
@@ -27,10 +28,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-import structlog
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import Column, DateTime, Float, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import relationship
 
 from app.db.base import Base
 from app.observability.logging import get_logger
@@ -40,41 +39,47 @@ _log = get_logger(__name__)
 
 # ── SQLAlchemy model ───────────────────────────────────────────────────────────
 
+
 class SubTenantModel(Base):
     """DB model for sub-tenants."""
+
     __tablename__ = "sub_tenants"
 
-    id                  = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    parent_tenant_id    = Column(String(100), nullable=False, index=True)
-    name                = Column(String(200), nullable=False)
-    slug                = Column(String(64), nullable=False)
-    description         = Column(String(500), default="")
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    parent_tenant_id = Column(String(100), nullable=False, index=True)
+    name = Column(String(200), nullable=False)
+    slug = Column(String(64), nullable=False)
+    description = Column(String(500), default="")
     budget_allocation_usd = Column(Float, default=0.0)
-    max_agents          = Column(Integer, default=20)
-    max_orgs            = Column(Integer, default=3)
-    allowed_channels    = Column(JSONB, default=[])
-    data_residency_region = Column(String(20), default="us")   # us | eu | in | ap
-    status              = Column(String(20), default="active")
-    settings            = Column(JSONB, default={})
-    created_at          = Column(DateTime(timezone=True), default=datetime.now(UTC))
-    updated_at          = Column(DateTime(timezone=True), default=datetime.now(UTC), onupdate=datetime.now(UTC))
+    max_agents = Column(Integer, default=20)
+    max_orgs = Column(Integer, default=3)
+    allowed_channels = Column(JSONB, default=[])
+    data_residency_region = Column(String(20), default="us")  # us | eu | in | ap
+    status = Column(String(20), default="active")
+    settings = Column(JSONB, default={})
+    created_at = Column(DateTime(timezone=True), default=datetime.now(UTC))
+    updated_at = Column(
+        DateTime(timezone=True), default=datetime.now(UTC), onupdate=datetime.now(UTC)
+    )
 
 
 # ── Dataclass for service layer ────────────────────────────────────────────────
 
+
 @dataclass
 class SubTenant:
     """Sub-tenant entity per spec QA4."""
+
     sub_tenant_id: str
     parent_tenant_id: str
     name: str
     slug: str
     description: str = ""
-    budget_allocation_usd: float = 0.0    # carved from parent's budget
-    max_agents: int = 20                   # quota from parent
+    budget_allocation_usd: float = 0.0  # carved from parent's budget
+    max_agents: int = 20  # quota from parent
     max_orgs: int = 3
     allowed_channels: list[str] = field(default_factory=list)
-    data_residency_region: str = "us"     # us | eu | in | ap
+    data_residency_region: str = "us"  # us | eu | in | ap
     status: str = "active"
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -83,9 +88,10 @@ class SubTenant:
 @dataclass
 class TenantHierarchy:
     """Full tenant hierarchy tree."""
+
     tenant_id: str
     tenant_name: str
-    sub_tenants: list["TenantHierarchyNode"] = field(default_factory=list)
+    sub_tenants: list[TenantHierarchyNode] = field(default_factory=list)
 
 
 @dataclass
@@ -104,7 +110,7 @@ class SubTenantService:
 
     def __init__(self, session: Any | None = None) -> None:
         self._session = session
-        self._store: dict[str, SubTenant] = {}   # sub_tenant_id → SubTenant
+        self._store: dict[str, SubTenant] = {}  # sub_tenant_id → SubTenant
         self._by_parent: dict[str, list[str]] = {}  # parent_id → [sub_tenant_ids]
 
     async def create(
@@ -161,13 +167,10 @@ class SubTenantService:
     async def get_hierarchy(self, parent_tenant_id: str) -> TenantHierarchy:
         """GET /v1/tenants/{id}/hierarchy — full tree view"""
         sub_tenants = await self.list_by_parent(parent_tenant_id)
-        nodes = [
-            TenantHierarchyNode(sub_tenant=s)
-            for s in sub_tenants
-        ]
+        nodes = [TenantHierarchyNode(sub_tenant=s) for s in sub_tenants]
         return TenantHierarchy(
             tenant_id=parent_tenant_id,
-            tenant_name=parent_tenant_id,   # TODO: join with tenant record
+            tenant_name=parent_tenant_id,  # TODO: join with tenant record
             sub_tenants=nodes,
         )
 

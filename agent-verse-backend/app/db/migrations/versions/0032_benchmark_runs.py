@@ -3,6 +3,7 @@
 Revision ID: 0032
 Revises: 0031
 """
+
 from __future__ import annotations
 
 from alembic import op
@@ -24,7 +25,9 @@ def upgrade() -> None:
             created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
     """)
-    op.execute("CREATE INDEX IF NOT EXISTS ix_benchmark_runs_suite ON benchmark_runs (suite_name, created_at DESC)")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_benchmark_runs_suite ON benchmark_runs (suite_name, created_at DESC)"
+    )
 
 
 def downgrade() -> None:

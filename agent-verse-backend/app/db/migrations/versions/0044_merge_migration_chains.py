@@ -6,8 +6,6 @@ Chain B: ...→ 0035 → 0036 → 0040 → 0041 → 0042 → 0043
 Both chains are now merged at 0044.
 """
 
-from alembic import op
-
 revision = "0044"
 down_revision = ("0039", "0043")  # Merge of both heads
 branch_labels = None

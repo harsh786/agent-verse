@@ -3,6 +3,7 @@
 These live in app/agent/ (not app/orchestration/) because they directly
 drive the LangGraph DynamicGraphAssembler and are agent-execution contracts.
 """
+
 from __future__ import annotations
 
 import enum
@@ -39,14 +40,14 @@ class GoalProperties:
     complexity: Complexity = Complexity.MEDIUM
     domain: Domain = Domain.TECHNICAL
     risk: RiskLevel = RiskLevel.LOW
-    time_sensitivity: str = "normal"          # realtime | normal | batch
-    knowledge_requirement: str = "kb_only"    # none | kb_only | web_required | expert_domain
-    reversibility: str = "reversible"         # reversible | irreversible
+    time_sensitivity: str = "normal"  # realtime | normal | batch
+    knowledge_requirement: str = "kb_only"  # none | kb_only | web_required | expert_domain
+    reversibility: str = "reversible"  # reversible | irreversible
     multi_step: bool = True
     is_generative: bool = False
     requires_web: bool = False
     estimated_steps: int = 3
-    confidence: float = 0.8                   # classifier confidence
+    confidence: float = 0.8  # classifier confidence
 
 
 @dataclass

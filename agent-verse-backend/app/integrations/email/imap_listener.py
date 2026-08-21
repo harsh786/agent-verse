@@ -14,6 +14,7 @@ Emails are processed as follows:
   From    → used as context (tenant lookup by email)
   Body    → additional context appended to goal
 """
+
 from __future__ import annotations
 
 import email
@@ -74,13 +75,9 @@ async def check_and_process_emails(goal_service: Any, tenant_ctx: Any) -> int:
     processed = 0
     try:
         if config["ssl"]:
-            imap = aioimaplib.IMAP4_SSL(
-                host=config["host"], port=config["port"]
-            )
+            imap = aioimaplib.IMAP4_SSL(host=config["host"], port=config["port"])
         else:
-            imap = aioimaplib.IMAP4(
-                host=config["host"], port=config["port"]
-            )
+            imap = aioimaplib.IMAP4(host=config["host"], port=config["port"])
 
         await imap.wait_hello_from_server()
         await imap.login(config["user"], config["password"])
@@ -109,9 +106,7 @@ async def check_and_process_emails(goal_service: Any, tenant_ctx: Any) -> int:
             if msg.is_multipart():
                 for part in msg.walk():
                     if part.get_content_type() == "text/plain":
-                        body = part.get_payload(decode=True).decode(
-                            "utf-8", errors="replace"
-                        )[:500]
+                        body = part.get_payload(decode=True).decode("utf-8", errors="replace")[:500]
                         break
             else:
                 payload = msg.get_payload(decode=True)

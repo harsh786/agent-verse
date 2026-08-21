@@ -15,6 +15,7 @@ Categories:
   approval_patterns   — which decisions need what approval levels
   agent_specialization — which agents excel at which sub-tasks
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -23,38 +24,37 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-import structlog
-
 from app.observability.logging import get_logger
 
 _log = get_logger(__name__)
 
 
 class LearningCategory(str, Enum):
-    TEAM_COMPOSITION    = "team_composition"
-    MODEL_ROUTING       = "model_routing"
-    TOOL_RELIABILITY    = "tool_reliability"
-    WORKFLOW_PATTERNS   = "workflow_patterns"
-    KNOWLEDGE_QUALITY   = "knowledge_quality"
-    COLLABORATION       = "collaboration"
-    COST_PATTERNS       = "cost_patterns"
-    RISK_INDICATORS     = "risk_indicators"
-    APPROVAL_PATTERNS   = "approval_patterns"
+    TEAM_COMPOSITION = "team_composition"
+    MODEL_ROUTING = "model_routing"
+    TOOL_RELIABILITY = "tool_reliability"
+    WORKFLOW_PATTERNS = "workflow_patterns"
+    KNOWLEDGE_QUALITY = "knowledge_quality"
+    COLLABORATION = "collaboration"
+    COST_PATTERNS = "cost_patterns"
+    RISK_INDICATORS = "risk_indicators"
+    APPROVAL_PATTERNS = "approval_patterns"
     AGENT_SPECIALIZATION = "agent_specialization"
 
 
 @dataclass
 class OrgLesson:
     """A validated lesson ready for promotion to org/dept memory tier."""
+
     lesson_id: str
     category: LearningCategory
     content: str
     source_mission_id: str
-    source_outcome: str       # completed | failed | partial
-    confidence: float         # 0–1
+    source_outcome: str  # completed | failed | partial
+    confidence: float  # 0–1
     applicability: list[str]  # mission types or domain tags this applies to
     evidence: list[str] = field(default_factory=list)
-    dept_scope: str | None = None      # None = org-wide; set = dept-scoped
+    dept_scope: str | None = None  # None = org-wide; set = dept-scoped
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     validated: bool = False
     validation_score: float = 0.0
@@ -89,8 +89,8 @@ class OrgLearningPipeline:
         eval_runner: Any | None = None,
     ) -> None:
         self._memory = memory_service
-        self._eval   = eval_runner
-        self._quarantine: list[OrgLesson] = []    # failed-mission lessons
+        self._eval = eval_runner
+        self._quarantine: list[OrgLesson] = []  # failed-mission lessons
 
     async def extract_lessons(
         self,
@@ -108,46 +108,54 @@ class OrgLearningPipeline:
 
         # Team composition lesson
         if team := mission_data.get("team"):
-            lessons.append(OrgLesson(
-                lesson_id=self._lid("team", mission_id),
-                category=LearningCategory.TEAM_COMPOSITION,
-                content=f"Team of {len(team)} agents with roles {[a.get('role','?') for a in team[:4]]} achieved outcome: {outcome}",
-                confidence=0.75 if outcome == "completed" else 0.60,
-                **base,
-            ))
+            lessons.append(
+                OrgLesson(
+                    lesson_id=self._lid("team", mission_id),
+                    category=LearningCategory.TEAM_COMPOSITION,
+                    content=f"Team of {len(team)} agents with roles {[a.get('role', '?') for a in team[:4]]} achieved outcome: {outcome}",
+                    confidence=0.75 if outcome == "completed" else 0.60,
+                    **base,
+                )
+            )
 
         # Model routing lesson
         if models_used := mission_data.get("models_used", []):
-            lessons.append(OrgLesson(
-                lesson_id=self._lid("model", mission_id),
-                category=LearningCategory.MODEL_ROUTING,
-                content=f"Models used: {models_used}. Outcome: {outcome}. Success rate implies routing quality.",
-                confidence=0.70,
-                **base,
-            ))
+            lessons.append(
+                OrgLesson(
+                    lesson_id=self._lid("model", mission_id),
+                    category=LearningCategory.MODEL_ROUTING,
+                    content=f"Models used: {models_used}. Outcome: {outcome}. Success rate implies routing quality.",
+                    confidence=0.70,
+                    **base,
+                )
+            )
 
         # Cost pattern lesson
         if cost := mission_data.get("actual_cost_usd", 0):
             estimated = mission_data.get("estimated_cost_usd", 0)
             ratio = cost / estimated if estimated > 0 else 1.0
-            lessons.append(OrgLesson(
-                lesson_id=self._lid("cost", mission_id),
-                category=LearningCategory.COST_PATTERNS,
-                content=f"Mission cost ${cost:.2f} vs estimated ${estimated:.2f} ({ratio:.1f}x). Goal type: {mission_data.get('goal_type', 'unknown')}",
-                confidence=0.80,
-                **base,
-            ))
+            lessons.append(
+                OrgLesson(
+                    lesson_id=self._lid("cost", mission_id),
+                    category=LearningCategory.COST_PATTERNS,
+                    content=f"Mission cost ${cost:.2f} vs estimated ${estimated:.2f} ({ratio:.1f}x). Goal type: {mission_data.get('goal_type', 'unknown')}",
+                    confidence=0.80,
+                    **base,
+                )
+            )
 
         # Risk indicator lesson (failed missions especially valuable)
         if outcome == "failed":
-            lessons.append(OrgLesson(
-                lesson_id=self._lid("risk", mission_id),
-                category=LearningCategory.RISK_INDICATORS,
-                content=f"Mission failed: {mission_data.get('failure_reason', 'unknown reason')}. Risk level was {mission_data.get('risk_level', 'unknown')}.",
-                confidence=0.85,
-                evidence=[mission_data.get("failure_reason", "")],
-                **base,
-            ))
+            lessons.append(
+                OrgLesson(
+                    lesson_id=self._lid("risk", mission_id),
+                    category=LearningCategory.RISK_INDICATORS,
+                    content=f"Mission failed: {mission_data.get('failure_reason', 'unknown reason')}. Risk level was {mission_data.get('risk_level', 'unknown')}.",
+                    confidence=0.85,
+                    evidence=[mission_data.get("failure_reason", "")],
+                    **base,
+                )
+            )
 
         return lessons
 
@@ -164,23 +172,34 @@ class OrgLearningPipeline:
             )
 
         # Gate 2: Failed mission lessons go to quarantine
-        if lesson.source_outcome == "failed" and lesson.category != LearningCategory.RISK_INDICATORS:
+        if (
+            lesson.source_outcome == "failed"
+            and lesson.category != LearningCategory.RISK_INDICATORS
+        ):
             flags.append("failed_mission_lesson")
             # Still allow risk indicators from failures — they're valuable
 
         # Gate 3: Content sanity check
         if len(lesson.content.strip()) < 20:
             return ValidationResult(
-                passed=False, score=0.0, reason="Lesson content too short",
+                passed=False,
+                score=0.0,
+                reason="Lesson content too short",
             )
 
         # Gate 4: PII check (basic)
         import re
-        pii_patterns = [r"\b\d{3}-\d{2}-\d{4}\b", r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"]
+
+        pii_patterns = [
+            r"\b\d{3}-\d{2}-\d{4}\b",
+            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
+        ]
         for pattern in pii_patterns:
             if re.search(pattern, lesson.content):
                 return ValidationResult(
-                    passed=False, score=0.0, reason="PII detected in lesson content",
+                    passed=False,
+                    score=0.0,
+                    reason="PII detected in lesson content",
                     anti_poisoning_flags=["pii_detected"],
                 )
 
@@ -204,7 +223,7 @@ class OrgLearningPipeline:
     async def promote_to_memory(
         self,
         lesson: OrgLesson,
-        tier: str,   # "department" | "org"
+        tier: str,  # "department" | "org"
         org_id: str,
         tenant_id: str,
     ) -> bool:
@@ -223,9 +242,9 @@ class OrgLearningPipeline:
                     org_id=org_id,
                     tenant_id=tenant_id,
                     metadata={
-                        "category":    lesson.category.value,
-                        "outcome":     lesson.source_outcome,
-                        "lesson_id":   lesson.lesson_id,
+                        "category": lesson.category.value,
+                        "outcome": lesson.source_outcome,
+                        "lesson_id": lesson.lesson_id,
                         "applicability": lesson.applicability,
                     },
                 )

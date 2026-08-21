@@ -11,6 +11,7 @@ Environment:
 
 Note: Snowflake connector is synchronous; calls are run in a thread pool.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -139,8 +140,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                         if not sql.upper().startswith("SELECT"):
                             return {
                                 "error": (
-                                    "Write operations disabled. "
-                                    "Set SNOWFLAKE_ALLOW_WRITES=true."
+                                    "Write operations disabled. Set SNOWFLAKE_ALLOW_WRITES=true."
                                 )
                             }
                     cur.execute(arguments["sql"])

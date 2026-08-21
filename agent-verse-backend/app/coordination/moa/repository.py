@@ -140,13 +140,17 @@ class PostgresMoARepository:
             sqlalchemy_rls_context(db, layer.tenant_id),
         ):
             prior = (
-                await db.execute(
-                    select(table).where(
-                        table.c.session_id == layer.session_id,
-                        table.c.idempotency_key == layer.idempotency_key,
+                (
+                    await db.execute(
+                        select(table).where(
+                            table.c.session_id == layer.session_id,
+                            table.c.idempotency_key == layer.idempotency_key,
+                        )
                     )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if prior is not None:
                 return _layer_from_row(prior)
             await db.execute(
@@ -175,13 +179,17 @@ class PostgresMoARepository:
             sqlalchemy_rls_context(db, proposal.tenant_id),
         ):
             prior = (
-                await db.execute(
-                    select(table).where(
-                        table.c.strategy_execution_id == proposal.strategy_execution_id,
-                        table.c.idempotency_key == proposal.idempotency_key,
+                (
+                    await db.execute(
+                        select(table).where(
+                            table.c.strategy_execution_id == proposal.strategy_execution_id,
+                            table.c.idempotency_key == proposal.idempotency_key,
+                        )
                     )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if prior is not None:
                 return _proposal_from_row(prior)
             await db.execute(
@@ -251,5 +259,6 @@ class PostgresMoARepository:
                 )
             ).mappings()
             return tuple(_proposal_from_row(row) for row in rows)
+
 
 __all__ = ["InMemoryMoARepository", "PostgresMoARepository"]

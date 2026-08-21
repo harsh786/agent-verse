@@ -6,6 +6,7 @@ CEO Agent refines a raw user goal into a structured OrgMission spec:
 
 This is the first step in the Goal → Mission → Team → Execution pipeline.
 """
+
 from __future__ import annotations
 
 import re
@@ -13,7 +14,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-import structlog
 from opentelemetry import trace
 
 from app.observability.logging import get_logger
@@ -25,13 +25,14 @@ _tracer = trace.get_tracer(__name__)
 @dataclass
 class RefinedMissionSpec:
     """Structured mission spec produced by goal refinement."""
+
     original_goal: str
     refined_goal: str
     requirements: list[str] = field(default_factory=list)
     success_criteria: list[str] = field(default_factory=list)
     constraints: dict[str, Any] = field(default_factory=dict)
     risks: list[str] = field(default_factory=list)
-    risk_level: str = "medium"      # low | medium | high | critical
+    risk_level: str = "medium"  # low | medium | high | critical
     autonomy_level: int = 3
     estimated_budget_usd: float = 0.0
     estimated_duration_hours: float = 0.0
@@ -68,28 +69,38 @@ class GoalRefinementPipeline:
 
     # Goal keywords → departments
     DEPT_HEURISTICS: dict[str, list[str]] = {
-        "strategy":          ["strategy", "strategic", "competitive", "market", "vision", "plan"],
-        "engineering":       ["code", "build", "develop", "engineer", "api", "software", "architecture"],
-        "marketing":         ["campaign", "brand", "content", "seo", "social", "launch", "promote"],
-        "sales":             ["revenue", "leads", "sales", "pipeline", "deal", "customer acquisition"],
-        "finance":           ["budget", "cost", "revenue", "financial", "forecast", "spend", "invoice"],
-        "legal":             ["legal", "compliance", "gdpr", "contract", "regulatory", "privacy"],
-        "hr":                ["hire", "recruit", "talent", "employee", "onboard", "culture"],
-        "data":              ["data", "analytics", "dashboard", "reporting", "metrics", "kpi"],
-        "research":          ["research", "analyze", "investigate", "study", "literature"],
-        "security":          ["security", "vulnerability", "threat", "breach", "pentest"],
-        "operations":        ["process", "workflow", "efficiency", "optimize", "automate"],
-        "customer_success":  ["customer", "support", "churn", "retention", "satisfaction"],
-        "design":            ["design", "ux", "ui", "branding", "creative", "visual"],
+        "strategy": ["strategy", "strategic", "competitive", "market", "vision", "plan"],
+        "engineering": ["code", "build", "develop", "engineer", "api", "software", "architecture"],
+        "marketing": ["campaign", "brand", "content", "seo", "social", "launch", "promote"],
+        "sales": ["revenue", "leads", "sales", "pipeline", "deal", "customer acquisition"],
+        "finance": ["budget", "cost", "revenue", "financial", "forecast", "spend", "invoice"],
+        "legal": ["legal", "compliance", "gdpr", "contract", "regulatory", "privacy"],
+        "hr": ["hire", "recruit", "talent", "employee", "onboard", "culture"],
+        "data": ["data", "analytics", "dashboard", "reporting", "metrics", "kpi"],
+        "research": ["research", "analyze", "investigate", "study", "literature"],
+        "security": ["security", "vulnerability", "threat", "breach", "pentest"],
+        "operations": ["process", "workflow", "efficiency", "optimize", "automate"],
+        "customer_success": ["customer", "support", "churn", "retention", "satisfaction"],
+        "design": ["design", "ux", "ui", "branding", "creative", "visual"],
     }
 
     # Risk keywords
     HIGH_RISK_KEYWORDS = [
-        "production", "deploy", "delete", "drop", "migrate", "external publish",
-        "legal agreement", "press release", "financial transfer", "mass email",
+        "production",
+        "deploy",
+        "delete",
+        "drop",
+        "migrate",
+        "external publish",
+        "legal agreement",
+        "press release",
+        "financial transfer",
+        "mass email",
     ]
 
-    def refine(self, raw_goal: str, org_context: dict[str, Any] | None = None) -> RefinedMissionSpec:
+    def refine(
+        self, raw_goal: str, org_context: dict[str, Any] | None = None
+    ) -> RefinedMissionSpec:
         """
         Synchronous goal refinement using heuristics.
         For LLM-assisted refinement, use refine_with_llm() instead.
@@ -140,8 +151,12 @@ class GoalRefinementPipeline:
             span.set_attribute("risk_level", risk_level)
             span.set_attribute("autonomy_level", autonomy_level)
             span.set_attribute("departments_count", len(depts))
-            _log.info("goal_refinement.complete",
-                      risk=risk_level, depts=depts, requirements_count=len(requirements))
+            _log.info(
+                "goal_refinement.complete",
+                risk=risk_level,
+                depts=depts,
+                requirements_count=len(requirements),
+            )
             return spec
 
     # ── Private helpers ──────────────────────────────────────────────────────
@@ -152,8 +167,7 @@ class GoalRefinementPipeline:
         for pattern in self.INJECTION_PATTERNS:
             if re.search(pattern, g_lower):
                 raise ValueError(
-                    f"Goal rejected: potential injection pattern detected. "
-                    f"Pattern: {pattern}"
+                    f"Goal rejected: potential injection pattern detected. Pattern: {pattern}"
                 )
 
     def _sanitize(self, goal: str) -> str:
@@ -189,9 +203,7 @@ class GoalRefinementPipeline:
                 criteria.append(f"Measurable outcome for: {req[:60]}")
         return criteria or [f"Goal achieved: {goal[:80]}"]
 
-    def _extract_constraints(
-        self, goal: str, org_context: dict
-    ) -> dict[str, Any]:
+    def _extract_constraints(self, goal: str, org_context: dict) -> dict[str, Any]:
         constraints: dict[str, Any] = {}
         g_lower = goal.lower()
 
@@ -231,7 +243,9 @@ class GoalRefinementPipeline:
     def _determine_risk_level(self, goal: str, risks: list[str]) -> str:
         score = len(risks)
         g_lower = goal.lower()
-        if any(k in g_lower for k in ["delete", "production", "legal agreement", "financial transfer"]):
+        if any(
+            k in g_lower for k in ["delete", "production", "legal agreement", "financial transfer"]
+        ):
             score += 3
         if any(k in g_lower for k in ["external publish", "mass email", "press release"]):
             score += 2
@@ -258,14 +272,12 @@ class GoalRefinementPipeline:
         self, depts: list[str], requirements: list[str], constraints: dict
     ) -> tuple[float, float]:
         base_hours = max(4.0, len(requirements) * 2.0 + len(depts) * 1.5)
-        base_cost  = len(depts) * base_hours * 0.08  # $0.08 per agent-hour avg
+        base_cost = len(depts) * base_hours * 0.08  # $0.08 per agent-hour avg
         if td := constraints.get("timeline_days"):
             base_hours = min(base_hours, float(td) * 8)
         return round(base_cost, 2), round(base_hours, 1)
 
-    def _produce_refined_goal(
-        self, goal: str, requirements: list[str], constraints: dict
-    ) -> str:
+    def _produce_refined_goal(self, goal: str, requirements: list[str], constraints: dict) -> str:
         if len(requirements) <= 1:
             return goal
         req_str = "; ".join(requirements[:3])

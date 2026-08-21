@@ -185,8 +185,7 @@ async def list_strategies(request: Request) -> dict[str, Any]:
                 "name": strategy.value.replace("_", " ").title(),
                 "description": capability.description,
                 "required_dependencies": [
-                    dependency.value
-                    for dependency in catalogue_entry.required_dependencies
+                    dependency.value for dependency in catalogue_entry.required_dependencies
                 ],
                 "state": capability.state.value,
                 "registry_available": registry_available,

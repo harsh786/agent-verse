@@ -75,7 +75,7 @@ def _anomaly_type_label(anomaly_type: str) -> str:
 def _anomaly_id(agent_id: str | None, detected_at: str) -> str:
     """Stable deterministic ID for an anomaly observation."""
     raw = f"{agent_id or 'tenant'}:{detected_at}"
-    return hashlib.sha1(raw.encode()).hexdigest()[:16]  # noqa: S324
+    return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -106,8 +106,12 @@ async def get_cost_summary(
         writer = csv.DictWriter(
             buf,
             fieldnames=[
-                "agent_id", "total_cost_usd", "goal_count",
-                "avg_cost_per_goal", "total_prompt_tokens", "total_completion_tokens",
+                "agent_id",
+                "total_cost_usd",
+                "goal_count",
+                "avg_cost_per_goal",
+                "total_prompt_tokens",
+                "total_completion_tokens",
             ],
             extrasaction="ignore",
         )
@@ -117,7 +121,9 @@ async def get_cost_summary(
         return Response(
             content=content,
             media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename=cost_summary_{period_days}d.csv"},
+            headers={
+                "Content-Disposition": f"attachment; filename=cost_summary_{period_days}d.csv"
+            },
         )
 
     return {
@@ -251,6 +257,7 @@ async def update_budgets(
             import json as _json
 
             from sqlalchemy import text as _t
+
             async with tracker._db() as session:
                 await session.execute(
                     _t(

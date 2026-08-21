@@ -1,5 +1,7 @@
 """AI Router data models - Model Registry primitives."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -44,6 +46,7 @@ class TaskType(str, Enum):
 @dataclass
 class ModelEndpoint:
     """A specific model endpoint with its configuration."""
+
     provider: str
     model_id: str
     display_name: str
@@ -68,6 +71,7 @@ class ModelEndpoint:
 @dataclass
 class ModelRoutePolicy:
     """Routing policy for a specific task type."""
+
     task_type: TaskType
     routing_mode: RoutingMode = RoutingMode.TENANT_DEFAULT
     preferred_provider: str | None = None
@@ -87,6 +91,7 @@ RoutePolicy = ModelRoutePolicy
 @dataclass
 class ProviderHealth:
     """Real-time health metrics for a provider."""
+
     provider: str
     is_healthy: bool = True
     circuit_open: bool = False

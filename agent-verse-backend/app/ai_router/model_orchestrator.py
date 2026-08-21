@@ -4,6 +4,7 @@ Runtime profiles supply desired constraints. ModelOrchestrator resolves those co
 against provider health, budget consumption, latency, quality, and fallback policy. The legacy
 ``ModelRouter`` remains a compatibility facade for callers on the previous interface.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -209,6 +210,7 @@ class ModelOrchestratorAdapter:
         Called by _node_plan when dynamic orchestration is active."""
         try:
             from app.agent.pattern_config import GoalProperties, PatternConfig  # noqa: F401
+
             pattern_config = PatternConfig(
                 goal_properties=runtime_profile.properties,
                 model_planner=getattr(runtime_profile.model_plan, "planner", "") or "",

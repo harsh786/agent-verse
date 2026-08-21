@@ -1,4 +1,5 @@
 """PromptBuilder — builds model-specific prompts from PromptContextBundle."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ _AUTO_COMPRESS_THRESHOLD = 0.85
 @dataclass
 class PromptContextBundle:
     """All context sources assembled before prompt construction."""
+
     goal_context: str
     knowledge_chunks: list[dict[str, Any]]
     citations: list[Any]
@@ -47,6 +49,7 @@ class PromptBuilder:
             return text
         try:
             from app.context.prompt_compressor import PromptCompressor
+
             compressor = PromptCompressor(target_tokens=int(limit * _AUTO_COMPRESS_THRESHOLD))
             compressed = compressor.compress(text)
             return compressed
@@ -79,9 +82,7 @@ class PromptBuilder:
                 sections.append(f"Knowledge:\n{chunk_text}")
 
         if bundle.session_memory:
-            mem_text = "\n".join(
-                str(m.get("content", m)) for m in bundle.session_memory[:3]
-            )
+            mem_text = "\n".join(str(m.get("content", m)) for m in bundle.session_memory[:3])
             sections.append(f"Session context:\n{mem_text}")
 
         if bundle.execution_memory:
@@ -89,15 +90,11 @@ class PromptBuilder:
             sections.append("Prior successful approaches:\n" + "\n".join(plans))
 
         if bundle.long_term_memory:
-            prefs = "\n".join(
-                str(m.get("content", m)) for m in bundle.long_term_memory[:3]
-            )
+            prefs = "\n".join(str(m.get("content", m)) for m in bundle.long_term_memory[:3])
             sections.append(f"Learned preferences:\n{prefs}")
 
         if bundle.semantic_cache_hits:
-            cached = "\n".join(
-                str(h.get("content", h)) for h in bundle.semantic_cache_hits[:2]
-            )
+            cached = "\n".join(str(h.get("content", h)) for h in bundle.semantic_cache_hits[:2])
             sections.append(f"[Cached context]\n{cached}")
 
         if bundle.graph_facts:
@@ -106,8 +103,7 @@ class PromptBuilder:
 
         if bundle.web_results:
             web_text = "\n".join(
-                r.get("content", r.get("snippet", ""))[:200]
-                for r in bundle.web_results[:3]
+                r.get("content", r.get("snippet", ""))[:200] for r in bundle.web_results[:3]
             )
             sections.append(f"Web context:\n{web_text}")
 
@@ -117,6 +113,7 @@ class PromptBuilder:
 
         if bundle.citations:
             from app.context.citation_manager import CitationManager
+
             mgr = CitationManager()
             sections.append(mgr.format_citation_block(bundle.citations))
 
@@ -141,13 +138,13 @@ class PromptBuilder:
 
         if bundle.citations:
             from app.context.citation_manager import CitationManager
+
             mgr = CitationManager()
             sections.append(mgr.format_citation_block(bundle.citations))
 
         if bundle.web_results:
             web_text = "\n".join(
-                r.get("content", r.get("snippet", ""))[:200]
-                for r in bundle.web_results[:3]
+                r.get("content", r.get("snippet", ""))[:200] for r in bundle.web_results[:3]
             )
             sections.append(f"Web results:\n{web_text}")
 
@@ -158,6 +155,7 @@ class PromptBuilder:
         sections = [f"Goal: {bundle.goal_context}"]
         if bundle.citations:
             from app.context.citation_manager import CitationManager
+
             mgr = CitationManager()
             sections.append(mgr.format_citation_block(bundle.citations))
         if bundle.degradation_notes:

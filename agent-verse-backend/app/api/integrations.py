@@ -1,4 +1,5 @@
 """Integration endpoints for Slack, Zapier, and email triggers."""
+
 from __future__ import annotations
 
 import json
@@ -21,6 +22,7 @@ def _get_zapier_tenant_id() -> str:
 
 
 # ── Slack ──────────────────────────────────────────────────────────────────────
+
 
 @router.post("/slack/commands")
 async def slack_slash_command(
@@ -90,10 +92,7 @@ async def slack_slash_command(
         )
         return {
             "response_type": "in_channel",
-            "text": (
-                f"Goal submitted! *{text[:100]}*\n"
-                f"Goal ID: `{result['goal_id']}`"
-            ),
+            "text": (f"Goal submitted! *{text[:100]}*\nGoal ID: `{result['goal_id']}`"),
         }
     except Exception as exc:
         return {"response_type": "ephemeral", "text": f"Error: {exc}"}
@@ -169,6 +168,7 @@ async def slack_interactive_callback(request: Request) -> dict:
 
     # Verify Slack signature
     from app.integrations.slack.handler import verify_slack_signature
+
     signing_secret = os.getenv("SLACK_SIGNING_SECRET", "")
     timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
     signature = request.headers.get("X-Slack-Signature", "")
@@ -180,7 +180,7 @@ async def slack_interactive_callback(request: Request) -> dict:
         # Slack sends: payload=<url-encoded-json>
         body_str = body.decode("utf-8")
         if body_str.startswith("payload="):
-            payload_json = unquote_plus(body_str[len("payload="):])
+            payload_json = unquote_plus(body_str[len("payload=") :])
         else:
             payload_json = body_str
         payload = json.loads(payload_json)
@@ -207,6 +207,7 @@ async def slack_interactive_callback(request: Request) -> dict:
             if goal_service:
                 try:
                     from app.tenancy.context import PlanTier, TenantContext
+
                     tenant_id = os.getenv("SLACK_TENANT_ID", "")
                     if tenant_id:
                         tenant_ctx = TenantContext(
@@ -222,6 +223,7 @@ async def slack_interactive_callback(request: Request) -> dict:
                         )
                 except Exception as exc:
                     import logging
+
                     logging.getLogger(__name__).warning("slack_interactive_resume_failed: %s", exc)
 
     # Acknowledge immediately (Slack requires response within 3s)
@@ -264,9 +266,7 @@ async def zapier_trigger(
 
     zapier_tenant_id = _get_zapier_tenant_id()
     if not zapier_tenant_id:
-        raise HTTPException(
-            503, "Zapier integration not configured. Set ZAPIER_TENANT_ID env var."
-        )
+        raise HTTPException(503, "Zapier integration not configured. Set ZAPIER_TENANT_ID env var.")
 
     ctx = TenantContext(
         tenant_id=zapier_tenant_id,
@@ -342,9 +342,7 @@ async def receive_alertmanager_event(
             except Exception as exc:
                 import logging
 
-                logging.getLogger(__name__).warning(
-                    "alertmanager_goal_create_failed: %s", exc
-                )
+                logging.getLogger(__name__).warning("alertmanager_goal_create_failed: %s", exc)
 
     return {
         "received": len(payload.alerts),
@@ -438,9 +436,7 @@ async def zapier_poll_completed_goals(request: Request) -> list[dict[str, Any]]:
 
     try:
         result = await goal_service.list_goals(tenant_ctx=ctx)
-        completed = [
-            g for g in result.get("goals", []) if g.get("status") == "complete"
-        ]
+        completed = [g for g in result.get("goals", []) if g.get("status") == "complete"]
         return completed[:10]
     except Exception:
         return []
@@ -459,13 +455,11 @@ async def github_push_webhook(request: Request) -> dict[str, Any]:
     are resolved from the X-AgentVerse-Collection-Id header or query param.
     """
     payload = await request.json()
-    collection_id = (
-        request.headers.get("X-AgentVerse-Collection-Id")
-        or request.query_params.get("collection_id", "")
+    collection_id = request.headers.get("X-AgentVerse-Collection-Id") or request.query_params.get(
+        "collection_id", ""
     )
-    tenant_id = (
-        request.headers.get("X-AgentVerse-Tenant-Id")
-        or request.query_params.get("tenant_id", "")
+    tenant_id = request.headers.get("X-AgentVerse-Tenant-Id") or request.query_params.get(
+        "tenant_id", ""
     )
     if not collection_id or not tenant_id:
         return {"status": "ignored", "reason": "missing collection_id or tenant_id"}
@@ -473,6 +467,7 @@ async def github_push_webhook(request: Request) -> dict[str, Any]:
     # Queue a delta re-ingest Celery task
     try:
         from app.scaling.tasks import delta_reingest_files
+
         repo = payload.get("repository", {})
         result = delta_reingest_files.delay(
             tenant_id=tenant_id,
@@ -493,13 +488,11 @@ async def github_push_webhook(request: Request) -> dict[str, Any]:
 async def confluence_page_webhook(request: Request) -> dict[str, Any]:
     """Handle Confluence page_updated events and queue re-ingestion."""
     payload = await request.json()
-    collection_id = (
-        request.headers.get("X-AgentVerse-Collection-Id")
-        or request.query_params.get("collection_id", "")
+    collection_id = request.headers.get("X-AgentVerse-Collection-Id") or request.query_params.get(
+        "collection_id", ""
     )
-    tenant_id = (
-        request.headers.get("X-AgentVerse-Tenant-Id")
-        or request.query_params.get("tenant_id", "")
+    tenant_id = request.headers.get("X-AgentVerse-Tenant-Id") or request.query_params.get(
+        "tenant_id", ""
     )
     if not collection_id or not tenant_id:
         return {"status": "ignored", "reason": "missing collection_id or tenant_id"}
@@ -508,6 +501,7 @@ async def confluence_page_webhook(request: Request) -> dict[str, Any]:
     space_key = payload.get("space", {}).get("key", "")
     try:
         from app.scaling.tasks import delta_reingest_files
+
         result = delta_reingest_files.delay(
             tenant_id=tenant_id,
             collection_id=collection_id,
@@ -523,13 +517,11 @@ async def confluence_page_webhook(request: Request) -> dict[str, Any]:
 async def notion_page_webhook(request: Request) -> dict[str, Any]:
     """Handle Notion webhook events and queue re-ingestion of updated pages."""
     payload = await request.json()
-    collection_id = (
-        request.headers.get("X-AgentVerse-Collection-Id")
-        or request.query_params.get("collection_id", "")
+    collection_id = request.headers.get("X-AgentVerse-Collection-Id") or request.query_params.get(
+        "collection_id", ""
     )
-    tenant_id = (
-        request.headers.get("X-AgentVerse-Tenant-Id")
-        or request.query_params.get("tenant_id", "")
+    tenant_id = request.headers.get("X-AgentVerse-Tenant-Id") or request.query_params.get(
+        "tenant_id", ""
     )
     if not collection_id or not tenant_id:
         return {"status": "ignored", "reason": "missing collection_id or tenant_id"}
@@ -537,6 +529,7 @@ async def notion_page_webhook(request: Request) -> dict[str, Any]:
     page_id = payload.get("entity", {}).get("id", "") or payload.get("page_id", "")
     try:
         from app.scaling.tasks import delta_reingest_files
+
         result = delta_reingest_files.delay(
             tenant_id=tenant_id,
             collection_id=collection_id,

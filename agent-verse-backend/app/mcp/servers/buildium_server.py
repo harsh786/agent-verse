@@ -4,6 +4,7 @@ Environment:
   BUILDIUM_CLIENT_ID: Buildium API client ID
   BUILDIUM_CLIENT_SECRET: Buildium API client secret
 """
+
 from __future__ import annotations
 
 import os
@@ -74,7 +75,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Request status: New, InProgress, Closed"},
+                "status": {
+                    "type": "string",
+                    "description": "Request status: New, InProgress, Closed",
+                },
                 "property_id": {"type": "integer", "description": "Filter by property ID"},
                 "page": {"type": "integer", "description": "Page number"},
                 "pagesize": {"type": "integer", "description": "Results per page"},
@@ -140,13 +144,17 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     params["startDate"] = arguments["start_date"]
                 if "end_date" in arguments:
                     params["endDate"] = arguments["end_date"]
-                r = await client.get(f"{BASE_URL}/reports/ownerstatement", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/reports/ownerstatement", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
             if tool_name == "buildium_list_maintenance_requests":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/maintenancerequests", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/maintenancerequests", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 

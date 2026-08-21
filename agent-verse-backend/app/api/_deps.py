@@ -18,12 +18,12 @@ Test override::
 
     app.dependency_overrides[get_goal_service] = lambda: FakeGoalService()
 """
+
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Depends, Request
-
+from fastapi import Request
 
 # ---------------------------------------------------------------------------
 # Core services
@@ -143,6 +143,7 @@ def get_nl_scheduler(request: Request) -> Any:
 def get_settings(request: Request) -> Any:
     """Return the per-app Settings from app.state."""
     return request.app.state.settings
+
 
 # ---------------------------------------------------------------------------
 # Extended services (added to complete full DI coverage)

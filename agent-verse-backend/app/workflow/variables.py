@@ -6,6 +6,7 @@ Variables are distinct from step outputs:
 
 Variables are stored in WorkflowState["vars"] and accessed via {{vars.X}}.
 """
+
 from __future__ import annotations
 
 from typing import Any

@@ -1,4 +1,5 @@
 """CostLatencyQualityPolicy — selects a model quality tier based on complexity and risk."""
+
 from __future__ import annotations
 
 from app.agent.pattern_config import Complexity, RiskLevel

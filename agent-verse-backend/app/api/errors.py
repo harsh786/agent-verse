@@ -1,4 +1,5 @@
 """Standard error response utilities."""
+
 from __future__ import annotations
 
 import uuid
@@ -19,8 +20,7 @@ def error_response(
     so operators can cross-reference logs without exposing internal details.
     """
     correlation_id = (
-        getattr(getattr(request, "state", None), "correlation_id", None)
-        or str(uuid.uuid4())[:8]
+        getattr(getattr(request, "state", None), "correlation_id", None) or str(uuid.uuid4())[:8]
     )
     return JSONResponse(
         status_code=status_code,

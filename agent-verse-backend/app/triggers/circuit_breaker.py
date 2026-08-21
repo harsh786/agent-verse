@@ -2,6 +2,7 @@
 
 States: closed → open → half_open → closed
 """
+
 from __future__ import annotations
 
 import logging
@@ -13,15 +14,15 @@ _log = logging.getLogger(__name__)
 
 @dataclass
 class TriggerCircuitBreaker:
-    trigger_id:            str
-    state:                 str = "closed"      # closed | open | half_open
-    failure_count:         int = 0
-    success_count:         int = 0
-    failure_threshold:     int = 5             # consecutive failures → open
-    success_threshold:     int = 2             # successes in half_open → closed
-    open_duration_seconds: int = 60            # probe after this delay
-    last_failure_at:       float | None = None
-    last_state_change_at:  float = field(default_factory=time.time)
+    trigger_id: str
+    state: str = "closed"  # closed | open | half_open
+    failure_count: int = 0
+    success_count: int = 0
+    failure_threshold: int = 5  # consecutive failures → open
+    success_threshold: int = 2  # successes in half_open → closed
+    open_duration_seconds: int = 60  # probe after this delay
+    last_failure_at: float | None = None
+    last_state_change_at: float = field(default_factory=time.time)
 
     def is_open(self) -> bool:
         """Return True if the circuit is open (blocking)."""

@@ -4,6 +4,7 @@ Called as a background task after `IngestionOrchestrator.ingest()` succeeds.
 Falls back silently to deterministic extraction when an LLM provider is
 unavailable, so the ingestion pipeline is never blocked.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,8 +33,8 @@ class KGIngestionHook:
 
     def __init__(
         self,
-        extractor: "KGExtractor",
-        kg_store: "KGStore",
+        extractor: KGExtractor,
+        kg_store: KGStore,
         use_llm: bool = True,
     ) -> None:
         self._extractor = extractor
@@ -45,7 +46,7 @@ class KGIngestionHook:
         chunks: list[str],
         document_id: str,
         tenant_id: str,
-        provider: "LLMProvider | None" = None,
+        provider: LLMProvider | None = None,
     ) -> dict[str, int]:
         """Extract KG entities/relations from *chunks* and persist them.
 

@@ -14,9 +14,7 @@ class BackpressureError(RuntimeError):
 class RedisStreamsClient(Protocol):
     async def xlen(self, stream: str) -> int: ...
 
-    async def xadd(
-        self, stream: str, fields: dict[str, str], **kwargs: Any
-    ) -> str: ...
+    async def xadd(self, stream: str, fields: dict[str, str], **kwargs: Any) -> str: ...
 
     async def xack(self, stream: str, group: str, message_id: str) -> int: ...
 
@@ -25,13 +23,9 @@ class CoordinationStreams:
     """Publish and acknowledge unchanged envelopes using service-role groups."""
 
     _token = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-    _roles = frozenset(
-        {"executor", "projector", "notifier", "recovery", "outbox"}
-    )
+    _roles = frozenset({"executor", "projector", "notifier", "recovery", "outbox"})
 
-    def __init__(
-        self, redis: RedisStreamsClient, *, max_stream_length: int = 10_000
-    ) -> None:
+    def __init__(self, redis: RedisStreamsClient, *, max_stream_length: int = 10_000) -> None:
         if max_stream_length <= 0:
             raise ValueError("max_stream_length must be positive")
         self._redis = redis
@@ -43,9 +37,7 @@ class CoordinationStreams:
             raise ValueError("invalid tenant or session stream token")
         return f"coord:{tenant_id}:{session_id}"
 
-    async def publish(
-        self, tenant_id: str, session_id: str, envelope: dict[str, Any]
-    ) -> str:
+    async def publish(self, tenant_id: str, session_id: str, envelope: dict[str, Any]) -> str:
         stream = self.stream_name(tenant_id, session_id)
         if await self._redis.xlen(stream) >= self._max_stream_length:
             raise BackpressureError(f"coordination stream is saturated: {stream}")

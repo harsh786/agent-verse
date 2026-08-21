@@ -12,6 +12,7 @@ P10 Collective Intelligence (Privacy-Preserving):
     Aggregate anonymised learning signals across orgs (same tenant)
     without exposing per-org data. Uses differential privacy noise.
 """
+
 from __future__ import annotations
 
 import random
@@ -28,20 +29,21 @@ _tracer = trace.get_tracer(__name__)
 
 # ── P1: Policy Evidence Engine ────────────────────────────────────────────────
 
+
 @dataclass
 class PolicyEvidence:
     """Evidence record supporting a policy decision."""
 
-    evidence_id:    str
-    policy_id:      str
-    org_id:         str
-    evidence_type:  str   # 'kpi_metric' | 'audit_finding' | 'external_signal'
-    description:    str
-    value:          float  # metric value that triggered the policy
-    threshold:      float  # threshold that was crossed
-    source:         str    # 'finance_agent' | 'monitoring' | 'audit'
-    confidence:     float = 0.9
-    recorded_at:    str = ""
+    evidence_id: str
+    policy_id: str
+    org_id: str
+    evidence_type: str  # 'kpi_metric' | 'audit_finding' | 'external_signal'
+    description: str
+    value: float  # metric value that triggered the policy
+    threshold: float  # threshold that was crossed
+    source: str  # 'finance_agent' | 'monitoring' | 'audit'
+    confidence: float = 0.9
+    recorded_at: str = ""
 
     def __post_init__(self) -> None:
         if not self.recorded_at:
@@ -60,7 +62,7 @@ class PolicyEvidenceEngine:
 
     def __init__(self) -> None:
         self._evidence: dict[str, list[PolicyEvidence]] = {}  # policy_id → [evidence]
-        self._decision_evidence: dict[str, list[str]] = {}    # decision_id → [evidence_ids]
+        self._decision_evidence: dict[str, list[str]] = {}  # decision_id → [evidence_ids]
 
     def record_evidence(self, evidence: PolicyEvidence) -> PolicyEvidence:
         """Record a piece of evidence for a policy."""
@@ -86,14 +88,14 @@ class PolicyEvidenceEngine:
         """Return all evidence supporting a policy decision."""
         return [
             {
-                "evidence_id":   e.evidence_id,
+                "evidence_id": e.evidence_id,
                 "evidence_type": e.evidence_type,
-                "description":   e.description,
-                "value":         e.value,
-                "threshold":     e.threshold,
-                "source":        e.source,
-                "confidence":    e.confidence,
-                "recorded_at":   e.recorded_at,
+                "description": e.description,
+                "value": e.value,
+                "threshold": e.threshold,
+                "source": e.source,
+                "confidence": e.confidence,
+                "recorded_at": e.recorded_at,
             }
             for e in self._evidence.get(policy_id, [])
         ]
@@ -105,20 +107,21 @@ class PolicyEvidenceEngine:
 
 # ── P4: Strategic Advisor ─────────────────────────────────────────────────────
 
+
 @dataclass
 class StrategicBrief:
     """Weekly strategic intelligence brief for an org."""
 
-    org_id:          str
-    week_ending:     str
-    health_summary:  str
+    org_id: str
+    week_ending: str
+    health_summary: str
     accomplishments: list[str] = field(default_factory=list)
-    risks:           list[str] = field(default_factory=list)
-    opportunities:   list[str] = field(default_factory=list)
+    risks: list[str] = field(default_factory=list)
+    opportunities: list[str] = field(default_factory=list)
     recommendations: list[str] = field(default_factory=list)
-    kpi_trends:      dict[str, Any] = field(default_factory=dict)
-    cost_overview:   dict[str, Any] = field(default_factory=dict)
-    generated_at:    str = ""
+    kpi_trends: dict[str, Any] = field(default_factory=dict)
+    cost_overview: dict[str, Any] = field(default_factory=dict)
+    generated_at: str = ""
     generation_method: str = "template"  # "llm" | "template"
 
     def __post_init__(self) -> None:
@@ -147,10 +150,10 @@ class StrategicAdvisor:
 
             week_ending = datetime.now(UTC).strftime("%Y-%m-%d")
             active_missions = health.get("active_missions", 0)
-            failed_tasks    = health.get("task_counts", {}).get("failed", 0)
-            blocked         = health.get("task_counts", {}).get("blocked", 0)
-            completed       = health.get("task_counts", {}).get("completed", 0)
-            h_status        = health.get("health", "healthy")
+            failed_tasks = health.get("task_counts", {}).get("failed", 0)
+            blocked = health.get("task_counts", {}).get("blocked", 0)
+            completed = health.get("task_counts", {}).get("completed", 0)
+            h_status = health.get("health", "healthy")
 
             # --- Try LLM if available ---
             brief = await self._llm_brief(org_id, org_name, health, recent_missions or [])
@@ -174,11 +177,15 @@ class StrategicAdvisor:
                 risks.append(f"{blocked} tasks blocked — may impact delivery timeline.")
 
             if h_status == "healthy" and active_missions > 0:
-                recommendations.append("Organisation operating smoothly — consider scaling active missions.")  # noqa: E501
+                recommendations.append(
+                    "Organisation operating smoothly — consider scaling active missions."
+                )
             if failed_tasks > 0:
                 recommendations.append("Schedule post-mortem for failed tasks within 48 hours.")
             if not recommendations:
-                recommendations.append("Review KPIs and ensure all department heads have reviewed weekly targets.")  # noqa: E501
+                recommendations.append(
+                    "Review KPIs and ensure all department heads have reviewed weekly targets."
+                )
 
             span.set_attribute("method", "template")
             return StrategicBrief(
@@ -204,6 +211,7 @@ class StrategicAdvisor:
         """Use LLM for richer brief when provider available."""
         try:
             from app.main import app as _app
+
             provider = getattr(_app.state, "provider", None)
             if provider is None:
                 return None
@@ -217,20 +225,33 @@ class StrategicAdvisor:
                 f"Org health: {health.get('health')}. "
                 f"Active missions: {health.get('active_missions', 0)}. "
                 f"Failed tasks: {health.get('task_counts', {}).get('failed', 0)}. "
-                "Return JSON: {\"health_summary\": str, \"accomplishments\": [str], "
-                "\"risks\": [str], \"opportunities\": [str], \"recommendations\": [str]}"
+                'Return JSON: {"health_summary": str, "accomplishments": [str], '
+                '"risks": [str], "opportunities": [str], "recommendations": [str]}'
             )
-            resp = await provider.complete(CompletionRequest(
-                messages=[Message(role="user", content=prompt)],
-                max_tokens=600,
-                temperature=0.3,
-            ))
-            data = _json.loads(resp.content.strip()[resp.content.find("{"):resp.content.rfind("}") + 1])  # noqa: E501
+            resp = await provider.complete(
+                CompletionRequest(
+                    messages=[Message(role="user", content=prompt)],
+                    max_tokens=600,
+                    temperature=0.3,
+                )
+            )
+            data = _json.loads(
+                resp.content.strip()[resp.content.find("{") : resp.content.rfind("}") + 1]
+            )
             return StrategicBrief(
                 org_id=org_id,
                 week_ending=datetime.now(UTC).strftime("%Y-%m-%d"),
                 generation_method="llm",
-                **{k: data.get(k, []) for k in ("health_summary", "accomplishments", "risks", "opportunities", "recommendations")},  # noqa: E501
+                **{
+                    k: data.get(k, [])
+                    for k in (
+                        "health_summary",
+                        "accomplishments",
+                        "risks",
+                        "opportunities",
+                        "recommendations",
+                    )
+                },
             )
         except Exception as exc:
             _log.warning("strategic_advisor.llm_fallback", org_id=org_id, error=str(exc))
@@ -238,6 +259,7 @@ class StrategicAdvisor:
 
 
 # ── P10: Collective Intelligence (Privacy-Preserving) ─────────────────────────
+
 
 class CollectiveIntelligence:
     """P10 — Cross-org learning with differential privacy.
@@ -277,47 +299,45 @@ class CollectiveIntelligence:
 
             # Store noised value — do NOT store org_id with the value
             noised = self._add_noise(value)
-            self._signals.setdefault(tenant_id, []).append({
-                "signal_type": signal_type,
-                "value":       noised,
-                "recorded_at": datetime.now(UTC).isoformat(),
-            })
+            self._signals.setdefault(tenant_id, []).append(
+                {
+                    "signal_type": signal_type,
+                    "value": noised,
+                    "recorded_at": datetime.now(UTC).isoformat(),
+                }
+            )
 
     def aggregate(self, tenant_id: str, signal_type: str) -> dict[str, Any]:
         """Return aggregated (noisy) statistics for a signal type."""
         signals = [
-            s["value"]
-            for s in self._signals.get(tenant_id, [])
-            if s["signal_type"] == signal_type
+            s["value"] for s in self._signals.get(tenant_id, []) if s["signal_type"] == signal_type
         ]
         if not signals:
             return {"count": 0, "mean": 0.0, "min": 0.0, "max": 0.0}
 
         return {
             "count": len(signals),
-            "mean":  round(sum(signals) / len(signals), 4),
-            "min":   round(min(signals), 4),
-            "max":   round(max(signals), 4),
+            "mean": round(sum(signals) / len(signals), 4),
+            "min": round(min(signals), 4),
+            "max": round(max(signals), 4),
             "privacy_guarantee": f"ε={self.EPSILON} differential privacy",
         }
 
     def benchmarks(self, tenant_id: str) -> dict[str, Any]:
         """Return aggregated benchmarks across all orgs for the tenant."""
         signal_types = list({s["signal_type"] for s in self._signals.get(tenant_id, [])})
-        return {
-            st: self.aggregate(tenant_id, st)
-            for st in signal_types
-        }
+        return {st: self.aggregate(tenant_id, st) for st in signal_types}
 
 
 # ── Q9: Channel Router + Conversation Manager ────────────────────────────────
 
+
 @dataclass
 class ConversationTurn:
-    role:       str   # 'user' | 'assistant'
-    content:    str
-    channel:    str
-    timestamp:  str = ""
+    role: str  # 'user' | 'assistant'
+    content: str
+    channel: str
+    timestamp: str = ""
 
     def __post_init__(self) -> None:
         if not self.timestamp:
@@ -392,26 +412,27 @@ class ChannelRouter:
             span.set_attribute("handler", handler)
             return {
                 "conversation_id": conv_id,
-                "handler":         handler,
-                "org_id":          org_id,
-                "channel":         channel,
-                "context_turns":   len(self._conversations.get(conv_id, [])),
+                "handler": handler,
+                "org_id": org_id,
+                "channel": channel,
+                "context_turns": len(self._conversations.get(conv_id, [])),
             }
 
 
 # ── QA4: Sub-Tenants / Enterprise Hierarchy ──────────────────────────────────
 
+
 @dataclass
 class SubTenant:
     """QA4 — An enterprise child tenant under a parent tenant."""
 
-    sub_tenant_id:  str
-    parent_id:      str
-    name:           str
-    org_quota:      int   = 10
-    agent_quota:    int   = 100
-    budget_limit:   float = 10_000.0
-    created_at:     str   = ""
+    sub_tenant_id: str
+    parent_id: str
+    name: str
+    org_quota: int = 10
+    agent_quota: int = 100
+    budget_limit: float = 10_000.0
+    created_at: str = ""
 
     def __post_init__(self) -> None:
         if not self.created_at:
@@ -436,11 +457,11 @@ class SubTenantManager:
         return [
             {
                 "sub_tenant_id": s.sub_tenant_id,
-                "name":          s.name,
-                "org_quota":     s.org_quota,
-                "agent_quota":   s.agent_quota,
-                "budget_limit":  s.budget_limit,
-                "created_at":    s.created_at,
+                "name": s.name,
+                "org_quota": s.org_quota,
+                "agent_quota": s.agent_quota,
+                "budget_limit": s.budget_limit,
+                "created_at": s.created_at,
             }
             for s in self._sub_tenants.get(parent_id, [])
         ]
@@ -448,25 +469,26 @@ class SubTenantManager:
 
 # ── QA11: MCP Resources + Prompts (full MCP spec beyond tools) ────────────────
 
+
 @dataclass
 class MCPResource:
     """QA11 — A resource exposed via the MCP server (read-only data source)."""
 
-    uri:          str   # e.g. "org://acme/missions/active"
-    name:         str
-    description:  str
-    mime_type:    str = "application/json"
-    content:      str = ""
+    uri: str  # e.g. "org://acme/missions/active"
+    name: str
+    description: str
+    mime_type: str = "application/json"
+    content: str = ""
 
 
 @dataclass
 class MCPPrompt:
     """QA11 — A reusable prompt template exposed via MCP."""
 
-    name:         str
-    description:  str
-    template:     str
-    arguments:    list[dict[str, str]] = field(default_factory=list)
+    name: str
+    description: str
+    template: str
+    arguments: list[dict[str, str]] = field(default_factory=list)
 
 
 class MCPFullSpec:
@@ -485,11 +507,19 @@ class MCPFullSpec:
     def _register_defaults(self) -> None:
         # Default resources
         for r in [
-            MCPResource("org://missions/active",    "Active Missions",     "List all currently active org missions"),  # noqa: E501
-            MCPResource("org://health",              "Org Health",          "Current org health score and metrics"),  # noqa: E501
-            MCPResource("org://teams/active",        "Active Teams",        "Teams currently executing work"),  # noqa: E501
-            MCPResource("org://decisions/recent",   "Recent Decisions",    "Last 10 autonomous decisions with reasoning"),  # noqa: E501
-            MCPResource("org://knowledge/summary",  "Knowledge Summary",   "Summary of org knowledge base"),  # noqa: E501
+            MCPResource(
+                "org://missions/active", "Active Missions", "List all currently active org missions"
+            ),
+            MCPResource("org://health", "Org Health", "Current org health score and metrics"),
+            MCPResource("org://teams/active", "Active Teams", "Teams currently executing work"),
+            MCPResource(
+                "org://decisions/recent",
+                "Recent Decisions",
+                "Last 10 autonomous decisions with reasoning",
+            ),
+            MCPResource(
+                "org://knowledge/summary", "Knowledge Summary", "Summary of org knowledge base"
+            ),
         ]:
             self._resources[r.uri] = r
 
@@ -499,7 +529,11 @@ class MCPFullSpec:
                 name="create_mission",
                 description="Create a new org mission from a goal description",
                 template="Create a mission for the {org_name} organization to achieve: {goal}. Priority: {priority}.",  # noqa: E501
-                arguments=[{"name": "org_name"}, {"name": "goal"}, {"name": "priority", "default": "medium"}],  # noqa: E501
+                arguments=[
+                    {"name": "org_name"},
+                    {"name": "goal"},
+                    {"name": "priority", "default": "medium"},
+                ],
             ),
             MCPPrompt(
                 name="analyze_org_health",
@@ -517,10 +551,16 @@ class MCPFullSpec:
             self._prompts[p.name] = p
 
     def list_resources(self) -> list[dict[str, Any]]:
-        return [{"uri": r.uri, "name": r.name, "description": r.description, "mimeType": r.mime_type} for r in self._resources.values()]  # noqa: E501
+        return [
+            {"uri": r.uri, "name": r.name, "description": r.description, "mimeType": r.mime_type}
+            for r in self._resources.values()
+        ]
 
     def list_prompts(self) -> list[dict[str, Any]]:
-        return [{"name": p.name, "description": p.description, "arguments": p.arguments} for p in self._prompts.values()]  # noqa: E501
+        return [
+            {"name": p.name, "description": p.description, "arguments": p.arguments}
+            for p in self._prompts.values()
+        ]
 
     def get_resource(self, uri: str) -> MCPResource | None:
         return self._resources.get(uri)
@@ -531,17 +571,33 @@ class MCPFullSpec:
 
 # ── Singletons ────────────────────────────────────────────────────────────────
 
-_policy_evidence      = PolicyEvidenceEngine()
-_strategic_advisor    = StrategicAdvisor()
-_collective_intel     = CollectiveIntelligence()
-_channel_router       = ChannelRouter()
-_sub_tenant_manager   = SubTenantManager()
-_mcp_full_spec        = MCPFullSpec()
+_policy_evidence = PolicyEvidenceEngine()
+_strategic_advisor = StrategicAdvisor()
+_collective_intel = CollectiveIntelligence()
+_channel_router = ChannelRouter()
+_sub_tenant_manager = SubTenantManager()
+_mcp_full_spec = MCPFullSpec()
 
 
-def get_policy_evidence()    -> PolicyEvidenceEngine:    return _policy_evidence
-def get_strategic_advisor()  -> StrategicAdvisor:        return _strategic_advisor
-def get_collective_intel()   -> CollectiveIntelligence:  return _collective_intel
-def get_channel_router()     -> ChannelRouter:           return _channel_router
-def get_sub_tenant_manager() -> SubTenantManager:        return _sub_tenant_manager
-def get_mcp_full_spec()      -> MCPFullSpec:             return _mcp_full_spec
+def get_policy_evidence() -> PolicyEvidenceEngine:
+    return _policy_evidence
+
+
+def get_strategic_advisor() -> StrategicAdvisor:
+    return _strategic_advisor
+
+
+def get_collective_intel() -> CollectiveIntelligence:
+    return _collective_intel
+
+
+def get_channel_router() -> ChannelRouter:
+    return _channel_router
+
+
+def get_sub_tenant_manager() -> SubTenantManager:
+    return _sub_tenant_manager
+
+
+def get_mcp_full_spec() -> MCPFullSpec:
+    return _mcp_full_spec

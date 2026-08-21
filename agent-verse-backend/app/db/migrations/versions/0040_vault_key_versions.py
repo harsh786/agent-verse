@@ -9,6 +9,7 @@ depends_on = None
 
 def upgrade() -> None:
     from alembic import op
+
     op.execute("""
         CREATE TABLE IF NOT EXISTS vault_key_versions (
             id              TEXT PRIMARY KEY,
@@ -20,10 +21,13 @@ def upgrade() -> None:
             is_current      BOOLEAN NOT NULL DEFAULT TRUE
         )
     """)
-    op.execute("CREATE INDEX IF NOT EXISTS ix_vault_key_tenant ON vault_key_versions (tenant_id, is_current)")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_vault_key_tenant ON vault_key_versions (tenant_id, is_current)"
+    )
 
 
 def downgrade() -> None:
     from alembic import op
+
     op.execute("DROP INDEX IF EXISTS ix_vault_key_tenant")
     op.execute("DROP TABLE IF EXISTS vault_key_versions")

@@ -13,6 +13,7 @@ Flow:
 
 Open-source deps only: python-jose, httpx (already in requirements)
 """
+
 from __future__ import annotations
 
 import time
@@ -32,21 +33,25 @@ _jwks_fetched_at = 0.0
 
 def _keycloak_url() -> str:
     from app.core.config import get_settings
+
     return get_settings().keycloak_url
 
 
 def _realm() -> str:
     from app.core.config import get_settings
+
     return get_settings().keycloak_realm
 
 
 def _client_id() -> str:
     from app.core.config import get_settings
+
     return get_settings().keycloak_client_id
 
 
 def _sso_enabled() -> bool:
     import os as _os
+
     return _os.environ.get("SSO_ENABLED", "false").lower() in ("true", "1", "yes")
 
 
@@ -139,9 +144,7 @@ def map_roles_to_plan(roles: list[str]) -> str:
     return "free"
 
 
-async def resolve_tenant_from_jwt(
-    token: str, tenant_service: Any
-) -> Any | None:
+async def resolve_tenant_from_jwt(token: str, tenant_service: Any) -> Any | None:
     """Validate JWT and resolve/create a TenantContext from the claims.
 
     Maps Keycloak users to AgentVerse tenants by email.
@@ -166,8 +169,7 @@ async def resolve_tenant_from_jwt(
 
     # Look up or provision tenant from email/sub
     tenant_id = await _get_or_provision_tenant(
-        sub=sub, email=email, name=name, plan=plan_str,
-        tenant_service=tenant_service
+        sub=sub, email=email, name=name, plan=plan_str, tenant_service=tenant_service
     )
 
     if not tenant_id:

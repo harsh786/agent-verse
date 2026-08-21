@@ -9,6 +9,7 @@ Called from:
 
 Designed to be fire-and-forget (async tasks) so it never blocks the hot path.
 """
+
 from __future__ import annotations
 
 import asyncio

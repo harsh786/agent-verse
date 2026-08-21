@@ -32,9 +32,11 @@ from app.intelligence.guardrail_patterns import (
 
 try:
     from app.observability.logging import get_logger
+
     _log = get_logger(__name__)
 except Exception:
     import logging
+
     _log = logging.getLogger(__name__)
 
 
@@ -56,6 +58,7 @@ class GuardrailContext:
 # ---------------------------------------------------------------------------
 # Severity & action enums
 # ---------------------------------------------------------------------------
+
 
 class GuardrailSeverity(StrEnum):
     LOW = "low"
@@ -95,12 +98,13 @@ def _sev(s: str) -> GuardrailSeverity:
 # Data models
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class GuardrailViolation:
     layer: str
     category: str
     severity: GuardrailSeverity
-    risk_score: float              # 0.0 to 1.0
+    risk_score: float  # 0.0 to 1.0
     matched_pattern: str | None = None
     context_snippet: str | None = None
     tool_name: str | None = None
@@ -112,7 +116,7 @@ class GuardrailViolation:
 @dataclass
 class GuardrailResult:
     allowed: bool
-    risk_score: float              # max of all violation scores
+    risk_score: float  # max of all violation scores
     action: GuardrailAction
     violations: list[GuardrailViolation] = field(default_factory=list)
     input_hash: str = ""
@@ -131,6 +135,7 @@ class GuardrailResult:
 # ---------------------------------------------------------------------------
 # Layer 1: Injection guard
 # ---------------------------------------------------------------------------
+
 
 class InjectionGuard:
     """Compiles INJECTION_PATTERNS at startup and provides O(n*patterns) scanning."""
@@ -154,14 +159,16 @@ class InjectionGuard:
             m = pattern.search(text)
             if m:
                 start = max(0, m.start() - 20)
-                violations.append(GuardrailViolation(
-                    layer="injection",
-                    category=category,
-                    severity=severity,
-                    risk_score=risk_score,
-                    matched_pattern=pattern.pattern[:80],
-                    context_snippet=text[start:m.end() + 20],
-                ))
+                violations.append(
+                    GuardrailViolation(
+                        layer="injection",
+                        category=category,
+                        severity=severity,
+                        risk_score=risk_score,
+                        matched_pattern=pattern.pattern[:80],
+                        context_snippet=text[start : m.end() + 20],
+                    )
+                )
         return violations
 
     def scan_with_rot13(self, text: str) -> list[GuardrailViolation]:
@@ -188,6 +195,7 @@ class InjectionGuard:
 # ---------------------------------------------------------------------------
 # Layer 2: Recursive argument scanner
 # ---------------------------------------------------------------------------
+
 
 class RecursiveArgScanner:
     """DFS scan of arbitrary JSON/dict structures.
@@ -227,16 +235,12 @@ class RecursiveArgScanner:
             for key, value in obj.items():
                 child_path = f"{path}.{key}"
                 # Scan the key itself for injection
-                violations.extend(
-                    self.scan(key, tool_name, f"{path}[key:{key}]", depth + 1)
-                )
+                violations.extend(self.scan(key, tool_name, f"{path}[key:{key}]", depth + 1))
                 violations.extend(self.scan(value, tool_name, child_path, depth + 1))
 
         elif isinstance(obj, (list, tuple)):
             for i, item in enumerate(obj):
-                violations.extend(
-                    self.scan(item, tool_name, f"{path}[{i}]", depth + 1)
-                )
+                violations.extend(self.scan(item, tool_name, f"{path}[{i}]", depth + 1))
 
         return violations
 
@@ -244,6 +248,7 @@ class RecursiveArgScanner:
 # ---------------------------------------------------------------------------
 # Layer 3: PII detector
 # ---------------------------------------------------------------------------
+
 
 class PIIDetector:
     """Detects PII and sensitive credentials; optionally redacts them.
@@ -277,14 +282,16 @@ class PIIDetector:
 
             for match in matches:
                 start = max(0, match.start() - 20)
-                violations.append(GuardrailViolation(
-                    layer="pii",
-                    category=f"pii_{category}",
-                    severity=severity,
-                    risk_score=risk_score,
-                    matched_pattern=category,
-                    context_snippet=f"...{match.string[start:match.end() + 20]}...",
-                ))
+                violations.append(
+                    GuardrailViolation(
+                        layer="pii",
+                        category=f"pii_{category}",
+                        severity=severity,
+                        risk_score=risk_score,
+                        matched_pattern=category,
+                        context_snippet=f"...{match.string[start : match.end() + 20]}...",
+                    )
+                )
 
             if self.redact:
                 redacted = pattern.sub(f"[REDACTED:{category.upper()}]", redacted)
@@ -296,6 +303,7 @@ class PIIDetector:
 # Layer 4: Cloud destruction guard
 # ---------------------------------------------------------------------------
 
+
 class CloudDestructionGuard:
     """Scans text for irreversible cloud/infrastructure destruction commands."""
 
@@ -303,12 +311,14 @@ class CloudDestructionGuard:
         self._compiled: list[tuple[re.Pattern, GuardrailSeverity, float, str]] = []
         for pattern_str, sev_str, risk_score, cat in CLOUD_DESTRUCTION_PATTERNS:
             with contextlib.suppress(re.error):
-                self._compiled.append((
-                    re.compile(pattern_str, re.IGNORECASE | re.MULTILINE),
-                    _sev(sev_str),
-                    risk_score,
-                    cat,
-                ))
+                self._compiled.append(
+                    (
+                        re.compile(pattern_str, re.IGNORECASE | re.MULTILINE),
+                        _sev(sev_str),
+                        risk_score,
+                        cat,
+                    )
+                )
 
     def scan(self, text: str, tool_name: str | None = None) -> list[GuardrailViolation]:
         violations: list[GuardrailViolation] = []
@@ -316,21 +326,24 @@ class CloudDestructionGuard:
             m = pattern.search(text)
             if m:
                 start = max(0, m.start() - 30)
-                violations.append(GuardrailViolation(
-                    layer="cloud_destruction",
-                    category=category,
-                    severity=severity,
-                    risk_score=risk_score,
-                    matched_pattern=category,
-                    context_snippet=text[start:m.end() + 30],
-                    tool_name=tool_name,
-                ))
+                violations.append(
+                    GuardrailViolation(
+                        layer="cloud_destruction",
+                        category=category,
+                        severity=severity,
+                        risk_score=risk_score,
+                        matched_pattern=category,
+                        context_snippet=text[start : m.end() + 30],
+                        tool_name=tool_name,
+                    )
+                )
         return violations
 
 
 # ---------------------------------------------------------------------------
 # Layer 5: LLM-as-judge
 # ---------------------------------------------------------------------------
+
 
 class LLMJudge:
     """Uses a fast LLM to semantically evaluate risk that regex cannot catch.
@@ -370,15 +383,17 @@ class LLMJudge:
             provider = await self._provider_factory()
             from app.providers.base import CompletionRequest, Message
 
-            response = await provider.complete(CompletionRequest(
-                model=self._model,
-                messages=[
-                    Message(role="system", content=self.SYSTEM_PROMPT),
-                    Message(role="user", content=text[:2000]),  # cap to 2 k chars
-                ],
-                max_tokens=100,
-                temperature=0.0,
-            ))
+            response = await provider.complete(
+                CompletionRequest(
+                    model=self._model,
+                    messages=[
+                        Message(role="system", content=self.SYSTEM_PROMPT),
+                        Message(role="user", content=text[:2000]),  # cap to 2 k chars
+                    ],
+                    max_tokens=100,
+                    temperature=0.0,
+                )
+            )
             result = json.loads(response.content.strip())
             score = float(result.get("risk_score", 0.0))
             risk_type = result.get("primary_risk_type", "unknown")
@@ -413,6 +428,7 @@ class LLMJudge:
 # Layer 6: Output scanner
 # ---------------------------------------------------------------------------
 
+
 class OutputScanner:
     """Scans LLM output before returning to caller.
 
@@ -446,14 +462,16 @@ class OutputScanner:
         for pattern in self._SYSTEM_PROMPT_LEAK_PATTERNS:
             m = pattern.search(output)
             if m:
-                violations.append(GuardrailViolation(
-                    layer="output_scan",
-                    category="system_prompt_leak",
-                    severity=GuardrailSeverity.HIGH,
-                    risk_score=0.87,
-                    matched_pattern=pattern.pattern[:80],
-                    context_snippet=output[max(0, m.start() - 20):m.end() + 20],
-                ))
+                violations.append(
+                    GuardrailViolation(
+                        layer="output_scan",
+                        category="system_prompt_leak",
+                        severity=GuardrailSeverity.HIGH,
+                        risk_score=0.87,
+                        matched_pattern=pattern.pattern[:80],
+                        context_snippet=output[max(0, m.start() - 20) : m.end() + 20],
+                    )
+                )
 
         if not violations:
             return GuardrailResult(
@@ -465,7 +483,7 @@ class OutputScanner:
 
         max_score = max(v.risk_score for v in violations)
         result = GuardrailResult(
-            allowed=True,       # output is still returned, just possibly redacted
+            allowed=True,  # output is still returned, just possibly redacted
             risk_score=max_score,
             action=GuardrailAction.REDACTED,
             violations=violations,
@@ -480,6 +498,7 @@ class OutputScanner:
 # ---------------------------------------------------------------------------
 # Main GuardrailEngine — orchestrates all six layers
 # ---------------------------------------------------------------------------
+
 
 class GuardrailEngine:
     """Orchestrates all six guardrail layers and returns a single GuardrailResult.
@@ -531,13 +550,15 @@ class GuardrailEngine:
                 allowed=False,
                 risk_score=1.0,
                 action=GuardrailAction.BLOCKED,
-                violations=[GuardrailViolation(
-                    layer="tool_args",
-                    category="blocked_tool",
-                    severity=GuardrailSeverity.CRITICAL,
-                    risk_score=1.0,
-                    tool_name=tool_name,
-                )],
+                violations=[
+                    GuardrailViolation(
+                        layer="tool_args",
+                        category="blocked_tool",
+                        severity=GuardrailSeverity.CRITICAL,
+                        risk_score=1.0,
+                        tool_name=tool_name,
+                    )
+                ],
             )
 
         violations: list[GuardrailViolation] = []

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import enum
 import hashlib
 from dataclasses import dataclass, field
@@ -27,13 +28,9 @@ class ABTestingEngine:
         self._results: dict[str, list[dict]] = {}
         self._db_factory = db_factory
 
-    def get_experiment_arm(
-        self, goal_id: str, experiment_type: ExperimentType
-    ) -> ExperimentArm:
+    def get_experiment_arm(self, goal_id: str, experiment_type: ExperimentType) -> ExperimentArm:
         h = int(
-            hashlib.md5(
-                f"{goal_id}:{experiment_type.value}".encode()
-            ).hexdigest(),
+            hashlib.md5(f"{goal_id}:{experiment_type.value}".encode()).hexdigest(),
             16,
         )
         arm_id = _ARMS[h % len(_ARMS)]
@@ -51,13 +48,9 @@ class ABTestingEngine:
             {"goal_id": goal_id, "arm_id": arm_id, "score": score}
         )
 
-    def get_arm_stats(
-        self, experiment_type: ExperimentType, arm_id: str
-    ) -> dict:
+    def get_arm_stats(self, experiment_type: ExperimentType, arm_id: str) -> dict:
         key = experiment_type.value
-        results = [
-            r for r in self._results.get(key, []) if r["arm_id"] == arm_id
-        ]
+        results = [r for r in self._results.get(key, []) if r["arm_id"] == arm_id]
         if not results:
             return {"call_count": 0, "avg_score": 0.0}
         avg = sum(r["score"] for r in results) / len(results)
@@ -91,7 +84,9 @@ class ABTestingEngine:
             return
         try:
             import uuid
+
             from sqlalchemy import text
+
             async with self._db_factory() as session, session.begin():
                 await session.execute(
                     text("""
@@ -113,9 +108,8 @@ class ABTestingEngine:
         except Exception as exc:
             try:
                 import logging
-                logging.getLogger(__name__).warning(
-                    "ab_test_result_persist_failed: %s", exc
-                )
+
+                logging.getLogger(__name__).warning("ab_test_result_persist_failed: %s", exc)
             except Exception:
                 pass
 
@@ -131,14 +125,20 @@ class ABTestingEngine:
             return 0
         try:
             from sqlalchemy import text
+
             count = 0
             async with factory() as session:
-                rows = (await session.execute(text("""
+                rows = (
+                    await session.execute(
+                        text("""
                     SELECT goal_id, experiment_type, arm_id, score
                     FROM ab_test_results
                     ORDER BY created_at DESC
                     LIMIT :limit
-                """), {"limit": limit})).fetchall()
+                """),
+                        {"limit": limit},
+                    )
+                ).fetchall()
                 for row in rows:
                     goal_id, exp_type_str, arm_id, score = row[0], row[1], row[2], row[3]
                     try:

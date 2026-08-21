@@ -3,6 +3,7 @@
 Cursor: last issue updatedDate (ISO 8601).
 Supports: Jira Cloud and Jira Server/Data Center.
 """
+
 from __future__ import annotations
 
 import logging
@@ -28,9 +29,11 @@ class JiraConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             import httpx
+
             cc = config.connection_config
             base_url = cc.get("base_url", "").rstrip("/")
             auth = (cc.get("username", ""), cc.get("api_token", ""))
@@ -40,7 +43,8 @@ class JiraConnector(BaseConnector):
                 user = r.json()
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
-                ok=True, latency_ms=latency,
+                ok=True,
+                latency_ms=latency,
                 metadata={"user": user.get("displayName"), "email": user.get("emailAddress")},
             )
         except Exception as exc:

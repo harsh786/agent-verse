@@ -10,6 +10,7 @@ At load time:
   - In production: any validation failure aborts startup (fail-closed)
   - In dev: bad records are logged and skipped
 """
+
 from __future__ import annotations
 
 import re
@@ -106,9 +107,7 @@ class MarketplaceAgentContent(BaseModel):
     @classmethod
     def _validate_autonomy_mode(cls, v: str) -> str:
         if v not in VALID_AUTONOMY_MODES:
-            raise ValueError(
-                f"autonomy_mode must be one of {set(VALID_AUTONOMY_MODES)}, got '{v}'"
-            )
+            raise ValueError(f"autonomy_mode must be one of {set(VALID_AUTONOMY_MODES)}, got '{v}'")
         return v
 
     @field_validator("template_id")

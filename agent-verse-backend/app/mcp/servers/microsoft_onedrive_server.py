@@ -3,6 +3,7 @@
 Environment variables:
   ONEDRIVE_ACCESS_TOKEN: Microsoft Graph OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -34,7 +35,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "item_id": {"type": "string", "description": "OneDrive item ID"},
-                "path": {"type": "string", "description": "Path relative to root e.g. /Documents/reports"},
+                "path": {
+                    "type": "string",
+                    "description": "Path relative to root e.g. /Documents/reports",
+                },
                 "top": {"type": "integer", "default": 100},
             },
         },
@@ -99,7 +103,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "parent_item_id": {"type": "string", "description": "Parent folder item ID ('root' for root)"},
+                "parent_item_id": {
+                    "type": "string",
+                    "description": "Parent folder item ID ('root' for root)",
+                },
                 "parent_path": {"type": "string", "description": "Parent folder path"},
                 "name": {"type": "string"},
             },
@@ -218,7 +225,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 item_id = arguments.get("item_id")
                 path = arguments.get("path")
                 url = _item_url(item_id, path) + "/content"
-                r = await c.get(url, headers={"Authorization": f"Bearer {token}"}, follow_redirects=True)
+                r = await c.get(
+                    url, headers={"Authorization": f"Bearer {token}"}, follow_redirects=True
+                )
                 r.raise_for_status()
                 return {
                     "size_bytes": len(r.content),

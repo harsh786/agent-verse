@@ -1,5 +1,7 @@
 """PromptVariantSelector — deterministic A/B variant selection per goal_id."""
+
 from __future__ import annotations
+
 import hashlib
 from dataclasses import dataclass
 

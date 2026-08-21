@@ -3,6 +3,7 @@
 Extracted from GoalService. Handles cost tracking, duration recording,
 terminal metric collection, and Prometheus counters.
 """
+
 from __future__ import annotations
 
 import logging

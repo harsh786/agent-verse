@@ -5,6 +5,7 @@ Revision ID: 0060
 Revises: 0059
 Create Date: 2026-06-28
 """
+
 from alembic import op
 
 revision = "0060"
@@ -155,7 +156,11 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     for t in [
-        "scim_tokens", "whitelabel_configs", "compliance_certifications",
-        "scim_configs", "saml_configs", "enterprise_contracts",
+        "scim_tokens",
+        "whitelabel_configs",
+        "compliance_certifications",
+        "scim_configs",
+        "saml_configs",
+        "enterprise_contracts",
     ]:
         op.execute(f"DROP TABLE IF EXISTS {t} CASCADE")

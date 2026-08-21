@@ -3,6 +3,7 @@
 Environment:
   EVERNOTE_ACCESS_TOKEN: Evernote OAuth access token
 """
+
 from __future__ import annotations
 
 import os
@@ -124,7 +125,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         try:
             if tool_name == "evernote_list_notebooks":
                 r = await c.get(
-                    f"https://api.evernote.com/edam/notestore/notebooks",
+                    "https://api.evernote.com/edam/notestore/notebooks",
                     headers=headers,
                 )
                 r.raise_for_status()
@@ -246,11 +247,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r.raise_for_status()
                 data = r.json()
                 tags = data if isinstance(data, list) else data.get("tags", [])
-                return {
-                    "tags": [
-                        {"guid": t.get("guid"), "name": t.get("name")} for t in tags
-                    ]
-                }
+                return {"tags": [{"guid": t.get("guid"), "name": t.get("name")} for t in tags]}
 
             else:
                 return {"error": f"Unknown tool: {tool_name}"}

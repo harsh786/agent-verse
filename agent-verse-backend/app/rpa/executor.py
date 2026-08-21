@@ -1,4 +1,5 @@
 """RPA executor — executes browser automation commands via Playwright or simulation fallback."""
+
 from __future__ import annotations
 
 import asyncio
@@ -66,9 +67,8 @@ class RPAExecutor:
                 arguments = await self._credential_injector.resolve_arguments(arguments)
             except Exception as exc:
                 import logging
-                logging.getLogger(__name__).warning(
-                    "credential_injection_failed error=%s", exc
-                )
+
+                logging.getLogger(__name__).warning("credential_injection_failed error=%s", exc)
 
         if self._playwright_available and self._session_manager:
             result = await self._execute_with_playwright(
@@ -85,9 +85,7 @@ class RPAExecutor:
                 goal_id=goal_id,
             )
         else:
-            result = await self._execute_simulation(
-                tool_name=tool_name, arguments=arguments
-            )
+            result = await self._execute_simulation(tool_name=tool_name, arguments=arguments)
 
         if ephemeral and self._session_manager:
             await self._session_manager.close(sid, tenant_id)
@@ -109,9 +107,7 @@ class RPAExecutor:
         page = session.page
 
         if page is None:
-            return await self._execute_simulation(
-                tool_name=tool_name, arguments=arguments
-            )
+            return await self._execute_simulation(tool_name=tool_name, arguments=arguments)
 
         try:
             url = arguments.get("url", "")
@@ -135,15 +131,11 @@ class RPAExecutor:
                 text = arguments.get("text", "")
                 try:
                     if text and not selector:
-                        await page.get_by_text(text, exact=False).first.click(
-                            timeout=5000
-                        )
+                        await page.get_by_text(text, exact=False).first.click(timeout=5000)
                     elif selector:
                         await page.click(selector, timeout=5000)
                     else:
-                        return RPAResult(
-                            success=False, error="selector or text required"
-                        )
+                        return RPAResult(success=False, error="selector or text required")
                     screenshot = base64.b64encode(await page.screenshot()).decode()
                     session.touch()
                     return RPAResult(
@@ -161,15 +153,11 @@ class RPAExecutor:
                 selector = arguments.get("selector", "")
                 text_to_type = arguments.get("text", "")
                 if not selector:
-                    return RPAResult(
-                        success=False, error="selector required for rpa_type"
-                    )
+                    return RPAResult(success=False, error="selector required for rpa_type")
                 try:
                     await page.fill(selector, text_to_type, timeout=5000)
                     session.touch()
-                    return RPAResult(
-                        success=True, output=f"Typed into {selector}"
-                    )
+                    return RPAResult(success=True, output=f"Typed into {selector}")
                 except Exception as exc:
                     return RPAResult(success=False, error=str(exc))
 
@@ -214,6 +202,7 @@ class RPAExecutor:
                 if self._vision_provider:
                     try:
                         from app.perception.browser_agent import BrowserAgent as _BA
+
                         _ba = _BA(vision_provider=self._vision_provider)
                         vision_analysis = await _ba.analyze_screenshot(
                             b64,
@@ -282,6 +271,7 @@ class RPAExecutor:
 
             elif tool_name == "rpa_upload_file":
                 import os
+
                 selector = arguments.get("selector", "")
                 file_path = arguments.get("file_path", "")
                 if not selector:
@@ -307,6 +297,7 @@ class RPAExecutor:
             elif tool_name == "rpa_download_file":
                 import os
                 import tempfile
+
                 selector = arguments.get("selector", "")
                 if not selector:
                     return RPAResult(success=False, error="selector argument required")
@@ -350,9 +341,7 @@ class RPAExecutor:
 
             elif tool_name == "rpa_submit_form":
                 field_values: dict = arguments.get("field_values", {})
-                submit_selector = arguments.get(
-                    "submit_selector", "button[type=submit]"
-                )
+                submit_selector = arguments.get("submit_selector", "button[type=submit]")
                 filled: list[str] = []
                 try:
                     for sel, value in field_values.items():
@@ -383,9 +372,7 @@ class RPAExecutor:
                     return RPAResult(success=False, error=str(exc))
 
             else:
-                return await self._execute_simulation(
-                    tool_name=tool_name, arguments=arguments
-                )
+                return await self._execute_simulation(tool_name=tool_name, arguments=arguments)
 
         except Exception as exc:
             return RPAResult(success=False, error=str(exc))
@@ -433,9 +420,7 @@ class RPAExecutor:
                     selector = arguments.get("selector", "")
                     text = arguments.get("text", "")
                     if text and not selector:
-                        await page.get_by_text(text, exact=False).first.click(
-                            timeout=5000
-                        )
+                        await page.get_by_text(text, exact=False).first.click(timeout=5000)
                     elif selector:
                         await page.click(selector, timeout=5000)
                     else:
@@ -544,6 +529,7 @@ class RPAExecutor:
 
                 elif tool_name == "rpa_upload_file":
                     import os
+
                     selector = arguments.get("selector", "")
                     file_path = arguments.get("file_path", "")
                     if not selector:
@@ -568,6 +554,7 @@ class RPAExecutor:
                 elif tool_name == "rpa_download_file":
                     import os
                     import tempfile
+
                     selector = arguments.get("selector", "")
                     if not selector:
                         return RPAResult(success=False, error="selector argument required")
@@ -610,9 +597,7 @@ class RPAExecutor:
 
                 elif tool_name == "rpa_submit_form":
                     field_values: dict = arguments.get("field_values", {})
-                    submit_selector = arguments.get(
-                        "submit_selector", "button[type=submit]"
-                    )
+                    submit_selector = arguments.get("submit_selector", "button[type=submit]")
                     filled: list[str] = []
                     try:
                         for sel, value in field_values.items():
@@ -642,33 +627,47 @@ class RPAExecutor:
                         return RPAResult(success=False, error=str(exc))
 
                 else:
-                    return await self._execute_simulation(
-                        tool_name=tool_name, arguments=arguments
-                    )
+                    return await self._execute_simulation(tool_name=tool_name, arguments=arguments)
 
             except Exception as exc:
                 return RPAResult(success=False, error=str(exc))
             finally:
                 await browser.close()
 
-    async def _execute_simulation(
-        self, *, tool_name: str, arguments: dict[str, Any]
-    ) -> RPAResult:
+    async def _execute_simulation(self, *, tool_name: str, arguments: dict[str, Any]) -> RPAResult:
         """Simulated execution when Playwright is not available."""
         # Add small delay to simulate real execution
         await asyncio.sleep(0.1)
 
         sim_outputs = {
             "rpa_open_url": lambda a: f"[simulated] Opened URL: {a.get('url', '?')}",
-            "rpa_click": lambda a: f"[simulated] Clicked: {a.get('selector') or a.get('text', '?')}",
-            "rpa_type": lambda a: f"[simulated] Typed '{a.get('text', '')}' into {a.get('selector', '?')}",
-            "rpa_extract_text": lambda a: f"[simulated] Extracted text from {a.get('selector', 'body')}: <simulated page content>",
-            "rpa_screenshot": lambda a: f"[simulated] Screenshot captured: {a.get('name', 'screenshot')}",
-            "rpa_wait_for_text": lambda a: f"[simulated] wait_for_text: Text '{a.get('text', '?')}' appeared on page",
-            "rpa_select_option": lambda a: f"[simulated] Selected '{a.get('value', '?')}' in '{a.get('selector', '?')}'",
-            "rpa_upload_file": lambda a: f"[simulated] Uploaded file '{a.get('file_path', '?')}' to '{a.get('selector', '?')}'",
-            "rpa_download_file": lambda a: f"[simulated] Downloaded file from '{a.get('selector', '?')}'",
-            "rpa_submit_form": lambda a: f"[simulated] Filled {len(a.get('field_values', {}))} fields and submitted form",
+            "rpa_click": lambda a: (
+                f"[simulated] Clicked: {a.get('selector') or a.get('text', '?')}"
+            ),
+            "rpa_type": lambda a: (
+                f"[simulated] Typed '{a.get('text', '')}' into {a.get('selector', '?')}"
+            ),
+            "rpa_extract_text": lambda a: (
+                f"[simulated] Extracted text from {a.get('selector', 'body')}: <simulated page content>"
+            ),
+            "rpa_screenshot": lambda a: (
+                f"[simulated] Screenshot captured: {a.get('name', 'screenshot')}"
+            ),
+            "rpa_wait_for_text": lambda a: (
+                f"[simulated] wait_for_text: Text '{a.get('text', '?')}' appeared on page"
+            ),
+            "rpa_select_option": lambda a: (
+                f"[simulated] Selected '{a.get('value', '?')}' in '{a.get('selector', '?')}'"
+            ),
+            "rpa_upload_file": lambda a: (
+                f"[simulated] Uploaded file '{a.get('file_path', '?')}' to '{a.get('selector', '?')}'"
+            ),
+            "rpa_download_file": lambda a: (
+                f"[simulated] Downloaded file from '{a.get('selector', '?')}'"
+            ),
+            "rpa_submit_form": lambda a: (
+                f"[simulated] Filled {len(a.get('field_values', {}))} fields and submitted form"
+            ),
         }
 
         output_fn = sim_outputs.get(tool_name)

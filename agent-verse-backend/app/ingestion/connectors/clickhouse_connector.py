@@ -3,6 +3,7 @@
 Uses clickhouse-connect (HTTP interface) for both full and incremental queries.
 Cursor: last row's ORDER BY column value (typically a timestamp).
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,9 +28,11 @@ class ClickHouseConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             import clickhouse_connect  # type: ignore[import-not-found]
+
             cc = config.connection_config
             client = clickhouse_connect.get_client(
                 host=cc.get("host", "localhost"),
@@ -52,10 +55,12 @@ class ClickHouseConnector(BaseConnector):
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
+
         try:
             import clickhouse_connect  # type: ignore[import-not-found]
         except ImportError:
-            _log.error("clickhouse-connect not installed"); return
+            _log.error("clickhouse-connect not installed")
+            return
 
         cc = config.connection_config
         client = clickhouse_connect.get_client(

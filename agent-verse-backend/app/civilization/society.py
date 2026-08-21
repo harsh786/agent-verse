@@ -3,11 +3,9 @@
 Reputation: seeds at 0.5, updated by EvalRunner EWMA.
 Routing: AgentRouter for best-member selection.
 """
+
 from __future__ import annotations
 
-import math
-import uuid
-from datetime import UTC, datetime
 from typing import Any
 
 from app.observability.logging import get_logger
@@ -261,7 +259,9 @@ class Society:
                     goal=goal, tenant_ctx=tenant_ctx, available_agents=active_agents
                 )
                 # Boost routing by reputation when we have a match
-                if decision.agent_id and decision.agent_id in {a["agent_id"] for a in active_agents}:
+                if decision.agent_id and decision.agent_id in {
+                    a["agent_id"] for a in active_agents
+                }:
                     rep = self._members.get(decision.agent_id, {}).get("reputation", 0.5)
                     return {
                         "agent_id": decision.agent_id,

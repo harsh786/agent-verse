@@ -4,6 +4,7 @@ Environment variables:
   DYNAMICS365_ACCESS_TOKEN: OAuth 2.0 Bearer access token for Dynamics 365
   DYNAMICS365_ORG_URL: Dynamics 365 organisation URL, e.g. https://myorg.crm.dynamics.com
 """
+
 from __future__ import annotations
 
 import os
@@ -22,8 +23,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "select": {"type": "string", "description": "Comma-separated fields to return, e.g. 'name,telephone1,websiteurl'"},
-                "filter": {"type": "string", "description": "OData $filter expression, e.g. \"name eq 'Contoso'\""},
+                "select": {
+                    "type": "string",
+                    "description": "Comma-separated fields to return, e.g. 'name,telephone1,websiteurl'",
+                },
+                "filter": {
+                    "type": "string",
+                    "description": "OData $filter expression, e.g. \"name eq 'Contoso'\"",
+                },
                 "top": {"type": "integer", "description": "Max records to return", "default": 50},
                 "orderby": {"type": "string", "description": "OData $orderby expression"},
             },
@@ -40,7 +47,10 @@ TOOL_DEFINITIONS = [
                 "websiteurl": {"type": "string"},
                 "address1_city": {"type": "string"},
                 "address1_country": {"type": "string"},
-                "industrycode": {"type": "integer", "description": "Industry code (Dynamics 365 enum)"},
+                "industrycode": {
+                    "type": "integer",
+                    "description": "Industry code (Dynamics 365 enum)",
+                },
                 "numberofemployees": {"type": "integer"},
             },
             "required": ["name"],
@@ -52,7 +62,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "select": {"type": "string", "description": "Comma-separated fields, e.g. 'firstname,lastname,emailaddress1'"},
+                "select": {
+                    "type": "string",
+                    "description": "Comma-separated fields, e.g. 'firstname,lastname,emailaddress1'",
+                },
                 "filter": {"type": "string", "description": "OData $filter expression"},
                 "top": {"type": "integer", "default": 50},
             },
@@ -131,9 +144,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     base_url = f"{org_url}/api/data/v9.2"
 
     try:
-        async with httpx.AsyncClient(
-            base_url=base_url, headers=_headers(token), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=base_url, headers=_headers(token), timeout=30.0) as c:
             if tool_name == "dynamics365_list_accounts":
                 params: dict[str, Any] = {"$top": arguments.get("top", 50)}
                 if "select" in arguments:
@@ -148,8 +159,14 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "dynamics365_create_account":
                 body: dict[str, Any] = {"name": arguments["name"]}
-                for k in ("telephone1", "websiteurl", "address1_city", "address1_country",
-                          "industrycode", "numberofemployees"):
+                for k in (
+                    "telephone1",
+                    "websiteurl",
+                    "address1_city",
+                    "address1_country",
+                    "industrycode",
+                    "numberofemployees",
+                ):
                     if k in arguments:
                         body[k] = arguments[k]
                 r = await c.post("/accounts", json=body)
@@ -169,7 +186,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "dynamics365_create_contact":
                 body = {"lastname": arguments["lastname"]}
-                for k in ("firstname", "emailaddress1", "telephone1", "jobtitle", "parentcustomerid"):
+                for k in (
+                    "firstname",
+                    "emailaddress1",
+                    "telephone1",
+                    "jobtitle",
+                    "parentcustomerid",
+                ):
                     if k in arguments:
                         body[k] = arguments[k]
                 r = await c.post("/contacts", json=body)
@@ -194,8 +217,14 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "lastname": arguments["lastname"],
                     "subject": arguments["subject"],
                 }
-                for k in ("firstname", "emailaddress1", "companyname", "telephone1",
-                          "jobtitle", "estimatedvalue"):
+                for k in (
+                    "firstname",
+                    "emailaddress1",
+                    "companyname",
+                    "telephone1",
+                    "jobtitle",
+                    "estimatedvalue",
+                ):
                     if k in arguments:
                         body[k] = arguments[k]
                 r = await c.post("/leads", json=body)

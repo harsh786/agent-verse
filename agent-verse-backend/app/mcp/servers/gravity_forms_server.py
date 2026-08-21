@@ -5,6 +5,7 @@ Environment:
   GRAVITY_FORMS_CONSUMER_SECRET: Gravity Forms API consumer secret
   GRAVITY_FORMS_SITE_URL: WordPress site URL (e.g. https://mysite.com)
 """
+
 from __future__ import annotations
 
 import os
@@ -57,7 +58,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "form_id": {"type": "integer", "description": "Target form ID"},
-                "fields": {"type": "object", "description": "Field ID to value mappings for the entry"},
+                "fields": {
+                    "type": "object",
+                    "description": "Field ID to value mappings for the entry",
+                },
                 "ip": {"type": "string", "description": "IP address for the submission"},
             },
             "required": ["form_id", "fields"],
@@ -105,7 +109,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
     consumer_secret = os.getenv("GRAVITY_FORMS_CONSUMER_SECRET", "")
     site_url = os.getenv("GRAVITY_FORMS_SITE_URL", "")
     if not consumer_key or not consumer_secret:
-        return {"error": "GRAVITY_FORMS_CONSUMER_KEY and GRAVITY_FORMS_CONSUMER_SECRET not configured"}
+        return {
+            "error": "GRAVITY_FORMS_CONSUMER_KEY and GRAVITY_FORMS_CONSUMER_SECRET not configured"
+        }
     if not site_url:
         return {"error": "GRAVITY_FORMS_SITE_URL not configured"}
 
@@ -128,7 +134,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     params["paging[page_size]"] = arguments["page_size"]
                 if "current_page" in arguments:
                     params["paging[current_page]"] = arguments["current_page"]
-                r = await client.get(f"{base_url}/forms/{form_id}/entries", auth=auth, params=params)
+                r = await client.get(
+                    f"{base_url}/forms/{form_id}/entries", auth=auth, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -143,7 +151,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "gravity_forms_update_entry":
                 entry_id = arguments["entry_id"]
-                r = await client.put(f"{base_url}/entries/{entry_id}", auth=auth, json=arguments["fields"])
+                r = await client.put(
+                    f"{base_url}/entries/{entry_id}", auth=auth, json=arguments["fields"]
+                )
                 r.raise_for_status()
                 return r.json()
 

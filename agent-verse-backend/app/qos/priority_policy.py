@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import enum
-from app.tenancy.context import TenantContext, PlanTier
+
+from app.tenancy.context import PlanTier, TenantContext
 
 
 class QueuePriority(str, enum.Enum):

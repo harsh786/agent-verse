@@ -3,6 +3,7 @@
 Provides BFS-based path finding between entities and ego-network subgraph
 extraction for use in graph-augmented RAG.
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -25,7 +26,7 @@ class HopPath:
             return self.nodes[0] if self.nodes else ""
         parts: list[str] = []
         for i, node in enumerate(self.nodes[:-1]):
-            parts.append(f"{node} --[{self.edges[i]}]--> {self.nodes[i+1]}")
+            parts.append(f"{node} --[{self.edges[i]}]--> {self.nodes[i + 1]}")
         return " | ".join(parts)
 
 
@@ -38,7 +39,9 @@ class Subgraph:
     def as_text(self) -> str:
         lines = [f"Entity: {self.center}"]
         for edge in self.edges:
-            lines.append(f"  {edge.get('source','')} --[{edge.get('relation','')}]--> {edge.get('target','')}")
+            lines.append(
+                f"  {edge.get('source', '')} --[{edge.get('relation', '')}]--> {edge.get('target', '')}"
+            )
         return "\n".join(lines)
 
 
@@ -107,11 +110,13 @@ class MultiHopReasoner:
                 target = nbr.get("target", "")
                 relation = nbr.get("relation", "RELATED_TO")
                 if target not in nodes:  # avoid cycles
-                    queue.append((
-                        target,
-                        nodes + [target],
-                        edges + [relation],
-                    ))
+                    queue.append(
+                        (
+                            target,
+                            nodes + [target],
+                            edges + [relation],
+                        )
+                    )
 
         found.sort(key=lambda p: p.length)
         return found
@@ -139,11 +144,13 @@ class MultiHopReasoner:
             for node in frontier:
                 for nbr in self._neighbours(node):
                     target = nbr.get("target", "")
-                    all_edges.append({
-                        "source": node,
-                        "target": target,
-                        "relation": nbr.get("relation", "RELATED_TO"),
-                    })
+                    all_edges.append(
+                        {
+                            "source": node,
+                            "target": target,
+                            "relation": nbr.get("relation", "RELATED_TO"),
+                        }
+                    )
                     if target not in visited_nodes:
                         visited_nodes.add(target)
                         next_frontier.add(target)

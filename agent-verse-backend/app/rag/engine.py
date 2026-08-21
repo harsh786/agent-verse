@@ -18,6 +18,7 @@ Retrieval modes:
   - "lexical": FTS + trigram only (no embeddings needed)
   - "vector": ANN only
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -74,9 +75,7 @@ async def load_agentic_parent_citations(
 ) -> dict[str, ParentWindowCitation]:
     """Load parent windows for tenant-scoped persisted proposition hits."""
     if embedding_dim not in _SUPPORTED_EMBEDDING_DIMENSIONS:
-        raise RetrievalStrategyExecutionError(
-            "agentic_chunking", "unsupported embedding dimension"
-        )
+        raise RetrievalStrategyExecutionError("agentic_chunking", "unsupported embedding dimension")
     table = f"knowledge_chunks_{embedding_dim}"
     rows = (
         await session.execute(
@@ -99,10 +98,7 @@ async def load_agentic_parent_citations(
             },
         )
     ).fetchall()
-    return {
-        str(row[0]): ParentWindowCitation(str(row[1]), str(row[2]))
-        for row in rows
-    }
+    return {str(row[0]): ParentWindowCitation(str(row[1]), str(row[2])) for row in rows}
 
 
 def expand_agentic_parent_results(
@@ -291,10 +287,12 @@ async def hybrid_search(
     # Determine table name — query collection's embedding_dim when not provided (C6 fix)
     if embedding_dim is None:
         try:
-            row = (await session.execute(
-                text("SELECT embedding_dim FROM knowledge_collections WHERE id = :cid LIMIT 1"),
-                {"cid": collection_id},
-            )).fetchone()
+            row = (
+                await session.execute(
+                    text("SELECT embedding_dim FROM knowledge_collections WHERE id = :cid LIMIT 1"),
+                    {"cid": collection_id},
+                )
+            ).fetchone()
             embedding_dim = int(row[0]) if row and row[0] else 1536
         except Exception as exc:
             if strict:
@@ -306,21 +304,13 @@ async def hybrid_search(
         logger.warning("unsupported_embedding_dimension", embedding_dim=embedding_dim)
         return []
     table = f"knowledge_chunks_{embedding_dim}"
-    vector_expression = (
-        "embedding::halfvec(3072)" if embedding_dim == 3072 else "embedding"
-    )
+    vector_expression = "embedding::halfvec(3072)" if embedding_dim == 3072 else "embedding"
     query_vector_expression = (
-        "CAST(:emb AS halfvec(3072))"
-        if embedding_dim == 3072
-        else "CAST(:emb AS vector)"
+        "CAST(:emb AS halfvec(3072))" if embedding_dim == 3072 else "CAST(:emb AS vector)"
     )
-    metadata_clause = (
-        " AND metadata @> CAST(:metadata_filter AS jsonb)" if metadata_filter else ""
-    )
+    metadata_clause = " AND metadata @> CAST(:metadata_filter AS jsonb)" if metadata_filter else ""
     live_chunk_clause = " AND (expires_at IS NULL OR expires_at > now())"
-    metadata_params = (
-        {"metadata_filter": json.dumps(metadata_filter)} if metadata_filter else {}
-    )
+    metadata_params = {"metadata_filter": json.dumps(metadata_filter)} if metadata_filter else {}
 
     # Per-leg result dicts: chunk_id → (content, metadata, rank)
     vector_ranks: dict[str, tuple[str, dict[str, Any], int, float]] = {}
@@ -349,12 +339,15 @@ async def hybrid_search(
                  ORDER BY {vector_expression} <=> {query_vector_expression}, id ASC
                 LIMIT :limit
             """)
-            rows = await session.execute(vec_sql, {
-                "emb": str(query_embedding),
-                "cid": collection_id,
-                "limit": top_k * 3,
-                **metadata_params,
-            })
+            rows = await session.execute(
+                vec_sql,
+                {
+                    "emb": str(query_embedding),
+                    "cid": collection_id,
+                    "limit": top_k * 3,
+                    **metadata_params,
+                },
+            )
             for i, row in enumerate(rows.fetchall()):
                 vector_ranks[row[0]] = (row[1], row[2] or {}, i + 1, float(row[3]))
         except Exception as e:
@@ -386,12 +379,15 @@ async def hybrid_search(
                  ORDER BY score DESC, id ASC
                 LIMIT :limit
             """)
-            rows = await session.execute(fts_sql, {
-                "q": query[:500],
-                "cid": collection_id,
-                "limit": top_k * 3,
-                **metadata_params,
-            })
+            rows = await session.execute(
+                fts_sql,
+                {
+                    "q": query[:500],
+                    "cid": collection_id,
+                    "limit": top_k * 3,
+                    **metadata_params,
+                },
+            )
             for i, row in enumerate(rows.fetchall()):
                 fts_ranks[row[0]] = (row[1], row[2] or {}, i + 1, float(row[3]))
         except Exception as e:
@@ -415,12 +411,15 @@ async def hybrid_search(
                  ORDER BY score DESC, id ASC
                 LIMIT :limit
             """)
-            rows = await session.execute(trgm_sql, {
-                "q": query[:500],
-                "cid": collection_id,
-                "limit": top_k * 2,
-                **metadata_params,
-            })
+            rows = await session.execute(
+                trgm_sql,
+                {
+                    "q": query[:500],
+                    "cid": collection_id,
+                    "limit": top_k * 2,
+                    **metadata_params,
+                },
+            )
             for i, row in enumerate(rows.fetchall()):
                 trgm_ranks[row[0]] = (row[1], row[2] or {}, i + 1, float(row[3]))
         except Exception as e:
@@ -489,9 +488,7 @@ async def hybrid_search(
         return []
 
     # Compute RRF scores
-    fused: list[
-        tuple[str, float, str, dict[str, Any], list[str], dict[str, float]]
-    ] = []
+    fused: list[tuple[str, float, str, dict[str, Any], list[str], dict[str, float]]] = []
     for chunk_id in all_ids:
         ranks: list[int] = []
         legs: list[str] = []
@@ -573,9 +570,7 @@ def _record_leg_evidence(
         {
             "component": component,
             "result_count": len(ranks),
-            "component_scores": {
-                chunk_id: item[3] for chunk_id, item in sorted(ranks.items())
-            },
+            "component_scores": {chunk_id: item[3] for chunk_id, item in sorted(ranks.items())},
             **(detail or {}),
         }
     )
@@ -686,7 +681,7 @@ class RetrievalPlanner:
     """
 
     _LEXICAL_PATTERNS: ClassVar[list[str]] = [
-        r"[A-Z][A-Z0-9]+-\d+",         # JIRA/GitHub IDs
+        r"[A-Z][A-Z0-9]+-\d+",  # JIRA/GitHub IDs
         r"\bticket\b|\bissue\b|\bpr\b",  # ticket/issue references
     ]
 
@@ -745,7 +740,7 @@ async def rerank_results(
     if not results or provider is None:
         return results[:top_k] if top_k else results
 
-    candidates = results[:min(20, len(results))]
+    candidates = results[: min(20, len(results))]
     if not candidates:
         return results[:top_k] if top_k else results
 
@@ -755,9 +750,7 @@ async def rerank_results(
         from app.providers.base import CompletionRequest, Message
 
         # Build a batch relevance scoring prompt
-        passages_text = "\n".join(
-            f"[{i}] {r.content[:300]}" for i, r in enumerate(candidates)
-        )
+        passages_text = "\n".join(f"[{i}] {r.content[:300]}" for i, r in enumerate(candidates))
         prompt = (
             f"Query: {query}\n\n"
             f"Rate each passage for relevance to the query (0=irrelevant, 10=highly relevant).\n"
@@ -803,8 +796,12 @@ async def retrieve_hyde(
         if strict:
             raise RetrievalStrategyExecutionError("hyde", "LLM provider is required")
         return await hybrid_search(
-            session, query=query, query_embedding=query_embedding,
-            collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+            session,
+            query=query,
+            query_embedding=query_embedding,
+            collection_id=collection_id,
+            top_k=top_k,
+            embedding_dim=embedding_dim,
             metadata_filter=metadata_filter,
         )
     if strict and not model.strip():
@@ -813,12 +810,16 @@ async def retrieve_hyde(
         raise RetrievalStrategyExecutionError("hyde", "embedding provider is required")
     try:
         from app.providers.base import CompletionRequest, Message
+
         req = CompletionRequest(
             messages=[
-                Message(role="system", content=(
-                    "Write a 2-3 sentence hypothetical document that would perfectly "
-                    "answer the following question. Write only the document text."
-                )),
+                Message(
+                    role="system",
+                    content=(
+                        "Write a 2-3 sentence hypothetical document that would perfectly "
+                        "answer the following question. Write only the document text."
+                    ),
+                ),
                 Message(role="user", content=f"Question: {query}"),
             ],
             model=model,
@@ -843,9 +844,7 @@ async def retrieve_hyde(
                     EmbedRequest(texts=[hyp_doc], input_type="document")
                 )
                 generated_embedding = (
-                    embedding_response.embeddings[0]
-                    if embedding_response.embeddings
-                    else None
+                    embedding_response.embeddings[0] if embedding_response.embeddings else None
                 )
                 if not generated_embedding:
                     raise ValueError("embedding response was empty")
@@ -856,16 +855,18 @@ async def retrieve_hyde(
         if strategy_evidence is not None:
             strategy_evidence.update(
                 {
-                    "generated_text_sha256": hashlib.sha256(
-                        hyp_doc.encode("utf-8")
-                    ).hexdigest(),
+                    "generated_text_sha256": hashlib.sha256(hyp_doc.encode("utf-8")).hexdigest(),
                     "model": model,
                     "generation": "hypothetical_document",
                 }
             )
         return await hybrid_search(
-            session, query=hyp_doc, query_embedding=generated_embedding,
-            collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+            session,
+            query=hyp_doc,
+            query_embedding=generated_embedding,
+            collection_id=collection_id,
+            top_k=top_k,
+            embedding_dim=embedding_dim,
             metadata_filter=metadata_filter,
             retrieval_mode="vector",
             strict=strict,
@@ -877,8 +878,12 @@ async def retrieve_hyde(
             raise RetrievalStrategyExecutionError("hyde", "algorithm failed") from exc
         logger.warning("hyde_failed_falling_back", error=str(exc)[:80])
         return await hybrid_search(
-            session, query=query, query_embedding=query_embedding,
-            collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+            session,
+            query=query,
+            query_embedding=query_embedding,
+            collection_id=collection_id,
+            top_k=top_k,
+            embedding_dim=embedding_dim,
             metadata_filter=metadata_filter,
         )
 
@@ -897,9 +902,7 @@ async def retrieve_multi_hop(
     embedder: Any = None,
     strict: bool = False,
     max_hops: int = 3,
-    search_operation: Callable[
-        [str, list[float] | None], Awaitable[list[RetrievalResult]]
-    ]
+    search_operation: Callable[[str, list[float] | None], Awaitable[list[RetrievalResult]]]
     | None = None,
     strategy_evidence: list[dict[str, Any]] | None = None,
 ) -> list[RetrievalResult]:
@@ -914,8 +917,12 @@ async def retrieve_multi_hop(
         if session is None:
             return []
         return await hybrid_search(
-            session, query=query, query_embedding=query_embedding,
-            collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+            session,
+            query=query,
+            query_embedding=query_embedding,
+            collection_id=collection_id,
+            top_k=top_k,
+            embedding_dim=embedding_dim,
             metadata_filter=metadata_filter,
         )
     if strict and not model.strip():
@@ -926,12 +933,16 @@ async def retrieve_multi_hop(
         import json as _json
 
         from app.providers.base import CompletionRequest, Message
+
         req = CompletionRequest(
             messages=[
-                Message(role="system", content=(
-                    "Decompose this query into 2-3 specific sub-queries. "
-                    'Return ONLY a JSON array: ["sub-query 1", "sub-query 2"]'
-                )),
+                Message(
+                    role="system",
+                    content=(
+                        "Decompose this query into 2-3 specific sub-queries. "
+                        'Return ONLY a JSON array: ["sub-query 1", "sub-query 2"]'
+                    ),
+                ),
                 Message(role="user", content=f"Query: {query}"),
             ],
             model=model,
@@ -961,9 +972,7 @@ async def retrieve_multi_hop(
         try:
             from app.providers.base import EmbedRequest
 
-            response = await embedder.embed(
-                EmbedRequest(texts=[sub_query], input_type="query")
-            )
+            response = await embedder.embed(EmbedRequest(texts=[sub_query], input_type="query"))
             embedding = response.embeddings[0] if response.embeddings else None
             if not embedding:
                 raise ValueError("embedding response was empty")
@@ -972,9 +981,7 @@ async def retrieve_multi_hop(
             if isinstance(exc, RetrievalStrategyExecutionError):
                 raise
             if strict:
-                raise RetrievalStrategyExecutionError(
-                    "multi_hop", "hop embedding failed"
-                ) from exc
+                raise RetrievalStrategyExecutionError("multi_hop", "hop embedding failed") from exc
             hop_embeddings.append(query_embedding)
 
     per_hop = max(top_k // max(len(sub_queries), 1), 3)
@@ -1024,9 +1031,7 @@ async def retrieve_multi_hop(
                 "hop": index,
                 "query": sub_query,
                 "result_count": len(hop_results),
-                "component_scores": {
-                    result.chunk_id: result.score for result in hop_results
-                },
+                "component_scores": {result.chunk_id: result.score for result in hop_results},
             }
             for index, (sub_query, hop_results) in enumerate(
                 zip(sub_queries, per_hop_results, strict=True), start=1
@@ -1146,10 +1151,15 @@ async def retrieve_fusion(
             raise ValueError("session is required when search_operation is not supplied")
         try:
             return await hybrid_search(
-                session=session, query=q, query_embedding=emb,
-                collection_id=collection_id, top_k=top_k,
-                ef_search=ef_search, embedding_dim=embedding_dim,
-                metadata_filter=metadata_filter, strict=strict,
+                session=session,
+                query=q,
+                query_embedding=emb,
+                collection_id=collection_id,
+                top_k=top_k,
+                ef_search=ef_search,
+                embedding_dim=embedding_dim,
+                metadata_filter=metadata_filter,
+                strict=strict,
             )
         except Exception as exc:
             if strict:
@@ -1196,9 +1206,7 @@ async def retrieve_fusion(
                 "variant": index,
                 "query": variant,
                 "result_count": len(variant_results),
-                "component_scores": {
-                    result.chunk_id: result.score for result in variant_results
-                },
+                "component_scores": {result.chunk_id: result.score for result in variant_results},
             }
             for index, (variant, variant_results) in enumerate(
                 zip(variants, per_variant_results, strict=True), start=1
@@ -1239,26 +1247,39 @@ async def retrieve(
     try:
         if strategy == "hyde":
             return await retrieve_hyde(
-                session, query=query, query_embedding=query_embedding,
-                collection_id=collection_id, provider=provider,
-                model=model, top_k=top_k, embedding_dim=embedding_dim,
+                session,
+                query=query,
+                query_embedding=query_embedding,
+                collection_id=collection_id,
+                provider=provider,
+                model=model,
+                top_k=top_k,
+                embedding_dim=embedding_dim,
                 metadata_filter=metadata_filter,
                 embedder=embedder,
                 strict=strict,
             )
         if strategy == "multi_hop":
             return await retrieve_multi_hop(
-                session, query=query, query_embedding=query_embedding,
-                collection_id=collection_id, provider=provider,
-                model=model, top_k=top_k, embedding_dim=embedding_dim,
+                session,
+                query=query,
+                query_embedding=query_embedding,
+                collection_id=collection_id,
+                provider=provider,
+                model=model,
+                top_k=top_k,
+                embedding_dim=embedding_dim,
                 metadata_filter=metadata_filter,
                 embedder=embedder,
                 strict=strict,
             )
         if strategy == "fusion":
             return await retrieve_fusion(
-                session, query=query, query_embedding=query_embedding,
-                collection_id=collection_id, top_k=top_k,
+                session,
+                query=query,
+                query_embedding=query_embedding,
+                collection_id=collection_id,
+                top_k=top_k,
                 embedding_dim=embedding_dim,
                 embedder=embedder or provider,
                 provider=provider,
@@ -1270,17 +1291,20 @@ async def retrieve(
             # CRAG: run hybrid search, check confidence, web fallback via RetrieverTool
             try:
                 base_results = await hybrid_search(
-                    session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k,
-                    retrieval_mode="hybrid", embedding_dim=embedding_dim,
-                    metadata_filter=metadata_filter, strict=strict,
+                    session,
+                    query=query,
+                    query_embedding=query_embedding,
+                    collection_id=collection_id,
+                    top_k=top_k,
+                    retrieval_mode="hybrid",
+                    embedding_dim=embedding_dim,
+                    metadata_filter=metadata_filter,
+                    strict=strict,
                 )
                 # CRAG correction: if low confidence, the caller (RetrieverTool.retrieve_corrective)
                 # handles web fallback. At engine level, return base results + confidence metadata.
                 avg_conf = (
-                    sum(r.score for r in base_results) / len(base_results)
-                    if base_results
-                    else 0.0
+                    sum(r.score for r in base_results) / len(base_results) if base_results else 0.0
                 )
                 if base_results and avg_conf < 0.5:
                     # Tag results as low-confidence for CRAG layer to act on
@@ -1290,13 +1314,15 @@ async def retrieve(
                 return base_results
             except Exception as exc:
                 if strict:
-                    raise RetrievalStrategyExecutionError(
-                        "corrective", "algorithm failed"
-                    ) from exc
+                    raise RetrievalStrategyExecutionError("corrective", "algorithm failed") from exc
                 logger.warning("corrective_rag_failed", error=str(exc)[:80])
                 return await hybrid_search(
-                    session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    session,
+                    query=query,
+                    query_embedding=query_embedding,
+                    collection_id=collection_id,
+                    top_k=top_k,
+                    embedding_dim=embedding_dim,
                     metadata_filter=metadata_filter,
                 )
 
@@ -1305,20 +1331,27 @@ async def retrieve(
             # When no provider given, fall back to hybrid
             if provider is None:
                 if strict:
-                    raise RetrievalStrategyExecutionError(
-                        strategy, "LLM provider is required"
-                    )
+                    raise RetrievalStrategyExecutionError(strategy, "LLM provider is required")
                 return await hybrid_search(
-                    session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    session,
+                    query=query,
+                    query_embedding=query_embedding,
+                    collection_id=collection_id,
+                    top_k=top_k,
+                    embedding_dim=embedding_dim,
                     metadata_filter=metadata_filter,
                 )
             try:
                 base_results = await hybrid_search(
-                    session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k,
-                    retrieval_mode="hybrid", embedding_dim=embedding_dim,
-                    metadata_filter=metadata_filter, strict=strict,
+                    session,
+                    query=query,
+                    query_embedding=query_embedding,
+                    collection_id=collection_id,
+                    top_k=top_k,
+                    retrieval_mode="hybrid",
+                    embedding_dim=embedding_dim,
+                    metadata_filter=metadata_filter,
+                    strict=strict,
                 )
                 if not base_results:
                     return base_results
@@ -1326,13 +1359,18 @@ async def retrieve(
                 context_text = "\n".join(r.content[:300] for r in base_results[:5])
                 if strategy == "flare":
                     from app.rag.agentic.patterns.flare import FLAREPattern
+
                     flare_pattern = FLAREPattern()
 
                     async def _flare_retrieve(q: str, **kw: Any) -> str:
                         extra = await hybrid_search(
-                            session, query=q, query_embedding=query_embedding,
-                            collection_id=collection_id, top_k=3,
-                            embedding_dim=embedding_dim, metadata_filter=metadata_filter,
+                            session,
+                            query=q,
+                            query_embedding=query_embedding,
+                            collection_id=collection_id,
+                            top_k=3,
+                            embedding_dim=embedding_dim,
+                            metadata_filter=metadata_filter,
                             strict=strict,
                         )
                         return "\n".join(r.content[:300] for r in extra)
@@ -1346,6 +1384,7 @@ async def retrieve(
                     )
                 elif strategy == "self_rag":
                     from app.rag.agentic.patterns.self_rag import SelfRAGPattern
+
                     self_rag_pattern = SelfRAGPattern()
 
                     async def _self_rag_retrieve(q: str, **kw: Any) -> str:
@@ -1375,35 +1414,47 @@ async def retrieve(
                     raise RetrievalStrategyExecutionError(strategy, "algorithm failed") from exc
                 logger.warning(f"{strategy}_rag_failed", error=str(exc)[:80])
                 return await hybrid_search(
-                    session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    session,
+                    query=query,
+                    query_embedding=query_embedding,
+                    collection_id=collection_id,
+                    top_k=top_k,
+                    embedding_dim=embedding_dim,
                     metadata_filter=metadata_filter,
                 )
 
         if strategy == "speculative":
             try:
                 if strict and provider is None:
-                    raise RetrievalStrategyExecutionError(
-                        "speculative", "LLM provider is required"
-                    )
+                    raise RetrievalStrategyExecutionError("speculative", "LLM provider is required")
                 base_results = await hybrid_search(
-                    session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k,
-                    embedding_dim=embedding_dim, metadata_filter=metadata_filter, strict=strict,
+                    session,
+                    query=query,
+                    query_embedding=query_embedding,
+                    collection_id=collection_id,
+                    top_k=top_k,
+                    embedding_dim=embedding_dim,
+                    metadata_filter=metadata_filter,
+                    strict=strict,
                 )
                 if not base_results or provider is None:
                     return base_results
 
                 async def _spec_retrieve(q: str, **kw: Any) -> str:
                     r = await hybrid_search(
-                        session, query=q, query_embedding=query_embedding,
-                        collection_id=collection_id, top_k=3,
-                        embedding_dim=embedding_dim, metadata_filter=metadata_filter,
+                        session,
+                        query=q,
+                        query_embedding=query_embedding,
+                        collection_id=collection_id,
+                        top_k=3,
+                        embedding_dim=embedding_dim,
+                        metadata_filter=metadata_filter,
                         strict=strict,
                     )
                     return "\n".join(x.content[:300] for x in r)
 
                 from app.rag.agentic.patterns.speculative import SpeculativeRAGPattern
+
                 speculative_pattern = SpeculativeRAGPattern(n_candidates=2)
                 best = await speculative_pattern.execute(
                     query=query,
@@ -1433,8 +1484,12 @@ async def retrieve(
                     ) from exc
                 logger.warning("speculative_rag_failed", error=str(exc)[:80])
                 return await hybrid_search(
-                    session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    session,
+                    query=query,
+                    query_embedding=query_embedding,
+                    collection_id=collection_id,
+                    top_k=top_k,
+                    embedding_dim=embedding_dim,
                     metadata_filter=metadata_filter,
                 )
 
@@ -1454,9 +1509,7 @@ async def retrieve(
                     strict=True,
                 )
                 for result in results:
-                    result.retrieval_legs = list(
-                        dict.fromkeys([*result.retrieval_legs, "raptor"])
-                    )
+                    result.retrieval_legs = list(dict.fromkeys([*result.retrieval_legs, "raptor"]))
                     result.source_metadata["strategy"] = "raptor"
                 return results
             except Exception as exc:
@@ -1467,18 +1520,28 @@ async def retrieve(
         if strategy == "colbert":
             try:
                 base_results = await hybrid_search(
-                    session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k * 2,
-                    embedding_dim=embedding_dim, metadata_filter=metadata_filter, strict=strict,
+                    session,
+                    query=query,
+                    query_embedding=query_embedding,
+                    collection_id=collection_id,
+                    top_k=top_k * 2,
+                    embedding_dim=embedding_dim,
+                    metadata_filter=metadata_filter,
+                    strict=strict,
                 )
                 if not base_results:
                     return base_results
                 chunks = [
-                    {"content": r.content, "chunk_id": r.chunk_id, "score": r.score,
-                     "source_metadata": r.source_metadata}
+                    {
+                        "content": r.content,
+                        "chunk_id": r.chunk_id,
+                        "score": r.score,
+                        "source_metadata": r.source_metadata,
+                    }
                     for r in base_results
                 ]
                 from app.rag.agentic.patterns.colbert import ColBERTPattern
+
                 colbert_pattern = ColBERTPattern(alpha=0.5)
                 try:
                     reranked = await colbert_pattern.rerank_async(
@@ -1506,8 +1569,12 @@ async def retrieve(
                     raise RetrievalStrategyExecutionError("colbert", "algorithm failed") from exc
                 logger.warning("colbert_failed", error=str(exc)[:80])
                 return await hybrid_search(
-                    session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    session,
+                    query=query,
+                    query_embedding=query_embedding,
+                    collection_id=collection_id,
+                    top_k=top_k,
+                    embedding_dim=embedding_dim,
                     metadata_filter=metadata_filter,
                 )
 
@@ -1598,19 +1665,28 @@ async def retrieve(
             # Graph retrieval via KnowledgeGraphStore
             try:
                 from app.state_runtime.kg_query_engine import KGQueryEngine  # noqa: F401
+
                 # KGQueryEngine needs a kg_store — pass provider as proxy if no store available
                 # For now return empty with a log — real wiring needs kg_store injection
                 logger.info("graph_strategy_requested_no_store_fallback", query=query[:60])
                 return await hybrid_search(
-                    session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    session,
+                    query=query,
+                    query_embedding=query_embedding,
+                    collection_id=collection_id,
+                    top_k=top_k,
+                    embedding_dim=embedding_dim,
                     metadata_filter=metadata_filter,
                 )
             except Exception as exc:
                 logger.warning("graph_strategy_failed", error=str(exc)[:80])
                 return await hybrid_search(
-                    session, query=query, query_embedding=query_embedding,
-                    collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+                    session,
+                    query=query,
+                    query_embedding=query_embedding,
+                    collection_id=collection_id,
+                    top_k=top_k,
+                    embedding_dim=embedding_dim,
                     metadata_filter=metadata_filter,
                 )
 
@@ -1622,9 +1698,14 @@ async def retrieve(
             else retrieval_mode
         )
         return await hybrid_search(
-            session, query=query, query_embedding=query_embedding,
-            collection_id=collection_id, top_k=top_k,
-            retrieval_mode=mode, embedding_dim=embedding_dim, strict=strict,
+            session,
+            query=query,
+            query_embedding=query_embedding,
+            collection_id=collection_id,
+            top_k=top_k,
+            retrieval_mode=mode,
+            embedding_dim=embedding_dim,
+            strict=strict,
             metadata_filter=metadata_filter,
         )
     except Exception as exc:
@@ -1632,7 +1713,11 @@ async def retrieve(
             raise
         logger.warning("retrieve_dispatch_failed", strategy=strategy, error=str(exc)[:80])
         return await hybrid_search(
-            session, query=query, query_embedding=query_embedding,
-            collection_id=collection_id, top_k=top_k, embedding_dim=embedding_dim,
+            session,
+            query=query,
+            query_embedding=query_embedding,
+            collection_id=collection_id,
+            top_k=top_k,
+            embedding_dim=embedding_dim,
             metadata_filter=metadata_filter,
         )

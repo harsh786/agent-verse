@@ -4,6 +4,7 @@ Extracted from GoalService to reduce the God-class size.
 Handles: _dispatch_event, subscribe_events, _persist_event,
          _events_for_replay, _list_persisted_events, get_events
 """
+
 from __future__ import annotations
 
 # This module is intentionally thin - it documents the intent to extract
@@ -17,7 +18,6 @@ from __future__ import annotations
 #
 # Current status: Methods documented here, still implemented in GoalService.
 # Migration tracked in: docs/refactoring/goal_service_decomp.md
-
 # Re-export the event key utilities for use by tests and other services
 from app.services.goal_service import GoalService as _GS
 

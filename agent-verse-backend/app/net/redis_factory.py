@@ -13,6 +13,7 @@ URL formats:
   Cluster:  REDIS_CLUSTER_NODES=host1:6379,host2:6379,host3:6379
   Single:   REDIS_URL=redis://host:6379/0  (or rediss:// for TLS)
 """
+
 from __future__ import annotations
 
 import os
@@ -69,8 +70,7 @@ def make_async_redis(
             from redis.asyncio.cluster import ClusterNode, RedisCluster  # type: ignore[import]
 
             startup_nodes = [
-                ClusterNode(h, p)
-                for h, p in _parse_host_port_list(cluster_nodes, 6379)
+                ClusterNode(h, p) for h, p in _parse_host_port_list(cluster_nodes, 6379)
             ]
             password = os.getenv("REDIS_CLUSTER_PASSWORD") or os.getenv("REDIS_PASSWORD") or None
             return RedisCluster(
@@ -111,8 +111,7 @@ def make_sync_redis(
             from redis.cluster import ClusterNode, RedisCluster  # type: ignore[import]
 
             startup_nodes = [
-                ClusterNode(h, p)
-                for h, p in _parse_host_port_list(cluster_nodes, 6379)
+                ClusterNode(h, p) for h, p in _parse_host_port_list(cluster_nodes, 6379)
             ]
             password = os.getenv("REDIS_CLUSTER_PASSWORD") or os.getenv("REDIS_PASSWORD") or None
             return RedisCluster(startup_nodes=startup_nodes, password=password, **kwargs)

@@ -1,4 +1,5 @@
 """RerankPolicy — deduplication, score-based and diversity reranking."""
+
 from __future__ import annotations
 
 import enum
@@ -26,8 +27,7 @@ def rrf_fuse(ranked_lists: list[list[dict]], k: int = 60) -> list[dict]:
             scores[chunk_id] += 1.0 / (k + rank)
             docs[chunk_id] = chunk
     sorted_ids = sorted(scores, key=lambda cid: scores[cid], reverse=True)
-    return [{**docs[cid], "rrf_score": scores[cid], "score": scores[cid]}
-            for cid in sorted_ids]
+    return [{**docs[cid], "rrf_score": scores[cid], "score": scores[cid]} for cid in sorted_ids]
 
 
 class RerankPolicy:
@@ -147,10 +147,7 @@ class RerankPolicy:
                 if not selected:
                     mmr_score = relevance
                 else:
-                    max_sim = max(
-                        self._cosine(emb, s.get("embedding", []))
-                        for s in selected
-                    )
+                    max_sim = max(self._cosine(emb, s.get("embedding", [])) for s in selected)
                     mmr_score = lambda_ * relevance - (1 - lambda_) * max_sim
                 if mmr_score > best_score:
                     best_score = mmr_score
@@ -164,8 +161,8 @@ class RerankPolicy:
 
     def _jaccard(self, text_a: str, text_b: str) -> float:
         """Token-level Jaccard similarity as fallback."""
-        tokens_a = set(re.findall(r'\b\w+\b', text_a.lower()))
-        tokens_b = set(re.findall(r'\b\w+\b', text_b.lower()))
+        tokens_a = set(re.findall(r"\b\w+\b", text_a.lower()))
+        tokens_b = set(re.findall(r"\b\w+\b", text_b.lower()))
         if not tokens_a or not tokens_b:
             return 0.0
         return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
@@ -247,7 +244,7 @@ class RerankPolicy:
         self,
         chunks: list[dict[str, Any]],
         query: str,
-        strategy: "RerankStrategy | None" = None,
+        strategy: RerankStrategy | None = None,
         query_embedding: list[float] | None = None,
     ) -> list[dict[str, Any]]:
         """Async reranking — cross-encoder via thread pool for blocking inference."""
@@ -259,9 +256,7 @@ class RerankPolicy:
             # Run blocking cross-encoder in thread pool
             loop = asyncio.get_event_loop()
             try:
-                result = await loop.run_in_executor(
-                    None, self._cross_encoder_rerank, chunks, query
-                )
+                result = await loop.run_in_executor(None, self._cross_encoder_rerank, chunks, query)
                 return result
             except Exception:
                 return self._tfidf_rerank(chunks, query)
@@ -273,11 +268,8 @@ class RerankPolicy:
 
     def _tfidf_rerank(self, chunks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
         """TF-IDF weighted token overlap reranking (improved fallback)."""
-        query_tokens = set(re.findall(r'\b\w+\b', query.lower()))
-        all_doc_tokens = [
-            re.findall(r'\b\w+\b', c.get("content", "").lower())
-            for c in chunks
-        ]
+        query_tokens = set(re.findall(r"\b\w+\b", query.lower()))
+        all_doc_tokens = [re.findall(r"\b\w+\b", c.get("content", "").lower()) for c in chunks]
         N = len(chunks)
 
         def idf(token: str) -> float:
@@ -289,10 +281,7 @@ class RerankPolicy:
             doc_tokens = all_doc_tokens[i]
             doc_freq = Counter(doc_tokens)
             total = len(doc_tokens) or 1
-            tfidf_score = sum(
-                (doc_freq.get(t, 0) / total) * idf(t)
-                for t in query_tokens
-            )
+            tfidf_score = sum((doc_freq.get(t, 0) / total) * idf(t) for t in query_tokens)
             original_score = float(chunk.get("score", 0.5))
             final = 0.4 * original_score + 0.6 * min(tfidf_score, 1.0)
             scored.append({**chunk, "score": final})
@@ -300,8 +289,6 @@ class RerankPolicy:
         scored.sort(key=lambda c: c["score"], reverse=True)
         return scored
 
-    def _llm_rerank_sync(
-        self, chunks: list[dict[str, Any]], query: str
-    ) -> list[dict[str, Any]]:
+    def _llm_rerank_sync(self, chunks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
         """Cross-encoder reranking (uses sentence-transformers when available, else TF-IDF)."""
         return self._cross_encoder_rerank(chunks, query)

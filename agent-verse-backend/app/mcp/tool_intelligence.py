@@ -26,11 +26,11 @@ Usage (in MCPClient.call_tool):
     if not result.success and SelfHealingToolCaller.is_argument_error(result.error):
         result = await healer.heal(tool_name, tool_schema, raw_arguments, result, ...)
 """
+
 from __future__ import annotations
 
 import json
 import re
-import string
 from typing import Any
 
 from app.observability.logging import get_logger
@@ -44,40 +44,49 @@ logger = get_logger(__name__)
 # declares "jql" but the LLM sends "query", this resolves it automatically.
 _SEMANTIC_ALIASES: dict[str, list[str]] = {
     # Jira
-    "jql":                  ["query", "jql_query", "search_query", "jql_string", "filter", "search"],
-    "issue_id_or_key":      ["issue_key", "issue_id", "key", "ticket", "ticket_id", "issue"],
-    "project_key":          ["project", "project_id", "project_name"],
-    "summary":              ["title", "name", "subject", "issue_title", "description_short"],
-    "description":          ["body", "content", "details", "issue_description", "long_description"],
-    "assignee_account_id":  ["assignee", "assignee_id", "user_id", "user"],
-    "transition_id":        ["transition", "status_id", "workflow_transition"],
+    "jql": ["query", "jql_query", "search_query", "jql_string", "filter", "search"],
+    "issue_id_or_key": ["issue_key", "issue_id", "key", "ticket", "ticket_id", "issue"],
+    "project_key": ["project", "project_id", "project_name"],
+    "summary": ["title", "name", "subject", "issue_title", "description_short"],
+    "description": ["body", "content", "details", "issue_description", "long_description"],
+    "assignee_account_id": ["assignee", "assignee_id", "user_id", "user"],
+    "transition_id": ["transition", "status_id", "workflow_transition"],
     # Confluence
-    "space_key":            ["space", "space_id", "space_name", "confluence_space"],
-    "body":                 ["content", "text", "page_content", "html", "wiki_content", "markup",
-                             "page_body", "page_text", "storage"],
-    "cql":                  ["query", "confluence_query", "search_query", "search"],
-    "page_id":              ["id", "confluence_id", "page", "content_id"],
-    "parent_page_id":       ["parent", "parent_id", "parent_page"],
+    "space_key": ["space", "space_id", "space_name", "confluence_space"],
+    "body": [
+        "content",
+        "text",
+        "page_content",
+        "html",
+        "wiki_content",
+        "markup",
+        "page_body",
+        "page_text",
+        "storage",
+    ],
+    "cql": ["query", "confluence_query", "search_query", "search"],
+    "page_id": ["id", "confluence_id", "page", "content_id"],
+    "parent_page_id": ["parent", "parent_id", "parent_page"],
     # Slack
-    "channel":              ["channel_id", "channel_name", "slack_channel", "room"],
-    "message":              ["text", "content", "msg", "body", "slack_message"],
-    "thread_ts":            ["thread", "thread_id", "reply_to", "parent_ts"],
+    "channel": ["channel_id", "channel_name", "slack_channel", "room"],
+    "message": ["text", "content", "msg", "body", "slack_message"],
+    "thread_ts": ["thread", "thread_id", "reply_to", "parent_ts"],
     # GitHub / GitLab
-    "repo":                 ["repository", "repo_name", "github_repo", "project"],
-    "owner":                ["org", "organisation", "organization", "user", "github_owner"],
-    "pr_number":            ["pull_request", "pr_id", "pull_request_number", "pr"],
-    "branch":               ["ref", "branch_name", "git_branch"],
+    "repo": ["repository", "repo_name", "github_repo", "project"],
+    "owner": ["org", "organisation", "organization", "user", "github_owner"],
+    "pr_number": ["pull_request", "pr_id", "pull_request_number", "pr"],
+    "branch": ["ref", "branch_name", "git_branch"],
     # Email / messaging
-    "to":                   ["recipient", "email", "recipients", "address", "to_email"],
-    "subject":              ["title", "email_subject", "topic"],
+    "to": ["recipient", "email", "recipients", "address", "to_email"],
+    "subject": ["title", "email_subject", "topic"],
     # Generic
-    "id":                   ["identifier", "resource_id", "object_id"],
-    "name":                 ["title", "label", "display_name"],
-    "url":                  ["link", "href", "endpoint", "uri"],
-    "token":                ["api_key", "access_token", "auth_token", "key"],
-    "limit":                ["max", "max_results", "count", "page_size", "size"],
-    "max_results":           ["limit", "count", "max", "page_size", "size", "n", "num"],
-    "offset":               ["start", "start_at", "skip", "from"],
+    "id": ["identifier", "resource_id", "object_id"],
+    "name": ["title", "label", "display_name"],
+    "url": ["link", "href", "endpoint", "uri"],
+    "token": ["api_key", "access_token", "auth_token", "key"],
+    "limit": ["max", "max_results", "count", "page_size", "size"],
+    "max_results": ["limit", "count", "max", "page_size", "size", "n", "num"],
+    "offset": ["start", "start_at", "skip", "from"],
 }
 
 # Build reverse map: alias → canonical names (for fast lookup)
@@ -150,9 +159,7 @@ class UniversalArgumentResolver:
         # Remove keys that are clearly wrong (not in schema) to avoid noise
         # Only when the schema is exhaustive (additionalProperties: false)
         if tool_schema.get("additionalProperties") is False:
-            resolved = {
-                k: v for k, v in resolved.items() if k in properties
-            }
+            resolved = {k: v for k, v in resolved.items() if k in properties}
 
         return resolved
 
@@ -237,9 +244,7 @@ _ARGUMENT_ERROR_PATTERNS = [
     r"^['\"][\w]+['\"]$",
 ]
 
-_ARGUMENT_ERROR_RE = re.compile(
-    "|".join(_ARGUMENT_ERROR_PATTERNS), re.IGNORECASE
-)
+_ARGUMENT_ERROR_RE = re.compile("|".join(_ARGUMENT_ERROR_PATTERNS), re.IGNORECASE)
 
 
 class SelfHealingToolCaller:
@@ -314,9 +319,7 @@ class SelfHealingToolCaller:
 
         # Step 3: Extract parameter name from KeyError and use schema default
         if tool_schema:
-            healed = self._extract_and_inject(
-                tool_name, tool_schema, original_arguments, error_msg
-            )
+            healed = self._extract_and_inject(tool_name, tool_schema, original_arguments, error_msg)
             if healed != original_arguments:
                 return healed
 
@@ -417,6 +420,7 @@ Produce a corrected JSON object with the right parameter names and values.
 
 
 # ── 3. Schema-Aware Prompt Injector ─────────────────────────────────────────────
+
 
 class SchemaAwarePromptInjector:
     """

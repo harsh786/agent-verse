@@ -1,4 +1,5 @@
 """Monitoring alert parsers — Grafana, CloudWatch, Sentry, log_pattern."""
+
 from __future__ import annotations
 
 import logging

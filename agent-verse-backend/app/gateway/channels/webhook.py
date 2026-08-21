@@ -3,6 +3,7 @@
 Any external system can POST to /v1/gateway/{org_id}/webhook
 with a valid HMAC-SHA256 signature to trigger org commands.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -30,7 +31,10 @@ class WebhookChannelAdapter(ChannelAdapter):
         self._secret = webhook_secret or os.getenv("WEBHOOK_SECRET", "")
 
     async def normalize(
-        self, raw_payload: dict[str, Any], tenant_id: str, org_id: str,
+        self,
+        raw_payload: dict[str, Any],
+        tenant_id: str,
+        org_id: str,
     ) -> OrgCommand:
         with _tracer.start_as_current_span("webhook.normalize"):
             command_id = str(uuid.uuid4())
@@ -63,16 +67,24 @@ class WebhookChannelAdapter(ChannelAdapter):
         }
 
     async def verify_auth(
-        self, request_headers: dict[str, str], raw_payload: dict[str, Any],
+        self,
+        request_headers: dict[str, str],
+        raw_payload: dict[str, Any],
     ) -> bool:
         if not self._secret:
             return True
         signature = request_headers.get("x-webhook-signature", "")
-        import json as _json  # noqa: PLC0415
+        import json as _json
+
         body = _json.dumps(raw_payload, separators=(",", ":")).encode()
-        computed = "sha256=" + hmac.new(
-            self._secret.encode(), body, hashlib.sha256,
-        ).hexdigest()
+        computed = (
+            "sha256="
+            + hmac.new(
+                self._secret.encode(),
+                body,
+                hashlib.sha256,
+            ).hexdigest()
+        )
         return hmac.compare_digest(computed, signature)
 
 

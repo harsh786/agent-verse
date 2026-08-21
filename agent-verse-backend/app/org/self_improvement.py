@@ -15,9 +15,9 @@ Self-Healing (PART 25):
 Organizational Learning (PART 26):
   10 learning categories, anti-poisoning via EvalRunner gate
 """
+
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -32,13 +32,14 @@ _tracer = trace.get_tracer(__name__)
 
 # ── PART 25: Recovery Hierarchy ───────────────────────────────────────────────
 
+
 class RecoveryAction(str, Enum):
-    RETRY           = "retry"
-    MODEL_FALLBACK  = "model_fallback"
-    REASSIGN        = "reassign"
-    ESCALATE        = "escalate"
-    PAUSE_ALERT     = "pause_alert"
-    HUMAN_REQUIRED  = "human_required"
+    RETRY = "retry"
+    MODEL_FALLBACK = "model_fallback"
+    REASSIGN = "reassign"
+    ESCALATE = "escalate"
+    PAUSE_ALERT = "pause_alert"
+    HUMAN_REQUIRED = "human_required"
 
 
 @dataclass
@@ -138,9 +139,12 @@ class OrgRecoveryHierarchy:
 
         # NEVER auto-heal (PART 25 hard limits)
         if failure_type in (
-            "production_infra_change", "mass_data_delete",
-            "financial_transfer", "legal_agreement",
-            "press_release", "mass_pii_operation",
+            "production_infra_change",
+            "mass_data_delete",
+            "financial_transfer",
+            "legal_agreement",
+            "press_release",
+            "mass_pii_operation",
         ):
             return RecoveryResult(
                 action=RecoveryAction.HUMAN_REQUIRED,
@@ -158,22 +162,24 @@ class OrgRecoveryHierarchy:
 
 # ── PART 26: Organizational Learning ─────────────────────────────────────────
 
+
 class LearningCategory(str, Enum):
-    TEAM_COMPOSITION     = "team_composition"
-    MODEL_ROUTING        = "model_routing"
-    TOOL_RELIABILITY     = "tool_reliability"
-    WORKFLOW_PATTERNS    = "workflow_patterns"
-    KNOWLEDGE_QUALITY    = "knowledge_quality"
-    COLLABORATION        = "collaboration"
-    COST_PATTERNS        = "cost_patterns"
-    RISK_INDICATORS      = "risk_indicators"
-    APPROVAL_PATTERNS    = "approval_patterns"
+    TEAM_COMPOSITION = "team_composition"
+    MODEL_ROUTING = "model_routing"
+    TOOL_RELIABILITY = "tool_reliability"
+    WORKFLOW_PATTERNS = "workflow_patterns"
+    KNOWLEDGE_QUALITY = "knowledge_quality"
+    COLLABORATION = "collaboration"
+    COST_PATTERNS = "cost_patterns"
+    RISK_INDICATORS = "risk_indicators"
+    APPROVAL_PATTERNS = "approval_patterns"
     AGENT_SPECIALIZATION = "agent_specialization"
 
 
 @dataclass
 class OrgLesson:
     """A lesson learned from mission execution."""
+
     id: str
     category: LearningCategory
     title: str
@@ -184,7 +190,7 @@ class OrgLesson:
     evidence: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
-    status: str = "pending"   # pending | validated | promoted | quarantined
+    status: str = "pending"  # pending | validated | promoted | quarantined
     validated_by: str | None = None
 
 
@@ -200,8 +206,8 @@ class OrgLearningSystem:
     - Low-confidence lessons decay unless reinforced
     """
 
-    MIN_CONFIDENCE    = 0.70
-    MIN_EVIDENCE_COUNT = 2    # must have at least 2 supporting examples to promote
+    MIN_CONFIDENCE = 0.70
+    MIN_EVIDENCE_COUNT = 2  # must have at least 2 supporting examples to promote
 
     def __init__(self) -> None:
         self._lessons: dict[str, OrgLesson] = {}
@@ -218,9 +224,9 @@ class OrgLearningSystem:
             raise ValueError("Lesson content contains potential PII. Rejected.")
 
         self._lessons[lesson.id] = lesson
-        _log.info("learning.lesson_added",
-                  category=lesson.category.value,
-                  confidence=lesson.confidence)
+        _log.info(
+            "learning.lesson_added", category=lesson.category.value, confidence=lesson.confidence
+        )
         return lesson.id
 
     def validate_lesson(self, lesson_id: str, validator: str) -> bool:
@@ -230,8 +236,11 @@ class OrgLearningSystem:
             return False
         if len(lesson.evidence) < self.MIN_EVIDENCE_COUNT:
             lesson.status = "pending"
-            _log.info("learning.insufficient_evidence",
-                      lesson_id=lesson_id, evidence_count=len(lesson.evidence))
+            _log.info(
+                "learning.insufficient_evidence",
+                lesson_id=lesson_id,
+                evidence_count=len(lesson.evidence),
+            )
             return False
 
         lesson.status = "validated"
@@ -255,7 +264,8 @@ class OrgLearningSystem:
         status_order = {"pending": 0, "validated": 1, "promoted": 2, "quarantined": -1}
         min_order = status_order.get(min_status, 0)
         return [
-            l for l in self._lessons.values()
+            l
+            for l in self._lessons.values()
             if l.category == category and status_order.get(l.status, -1) >= min_order
         ]
 
@@ -263,38 +273,41 @@ class OrgLearningSystem:
     def _contains_pii(text: str) -> bool:
         """Basic PII detection to block from shared memory."""
         import re
+
         patterns = [
-            r"\b\d{3}-\d{2}-\d{4}\b",        # SSN
-            r"\b4[0-9]{12}(?:[0-9]{3})?\b",   # Visa
+            r"\b\d{3}-\d{2}-\d{4}\b",  # SSN
+            r"\b4[0-9]{12}(?:[0-9]{3})?\b",  # Visa
         ]
         return any(re.search(p, text) for p in patterns)
 
 
 # ── PART 24: Self-Improvement Cycle ──────────────────────────────────────────
 
+
 class ImprovementCyclePhase(str, Enum):
-    OBSERVE    = "observe"
-    ANALYZE    = "analyze"
+    OBSERVE = "observe"
+    ANALYZE = "analyze"
     HYPOTHESIZE = "hypothesize"
-    SIMULATE   = "simulate"
-    EVALUATE   = "evaluate"
-    REVIEW     = "review"
-    CANARY     = "canary"
-    DEPLOY     = "deploy"
-    MONITOR    = "monitor"
+    SIMULATE = "simulate"
+    EVALUATE = "evaluate"
+    REVIEW = "review"
+    CANARY = "canary"
+    DEPLOY = "deploy"
+    MONITOR = "monitor"
 
 
 @dataclass
 class ImprovementProposal:
     """An improvement proposal from the self-optimization cycle."""
+
     id: str
-    area: str                # model_routing | team_composition | workflow_patterns | etc.
+    area: str  # model_routing | team_composition | workflow_patterns | etc.
     hypothesis: str
     expected_improvement_pct: float
     confidence: float
     evidence: list[str] = field(default_factory=list)
     phase: ImprovementCyclePhase = ImprovementCyclePhase.OBSERVE
-    canary_pct: float = 0.05     # 5% traffic for canary
+    canary_pct: float = 0.05  # 5% traffic for canary
     approved_by: str | None = None
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     deployed_at: str | None = None
@@ -341,6 +354,7 @@ class OrgSelfImprovementEngine:
             raise ValueError(f"Unknown improvement area: {area}. Valid: {self.IMPROVABLE_AREAS}")
 
         import uuid
+
         proposal = ImprovementProposal(
             id=f"imp_{uuid.uuid4().hex[:12]}",
             area=area,
@@ -374,8 +388,9 @@ class OrgSelfImprovementEngine:
             proposal.phase = phase_order[current_idx + 1]
             if proposal.phase == ImprovementCyclePhase.DEPLOY:
                 proposal.deployed_at = datetime.now(UTC).isoformat()
-            _log.info("improvement.phase_advanced",
-                      proposal_id=proposal_id, phase=proposal.phase.value)
+            _log.info(
+                "improvement.phase_advanced", proposal_id=proposal_id, phase=proposal.phase.value
+            )
 
         return proposal.phase.value
 
@@ -384,7 +399,7 @@ class OrgSelfImprovementEngine:
         proposal = self._proposals.get(proposal_id)
         if not proposal:
             return
-        proposal.phase = ImprovementCyclePhase.OBSERVE   # back to start
+        proposal.phase = ImprovementCyclePhase.OBSERVE  # back to start
         proposal.rollback_at = datetime.now(UTC).isoformat()
         _log.info("improvement.rolled_back", proposal_id=proposal_id, reason=reason)
 

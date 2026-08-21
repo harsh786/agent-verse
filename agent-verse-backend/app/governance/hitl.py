@@ -8,6 +8,7 @@ Dual-mode implementation:
 The Redis BLPOP path survives server restarts and works across multiple replicas
 because the approval result is stored in a Redis list (not process memory).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,9 +17,10 @@ import enum
 import json
 import time
 import uuid
+from collections.abc import Generator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Generator, cast
+from typing import Any, cast
 
 from app.tenancy.context import TenantContext
 
@@ -88,7 +90,7 @@ class ApprovalRequest:
 
     # ── Dual-mode (sync + await) support ──────────────────────────────────────
 
-    def __await__(self) -> Generator[Any, None, "ApprovalRequest"]:
+    def __await__(self) -> Generator[Any, None, ApprovalRequest]:
         """Enable ``req = await gateway.request_approval(...)``."""
         return self
         yield  # makes this a generator function — required for __await__
@@ -146,6 +148,7 @@ class HITLGateway:
         Also sets ``_expires_at_dt`` for in-process timeout enforcement.
         """
         from datetime import UTC, timedelta
+
         _action = step_description or action  # accept either param name
         req = ApprovalRequest(
             goal_id=goal_id,
@@ -159,6 +162,7 @@ class HITLGateway:
         # Persist to DB (fire-and-forget, Fix 4)
         if self._db_session_factory is not None:
             import asyncio as _aio
+
             try:
                 loop = _aio.get_running_loop()
                 _task = loop.create_task(  # noqa: RUF006
@@ -170,6 +174,7 @@ class HITLGateway:
         # Dispatch notification (fire and forget)
         if self._notification_service is not None:
             import asyncio as _aio
+
             try:
                 loop = _aio.get_running_loop()
                 _task = loop.create_task(  # noqa: RUF006
@@ -186,14 +191,13 @@ class HITLGateway:
 
         return req  # ApprovalRequest: awaitable + string-compatible via __str__/__eq__/__hash__
 
-    async def _db_persist_approval_request(
-        self, req: ApprovalRequest, tenant_id: str
-    ) -> None:
+    async def _db_persist_approval_request(self, req: ApprovalRequest, tenant_id: str) -> None:
         """Persist new approval request to DB (Fix 4)."""
         if self._db_session_factory is None:
             return
         try:
             from sqlalchemy import text
+
             async with self._db_session_factory() as session, session.begin():
                 await session.execute(
                     text(
@@ -212,6 +216,7 @@ class HITLGateway:
                 )
         except Exception as exc:
             from app.observability.logging import get_logger
+
             get_logger(__name__).warning("hitl_db_persist_failed", error=str(exc))
 
     async def wait_for_approval(
@@ -244,9 +249,7 @@ class HITLGateway:
         # Task 2: Redis BLPOP (cross-replica approval delivery)
         redis_task: asyncio.Task[Any] | None = None
         if self._redis is not None:
-            redis_task = asyncio.create_task(
-                self._wait_for_result(request_id, timeout=timeout_s)
-            )
+            redis_task = asyncio.create_task(self._wait_for_result(request_id, timeout=timeout_s))
 
         tasks: list[asyncio.Task[Any]] = [local_task]
         if redis_task is not None:
@@ -361,15 +364,18 @@ class HITLGateway:
             try:
                 import json
                 from datetime import UTC, datetime
+
                 await self._redis.publish(
                     f"hitl_rejected:{req.goal_id}",
-                    json.dumps({
-                        "request_id": str(request_id),
-                        "goal_id": req.goal_id,
-                        "note": note,
-                        "rejected_by": getattr(tenant_ctx, "api_key_id", "unknown"),
-                        "ts": datetime.now(UTC).isoformat(),
-                    })
+                    json.dumps(
+                        {
+                            "request_id": str(request_id),
+                            "goal_id": req.goal_id,
+                            "note": note,
+                            "rejected_by": getattr(tenant_ctx, "api_key_id", "unknown"),
+                            "ts": datetime.now(UTC).isoformat(),
+                        }
+                    ),
                 )
             except Exception:
                 pass
@@ -407,9 +413,7 @@ class HITLGateway:
     # Cross-replica HITL delivery (Redis BLPOP)
     # ------------------------------------------------------------------
 
-    async def _wait_for_result(
-        self, request_id: str, timeout: float
-    ) -> dict[str, Any] | None:
+    async def _wait_for_result(self, request_id: str, timeout: float) -> dict[str, Any] | None:
         """Wait for a HITL result via Redis BLPOP.
 
         Blocks up to *timeout* seconds by issuing repeated BLPOP calls with a
@@ -467,13 +471,12 @@ class HITLGateway:
             except Exception as exc:
                 from app.observability.logging import get_logger
 
-                get_logger(__name__).warning(
-                    "hitl_publish_resolution_error", error=str(exc)
-                )
+                get_logger(__name__).warning("hitl_publish_resolution_error", error=str(exc))
 
     def expire_timed_out_requests(self) -> list[str]:
         """Check all pending requests and auto-reject those past _expires_at_dt."""
         from datetime import UTC
+
         expired = []
         now = datetime.now(UTC)
         for (_tenant_id, req_id), req in list(self._requests.items()):
@@ -488,6 +491,7 @@ class HITLGateway:
                 if self._notification_service is not None:
                     try:
                         import asyncio as _aio
+
                         _coro = self._notification_service.notify_approval_timeout(
                             request_id=req_id,
                             goal_id=req.goal_id,
@@ -511,11 +515,12 @@ class HITLGateway:
             from sqlalchemy import select
 
             from app.db.models.governance import ApprovalRequest as DBApprovalReq
+
             async with db() as session:
                 result = await session.execute(
-                    select(DBApprovalReq)
-                    .where(DBApprovalReq.tenant_id == tenant_id,
-                           DBApprovalReq.status == "pending")
+                    select(DBApprovalReq).where(
+                        DBApprovalReq.tenant_id == tenant_id, DBApprovalReq.status == "pending"
+                    )
                 )
                 rows = result.scalars().all()
             for row in rows:
@@ -530,6 +535,7 @@ class HITLGateway:
             return len(rows)
         except Exception as exc:
             from app.observability.logging import get_logger
+
             get_logger(__name__).warning("hitl_load_from_db_failed", error=str(exc))
             return 0
 
@@ -544,6 +550,7 @@ class HITLGateway:
             from sqlalchemy import select
 
             from app.db.models.governance import ApprovalRequest as DBApprovalReq
+
             async with db() as session:
                 result = await session.execute(
                     select(DBApprovalReq).where(DBApprovalReq.status == "pending")
@@ -562,6 +569,7 @@ class HITLGateway:
             return len(rows)
         except Exception as exc:
             from app.observability.logging import get_logger
+
             get_logger(__name__).warning("hitl_load_pending_full_failed", error=str(exc))
             return 0
 
@@ -579,6 +587,7 @@ class HITLGateway:
         try:
             count = await self.load_pending_from_db_full(db)
             from app.observability.logging import get_logger
+
             get_logger(__name__).info(
                 "hitl_pending_restored",
                 count=count,
@@ -587,5 +596,6 @@ class HITLGateway:
             return count
         except Exception as exc:
             from app.observability.logging import get_logger
+
             get_logger(__name__).warning("hitl_startup_restore_failed", error=str(exc))
             return 0

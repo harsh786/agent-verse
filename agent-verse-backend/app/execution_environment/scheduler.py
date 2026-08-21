@@ -24,6 +24,7 @@ An instance is constructed in ``app/main.py::create_app()`` and stored on
 ``app.state.execution_scheduler``.  The Celery worker constructs a fresh
 instance using ``from_flags()``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -68,6 +69,7 @@ class ExecutionEnvironmentScheduler:
     def __init__(self, runner: BaseRunner | None = None) -> None:
         if runner is None:
             from app.execution_environment.fake_runner import FakeRunner
+
             runner = FakeRunner()
         self._runner = runner
 
@@ -82,12 +84,15 @@ class ExecutionEnvironmentScheduler:
         """Construct the scheduler with the appropriate runner from flags."""
         if isolated_execution_kubernetes_runner:
             from app.execution_environment.kubernetes_runner import KubernetesRunner
+
             runner: BaseRunner = KubernetesRunner()
         elif isolated_execution_local_runner:
             from app.execution_environment.local_runner import LocalSubprocessRunner
+
             runner = LocalSubprocessRunner()
         else:
             from app.execution_environment.fake_runner import FakeRunner
+
             runner = FakeRunner(agent_loop_factory=agent_loop_factory)
         return cls(runner=runner)
 
@@ -152,7 +157,9 @@ class ExecutionEnvironmentScheduler:
                 )
                 logger.error(
                     "isolated_runner_unhealthy runner=%s msg=%s latency_ms=%.1f",
-                    self._runner.runner_type, health.message, health.latency_ms,
+                    self._runner.runner_type,
+                    health.message,
+                    health.latency_ms,
                 )
                 span.set_attribute("health_status", "unhealthy")
                 raise RunnerUnavailableError(msg, ExecutionFailureReason.RUNNER_UNAVAILABLE)
@@ -165,7 +172,8 @@ class ExecutionEnvironmentScheduler:
                 msg = f"Execution policy denied: {decision.message}"
                 logger.warning(
                     "isolated_execution_policy_denied goal_id=%s reason=%s",
-                    envelope.goal_id, decision.message,
+                    envelope.goal_id,
+                    decision.message,
                 )
                 span.set_attribute("policy_decision", "denied")
                 raise RunnerUnavailableError(
@@ -182,7 +190,9 @@ class ExecutionEnvironmentScheduler:
             )
             logger.info(
                 "isolated_execution_dispatched goal_id=%s runner=%s attempt=%s",
-                envelope.goal_id, self._runner.runner_type, envelope.attempt_id,
+                envelope.goal_id,
+                self._runner.runner_type,
+                envelope.attempt_id,
             )
 
             result = await self._runner.run(request, event_callback=event_callback)
@@ -193,6 +203,9 @@ class ExecutionEnvironmentScheduler:
 
             logger.info(
                 "isolated_execution_complete goal_id=%s status=%s runner=%s ms=%.0f",
-                envelope.goal_id, result.status, result.runner_type, result.execution_time_ms,
+                envelope.goal_id,
+                result.status,
+                result.runner_type,
+                result.execution_time_ms,
             )
             return result

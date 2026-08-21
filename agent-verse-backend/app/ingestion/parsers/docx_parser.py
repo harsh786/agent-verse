@@ -1,4 +1,5 @@
 """DOCXParser — extracts structured text from Word documents."""
+
 from __future__ import annotations
 
 import io
@@ -21,24 +22,28 @@ class DOCXParseResult:
         current_len = 0
         for para in self.paragraphs:
             if current_len + len(para) > 2000 and current:
-                chunks.append({
-                    "content": "\n\n".join(current),
-                    "chunk_index": len(chunks),
-                    "source_name": self.source_name,
-                    "content_type": "docx",
-                })
+                chunks.append(
+                    {
+                        "content": "\n\n".join(current),
+                        "chunk_index": len(chunks),
+                        "source_name": self.source_name,
+                        "content_type": "docx",
+                    }
+                )
                 current = [para]
                 current_len = len(para)
             else:
                 current.append(para)
                 current_len += len(para)
         if current:
-            chunks.append({
-                "content": "\n\n".join(current),
-                "chunk_index": len(chunks),
-                "source_name": self.source_name,
-                "content_type": "docx",
-            })
+            chunks.append(
+                {
+                    "content": "\n\n".join(current),
+                    "chunk_index": len(chunks),
+                    "source_name": self.source_name,
+                    "content_type": "docx",
+                }
+            )
         return chunks
 
 
@@ -48,6 +53,7 @@ class DOCXParser:
             return DOCXParseResult(source_name=source_name, error="empty document")
         try:
             from docx import Document  # type: ignore[import]
+
             doc = Document(io.BytesIO(docx_bytes))
             paragraphs: list[str] = []
             headings: list[str] = []
@@ -58,7 +64,9 @@ class DOCXParser:
                 if para.style.name.startswith("Heading"):
                     headings.append(text)
                 paragraphs.append(text)
-            return DOCXParseResult(source_name=source_name, paragraphs=paragraphs, headings=headings)
+            return DOCXParseResult(
+                source_name=source_name, paragraphs=paragraphs, headings=headings
+            )
         except ImportError:
             text = docx_bytes.decode("utf-8", errors="replace")
             paras = [p.strip() for p in text.split("\n\n") if p.strip()]

@@ -6,6 +6,7 @@ A separate 'reviewer' LLM evaluates the output for:
   - Quality score: 0.0 (terrible) to 1.0 (excellent)
   - Approved: whether the output meets a minimum quality bar
 """
+
 from __future__ import annotations
 
 import re
@@ -114,6 +115,7 @@ class PeerReviewPattern(AgentPattern):
     def is_compatible(self, goal_properties: Any) -> bool:
         try:
             from app.core.config import get_settings
+
             if not get_settings().enable_peer_review:
                 return False
         except Exception:
@@ -203,8 +205,6 @@ class PeerReviewPattern(AgentPattern):
                 scores=(review.quality_score,),
                 critique_categories=categories,
                 approved=review.approved,
-                safe_rationale_summary=(
-                    "independent review categories: " + ", ".join(categories)
-                ),
+                safe_rationale_summary=("independent review categories: " + ", ".join(categories)),
             ),
         )

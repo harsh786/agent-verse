@@ -1,6 +1,8 @@
 """EvalDatasetBuilder — converts important failures into reusable golden tasks."""
+
 from __future__ import annotations
-from typing import Any, TYPE_CHECKING
+
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.agent.state import AgentState
@@ -9,12 +11,9 @@ _CANDIDATE_THRESHOLD = 0.6
 
 
 class EvalDatasetBuilder:
-    def maybe_create(
-        self, *, state: "AgentState", score: float
-    ) -> dict[str, Any] | None:
+    def maybe_create(self, *, state: AgentState, score: float) -> dict[str, Any] | None:
         if score >= _CANDIDATE_THRESHOLD:
             return None
-        from app.agent.state import GoalStatus
 
         return {
             "goal_id": state.goal_id,
@@ -26,7 +25,7 @@ class EvalDatasetBuilder:
             "regression_candidate": True,
         }
 
-    def _infer_expected(self, state: "AgentState") -> str:
+    def _infer_expected(self, state: AgentState) -> str:
         from app.agent.state import GoalStatus
 
         if state.status == GoalStatus.FAILED:

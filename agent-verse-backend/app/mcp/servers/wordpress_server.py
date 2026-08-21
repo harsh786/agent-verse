@@ -5,6 +5,7 @@ Environment:
   WORDPRESS_USERNAME:         WordPress admin username
   WORDPRESS_APP_PASSWORD:     WordPress Application Password (Settings > User > Application Passwords)
 """
+
 from __future__ import annotations
 
 import base64
@@ -150,7 +151,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     username = os.getenv("WORDPRESS_USERNAME", "")
     app_pass = os.getenv("WORDPRESS_APP_PASSWORD", "")
     if not all([wp_url, username, app_pass]):
-        return {"error": "WORDPRESS_URL, WORDPRESS_USERNAME, and WORDPRESS_APP_PASSWORD must be configured"}
+        return {
+            "error": "WORDPRESS_URL, WORDPRESS_USERNAME, and WORDPRESS_APP_PASSWORD must be configured"
+        }
 
     base = _base()
 

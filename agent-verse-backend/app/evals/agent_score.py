@@ -1,4 +1,5 @@
 """AgentScorer — per-agent execution quality: tool success, grounding, citation."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -14,8 +15,7 @@ class AgentScorer:
             all_calls.extend(getattr(step, "tool_calls", None) or [])
         if not all_calls:
             return None
-        failed = sum(1 for tc in all_calls
-                     if isinstance(tc, dict) and not tc.get("success", True))
+        failed = sum(1 for tc in all_calls if isinstance(tc, dict) and not tc.get("success", True))
         return round(max(0.0, 1.0 - failed / len(all_calls)), 3)
 
     def score_grounding(self, state: AgentState) -> float | None:
@@ -32,8 +32,9 @@ class AgentScorer:
         if not cited_answer and not provenance:
             return None
         if provenance:
-            avg = sum(p.get("confidence", 0.5) if isinstance(p, dict) else 0.5
-                      for p in provenance) / len(provenance)
+            avg = sum(
+                p.get("confidence", 0.5) if isinstance(p, dict) else 0.5 for p in provenance
+            ) / len(provenance)
             return round(avg, 3)
         has_citations = "[" in cited_answer and "]" in cited_answer
         return 0.8 if has_citations else 0.4

@@ -3,6 +3,7 @@
 Cursor: last issue's lastSeen timestamp.
 Yields: issues, events, and release notes.
 """
+
 from __future__ import annotations
 
 import logging
@@ -30,6 +31,7 @@ class SentryConnector(BaseConnector):
         import time
 
         import httpx
+
         t0 = time.perf_counter()
         try:
             token = config.connection_config.get("auth_token", "")
@@ -61,8 +63,12 @@ class SentryConnector(BaseConnector):
         new_cursor = cursor or ""
 
         async with httpx.AsyncClient(timeout=30) as client:
-            for project_slug in (project_slugs or [""]):
-                url_path = f"{base_url}/projects/{org_slug}/{project_slug}/issues/" if project_slug else f"{base_url}/organizations/{org_slug}/issues/"
+            for project_slug in project_slugs or [""]:
+                url_path = (
+                    f"{base_url}/projects/{org_slug}/{project_slug}/issues/"
+                    if project_slug
+                    else f"{base_url}/organizations/{org_slug}/issues/"
+                )
                 params: dict = {"limit": batch_size, "sort": "date", "query": "is:unresolved"}
                 if cursor:
                     params["query"] += f" lastSeen:>{cursor}"
@@ -70,9 +76,11 @@ class SentryConnector(BaseConnector):
                 url: str | None = url_path
                 while url:
                     r = await client.get(url, params=params, headers=headers)
-                    if not r.is_success: break
+                    if not r.is_success:
+                        break
                     issues = r.json()
-                    if not isinstance(issues, list) or not issues: break
+                    if not isinstance(issues, list) or not issues:
+                        break
 
                     for issue in issues:
                         last_seen = issue.get("lastSeen", "")
@@ -88,10 +96,17 @@ class SentryConnector(BaseConnector):
                         )
                         doc = RawDocument(
                             doc_id=str(uuid.uuid4()),
-                            source_id=config.source_id, tenant_id=config.tenant_id,
+                            source_id=config.source_id,
+                            tenant_id=config.tenant_id,
                             source_url=issue.get("permalink", ""),
-                            content=text.encode(), content_type="text/plain",
-                            metadata={"id": issue.get("id"), "level": level, "last_seen": last_seen, "project": project_slug},
+                            content=text.encode(),
+                            content_type="text/plain",
+                            metadata={
+                                "id": issue.get("id"),
+                                "level": level,
+                                "last_seen": last_seen,
+                                "project": project_slug,
+                            },
                         )
                         yield doc, new_cursor
 

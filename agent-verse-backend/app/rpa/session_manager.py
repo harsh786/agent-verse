@@ -4,6 +4,7 @@ Uses open-source Playwright for real browser automation.
 Sessions are scoped to (session_id, tenant_id) for isolation.
 Idle sessions auto-close after max_idle_seconds.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -82,9 +83,7 @@ class BrowserSessionManager:
         self._redis = redis
         self._SESSION_TTL = 3600  # 1 hour
 
-    async def get_or_create(
-        self, session_id: str, tenant_id: str
-    ) -> BrowserSession:
+    async def get_or_create(self, session_id: str, tenant_id: str) -> BrowserSession:
         """Get existing session or create a new one, enforcing per-tenant cap."""
         key = (session_id, tenant_id)
         async with self._lock:
@@ -95,7 +94,8 @@ class BrowserSessionManager:
 
             # Enforce per-tenant session cap
             tenant_active = sum(
-                1 for (sid, tid) in self._sessions
+                1
+                for (sid, tid) in self._sessions
                 if tid == tenant_id and self._sessions[(sid, tid)].is_alive
             )
             if tenant_active >= self._max_per_tenant:
@@ -133,9 +133,7 @@ class BrowserSessionManager:
             await self._register_in_redis(session)
             return session
 
-    async def _create_session(
-        self, session_id: str, tenant_id: str
-    ) -> BrowserSession:
+    async def _create_session(self, session_id: str, tenant_id: str) -> BrowserSession:
         session = BrowserSession(session_id=session_id, tenant_id=tenant_id)
         try:
             from playwright.async_api import async_playwright
@@ -208,17 +206,20 @@ class BrowserSessionManager:
         if self._redis is None:
             return
         import json as _json
+
         key = f"rpa_session:{session.tenant_id}:{session.session_id}"
         try:
             await self._redis.setex(
                 key,
                 self._SESSION_TTL,
-                _json.dumps({
-                    "session_id": session.session_id,
-                    "tenant_id": session.tenant_id,
-                    "created_at": session.created_at,
-                    "current_url": session.current_url,
-                }),
+                _json.dumps(
+                    {
+                        "session_id": session.session_id,
+                        "tenant_id": session.tenant_id,
+                        "created_at": session.created_at,
+                        "current_url": session.current_url,
+                    }
+                ),
             )
         except Exception:
             pass
@@ -237,6 +238,7 @@ class BrowserSessionManager:
         if self._redis is None:
             return self.list_active(tenant_id=tenant_id)
         import json as _json
+
         pattern = f"rpa_session:{tenant_id}:*"
         try:
             keys = await self._redis.keys(pattern)

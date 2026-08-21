@@ -201,9 +201,7 @@ async def delete_session(session_id: str, request: Request) -> None:
 
 
 @router.post("/sessions/{session_id}/pin")
-async def pin_session(
-    session_id: str, request: Request, pinned: bool = True
-) -> dict[str, Any]:
+async def pin_session(session_id: str, request: Request, pinned: bool = True) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
     s = svc.pin_session(session_id, tenant.tenant_id, pinned)
@@ -334,7 +332,9 @@ async def edit_message(
     return {"message": _message_to_dict(msg), "pruned_message_ids": pruned}
 
 
-@router.delete("/sessions/{session_id}/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT)  # noqa: E501
+@router.delete(
+    "/sessions/{session_id}/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def delete_message(session_id: str, message_id: str, request: Request) -> None:
     tenant = _tenant(request)
     svc = _svc(request)
@@ -468,7 +468,9 @@ async def update_artifact(
     return {"id": a.id, "title": a.title, "language": a.language, "content": a.content}
 
 
-@router.delete("/sessions/{session_id}/artifacts/{artifact_id}", status_code=status.HTTP_204_NO_CONTENT)  # noqa: E501
+@router.delete(
+    "/sessions/{session_id}/artifacts/{artifact_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def delete_artifact(session_id: str, artifact_id: str, request: Request) -> None:
     tenant = _tenant(request)
     svc = _svc(request)
@@ -594,7 +596,9 @@ async def create_memory(body: CreateMemoryRequest, request: Request) -> dict[str
 
 
 @router.patch("/memories/{memory_id}")
-async def update_memory(memory_id: str, body: UpdateMemoryRequest, request: Request) -> dict[str, Any]:  # noqa: E501
+async def update_memory(
+    memory_id: str, body: UpdateMemoryRequest, request: Request
+) -> dict[str, Any]:
     tenant = _tenant(request)
     m = _memory_api.update_memory(memory_id, tenant.tenant_id, body.content)
     if not m:
@@ -689,9 +693,7 @@ async def list_services(request: Request) -> dict[str, Any]:
 @router.post("/services", status_code=status.HTTP_201_CREATED)
 async def connect_service(body: ConnectServiceRequest, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
-    result = _services_api.initiate_connection(
-        tenant.tenant_id, body.name, body.url, body.scopes
-    )
+    result = _services_api.initiate_connection(tenant.tenant_id, body.name, body.url, body.scopes)
     return {
         "service_id": result["service_id"],
         "oauth_url": result["oauth_url"],
@@ -746,4 +748,3 @@ async def export_session(session_id: str, request: Request) -> dict[str, Any]:
         prefix = "**User**" if m.role == "user" else "**Assistant**"
         lines.append(f"{prefix}: {m.content}\n")
     return {"markdown": "\n".join(lines), "session_id": session_id, "title": s.title}
-

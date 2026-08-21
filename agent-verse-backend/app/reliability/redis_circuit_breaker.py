@@ -16,6 +16,7 @@ meaningfully compared across replicas; wall-clock epoch timestamps are shared
 across all processes on all hosts and therefore give correct cross-replica
 elapsed-time calculations.
 """
+
 from __future__ import annotations
 
 import time
@@ -105,9 +106,7 @@ class RedisCircuitBreaker:
                     # H16: use wall-clock (time.time()) for cross-replica correctness
                     if time.time() - opened_at >= self._cooldown:
                         # Promote to HALF_OPEN to allow a single probe call
-                        await self._redis.set(
-                            self._key("state"), CircuitState.HALF_OPEN.value
-                        )
+                        await self._redis.set(self._key("state"), CircuitState.HALF_OPEN.value)
                         return True
                 return False
 
@@ -168,4 +167,3 @@ class RedisCircuitBreaker:
     @property
     def state(self) -> CircuitState:
         return self._fallback.state
-

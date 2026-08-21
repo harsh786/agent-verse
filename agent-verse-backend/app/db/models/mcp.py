@@ -14,9 +14,7 @@ from app.db.models import Base
 class MCPServer(Base):
     __tablename__ = "mcp_servers"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -43,9 +41,7 @@ class MCPCredential(Base):
 
     __tablename__ = "mcp_credentials"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     server_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("mcp_servers.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -66,9 +62,7 @@ class OAuthToken(Base):
 
     __tablename__ = "oauth_tokens"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     server_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("mcp_servers.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -77,9 +71,7 @@ class OAuthToken(Base):
     refresh_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     token_type: Mapped[str | None] = mapped_column(String(50), nullable=True, default="Bearer")
     scope: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -89,8 +81,7 @@ class OAuthToken(Base):
 
 class ConnectorHealthSnapshot(Base):
     __tablename__ = "connector_health_snapshots"
-    id: Mapped[str] = mapped_column(String(64), primary_key=True,
-        default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     server_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -99,6 +90,4 @@ class ConnectorHealthSnapshot(Base):
     checked_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    __table_args__ = (
-        Index("ix_ch_snapshots_server_tenant", "server_id", "tenant_id"),
-    )
+    __table_args__ = (Index("ix_ch_snapshots_server_tenant", "server_id", "tenant_id"),)

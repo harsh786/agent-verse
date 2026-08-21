@@ -3,6 +3,7 @@
 Environment:
   TEAMS_ACCESS_TOKEN: OAuth2 access token for Microsoft Graph
 """
+
 from __future__ import annotations
 
 import os
@@ -101,9 +102,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "TEAMS_ACCESS_TOKEN not configured"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=GRAPH_BASE, headers=_headers(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=GRAPH_BASE, headers=_headers(), timeout=30.0) as c:
             if tool_name == "teams_list_teams":
                 r = await c.get("/me/joinedTeams")
                 r.raise_for_status()
@@ -151,9 +150,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "description": arguments.get("description", ""),
                     "membershipType": arguments.get("membership_type", "standard"),
                 }
-                r = await c.post(
-                    f"/teams/{arguments['team_id']}/channels", json=payload
-                )
+                r = await c.post(f"/teams/{arguments['team_id']}/channels", json=payload)
                 r.raise_for_status()
                 data = r.json()
                 return {"id": data.get("id"), "displayName": data.get("displayName")}

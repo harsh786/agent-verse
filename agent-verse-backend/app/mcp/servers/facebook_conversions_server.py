@@ -4,6 +4,7 @@ Environment:
   FACEBOOK_PIXEL_ID: Facebook Pixel ID for server-side event reporting
   FACEBOOK_ACCESS_TOKEN: Facebook Conversions API access token with ads_management permission
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -24,9 +25,18 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "event_name": {"type": "string", "description": "Event name: Purchase, Lead, CompleteRegistration, AddToCart, etc."},
-                "event_time": {"type": "integer", "description": "Unix timestamp of the event (defaults to now)"},
-                "event_source_url": {"type": "string", "description": "URL where the event occurred"},
+                "event_name": {
+                    "type": "string",
+                    "description": "Event name: Purchase, Lead, CompleteRegistration, AddToCart, etc.",
+                },
+                "event_time": {
+                    "type": "integer",
+                    "description": "Unix timestamp of the event (defaults to now)",
+                },
+                "event_source_url": {
+                    "type": "string",
+                    "description": "URL where the event occurred",
+                },
                 "user_data": {
                     "type": "object",
                     "description": "Hashed user identifiers: em (email), ph (phone), fn, ln, external_id",
@@ -35,7 +45,10 @@ TOOL_DEFINITIONS = [
                     "type": "object",
                     "description": "Event-specific data: value, currency, content_ids, etc.",
                 },
-                "test_event_code": {"type": "string", "description": "Test event code from Events Manager for validation"},
+                "test_event_code": {
+                    "type": "string",
+                    "description": "Test event code from Events Manager for validation",
+                },
             },
             "required": ["event_name"],
         },
@@ -47,17 +60,33 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "value": {"type": "number", "description": "Purchase value amount"},
-                "currency": {"type": "string", "description": "ISO 4217 currency code e.g. USD", "default": "USD"},
+                "currency": {
+                    "type": "string",
+                    "description": "ISO 4217 currency code e.g. USD",
+                    "default": "USD",
+                },
                 "order_id": {"type": "string", "description": "Order ID for deduplication"},
                 "content_ids": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Product IDs purchased",
                 },
-                "event_source_url": {"type": "string", "description": "Page URL where purchase happened"},
-                "user_email": {"type": "string", "description": "Customer email (will be SHA256 hashed)"},
-                "user_phone": {"type": "string", "description": "Customer phone (will be SHA256 hashed)"},
-                "test_event_code": {"type": "string", "description": "Test event code from Events Manager"},
+                "event_source_url": {
+                    "type": "string",
+                    "description": "Page URL where purchase happened",
+                },
+                "user_email": {
+                    "type": "string",
+                    "description": "Customer email (will be SHA256 hashed)",
+                },
+                "user_phone": {
+                    "type": "string",
+                    "description": "Customer phone (will be SHA256 hashed)",
+                },
+                "test_event_code": {
+                    "type": "string",
+                    "description": "Test event code from Events Manager",
+                },
             },
             "required": ["value", "currency"],
         },
@@ -69,8 +98,14 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "event_source_url": {"type": "string", "description": "Lead capture page URL"},
-                "user_email": {"type": "string", "description": "Lead email address (will be SHA256 hashed)"},
-                "user_phone": {"type": "string", "description": "Lead phone number (will be SHA256 hashed)"},
+                "user_email": {
+                    "type": "string",
+                    "description": "Lead email address (will be SHA256 hashed)",
+                },
+                "user_phone": {
+                    "type": "string",
+                    "description": "Lead phone number (will be SHA256 hashed)",
+                },
                 "lead_id": {"type": "string", "description": "CRM lead ID for deduplication"},
                 "test_event_code": {"type": "string", "description": "Test event code"},
             },
@@ -83,10 +118,16 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "event_source_url": {"type": "string", "description": "URL of the page viewed"},
-                "user_email": {"type": "string", "description": "User email (SHA256 hashed before sending)"},
+                "user_email": {
+                    "type": "string",
+                    "description": "User email (SHA256 hashed before sending)",
+                },
                 "client_ip_address": {"type": "string", "description": "User client IP address"},
                 "client_user_agent": {"type": "string", "description": "User agent string"},
-                "test_event_code": {"type": "string", "description": "Test event code from Events Manager"},
+                "test_event_code": {
+                    "type": "string",
+                    "description": "Test event code from Events Manager",
+                },
             },
             "required": ["event_source_url"],
         },
@@ -102,7 +143,10 @@ TOOL_DEFINITIONS = [
                 "value": {"type": "number", "description": "Monetary value of the event"},
                 "currency": {"type": "string", "description": "ISO 4217 currency code"},
                 "user_email": {"type": "string", "description": "User email (SHA256 hashed)"},
-                "custom_properties": {"type": "object", "description": "Additional custom data properties"},
+                "custom_properties": {
+                    "type": "object",
+                    "description": "Additional custom data properties",
+                },
                 "test_event_code": {"type": "string", "description": "Test event code"},
             },
             "required": ["event_name"],
@@ -114,8 +158,15 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "test_event_code": {"type": "string", "description": "Test event code from Facebook Events Manager"},
-                "event_name": {"type": "string", "description": "Event type to test: Purchase, Lead, PageView", "default": "Purchase"},
+                "test_event_code": {
+                    "type": "string",
+                    "description": "Test event code from Facebook Events Manager",
+                },
+                "event_name": {
+                    "type": "string",
+                    "description": "Event type to test: Purchase, Lead, PageView",
+                    "default": "Purchase",
+                },
             },
             "required": ["test_event_code"],
         },
@@ -128,7 +179,13 @@ def _sha256(value: str) -> str:
     return hashlib.sha256(value.strip().lower().encode()).hexdigest()
 
 
-async def _send_events(client: httpx.AsyncClient, pixel_id: str, access_token: str, events: list[dict[str, Any]], test_code: str | None = None) -> dict[str, Any]:
+async def _send_events(
+    client: httpx.AsyncClient,
+    pixel_id: str,
+    access_token: str,
+    events: list[dict[str, Any]],
+    test_code: str | None = None,
+) -> dict[str, Any]:
     """Send events to the Facebook Conversions API."""
     base_url = f"https://graph.facebook.com/v18.0/{pixel_id}/events"
     payload: dict[str, Any] = {
@@ -163,7 +220,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     event["user_data"] = arguments["user_data"]
                 if "custom_data" in arguments:
                     event["custom_data"] = arguments["custom_data"]
-                return await _send_events(client, pixel_id, access_token, [event], arguments.get("test_event_code"))
+                return await _send_events(
+                    client, pixel_id, access_token, [event], arguments.get("test_event_code")
+                )
 
             elif tool_name == "facebook_conversions_send_purchase_event":
                 user_data: dict[str, Any] = {}
@@ -187,7 +246,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
                 if "event_source_url" in arguments:
                     event["event_source_url"] = arguments["event_source_url"]
-                return await _send_events(client, pixel_id, access_token, [event], arguments.get("test_event_code"))
+                return await _send_events(
+                    client, pixel_id, access_token, [event], arguments.get("test_event_code")
+                )
 
             elif tool_name == "facebook_conversions_send_lead_event":
                 user_data = {}
@@ -207,7 +268,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     event["custom_data"] = custom_data
                 if "event_source_url" in arguments:
                     event["event_source_url"] = arguments["event_source_url"]
-                return await _send_events(client, pixel_id, access_token, [event], arguments.get("test_event_code"))
+                return await _send_events(
+                    client, pixel_id, access_token, [event], arguments.get("test_event_code")
+                )
 
             elif tool_name == "facebook_conversions_send_page_view":
                 user_data = {}
@@ -223,7 +286,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "event_source_url": arguments["event_source_url"],
                     "user_data": user_data,
                 }
-                return await _send_events(client, pixel_id, access_token, [event], arguments.get("test_event_code"))
+                return await _send_events(
+                    client, pixel_id, access_token, [event], arguments.get("test_event_code")
+                )
 
             elif tool_name == "facebook_conversions_send_custom_event":
                 user_data = {}
@@ -245,7 +310,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     event["event_source_url"] = arguments["event_source_url"]
                 if custom_data:
                     event["custom_data"] = custom_data
-                return await _send_events(client, pixel_id, access_token, [event], arguments.get("test_event_code"))
+                return await _send_events(
+                    client, pixel_id, access_token, [event], arguments.get("test_event_code")
+                )
 
             elif tool_name == "facebook_conversions_test_event":
                 event = {
@@ -255,7 +322,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "custom_data": {"value": 1.0, "currency": "USD"},
                 }
                 return await _send_events(
-                    client, pixel_id, access_token, [event],
+                    client,
+                    pixel_id,
+                    access_token,
+                    [event],
                     arguments["test_event_code"],
                 )
 

@@ -1,7 +1,7 @@
 """Azure Cognitive Services TTS — requires AZURE_TTS_KEY + AZURE_TTS_REGION."""
+
 from __future__ import annotations
 
-import io
 import os
 from collections.abc import AsyncGenerator
 
@@ -9,14 +9,14 @@ SAMPLE_RATE = 24_000
 
 
 class AzureTTS:
-    provider_name:          str  = "azure_tts"
-    sample_rate:            int  = SAMPLE_RATE
+    provider_name: str = "azure_tts"
+    sample_rate: int = SAMPLE_RATE
     supports_voice_cloning: bool = False
-    supports_nonverbal:     bool = False
-    max_text_length:        int  = 10_000
+    supports_nonverbal: bool = False
+    max_text_length: int = 10_000
 
     def __init__(self) -> None:
-        self._key    = os.getenv("AZURE_TTS_KEY", "")
+        self._key = os.getenv("AZURE_TTS_KEY", "")
         self._region = os.getenv("AZURE_TTS_REGION", "eastus")
 
     async def warmup(self) -> None:
@@ -26,16 +26,23 @@ class AzureTTS:
         return bool(self._key)
 
     async def synthesize(
-        self, text: str, *, ref_audio: bytes | None = None, ref_text: str | None = None,
-        language: str = "en", speed: float = 1.0, voice_id: str | None = None,
+        self,
+        text: str,
+        *,
+        ref_audio: bytes | None = None,
+        ref_text: str | None = None,
+        language: str = "en",
+        speed: float = 1.0,
+        voice_id: str | None = None,
     ) -> bytes:
         import httpx
+
         voice = voice_id or os.getenv("AZURE_TTS_VOICE", "en-US-JennyNeural")
-        ssml  = (
+        ssml = (
             f'<speak version="1.0" xml:lang="{language}">'
             f'<voice name="{voice}">'
             f'<prosody rate="{speed}">{text}</prosody>'
-            f'</voice></speak>'
+            f"</voice></speak>"
         )
         url = f"https://{self._region}.tts.speech.microsoft.com/cognitiveservices/v1"
         async with httpx.AsyncClient(timeout=60) as client:
@@ -52,10 +59,15 @@ class AzureTTS:
             return r.content
 
     async def synthesize_streaming(
-        self, text: str, *, ref_audio: bytes | None = None, ref_text: str | None = None,
-        language: str = "en", voice_id: str | None = None,
+        self,
+        text: str,
+        *,
+        ref_audio: bytes | None = None,
+        ref_text: str | None = None,
+        language: str = "en",
+        voice_id: str | None = None,
     ) -> AsyncGenerator[bytes, None]:
         wav = await self.synthesize(text, language=language, voice_id=voice_id)
         CHUNK = 4800 * 2
         for pos in range(0, len(wav), CHUNK):
-            yield wav[pos:pos + CHUNK]
+            yield wav[pos : pos + CHUNK]

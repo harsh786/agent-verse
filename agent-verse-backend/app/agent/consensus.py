@@ -9,6 +9,7 @@ run up to 3 verifiers:
 
 Majority required for success. On disagreement → HITL.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -23,14 +24,16 @@ logger = get_logger(__name__)
 # Domain / tool-risk constants
 # ---------------------------------------------------------------------------
 
-_REQUIRES_CONSENSUS_DOMAINS = frozenset({
-    "legal",
-    "gst-tax",
-    "banking-fintech",
-    "healthcare",
-    "pharmaceutical",
-    "government-portal",
-})
+_REQUIRES_CONSENSUS_DOMAINS = frozenset(
+    {
+        "legal",
+        "gst-tax",
+        "banking-fintech",
+        "healthcare",
+        "pharmaceutical",
+        "government-portal",
+    }
+)
 
 _REGULATED_TOOL_RISK = frozenset({"write_high", "destructive"})
 
@@ -74,6 +77,7 @@ def requires_consensus(
 
     if steps:
         from app.agent.tool_risk import classify_tool_risk
+
         for step in steps:
             for tc in getattr(step, "tool_calls", []) or []:
                 risk = classify_tool_risk(
@@ -232,9 +236,7 @@ class ConsensusVerifier:
         agreement = successes / total if total else 0.0
         requires_hitl = not unanimous and total >= 2
 
-        majority_reason = next(
-            (v.reason for v in votes if v.success == majority_success), ""
-        )
+        majority_reason = next((v.reason for v in votes if v.success == majority_success), "")
 
         logger.info(
             "consensus_result",

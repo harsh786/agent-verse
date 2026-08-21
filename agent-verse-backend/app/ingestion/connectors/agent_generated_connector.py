@@ -4,6 +4,7 @@ The highest-quality knowledge source: human-approved answers and
 high-scoring agent outputs are indexed for future agent retrieval.
 Uses Redis pub/sub for real-time ingestion on goal completion.
 """
+
 from __future__ import annotations
 
 import logging
@@ -54,7 +55,9 @@ class AgentGeneratedConnector(BaseConnector):
         # This is a polling path; streaming path uses on_webhook
         _log.debug(
             "agent_generated_delta cursor=%s min_score=%.2f types=%s",
-            cursor, min_score, source_types,
+            cursor,
+            min_score,
+            source_types,
         )
 
         # Yield nothing in pull mode — streaming mode via on_webhook is primary
@@ -84,7 +87,9 @@ class AgentGeneratedConnector(BaseConnector):
         if score < min_score:
             _log.debug(
                 "agent_generated_skip score=%.2f < min=%.2f goal=%s",
-                score, min_score, data.get("goal_id"),
+                score,
+                min_score,
+                data.get("goal_id"),
             )
             return
 

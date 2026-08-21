@@ -65,8 +65,7 @@ class ToolContext:
             or (
                 # Both the lookup name AND the registered tool name are Jira-search aliases —
                 # e.g. looking up "jira_search_issues" while tool is registered as "jira_search"
-                name_key in jira_search_aliases
-                and _normalize(tool.name) in jira_search_aliases
+                name_key in jira_search_aliases and _normalize(tool.name) in jira_search_aliases
             )
             or (name_key in jira_search_aliases and tool.name == "jira_search_issues")
         ]
@@ -103,6 +102,7 @@ class ToolContext:
 # ---------------------------------------------------------------------------
 # Tiered rendering — used by ToolSelector output
 # ---------------------------------------------------------------------------
+
 
 def _render_signature(tool: Any) -> str:
     """One-line ``name(param1, param2) — description[:80]`` for a tool."""

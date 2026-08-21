@@ -1,4 +1,5 @@
 """CitationThreader — attaches sequential citation indices to chunks."""
+
 from __future__ import annotations
 
 from typing import Any

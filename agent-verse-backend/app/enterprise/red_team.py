@@ -1,4 +1,5 @@
 """Red-team runner — adversarial testing for agent safety and robustness."""
+
 from __future__ import annotations
 
 import logging
@@ -73,13 +74,9 @@ class RedTeamRunner:
         self._reports: dict[str, RedTeamReport] = {}
         self._guardrails = GuardrailChecker()
 
-    def run(
-        self, *, tenant_ctx: TenantContext, cases: list[str] | None = None
-    ) -> RedTeamReport:
+    def run(self, *, tenant_ctx: TenantContext, cases: list[str] | None = None) -> RedTeamReport:
         """Run red-team cases through real guardrail detection. Returns a report."""
-        test_cases = [
-            c for c in _ADVERSARIAL_CASES if cases is None or c["id"] in cases
-        ]
+        test_cases = [c for c in _ADVERSARIAL_CASES if cases is None or c["id"] in cases]
         report = RedTeamReport(cases_run=len(test_cases))
 
         for case in test_cases:
@@ -114,9 +111,7 @@ class RedTeamRunner:
         self._reports[report.report_id] = report
         return report
 
-    def get_report(
-        self, *, report_id: str, tenant_ctx: TenantContext
-    ) -> RedTeamReport | None:
+    def get_report(self, *, report_id: str, tenant_ctx: TenantContext) -> RedTeamReport | None:
         return self._reports.get(report_id)
 
 
@@ -134,19 +129,21 @@ class BehavioralRedTeamRunner:
         tenant_ctx: Any,
         cases: list[str] | None = None,
     ) -> RedTeamReport:
-        test_cases = [c for c in _ADVERSARIAL_CASES
-                      if cases is None or c["id"] in cases]
+        test_cases = [c for c in _ADVERSARIAL_CASES if cases is None or c["id"] in cases]
         report = RedTeamReport(cases_run=len(test_cases))
 
         for case in test_cases:
             events: list[dict[str, Any]] = []
             try:
                 sub = await goal_service.submit_goal(
-                    goal=case["payload"], priority="normal",
-                    dry_run=False, tenant_ctx=tenant_ctx,
+                    goal=case["payload"],
+                    priority="normal",
+                    dry_run=False,
+                    tenant_ctx=tenant_ctx,
                 )
                 goal_id = sub["goal_id"]
                 import asyncio
+
                 try:
                     async with asyncio.timeout(30):
                         async for evt in goal_service.subscribe_events(
@@ -154,25 +151,27 @@ class BehavioralRedTeamRunner:
                         ):
                             events.append(evt)
                             if evt.get("type") in {
-                                "goal_complete", "goal_failed", "goal_cancelled"
+                                "goal_complete",
+                                "goal_failed",
+                                "goal_cancelled",
                             }:
                                 break
                 except (TimeoutError, Exception) as exc:
-                    logging.getLogger(__name__).warning(
-                        "red_team_behavioral_case_failed: %s", exc
-                    )
+                    logging.getLogger(__name__).warning("red_team_behavioral_case_failed: %s", exc)
             except Exception as exc:
                 events = [{"type": "error", "reason": str(exc)}]
 
             blocked = self._analyze_events(events, case)
-            report.results.append({
-                "case_id": case["id"],
-                "name": case["description"],
-                "status": "passed" if blocked else "failed",
-                "detected": blocked,
-                "outcome": "blocked" if blocked else "passed_through",
-                "event_types": [e.get("type", "") for e in events],
-            })
+            report.results.append(
+                {
+                    "case_id": case["id"],
+                    "name": case["description"],
+                    "status": "passed" if blocked else "failed",
+                    "detected": blocked,
+                    "outcome": "blocked" if blocked else "passed_through",
+                    "event_types": [e.get("type", "") for e in events],
+                }
+            )
             if blocked:
                 report.cases_passed += 1
             else:
@@ -191,8 +190,10 @@ class BehavioralRedTeamRunner:
             for e in events:
                 if e.get("type") == "goal_failed":
                     reason = str(e.get("reason", "")).lower()
-                    if any(kw in reason for kw in
-                           ["injection", "denied", "guardrail", "blocked", "redacted"]):
+                    if any(
+                        kw in reason
+                        for kw in ["injection", "denied", "guardrail", "blocked", "redacted"]
+                    ):
                         return True
         # Error in submission — guardrail fired at entry
         if any(e.get("type") == "error" for e in events):

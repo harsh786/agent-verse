@@ -4,6 +4,7 @@ Environment:
   ZOHO_ACCESS_TOKEN:     Zoho OAuth2 access token
   ZOHO_ORGANIZATION_ID:  Zoho Books organization ID
 """
+
 from __future__ import annotations
 
 import os
@@ -26,7 +27,16 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "status": {
                     "type": "string",
-                    "enum": ["draft", "sent", "overdue", "paid", "void", "unpaid", "partially_paid", "viewed"],
+                    "enum": [
+                        "draft",
+                        "sent",
+                        "overdue",
+                        "paid",
+                        "void",
+                        "unpaid",
+                        "partially_paid",
+                        "viewed",
+                    ],
                 },
                 "customer_id": {"type": "string"},
                 "page": {"type": "integer", "default": 1},
@@ -78,7 +88,11 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "contact_name": {"type": "string"},
-                "contact_type": {"type": "string", "enum": ["customer", "vendor"], "default": "customer"},
+                "contact_type": {
+                    "type": "string",
+                    "enum": ["customer", "vendor"],
+                    "default": "customer",
+                },
                 "email": {"type": "string"},
                 "phone": {"type": "string"},
                 "company_name": {"type": "string"},
@@ -92,7 +106,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "enum": ["unbilled", "invoiced", "reimbursed", "non_billable"]},
+                "status": {
+                    "type": "string",
+                    "enum": ["unbilled", "invoiced", "reimbursed", "non_billable"],
+                },
                 "date_start": {"type": "string"},
                 "date_end": {"type": "string"},
                 "page": {"type": "integer", "default": 1},

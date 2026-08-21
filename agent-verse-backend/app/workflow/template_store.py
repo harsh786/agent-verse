@@ -8,6 +8,7 @@ Templates are static YAML files in app/workflow/templates/. They are:
 Each template YAML must have:
   name, slug, description, category, tags[], author, version, definition (WorkflowDefinition)
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -96,7 +97,8 @@ class SystemTemplateStore:
         if q:
             q_lower = q.lower()
             items = [
-                t for t in items
+                t
+                for t in items
                 if q_lower in t.name.lower()
                 or q_lower in t.description.lower()
                 or any(q_lower in tag.lower() for tag in t.tags)
@@ -115,10 +117,7 @@ class SystemTemplateStore:
         counts: dict[str, int] = {}
         for t in catalog.values():
             counts[t.category] = counts.get(t.category, 0) + 1
-        return [
-            {"category": cat, "count": count}
-            for cat, count in sorted(counts.items())
-        ]
+        return [{"category": cat, "count": count} for cat, count in sorted(counts.items())]
 
     def fork(
         self, slug: str, tenant_id: str, overrides: dict[str, Any] | None = None
@@ -169,6 +168,7 @@ class SystemTemplateStore:
     @staticmethod
     def _load_file(path: Path) -> SystemTemplate:
         import yaml  # type: ignore[import]
+
         with open(path) as f:
             raw = yaml.safe_load(f)
         if not isinstance(raw, dict):

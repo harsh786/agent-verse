@@ -2,6 +2,7 @@
 
 Open source YAML parsing only (pyyaml).
 """
+
 from __future__ import annotations
 
 import json
@@ -65,13 +66,16 @@ class AgentManifest:
             goal_template=data.get("goal_template", ""),
             default_model=data.get("default_model", ""),
             connector_requirements=[
-                ConnectorRequirement(**c) if isinstance(c, dict)
+                ConnectorRequirement(**c)
+                if isinstance(c, dict)
                 else ConnectorRequirement(type=str(c))
                 for c in data.get("connector_requirements", [])
             ],
             knowledge_collections=data.get("knowledge_collections", []),
             policies=[
-                PolicySpec(**p) if isinstance(p, dict) else PolicySpec(name=str(p), tools_pattern="*")
+                PolicySpec(**p)
+                if isinstance(p, dict)
+                else PolicySpec(name=str(p), tools_pattern="*")
                 for p in data.get("policies", [])
             ],
             eval_suite_id=data.get("eval_suite_id"),

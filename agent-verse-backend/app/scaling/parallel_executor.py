@@ -20,9 +20,7 @@ class ParallelExecutor:
     def __init__(self, max_concurrency: int = 8) -> None:
         self._sem = asyncio.Semaphore(max_concurrency)
 
-    async def run_parallel(
-        self, steps: list[Callable[[], Awaitable[str]]]
-    ) -> list[str]:
+    async def run_parallel(self, steps: list[Callable[[], Awaitable[str]]]) -> list[str]:
         async def _bounded(step: Callable[[], Awaitable[str]]) -> str:
             async with self._sem:
                 return await step()

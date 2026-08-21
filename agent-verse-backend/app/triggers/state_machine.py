@@ -1,4 +1,5 @@
 """State machine — create, transition, query state; emits events on state change."""
+
 from __future__ import annotations
 
 import logging
@@ -136,13 +137,15 @@ class StateMachine:
         old_state = instance.current_state
         instance.current_state = t.to_state
         instance.updated_at = datetime.now(UTC).isoformat()
-        instance.history.append({
-            "from_state": old_state,
-            "to_state": t.to_state,
-            "event": event,
-            "at": instance.updated_at,
-            "payload": payload or {},
-        })
+        instance.history.append(
+            {
+                "from_state": old_state,
+                "to_state": t.to_state,
+                "event": event,
+                "at": instance.updated_at,
+                "payload": payload or {},
+            }
+        )
 
         # Mark complete if terminal
         for state_def in defn.states:
@@ -152,7 +155,11 @@ class StateMachine:
 
         _log.info(
             "state_machine_transition machine=%s entity=%s %s --(%s)--> %s",
-            machine_id, entity_id, old_state, event, t.to_state,
+            machine_id,
+            entity_id,
+            old_state,
+            event,
+            t.to_state,
         )
         return {
             "from_state": old_state,

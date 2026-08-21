@@ -79,11 +79,7 @@ class InMemoryLeaseRepository:
         async with self._lock:
             key = (tenant_id, work_item_id)
             current = self._claims.get(key)
-            if (
-                current is not None
-                and current.state == "active"
-                and current.lease_expires_at > now
-            ):
+            if current is not None and current.state == "active" and current.lease_expires_at > now:
                 raise ActiveClaimError(f"work item already claimed: {work_item_id}")
             token = 1 if current is None else current.fencing_token + 1
             claim = LeaseClaim(
@@ -118,9 +114,7 @@ class InMemoryLeaseRepository:
                 or current.owner_agent_id != owner_agent_id
                 or current.fencing_token != fencing_token
             ):
-                raise StaleFencingTokenError(
-                    f"stale fencing token for work item: {work_item_id}"
-                )
+                raise StaleFencingTokenError(f"stale fencing token for work item: {work_item_id}")
             updated = current.model_copy(
                 update={
                     "heartbeat_at": now,
@@ -156,21 +150,23 @@ class PostgresLeaseRepository:
         ):
             work_item = (
                 await db.execute(
-                    select(work_items.c.id)
-                    .where(work_items.c.id == work_item_id)
-                    .with_for_update()
+                    select(work_items.c.id).where(work_items.c.id == work_item_id).with_for_update()
                 )
             ).scalar_one_or_none()
             if work_item is None:
                 raise KeyError(f"work item not found: {work_item_id}")
 
             current = (
-                await db.execute(
-                    select(claims)
-                    .where(claims.c.work_item_id == work_item_id)
-                    .with_for_update()
+                (
+                    await db.execute(
+                        select(claims)
+                        .where(claims.c.work_item_id == work_item_id)
+                        .with_for_update()
+                    )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if (
                 current is not None
                 and current["state"] == "active"
@@ -222,21 +218,23 @@ class PostgresLeaseRepository:
             sqlalchemy_rls_context(db, tenant_id),
         ):
             current = (
-                await db.execute(
-                    select(claims)
-                    .where(claims.c.work_item_id == work_item_id)
-                    .with_for_update()
+                (
+                    await db.execute(
+                        select(claims)
+                        .where(claims.c.work_item_id == work_item_id)
+                        .with_for_update()
+                    )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if (
                 current is None
                 or current["state"] != "active"
                 or current["owner_agent_id"] != owner_agent_id
                 or int(current["fencing_token"]) != fencing_token
             ):
-                raise StaleFencingTokenError(
-                    f"stale fencing token for work item: {work_item_id}"
-                )
+                raise StaleFencingTokenError(f"stale fencing token for work item: {work_item_id}")
 
             new_state = state or str(current["state"])
             expires_at = now + ttl if ttl is not None else current["lease_expires_at"]

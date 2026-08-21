@@ -22,6 +22,7 @@ Feature flags (all default False — existing behaviour is preserved):
   ``ISOLATED_EXECUTION_LOCAL_RUNNER``   — enable subprocess runner
   ``ISOLATED_EXECUTION_KUBERNETES_RUNNER`` — enable Kubernetes Job runner
 """
+
 from __future__ import annotations
 
 from app.execution_environment.models import (

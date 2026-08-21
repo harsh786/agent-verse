@@ -5,9 +5,9 @@ Environment:
   TWILIO_AUTH_TOKEN: Auth token
   TWILIO_FROM_NUMBER: Default from number (E.164 format, e.g. +15551234567)
 """
+
 from __future__ import annotations
 
-import base64
 import os
 from typing import Any
 
@@ -36,7 +36,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "to": {"type": "string", "description": "Recipient phone number (E.164)"},
                 "body": {"type": "string", "description": "SMS body text"},
-                "from_number": {"type": "string", "description": "Sender number (uses TWILIO_FROM_NUMBER if omitted)"},
+                "from_number": {
+                    "type": "string",
+                    "description": "Sender number (uses TWILIO_FROM_NUMBER if omitted)",
+                },
                 "media_url": {"type": "string", "description": "URL of media attachment (MMS)"},
             },
             "required": ["to", "body"],
@@ -48,7 +51,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "to": {"type": "string", "description": "Recipient number (E.164 without whatsapp: prefix)"},
+                "to": {
+                    "type": "string",
+                    "description": "Recipient number (E.164 without whatsapp: prefix)",
+                },
                 "body": {"type": "string"},
                 "from_number": {"type": "string", "description": "Twilio WhatsApp sender number"},
             },

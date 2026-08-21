@@ -5,6 +5,7 @@ Environment variables:
   QUICKBOOKS_COMPANY_ID:   Intuit company/realm ID
   QUICKBOOKS_SANDBOX:      'true' (default) or 'false' for production
 """
+
 from __future__ import annotations
 
 import os
@@ -143,7 +144,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "start_date": {"type": "string", "description": "YYYY-MM-DD"},
                 "end_date": {"type": "string", "description": "YYYY-MM-DD"},
-                "accounting_method": {"type": "string", "enum": ["Accrual", "Cash"], "default": "Accrual"},
+                "accounting_method": {
+                    "type": "string",
+                    "enum": ["Accrual", "Cash"],
+                    "default": "Accrual",
+                },
             },
             "required": ["start_date", "end_date"],
         },
@@ -192,7 +197,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 for item in arguments["line_items"]:
                     line: dict[str, Any] = {
                         "Amount": item["amount"],
-                        "DetailType": "SalesItemLineDetail" if item.get("item_id") else "DescriptionOnly",
+                        "DetailType": "SalesItemLineDetail"
+                        if item.get("item_id")
+                        else "DescriptionOnly",
                     }
                     if item.get("item_id"):
                         line["SalesItemLineDetail"] = {
@@ -291,7 +298,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 r = await c.get(
                     f"{base}/query",
                     headers=hdrs,
-                    params={"query": f"SELECT * FROM Vendor MAXRESULTS {max_r}", "minorversion": "65"},
+                    params={
+                        "query": f"SELECT * FROM Vendor MAXRESULTS {max_r}",
+                        "minorversion": "65",
+                    },
                 )
                 r.raise_for_status()
                 return r.json()

@@ -1,4 +1,5 @@
 """Billing & subscription management API — Razorpay + legacy Stripe support."""
+
 from __future__ import annotations
 
 import hashlib
@@ -19,9 +20,9 @@ _log = logging.getLogger(__name__)
 # ── Plan definitions ───────────────────────────────────────────────────────────
 
 PLAN_PRICES = {
-    "starter":      {"monthly": 2900,  "annual": 27840},   # INR paise (₹29 / ₹278.40)
-    "professional": {"monthly": 9900,  "annual": 95040},   # INR paise (₹99 / ₹950.40)
-    "enterprise":   {"monthly": 49900, "annual": 479040},  # INR paise (₹499 / ₹4790.40)
+    "starter": {"monthly": 2900, "annual": 27840},  # INR paise (₹29 / ₹278.40)
+    "professional": {"monthly": 9900, "annual": 95040},  # INR paise (₹99 / ₹950.40)
+    "enterprise": {"monthly": 49900, "annual": 479040},  # INR paise (₹499 / ₹4790.40)
 }
 
 PLAN_FEATURES: dict[str, dict[str, Any]] = {
@@ -61,8 +62,9 @@ def _require_tenant(request: Request) -> TenantContext:
 def _get_razorpay() -> Any | None:
     """Return a configured Razorpay client, or None if not configured."""
     try:
-        import razorpay  # noqa: PLC0415
-        from app.core.config import get_settings  # noqa: PLC0415
+        import razorpay
+
+        from app.core.config import get_settings
 
         settings = get_settings()
         if not settings.razorpay_key_secret:
@@ -74,7 +76,7 @@ def _get_razorpay() -> Any | None:
 
 def _inr_to_usd(amount_inr: float) -> float:
     """Convert INR to approximate USD using the configurable exchange rate."""
-    from app.core.config import get_settings  # noqa: PLC0415
+    from app.core.config import get_settings
 
     rate = get_settings().inr_to_usd_rate
     return round(amount_inr / rate, 2)
@@ -131,7 +133,7 @@ async def get_subscription(request: Request) -> dict[str, Any]:
     """Get current subscription details."""
     tenant_ctx = _require_tenant(request)
 
-    from app.core.config import get_settings  # noqa: PLC0415
+    from app.core.config import get_settings
 
     settings = get_settings()
 
@@ -154,7 +156,7 @@ async def request_upgrade(body: UpgradeRequest, request: Request) -> dict[str, A
     if body.plan not in valid_plans:
         raise HTTPException(status_code=400, detail=f"Invalid plan: {body.plan}")
 
-    from app.core.config import get_settings  # noqa: PLC0415
+    from app.core.config import get_settings
 
     settings = get_settings()
     if not settings.stripe_api_key:
@@ -175,7 +177,7 @@ async def create_checkout_session(
 ) -> dict[str, Any]:
     """Create a Stripe Checkout Session for the given plan (legacy)."""
     tenant = _require_tenant(request)
-    from app.core.config import get_settings  # noqa: PLC0415
+    from app.core.config import get_settings
 
     settings = get_settings()
     if not settings.stripe_api_key:
@@ -184,7 +186,7 @@ async def create_checkout_session(
             "Stripe billing not configured. Use /billing/create-order for Razorpay.",
         )
     try:
-        import stripe  # noqa: PLC0415
+        import stripe
 
         stripe.api_key = settings.stripe_api_key
         price_map = {
@@ -226,13 +228,14 @@ async def list_invoices(request: Request) -> list[dict[str, Any]]:
 
     rz = _get_razorpay()
     if rz is None:
-        from app.core.config import get_settings  # noqa: PLC0415
+        from app.core.config import get_settings
 
         settings = get_settings()
         if settings.environment != "development":
             return []  # No fake data in staging/production
         # Return demo invoices for development mode only
         from datetime import UTC, datetime, timedelta
+
         now = datetime.now(UTC)
         return [
             {
@@ -250,13 +253,15 @@ async def list_invoices(request: Request) -> list[dict[str, Any]]:
 
     try:
         # Fetch payments for this tenant from Razorpay
-        payments = rz.payment.all({
-            "count": 20,
-            "notes[tenant_id]": tenant.tenant_id,
-        })
+        payments = rz.payment.all(
+            {
+                "count": 20,
+                "notes[tenant_id]": tenant.tenant_id,
+            }
+        )
 
         invoices = []
-        for payment in (payments.get("items", []) if isinstance(payments, dict) else []):
+        for payment in payments.get("items", []) if isinstance(payments, dict) else []:
             notes = payment.get("notes", {})
             if notes.get("tenant_id") != tenant.tenant_id:
                 continue  # Extra safety check
@@ -265,23 +270,27 @@ async def list_invoices(request: Request) -> list[dict[str, Any]]:
             amount_usd = _inr_to_usd(amount_inr)
 
             import datetime as _dt
-            invoices.append({
-                "id": payment.get("id", ""),
-                "date": _dt.datetime.fromtimestamp(
-                    payment.get("created_at", 0),
-                    tz=_dt.timezone.utc,
-                ).isoformat(),
-                "amount_usd": round(amount_usd, 2),
-                "amount_inr": round(amount_inr, 2),
-                "status": (
-                    "paid" if payment.get("status") == "captured"
-                    else payment.get("status", "unknown")
-                ),
-                "plan": notes.get("plan", "unknown"),
-                "cycle": notes.get("cycle", "monthly"),
-                "pdf_url": None,  # Razorpay doesn't provide PDF invoices via API directly
-                "payment_id": payment.get("id"),
-            })
+
+            invoices.append(
+                {
+                    "id": payment.get("id", ""),
+                    "date": _dt.datetime.fromtimestamp(
+                        payment.get("created_at", 0),
+                        tz=_dt.UTC,
+                    ).isoformat(),
+                    "amount_usd": round(amount_usd, 2),
+                    "amount_inr": round(amount_inr, 2),
+                    "status": (
+                        "paid"
+                        if payment.get("status") == "captured"
+                        else payment.get("status", "unknown")
+                    ),
+                    "plan": notes.get("plan", "unknown"),
+                    "cycle": notes.get("cycle", "monthly"),
+                    "pdf_url": None,  # Razorpay doesn't provide PDF invoices via API directly
+                    "payment_id": payment.get("id"),
+                }
+            )
 
         return invoices
     except Exception as exc:
@@ -296,7 +305,7 @@ async def list_invoices(request: Request) -> list[dict[str, Any]]:
 async def list_plans(request: Request) -> list[dict[str, Any]]:
     """Return available billing plans with Razorpay pricing info."""
     _require_tenant(request)
-    from app.core.config import get_settings  # noqa: PLC0415
+    from app.core.config import get_settings
 
     settings = get_settings()
 
@@ -318,9 +327,7 @@ async def list_plans(request: Request) -> list[dict[str, Any]]:
 
 
 @router.post("/create-order")
-async def create_razorpay_order(
-    request: Request, body: CreateOrderRequest
-) -> dict[str, Any]:
+async def create_razorpay_order(request: Request, body: CreateOrderRequest) -> dict[str, Any]:
     """Create a Razorpay order for plan upgrade."""
     tenant = _require_tenant(request)
 
@@ -331,7 +338,7 @@ async def create_razorpay_order(
     rz = _get_razorpay()
 
     if rz is None:
-        from app.core.config import get_settings  # noqa: PLC0415
+        from app.core.config import get_settings
 
         # Development / demo mode: return a mock order so the UI still functions
         return {
@@ -349,7 +356,7 @@ async def create_razorpay_order(
         }
 
     try:
-        from app.core.config import get_settings  # noqa: PLC0415
+        from app.core.config import get_settings
 
         order_data: dict[str, Any] = {
             "amount": amount,
@@ -377,23 +384,20 @@ async def create_razorpay_order(
 
 
 @router.post("/verify-payment")
-async def verify_razorpay_payment(
-    request: Request, body: VerifyPaymentRequest
-) -> dict[str, Any]:
+async def verify_razorpay_payment(request: Request, body: VerifyPaymentRequest) -> dict[str, Any]:
     """Verify Razorpay payment signature and upgrade the tenant plan."""
     tenant = _require_tenant(request)
     rz = _get_razorpay()
 
     if rz is None:
-        from app.core.config import get_settings  # noqa: PLC0415
+        from app.core.config import get_settings
 
         settings = get_settings()
         if not settings.allow_mock_payments:
             raise HTTPException(
                 status_code=503,
                 detail=(
-                    "Payment service not configured. "
-                    "Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET."
+                    "Payment service not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET."
                 ),
             )
         _log.warning(
@@ -407,7 +411,7 @@ async def verify_razorpay_payment(
         )
 
     try:
-        from app.core.config import get_settings  # noqa: PLC0415
+        from app.core.config import get_settings
 
         settings = get_settings()
         generated_signature = hmac.new(
@@ -467,9 +471,7 @@ async def razorpay_webhook(request: Request) -> dict[str, Any]:
         )
 
     sig = request.headers.get("x-razorpay-signature", "")
-    expected = hmac.new(
-        webhook_secret.encode(), body, hashlib.sha256
-    ).hexdigest()
+    expected = hmac.new(webhook_secret.encode(), body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, sig):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid webhook signature")
 
@@ -492,7 +494,7 @@ async def razorpay_webhook(request: Request) -> dict[str, Any]:
                     payment_id,
                 )
                 try:
-                    from app.tenancy.context import PlanTier, TenantContext  # noqa: PLC0415
+                    from app.tenancy.context import PlanTier, TenantContext
 
                     tenant_ctx = TenantContext(
                         tenant_id=tenant_id,
@@ -506,15 +508,13 @@ async def razorpay_webhook(request: Request) -> dict[str, Any]:
 
         elif event_type in ("subscription.charged", "order.paid"):
             entity_key = "subscription" if event_type == "subscription.charged" else "order"
-            entity = (
-                event.get("payload", {}).get(entity_key, {}).get("entity", {})
-            )
+            entity = event.get("payload", {}).get(entity_key, {}).get("entity", {})
             notes = entity.get("notes", {})
             tenant_id = notes.get("tenant_id")
             plan = notes.get("plan")
             if tenant_id and plan:
                 try:
-                    from app.tenancy.context import PlanTier, TenantContext  # noqa: PLC0415
+                    from app.tenancy.context import PlanTier, TenantContext
 
                     tenant_ctx = TenantContext(
                         tenant_id=tenant_id,

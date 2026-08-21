@@ -8,6 +8,7 @@ namespaced as:
 This allows no-restart register/unregister and per-tenant isolation without
 any shared mutable state.
 """
+
 from __future__ import annotations
 
 import enum
@@ -69,7 +70,7 @@ class MCPServerConfig(BaseModel):
     ws_url: str | None = None
 
     @model_validator(mode="after")
-    def _sync_url_fields(self) -> "MCPServerConfig":
+    def _sync_url_fields(self) -> MCPServerConfig:
         """Keep url and base_url in sync so either can be used."""
         if self.base_url and not self.url:
             self.url = self.base_url

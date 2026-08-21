@@ -3,18 +3,23 @@
 Wiring layer between GuardrailProfileSelector and guardrails_v2/engine.
 Translates a GuardrailConfig (bundle selection) into concrete scanning decisions.
 """
+
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.orchestration.runtime_profile import GoalRuntimeProfile
 
 _INJECTION_PATTERNS = [
-    re.compile(r"(?i)(ignore|forget|disregard)\s+(previous|prior|above|all)\s+(instructions?|prompts?|rules?|context)"),
-    re.compile(r"(?i)(you are now|act as|pretend to be|roleplay as)\s+.{0,50}(without|ignore|bypass)"),
+    re.compile(
+        r"(?i)(ignore|forget|disregard)\s+(previous|prior|above|all)\s+(instructions?|prompts?|rules?|context)"
+    ),
+    re.compile(
+        r"(?i)(you are now|act as|pretend to be|roleplay as)\s+.{0,50}(without|ignore|bypass)"
+    ),
     re.compile(r"(?i)(system\s*prompt|hidden\s*instruction|jailbreak)"),
     re.compile(r"(?i)(DROP\s+TABLE|DELETE\s+FROM|TRUNCATE\s+TABLE|ALTER\s+TABLE)"),
 ]
@@ -40,6 +45,7 @@ class EnforcementResult:
 # Check if guardrails_v2 is available
 try:
     from app.guardrails_v2.engine import guardrails_engine as _ge
+
     _GUARDRAILS_V2_AVAILABLE = _ge is not None
 except (ImportError, Exception):
     _GUARDRAILS_V2_AVAILABLE = False
@@ -52,22 +58,24 @@ class GuardrailEnforcer:
         self,
         tool_name: str,
         tool_args: dict[str, Any],
-        profile: "GoalRuntimeProfile",
+        profile: GoalRuntimeProfile,
     ) -> EnforcementResult:
         """Check tool arguments for injection, PII, and policy violations."""
         from app.security_runtime.guardrail_profile import GuardrailProfileSelector
-        from app.tenancy.context import TenantContext, PlanTier
+        from app.tenancy.context import PlanTier, TenantContext
 
         selector = GuardrailProfileSelector()
         # C5 fix: use actual tenant plan from profile, not hardcoded PROFESSIONAL
         try:
             plan_str = getattr(profile, "tenant_plan", None) or "professional"
-            plan = PlanTier(plan_str) if plan_str in [p.value for p in PlanTier] else PlanTier.PROFESSIONAL
+            plan = (
+                PlanTier(plan_str)
+                if plan_str in [p.value for p in PlanTier]
+                else PlanTier.PROFESSIONAL
+            )
         except Exception:
             plan = PlanTier.PROFESSIONAL
-        tenant_ctx = TenantContext(
-            tenant_id=profile.tenant_id, plan=plan, api_key_id="k1"
-        )
+        tenant_ctx = TenantContext(tenant_id=profile.tenant_id, plan=plan, api_key_id="k1")
         config = selector.select(profile, tenant_ctx=tenant_ctx)
 
         if _GUARDRAILS_V2_AVAILABLE:
@@ -78,29 +86,33 @@ class GuardrailEnforcer:
         blocked = injection and config.block_on_injection
 
         return EnforcementResult(
-            checked=True, blocked=blocked, injection_detected=injection,
+            checked=True,
+            blocked=blocked,
+            injection_detected=injection,
             reason="injection_detected" if injection else "",
         )
 
     def check_final_output(
         self,
         output: str,
-        profile: "GoalRuntimeProfile",
+        profile: GoalRuntimeProfile,
     ) -> EnforcementResult:
         """Check final output for PII, toxicity, and policy violations."""
         from app.security_runtime.guardrail_profile import GuardrailProfileSelector
-        from app.tenancy.context import TenantContext, PlanTier
+        from app.tenancy.context import PlanTier, TenantContext
 
         selector = GuardrailProfileSelector()
         # C5 fix: use actual tenant plan from profile, not hardcoded PROFESSIONAL
         try:
             plan_str = getattr(profile, "tenant_plan", None) or "professional"
-            plan = PlanTier(plan_str) if plan_str in [p.value for p in PlanTier] else PlanTier.PROFESSIONAL
+            plan = (
+                PlanTier(plan_str)
+                if plan_str in [p.value for p in PlanTier]
+                else PlanTier.PROFESSIONAL
+            )
         except Exception:
             plan = PlanTier.PROFESSIONAL
-        tenant_ctx = TenantContext(
-            tenant_id=profile.tenant_id, plan=plan, api_key_id="k1"
-        )
+        tenant_ctx = TenantContext(tenant_id=profile.tenant_id, plan=plan, api_key_id="k1")
         config = selector.select(profile, tenant_ctx=tenant_ctx)
 
         if _GUARDRAILS_V2_AVAILABLE:
@@ -110,7 +122,9 @@ class GuardrailEnforcer:
         blocked = pii and config.block_on_pii
 
         return EnforcementResult(
-            checked=True, blocked=blocked, pii_detected=pii,
+            checked=True,
+            blocked=blocked,
+            pii_detected=pii,
             reason="pii_detected" if pii else "",
         )
 
@@ -118,15 +132,18 @@ class GuardrailEnforcer:
         try:
             from app.guardrails_v2.engine import guardrails_engine
             from app.guardrails_v2.models import GuardrailLayer
+
             layer_map = {
                 "tool_args": GuardrailLayer.TOOL_ARGS,
                 "final_output": GuardrailLayer.FINAL_OUTPUT,
             }
             result = guardrails_engine.evaluate(
-                content=content, layer=layer_map.get(layer, GuardrailLayer.TOOL_ARGS),
+                content=content,
+                layer=layer_map.get(layer, GuardrailLayer.TOOL_ARGS),
             )
             return EnforcementResult(
-                checked=True, blocked=getattr(result, "blocked", False),
+                checked=True,
+                blocked=getattr(result, "blocked", False),
                 injection_detected=getattr(result, "injection_detected", False),
                 pii_detected=getattr(result, "pii_detected", False),
                 reason=getattr(result, "reason", ""),
@@ -137,8 +154,9 @@ class GuardrailEnforcer:
     def _fallback_check(self, content: str) -> EnforcementResult:
         injection = self._check_injection(content)
         pii = self._check_pii(content)
-        return EnforcementResult(checked=True, blocked=False,
-                                  injection_detected=injection, pii_detected=pii)
+        return EnforcementResult(
+            checked=True, blocked=False, injection_detected=injection, pii_detected=pii
+        )
 
     def _check_injection(self, content: str) -> bool:
         return any(p.search(content) for p in _INJECTION_PATTERNS)

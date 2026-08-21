@@ -31,9 +31,7 @@ class ExecutionMemory:
         plan: list[str],
         tenant_ctx: TenantContext,
     ) -> None:
-        self._plans.setdefault(tenant_ctx.tenant_id, []).append(
-            {"goal": goal, "plan": plan}
-        )
+        self._plans.setdefault(tenant_ctx.tenant_id, []).append({"goal": goal, "plan": plan})
 
     def recall(
         self,
@@ -44,9 +42,7 @@ class ExecutionMemory:
     ) -> list[dict[str, object]]:
         hint = goal_hint.lower()
         matches = [
-            m
-            for m in self._plans.get(tenant_ctx.tenant_id, [])
-            if hint in str(m["goal"]).lower()
+            m for m in self._plans.get(tenant_ctx.tenant_id, []) if hint in str(m["goal"]).lower()
         ]
         return matches[:top_k]
 
@@ -93,6 +89,7 @@ class ExecutionMemory:
         method can still find newly-persisted entries in the same session.
         """
         from datetime import UTC, datetime
+
         tid = tenant_id
         entry: dict[str, object] = {
             "goal_text": goal,
@@ -116,16 +113,23 @@ class ExecutionMemory:
             import uuid
 
             from sqlalchemy import text
+
             async with db() as session, session.begin():
                 await session.execute(
                     text("""INSERT INTO execution_memory
                         (id, tenant_id, goal_text, plan, success, created_at)
                         VALUES (:id, :tid, :goal, :plan, :success, NOW())"""),
-                    {"id": uuid.uuid4().hex, "tid": tid,
-                     "goal": goal[:500], "plan": json.dumps(plan), "success": success}
+                    {
+                        "id": uuid.uuid4().hex,
+                        "tid": tid,
+                        "goal": goal[:500],
+                        "plan": json.dumps(plan),
+                        "success": success,
+                    },
                 )
         except Exception as exc:
             from app.observability.logging import get_logger
+
             get_logger(__name__).warning("execution_memory_db_write_failed", error=str(exc))
 
     async def record_failure_async(
@@ -149,6 +153,7 @@ class ExecutionMemory:
             import uuid
 
             from sqlalchemy import text
+
             async with db() as session, session.begin():
                 await session.execute(
                     text("""
@@ -165,6 +170,7 @@ class ExecutionMemory:
                 )
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning("failure_persist_failed: %s", exc)
 
     async def load_from_db(
@@ -179,10 +185,13 @@ class ExecutionMemory:
             return 0
         try:
             import json
+
             from sqlalchemy import text
+
             async with db() as session:
-                rows = (await session.execute(
-                    text("""
+                rows = (
+                    await session.execute(
+                        text("""
                         SELECT tenant_id, goal_text, plan
                         FROM execution_memory
                         WHERE tenant_id = :tenant_id
@@ -190,13 +199,18 @@ class ExecutionMemory:
                         ORDER BY created_at DESC
                         LIMIT :limit
                     """),
-                    {"tenant_id": tenant_id, "limit": limit},
-                )).fetchall()
+                        {"tenant_id": tenant_id, "limit": limit},
+                    )
+                ).fetchall()
                 count = 0
                 for row in reversed(rows):  # oldest first so recent ones are at end
                     tid, goal, plan_json = str(row[0]), str(row[1]), row[2]
                     try:
-                        plan = json.loads(plan_json) if isinstance(plan_json, str) else (plan_json or [])
+                        plan = (
+                            json.loads(plan_json)
+                            if isinstance(plan_json, str)
+                            else (plan_json or [])
+                        )
                         self._plans.setdefault(tid, []).append({"goal": goal, "plan": plan})
                         count += 1
                     except Exception:
@@ -205,6 +219,7 @@ class ExecutionMemory:
         except Exception as exc:
             try:
                 from app.observability.logging import get_logger
+
                 get_logger(__name__).warning("execution_memory_load_from_db_failed", error=str(exc))
             except Exception:
                 pass
@@ -229,26 +244,31 @@ class ExecutionMemory:
             for m in self._plans.get(tenant_id, []):
                 goal_str = str(m.get("goal", m.get("goal_text", "")))
                 if any(word in goal_str.lower() for word in hint_lower.split()[:5]):
-                    results.append({
-                        "goal": goal_str,
-                        "plan": m.get("plan", []) if isinstance(m.get("plan"), list) else [],
-                        "success": m.get("success", True),
-                    })
+                    results.append(
+                        {
+                            "goal": goal_str,
+                            "plan": m.get("plan", []) if isinstance(m.get("plan"), list) else [],
+                            "success": m.get("success", True),
+                        }
+                    )
                     if len(results) >= limit:
                         break
             return results
 
         try:
             from sqlalchemy import text
+
             async with db() as session:
-                rows = (await session.execute(
-                    text("""
+                rows = (
+                    await session.execute(
+                        text("""
                         SELECT goal_text, plan, success FROM execution_memory
                         WHERE tenant_id = :tid AND success = TRUE
                         ORDER BY created_at DESC LIMIT :lim
                     """),
-                    {"tid": tenant_id, "lim": limit * 3}
-                )).fetchall()
+                        {"tid": tenant_id, "lim": limit * 3},
+                    )
+                ).fetchall()
 
             # Filter by keyword relevance
             hint_lower = goal_hint.lower()
@@ -256,11 +276,13 @@ class ExecutionMemory:
             for row in rows:
                 goal_text, plan, success = row
                 if any(word in (goal_text or "").lower() for word in hint_lower.split()[:5]):
-                    filtered.append({
-                        "goal": goal_text,
-                        "plan": plan if isinstance(plan, list) else [],
-                        "success": success,
-                    })
+                    filtered.append(
+                        {
+                            "goal": goal_text,
+                            "plan": plan if isinstance(plan, list) else [],
+                            "success": success,
+                        }
+                    )
                     if len(filtered) >= limit:
                         break
             return filtered
@@ -271,11 +293,13 @@ class ExecutionMemory:
             for m in self._plans.get(tenant_id, []):
                 goal_str = str(m.get("goal", m.get("goal_text", "")))
                 if any(word in goal_str.lower() for word in hint_lower.split()[:5]):
-                    fallback.append({
-                        "goal": goal_str,
-                        "plan": m.get("plan", []) if isinstance(m.get("plan"), list) else [],
-                        "success": m.get("success", True),
-                    })
+                    fallback.append(
+                        {
+                            "goal": goal_str,
+                            "plan": m.get("plan", []) if isinstance(m.get("plan"), list) else [],
+                            "success": m.get("success", True),
+                        }
+                    )
                     if len(fallback) >= limit:
                         break
             return fallback

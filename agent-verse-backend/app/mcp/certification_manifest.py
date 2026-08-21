@@ -16,6 +16,7 @@ class ConnectorTarget(TypedDict):
     expected_artifact_kind: ExpectedArtifactKind
     live_env: list[str]
 
+
 CONNECTOR_CERTIFICATION_TARGETS: dict[str, ConnectorTarget] = {
     "jira": {
         "display_name": "Jira",

@@ -4,6 +4,7 @@ Environment:
   YOUTUBE_API_KEY:      YouTube Data API v3 key (for public data reads)
   YOUTUBE_ACCESS_TOKEN: OAuth 2.0 token (for authenticated operations)
 """
+
 from __future__ import annotations
 
 import os
@@ -85,7 +86,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "channel_id": {"type": "string", "description": "Channel ID (UCxxx...)"},
-                "username": {"type": "string", "description": "Channel username/handle (alternative to ID)"},
+                "username": {
+                    "type": "string",
+                    "description": "Channel username/handle (alternative to ID)",
+                },
                 "parts": {
                     "type": "string",
                     "default": "snippet,statistics,brandingSettings",
@@ -164,13 +168,15 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     try:
         async with httpx.AsyncClient(headers=_headers(), timeout=30.0) as c:
             if tool_name == "youtube_search":
-                params = _params({
-                    "part": "snippet",
-                    "q": arguments["query"],
-                    "maxResults": arguments.get("max_results", 10),
-                    "type": arguments.get("type", "video"),
-                    "order": arguments.get("order", "relevance"),
-                })
+                params = _params(
+                    {
+                        "part": "snippet",
+                        "q": arguments["query"],
+                        "maxResults": arguments.get("max_results", 10),
+                        "type": arguments.get("type", "video"),
+                        "order": arguments.get("order", "relevance"),
+                    }
+                )
                 for key, api_key_name in [
                     ("published_after", "publishedAfter"),
                     ("language", "relevanceLanguage"),
@@ -185,22 +191,26 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "youtube_get_video":
                 r = await c.get(
                     f"{YOUTUBE_BASE}/videos",
-                    params=_params({
-                        "part": arguments.get("parts", "snippet,statistics,contentDetails"),
-                        "id": arguments["video_id"],
-                    }),
+                    params=_params(
+                        {
+                            "part": arguments.get("parts", "snippet,statistics,contentDetails"),
+                            "id": arguments["video_id"],
+                        }
+                    ),
                 )
                 r.raise_for_status()
                 return r.json()
 
             elif tool_name == "youtube_list_channel_videos":
-                params = _params({
-                    "part": "snippet",
-                    "channelId": arguments["channel_id"],
-                    "maxResults": arguments.get("max_results", 20),
-                    "order": arguments.get("order", "date"),
-                    "type": "video",
-                })
+                params = _params(
+                    {
+                        "part": "snippet",
+                        "channelId": arguments["channel_id"],
+                        "maxResults": arguments.get("max_results", 20),
+                        "order": arguments.get("order", "date"),
+                        "type": "video",
+                    }
+                )
                 if pa := arguments.get("published_after"):
                     params["publishedAfter"] = pa
                 if pt := arguments.get("page_token"):
@@ -210,9 +220,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 return r.json()
 
             elif tool_name == "youtube_get_channel":
-                p: dict[str, Any] = _params({
-                    "part": arguments.get("parts", "snippet,statistics"),
-                })
+                p: dict[str, Any] = _params(
+                    {
+                        "part": arguments.get("parts", "snippet,statistics"),
+                    }
+                )
                 if cid := arguments.get("channel_id"):
                     p["id"] = cid
                 elif uname := arguments.get("username"):
@@ -224,11 +236,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 return r.json()
 
             elif tool_name == "youtube_list_playlists":
-                params = _params({
-                    "part": "snippet,contentDetails",
-                    "channelId": arguments["channel_id"],
-                    "maxResults": arguments.get("max_results", 20),
-                })
+                params = _params(
+                    {
+                        "part": "snippet,contentDetails",
+                        "channelId": arguments["channel_id"],
+                        "maxResults": arguments.get("max_results", 20),
+                    }
+                )
                 if pt := arguments.get("page_token"):
                     params["pageToken"] = pt
                 r = await c.get(f"{YOUTUBE_BASE}/playlists", params=params)
@@ -236,11 +250,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 return r.json()
 
             elif tool_name == "youtube_list_playlist_items":
-                params = _params({
-                    "part": "snippet,contentDetails",
-                    "playlistId": arguments["playlist_id"],
-                    "maxResults": arguments.get("max_results", 50),
-                })
+                params = _params(
+                    {
+                        "part": "snippet,contentDetails",
+                        "playlistId": arguments["playlist_id"],
+                        "maxResults": arguments.get("max_results", 50),
+                    }
+                )
                 if pt := arguments.get("page_token"):
                     params["pageToken"] = pt
                 r = await c.get(f"{YOUTUBE_BASE}/playlistItems", params=params)
@@ -248,12 +264,14 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 return r.json()
 
             elif tool_name == "youtube_get_video_comments":
-                params = _params({
-                    "part": "snippet",
-                    "videoId": arguments["video_id"],
-                    "maxResults": arguments.get("max_results", 20),
-                    "order": arguments.get("order", "relevance"),
-                })
+                params = _params(
+                    {
+                        "part": "snippet",
+                        "videoId": arguments["video_id"],
+                        "maxResults": arguments.get("max_results", 20),
+                        "order": arguments.get("order", "relevance"),
+                    }
+                )
                 if search := arguments.get("search_terms"):
                     params["searchTerms"] = search
                 r = await c.get(f"{YOUTUBE_BASE}/commentThreads", params=params)

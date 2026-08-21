@@ -1,4 +1,5 @@
 """AssemblyAI STT — requires ASSEMBLY_AI_KEY."""
+
 from __future__ import annotations
 
 import asyncio
@@ -8,7 +9,7 @@ from app.voice.providers.base import TranscriptResult
 
 
 class AssemblyAISTT:
-    provider_name:      str  = "assemblyai"
+    provider_name: str = "assemblyai"
     supports_streaming: bool = False
 
     def __init__(self) -> None:
@@ -22,7 +23,8 @@ class AssemblyAISTT:
 
     async def transcribe(self, audio_bytes: bytes, content_type: str) -> TranscriptResult:
         import httpx
-        key     = os.getenv("ASSEMBLY_AI_KEY", "")
+
+        key = os.getenv("ASSEMBLY_AI_KEY", "")
         headers = {"authorization": key}
         if not key:
             raise RuntimeError("ASSEMBLY_AI_KEY not set for assemblyai provider")

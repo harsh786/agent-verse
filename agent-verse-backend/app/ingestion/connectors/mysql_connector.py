@@ -3,6 +3,7 @@
 Uses mysqlclient or PyMySQL.
 Cursor: last row's ORDER BY column value (typically a timestamp or auto-increment ID).
 """
+
 from __future__ import annotations
 
 import logging
@@ -28,6 +29,7 @@ class MySQLConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         cc = config.connection_config
         try:
@@ -47,6 +49,7 @@ class MySQLConnector(BaseConnector):
     def _connect(cc: dict):
         try:
             import pymysql  # type: ignore[import-not-found]
+
             return pymysql.connect(
                 host=cc.get("host", "localhost"),
                 port=int(cc.get("port", 3306)),
@@ -58,6 +61,7 @@ class MySQLConnector(BaseConnector):
             )
         except ImportError:
             import MySQLdb  # type: ignore[import-not-found]
+
             return MySQLdb.connect(
                 host=cc.get("host", "localhost"),
                 port=int(cc.get("port", 3306)),
@@ -107,9 +111,11 @@ class MySQLConnector(BaseConnector):
             text = "\n".join(f"{k}: {v}" for k, v in row_dict.items() if v is not None)
             doc = RawDocument(
                 doc_id=str(uuid.uuid4()),
-                source_id=config.source_id, tenant_id=config.tenant_id,
+                source_id=config.source_id,
+                tenant_id=config.tenant_id,
                 source_url=f"mysql://{cc.get('host')}/{cc.get('database')}/row/{uuid.uuid4()}",
-                content=text.encode(), content_type="text/plain",
+                content=text.encode(),
+                content_type="text/plain",
                 metadata=row_dict,
             )
             yield doc, new_cursor

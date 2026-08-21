@@ -4,6 +4,7 @@ Environment:
   HOME_ASSISTANT_TOKEN: Long-lived access token for Home Assistant API
   HOME_ASSISTANT_URL: Base URL of the Home Assistant instance (e.g. http://homeassistant.local:8123)
 """
+
 from __future__ import annotations
 
 import os
@@ -28,7 +29,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "domain": {"type": "string", "description": "Filter by domain: light, switch, sensor, climate, etc."},
+                "domain": {
+                    "type": "string",
+                    "description": "Filter by domain: light, switch, sensor, climate, etc.",
+                },
             },
         },
     },
@@ -38,7 +42,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "entity_id": {"type": "string", "description": "Entity ID (e.g. light.living_room)"},
+                "entity_id": {
+                    "type": "string",
+                    "description": "Entity ID (e.g. light.living_room)",
+                },
             },
             "required": ["entity_id"],
         },
@@ -49,8 +56,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "domain": {"type": "string", "description": "Service domain (e.g. light, switch, climate)"},
-                "service": {"type": "string", "description": "Service name (e.g. turn_on, turn_off, toggle)"},
+                "domain": {
+                    "type": "string",
+                    "description": "Service domain (e.g. light, switch, climate)",
+                },
+                "service": {
+                    "type": "string",
+                    "description": "Service name (e.g. turn_on, turn_off, toggle)",
+                },
                 "entity_id": {"type": "string", "description": "Target entity ID"},
                 "service_data": {"type": "object", "description": "Additional service parameters"},
             },
@@ -71,7 +84,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "automation_id": {"type": "string", "description": "Automation entity ID (e.g. automation.morning_lights)"},
+                "automation_id": {
+                    "type": "string",
+                    "description": "Automation entity ID (e.g. automation.morning_lights)",
+                },
             },
             "required": ["automation_id"],
         },
@@ -152,7 +168,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 if "end_time" in arguments:
                     params["end_time"] = arguments["end_time"]
                 start = arguments.get("start_time", "")
-                url = f"{base_url}/history/period/{start}" if start else f"{base_url}/history/period"
+                url = (
+                    f"{base_url}/history/period/{start}" if start else f"{base_url}/history/period"
+                )
                 r = await client.get(url, headers=headers, params=params)
                 r.raise_for_status()
                 return r.json()

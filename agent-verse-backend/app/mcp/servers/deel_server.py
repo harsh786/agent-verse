@@ -3,6 +3,7 @@
 Environment:
   DEEL_API_KEY: Deel API key
 """
+
 from __future__ import annotations
 
 import os

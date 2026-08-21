@@ -8,6 +8,7 @@ Environment variables:
 This server provides a unified interface to common AWS services.
 For service-specific features, register aws_s3, aws_lambda, etc. separately.
 """
+
 from __future__ import annotations
 
 import os
@@ -370,10 +371,7 @@ async def call_tool(
             )
             resp = iam.list_roles(MaxItems=100)
             return {
-                "roles": [
-                    {"name": r["RoleName"], "arn": r["Arn"]}
-                    for r in resp.get("Roles", [])
-                ]
+                "roles": [{"name": r["RoleName"], "arn": r["Arn"]} for r in resp.get("Roles", [])]
             }
 
         return {"error": f"Unknown tool: {tool_name}"}

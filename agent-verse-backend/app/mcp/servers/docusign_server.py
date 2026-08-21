@@ -5,6 +5,7 @@ Environment:
   DOCUSIGN_ACCOUNT_ID:   DocuSign Account ID
   DOCUSIGN_BASE_URL:     API base URL (e.g. https://demo.docusign.net/restapi or https://www.docusign.net/restapi)
 """
+
 from __future__ import annotations
 
 import os
@@ -91,7 +92,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "envelope_id": {"type": "string"},
-                "client_user_id": {"type": "string", "description": "Unique client user identifier"},
+                "client_user_id": {
+                    "type": "string",
+                    "description": "Unique client user identifier",
+                },
                 "email": {"type": "string", "description": "Signer's email address"},
                 "name": {"type": "string", "description": "Signer's name"},
                 "return_url": {"type": "string", "description": "URL to redirect after signing"},

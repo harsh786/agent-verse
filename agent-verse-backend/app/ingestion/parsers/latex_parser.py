@@ -1,4 +1,5 @@
 """LaTeX parser — section-aware extraction from .tex source files."""
+
 from __future__ import annotations
 
 import logging
@@ -8,12 +9,14 @@ _log = logging.getLogger(__name__)
 
 # LaTeX sectioning commands in hierarchy order
 _SECTION_COMMANDS = [
-    "chapter", "section", "subsection", "subsubsection",
-    "paragraph", "subparagraph",
+    "chapter",
+    "section",
+    "subsection",
+    "subsubsection",
+    "paragraph",
+    "subparagraph",
 ]
-_SECTION_RE = re.compile(
-    r"\\(" + "|".join(_SECTION_COMMANDS) + r")\*?\{([^}]+)\}"
-)
+_SECTION_RE = re.compile(r"\\(" + "|".join(_SECTION_COMMANDS) + r")\*?\{([^}]+)\}")
 _COMMENT_RE = re.compile(r"(?<!\\)%.*$", re.MULTILINE)
 _COMMAND_RE = re.compile(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?(?:\{[^}]*\})*")
 _MATH_ENV_RE = re.compile(

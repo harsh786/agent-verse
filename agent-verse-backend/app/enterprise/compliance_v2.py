@@ -14,6 +14,7 @@ Key fixes vs. old compliance.py:
 Amendment 8.3: check_gdpr() reads real DB records, no hardcoded True fields.
 Amendment 8.4: SAML replay protection via Redis.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -101,8 +102,7 @@ class ComplianceChecker:
             controls["minimum_necessary"] = {
                 "pass": hitl_policy,
                 "note": (
-                    None if hitl_policy
-                    else "HITL approval policy for PHI endpoints not configured"
+                    None if hitl_policy else "HITL approval policy for PHI endpoints not configured"
                 ),
             }
 
@@ -111,7 +111,8 @@ class ComplianceChecker:
             controls["workforce_training"] = {
                 "pass": training,
                 "note": (
-                    None if training
+                    None
+                    if training
                     else "HIPAA workforce training expiry not tracked in tenant settings"
                 ),
             }
@@ -121,8 +122,7 @@ class ComplianceChecker:
             controls["encryption_at_rest"] = {
                 "pass": enc,
                 "note": (
-                    None if enc
-                    else "Enterprise plan required for encryption-at-rest guarantee"
+                    None if enc else "Enterprise plan required for encryption-at-rest guarantee"
                 ),
             }
 
@@ -183,8 +183,7 @@ class ComplianceChecker:
                 "pass": recent_exports > 0,
                 "detail": f"{recent_exports} export(s) completed in last 90 days",
                 "note": (
-                    None if recent_exports > 0
-                    else "No completed GDPR data exports in last 90 days"
+                    None if recent_exports > 0 else "No completed GDPR data exports in last 90 days"
                 ),
             }
 
@@ -211,7 +210,8 @@ class ComplianceChecker:
                 "pass": region in eu_regions,
                 "region": region,
                 "note": (
-                    None if region in eu_regions
+                    None
+                    if region in eu_regions
                     else f"Region '{region}' is not EU; GDPR requires EU data residency"
                 ),
             }
@@ -221,8 +221,7 @@ class ComplianceChecker:
             controls["retention_policy"] = {
                 "pass": retention,
                 "note": (
-                    None if retention
-                    else "Data retention policy not configured in tenant settings"
+                    None if retention else "Data retention policy not configured in tenant settings"
                 ),
             }
 
@@ -261,7 +260,8 @@ class ComplianceChecker:
             controls["certification_on_file"] = {
                 "pass": cert is not None and cert.get("status") == "active",
                 "note": (
-                    None if cert and cert.get("status") == "active"
+                    None
+                    if cert and cert.get("status") == "active"
                     else "SOC 2 Type II certification not on file"
                 ),
             }
@@ -391,7 +391,7 @@ class ComplianceChecker:
                     {"tid": tenant_id},
                 )
             ).fetchone()
-            return (row[0] if row and row[0] else "us-east-1")
+            return row[0] if row and row[0] else "us-east-1"
         except Exception:
             return "us-east-1"
 

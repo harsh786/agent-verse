@@ -365,8 +365,7 @@ async def _probe_session_factory(factory: object | None, tenant_id: str) -> str 
             context.close()
             return "session_factory_unavailable"
         if not (
-            _has_async_method(context, "__aenter__")
-            and _has_async_method(context, "__aexit__")
+            _has_async_method(context, "__aenter__") and _has_async_method(context, "__aexit__")
         ):
             return "session_factory_unavailable"
         async with context as session:
@@ -664,14 +663,13 @@ class RetrievalExecutionContext:
         """Execute the legacy engine core with canonical fail-closed semantics."""
 
         if self.strategy is RAGStrategy.FUSION:
+
             async def search_operation(
                 variant_query: str,
                 variant_embedding: list[float] | None,
             ) -> list[EngineRetrievalResult]:
                 async def search(session: AsyncSession) -> list[EngineRetrievalResult]:
-                    await _require_active_collection(
-                        session, self.tenant_context, collection_id
-                    )
+                    await _require_active_collection(session, self.tenant_context, collection_id)
                     return await rag_engine.hybrid_search(
                         session,
                         query=variant_query,
@@ -729,10 +727,7 @@ async def execute_core_strategy(
 ) -> RAGExecutionResult:
     """Execute one certified strategy through tenant-scoped persistence boundaries."""
 
-    if (
-        strategy not in DIRECT_CORE_RAG_STRATEGIES
-        and strategy is not RAGStrategy.ADAPTIVE
-    ):
+    if strategy not in DIRECT_CORE_RAG_STRATEGIES and strategy is not RAGStrategy.ADAPTIVE:
         raise RetrievalStrategyExecutionError(strategy.value, "adapter is not certified")
 
     collection_id = request.collection_id
@@ -835,9 +830,7 @@ async def execute_core_strategy(
                     "query": request.query,
                     "tenant_id": stable_tenant_id,
                     "result_count": len(typed_items),
-                    "component_scores": {
-                        item.evidence_id: item.score for item in typed_items
-                    },
+                    "component_scores": {item.evidence_id: item.score for item in typed_items},
                 }
             )
         results = rag_engine.merge_grounding_results(
@@ -1114,9 +1107,7 @@ async def execute_core_strategy(
                     [retained, web_results],
                     top_k=request.top_k,
                 )
-                stop_reason = (
-                    "web_fallback_empty" if not web_results else "web_fallback_complete"
-                )
+                stop_reason = "web_fallback_empty" if not web_results else "web_fallback_complete"
         trace.append(
             RAGStrategyTrace(
                 strategy=strategy,
@@ -1143,9 +1134,7 @@ async def execute_core_strategy(
         hyde_started = time.perf_counter()
 
         async def operation(session: AsyncSession) -> list[EngineRetrievalResult]:
-            await _require_active_collection(
-                session, context.tenant_context, collection_id
-            )
+            await _require_active_collection(session, context.tenant_context, collection_id)
             return await rag_engine.retrieve_hyde(
                 session,
                 query=request.query,
@@ -1199,9 +1188,7 @@ async def execute_core_strategy(
                 retrieval_mode="hybrid",
             )
         finally:
-            search_latencies[variant_query] = (
-                time.perf_counter() - search_started
-            ) * 1000
+            search_latencies[variant_query] = (time.perf_counter() - search_started) * 1000
 
     if strategy is RAGStrategy.MULTI_HOP:
         results = await rag_engine.retrieve_multi_hop(
@@ -1280,9 +1267,7 @@ async def _embed_text(
 
     embedder: Any = context.dependencies.embedder
     if embedder is None or not callable(getattr(embedder, "embed", None)):
-        raise RetrievalStrategyExecutionError(
-            strategy.value, "embedding provider is required"
-        )
+        raise RetrievalStrategyExecutionError(strategy.value, "embedding provider is required")
     try:
         response = await embedder.embed(EmbedRequest(texts=[text_value], input_type="query"))
         embedding = response.embeddings[0] if response.embeddings else None
@@ -1420,11 +1405,7 @@ def _canonical_result(
                 strategy=strategy,
                 action="rrf_merge",
                 status="complete",
-                detail={
-                    "rrf_scores": {
-                        result.chunk_id: result.rrf_score for result in results
-                    }
-                },
+                detail={"rrf_scores": {result.chunk_id: result.rrf_score for result in results}},
             )
         )
     return RAGExecutionResult(
@@ -1456,9 +1437,8 @@ class RetrievalGateway:
             for capability in self.dependencies.strategy_capabilities.values():
                 adapter = capability.adapter
                 adapter_id = id(adapter)
-                if (
-                    adapter_id not in seen_adapter_ids
-                    and isinstance(adapter, AsyncCloseableProtocol)
+                if adapter_id not in seen_adapter_ids and isinstance(
+                    adapter, AsyncCloseableProtocol
                 ):
                     seen_adapter_ids.add(adapter_id)
                     closeable_adapters.append(adapter)
@@ -1621,9 +1601,7 @@ class RetrievalGateway:
                 RAGRuntimeDependency.RAFT_MODEL: raft_model_fact,
             }
         )
-        strategy_facts: dict[
-            RAGStrategy, Mapping[RAGRuntimeDependency, ReadinessFact]
-        ] = {}
+        strategy_facts: dict[RAGStrategy, Mapping[RAGRuntimeDependency, ReadinessFact]] = {}
         adapter_facts: dict[RAGStrategy, ReadinessFact] = {}
         target_strategies = tuple(strategies or RAG_CAPABILITY_CATALOGUE)
         for strategy in target_strategies:
@@ -1724,9 +1702,7 @@ class RetrievalGateway:
             RAGStrategy.AGENTIC,
             RAGStrategy.MODULAR,
         }:
-            available_strategies, strategy_llms = await self._available_strategies(
-                tenant_context
-            )
+            available_strategies, strategy_llms = await self._available_strategies(tenant_context)
         else:
             available_strategies, strategy_llms = (), {}
         cost_guard = _RAGCostGuard(
@@ -1824,11 +1800,8 @@ class RetrievalGateway:
                     "resolved_strategy_id": strategy,
                 }
             )
-        elif (
-            isinstance(result, (list, tuple))
-            and all(
+        elif isinstance(result, (list, tuple)) and all(
             isinstance(item, EngineRetrievalResult) for item in result
-            )
         ):
             normalized = self._normalize_engine_results(request, strategy, list(result))
         else:
@@ -1970,9 +1943,8 @@ class RetrievalGateway:
             raise UnavailableRAGStrategyError(strategy, decision.reason)
 
     def _has_graph_capability(self) -> bool:
-        return (
-            self.dependencies.session_factory is not None
-            and callable(getattr(self.dependencies.graph_capability, "bind", None))
+        return self.dependencies.session_factory is not None and callable(
+            getattr(self.dependencies.graph_capability, "bind", None)
         )
 
     async def _web_policy_reason(self, tenant_context: TenantContext) -> str:

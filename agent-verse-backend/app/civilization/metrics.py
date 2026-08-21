@@ -4,6 +4,7 @@ Registered lazily to avoid import-time metric conflicts with the main
 REGISTRY in app.observability.metrics (which pre-registers platform counters
 at import time). Civilization metrics use their own lazy registry.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -67,6 +68,7 @@ class _NullMetric:
 
 
 # ── Metric accessors ──────────────────────────────────────────────────────────
+
 
 def civ_agents_active() -> Any:
     """Gauge: number of active agents in all civilizations."""
@@ -140,6 +142,7 @@ def civ_learnings_rejected_total() -> Any:
 
 # ── Recording helpers ─────────────────────────────────────────────────────────
 
+
 def record_spawn(
     *,
     tenant_id: str,
@@ -150,9 +153,7 @@ def record_spawn(
     try:
         civ_spawns_total().labels(tenant_id=tenant_id, decision=decision).inc()
         if decision == "denied":
-            civ_spawn_denied_total().labels(
-                tenant_id=tenant_id, reason_category="policy"
-            ).inc()
+            civ_spawn_denied_total().labels(tenant_id=tenant_id, reason_category="policy").inc()
     except Exception:
         pass
 
@@ -165,9 +166,7 @@ def record_agents_active(
 ) -> None:
     """Update active agent gauge for a civilization."""
     try:
-        civ_agents_active().labels(
-            tenant_id=tenant_id, civilization_id=civilization_id
-        ).set(count)
+        civ_agents_active().labels(tenant_id=tenant_id, civilization_id=civilization_id).set(count)
     except Exception:
         pass
 
@@ -180,9 +179,9 @@ def record_budget_spent(
 ) -> None:
     """Update budget-spent gauge for a civilization."""
     try:
-        civ_budget_spent_usd().labels(
-            tenant_id=tenant_id, civilization_id=civilization_id
-        ).set(amount_usd)
+        civ_budget_spent_usd().labels(tenant_id=tenant_id, civilization_id=civilization_id).set(
+            amount_usd
+        )
     except Exception:
         pass
 

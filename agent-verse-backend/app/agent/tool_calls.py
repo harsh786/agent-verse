@@ -85,10 +85,11 @@ def extract_tool_call(text: str) -> ToolCall | None:
     tool_text = str(tool)
 
     # Skip placeholder/template values
-    if (
-        tool_text in {"server_name.tool_name", "tool_name", "python.datetime"}
-        or tool_text.startswith("server_name.")
-    ):
+    if tool_text in {
+        "server_name.tool_name",
+        "tool_name",
+        "python.datetime",
+    } or tool_text.startswith("server_name."):
         return None
 
     # Resolve arguments from various formats
@@ -318,10 +319,12 @@ async def repair_tool_call_arguments(call: ToolCall, step: str, goal: str = "") 
 
 
 # ── Built-in tool prefixes that always bypass MCP validation ─────────────────
-_ALWAYS_ALLOWED_PREFIXES: frozenset[str] = frozenset({
-    "rpa_",
-    "civilization_",
-})
+_ALWAYS_ALLOWED_PREFIXES: frozenset[str] = frozenset(
+    {
+        "rpa_",
+        "civilization_",
+    }
+)
 
 
 def validate_tool_name(tool_name: str, allowed_tools: set[str]) -> str | None:
@@ -338,9 +341,7 @@ def validate_tool_name(tool_name: str, allowed_tools: set[str]) -> str | None:
 
     # Built-in tools are always allowed
     for prefix in _ALWAYS_ALLOWED_PREFIXES:
-        if tool_name.startswith(prefix) or tool_name.split(".")[-1].startswith(
-            prefix.rstrip("_")
-        ):
+        if tool_name.startswith(prefix) or tool_name.split(".")[-1].startswith(prefix.rstrip("_")):
             return None
 
     # If no allowed_tools were provided (discovery failed), be permissive

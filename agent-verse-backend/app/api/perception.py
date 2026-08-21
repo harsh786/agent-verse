@@ -1,4 +1,5 @@
 """Perception API — browser screenshots, image analysis, multimodal goal input."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -21,6 +22,7 @@ def _browser_agent(request: Request) -> Any:
     agent = getattr(request.app.state, "browser_agent", None)
     if agent is None:
         from app.perception.browser_agent import BrowserAgent
+
         agent = BrowserAgent()
         request.app.state.browser_agent = agent
     return agent
@@ -30,6 +32,7 @@ def _page_analyzer(request: Request) -> Any:
     analyzer = getattr(request.app.state, "page_analyzer", None)
     if analyzer is None:
         from app.perception.page_analyzer import PageAnalyzer
+
         analyzer = PageAnalyzer(browser_agent=_browser_agent(request))
         request.app.state.page_analyzer = analyzer
     return analyzer
@@ -40,6 +43,7 @@ async def get_perception_status(request: Request) -> dict[str, Any]:
     """Return Playwright availability and vision provider status."""
     _require_tenant(request)
     from app.perception.browser_agent import _PLAYWRIGHT_AVAILABLE
+
     vision_provider = getattr(request.app.state, "embedder", None)
     return {
         "playwright_available": _PLAYWRIGHT_AVAILABLE,
@@ -130,8 +134,8 @@ async def extract_text(request: Request, body: ExtractRequest) -> dict[str, Any]
 
 class GoalWithImageRequest(BaseModel):
     goal: str
-    image_b64: str = ""          # Base64 image data (without data URI prefix)
-    image_url: str = ""          # URL to screenshot and attach
+    image_b64: str = ""  # Base64 image data (without data URI prefix)
+    image_url: str = ""  # URL to screenshot and attach
     image_description: str = ""  # Human description of the image
     priority: str = "normal"
     dry_run: bool = False
@@ -185,9 +189,7 @@ async def batch_analyze(request: Request, body: BatchAnalyzeRequest) -> dict[str
 
 
 @router.post("/goal-with-image", status_code=202)
-async def submit_goal_with_image(
-    request: Request, body: GoalWithImageRequest
-) -> dict[str, Any]:
+async def submit_goal_with_image(request: Request, body: GoalWithImageRequest) -> dict[str, Any]:
     """Submit a goal with an image attachment for multimodal agent execution."""
     tenant = _require_tenant(request)
 
@@ -215,9 +217,7 @@ async def submit_goal_with_image(
                     image_context += f"\nPage analysis: {vision_text}"
 
     if body.image_b64:
-        image_context += (
-            f"\n[Image attached: {body.image_description or 'user-provided image'}]"
-        )
+        image_context += f"\n[Image attached: {body.image_description or 'user-provided image'}]"
 
     if image_context:
         enriched_goal = f"{body.goal}\n{image_context}"

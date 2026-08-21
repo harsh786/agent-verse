@@ -13,8 +13,16 @@ from app.observability.logging import get_logger
 
 _SAFE_PATTERN_ATTRIBUTE_KEYS = frozenset(
     {
-        "event", "family", "strategy", "phase", "status", "correlation_id",
-        "causation_id", "classification", "limit_type", "fallback_reason",
+        "event",
+        "family",
+        "strategy",
+        "phase",
+        "status",
+        "correlation_id",
+        "causation_id",
+        "classification",
+        "limit_type",
+        "fallback_reason",
     }
 )
 
@@ -33,14 +41,13 @@ def configure_tracing(service_name: str, otlp_endpoint: str | None = None) -> No
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
 
-    provider = TracerProvider(
-        resource=Resource.create({"service.name": service_name})
-    )
+    provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
 
     if otlp_endpoint:
         try:
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
             exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
             provider.add_span_processor(BatchSpanProcessor(exporter))
             get_logger(__name__).info("otlp_tracing_enabled", endpoint=otlp_endpoint)
@@ -69,6 +76,7 @@ def get_tracer(name: str) -> Any:
     """Get a named OTel tracer.  No-ops gracefully when OTel is not installed."""
     try:
         from opentelemetry import trace
+
         return trace.get_tracer(name)
     except Exception:
         return _NoOpTracer()

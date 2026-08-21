@@ -78,22 +78,27 @@ class AgentCollabSession:
 
         try:
             import json as _json
+
             from app.providers.base import CompletionRequest, Message
+
             req = CompletionRequest(
-                messages=[Message(
-                    role="user",
-                    content=(
-                        f"Analyze these collaboration rounds and produce a consensus:\n"
-                        f"{_json.dumps(rounds_summary, indent=2)}\n\n"
-                        f'Return JSON: {{"consensus": "...", "agreed": true|false, '
-                        f'"key_points": ["..."], "dissenter_id": null}}'
+                messages=[
+                    Message(
+                        role="user",
+                        content=(
+                            f"Analyze these collaboration rounds and produce a consensus:\n"
+                            f"{_json.dumps(rounds_summary, indent=2)}\n\n"
+                            f'Return JSON: {{"consensus": "...", "agreed": true|false, '
+                            f'"key_points": ["..."], "dissenter_id": null}}'
+                        ),
                     )
-                )],
+                ],
                 model="",
             )
             resp = await provider.complete(req)
             import re
-            m = re.search(r'\{[\s\S]*\}', resp.content)
+
+            m = re.search(r"\{[\s\S]*\}", resp.content)
             if m:
                 data = _json.loads(m.group())
                 return ConsensusResult(
@@ -139,6 +144,7 @@ class AgentCollabSession:
             return
         try:
             import uuid
+
             from sqlalchemy import text
 
             async with db() as session, session.begin():

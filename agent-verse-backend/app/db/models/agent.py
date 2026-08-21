@@ -26,9 +26,7 @@ from app.db.models import Base
 class Agent(Base):
     __tablename__ = "agents"
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -82,9 +80,7 @@ class AgentPermission(Base):
     __tablename__ = "agent_permissions"
     __table_args__ = (UniqueConstraint("agent_id", "tool_name", name="uq_agent_tool"),)
 
-    id: Mapped[str] = mapped_column(
-        String(32), primary_key=True, default=lambda: uuid.uuid4().hex
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     agent_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True
     )

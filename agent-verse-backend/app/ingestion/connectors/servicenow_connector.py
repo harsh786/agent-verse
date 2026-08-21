@@ -3,6 +3,7 @@
 Cursor: last record's sys_updated_on timestamp.
 Uses ServiceNow Table API.
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,6 +30,7 @@ class ServiceNowConnector(BaseConnector):
         import time
 
         import httpx
+
         t0 = time.perf_counter()
         try:
             cc = config.connection_config
@@ -84,17 +86,31 @@ class ServiceNowConnector(BaseConnector):
                     for rec in records:
                         updated = rec.get("sys_updated_on", "")
                         new_cursor = max(new_cursor, updated)
-                        short_desc = rec.get("short_description") or rec.get("title") or rec.get("name") or ""
-                        body = rec.get("description") or rec.get("text") or rec.get("work_notes") or ""
+                        short_desc = (
+                            rec.get("short_description")
+                            or rec.get("title")
+                            or rec.get("name")
+                            or ""
+                        )
+                        body = (
+                            rec.get("description") or rec.get("text") or rec.get("work_notes") or ""
+                        )
                         sys_id = rec.get("sys_id", "")
                         number = rec.get("number") or sys_id
                         text = f"[{table.upper()}] {number}: {short_desc}\nUpdated: {updated}\n\n{body}"
                         doc = RawDocument(
                             doc_id=str(uuid.uuid4()),
-                            source_id=config.source_id, tenant_id=config.tenant_id,
+                            source_id=config.source_id,
+                            tenant_id=config.tenant_id,
                             source_url=f"https://{instance}.service-now.com/nav_to.do?source_url={table}.do?sys_id={sys_id}",
-                            content=text.encode(), content_type="text/plain",
-                            metadata={"table": table, "sys_id": sys_id, "number": number, "updated": updated},
+                            content=text.encode(),
+                            content_type="text/plain",
+                            metadata={
+                                "table": table,
+                                "sys_id": sys_id,
+                                "number": number,
+                                "updated": updated,
+                            },
                         )
                         yield doc, new_cursor
                     # Next page: use last record's updated time
@@ -102,6 +118,10 @@ class ServiceNowConnector(BaseConnector):
                         break
                     last_ts = records[-1].get("sys_updated_on", "")
                     if last_ts:
-                        params = {"sysparm_limit": batch_size, "sysparm_order": "sys_updated_on ASC", "sysparm_query": f"sys_updated_on>{last_ts}"}
+                        params = {
+                            "sysparm_limit": batch_size,
+                            "sysparm_order": "sys_updated_on ASC",
+                            "sysparm_query": f"sys_updated_on>{last_ts}",
+                        }
                     else:
                         break

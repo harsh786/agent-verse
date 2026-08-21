@@ -5,6 +5,7 @@ Three modes:
   logical_replication: pgoutput WAL streaming (requires superuser/replication role)
   pg_notify:           LISTEN/NOTIFY for push-based row change ingestion
 """
+
 from __future__ import annotations
 
 import logging
@@ -39,9 +40,11 @@ class PostgreSQLConnector(BaseConnector):
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
+
         t0 = time.perf_counter()
         try:
             import asyncpg  # type: ignore[import-not-found]
+
             dsn = config.connection_config.get("dsn") or _build_dsn(config.connection_config)
             conn = await asyncpg.connect(dsn, timeout=10)
             version = await conn.fetchval("SELECT version()")
@@ -71,7 +74,9 @@ class PostgreSQLConnector(BaseConnector):
         dsn = config.connection_config.get("dsn") or _build_dsn(config.connection_config)
 
         if cdc_mode != "query":
-            _log.warning("postgresql_cdc_mode=%s not yet implemented, falling back to query", cdc_mode)
+            _log.warning(
+                "postgresql_cdc_mode=%s not yet implemented, falling back to query", cdc_mode
+            )
 
         try:
             import asyncpg

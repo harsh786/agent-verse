@@ -1,5 +1,7 @@
 """ModelOptimizer — selects optimal model per task type and runtime profile."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,13 +25,29 @@ class ModelRecommendation:
 def _get_task_defaults() -> dict[str, tuple[str, str, float, float]]:
     """Load task defaults from Settings so they can be overridden via env vars."""
     from app.core.config import get_settings
+
     s = get_settings()
     return {
         "planning": (s.default_planning_model, s.default_planning_provider, 0.003, 2000),
         "execution": (s.default_execution_model, s.default_execution_provider, 0.0003, 500),
-        "verification": (s.default_verification_model, s.default_verification_provider, 0.0003, 500),
-        "summarization": (s.default_summarization_model, s.default_summarization_provider, 0.0002, 400),
-        "classification": (s.default_classification_model, s.default_classification_provider, 0.0003, 300),
+        "verification": (
+            s.default_verification_model,
+            s.default_verification_provider,
+            0.0003,
+            500,
+        ),
+        "summarization": (
+            s.default_summarization_model,
+            s.default_summarization_provider,
+            0.0002,
+            400,
+        ),
+        "classification": (
+            s.default_classification_model,
+            s.default_classification_provider,
+            0.0003,
+            300,
+        ),
     }
 
 
@@ -45,10 +63,11 @@ class ModelOptimizer:
         props = getattr(profile, "properties", None)
         if props is None:
             return ModelOptimizationDecision("medium", True, "no properties")
-        if props.risk in (RiskLevel.HIGH, RiskLevel.CRITICAL) or props.complexity == Complexity.EXPERT:
-            return ModelOptimizationDecision(
-                "high", False, f"risk={props.risk.value}"
-            )
+        if (
+            props.risk in (RiskLevel.HIGH, RiskLevel.CRITICAL)
+            or props.complexity == Complexity.EXPERT
+        ):
+            return ModelOptimizationDecision("high", False, f"risk={props.risk.value}")
         if props.complexity == Complexity.SIMPLE and props.risk == RiskLevel.LOW:
             return ModelOptimizationDecision("low", True, "simple low-risk goal")
         return ModelOptimizationDecision("medium", True, "medium complexity")

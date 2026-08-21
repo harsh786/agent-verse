@@ -6,6 +6,7 @@ Environment:
   ELASTICSEARCH_USER:     Basic auth username (fallback)
   ELASTICSEARCH_PASSWORD: Basic auth password (fallback)
 """
+
 from __future__ import annotations
 
 import os
@@ -119,9 +120,7 @@ def _client() -> tuple[str, httpx.AsyncClient]:
 
     if api_key := os.getenv("ELASTICSEARCH_API_KEY"):
         headers["Authorization"] = f"ApiKey {api_key}"
-    elif (user := os.getenv("ELASTICSEARCH_USER")) and (
-        pwd := os.getenv("ELASTICSEARCH_PASSWORD")
-    ):
+    elif (user := os.getenv("ELASTICSEARCH_USER")) and (pwd := os.getenv("ELASTICSEARCH_PASSWORD")):
         auth = (user, pwd)
 
     return base, httpx.AsyncClient(headers=headers, auth=auth, timeout=30.0)
@@ -161,7 +160,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 index = arguments["index"]
                 doc_id = arguments.get("id")
                 if doc_id:
-                    resp = await client.put(f"{base}/{index}/_doc/{doc_id}", json=arguments["document"])
+                    resp = await client.put(
+                        f"{base}/{index}/_doc/{doc_id}", json=arguments["document"]
+                    )
                 else:
                     resp = await client.post(f"{base}/{index}/_doc", json=arguments["document"])
                 resp.raise_for_status()
@@ -172,7 +173,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 resp = await client.get(f"{base}/{arguments['index']}/_doc/{arguments['id']}")
                 resp.raise_for_status()
                 data = resp.json()
-                return {"_id": data["_id"], "found": data.get("found", False), "source": data.get("_source")}
+                return {
+                    "_id": data["_id"],
+                    "found": data.get("found", False),
+                    "source": data.get("_source"),
+                }
 
             elif tool_name == "elasticsearch_delete_document":
                 resp = await client.delete(f"{base}/{arguments['index']}/_doc/{arguments['id']}")
@@ -203,6 +208,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 index = arguments["index"]
                 lines: list[str] = []
                 import json
+
                 for doc in arguments["documents"]:
                     lines.append(json.dumps({"index": {"_index": index}}))
                     lines.append(json.dumps(doc))

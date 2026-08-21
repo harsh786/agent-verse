@@ -3,6 +3,7 @@
 Allows Zapier to trigger AgentVerse goals and receive results.
 Compatible with Zapier's webhook trigger and action patterns.
 """
+
 from __future__ import annotations
 
 import hmac

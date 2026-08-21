@@ -1,5 +1,7 @@
 """Data classification schema."""
+
 from __future__ import annotations
+
 import enum
 from dataclasses import dataclass, field
 
@@ -15,9 +17,17 @@ class DataClass(str, enum.Enum):
     SOURCE_CODE = "source_code"
 
     @classmethod
-    def sensitivity_order(cls) -> list["DataClass"]:
-        return [cls.PUBLIC, cls.INTERNAL, cls.CONFIDENTIAL, cls.SOURCE_CODE,
-                cls.PII, cls.PHI, cls.PCI, cls.SECRET]
+    def sensitivity_order(cls) -> list[DataClass]:
+        return [
+            cls.PUBLIC,
+            cls.INTERNAL,
+            cls.CONFIDENTIAL,
+            cls.SOURCE_CODE,
+            cls.PII,
+            cls.PHI,
+            cls.PCI,
+            cls.SECRET,
+        ]
 
 
 @dataclass

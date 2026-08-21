@@ -19,14 +19,23 @@ class PDFLayoutChunker(ChunkerBase):
                 if i + 1 < len(pages):
                     page_num = int(pages[i + 1])
                 if page_content:
-                    chunks.append(Chunk(content=page_content, chunk_index=len(chunks),
-                                        metadata={"page_number": page_num, "section": f"page_{page_num}"}))
-            return chunks or [Chunk(content=content.strip(), chunk_index=0, metadata={"page_number": 1})]
+                    chunks.append(
+                        Chunk(
+                            content=page_content,
+                            chunk_index=len(chunks),
+                            metadata={"page_number": page_num, "section": f"page_{page_num}"},
+                        )
+                    )
+            return chunks or [
+                Chunk(content=content.strip(), chunk_index=0, metadata={"page_number": 1})
+            ]
         paras = [p.strip() for p in content.split("\n\n") if p.strip()]
         chunks = []
         for i, para in enumerate(paras):
-            meta: dict = {"section": f"section_{i+1}"}
+            meta: dict = {"section": f"section_{i + 1}"}
             if _TABLE_PATTERN.search(para):
                 meta["content_type"] = "table"
             chunks.append(Chunk(content=para, chunk_index=i, metadata=meta))
-        return chunks or [Chunk(content=content.strip(), chunk_index=0, metadata={"page_number": 1})]
+        return chunks or [
+            Chunk(content=content.strip(), chunk_index=0, metadata={"page_number": 1})
+        ]

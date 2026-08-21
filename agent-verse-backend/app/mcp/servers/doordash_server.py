@@ -5,6 +5,7 @@ Environment:
   DOORDASH_KEY_ID: DoorDash API key ID
   DOORDASH_SIGNING_SECRET: DoorDash JWT signing secret
 """
+
 from __future__ import annotations
 
 import os
@@ -25,12 +26,21 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "external_delivery_id": {"type": "string", "description": "Your unique ID for this delivery"},
+                "external_delivery_id": {
+                    "type": "string",
+                    "description": "Your unique ID for this delivery",
+                },
                 "pickup_address": {"type": "string", "description": "Full pickup address"},
-                "pickup_business_name": {"type": "string", "description": "Business name at pickup location"},
+                "pickup_business_name": {
+                    "type": "string",
+                    "description": "Business name at pickup location",
+                },
                 "pickup_phone_number": {"type": "string", "description": "Pickup location phone"},
                 "dropoff_address": {"type": "string", "description": "Full dropoff address"},
-                "dropoff_contact_given_name": {"type": "string", "description": "Recipient first name"},
+                "dropoff_contact_given_name": {
+                    "type": "string",
+                    "description": "Recipient first name",
+                },
                 "dropoff_phone_number": {"type": "string", "description": "Recipient phone number"},
                 "order_value": {"type": "integer", "description": "Order value in cents"},
                 "currency": {"type": "string", "description": "Currency code (e.g. USD)"},
@@ -44,7 +54,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "external_delivery_id": {"type": "string", "description": "Your external delivery ID"},
+                "external_delivery_id": {
+                    "type": "string",
+                    "description": "Your external delivery ID",
+                },
             },
             "required": ["external_delivery_id"],
         },
@@ -55,7 +68,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "external_delivery_id": {"type": "string", "description": "Your external delivery ID to cancel"},
+                "external_delivery_id": {
+                    "type": "string",
+                    "description": "Your external delivery ID to cancel",
+                },
             },
             "required": ["external_delivery_id"],
         },
@@ -80,7 +96,10 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "pickup_address": {"type": "string", "description": "Pickup address"},
                 "dropoff_address": {"type": "string", "description": "Dropoff address"},
-                "order_value": {"type": "integer", "description": "Order value in cents for fee calculation"},
+                "order_value": {
+                    "type": "integer",
+                    "description": "Order value in cents for fee calculation",
+                },
             },
             "required": ["pickup_address", "dropoff_address"],
         },
@@ -91,7 +110,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "external_delivery_id": {"type": "string", "description": "Your external delivery ID"},
+                "external_delivery_id": {
+                    "type": "string",
+                    "description": "Your external delivery ID",
+                },
                 "tip": {"type": "integer", "description": "Tip amount in cents"},
             },
             "required": ["external_delivery_id", "tip"],
@@ -104,6 +126,7 @@ def _make_jwt() -> str:
     """Create JWT for DoorDash authentication."""
     try:
         import jwt as pyjwt
+
         developer_id = os.getenv("DOORDASH_DEVELOPER_ID", "")
         key_id = os.getenv("DOORDASH_KEY_ID", "")
         signing_secret = os.getenv("DOORDASH_SIGNING_SECRET", "")
@@ -124,7 +147,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
     key_id = os.getenv("DOORDASH_KEY_ID", "")
     signing_secret = os.getenv("DOORDASH_SIGNING_SECRET", "")
     if not developer_id or not key_id or not signing_secret:
-        return {"error": "DOORDASH_DEVELOPER_ID, DOORDASH_KEY_ID, and DOORDASH_SIGNING_SECRET not configured"}
+        return {
+            "error": "DOORDASH_DEVELOPER_ID, DOORDASH_KEY_ID, and DOORDASH_SIGNING_SECRET not configured"
+        }
 
     token = _make_jwt()
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -132,7 +157,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
         try:
             if tool_name == "doordash_create_delivery":
                 payload = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.post(f"{BASE_URL}/drive/v2/deliveries", headers=headers, json=payload)
+                r = await client.post(
+                    f"{BASE_URL}/drive/v2/deliveries", headers=headers, json=payload
+                )
                 r.raise_for_status()
                 return r.json()
 
@@ -154,13 +181,17 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
 
             if tool_name == "doordash_list_deliveries":
                 params = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.get(f"{BASE_URL}/drive/v2/deliveries", headers=headers, params=params)
+                r = await client.get(
+                    f"{BASE_URL}/drive/v2/deliveries", headers=headers, params=params
+                )
                 r.raise_for_status()
                 return r.json()
 
             if tool_name == "doordash_get_delivery_quote":
                 payload = {k: v for k, v in arguments.items() if v is not None}
-                r = await client.post(f"{BASE_URL}/drive/v2/deliveries/quote", headers=headers, json=payload)
+                r = await client.post(
+                    f"{BASE_URL}/drive/v2/deliveries/quote", headers=headers, json=payload
+                )
                 r.raise_for_status()
                 return r.json()
 

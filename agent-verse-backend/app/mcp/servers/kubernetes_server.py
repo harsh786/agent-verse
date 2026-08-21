@@ -5,6 +5,7 @@ Environment variables:
   KUBE_TOKEN:      Service account bearer token
   KUBE_NAMESPACE:  Default namespace (default: default)
 """
+
 from __future__ import annotations
 
 import json
@@ -27,7 +28,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "namespace": {"type": "string", "description": "Namespace (defaults to KUBE_NAMESPACE env)"},
+                "namespace": {
+                    "type": "string",
+                    "description": "Namespace (defaults to KUBE_NAMESPACE env)",
+                },
                 "label_selector": {"type": "string", "description": "Label selector filter"},
                 "field_selector": {"type": "string"},
             },
@@ -104,7 +108,11 @@ TOOL_DEFINITIONS = [
                 "namespace": {"type": "string"},
                 "container": {"type": "string"},
                 "tail_lines": {"type": "integer", "default": 100},
-                "previous": {"type": "boolean", "default": False, "description": "Get logs from previous container instance"},
+                "previous": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Get logs from previous container instance",
+                },
             },
             "required": ["pod_name"],
         },
@@ -167,7 +175,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             error_body = exc.response.text[:500]
         except Exception:
             pass
-        return {"error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}", "status_code": exc.response.status_code}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {error_body or exc.response.reason_phrase}",
+            "status_code": exc.response.status_code,
+        }
     except Exception as exc:
         logger.error("call_tool_failed tool=%s error=%s", tool_name, str(exc))
         return {"error": str(exc)}
@@ -267,7 +278,11 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
                         "ready_replicas": d.get("status", {}).get("readyReplicas", 0),
                         "available_replicas": d.get("status", {}).get("availableReplicas", 0),
                         "updated_replicas": d.get("status", {}).get("updatedReplicas", 0),
-                        "image": d.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [{}])[0].get("image"),
+                        "image": d.get("spec", {})
+                        .get("template", {})
+                        .get("spec", {})
+                        .get("containers", [{}])[0]
+                        .get("image"),
                     }
                     for d in data.get("items", [])
                 ]
@@ -292,6 +307,7 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
 
         elif tool_name == "k8s_restart_deployment":
             import datetime
+
             name = arguments["name"]
             # Patch restartedAt annotation to trigger a rolling restart
             now = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")

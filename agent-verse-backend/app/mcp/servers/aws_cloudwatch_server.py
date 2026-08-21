@@ -5,6 +5,7 @@ Environment variables:
   AWS_SECRET_ACCESS_KEY: AWS secret key
   AWS_REGION:            AWS region (default: us-east-1)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,7 +23,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "namespace": {"type": "string", "description": "CloudWatch namespace (e.g. AWS/EC2)"},
+                "namespace": {
+                    "type": "string",
+                    "description": "CloudWatch namespace (e.g. AWS/EC2)",
+                },
                 "metric_name": {"type": "string"},
                 "dimensions": {
                     "type": "array",
@@ -36,7 +40,11 @@ TOOL_DEFINITIONS = [
                 },
                 "start_time": {"type": "string", "description": "ISO 8601 start time"},
                 "end_time": {"type": "string", "description": "ISO 8601 end time"},
-                "period": {"type": "integer", "default": 300, "description": "Aggregation period in seconds"},
+                "period": {
+                    "type": "integer",
+                    "default": 300,
+                    "description": "Aggregation period in seconds",
+                },
                 "stat": {
                     "type": "string",
                     "enum": ["Average", "Sum", "Minimum", "Maximum", "SampleCount"],
@@ -200,7 +208,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     Namespace=arguments["namespace"],
                     MetricName=arguments["metric_name"],
                     Dimensions=arguments.get("dimensions", []),
-                    StartTime=datetime.fromisoformat(arguments["start_time"].replace("Z", "+00:00")),
+                    StartTime=datetime.fromisoformat(
+                        arguments["start_time"].replace("Z", "+00:00")
+                    ),
                     EndTime=datetime.fromisoformat(arguments["end_time"].replace("Z", "+00:00")),
                     Period=arguments.get("period", 300),
                     Statistics=[arguments.get("stat", "Average")],
@@ -238,7 +248,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                             "namespace": a.get("Namespace"),
                             "threshold": a.get("Threshold"),
                             "comparison_operator": a.get("ComparisonOperator"),
-                            "state_updated": a.get("StateUpdatedTimestamp").isoformat() if a.get("StateUpdatedTimestamp") else None,
+                            "state_updated": a.get("StateUpdatedTimestamp").isoformat()
+                            if a.get("StateUpdatedTimestamp")
+                            else None,
                         }
                         for a in alarms
                     ]

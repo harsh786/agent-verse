@@ -155,9 +155,7 @@ class LocalAESGCMKMS:
         return base64.b64encode(ciphertext).decode(), base64.b64encode(nonce).decode()
 
     async def decrypt(self, ciphertext: str, nonce: str, *, context: bytes) -> bytes:
-        return self._cipher.decrypt(
-            base64.b64decode(nonce), base64.b64decode(ciphertext), context
-        )
+        return self._cipher.decrypt(base64.b64decode(nonce), base64.b64decode(ciphertext), context)
 
 
 class KMSSealedBidService:
@@ -251,9 +249,7 @@ class KMSSealedBidService:
         secret = self._secrets.get(envelope.bidder_id)
         if secret is None:
             raise PermissionError("unknown bidder credential")
-        context = _envelope_context(
-            envelope.auction_id, envelope.bidder_id, envelope.version
-        )
+        context = _envelope_context(envelope.auction_id, envelope.bidder_id, envelope.version)
         expected = hmac.new(
             secret,
             context + b":" + envelope.nonce.encode() + b":" + envelope.ciphertext.encode(),

@@ -3,6 +3,7 @@
 Holds all active GoalRuntimeProfiles by (tenant_id, goal_id) key.
 Allows the platform to inspect and audit runtime decisions per goal.
 """
+
 from __future__ import annotations
 
 from functools import lru_cache

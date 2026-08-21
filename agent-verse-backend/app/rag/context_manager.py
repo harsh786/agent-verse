@@ -11,6 +11,7 @@ LLM calls on every context assembly. Enable via runtime flag ENHANCED_CONTEXT_BU
 doc-2 §12 explicitly requires this file:
   app/rag/context_manager.py  ← ContextBudgetManager, dedup, token cap
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -47,8 +48,9 @@ class ContextBudgetManager:
         step_query: str = "",
     ) -> ManagedContext:
         if not chunks:
-            return ManagedContext(chunks=[], total_tokens=0, dedup_removed=0,
-                                  budget_remaining=self.max_tokens)
+            return ManagedContext(
+                chunks=[], total_tokens=0, dedup_removed=0, budget_remaining=self.max_tokens
+            )
 
         # 1. Remove already-seen chunks (cross-iteration dedup)
         seen_filtered = [c for c in chunks if c.get("chunk_id") not in self._seen_chunk_ids]
@@ -89,6 +91,9 @@ class ContextBudgetManager:
 
         sources = list({c.get("source_url", "") for c in selected if c.get("source_url")})
         return ManagedContext(
-            chunks=selected, total_tokens=token_count, dedup_removed=dedup_removed,
-            budget_remaining=max(0, self.max_tokens - token_count), sources_used=sources,
+            chunks=selected,
+            total_tokens=token_count,
+            dedup_removed=dedup_removed,
+            budget_remaining=max(0, self.max_tokens - token_count),
+            sources_used=sources,
         )

@@ -10,6 +10,7 @@ Checks:
 
 Wired into: MCPClient.call_tool() before dispatching write tools
 """
+
 from __future__ import annotations
 
 import re
@@ -29,17 +30,19 @@ _SECRET_PATTERNS = [
     re.compile(r"AKIA[A-Z0-9]{16}"),  # AWS access key
 ]
 
-_WRITE_SINKS = frozenset({
-    "send_email",
-    "send_slack_message",
-    "post_webhook",
-    "create_issue",
-    "create_page",
-    "http_post",
-    "http_put",
-    "write_file",
-    "upload_file",
-})
+_WRITE_SINKS = frozenset(
+    {
+        "send_email",
+        "send_slack_message",
+        "post_webhook",
+        "create_issue",
+        "create_page",
+        "http_post",
+        "http_put",
+        "write_file",
+        "upload_file",
+    }
+)
 
 _MAX_SAFE_PAYLOAD = 50_000  # 50 KB threshold
 
@@ -110,8 +113,8 @@ _INJECTION_PATTERNS = [
     re.compile(r"(?i)disregard\s+(?:your|all)\s+(?:instructions|guidelines)"),
     re.compile(r"(?i)system\s+prompt\s*[:=]"),
     re.compile(r"(?i)<\s*system\s*>"),
-    re.compile(r"(?i)\[INST\]|\[\/INST\]"),   # Llama injection markers
-    re.compile(r"(?i)###\s*Human\s*:"),        # Alpaca injection
+    re.compile(r"(?i)\[INST\]|\[\/INST\]"),  # Llama injection markers
+    re.compile(r"(?i)###\s*Human\s*:"),  # Alpaca injection
     re.compile(r"(?i)new\s+instructions?\s+follow"),
 ]
 

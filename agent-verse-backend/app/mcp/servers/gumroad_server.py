@@ -3,6 +3,7 @@
 Environment:
   GUMROAD_ACCESS_TOKEN: Gumroad OAuth2 access token from API settings
 """
+
 from __future__ import annotations
 
 import os
@@ -32,11 +33,22 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Product name"},
-                "price": {"type": "integer", "description": "Price in cents (0 for pay-what-you-want)"},
+                "price": {
+                    "type": "integer",
+                    "description": "Price in cents (0 for pay-what-you-want)",
+                },
                 "url": {"type": "string", "description": "Product URL (custom_permalink)"},
                 "description": {"type": "string", "description": "Product description"},
-                "published": {"type": "boolean", "description": "Whether to publish immediately", "default": False},
-                "require_shipping": {"type": "boolean", "description": "Whether shipping address is required", "default": False},
+                "published": {
+                    "type": "boolean",
+                    "description": "Whether to publish immediately",
+                    "default": False,
+                },
+                "require_shipping": {
+                    "type": "boolean",
+                    "description": "Whether shipping address is required",
+                    "default": False,
+                },
             },
             "required": ["name", "price"],
         },
@@ -48,9 +60,19 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "product_id": {"type": "string", "description": "Filter by product ID"},
-                "after": {"type": "string", "description": "Only return sales after this ISO 8601 datetime"},
-                "before": {"type": "string", "description": "Only return sales before this ISO 8601 datetime"},
-                "page": {"type": "integer", "description": "Page number for pagination", "default": 1},
+                "after": {
+                    "type": "string",
+                    "description": "Only return sales after this ISO 8601 datetime",
+                },
+                "before": {
+                    "type": "string",
+                    "description": "Only return sales before this ISO 8601 datetime",
+                },
+                "page": {
+                    "type": "integer",
+                    "description": "Page number for pagination",
+                    "default": 1,
+                },
             },
         },
     },
@@ -71,7 +93,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "product_id": {"type": "string", "description": "Product ID to list subscribers for"},
+                "product_id": {
+                    "type": "string",
+                    "description": "Product ID to list subscribers for",
+                },
                 "page": {"type": "integer", "description": "Page number", "default": 1},
             },
             "required": ["product_id"],
@@ -85,7 +110,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "product_id": {"type": "string", "description": "Gumroad product ID or permalink"},
                 "license_key": {"type": "string", "description": "License key to enable/verify"},
-                "increment_uses_count": {"type": "boolean", "description": "Increment the uses count", "default": True},
+                "increment_uses_count": {
+                    "type": "boolean",
+                    "description": "Increment the uses count",
+                    "default": True,
+                },
             },
             "required": ["product_id", "license_key"],
         },
@@ -138,7 +167,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 if "published" in arguments:
                     data_payload["published"] = "true" if arguments["published"] else "false"
                 if "require_shipping" in arguments:
-                    data_payload["require_shipping"] = "true" if arguments["require_shipping"] else "false"
+                    data_payload["require_shipping"] = (
+                        "true" if arguments["require_shipping"] else "false"
+                    )
                 r = await client.post(f"{BASE}/products", headers=headers, data=data_payload)
                 r.raise_for_status()
                 result = r.json()
@@ -209,7 +240,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     data={
                         "product_id": arguments["product_id"],
                         "license_key": arguments["license_key"],
-                        "increment_uses_count": "true" if arguments.get("increment_uses_count", True) else "false",
+                        "increment_uses_count": "true"
+                        if arguments.get("increment_uses_count", True)
+                        else "false",
                     },
                 )
                 r.raise_for_status()

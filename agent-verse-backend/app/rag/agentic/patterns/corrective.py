@@ -1,4 +1,5 @@
 """Corrective RAG grading and reformulation primitives."""
+
 from __future__ import annotations
 
 import json

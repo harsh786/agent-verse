@@ -3,6 +3,7 @@
 Environment variables:
   LEADPAGES_API_KEY: Leadpages API key
 """
+
 from __future__ import annotations
 
 import os
@@ -70,7 +71,10 @@ TOOL_DEFINITIONS = [
                 "page_id": {"type": "string", "description": "Filter leads by page ID"},
                 "limit": {"type": "integer", "default": 25},
                 "offset": {"type": "integer", "default": 0},
-                "start_date": {"type": "string", "description": "Filter by submission date (YYYY-MM-DD)"},
+                "start_date": {
+                    "type": "string",
+                    "description": "Filter by submission date (YYYY-MM-DD)",
+                },
                 "end_date": {"type": "string"},
             },
         },
@@ -88,7 +92,10 @@ TOOL_DEFINITIONS = [
                     "enum": ["click", "timed", "exit", "scroll"],
                     "default": "click",
                 },
-                "trigger_delay": {"type": "integer", "description": "Delay in seconds (for timed trigger)"},
+                "trigger_delay": {
+                    "type": "integer",
+                    "description": "Delay in seconds (for timed trigger)",
+                },
             },
             "required": ["name"],
         },

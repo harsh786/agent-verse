@@ -11,6 +11,7 @@ Changes:
     migration 0062 defined IDs as UUID but the ORM models use String(32)/TEXT and
     the tenants.id FK is TEXT, causing JOIN type errors. Drop and recreate with TEXT.
 """
+
 from alembic import op
 
 revision = "0068"

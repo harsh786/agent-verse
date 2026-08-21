@@ -59,12 +59,8 @@ class RegressionGate:
         deltas = {
             "quality": candidate.quality - reference.quality,
             "safety": candidate.safety - reference.safety,
-            "cost_ratio": self._ratio_delta(
-                candidate.mean_cost_usd, reference.mean_cost_usd
-            ),
-            "latency_ratio": self._ratio_delta(
-                candidate.p95_latency_ms, reference.p95_latency_ms
-            ),
+            "cost_ratio": self._ratio_delta(candidate.mean_cost_usd, reference.mean_cost_usd),
+            "latency_ratio": self._ratio_delta(candidate.p95_latency_ms, reference.p95_latency_ms),
             "coverage": candidate.coverage - reference.coverage,
         }
         reasons: list[str] = []

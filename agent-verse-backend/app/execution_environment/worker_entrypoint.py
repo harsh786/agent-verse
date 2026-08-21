@@ -26,6 +26,7 @@ Security properties enforced here
 * The final line on stdout is always ``{"_result": true, ...}`` for structured
   parsing by the parent runner.
 """
+
 from __future__ import annotations
 
 import base64
@@ -96,6 +97,7 @@ def _set_resource_limits(
 def _emit(event: dict[str, Any]) -> None:
     """Write a JSON event line to stdout (flushed immediately)."""
     import contextlib
+
     with contextlib.suppress(Exception):
         print(json.dumps(event), flush=True)
 
@@ -128,15 +130,18 @@ def _build_provider(llm_key: str, role: str) -> Any:
 
     if not llm_key:
         _emit_log("warning", f"No LLM key for role={role}, using FakeProvider")
-        return FakeProvider(responses=[
-            '{"steps": ["Execute the goal autonomously"]}',
-            "Goal executed in isolated environment",
-            '{"success": true, "reason": "Completed in isolated environment"}',
-        ])
+        return FakeProvider(
+            responses=[
+                '{"steps": ["Execute the goal autonomously"]}',
+                "Goal executed in isolated environment",
+                '{"success": true, "reason": "Completed in isolated environment"}',
+            ]
+        )
 
     if llm_key.startswith("sk-ant-"):
         try:
             from app.providers.anthropic_provider import AnthropicProvider
+
             return AnthropicProvider(api_key=llm_key)
         except Exception as exc:
             _emit_log("warning", f"Anthropic provider init failed for role={role}: {exc}")
@@ -144,6 +149,7 @@ def _build_provider(llm_key: str, role: str) -> Any:
     elif llm_key.startswith("sk-"):
         try:
             from app.providers.openai_compatible import OpenAICompatibleProvider
+
             return OpenAICompatibleProvider(api_key=llm_key)
         except Exception as exc:
             _emit_log("warning", f"OpenAI provider init failed for role={role}: {exc}")
@@ -151,6 +157,7 @@ def _build_provider(llm_key: str, role: str) -> Any:
     elif llm_key.startswith("AIza"):
         try:
             from app.providers.gemini_provider import GeminiProvider
+
             return GeminiProvider(api_key=llm_key)
         except Exception as exc:
             _emit_log("warning", f"Gemini provider init failed for role={role}: {exc}")
@@ -158,6 +165,7 @@ def _build_provider(llm_key: str, role: str) -> Any:
     elif llm_key.startswith("pa-"):
         try:
             from app.providers.voyage_provider import VoyageProvider
+
             return VoyageProvider(api_key=llm_key)
         except Exception as exc:
             _emit_log("warning", f"Voyage provider init failed for role={role}: {exc}")
@@ -165,11 +173,13 @@ def _build_provider(llm_key: str, role: str) -> Any:
     else:
         _emit_log("warning", f"Unrecognised LLM key prefix for role={role}, using FakeProvider")
 
-    return FakeProvider(responses=[
-        '{"steps": ["Execute the goal autonomously"]}',
-        "Goal executed in isolated environment",
-        '{"success": true, "reason": "Completed in isolated environment"}',
-    ])
+    return FakeProvider(
+        responses=[
+            '{"steps": ["Execute the goal autonomously"]}',
+            "Goal executed in isolated environment",
+            '{"success": true, "reason": "Completed in isolated environment"}',
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +196,7 @@ def _make_db_factory(db_url: str, tenant_id: str) -> Any:
         return None
     try:
         from app.db.session import _make_session_factory as _msf
+
         factory = _msf(database_url=db_url)
 
         # Wrap to inject RLS GUC on every session
@@ -229,9 +240,9 @@ def main() -> int:
     attempt_id: str = envelope_dict.get("attempt_id", "")
     goal_text: str = envelope_dict.get("goal_text", "")
     dry_run: bool = bool(envelope_dict.get("dry_run", False))
-    resource_limits_dict: dict[str, Any] = (
-        (envelope_dict.get("policy") or {}).get("resource_limits") or {}
-    )
+    resource_limits_dict: dict[str, Any] = (envelope_dict.get("policy") or {}).get(
+        "resource_limits"
+    ) or {}
     memory_mb: int = int(resource_limits_dict.get("memory_mb", 512))
     wall_clock_seconds: int = int(resource_limits_dict.get("wall_clock_seconds", 1800))
     max_processes: int = int(resource_limits_dict.get("max_processes", 0))
@@ -339,32 +350,40 @@ def main() -> int:
         _emit({"type": "worker_error", "reason": f"Envelope verification error: {exc}"})
         return 1
 
-    _emit({
-        "type": "worker_started", "goal": goal_text,
-        "worker": "isolated-local", "attempt_id": attempt_id,
-    })
+    _emit(
+        {
+            "type": "worker_started",
+            "goal": goal_text,
+            "worker": "isolated-local",
+            "attempt_id": attempt_id,
+        }
+    )
 
     # --- Dry-run fast path ---
     if dry_run:
         _emit({"type": "goal_started", "goal": goal_text})
-        _emit({
-            "type": "dry_run_preview",
-            "message": "Dry run completed without executing tools or writing changes.",
-            "would_execute": False,
-        })
+        _emit(
+            {
+                "type": "dry_run_preview",
+                "message": "Dry run completed without executing tools or writing changes.",
+                "would_execute": False,
+            }
+        )
         _emit({"type": "goal_complete"})
-        _emit({
-            "_result": True,
-            "success": True,
-            "status": "complete",
-            "iterations": 0,
-            "plan": [],
-            "steps": [],
-            "verification_feedback": "",
-            "goal_id": goal_id,
-            "tenant_id": tenant_id,
-            "attempt_id": attempt_id,
-        })
+        _emit(
+            {
+                "_result": True,
+                "success": True,
+                "status": "complete",
+                "iterations": 0,
+                "plan": [],
+                "steps": [],
+                "verification_feedback": "",
+                "goal_id": goal_id,
+                "tenant_id": tenant_id,
+                "attempt_id": attempt_id,
+            }
+        )
         return 0
 
     # --- Build DB factory (with RLS) ---
@@ -375,9 +394,8 @@ def main() -> int:
     _redis_url = os.environ.get("_ISOLATED_WORKER_REDIS_URL", "")
 
     # --- Resolve LLM key ---
-    llm_key = (
-        os.environ.get("_ISOLATED_WORKER_LLM_KEY", "")
-        or envelope_dict.get("scoped_llm_api_key", "")
+    llm_key = os.environ.get("_ISOLATED_WORKER_LLM_KEY", "") or envelope_dict.get(
+        "scoped_llm_api_key", ""
     )
 
     import asyncio
@@ -451,19 +469,21 @@ def main() -> int:
         return 0
     except Exception as exc:
         _emit_log("error", f"Worker execution failed: {exc}")
-        _emit({
-            "_result": True,
-            "success": False,
-            "status": "failed",
-            "iterations": 0,
-            "plan": [],
-            "steps": [],
-            "verification_feedback": "",
-            "goal_id": goal_id,
-            "tenant_id": tenant_id,
-            "attempt_id": attempt_id,
-            "error_message": str(exc),
-        })
+        _emit(
+            {
+                "_result": True,
+                "success": False,
+                "status": "failed",
+                "iterations": 0,
+                "plan": [],
+                "steps": [],
+                "verification_feedback": "",
+                "goal_id": goal_id,
+                "tenant_id": tenant_id,
+                "attempt_id": attempt_id,
+                "error_message": str(exc),
+            }
+        )
         return 1
 
 

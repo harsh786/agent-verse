@@ -1,7 +1,9 @@
 """Memory consolidation - dedup, merge, and lifecycle management."""
+
 from __future__ import annotations
-import logging
+
 import datetime
+import logging
 from typing import Any
 
 _log = logging.getLogger(__name__)
@@ -27,24 +29,25 @@ class MemoryConsolidator:
         }
 
         memories = [
-            v for k, v in memory_store.items()
+            v
+            for k, v in memory_store.items()
             if k.startswith(f"{tenant_id}:")
             and v.get("lifecycle_state") not in ("deleted", "archived")
         ]
         stats["total_before"] = len(memories)
 
         # Mark old memories as stale (older than 30 days without update)
-        cutoff_stale = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)
-        cutoff_archive = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)
+        cutoff_stale = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=30)
+        cutoff_archive = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=90)
 
         for memory in memories:
             updated_str = memory.get("updated_at", "")
             if not updated_str:
                 continue
             try:
-                updated_dt = datetime.datetime.fromisoformat(
-                    updated_str.rstrip("Z")
-                ).replace(tzinfo=datetime.timezone.utc)
+                updated_dt = datetime.datetime.fromisoformat(updated_str.rstrip("Z")).replace(
+                    tzinfo=datetime.UTC
+                )
             except Exception:
                 continue
 
@@ -82,7 +85,8 @@ class MemoryConsolidator:
                 seen_content[content_key] = memory["memory_id"]
 
         remaining = [
-            v for k, v in memory_store.items()
+            v
+            for k, v in memory_store.items()
             if k.startswith(f"{tenant_id}:")
             and v.get("lifecycle_state") not in ("deleted", "archived")
         ]

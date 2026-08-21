@@ -3,6 +3,7 @@
 Environment variables:
   PLANHAT_API_KEY: Planhat API key (Bearer token)
 """
+
 from __future__ import annotations
 
 import os
@@ -105,9 +106,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": "PLANHAT_API_KEY not configured"}
 
     try:
-        async with httpx.AsyncClient(
-            base_url=PLANHAT_BASE, headers=_headers(), timeout=30.0
-        ) as c:
+        async with httpx.AsyncClient(base_url=PLANHAT_BASE, headers=_headers(), timeout=30.0) as c:
             if tool_name == "planhat_list_companies":
                 params: dict[str, Any] = {
                     "limit": arguments.get("limit", 20),

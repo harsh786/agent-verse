@@ -1,4 +1,5 @@
 """Skills CRUD API — create, list, update, delete custom skills."""
+
 from __future__ import annotations
 
 import json

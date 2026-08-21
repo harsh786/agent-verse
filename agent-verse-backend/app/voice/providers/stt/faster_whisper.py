@@ -2,6 +2,7 @@
 
 Supports: wav, webm, ogg, mp4, m4a, flac (auto-detected via torchaudio FFmpeg).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -18,7 +19,7 @@ tracer = trace.get_tracer(__name__)
 
 
 class FasterWhisperSTT:
-    provider_name:      str  = "faster_whisper"
+    provider_name: str = "faster_whisper"
     supports_streaming: bool = False
 
     def __init__(self) -> None:
@@ -34,19 +35,21 @@ class FasterWhisperSTT:
     async def transcribe(self, audio_bytes: bytes, content_type: str) -> TranscriptResult:
         with tracer.start_as_current_span("stt.faster_whisper.transcribe") as span:
             span.set_attribute("audio_bytes", len(audio_bytes))
-            model  = await self._get_model()
-            audio  = await _decode_audio(audio_bytes, content_type)
-            loop   = asyncio.get_event_loop()
+            model = await self._get_model()
+            audio = await _decode_audio(audio_bytes, content_type)
+            loop = asyncio.get_event_loop()
             segs_gen, info = await loop.run_in_executor(
                 None,
                 lambda: model.transcribe(
-                    audio, beam_size=5, vad_filter=True,
+                    audio,
+                    beam_size=5,
+                    vad_filter=True,
                     vad_parameters={"min_silence_duration_ms": 300},
                 ),
             )
             seg_list = list(segs_gen)
             text = " ".join(s.text.strip() for s in seg_list)
-            avg  = float(np.mean([s.avg_logprob for s in seg_list])) if seg_list else -1.0
+            avg = float(np.mean([s.avg_logprob for s in seg_list])) if seg_list else -1.0
             conf = float(np.clip(np.exp(avg), 0.0, 1.0))
             span.set_attribute("language", info.language)
             span.set_attribute("confidence", conf)
@@ -64,14 +67,15 @@ class FasterWhisperSTT:
         async with self._lock:
             if self._model:
                 return self._model
-            from faster_whisper import WhisperModel
             import pathlib as _pl
-            device  = os.getenv("VOICE_DEVICE", "cpu")
+
+            from faster_whisper import WhisperModel
+
+            device = os.getenv("VOICE_DEVICE", "cpu")
             compute = "float16" if device == "cuda" else "int8"
             # Use a writable local cache — /app/models is Docker-only, read-only on macOS
-            cache_dir = (
-                os.getenv("MODEL_CACHE_DIR")
-                or str(_pl.Path.home() / ".cache" / "agentverse" / "models")
+            cache_dir = os.getenv("MODEL_CACHE_DIR") or str(
+                _pl.Path.home() / ".cache" / "agentverse" / "models"
             )
             _pl.Path(cache_dir).mkdir(parents=True, exist_ok=True)
             # Use 'tiny' by default for local dev (37MB); set VOICE_STT_MODEL=large-v3-turbo for production
@@ -88,19 +92,22 @@ class FasterWhisperSTT:
 async def _decode_audio(audio_bytes: bytes, content_type: str) -> np.ndarray:
     """Decode any audio format to float32 mono 16 kHz numpy array."""
     import soundfile as sf
+
     buf = io.BytesIO(audio_bytes)
     try:
         audio, sr = sf.read(buf, dtype="float32", always_2d=False)
     except Exception:
         import torchaudio
+
         buf.seek(0)
         wf, sr = torchaudio.load(buf)
-        audio  = wf.squeeze().numpy()
+        audio = wf.squeeze().numpy()
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
     if sr != 16_000:
         import torch
         import torchaudio
-        t     = torch.from_numpy(audio).unsqueeze(0)
+
+        t = torch.from_numpy(audio).unsqueeze(0)
         audio = torchaudio.functional.resample(t, sr, 16_000).squeeze().numpy()
     return audio

@@ -22,6 +22,7 @@ Features (20):
  19. Stats: avg resolution time, pending count by queue
  20. PWA push notification bridge (Phase 5 hook)
 """
+
 from __future__ import annotations
 
 import json
@@ -59,7 +60,7 @@ class WorkflowHITLRequest:
 
     # Assignment
     assignment_strategy: AssignmentStrategy = "round_robin"
-    assigned_to: str | None = None       # user_id when strategy=specific_user
+    assigned_to: str | None = None  # user_id when strategy=specific_user
     assigned_role: str | None = None
     priority: Priority = "medium"
 
@@ -96,9 +97,7 @@ class WorkflowHITLRequest:
     note: str = ""
 
     # Timestamps
-    created_at: str = field(
-        default_factory=lambda: datetime.now(UTC).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     # Magic link support
     magic_link_token: str | None = None
@@ -202,13 +201,15 @@ class HITLWorkflowGateway:
             raise ValueError("Cannot delegate a non-pending request")
 
         req.assigned_to = to_user
-        req.discussion.append({
-            "type": "delegation",
-            "from": from_user,
-            "to": to_user,
-            "note": note,
-            "at": datetime.now(UTC).isoformat(),
-        })
+        req.discussion.append(
+            {
+                "type": "delegation",
+                "from": from_user,
+                "to": to_user,
+                "note": note,
+                "at": datetime.now(UTC).isoformat(),
+            }
+        )
 
         await self._save(req)
         await self._send_notification(req)
@@ -221,20 +222,20 @@ class HITLWorkflowGateway:
         )
         return req
 
-    async def escalate(
-        self, request_id: str, actor_id: str, note: str = ""
-    ) -> WorkflowHITLRequest:
+    async def escalate(self, request_id: str, actor_id: str, note: str = "") -> WorkflowHITLRequest:
         """Manually escalate a request."""
         req = await self.get_request(request_id)
         if req is None:
             raise ValueError(f"HITL request not found: {request_id}")
 
-        req.discussion.append({
-            "type": "escalation",
-            "by": actor_id,
-            "note": note,
-            "at": datetime.now(UTC).isoformat(),
-        })
+        req.discussion.append(
+            {
+                "type": "escalation",
+                "by": actor_id,
+                "note": note,
+                "at": datetime.now(UTC).isoformat(),
+            }
+        )
 
         # Change assignment to escalation role
         if req.escalation_to_role:
@@ -270,12 +271,14 @@ class HITLWorkflowGateway:
         if req is None:
             raise ValueError(f"HITL request not found: {request_id}")
 
-        req.discussion.append({
-            "type": "comment",
-            "by": actor_id,
-            "text": comment,
-            "at": datetime.now(UTC).isoformat(),
-        })
+        req.discussion.append(
+            {
+                "type": "comment",
+                "by": actor_id,
+                "text": comment,
+                "at": datetime.now(UTC).isoformat(),
+            }
+        )
 
         await self._save(req)
         return req
@@ -314,6 +317,7 @@ class HITLWorkflowGateway:
         if req:
             req.magic_link_token = jti
             from datetime import timedelta
+
             req.magic_link_expires_at = (
                 datetime.now(UTC) + timedelta(seconds=self.MAGIC_LINK_TTL_SECONDS)
             ).isoformat()
@@ -359,8 +363,10 @@ class HITLWorkflowGateway:
         """List pending HITL requests for a tenant."""
         all_items = list(self._store.values())
         filtered = [
-            r for r in all_items
-            if r.tenant_id == tenant_id and r.status == "pending"
+            r
+            for r in all_items
+            if r.tenant_id == tenant_id
+            and r.status == "pending"
             and (assigned_to is None or r.assigned_to == assigned_to)
             and (priority is None or r.priority == priority)
         ]

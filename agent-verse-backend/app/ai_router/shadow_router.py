@@ -9,6 +9,7 @@ Use cases:
 - Validate that a new model version produces equivalent quality
 - A/B experiment data collection
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -29,8 +30,8 @@ class ShadowRoutingConfig:
 
 @dataclass
 class ShadowResult:
-    primary_response: "CompletionResponse"
-    shadow_response: "CompletionResponse | None"
+    primary_response: CompletionResponse
+    shadow_response: CompletionResponse | None
     latency_primary_ms: float
     latency_shadow_ms: float | None
     shadow_provider_id: str
@@ -67,10 +68,10 @@ class ShadowRouter:
 
     async def shadow_call(
         self,
-        request: "CompletionRequest",
-        primary_provider: "LLMProvider",
-        shadow_provider: "LLMProvider | None" = None,
-    ) -> "CompletionResponse":
+        request: CompletionRequest,
+        primary_provider: LLMProvider,
+        shadow_provider: LLMProvider | None = None,
+    ) -> CompletionResponse:
         """Fire primary (and optionally shadow) call; return primary response.
 
         The shadow call is fired concurrently with the primary but its result
@@ -86,11 +87,7 @@ class ShadowRouter:
             The candidate model. If None or config is disabled, behaves as a
             plain primary call.
         """
-        should_shadow = (
-            self._config.enabled
-            and shadow_provider is not None
-            and self._sample()
-        )
+        should_shadow = self._config.enabled and shadow_provider is not None and self._sample()
 
         if not should_shadow:
             return await primary_provider.complete(request)
@@ -136,7 +133,8 @@ class ShadowRouter:
                 "latency_shadow_ms": r.latency_shadow_ms,
                 "primary_content": (r.primary_response.content or "")[:200],
                 "shadow_content": (r.shadow_response.content or "")[:200]
-                if r.shadow_response else None,
+                if r.shadow_response
+                else None,
             }
             for r in self._log[-limit:]
         ]
@@ -157,4 +155,4 @@ class ShadowRouter:
     def _record(self, result: ShadowResult) -> None:
         self._log.append(result)
         if len(self._log) > self._log_size:
-            self._log = self._log[-self._log_size:]
+            self._log = self._log[-self._log_size :]

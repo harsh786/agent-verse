@@ -1,15 +1,21 @@
 """KGQueryEngine — routes KG queries based on strategy (spec §3.5 matrix)."""
+
 from __future__ import annotations
+
 import re
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.knowledge_graph.store import KnowledgeGraphStore
 
-_RELATIONSHIP_RE = re.compile(r"\b(related to|associated with|connected to|linked to|similar to)\b", re.I)
+_RELATIONSHIP_RE = re.compile(
+    r"\b(related to|associated with|connected to|linked to|similar to)\b", re.I
+)
 _DEPENDENCY_RE = re.compile(r"\b(depends on|requires|needs|uses|built on|based on)\b", re.I)
-_IMPACT_RE = re.compile(r"\b(impact of|effect of|consequence of|caused by|leads to|affects)\b", re.I)
+_IMPACT_RE = re.compile(
+    r"\b(impact of|effect of|consequence of|caused by|leads to|affects)\b", re.I
+)
 _CAUSAL_RE = re.compile(r"\b(why did|what caused|root cause|triggered by|because of)\b", re.I)
 
 
@@ -22,14 +28,18 @@ class KGQueryResult:
 
 
 class KGQueryEngine:
-    def __init__(self, kg_store: "KnowledgeGraphStore | None" = None) -> None:
+    def __init__(self, kg_store: KnowledgeGraphStore | None = None) -> None:
         self._kg = kg_store
 
     def select_strategy(self, query: str) -> str:
-        if _RELATIONSHIP_RE.search(query): return "entity"
-        if _DEPENDENCY_RE.search(query): return "path"
-        if _IMPACT_RE.search(query) or _CAUSAL_RE.search(query): return "impact"
-        if re.match(r"^(list|get|fetch|show|count|find)\b", query.strip(), re.I): return "none"
+        if _RELATIONSHIP_RE.search(query):
+            return "entity"
+        if _DEPENDENCY_RE.search(query):
+            return "path"
+        if _IMPACT_RE.search(query) or _CAUSAL_RE.search(query):
+            return "impact"
+        if re.match(r"^(list|get|fetch|show|count|find)\b", query.strip(), re.I):
+            return "none"
         return "entity"
 
     async def query(self, query: str, tenant_id: str, strategy: str = "auto") -> KGQueryResult:
@@ -51,17 +61,24 @@ class KGQueryEngine:
 
     async def _entity_expansion(self, query: str, tenant_id: str) -> KGQueryResult:
         nodes = self._kg.query_nodes(tenant_id=tenant_id, search=query[:100], limit=10)
-        facts = [{"entity": n.label, "type": str(n.node_type), "confidence": getattr(n, "confidence", 0.7)}
-                 for n in (nodes or [])]
-        return KGQueryResult(strategy_used="entity", facts=facts,
-                              entities_found=[n.label for n in (nodes or [])],
-                              confidence=0.7 if facts else 0.0)
+        facts = [
+            {
+                "entity": n.label,
+                "type": str(n.node_type),
+                "confidence": getattr(n, "confidence", 0.7),
+            }
+            for n in (nodes or [])
+        ]
+        return KGQueryResult(
+            strategy_used="entity",
+            facts=facts,
+            entities_found=[n.label for n in (nodes or [])],
+            confidence=0.7 if facts else 0.0,
+        )
 
     async def _path_traversal(self, query: str, tenant_id: str) -> KGQueryResult:
         """Real edge traversal using get_edges_for_node()."""
-        source_nodes = self._kg.query_nodes(
-            tenant_id=tenant_id, search=query[:100], limit=5
-        ) or []
+        source_nodes = self._kg.query_nodes(tenant_id=tenant_id, search=query[:100], limit=5) or []
 
         if not source_nodes:
             return KGQueryResult(strategy_used="path", facts=[], confidence=0.0)
@@ -71,9 +88,7 @@ class KGQueryEngine:
 
         facts: list[dict[str, Any]] = []
         for node in source_nodes[:3]:
-            edges = self._kg.get_edges_for_node(
-                node_id=node.node_id, tenant_id=tenant_id
-            ) or []
+            edges = self._kg.get_edges_for_node(node_id=node.node_id, tenant_id=tenant_id) or []
             for edge in edges[:5]:
                 # Determine the neighbour (the other end of the edge)
                 neighbour_id = (
@@ -83,9 +98,9 @@ class KGQueryEngine:
                 )
                 # Resolve neighbour name (look up in cache or query)
                 if neighbour_id not in node_name_cache:
-                    all_nodes = self._kg.query_nodes(
-                        tenant_id=tenant_id, search="", limit=200
-                    ) or []
+                    all_nodes = (
+                        self._kg.query_nodes(tenant_id=tenant_id, search="", limit=200) or []
+                    )
                     node_name_cache.update({n.node_id: n.label for n in all_nodes})
                 neighbour_name = node_name_cache.get(neighbour_id, neighbour_id)
                 edge_type_str = (
@@ -93,12 +108,14 @@ class KGQueryEngine:
                     if hasattr(edge.edge_type, "value")
                     else str(edge.edge_type)
                 )
-                facts.append({
-                    "from": node.label,
-                    "relation": edge_type_str,
-                    "to": neighbour_name,
-                    "confidence": getattr(edge, "confidence", 0.65),
-                })
+                facts.append(
+                    {
+                        "from": node.label,
+                        "relation": edge_type_str,
+                        "to": neighbour_name,
+                        "confidence": getattr(edge, "confidence", 0.65),
+                    }
+                )
 
         return KGQueryResult(
             strategy_used="path",

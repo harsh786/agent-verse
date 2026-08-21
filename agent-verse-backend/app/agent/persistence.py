@@ -7,6 +7,7 @@ Design principles:
 - Exponential backoff: don't hammer LLM providers on repeated failures
 - Open-source, no cloud deps
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -24,12 +25,12 @@ logger = get_logger(__name__)
 
 
 class RetryStrategy(StrEnum):
-    SAME_APPROACH      = "same_approach"       # Retry exact same plan
-    DIFFERENT_TOOLS    = "different_tools"     # Ask planner to use different tools
-    DECOMPOSE          = "decompose"           # Break goal into smaller sub-goals
-    SIMPLIFY           = "simplify"            # Reduce scope, achieve partial success
-    HUMAN_GUIDANCE     = "human_guidance"      # Ask human for clarification
-    ESCALATE           = "escalate"            # Mark for human takeover
+    SAME_APPROACH = "same_approach"  # Retry exact same plan
+    DIFFERENT_TOOLS = "different_tools"  # Ask planner to use different tools
+    DECOMPOSE = "decompose"  # Break goal into smaller sub-goals
+    SIMPLIFY = "simplify"  # Reduce scope, achieve partial success
+    HUMAN_GUIDANCE = "human_guidance"  # Ask human for clarification
+    ESCALATE = "escalate"  # Mark for human takeover
 
 
 @dataclass
@@ -59,6 +60,7 @@ class AttemptRecord:
 @dataclass
 class PersistenceConfig:
     """Configuration for the persistent retry engine."""
+
     # How many full goal attempts before giving up permanently
     max_attempts: int = 10
     # Iterations per attempt (passed to AgentGraph)
@@ -142,8 +144,9 @@ class GoalPersistenceEngine:
             strategies = [
                 RetryStrategy.DIFFERENT_TOOLS,
                 RetryStrategy.SIMPLIFY,
-                RetryStrategy.DECOMPOSE if self._config.decompose_on_failure
-                    else RetryStrategy.DIFFERENT_TOOLS,
+                RetryStrategy.DECOMPOSE
+                if self._config.decompose_on_failure
+                else RetryStrategy.DIFFERENT_TOOLS,
                 RetryStrategy.HUMAN_GUIDANCE,
             ]
             return strategies[cycle % len(strategies)]
@@ -156,6 +159,7 @@ class GoalPersistenceEngine:
         capped = min(raw, self._config.max_backoff_seconds)
         # Add 0-20% additive jitter to avoid thundering herd
         import random
+
         jitter = capped * random.uniform(0, 0.2)
         return float(max(1.0, capped + jitter))
 
@@ -167,10 +171,7 @@ class GoalPersistenceEngine:
     ) -> str:
         """Enrich the goal prompt with strategy hints for the planner."""
         if strategy == RetryStrategy.SAME_APPROACH:
-            return (
-                f"{original_goal}\n\n"
-                f"[Previous attempt failed: {last_failure}. Try again.]"
-            )
+            return f"{original_goal}\n\n[Previous attempt failed: {last_failure}. Try again.]"
         elif strategy == RetryStrategy.DIFFERENT_TOOLS:
             return (
                 f"{original_goal}\n\n"
@@ -223,12 +224,14 @@ class GoalPersistenceEngine:
             return attempt_id
         try:
             from sqlalchemy import text as _t
+
             async with self._db() as session:
                 await session.execute(
                     _t("SELECT set_config('app.tenant_id', :tid, true)"),
                     {"tid": tenant_id},
                 )
-                result = await session.execute(_t("""
+                result = await session.execute(
+                    _t("""
                     INSERT INTO goal_attempts
                         (id, goal_id, tenant_id, attempt_number, strategy,
                          enriched_goal, started_at, backoff_seconds,
@@ -241,21 +244,23 @@ class GoalPersistenceEngine:
                             '{}'::jsonb, '{}'::jsonb, :idempotency_key, 1)
                     ON CONFLICT (tenant_id, goal_id, attempt_number) DO NOTHING
                     RETURNING id
-                """), {
-                    "id": attempt_id,
-                    "goal": goal_id,
-                    "tenant": tenant_id,
-                    "num": attempt_num,
-                    "strat": strategy,
-                    "goal_text": enriched_goal[:2000],
-                    "backoff": backoff,
-                    "execution": strategy_execution_id,
-                    "strategy_id": strategy_id,
-                    "strategy_version": strategy_version,
-                    "profile_id": profile_id,
-                    "profile_version": profile_version,
-                    "idempotency_key": stable_key,
-                })
+                """),
+                    {
+                        "id": attempt_id,
+                        "goal": goal_id,
+                        "tenant": tenant_id,
+                        "num": attempt_num,
+                        "strat": strategy,
+                        "goal_text": enriched_goal[:2000],
+                        "backoff": backoff,
+                        "execution": strategy_execution_id,
+                        "strategy_id": strategy_id,
+                        "strategy_version": strategy_version,
+                        "profile_id": profile_id,
+                        "profile_version": profile_version,
+                        "idempotency_key": stable_key,
+                    },
+                )
                 accepted_id = result.scalar_one_or_none()
                 if accepted_id is not None:
                     await session.commit()
@@ -292,12 +297,14 @@ class GoalPersistenceEngine:
             import json
 
             from sqlalchemy import text as _t
+
             async with self._db() as session:
                 await session.execute(
                     _t("SELECT set_config('app.tenant_id', :tid, true)"),
                     {"tid": tenant_id},
                 )
-                await session.execute(_t("""
+                await session.execute(
+                    _t("""
                     UPDATE goal_attempts
                     SET ended_at = NOW(),
                         succeeded = :ok,
@@ -310,18 +317,20 @@ class GoalPersistenceEngine:
                         terminal_evidence = CAST(:terminal_evidence AS jsonb),
                         version = version + 1
                     WHERE id = :id AND tenant_id = :tenant
-                """), {
-                    "id": attempt_id,
-                    "tenant": tenant_id,
-                    "ok": succeeded,
-                    "reason": failure_reason[:500] if failure_reason else "",
-                    "iters": iterations,
-                    "cost": cost_usd,
-                    "transition_reason": "completed" if succeeded else "failed",
-                    "checkpoint_reference": checkpoint_reference,
-                    "budget_consumed": json.dumps({"cost_usd": cost_usd}),
-                    "terminal_evidence": json.dumps(terminal_evidence or {}),
-                })
+                """),
+                    {
+                        "id": attempt_id,
+                        "tenant": tenant_id,
+                        "ok": succeeded,
+                        "reason": failure_reason[:500] if failure_reason else "",
+                        "iters": iterations,
+                        "cost": cost_usd,
+                        "transition_reason": "completed" if succeeded else "failed",
+                        "checkpoint_reference": checkpoint_reference,
+                        "budget_consumed": json.dumps({"cost_usd": cost_usd}),
+                        "terminal_evidence": json.dumps(terminal_evidence or {}),
+                    },
+                )
                 await session.commit()
         except Exception as exc:
             logger.warning("attempt_update_failed", error=str(exc))
@@ -362,34 +371,40 @@ class GoalPersistenceEngine:
             if config.total_timeout_seconds > 0:
                 elapsed = time.monotonic() - session_start
                 if elapsed >= config.total_timeout_seconds:
-                    await emit({
-                        "type": "persistence_timeout",
-                        "elapsed_seconds": elapsed,
-                        "attempts": attempt_number - 1,
-                    })
+                    await emit(
+                        {
+                            "type": "persistence_timeout",
+                            "elapsed_seconds": elapsed,
+                            "attempts": attempt_number - 1,
+                        }
+                    )
                     break
 
             strategy = self._pick_strategy(attempt_number)
 
             if strategy == RetryStrategy.ESCALATE:
-                await emit({
-                    "type": "persistence_escalating",
-                    "reason": f"Goal failed {len(self._attempts)} times — escalating to human",
-                    "attempts": len(self._attempts),
-                    "total_cost_usd": self.total_cost_usd,
-                })
+                await emit(
+                    {
+                        "type": "persistence_escalating",
+                        "reason": f"Goal failed {len(self._attempts)} times — escalating to human",
+                        "attempts": len(self._attempts),
+                        "total_cost_usd": self.total_cost_usd,
+                    }
+                )
                 break
 
             # Wait with exponential backoff (skip on first attempt)
             if attempt_number > 1:
                 backoff = self._backoff_seconds(attempt_number - 1)
-                await emit({
-                    "type": "persistence_waiting",
-                    "attempt": attempt_number,
-                    "backoff_seconds": round(backoff, 1),
-                    "strategy": strategy,
-                    "max_attempts": config.max_attempts,
-                })
+                await emit(
+                    {
+                        "type": "persistence_waiting",
+                        "attempt": attempt_number,
+                        "backoff_seconds": round(backoff, 1),
+                        "strategy": strategy,
+                        "max_attempts": config.max_attempts,
+                    }
+                )
                 await asyncio.sleep(backoff)
 
             attempt = AttemptRecord(
@@ -406,9 +421,7 @@ class GoalPersistenceEngine:
 
             enriched_goal = self._build_enriched_goal(goal, strategy, last_failure)
             backoff_used = (
-                0
-                if attempt_number == 1
-                else int(self._backoff_seconds(attempt_number - 1))
+                0 if attempt_number == 1 else int(self._backoff_seconds(attempt_number - 1))
             )
 
             # Write attempt start to DB
@@ -427,17 +440,19 @@ class GoalPersistenceEngine:
                 idempotency_key=attempt.idempotency_key,
             )
 
-            await emit({
-                "type": "persistence_attempt_start",
-                "attempt": attempt_number,
-                "max_attempts": config.max_attempts,
-                "strategy": strategy,
-                "goal_modified": enriched_goal != goal,
-            })
+            await emit(
+                {
+                    "type": "persistence_attempt_start",
+                    "attempt": attempt_number,
+                    "max_attempts": config.max_attempts,
+                    "strategy": strategy,
+                    "goal_modified": enriched_goal != goal,
+                }
+            )
 
             try:
                 # Get a fresh agent for this attempt
-                if callable(agent_factory) and not hasattr(agent_factory, 'run'):
+                if callable(agent_factory) and not hasattr(agent_factory, "run"):
                     agent = agent_factory()
                 else:
                     agent = agent_factory  # Already an agent instance
@@ -459,9 +474,7 @@ class GoalPersistenceEngine:
                 )
                 attempt.terminal_evidence = {
                     "status": str(getattr(state, "status", "")),
-                    "verification_success": bool(
-                        getattr(state, "verification_success", False)
-                    ),
+                    "verification_success": bool(getattr(state, "verification_success", False)),
                 }
 
                 # Write attempt end to DB
@@ -477,23 +490,29 @@ class GoalPersistenceEngine:
                 )
 
                 if attempt.success:
-                    await emit({
-                        "type": "persistence_goal_achieved",
-                        "attempt": attempt_number,
-                        "total_attempts": len(self._attempts),
-                        "total_cost_usd": self.total_cost_usd,
-                        "strategy_that_worked": strategy,
-                    })
+                    await emit(
+                        {
+                            "type": "persistence_goal_achieved",
+                            "attempt": attempt_number,
+                            "total_attempts": len(self._attempts),
+                            "total_cost_usd": self.total_cost_usd,
+                            "strategy_that_worked": strategy,
+                        }
+                    )
                     logger.info(
                         "persistent_goal_achieved",
-                        goal=goal[:100], attempt=attempt_number, strategy=strategy
+                        goal=goal[:100],
+                        attempt=attempt_number,
+                        strategy=strategy,
                     )
                     return True, self._attempts
 
                 # Record failure
-                last_failure = getattr(state, "error_message", "") or \
-                               getattr(state, "verification_feedback", "") or \
-                               "verification failed"
+                last_failure = (
+                    getattr(state, "error_message", "")
+                    or getattr(state, "verification_feedback", "")
+                    or "verification failed"
+                )
                 attempt.failure_reason = last_failure
 
                 # Write failure end to DB
@@ -506,17 +525,21 @@ class GoalPersistenceEngine:
                     cost_usd=attempt.cost_usd,
                 )
 
-                await emit({
-                    "type": "persistence_attempt_failed",
-                    "attempt": attempt_number,
-                    "reason": last_failure[:200],
-                    "iterations_used": attempt.iterations_used,
-                    "remaining_attempts": config.max_attempts - attempt_number,
-                })
+                await emit(
+                    {
+                        "type": "persistence_attempt_failed",
+                        "attempt": attempt_number,
+                        "reason": last_failure[:200],
+                        "iterations_used": attempt.iterations_used,
+                        "remaining_attempts": config.max_attempts - attempt_number,
+                    }
+                )
                 logger.warning(
                     "persistent_goal_attempt_failed",
-                    goal=goal[:100], attempt=attempt_number,
-                    reason=last_failure[:100], strategy=strategy
+                    goal=goal[:100],
+                    attempt=attempt_number,
+                    reason=last_failure[:100],
+                    strategy=strategy,
                 )
 
             except asyncio.CancelledError:
@@ -544,18 +567,22 @@ class GoalPersistenceEngine:
                     iterations=attempt.iterations_used,
                     cost_usd=attempt.cost_usd,
                 )
-                await emit({
-                    "type": "persistence_attempt_error",
-                    "attempt": attempt_number,
-                    "error": str(exc)[:200],
-                })
+                await emit(
+                    {
+                        "type": "persistence_attempt_error",
+                        "attempt": attempt_number,
+                        "error": str(exc)[:200],
+                    }
+                )
                 logger.warning("persistent_goal_error", error=str(exc), attempt=attempt_number)
 
         # All attempts exhausted
-        await emit({
-            "type": "persistence_exhausted",
-            "total_attempts": len(self._attempts),
-            "total_cost_usd": self.total_cost_usd,
-            "last_failure": last_failure[:200],
-        })
+        await emit(
+            {
+                "type": "persistence_exhausted",
+                "total_attempts": len(self._attempts),
+                "total_cost_usd": self.total_cost_usd,
+                "last_failure": last_failure[:200],
+            }
+        )
         return False, self._attempts

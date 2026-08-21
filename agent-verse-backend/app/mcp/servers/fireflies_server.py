@@ -3,6 +3,7 @@
 Environment:
   FIREFLIES_API_KEY: Fireflies.ai API key for GraphQL authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -22,8 +23,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "description": "Maximum number of transcripts to return"},
-                "skip": {"type": "integer", "description": "Number of transcripts to skip for pagination"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of transcripts to return",
+                },
+                "skip": {
+                    "type": "integer",
+                    "description": "Number of transcripts to skip for pagination",
+                },
                 "user_id": {"type": "string", "description": "Filter by participant user ID"},
             },
         },
@@ -68,7 +75,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "transcript_id": {"type": "string", "description": "ID of the transcript to summarize"},
+                "transcript_id": {
+                    "type": "string",
+                    "description": "ID of the transcript to summarize",
+                },
             },
             "required": ["transcript_id"],
         },
@@ -79,8 +89,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "meeting_link": {"type": "string", "description": "URL of the meeting to join (Zoom, Meet, Teams)"},
-                "title": {"type": "string", "description": "Title or name for the meeting recording"},
+                "meeting_link": {
+                    "type": "string",
+                    "description": "URL of the meeting to join (Zoom, Meet, Teams)",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Title or name for the meeting recording",
+                },
                 "attendees": {
                     "type": "array",
                     "description": "List of attendee email addresses",
@@ -93,7 +109,9 @@ TOOL_DEFINITIONS = [
 ]
 
 
-async def _gql(client: httpx.AsyncClient, api_key: str, query: str, variables: dict[str, Any] | None = None) -> Any:
+async def _gql(
+    client: httpx.AsyncClient, api_key: str, query: str, variables: dict[str, Any] | None = None
+) -> Any:
     r = await client.post(
         BASE_URL,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -121,10 +139,15 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     organizer_email participants
                   }
                 }"""
-                return await _gql(client, api_key, query, {
-                    "limit": arguments.get("limit", 10),
-                    "skip": arguments.get("skip", 0),
-                })
+                return await _gql(
+                    client,
+                    api_key,
+                    query,
+                    {
+                        "limit": arguments.get("limit", 10),
+                        "skip": arguments.get("skip", 0),
+                    },
+                )
 
             if tool_name == "fireflies_get_transcript":
                 query = """
@@ -146,10 +169,15 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     id title date duration organizer_email
                   }
                 }"""
-                return await _gql(client, api_key, query, {
-                    "query": arguments["query"],
-                    "limit": arguments.get("limit", 10),
-                })
+                return await _gql(
+                    client,
+                    api_key,
+                    query,
+                    {
+                        "query": arguments["query"],
+                        "limit": arguments.get("limit", 10),
+                    },
+                )
 
             if tool_name == "fireflies_list_meetings":
                 query = """
@@ -158,10 +186,15 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     id title date participants status
                   }
                 }"""
-                return await _gql(client, api_key, query, {
-                    "limit": arguments.get("limit", 10),
-                    "skip": arguments.get("skip", 0),
-                })
+                return await _gql(
+                    client,
+                    api_key,
+                    query,
+                    {
+                        "limit": arguments.get("limit", 10),
+                        "skip": arguments.get("skip", 0),
+                    },
+                )
 
             if tool_name == "fireflies_get_summary":
                 query = """
@@ -185,11 +218,16 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     attendees: $attendees
                   ) { success message }
                 }"""
-                return await _gql(client, api_key, mutation, {
-                    "url": arguments["meeting_link"],
-                    "title": arguments.get("title"),
-                    "attendees": arguments.get("attendees"),
-                })
+                return await _gql(
+                    client,
+                    api_key,
+                    mutation,
+                    {
+                        "url": arguments["meeting_link"],
+                        "title": arguments.get("title"),
+                        "attendees": arguments.get("attendees"),
+                    },
+                )
 
             return {"error": f"Unknown tool: {tool_name}"}
         except httpx.HTTPStatusError as e:

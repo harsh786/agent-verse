@@ -3,6 +3,7 @@
 Tracks input/output tokens and estimated cost per LLM role (planner/executor/verifier)
 for a single goal execution. Results are stored in goal_events for the UI to display.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

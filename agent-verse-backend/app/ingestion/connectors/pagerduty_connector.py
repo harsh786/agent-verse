@@ -2,6 +2,7 @@
 
 Cursor: last incident created_at timestamp (ISO 8601).
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,18 +30,26 @@ class PagerDutyConnector(BaseConnector):
         import time
 
         import httpx
+
         t0 = time.perf_counter()
         try:
             token = config.connection_config.get("api_token", "")
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.get(
                     f"{_PD_BASE}/users/me",
-                    headers={"Authorization": f"Token token={token}", "Accept": "application/vnd.pagerduty+json;version=2"},
+                    headers={
+                        "Authorization": f"Token token={token}",
+                        "Accept": "application/vnd.pagerduty+json;version=2",
+                    },
                 )
                 r.raise_for_status()
                 user = r.json().get("user", {})
             latency = (time.perf_counter() - t0) * 1000
-            return ConnectionHealth(ok=True, latency_ms=latency, metadata={"user": user.get("name"), "email": user.get("email")})
+            return ConnectionHealth(
+                ok=True,
+                latency_ms=latency,
+                metadata={"user": user.get("name"), "email": user.get("email")},
+            )
         except Exception as exc:
             return ConnectionHealth(ok=False, error=str(exc))
 
@@ -70,10 +79,12 @@ class PagerDutyConnector(BaseConnector):
                 while True:
                     params["offset"] = offset
                     r = await client.get(f"{_PD_BASE}/incidents", params=params, headers=headers)
-                    if not r.is_success: break
+                    if not r.is_success:
+                        break
                     data = r.json()
                     incidents = data.get("incidents", [])
-                    if not incidents: break
+                    if not incidents:
+                        break
                     for incident in incidents:
                         created = incident.get("created_at", "")
                         new_cursor = max(new_cursor, created)
@@ -88,10 +99,17 @@ class PagerDutyConnector(BaseConnector):
                         )
                         doc = RawDocument(
                             doc_id=str(uuid.uuid4()),
-                            source_id=config.source_id, tenant_id=config.tenant_id,
+                            source_id=config.source_id,
+                            tenant_id=config.tenant_id,
                             source_url=incident.get("html_url", ""),
-                            content=text.encode(), content_type="text/plain",
-                            metadata={"id": incident.get("id"), "status": status, "urgency": urgency, "created": created},
+                            content=text.encode(),
+                            content_type="text/plain",
+                            metadata={
+                                "id": incident.get("id"),
+                                "status": status,
+                                "urgency": urgency,
+                                "created": created,
+                            },
                         )
                         yield doc, new_cursor
                     if not data.get("more"):

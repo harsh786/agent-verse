@@ -1,4 +1,5 @@
 """Add template_versions table for marketplace versioning."""
+
 from alembic import op
 
 revision = "0038"

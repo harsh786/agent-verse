@@ -1,4 +1,5 @@
 """OrgCommand and OrgResponse — channel-agnostic normalized command objects."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ class ArtifactRef:
 @dataclass
 class OrgCommand:
     """Normalized command from any channel."""
+
     command_id: str
     tenant_id: str
     org_id: str
@@ -44,7 +46,7 @@ class OrgCommand:
     # Who said it
     actor_id: str = ""
     actor_name: str | None = None
-    actor_channel: str = "rest"   # rest|telegram|slack|whatsapp|discord|email|mcp|a2a|teams
+    actor_channel: str = "rest"  # rest|telegram|slack|whatsapp|discord|email|mcp|a2a|teams
 
     # Context
     conversation_id: str | None = None
@@ -55,7 +57,7 @@ class OrgCommand:
 
     # Routing hints
     explicit_org_id: str | None = None
-    urgency: str = "normal"   # urgent|normal|background
+    urgency: str = "normal"  # urgent|normal|background
 
     # Channel metadata
     raw_payload: dict[str, Any] = field(default_factory=dict)
@@ -65,13 +67,14 @@ class OrgCommand:
 @dataclass
 class OrgResponse:
     """Response sent back to the originating channel."""
+
     command_id: str
     text: str
-    formatted: dict[str, Any] | None = None   # channel-specific format
+    formatted: dict[str, Any] | None = None  # channel-specific format
     actions: list[ResponseAction] = field(default_factory=list)
     artifacts: list[ArtifactRef] = field(default_factory=list)
     mission_id: str | None = None
     requires_action: bool = False
     voice_text: str | None = None
     processing_ms: int = 0
-    status: str = "complete"   # complete|processing|error
+    status: str = "complete"  # complete|processing|error

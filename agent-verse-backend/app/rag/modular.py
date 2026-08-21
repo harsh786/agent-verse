@@ -44,9 +44,7 @@ class ModularModuleExecutionError(RuntimeError):
         sequence: int,
         cause: Exception,
     ) -> None:
-        super().__init__(
-            f"Modular module execution failed at sequence {sequence}: {module_id}"
-        )
+        super().__init__(f"Modular module execution failed at sequence {sequence}: {module_id}")
         self.module_id = module_id
         self.capability_id = capability_id
         self.sequence = sequence
@@ -91,9 +89,7 @@ class ModuleSpec:
 
 
 def _freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
-    return MappingProxyType(
-        {key: _freeze_value(item) for key, item in value.items()}
-    )
+    return MappingProxyType({key: _freeze_value(item) for key, item in value.items()})
 
 
 def _freeze_value(value: Any) -> Any:
@@ -249,8 +245,7 @@ def default_modular_pipeline() -> ModularPipelineSpec:
     pipeline = ModularPipelineSpec(
         modules=modules,
         edges=tuple(
-            ModuleEdge(source.module_id, target.module_id)
-            for source, target in pairwise(modules)
+            ModuleEdge(source.module_id, target.module_id) for source, target in pairwise(modules)
         ),
         entry_module_id=modules[0].module_id,
         output_module_id=modules[-1].module_id,
@@ -359,9 +354,7 @@ def validate_modular_pipeline(pipeline: ModularPipelineShape) -> None:
         if module.capability_id == "fallback":
             strategy = module.config.get("strategy", "hybrid")
             if not isinstance(strategy, str) or not strategy.strip():
-                raise ModularGraphValidationError(
-                    "fallback strategy must be a non-empty string"
-                )
+                raise ModularGraphValidationError("fallback strategy must be a non-empty string")
             try:
                 fallback_strategy = resolve_rag_strategy(strategy)
             except UnknownRAGStrategyError as exc:
@@ -403,9 +396,7 @@ def validate_modular_pipeline(pipeline: ModularPipelineShape) -> None:
     if modules[pipeline.output_module_id].output_type is not ModularValueType.ANSWER:
         raise ModularGraphValidationError("output module must produce an answer")
 
-    queue = deque(
-        module_id for module_id, count in incoming_count.items() if count == 0
-    )
+    queue = deque(module_id for module_id, count in incoming_count.items() if count == 0)
     visited: list[str] = []
     remaining_incoming = dict(incoming_count)
     while queue:
@@ -443,10 +434,7 @@ class ModularExecutor:
     async def execute(self, query: str) -> tuple[ModuleValue, list[ModuleExecution]]:
         _validate_payload(ModuleValue(ModularValueType.QUERY, query))
         modules = {module.module_id: module for module in self._pipeline.modules}
-        order = {
-            module.module_id: index
-            for index, module in enumerate(self._pipeline.modules)
-        }
+        order = {module.module_id: index for index, module in enumerate(self._pipeline.modules)}
         incoming: dict[str, list[str]] = defaultdict(list)
         outgoing: dict[str, list[str]] = defaultdict(list)
         for edge in self._pipeline.edges:
@@ -524,11 +512,7 @@ def _merge_inputs(
     if value_type is ModularValueType.QUERIES:
         return ModuleValue(
             value_type,
-            list(
-                dict.fromkeys(
-                    query for value in values for query in value.value
-                )
-            ),
+            list(dict.fromkeys(query for value in values for query in value.value)),
         )
     if value_type in {
         ModularValueType.DOCUMENTS,
@@ -546,17 +530,13 @@ def _validate_payload(module_value: ModuleValue) -> None:
     if value_type in {ModularValueType.QUERY, ModularValueType.ANSWER}:
         is_valid = isinstance(value, str)
     elif value_type is ModularValueType.QUERIES:
-        is_valid = isinstance(value, list | tuple) and all(
-            isinstance(item, str) for item in value
-        )
+        is_valid = isinstance(value, list | tuple) and all(isinstance(item, str) for item in value)
     else:
         is_valid = isinstance(value, list | tuple) and all(
             _is_retrieval_result(item) for item in value
         )
     if not is_valid:
-        raise ModularGraphValidationError(
-            f"invalid {value_type.value} payload at module boundary"
-        )
+        raise ModularGraphValidationError(f"invalid {value_type.value} payload at module boundary")
 
 
 def _is_retrieval_result(value: object) -> bool:
@@ -573,9 +553,7 @@ def _is_retrieval_result(value: object) -> bool:
         and all(isinstance(leg, str) for leg in value.retrieval_legs)
         and isinstance(value.component_scores, Mapping)
         and all(
-            isinstance(key, str)
-            and not isinstance(score, bool)
-            and isinstance(score, Real)
+            isinstance(key, str) and not isinstance(score, bool) and isinstance(score, Real)
             for key, score in value.component_scores.items()
         )
     )
@@ -600,9 +578,7 @@ def _merge_documents(values: list[ModuleValue]) -> list[Any]:
                     float(score),
                     component_scores.get(component, float("-inf")),
                 )
-        retrieval_legs = sorted(
-            {leg for candidate in ranked for leg in candidate.retrieval_legs}
-        )
+        retrieval_legs = sorted({leg for candidate in ranked for leg in candidate.retrieval_legs})
         provenance = _source_provenance(ranked)
         source_metadata = {
             key: value
@@ -645,8 +621,7 @@ def _source_provenance(documents: list[Any]) -> list[dict[str, Any]]:
                 {
                     key: value
                     for key, value in document.source_metadata.items()
-                    if key
-                    not in {"component_scores", "retrieval_legs", "source_provenance"}
+                    if key not in {"component_scores", "retrieval_legs", "source_provenance"}
                 },
             )
         for candidate in candidates:

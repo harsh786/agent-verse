@@ -9,32 +9,48 @@ D-2: "While You Were Away" digest narration uses real DigestGenerator.
 D-5: Multi-language by org jurisdiction.
 D-7: Real org health data in greeting.
 """
+
 from __future__ import annotations
 
 import datetime
-import logging
 from typing import Any
 
 import structlog
 from opentelemetry import trace
 
-log    = structlog.get_logger(__name__)
+log = structlog.get_logger(__name__)
 tracer = trace.get_tracer(__name__)
 
 # ── D-5: Jurisdiction → TTS language map ─────────────────────────────────────
 JURISDICTION_TO_LANG: dict[str, str] = {
-    "india": "hi", "in": "hi",
-    "france": "fr", "fr": "fr",
-    "germany": "de", "de": "de",
-    "spain": "es", "es": "es",
-    "japan": "ja", "jp": "ja",
-    "china": "zh", "cn": "zh",
-    "brazil": "pt", "br": "pt",
-    "korea": "ko", "kr": "ko",
-    "italy": "it", "it": "it",
-    "russia": "ru", "ru": "ru",
-    "arab": "ar", "uae": "ar", "sa": "ar",    "saudi arabia": "ar", "arabia": "ar",
-    "egypt": "ar", "egypt": "ar",}
+    "india": "hi",
+    "in": "hi",
+    "france": "fr",
+    "fr": "fr",
+    "germany": "de",
+    "de": "de",
+    "spain": "es",
+    "es": "es",
+    "japan": "ja",
+    "jp": "ja",
+    "china": "zh",
+    "cn": "zh",
+    "brazil": "pt",
+    "br": "pt",
+    "korea": "ko",
+    "kr": "ko",
+    "italy": "it",
+    "it": "it",
+    "russia": "ru",
+    "ru": "ru",
+    "arab": "ar",
+    "uae": "ar",
+    "sa": "ar",
+    "saudi arabia": "ar",
+    "arabia": "ar",
+    "egypt": "ar",
+    "egypt": "ar",
+}
 
 _TEMPLATES: dict[str, str] = {
     "healthy": (
@@ -78,7 +94,7 @@ async def build_greeting_script(
         wywa_items:  Count from DigestGenerator (D-2 while-you-were-away).
         wywa_summary: Short WYWA text if available.
     """
-    hour = datetime.datetime.now(datetime.timezone.utc).hour
+    hour = datetime.datetime.now(datetime.UTC).hour
     if hour < 12:
         tod = "morning"
     elif hour < 17:
@@ -86,30 +102,32 @@ async def build_greeting_script(
     else:
         tod = "evening"
 
-    health_status     = health.get("overall_health", "healthy")
-    template          = _TEMPLATES.get(health_status, _TEMPLATES["healthy"])
-    first_name        = (user_name or "there").split()[0]
-    active_missions   = int(health.get("active_missions", 0))
-    active_teams      = int(health.get("active_teams", 0))
+    health_status = health.get("overall_health", "healthy")
+    template = _TEMPLATES.get(health_status, _TEMPLATES["healthy"])
+    first_name = (user_name or "there").split()[0]
+    active_missions = int(health.get("active_missions", 0))
+    active_teams = int(health.get("active_teams", 0))
     pending_approvals = int(health.get("pending_approvals", 0))
-    items             = int(health.get("items_needing_attention", 0))
+    items = int(health.get("items_needing_attention", 0))
 
     if wywa_items > 0 and not wywa_summary:
-        wywa_summary = f"{wywa_items} update{'s' if wywa_items != 1 else ''} happened while you were away."
+        wywa_summary = (
+            f"{wywa_items} update{'s' if wywa_items != 1 else ''} happened while you were away."
+        )
 
     return template.format(
-        tod               = tod,
-        first_name        = first_name,
-        org_name          = health.get("org_name", "your organisation"),
-        active_missions   = active_missions,
-        m_pl              = "s" if active_missions != 1 else "",
-        active_teams      = active_teams,
-        t_pl              = "s" if active_teams != 1 else "",
-        pending_approvals = pending_approvals,
-        pa_pl             = "s" if pending_approvals != 1 else "",
-        items             = items,
-        items_pl          = "s" if items != 1 else "",
-        wywa_summary      = wywa_summary,
+        tod=tod,
+        first_name=first_name,
+        org_name=health.get("org_name", "your organisation"),
+        active_missions=active_missions,
+        m_pl="s" if active_missions != 1 else "",
+        active_teams=active_teams,
+        t_pl="s" if active_teams != 1 else "",
+        pending_approvals=pending_approvals,
+        pa_pl="s" if pending_approvals != 1 else "",
+        items=items,
+        items_pl="s" if items != 1 else "",
+        wywa_summary=wywa_summary,
     )
 
 
@@ -139,10 +157,10 @@ async def synthesize_greeting(
     user_name: str,
     *,
     ref_audio: bytes | None = None,
-    ref_text: str | None   = None,
-    language: str          = "en",
-    wywa_items: int        = 0,
-    wywa_summary: str      = "",
+    ref_text: str | None = None,
+    language: str = "en",
+    wywa_items: int = 0,
+    wywa_summary: str = "",
 ) -> bytes:
     """Return WAV bytes for the login greeting using real org health data."""
     with tracer.start_as_current_span("voice.greeting.synthesize") as span:
@@ -150,13 +168,21 @@ async def synthesize_greeting(
         span.set_attribute("health", health.get("overall_health", ""))
 
         script = await build_greeting_script(
-            health, user_name, wywa_items=wywa_items, wywa_summary=wywa_summary,
+            health,
+            user_name,
+            wywa_items=wywa_items,
+            wywa_summary=wywa_summary,
         )
         span.set_attribute("script_len", len(script))
 
         from app.voice.tts_engine import synthesize
+
         wav = await synthesize(script, ref_audio=ref_audio, ref_text=ref_text, language=language)
-        log.info("voice.greeting.synthesized",
-                 org_id=health.get("org_id"), health=health.get("overall_health"),
-                 wywa_items=wywa_items, wav_bytes=len(wav))
+        log.info(
+            "voice.greeting.synthesized",
+            org_id=health.get("org_id"),
+            health=health.get("overall_health"),
+            wywa_items=wywa_items,
+            wav_bytes=len(wav),
+        )
         return wav

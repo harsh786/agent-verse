@@ -1,4 +1,5 @@
 """HTML parser using trafilatura for clean content extraction."""
+
 from __future__ import annotations
 
 import logging
@@ -18,6 +19,7 @@ class HTMLParser:
         # Try trafilatura first (best quality)
         try:
             import trafilatura  # type: ignore[import-not-found]
+
             text = trafilatura.extract(
                 content,
                 include_comments=False,
@@ -35,6 +37,7 @@ class HTMLParser:
         # Try BeautifulSoup fallback
         try:
             from bs4 import BeautifulSoup  # type: ignore[import-not-found]
+
             soup = BeautifulSoup(content, "html.parser")
             # Remove script/style tags
             for tag in soup(["script", "style", "nav", "header", "footer"]):

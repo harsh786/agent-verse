@@ -1,4 +1,5 @@
 """Slack channel message ingestor via Web API."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -31,8 +32,9 @@ class SlackIngestor:
                 params["cursor"] = cursor
 
             async with httpx.AsyncClient(timeout=20) as c:
-                r = await c.get(f"{_SLACK_API}/conversations.history",
-                               params=params, headers=self._headers())
+                r = await c.get(
+                    f"{_SLACK_API}/conversations.history", params=params, headers=self._headers()
+                )
                 data = r.json()
                 if not data.get("ok"):
                     logger.warning("slack_api_error", error=data.get("error"))
@@ -53,23 +55,32 @@ class SlackIngestor:
                     message_count += 1
                     if len(window) >= 5 or message_count >= max_messages:
                         chunk_text = "\n".join(window)
-                        chunks.append({
-                            "content": chunk_text,
-                            "source_url": f"https://slack.com/archives/{channel_id}",
-                            "source_type": "slack",
-                            "source_doc_id": f"{channel_id}/{last_ts}",
-                            "page_number": None,
-                            "metadata": {"channel_id": channel_id, "channel_name": channel_name},
-                        })
+                        chunks.append(
+                            {
+                                "content": chunk_text,
+                                "source_url": f"https://slack.com/archives/{channel_id}",
+                                "source_type": "slack",
+                                "source_doc_id": f"{channel_id}/{last_ts}",
+                                "page_number": None,
+                                "metadata": {
+                                    "channel_id": channel_id,
+                                    "channel_name": channel_name,
+                                },
+                            }
+                        )
                         window = []
 
                 if window:
-                    chunks.append({
-                        "content": "\n".join(window),
-                        "source_url": f"https://slack.com/archives/{channel_id}",
-                        "source_type": "slack", "source_doc_id": channel_id,
-                        "page_number": None, "metadata": {"channel_id": channel_id},
-                    })
+                    chunks.append(
+                        {
+                            "content": "\n".join(window),
+                            "source_url": f"https://slack.com/archives/{channel_id}",
+                            "source_type": "slack",
+                            "source_doc_id": channel_id,
+                            "page_number": None,
+                            "metadata": {"channel_id": channel_id},
+                        }
+                    )
 
                 response_meta = data.get("response_metadata", {})
                 cursor = response_meta.get("next_cursor")

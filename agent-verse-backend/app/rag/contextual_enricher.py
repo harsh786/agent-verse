@@ -6,6 +6,7 @@ without surrounding context (e.g. "He agreed." without knowing who or what).
 
 Reference: Anthropic's Contextual Retrieval blog post (2024).
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -42,7 +43,7 @@ class ContextualChunkEnricher:
         )
         return [f"{prefix}{chunk}" for chunk in chunks]
 
-    async def summarize_document(self, content: str, provider: "LLMProvider") -> str:
+    async def summarize_document(self, content: str, provider: LLMProvider) -> str:
         """Generate a 1-paragraph document summary using the LLM.
 
         Returns an empty string if the call fails, so callers can fall back
@@ -76,7 +77,7 @@ class ContextualChunkEnricher:
         self,
         chunks: list[str],
         full_content: str,
-        provider: "LLMProvider",
+        provider: LLMProvider,
     ) -> list[str]:
         """Generate a per-chunk contextual prefix via the LLM.
 

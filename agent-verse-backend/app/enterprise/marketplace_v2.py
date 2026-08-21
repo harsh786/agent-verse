@@ -228,7 +228,11 @@ class TemplateSecurityReviewer:
         if self._injection is not None:
             try:
                 violations = self._injection.scan_text(full_text)
-                critical = [v for v in violations if getattr(v.severity, "value", str(v.severity)) in ("high", "critical")]
+                critical = [
+                    v
+                    for v in violations
+                    if getattr(v.severity, "value", str(v.severity)) in ("high", "critical")
+                ]
                 for v in critical:
                     findings.append(
                         {
@@ -344,9 +348,7 @@ _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
         "autonomy_mode": "supervised",
         "author_name": "AgentVerse",
         "template_config": {
-            "goal_template": (
-                "Monitor {service} and roll back if error rate exceeds {threshold}%"
-            ),
+            "goal_template": ("Monitor {service} and roll back if error rate exceeds {threshold}%"),
             "autonomy_mode": "supervised",
         },
         "parameters_schema": {
@@ -397,8 +399,7 @@ _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
         "author_name": "AgentVerse",
         "template_config": {
             "goal_template": (
-                "Onboard {employee_name}: create accounts, file IT tickets, "
-                "assign first-week tasks"
+                "Onboard {employee_name}: create accounts, file IT tickets, assign first-week tasks"
             ),
             "autonomy_mode": "supervised",
         },
@@ -468,9 +469,7 @@ _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
         "name": "Code Review Agent",
         "slug": "code-review-automation",
         "domain": "software",
-        "description": (
-            "Automatically review open PRs, post inline comments, and request changes"
-        ),
+        "description": ("Automatically review open PRs, post inline comments, and request changes"),
         "required_connectors": ["github", "jira"],
         "autonomy_mode": "bounded-autonomous",
         "author_name": "AgentVerse",
@@ -495,8 +494,7 @@ _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
         "slug": "incident-response-agent",
         "domain": "devops",
         "description": (
-            "Detect production incidents, page on-call, open Jira tickets, "
-            "and post status updates"
+            "Detect production incidents, page on-call, open Jira tickets, and post status updates"
         ),
         "required_connectors": ["datadog", "slack", "jira"],
         "autonomy_mode": "supervised",
@@ -565,9 +563,7 @@ _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
         "name": "Legal Case Research Agent",
         "slug": "legal-case-research",
         "domain": "legal",
-        "description": (
-            "Research relevant case law, statutes, and precedents for a legal matter"
-        ),
+        "description": ("Research relevant case law, statutes, and precedents for a legal matter"),
         "required_connectors": ["web_search"],
         "autonomy_mode": "bounded-autonomous",
         "author_name": "AgentVerse",
@@ -612,7 +608,11 @@ _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
                 "facts_summary": {"type": "string"},
                 "legal_issues": {"type": "string"},
                 "court": {"type": "string"},
-                "format": {"type": "string", "enum": ["motion", "brief", "memo"], "default": "brief"},
+                "format": {
+                    "type": "string",
+                    "enum": ["motion", "brief", "memo"],
+                    "default": "brief",
+                },
             },
             "required": ["matter_name", "facts_summary", "legal_issues"],
         },
@@ -647,9 +647,16 @@ _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
                 "document_folder": {"type": "string"},
                 "focus_areas": {
                     "type": "array",
-                    "items": {"type": "string", "enum": [
-                        "corporate", "ip", "employment", "compliance", "litigation",
-                    ]},
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "corporate",
+                            "ip",
+                            "employment",
+                            "compliance",
+                            "litigation",
+                        ],
+                    },
                 },
             },
             "required": ["target_company", "deal_type"],
@@ -663,9 +670,7 @@ _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
         "name": "Trademark Search Agent",
         "slug": "legal-trademark-search",
         "domain": "legal",
-        "description": (
-            "Search trademark databases for conflicts with a proposed mark"
-        ),
+        "description": ("Search trademark databases for conflicts with a proposed mark"),
         "required_connectors": ["web_search"],
         "autonomy_mode": "bounded-autonomous",
         "author_name": "AgentVerse",
@@ -732,9 +737,7 @@ _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
         "name": "Clinical Note Generation Agent",
         "slug": "healthcare-clinical-note-generation",
         "domain": "healthcare",
-        "description": (
-            "Generate structured SOAP notes from audio transcripts or dictation"
-        ),
+        "description": ("Generate structured SOAP notes from audio transcripts or dictation"),
         "required_connectors": ["audio_transcriber"],
         "autonomy_mode": "supervised",
         "author_name": "AgentVerse",
@@ -803,9 +806,7 @@ _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
         "name": "Discharge Summary Generator",
         "slug": "healthcare-discharge-summary",
         "domain": "healthcare",
-        "description": (
-            "Generate structured discharge summaries from inpatient encounter records"
-        ),
+        "description": ("Generate structured discharge summaries from inpatient encounter records"),
         "required_connectors": ["document_reader"],
         "autonomy_mode": "supervised",
         "author_name": "AgentVerse",
@@ -841,8 +842,7 @@ _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
         "slug": "education-assignment-grading",
         "domain": "education",
         "description": (
-            "Grade student assignments against rubrics; provide detailed feedback "
-            "and scores"
+            "Grade student assignments against rubrics; provide detailed feedback and scores"
         ),
         "required_connectors": ["document_reader"],
         "autonomy_mode": "supervised",
@@ -1123,9 +1123,7 @@ _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
         "name": "Product Description Writer",
         "slug": "ecommerce-product-description",
         "domain": "ecommerce",
-        "description": (
-            "Generate SEO-optimized product descriptions from specs and images"
-        ),
+        "description": ("Generate SEO-optimized product descriptions from specs and images"),
         "required_connectors": ["web_search"],
         "autonomy_mode": "fully-autonomous",
         "author_name": "AgentVerse",
@@ -1403,9 +1401,7 @@ class MarketplaceV2:
                     elif slug:
                         row = (
                             await session.execute(
-                                _t(
-                                    "SELECT * FROM marketplace_templates WHERE slug = :slug"
-                                ),
+                                _t("SELECT * FROM marketplace_templates WHERE slug = :slug"),
                                 {"slug": slug},
                             )
                         ).fetchone()
@@ -1485,9 +1481,7 @@ class MarketplaceV2:
                     ).fetchall()
                     total = (
                         await session.execute(
-                            _t(
-                                f"SELECT count(*) FROM marketplace_templates WHERE {where}"
-                            ),
+                            _t(f"SELECT count(*) FROM marketplace_templates WHERE {where}"),
                             params,
                         )
                     ).scalar()
@@ -1505,7 +1499,8 @@ class MarketplaceV2:
         if not self._builtin_cache_populated:
             self._ensure_builtin_cache()
         templates = [
-            t for t in self._cache.values()
+            t
+            for t in self._cache.values()
             if t.get("visibility") in ("public", "community") or t.get("tenant_id") == tenant_id
         ]
         if domain:
@@ -1707,9 +1702,7 @@ class MarketplaceV2:
                     )
                     # ATOMIC: create agent row (B.2: include connector_ids + system_prompt)
                     connector_ids = template.get("required_connectors", [])
-                    system_prompt = config.get("system_prompt") or template.get(
-                        "system_prompt", ""
-                    )
+                    system_prompt = config.get("system_prompt") or template.get("system_prompt", "")
                     await session.execute(
                         _t("""
                             INSERT INTO agents
@@ -1726,9 +1719,7 @@ class MarketplaceV2:
                                 config.get("name", template.get("name", "Agent")),
                             ),
                             "goal": config.get("goal_template", ""),
-                            "mode": config.get(
-                                "autonomy_mode", "bounded-autonomous"
-                            ),
+                            "mode": config.get("autonomy_mode", "bounded-autonomous"),
                             "connector_ids": json.dumps(connector_ids),
                             "system_prompt": system_prompt,
                         },
@@ -1889,9 +1880,7 @@ class MarketplaceV2:
             # Update in-memory cache
             if template_id in self._cache:
                 all_ratings = [
-                    r["rating"]
-                    for r in self._reviews
-                    if r["template_id"] == template_id
+                    r["rating"] for r in self._reviews if r["template_id"] == template_id
                 ]
                 self._cache[template_id]["rating_avg"] = (
                     sum(all_ratings) / len(all_ratings) if all_ratings else None

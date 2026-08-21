@@ -87,17 +87,23 @@ async def stream_goal_progress(
 
         # Tool calls within step
         for tool in step.get("tool_calls", []):
-            yield _sse("tool_call", {
+            yield _sse(
+                "tool_call",
+                {
+                    "goal_id": goal_id,
+                    "step": step.get("name", ""),
+                    "tool": tool,
+                },
+            )
+
+        yield _sse(
+            "step_complete",
+            {
                 "goal_id": goal_id,
                 "step": step.get("name", ""),
-                "tool": tool,
-            })
-
-        yield _sse("step_complete", {
-            "goal_id": goal_id,
-            "step": step.get("name", ""),
-            "result": step.get("result", ""),
-        })
+                "result": step.get("result", ""),
+            },
+        )
 
     if outcome == "failure" and failure_reason:
         yield _sse(

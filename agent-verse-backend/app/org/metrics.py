@@ -12,6 +12,7 @@ Exposes org-level Prometheus counters/gauges/histograms for:
 
 These extend the existing OTEL infrastructure (PART 22 observability level 3).
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -23,7 +24,7 @@ _log = structlog.get_logger(__name__)
 # ── Prometheus metrics (lazy import to avoid hard dependency) ─────────────────
 
 try:
-    from prometheus_client import Counter, Gauge, Histogram, REGISTRY
+    from prometheus_client import Counter, Gauge, Histogram
 
     ORG_MISSION_TOTAL = Counter(
         "agentverse_org_mission_total",
@@ -91,28 +92,39 @@ except Exception:
 
     # Stub classes so callers don't need try/except
     class _Stub:
-        def labels(self, **kw: Any) -> "_Stub": return self
-        def inc(self, amount: float = 1.0) -> None: pass
-        def observe(self, amount: float) -> None: pass
-        def set(self, value: float) -> None: pass
+        def labels(self, **kw: Any) -> _Stub:
+            return self
 
-    ORG_MISSION_TOTAL             = _Stub()  # type: ignore[assignment]
-    ORG_MISSION_DURATION_SECONDS  = _Stub()  # type: ignore[assignment]
-    ORG_AGENT_ACTIVE              = _Stub()  # type: ignore[assignment]
-    ORG_APPROVAL_WAIT_SECONDS     = _Stub()  # type: ignore[assignment]
-    ORG_MODEL_COST_USD            = _Stub()  # type: ignore[assignment]
-    ORG_MODEL_QUALITY             = _Stub()  # type: ignore[assignment]
-    ORG_KNOWLEDGE_HITS            = _Stub()  # type: ignore[assignment]
-    ORG_CROSS_DEPT_MESSAGES       = _Stub()  # type: ignore[assignment]
-    ORG_BLOCKED_TASKS             = _Stub()  # type: ignore[assignment]
-    ORG_HEALTH_SCORE              = _Stub()  # type: ignore[assignment]
-    ORG_BUDGET_USED_PCT           = _Stub()  # type: ignore[assignment]
+        def inc(self, amount: float = 1.0) -> None:
+            pass
+
+        def observe(self, amount: float) -> None:
+            pass
+
+        def set(self, value: float) -> None:
+            pass
+
+    ORG_MISSION_TOTAL = _Stub()  # type: ignore[assignment]
+    ORG_MISSION_DURATION_SECONDS = _Stub()  # type: ignore[assignment]
+    ORG_AGENT_ACTIVE = _Stub()  # type: ignore[assignment]
+    ORG_APPROVAL_WAIT_SECONDS = _Stub()  # type: ignore[assignment]
+    ORG_MODEL_COST_USD = _Stub()  # type: ignore[assignment]
+    ORG_MODEL_QUALITY = _Stub()  # type: ignore[assignment]
+    ORG_KNOWLEDGE_HITS = _Stub()  # type: ignore[assignment]
+    ORG_CROSS_DEPT_MESSAGES = _Stub()  # type: ignore[assignment]
+    ORG_BLOCKED_TASKS = _Stub()  # type: ignore[assignment]
+    ORG_HEALTH_SCORE = _Stub()  # type: ignore[assignment]
+    ORG_BUDGET_USED_PCT = _Stub()  # type: ignore[assignment]
 
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 
+
 def record_mission_completed(
-    org_id: str, department: str, outcome: str, duration_seconds: float,
+    org_id: str,
+    department: str,
+    outcome: str,
+    duration_seconds: float,
     risk_level: str = "medium",
 ) -> None:
     ORG_MISSION_TOTAL.labels(org_id=org_id, department=department, outcome=outcome).inc()
@@ -128,9 +140,7 @@ def record_model_cost(org_id: str, model_profile: str, department: str, cost_usd
 
 
 def record_model_quality(org_id: str, model_profile: str, gate: str, score: float) -> None:
-    ORG_MODEL_QUALITY.labels(
-        org_id=org_id, model_profile=model_profile, gate=gate
-    ).observe(score)
+    ORG_MODEL_QUALITY.labels(org_id=org_id, model_profile=model_profile, gate=gate).observe(score)
 
 
 def record_approval_wait(org_id: str, action_type: str, wait_seconds: float) -> None:

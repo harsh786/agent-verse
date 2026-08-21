@@ -1,9 +1,10 @@
 """User auth session management — list active sessions, revoke, idle timeout."""
+
 from __future__ import annotations
-import uuid
+
 from typing import Any
+
 from fastapi import APIRouter, HTTPException, Request
-from datetime import UTC, datetime
 
 router = APIRouter(prefix="/auth/sessions", tags=["auth"])
 
@@ -18,7 +19,9 @@ async def list_active_sessions(request: Request) -> list[dict[str, Any]]:
         raise HTTPException(401, "Unauthorized")
     redis = getattr(request.app.state, "_rate_limiter_redis", None)
     if redis is None:
-        return [{"session_id": "current", "created_at": "", "device": "unknown", "is_current": True}]
+        return [
+            {"session_id": "current", "created_at": "", "device": "unknown", "is_current": True}
+        ]
     try:
         pattern = f"session:{tenant.tenant_id}:*"
         keys = await redis.keys(pattern)
@@ -27,13 +30,23 @@ async def list_active_sessions(request: Request) -> list[dict[str, Any]]:
             data = await redis.hgetall(k)
             if data:
                 sid = k.decode().split(":")[-1] if isinstance(k, bytes) else k.split(":")[-1]
-                sessions.append({
-                    "session_id": sid,
-                    "created_at": (data.get(b"created_at") or data.get("created_at", b"")).decode() if isinstance(data.get(b"created_at", data.get("created_at", "")), bytes) else data.get("created_at", ""),
-                    "ip_address": (data.get(b"ip") or data.get("ip", b"unknown")).decode() if isinstance(data.get(b"ip", data.get("ip", "unknown")), bytes) else data.get("ip", "unknown"),
-                    "user_agent": (data.get(b"ua") or data.get("ua", b"")).decode() if isinstance(data.get(b"ua", data.get("ua", "")), bytes) else data.get("ua", ""),
-                    "is_current": False,
-                })
+                sessions.append(
+                    {
+                        "session_id": sid,
+                        "created_at": (
+                            data.get(b"created_at") or data.get("created_at", b"")
+                        ).decode()
+                        if isinstance(data.get(b"created_at", data.get("created_at", "")), bytes)
+                        else data.get("created_at", ""),
+                        "ip_address": (data.get(b"ip") or data.get("ip", b"unknown")).decode()
+                        if isinstance(data.get(b"ip", data.get("ip", "unknown")), bytes)
+                        else data.get("ip", "unknown"),
+                        "user_agent": (data.get(b"ua") or data.get("ua", b"")).decode()
+                        if isinstance(data.get(b"ua", data.get("ua", "")), bytes)
+                        else data.get("ua", ""),
+                        "is_current": False,
+                    }
+                )
         return sessions
     except Exception:
         return []

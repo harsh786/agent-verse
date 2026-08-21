@@ -3,6 +3,7 @@
 Environment variables:
   REPLYIO_API_KEY: Reply.io API key
 """
+
 from __future__ import annotations
 
 import os

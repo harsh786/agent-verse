@@ -8,10 +8,11 @@ These tables power the generic ingestion framework:
   source_configs  — configuration for every connected source
   ingestion_jobs  — job tracking with cursor, progress, status
 """
+
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "0109"
@@ -54,8 +55,12 @@ def upgrade() -> None:
         sa.Column("total_docs_indexed", sa.Integer, nullable=False, server_default="0"),
         sa.Column("total_chunks", sa.Integer, nullable=False, server_default="0"),
         sa.Column("version", sa.Integer, nullable=False, server_default="1"),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
     )
     op.create_index("idx_source_configs_tenant", "source_configs", ["tenant_id"])
     op.create_index("idx_source_configs_type", "source_configs", ["tenant_id", "source_type"])
@@ -89,7 +94,9 @@ def upgrade() -> None:
         sa.Column("cursor_before", sa.Text, nullable=False, server_default=""),
         sa.Column("cursor_after", sa.Text, nullable=False, server_default=""),
         sa.Column("error_message", sa.Text, nullable=False, server_default=""),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.ForeignKeyConstraint(["source_id"], ["source_configs.id"], ondelete="CASCADE"),
     )
     op.create_index("idx_ingestion_jobs_source", "ingestion_jobs", ["source_id", "created_at"])
@@ -116,7 +123,9 @@ def upgrade() -> None:
         sa.Column("retry_count", sa.Integer, nullable=False, server_default="0"),
         sa.Column("next_retry_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.ForeignKeyConstraint(["source_id"], ["source_configs.id"], ondelete="CASCADE"),
     )
     op.create_index("idx_ingestion_dlq_source", "ingestion_dlq", ["source_id", "created_at"])

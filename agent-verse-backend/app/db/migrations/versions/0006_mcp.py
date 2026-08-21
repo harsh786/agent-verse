@@ -121,9 +121,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("DROP POLICY IF EXISTS oauth_tokens_tenant_isolation ON oauth_tokens")
     op.drop_table("oauth_tokens")
-    op.execute(
-        "DROP POLICY IF EXISTS mcp_credentials_tenant_isolation ON mcp_credentials"
-    )
+    op.execute("DROP POLICY IF EXISTS mcp_credentials_tenant_isolation ON mcp_credentials")
     op.drop_table("mcp_credentials")
     op.execute("DROP POLICY IF EXISTS mcp_servers_tenant_isolation ON mcp_servers")
     op.drop_table("mcp_servers")

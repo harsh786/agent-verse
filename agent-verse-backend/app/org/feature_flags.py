@@ -13,10 +13,9 @@ Cron Tasks (PART 43):
   org-digest-cron         — daily 06:00: generate "while you were away"
   org-twin-sync           — event-driven: update digital twin state
 """
+
 from __future__ import annotations
 
-import asyncio
-from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -31,35 +30,35 @@ _tracer = trace.get_tracer(__name__)
 # Org OS feature flags — all False by default (PHASE 0 of rollout)
 ORG_FEATURE_FLAGS: dict[str, bool] = {
     # Core org OS
-    "org_os_enabled":           False,   # master switch
-    "team_formation_enabled":   False,   # TeamFormationEngine
+    "org_os_enabled": False,  # master switch
+    "team_formation_enabled": False,  # TeamFormationEngine
     "meta_orchestrator_enabled": False,  # MetaOrchestrator
-    "model_gateway_enabled":    False,   # Model Intelligence Gateway
-    "context_engine_enabled":   False,   # Context Engine
-    "quality_gates_enabled":    False,   # 6-gate quality system
-    "loop_detector_enabled":    True,    # OrgLoopDetector (always on for safety)
+    "model_gateway_enabled": False,  # Model Intelligence Gateway
+    "context_engine_enabled": False,  # Context Engine
+    "quality_gates_enabled": False,  # 6-gate quality system
+    "loop_detector_enabled": True,  # OrgLoopDetector (always on for safety)
     # Memory tiers
-    "dept_memory_enabled":      False,   # Tier 5 dept memory
-    "org_memory_enabled":       False,   # Tier 6 org memory
+    "dept_memory_enabled": False,  # Tier 5 dept memory
+    "org_memory_enabled": False,  # Tier 6 org memory
     # Gateway channels
     "gateway_telegram_enabled": False,
-    "gateway_slack_enabled":    False,
-    "gateway_teams_enabled":    False,
-    "gateway_discord_enabled":  False,
-    "gateway_email_enabled":    False,
-    "gateway_mcp_enabled":      False,
-    "gateway_a2a_enabled":      False,
+    "gateway_slack_enabled": False,
+    "gateway_teams_enabled": False,
+    "gateway_discord_enabled": False,
+    "gateway_email_enabled": False,
+    "gateway_mcp_enabled": False,
+    "gateway_a2a_enabled": False,
     # Advanced features
-    "digital_twin_enabled":     False,
+    "digital_twin_enabled": False,
     "self_improvement_enabled": False,
-    "org_learning_enabled":     False,
-    "plugin_system_enabled":    False,
+    "org_learning_enabled": False,
+    "plugin_system_enabled": False,
     # Analytics
-    "org_analytics_enabled":    False,
-    "org_digest_enabled":       False,
+    "org_analytics_enabled": False,
+    "org_digest_enabled": False,
     # UI features
-    "command_bar_enabled":      True,    # Cmd+K always on
-    "org_chart_enabled":        True,    # Always on
+    "command_bar_enabled": True,  # Cmd+K always on
+    "org_chart_enabled": True,  # Always on
 }
 
 
@@ -93,17 +92,36 @@ class FeatureFlagService:
     def enable_phase(self, phase: int) -> list[str]:
         """Enable all flags for a deployment phase. Returns enabled flags."""
         PHASE_FLAGS = {
-            0: [],   # nothing (deploy with flag=OFF)
+            0: [],  # nothing (deploy with flag=OFF)
             1: ["org_os_enabled"],  # internal testing
             2: ["org_os_enabled", "team_formation_enabled", "meta_orchestrator_enabled"],
-            3: ["org_os_enabled", "team_formation_enabled", "meta_orchestrator_enabled",
-                "model_gateway_enabled", "context_engine_enabled", "quality_gates_enabled",
-                "dept_memory_enabled", "org_memory_enabled"],
-            4: ["gateway_telegram_enabled", "gateway_slack_enabled", "gateway_mcp_enabled",
-                "digital_twin_enabled", "org_analytics_enabled", "org_digest_enabled"],
-            5: ["self_improvement_enabled", "org_learning_enabled", "plugin_system_enabled",
-                "gateway_discord_enabled", "gateway_email_enabled", "gateway_a2a_enabled",
-                "gateway_teams_enabled"],
+            3: [
+                "org_os_enabled",
+                "team_formation_enabled",
+                "meta_orchestrator_enabled",
+                "model_gateway_enabled",
+                "context_engine_enabled",
+                "quality_gates_enabled",
+                "dept_memory_enabled",
+                "org_memory_enabled",
+            ],
+            4: [
+                "gateway_telegram_enabled",
+                "gateway_slack_enabled",
+                "gateway_mcp_enabled",
+                "digital_twin_enabled",
+                "org_analytics_enabled",
+                "org_digest_enabled",
+            ],
+            5: [
+                "self_improvement_enabled",
+                "org_learning_enabled",
+                "plugin_system_enabled",
+                "gateway_discord_enabled",
+                "gateway_email_enabled",
+                "gateway_a2a_enabled",
+                "gateway_teams_enabled",
+            ],
         }
         flags = PHASE_FLAGS.get(phase, [])
         for flag in flags:
@@ -130,16 +148,18 @@ def is_feature_enabled(flag: str, tenant_id: str | None = None) -> bool:
 # ── PART 43: Org Celery Cron Tasks ───────────────────────────────────────────
 # These are registered in app/scaling/tasks.py beat_schedule
 
+
 async def _run_org_intelligence_cron() -> dict[str, Any]:
     """
     org-intelligence-cron: Every 15 minutes.
     Detects bottlenecks, generates insights, updates org health scores.
     """
-    from app.db.session import db_factory  # type: ignore[import]
-    from app.db.rls import sqlalchemy_rls_context  # type: ignore[import]
-    from app.org.models import Organization
-    from app.org.analytics import OrgAnalyticsService
     from sqlalchemy import select
+
+    from app.db.rls import sqlalchemy_rls_context  # type: ignore[import]
+    from app.db.session import db_factory  # type: ignore[import]
+    from app.org.analytics import OrgAnalyticsService
+    from app.org.models import Organization
 
     processed = 0
     insights_generated = 0
@@ -164,14 +184,12 @@ async def _run_org_intelligence_cron() -> dict[str, Any]:
                             insights_generated += len(bottlenecks)
                 processed += 1
             except Exception as exc:
-                _log.warning("org_intelligence_cron.org_failed",
-                             org_id=str(org_id), error=str(exc))
+                _log.warning("org_intelligence_cron.org_failed", org_id=str(org_id), error=str(exc))
 
     except Exception as exc:
         _log.error("org_intelligence_cron.failed", error=str(exc))
 
-    _log.info("org_intelligence_cron.done",
-              processed=processed, insights=insights_generated)
+    _log.info("org_intelligence_cron.done", processed=processed, insights=insights_generated)
     return {"processed": processed, "insights": insights_generated}
 
 
@@ -180,11 +198,12 @@ async def _run_org_digest_cron() -> dict[str, Any]:
     org-digest-cron: Daily at 06:00 UTC.
     Generates "While You Were Away" digests for all active orgs.
     """
-    from app.db.session import db_factory  # type: ignore[import]
-    from app.db.rls import sqlalchemy_rls_context  # type: ignore[import]
-    from app.org.models import Organization
-    from app.org.digest import OrgDigestService
     from sqlalchemy import select
+
+    from app.db.rls import sqlalchemy_rls_context  # type: ignore[import]
+    from app.db.session import db_factory  # type: ignore[import]
+    from app.org.digest import OrgDigestService
+    from app.org.models import Organization
 
     processed = 0
     digests_generated = 0
@@ -207,8 +226,7 @@ async def _run_org_digest_cron() -> dict[str, Any]:
                         digests_generated += 1
                 processed += 1
             except Exception as exc:
-                _log.warning("org_digest_cron.org_failed",
-                             org_id=str(org_id), error=str(exc))
+                _log.warning("org_digest_cron.org_failed", org_id=str(org_id), error=str(exc))
 
     except Exception as exc:
         _log.error("org_digest_cron.failed", error=str(exc))
@@ -230,6 +248,7 @@ async def _run_org_twin_sync(event: dict[str, Any]) -> None:
 
     try:
         from app.org.digital_twin import OrgDigitalTwin
+
         twin = OrgDigitalTwin()
         await twin.sync(event)
         _log.debug("org_twin_sync.done", org_id=org_id, event=event_type)

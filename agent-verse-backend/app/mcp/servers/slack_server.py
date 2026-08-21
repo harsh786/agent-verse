@@ -3,6 +3,7 @@
 Environment:
   SLACK_BOT_TOKEN: Bot token (xoxb-...)
 """
+
 from __future__ import annotations
 
 import os
@@ -104,12 +105,7 @@ async def _call_tool_inner(
     credentials: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     creds = credentials or {}
-    token = (
-        creds.get("token")
-        or creds.get("bot_token")
-        or creds.get("api_token")
-        or _token()
-    )
+    token = creds.get("token") or creds.get("bot_token") or creds.get("api_token") or _token()
     if not token:
         return {"error": "SLACK_BOT_TOKEN not configured"}
 
@@ -126,9 +122,7 @@ async def _call_tool_inner(
             }
             if "thread_ts" in arguments:
                 payload["thread_ts"] = arguments["thread_ts"]
-            resp = await client.post(
-                f"{SLACK_API}/chat.postMessage", json=payload, headers=headers
-            )
+            resp = await client.post(f"{SLACK_API}/chat.postMessage", json=payload, headers=headers)
             data = resp.json()
             return {
                 "ok": data.get("ok"),
@@ -144,12 +138,12 @@ async def _call_tool_inner(
             )
             data = resp.json()
             if not data.get("ok"):
-                return {"error": data.get("error", "Slack API error"), "detail": data.get("response_metadata", {})}
+                return {
+                    "error": data.get("error", "Slack API error"),
+                    "detail": data.get("response_metadata", {}),
+                }
             return {
-                "channels": [
-                    {"id": c["id"], "name": c["name"]}
-                    for c in data.get("channels", [])
-                ]
+                "channels": [{"id": c["id"], "name": c["name"]} for c in data.get("channels", [])]
             }
 
         elif tool_name == "slack_get_channel_history":
@@ -163,7 +157,10 @@ async def _call_tool_inner(
             )
             data = resp.json()
             if not data.get("ok"):
-                return {"error": data.get("error", "Slack API error"), "detail": data.get("response_metadata", {})}
+                return {
+                    "error": data.get("error", "Slack API error"),
+                    "detail": data.get("response_metadata", {}),
+                }
             return {
                 "messages": [
                     {
@@ -186,7 +183,10 @@ async def _call_tool_inner(
             )
             data = resp.json()
             if not data.get("ok"):
-                return {"error": data.get("error", "Slack API error"), "detail": data.get("response_metadata", {})}
+                return {
+                    "error": data.get("error", "Slack API error"),
+                    "detail": data.get("response_metadata", {}),
+                }
             matches = data.get("messages", {}).get("matches", [])
             return {
                 "messages": [

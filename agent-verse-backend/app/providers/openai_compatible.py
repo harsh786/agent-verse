@@ -45,13 +45,33 @@ class OpenAICompatibleProvider:
         self._vision = supports_vision_flag
 
     # Models in the gpt-5.x series use max_completion_tokens; older models use max_tokens.
-    _MAX_COMPLETION_TOKENS_MODELS = frozenset({
-        "gpt-5.2", "gpt-5.2-pro", "gpt-5.1", "gpt-5.1-codex",
-        "gpt-5", "gpt-5-pro", "gpt-5-mini", "gpt-5-nano",
-        "gpt-5.3-chat-latest", "gpt-5.2-chat-latest", "gpt-5.1-chat-latest",
-        "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-pro", "gpt-5.5", "gpt-5.5-pro",
-        "o1", "o1-pro", "o1-preview", "o3", "o3-pro", "o3-mini", "o4-mini",
-    })
+    _MAX_COMPLETION_TOKENS_MODELS = frozenset(
+        {
+            "gpt-5.2",
+            "gpt-5.2-pro",
+            "gpt-5.1",
+            "gpt-5.1-codex",
+            "gpt-5",
+            "gpt-5-pro",
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "gpt-5.3-chat-latest",
+            "gpt-5.2-chat-latest",
+            "gpt-5.1-chat-latest",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.4-pro",
+            "gpt-5.5",
+            "gpt-5.5-pro",
+            "o1",
+            "o1-pro",
+            "o1-preview",
+            "o3",
+            "o3-pro",
+            "o3-mini",
+            "o4-mini",
+        }
+    )
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         model = request.model or self._default_model
@@ -61,7 +81,9 @@ class OpenAICompatibleProvider:
         _use_completion_tokens = (
             model in self._MAX_COMPLETION_TOKENS_MODELS
             or model.startswith("gpt-5")
-            or model.startswith("o1") or model.startswith("o3") or model.startswith("o4")
+            or model.startswith("o1")
+            or model.startswith("o3")
+            or model.startswith("o4")
         )
         _token_key = "max_completion_tokens" if _use_completion_tokens else "max_tokens"
 
@@ -104,12 +126,14 @@ class OpenAICompatibleProvider:
             # in `required`. If we get a 400 schema validation error, fall back
             # to non-strict json_object mode so the goal can still proceed.
             _err_str = str(_strict_err).lower()
-            if (
-                request.response_schema is not None
-                and ("400" in _err_str or "invalid_request_error" in _err_str
-                     or "invalid schema" in _err_str or "response_format" in _err_str)
+            if request.response_schema is not None and (
+                "400" in _err_str
+                or "invalid_request_error" in _err_str
+                or "invalid schema" in _err_str
+                or "response_format" in _err_str
             ):
                 import logging as _log
+
                 _log.getLogger(__name__).warning(
                     "openai_strict_schema_rejected_falling_back_to_json_object: %s",
                     str(_strict_err)[:200],
@@ -117,11 +141,13 @@ class OpenAICompatibleProvider:
                 kwargs["response_format"] = {"type": "json_object"}
                 response = await self._client.chat.completions.create(**kwargs)
             elif "tool_choice" in kwargs and (
-                "400" in _err_str or "invalid_request_error" in _err_str
+                "400" in _err_str
+                or "invalid_request_error" in _err_str
                 or "tool_choice" in _err_str
             ):
                 # tool_choice="required" rejected — fall back to auto
                 import logging as _log2
+
                 _log2.getLogger(__name__).warning(
                     "tool_choice_required_rejected_falling_back_to_auto: %s",
                     str(_strict_err)[:200],
@@ -135,12 +161,18 @@ class OpenAICompatibleProvider:
         try:
             from app.governance.pricing import estimate_cost
             from app.observability.metrics import record_cost_usd, record_llm_tokens
+
             usage = getattr(response, "usage", None)
             if usage:
-                record_llm_tokens("openai", response.model or "", "prompt",
-                                  getattr(usage, "prompt_tokens", 0))
-                record_llm_tokens("openai", response.model or "", "completion",
-                                  getattr(usage, "completion_tokens", 0))
+                record_llm_tokens(
+                    "openai", response.model or "", "prompt", getattr(usage, "prompt_tokens", 0)
+                )
+                record_llm_tokens(
+                    "openai",
+                    response.model or "",
+                    "completion",
+                    getattr(usage, "completion_tokens", 0),
+                )
                 cost = estimate_cost(
                     response.model or "",
                     getattr(usage, "prompt_tokens", 0),
@@ -158,11 +190,9 @@ class OpenAICompatibleProvider:
             tool_calls = [
                 {
                     "name": tc.function.name,
-                    "input": (
-                        json.loads(tc.function.arguments)
-                        if tc.function.arguments
-                        else {}
-                    ) if isinstance(tc.function.arguments, str) else (tc.function.arguments or {}),
+                    "input": (json.loads(tc.function.arguments) if tc.function.arguments else {})
+                    if isinstance(tc.function.arguments, str)
+                    else (tc.function.arguments or {}),
                     "id": tc.id,
                 }
                 for tc in choice.message.tool_calls
@@ -190,8 +220,10 @@ class OpenAICompatibleProvider:
         messages = [{"role": m.role, "content": m.content} for m in request.messages]
         _use_completion_tokens = (
             model in self._MAX_COMPLETION_TOKENS_MODELS
-            or model.startswith("gpt-5") or model.startswith("o1")
-            or model.startswith("o3") or model.startswith("o4")
+            or model.startswith("gpt-5")
+            or model.startswith("o1")
+            or model.startswith("o3")
+            or model.startswith("o4")
         )
         _token_key = "max_completion_tokens" if _use_completion_tokens else "max_tokens"
         try:
@@ -231,8 +263,10 @@ class OpenAICompatibleProvider:
 
         _use_ct = (
             model in self._MAX_COMPLETION_TOKENS_MODELS
-            or model.startswith("gpt-5") or model.startswith("o1")
-            or model.startswith("o3") or model.startswith("o4")
+            or model.startswith("gpt-5")
+            or model.startswith("o1")
+            or model.startswith("o3")
+            or model.startswith("o4")
         )
         kwargs = {
             "model": model,

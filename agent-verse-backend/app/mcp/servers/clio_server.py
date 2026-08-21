@@ -3,6 +3,7 @@
 Environment:
   CLIO_ACCESS_TOKEN: Clio OAuth2 access token
 """
+
 from __future__ import annotations
 
 import os
@@ -22,7 +23,10 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter by status: open, pending, closed"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: open, pending, closed",
+                },
                 "client_id": {"type": "integer", "description": "Filter by client ID"},
                 "page": {"type": "integer", "description": "Page number"},
                 "limit": {"type": "integer", "description": "Results per page"},
@@ -37,7 +41,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "description": {"type": "string", "description": "Matter description or case name"},
-                "client_id": {"type": "integer", "description": "ID of the client this matter belongs to"},
+                "client_id": {
+                    "type": "integer",
+                    "description": "ID of the client this matter belongs to",
+                },
                 "practice_area_id": {"type": "integer", "description": "Practice area ID"},
                 "status": {"type": "string", "description": "Initial status: open, pending"},
                 "open_date": {"type": "string", "description": "Opening date in YYYY-MM-DD format"},
@@ -68,7 +75,10 @@ TOOL_DEFINITIONS = [
                 "type": {"type": "string", "description": "Contact type: Person or Company"},
                 "email": {"type": "string", "description": "Email address"},
                 "phone": {"type": "string", "description": "Phone number"},
-                "address": {"type": "object", "description": "Address object with street, city, state, zip"},
+                "address": {
+                    "type": "object",
+                    "description": "Address object with street, city, state, zip",
+                },
             },
             "required": ["name", "type"],
         },
@@ -123,7 +133,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 return r.json()
 
             if tool_name == "clio_create_matter":
-                payload: dict[str, Any] = {"data": {k: v for k, v in arguments.items() if v is not None}}
+                payload: dict[str, Any] = {
+                    "data": {k: v for k, v in arguments.items() if v is not None}
+                }
                 r = await client.post(f"{BASE_URL}/matters.json", headers=headers, json=payload)
                 r.raise_for_status()
                 return r.json()

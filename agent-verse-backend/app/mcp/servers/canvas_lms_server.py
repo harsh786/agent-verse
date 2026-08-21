@@ -4,6 +4,7 @@ Environment:
   CANVAS_ACCESS_TOKEN: Canvas LMS API token
   CANVAS_DOMAIN: Canvas instance domain (e.g. myschool.instructure.com)
 """
+
 from __future__ import annotations
 
 import os
@@ -28,8 +29,14 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "enrollment_type": {"type": "string", "description": "Filter by role: teacher, student, ta"},
-                "include": {"type": "string", "description": "Comma-separated extra fields to include"},
+                "enrollment_type": {
+                    "type": "string",
+                    "description": "Filter by role: teacher, student, ta",
+                },
+                "include": {
+                    "type": "string",
+                    "description": "Comma-separated extra fields to include",
+                },
                 "page": {"type": "integer", "description": "Page number"},
                 "per_page": {"type": "integer", "description": "Results per page"},
             },
@@ -58,7 +65,10 @@ TOOL_DEFINITIONS = [
                 "name": {"type": "string", "description": "Assignment title"},
                 "description": {"type": "string", "description": "Assignment instructions (HTML)"},
                 "due_at": {"type": "string", "description": "Due date in ISO 8601 format"},
-                "points_possible": {"type": "number", "description": "Maximum points for the assignment"},
+                "points_possible": {
+                    "type": "number",
+                    "description": "Maximum points for the assignment",
+                },
                 "submission_types": {
                     "type": "array",
                     "description": "Allowed submission types",
@@ -92,7 +102,10 @@ TOOL_DEFINITIONS = [
                 "assignment_id": {"type": "string", "description": "Assignment ID"},
                 "student_id": {"type": "string", "description": "Student user ID"},
                 "grade": {"type": "string", "description": "Grade to assign (numeric or letter)"},
-                "text_comment": {"type": "string", "description": "Feedback comment for the student"},
+                "text_comment": {
+                    "type": "string",
+                    "description": "Feedback comment for the student",
+                },
             },
             "required": ["course_id", "assignment_id", "student_id", "grade"],
         },
@@ -105,8 +118,14 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "course_id": {"type": "string", "description": "Canvas course ID"},
                 "title": {"type": "string", "description": "Announcement title"},
-                "message": {"type": "string", "description": "Announcement message body (HTML allowed)"},
-                "delayed_post_at": {"type": "string", "description": "Optional scheduled post time"},
+                "message": {
+                    "type": "string",
+                    "description": "Announcement message body (HTML allowed)",
+                },
+                "delayed_post_at": {
+                    "type": "string",
+                    "description": "Optional scheduled post time",
+                },
             },
             "required": ["course_id", "title", "message"],
         },
@@ -156,7 +175,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                     payload["assignment[points_possible]"] = arguments["points_possible"]
                 if "submission_types" in arguments:
                     for i, st in enumerate(arguments["submission_types"]):
-                        payload[f"assignment[submission_types][]"] = st
+                        payload["assignment[submission_types][]"] = st
                 r = await client.post(
                     f"{base_url}/courses/{course_id}/assignments",
                     headers=headers,
@@ -168,7 +187,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
             if tool_name == "canvas_list_submissions":
                 course_id = arguments["course_id"]
                 assignment_id = arguments["assignment_id"]
-                params = {k: v for k, v in arguments.items() if k not in ("course_id", "assignment_id") and v is not None}
+                params = {
+                    k: v
+                    for k, v in arguments.items()
+                    if k not in ("course_id", "assignment_id") and v is not None
+                }
                 r = await client.get(
                     f"{base_url}/courses/{course_id}/assignments/{assignment_id}/submissions",
                     headers=headers,

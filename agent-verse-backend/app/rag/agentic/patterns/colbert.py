@@ -62,8 +62,7 @@ def _cosine(left: list[float], right: list[float]) -> float:
     if magnitude_left == 0.0 or magnitude_right == 0.0:
         return 0.0
     return sum(
-        left_value * right_value
-        for left_value, right_value in zip(left, right, strict=True)
+        left_value * right_value for left_value, right_value in zip(left, right, strict=True)
     ) / (magnitude_left * magnitude_right)
 
 
@@ -75,10 +74,7 @@ def maxsim_score(
     if not query_embeddings or not document_embeddings:
         return 0.0
     similarities = [
-        max(
-            _cosine(query_token, document_token)
-            for document_token in document_embeddings
-        )
+        max(_cosine(query_token, document_token) for document_token in document_embeddings)
         for query_token in query_embeddings
     ]
     return sum(similarities)
@@ -102,9 +98,7 @@ def _load_colbert_model(
             pretrained_model.from_pretrained(checkpoint),
         )
     except Exception as exc:
-        raise RerankerLoadError(
-            f"ColBERT model could not be loaded: {checkpoint}"
-        ) from exc
+        raise RerankerLoadError(f"ColBERT model could not be loaded: {checkpoint}") from exc
 
 
 def _result_index(
@@ -124,20 +118,14 @@ def _result_index(
         ):
             raise RerankerInferenceError("ColBERT result_index is invalid")
         if documents[raw_index] != content:
-            raise RerankerInferenceError(
-                "ColBERT result_index does not match result content"
-            )
+            raise RerankerInferenceError("ColBERT result_index does not match result content")
         return raw_index
 
-    matching_indices = [
-        index for index, document in enumerate(documents) if document == content
-    ]
+    matching_indices = [index for index, document in enumerate(documents) if document == content]
     if not matching_indices:
         raise RerankerInferenceError("ColBERT result content is not a candidate")
     if len(matching_indices) > 1:
-        raise RerankerInferenceError(
-            "ColBERT result content maps to multiple candidates"
-        )
+        raise RerankerInferenceError("ColBERT result content maps to multiple candidates")
     return matching_indices[0]
 
 
@@ -212,9 +200,7 @@ class ColBERTLateInteractionReranker(RerankerProtocol):
     def _score_blocking(self, query: str, documents: list[str]) -> list[float]:
         model = self._get_model()
         try:
-            inference_guard = (
-                nullcontext() if self._backend_thread_safe else self._rerank_lock
-            )
+            inference_guard = nullcontext() if self._backend_thread_safe else self._rerank_lock
             with inference_guard:
                 results = model.rerank(
                     query=query,
@@ -225,9 +211,7 @@ class ColBERTLateInteractionReranker(RerankerProtocol):
         except (RerankerLoadError, RerankerInferenceError):
             raise
         except Exception as exc:
-            raise RerankerInferenceError(
-                "ColBERT late-interaction scoring failed"
-            ) from exc
+            raise RerankerInferenceError("ColBERT late-interaction scoring failed") from exc
 
     async def score(self, query: str, documents: list[str]) -> list[float]:
         if not documents:
@@ -263,9 +247,7 @@ class ColBERTRAGRuntimeAdapter(ColBERTRAGRuntimeContract):
             raise ValueError("ColBERT candidate_multiplier must be at least 2")
         self._reranker: RerankerProtocol
         if reranker is None:
-            self._reranker = ColBERTLateInteractionReranker(
-                checkpoint=colbert_checkpoint
-            )
+            self._reranker = ColBERTLateInteractionReranker(checkpoint=colbert_checkpoint)
             self._owns_reranker = True
         else:
             self._reranker = reranker
@@ -320,9 +302,7 @@ class ColBERTRAGRuntimeAdapter(ColBERTRAGRuntimeContract):
         except (RerankerLoadError, RerankerInferenceError):
             raise
         except Exception as exc:
-            raise RetrievalStrategyExecutionError(
-                self.strategy.value, "reranker failed"
-            ) from exc
+            raise RetrievalStrategyExecutionError(self.strategy.value, "reranker failed") from exc
         if len(rerank_scores) != len(candidates):
             raise RetrievalStrategyExecutionError(
                 self.strategy.value, "reranker returned an invalid score count"
@@ -368,8 +348,7 @@ class ColBERTRAGRuntimeAdapter(ColBERTRAGRuntimeContract):
                         "candidate_limit": candidate_limit,
                         "returned_count": len(reranked),
                         "rerank_scores": {
-                            candidate.chunk_id: candidate.score
-                            for candidate in reranked
+                            candidate.chunk_id: candidate.score for candidate in reranked
                         },
                     },
                 )
@@ -438,10 +417,7 @@ class ColBERTPattern(RAGPattern):
         reranked = []
         for chunk, colbert_score in zip(chunks, scores, strict=True):
             original_score = float(chunk.get("score", 0.0))
-            rerank_score = (
-                self._alpha * colbert_score
-                + (1.0 - self._alpha) * original_score
-            )
+            rerank_score = self._alpha * colbert_score + (1.0 - self._alpha) * original_score
             reranked.append(
                 {
                     **chunk,
@@ -451,9 +427,7 @@ class ColBERTPattern(RAGPattern):
                     "rerank_score": rerank_score,
                 }
             )
-        reranked.sort(
-            key=lambda chunk: (-float(chunk["score"]), str(chunk.get("chunk_id", "")))
-        )
+        reranked.sort(key=lambda chunk: (-float(chunk["score"]), str(chunk.get("chunk_id", ""))))
         return reranked if top_k is None else reranked[:top_k]
 
     def _maxsim_score(self, query: str, document: str) -> float:

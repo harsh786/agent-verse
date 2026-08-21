@@ -3,6 +3,7 @@
 Environment:
   HARVEY_API_KEY: Harvey AI API key for authentication
 """
+
 from __future__ import annotations
 
 import os
@@ -22,9 +23,18 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Legal research question or topic to investigate"},
-                "jurisdiction": {"type": "string", "description": "Jurisdiction (e.g. US Federal, New York, UK)"},
-                "practice_area": {"type": "string", "description": "Practice area (e.g. contracts, IP, employment)"},
+                "query": {
+                    "type": "string",
+                    "description": "Legal research question or topic to investigate",
+                },
+                "jurisdiction": {
+                    "type": "string",
+                    "description": "Jurisdiction (e.g. US Federal, New York, UK)",
+                },
+                "practice_area": {
+                    "type": "string",
+                    "description": "Practice area (e.g. contracts, IP, employment)",
+                },
                 "include_cases": {"type": "boolean", "description": "Include case law citations"},
             },
             "required": ["query"],
@@ -36,9 +46,19 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "contract_type": {"type": "string", "description": "Type of contract (e.g. NDA, employment, SaaS)"},
-                "parties": {"type": "array", "description": "List of party names and roles", "items": {"type": "object"}},
-                "key_terms": {"type": "object", "description": "Key terms and conditions to include"},
+                "contract_type": {
+                    "type": "string",
+                    "description": "Type of contract (e.g. NDA, employment, SaaS)",
+                },
+                "parties": {
+                    "type": "array",
+                    "description": "List of party names and roles",
+                    "items": {"type": "object"},
+                },
+                "key_terms": {
+                    "type": "object",
+                    "description": "Key terms and conditions to include",
+                },
                 "jurisdiction": {"type": "string", "description": "Governing law jurisdiction"},
             },
             "required": ["contract_type"],
@@ -50,9 +70,19 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "document_text": {"type": "string", "description": "Full text of the legal document to analyze"},
-                "analysis_type": {"type": "string", "description": "Analysis type: risk, summary, comparison, redline"},
-                "focus_areas": {"type": "array", "description": "Specific areas to focus on", "items": {"type": "string"}},
+                "document_text": {
+                    "type": "string",
+                    "description": "Full text of the legal document to analyze",
+                },
+                "analysis_type": {
+                    "type": "string",
+                    "description": "Analysis type: risk, summary, comparison, redline",
+                },
+                "focus_areas": {
+                    "type": "array",
+                    "description": "Specific areas to focus on",
+                    "items": {"type": "string"},
+                },
             },
             "required": ["document_text"],
         },
@@ -63,9 +93,15 @@ TOOL_DEFINITIONS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "legal_issue": {"type": "string", "description": "Legal issue or question to find precedents for"},
+                "legal_issue": {
+                    "type": "string",
+                    "description": "Legal issue or question to find precedents for",
+                },
                 "jurisdiction": {"type": "string", "description": "Jurisdiction to search in"},
-                "date_range": {"type": "string", "description": "Date range for cases (e.g. 2010-2024)"},
+                "date_range": {
+                    "type": "string",
+                    "description": "Date range for cases (e.g. 2010-2024)",
+                },
                 "limit": {"type": "integer", "description": "Maximum precedents to return"},
             },
             "required": ["legal_issue"],
@@ -78,7 +114,10 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "case_text": {"type": "string", "description": "Full text or citation of the case"},
-                "summary_length": {"type": "string", "description": "Summary length: brief, standard, detailed"},
+                "summary_length": {
+                    "type": "string",
+                    "description": "Summary length: brief, standard, detailed",
+                },
                 "include_holdings": {"type": "boolean", "description": "Include key holdings"},
             },
             "required": ["case_text"],
@@ -91,8 +130,15 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "document_text": {"type": "string", "description": "Text to check for compliance"},
-                "regulations": {"type": "array", "description": "List of regulations/frameworks to check against", "items": {"type": "string"}},
-                "jurisdiction": {"type": "string", "description": "Jurisdiction for compliance check"},
+                "regulations": {
+                    "type": "array",
+                    "description": "List of regulations/frameworks to check against",
+                    "items": {"type": "string"},
+                },
+                "jurisdiction": {
+                    "type": "string",
+                    "description": "Jurisdiction for compliance check",
+                },
             },
             "required": ["document_text", "regulations"],
         },

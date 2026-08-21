@@ -16,6 +16,7 @@ Events emitted:
   workflow.paused         — operator paused
   workflow.resumed        — operator resumed
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -47,17 +48,25 @@ class AutoAuditMiddleware:
     # ── Lifecycle events ─────────────────────────────────────────────────
 
     def run_started(self, state: WorkflowState) -> None:
-        self._emit(state, "workflow.run_started", {
-            "workflow_id": state.get("workflow_id"),
-            "trigger_type": (state.get("inputs") or {}).get("_trigger_type"),
-            "inputs_hash": _hash(state.get("inputs")),
-        })
+        self._emit(
+            state,
+            "workflow.run_started",
+            {
+                "workflow_id": state.get("workflow_id"),
+                "trigger_type": (state.get("inputs") or {}).get("_trigger_type"),
+                "inputs_hash": _hash(state.get("inputs")),
+            },
+        )
 
     def step_started(self, state: WorkflowState, step_id: str, step_type: str) -> None:
-        self._emit(state, "step.started", {
-            "step_id": step_id,
-            "step_type": step_type,
-        })
+        self._emit(
+            state,
+            "step.started",
+            {
+                "step_id": step_id,
+                "step_type": step_type,
+            },
+        )
 
     def step_completed(
         self,
@@ -67,26 +76,36 @@ class AutoAuditMiddleware:
         duration_ms: int,
         cost_usd: float,
     ) -> None:
-        self._emit(state, "step.completed", {
-            "step_id": step_id,
-            "output_hash": _hash(output),
-            "duration_ms": duration_ms,
-            "cost_usd": cost_usd,
-        })
+        self._emit(
+            state,
+            "step.completed",
+            {
+                "step_id": step_id,
+                "output_hash": _hash(output),
+                "duration_ms": duration_ms,
+                "cost_usd": cost_usd,
+            },
+        )
 
-    def step_failed(
-        self, state: WorkflowState, step_id: str, error: str
-    ) -> None:
-        self._emit(state, "step.failed", {
-            "step_id": step_id,
-            "error": error[:256],  # truncate long traces
-        })
+    def step_failed(self, state: WorkflowState, step_id: str, error: str) -> None:
+        self._emit(
+            state,
+            "step.failed",
+            {
+                "step_id": step_id,
+                "error": error[:256],  # truncate long traces
+            },
+        )
 
     def step_skipped(self, state: WorkflowState, step_id: str, reason: str) -> None:
-        self._emit(state, "step.skipped", {
-            "step_id": step_id,
-            "reason": reason,
-        })
+        self._emit(
+            state,
+            "step.skipped",
+            {
+                "step_id": step_id,
+                "reason": reason,
+            },
+        )
 
     def hitl_requested(
         self,
@@ -96,12 +115,16 @@ class AutoAuditMiddleware:
         assignee_role: str,
         deadline_at: str,
     ) -> None:
-        self._emit(state, "hitl.requested", {
-            "step_id": step_id,
-            "request_id": request_id,
-            "assignee_role": assignee_role,
-            "deadline_at": deadline_at,
-        })
+        self._emit(
+            state,
+            "hitl.requested",
+            {
+                "step_id": step_id,
+                "request_id": request_id,
+                "assignee_role": assignee_role,
+                "deadline_at": deadline_at,
+            },
+        )
 
     def hitl_decided(
         self,
@@ -110,11 +133,15 @@ class AutoAuditMiddleware:
         action: str,
         reviewer_id: str,
     ) -> None:
-        self._emit(state, "hitl.decided", {
-            "step_id": step_id,
-            "action": action,
-            "reviewer_id": reviewer_id,
-        })
+        self._emit(
+            state,
+            "hitl.decided",
+            {
+                "step_id": step_id,
+                "action": action,
+                "reviewer_id": reviewer_id,
+            },
+        )
 
     def run_completed(
         self,
@@ -123,11 +150,15 @@ class AutoAuditMiddleware:
         total_cost_usd: float,
         duration_ms: int,
     ) -> None:
-        self._emit(state, "workflow.completed", {
-            "outputs_hash": outputs_hash,
-            "total_cost_usd": total_cost_usd,
-            "duration_ms": duration_ms,
-        })
+        self._emit(
+            state,
+            "workflow.completed",
+            {
+                "outputs_hash": outputs_hash,
+                "total_cost_usd": total_cost_usd,
+                "duration_ms": duration_ms,
+            },
+        )
 
     def run_failed(
         self,
@@ -135,18 +166,24 @@ class AutoAuditMiddleware:
         error_code: str,
         failed_step_id: str | None,
     ) -> None:
-        self._emit(state, "workflow.failed", {
-            "error_code": error_code,
-            "failed_step_id": failed_step_id,
-        })
+        self._emit(
+            state,
+            "workflow.failed",
+            {
+                "error_code": error_code,
+                "failed_step_id": failed_step_id,
+            },
+        )
 
-    def run_paused(
-        self, state: WorkflowState, paused_by: str, reason: str
-    ) -> None:
-        self._emit(state, "workflow.paused", {
-            "paused_by": paused_by,
-            "reason": reason,
-        })
+    def run_paused(self, state: WorkflowState, paused_by: str, reason: str) -> None:
+        self._emit(
+            state,
+            "workflow.paused",
+            {
+                "paused_by": paused_by,
+                "reason": reason,
+            },
+        )
 
     def run_resumed(self, state: WorkflowState, resumed_by: str) -> None:
         self._emit(state, "workflow.resumed", {"resumed_by": resumed_by})

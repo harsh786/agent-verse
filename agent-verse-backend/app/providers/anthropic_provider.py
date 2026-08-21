@@ -51,23 +51,25 @@ class AnthropicProvider:
                 continue
             if m.image_data:
                 # Multi-modal message with image
-                messages.append({
-                    "role": m.role,
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": m.image_data,
+                messages.append(
+                    {
+                        "role": m.role,
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": m.image_data,
+                                },
                             },
-                        },
-                        {
-                            "type": "text",
-                            "text": m.content if isinstance(m.content, str) else str(m.content),
-                        },
-                    ],
-                })
+                            {
+                                "type": "text",
+                                "text": m.content if isinstance(m.content, str) else str(m.content),
+                            },
+                        ],
+                    }
+                )
             else:
                 messages.append({"role": m.role, "content": m.content})
         system_prompt = request.system or next(
@@ -84,9 +86,7 @@ class AnthropicProvider:
             # cache_control so Anthropic can cache the stable prefix across calls.
             # When cache_prefix is set, only the stable prefix gets cache_control;
             # the volatile part (feedback, replanning context) is NOT cached.
-            system_str = (
-                system_prompt if isinstance(system_prompt, str) else str(system_prompt)
-            )
+            system_str = system_prompt if isinstance(system_prompt, str) else str(system_prompt)
             if request.cache_prefix and request.cache_prefix in system_str:
                 split_idx = system_str.find(request.cache_prefix) + len(request.cache_prefix)
                 stable_part = system_str[:split_idx]
@@ -129,10 +129,19 @@ class AnthropicProvider:
         try:
             from app.governance.pricing import estimate_cost
             from app.observability.metrics import record_cost_usd, record_llm_tokens
-            record_llm_tokens("anthropic", response.model or "", "prompt",
-                              getattr(response.usage, "input_tokens", 0))
-            record_llm_tokens("anthropic", response.model or "", "completion",
-                              getattr(response.usage, "output_tokens", 0))
+
+            record_llm_tokens(
+                "anthropic",
+                response.model or "",
+                "prompt",
+                getattr(response.usage, "input_tokens", 0),
+            )
+            record_llm_tokens(
+                "anthropic",
+                response.model or "",
+                "completion",
+                getattr(response.usage, "output_tokens", 0),
+            )
             cost = estimate_cost(
                 response.model or "",
                 getattr(response.usage, "input_tokens", 0),
@@ -228,27 +237,30 @@ class AnthropicProvider:
             if m.role == "system":
                 continue
             if m.image_data:
-                messages.append({
-                    "role": m.role,
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": m.image_data,
+                messages.append(
+                    {
+                        "role": m.role,
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": m.image_data,
+                                },
                             },
-                        },
-                        {
-                            "type": "text",
-                            "text": m.content if isinstance(m.content, str) else str(m.content),
-                        },
-                    ],
-                })
+                            {
+                                "type": "text",
+                                "text": m.content if isinstance(m.content, str) else str(m.content),
+                            },
+                        ],
+                    }
+                )
             else:
                 messages.append({"role": m.role, "content": m.content})
 
         import anthropic as _anthropic
+
         system_prompt = request.system or next(
             (m.content for m in request.messages if m.role == "system"),
             _anthropic.NOT_GIVEN,
