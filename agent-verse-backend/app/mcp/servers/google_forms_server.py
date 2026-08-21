@@ -20,7 +20,7 @@ FORMS_BASE = "https://forms.googleapis.com/v1"
 TOOL_DEFINITIONS = [
     {
         "name": "gforms_list_forms",
-        "description": "List Google Forms in Drive (uses Drive API as Forms API has no list endpoint)",
+        "description": "List Google Forms in Drive (uses Drive API as Forms API has no list endpoint)",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {
@@ -53,7 +53,7 @@ TOOL_DEFINITIONS = [
                 "page_size": {"type": "integer", "default": 100},
                 "filter": {
                     "type": "string",
-                    "description": "RFC 3339 timestamp filter e.g. timestamp > 2024-01-01T00:00:00Z",
+                    "description": "RFC 3339 timestamp filter e.g. timestamp > 2024-01-01T00:00:00Z",  # noqa: E501
                 },
             },
             "required": ["form_id"],

@@ -106,7 +106,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "insightly_create_task",
-        "description": "Create a task in Insightly CRM, optionally linked to a contact or opportunity",
+        "description": "Create a task in Insightly CRM, optionally linked to a contact or opportunity",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

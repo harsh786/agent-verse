@@ -273,7 +273,7 @@ async def list_channel_mappings(request: Request) -> list[dict]:
         async with db() as session:
             rows = await session.execute(
                 text(
-                    "SELECT id, channel_type, channel_id, created_at FROM channel_tenant_mappings WHERE tenant_id = :tid"
+                    "SELECT id, channel_type, channel_id, created_at FROM channel_tenant_mappings WHERE tenant_id = :tid"  # noqa: E501
                 ),
                 {"tid": tenant_id},
             )

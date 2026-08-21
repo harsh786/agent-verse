@@ -118,7 +118,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     token_key = os.getenv("NETSUITE_TOKEN_KEY", "")
     if not account_id or not consumer_key or not token_key:
         return {
-            "error": "NETSUITE_ACCOUNT_ID, NETSUITE_CONSUMER_KEY, and NETSUITE_TOKEN_KEY must be configured"
+            "error": "NETSUITE_ACCOUNT_ID, NETSUITE_CONSUMER_KEY, and NETSUITE_TOKEN_KEY must be configured"  # noqa: E501
         }
 
     base = _base()

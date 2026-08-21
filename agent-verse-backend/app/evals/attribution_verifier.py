@@ -94,7 +94,7 @@ class AttributionVerifier:
             else:
                 failed += 1
                 unsupported.append(
-                    f"Citation [{idx + 1}] has low overlap with cited chunk (jaccard={max_score:.3f})"
+                    f"Citation [{idx + 1}] has low overlap with cited chunk (jaccard={max_score:.3f})"  # noqa: E501
                 )
                 details.append(
                     {"citation": idx + 1, "valid": False, "jaccard": round(max_score, 3)}

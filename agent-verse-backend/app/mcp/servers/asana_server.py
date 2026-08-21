@@ -29,7 +29,7 @@ TOOL_DEFINITIONS = [
                 "project_gid": {"type": "string", "description": "Project GID"},
                 "completed_since": {
                     "type": "string",
-                    "description": "ISO 8601 datetime — only return tasks completed after this time",
+                    "description": "ISO 8601 datetime — only return tasks completed after this time",  # noqa: E501
                 },
                 "opt_fields": {
                     "type": "string",
@@ -49,7 +49,7 @@ TOOL_DEFINITIONS = [
                 "task_gid": {"type": "string"},
                 "opt_fields": {
                     "type": "string",
-                    "default": "name,notes,completed,due_on,assignee.name,projects.name,tags.name,custom_fields",
+                    "default": "name,notes,completed,due_on,assignee.name,projects.name,tags.name,custom_fields",  # noqa: E501
                 },
             },
             "required": ["task_gid"],

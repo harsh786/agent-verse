@@ -139,7 +139,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
     if not username or not secret:
         return {
-            "error": "MIXPANEL_SERVICE_ACCOUNT_USERNAME and MIXPANEL_SERVICE_ACCOUNT_SECRET not configured"
+            "error": "MIXPANEL_SERVICE_ACCOUNT_USERNAME and MIXPANEL_SERVICE_ACCOUNT_SECRET not configured"  # noqa: E501
         }
     if not project_id:
         return {"error": "MIXPANEL_PROJECT_ID not configured"}

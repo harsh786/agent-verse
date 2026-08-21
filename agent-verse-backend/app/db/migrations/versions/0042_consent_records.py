@@ -24,7 +24,7 @@ def upgrade() -> None:
         )
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_consent_tenant ON consent_records (tenant_id, granted_at DESC)"
+        "CREATE INDEX IF NOT EXISTS ix_consent_tenant ON consent_records (tenant_id, granted_at DESC)"  # noqa: E501
     )
 
     # Async GDPR export jobs tracking
@@ -40,7 +40,7 @@ def upgrade() -> None:
         )
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_gdpr_jobs_tenant ON gdpr_export_jobs (tenant_id, created_at DESC)"
+        "CREATE INDEX IF NOT EXISTS ix_gdpr_jobs_tenant ON gdpr_export_jobs (tenant_id, created_at DESC)"  # noqa: E501
     )
 
 

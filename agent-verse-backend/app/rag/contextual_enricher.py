@@ -103,7 +103,7 @@ class ContextualChunkEnricher:
                                 content=(
                                     "Given the document excerpt below, write a SHORT one-sentence "
                                     "context (max 50 words) that situates the following chunk "
-                                    "within the document. Only the context sentence, nothing else.\n\n"
+                                    "within the document. Only the context sentence, nothing else.\n\n"  # noqa: E501
                                     f"Document excerpt:\n{doc_excerpt}\n\n"
                                     f"Chunk:\n{chunk[:500]}"
                                 ),

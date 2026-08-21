@@ -85,7 +85,7 @@ TOOL_DEFINITIONS = [
                 "metric_types": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Metrics: IMPRESSION, ENGAGEMENTS, OUTBOUND_CLICKS, PIN_CLICK, SAVE",
+                    "description": "Metrics: IMPRESSION, ENGAGEMENTS, OUTBOUND_CLICKS, PIN_CLICK, SAVE",  # noqa: E501
                 },
             },
             "required": ["board_id", "start_date", "end_date"],

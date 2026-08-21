@@ -255,7 +255,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 fmt = arguments.get("export_format", "pdf")
                 mime_map = {
                     "pdf": "application/pdf",
-                    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # noqa: E501
                     "odp": "application/vnd.oasis.opendocument.presentation",
                     "txt": "text/plain",
                 }

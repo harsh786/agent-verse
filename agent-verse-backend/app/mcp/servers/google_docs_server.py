@@ -45,7 +45,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "docs_batch_update",
-        "description": "Apply a list of update requests to a Google Document (insert text, apply styles, etc.)",
+        "description": "Apply a list of update requests to a Google Document (insert text, apply styles, etc.)",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

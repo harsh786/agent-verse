@@ -601,7 +601,7 @@ class ExecutorMixin:
                 )
 
         # 6. Guardrails — validate step text for injection, then tool name
-        # 6a. Check the plan STEP TEXT for injection phrases (e.g. "ignore all previous instructions")
+        # 6a. Check the plan STEP TEXT for injection phrases (e.g. "ignore all previous instructions")  # noqa: E501
         # This is important: a compromised tool could return an injection-crafted step description.
         if self._guardrail_checker is not None:
             step_issues = self._guardrail_checker.check_goal(step)
@@ -1609,7 +1609,7 @@ class ExecutorMixin:
                                         time.monotonic() - tool_call_started,
                                     )
                                     raise
-                            # Apply PII check to raw tool output (H3 fix: result is ToolCallResult not dict)
+                            # Apply PII check to raw tool output (H3 fix: result is ToolCallResult not dict)  # noqa: E501
                             raw_output_text = ""
                             if isinstance(result.output, dict):
                                 raw_output_text = str(
@@ -1648,7 +1648,7 @@ class ExecutorMixin:
                                                         tenant_ctx, "api_key_id", None
                                                     )
                                                     or "",
-                                                    note=f"issues_count={len(pii_issues)} step={step[:100]}",
+                                                    note=f"issues_count={len(pii_issues)} step={step[:100]}",  # noqa: E501
                                                 ),
                                                 tenant_ctx=tenant_ctx,
                                             )
@@ -1729,8 +1729,8 @@ class ExecutorMixin:
                                     "success": result.success,
                                     "output": self._sanitize_tool_event_value(result.output),
                                     "error": self._sanitize_tool_event_value(result.error),
-                                    # tool_output preserves the raw structured dict for result_artifacts.py
-                                    # without truncation so downstream consumers can access full data.
+                                    # tool_output preserves the raw structured dict for result_artifacts.py  # noqa: E501
+                                    # without truncation so downstream consumers can access full data.  # noqa: E501
                                     "tool_output": result.output
                                     if isinstance(result.output, dict)
                                     else None,

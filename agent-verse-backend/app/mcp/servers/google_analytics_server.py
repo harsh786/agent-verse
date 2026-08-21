@@ -44,7 +44,7 @@ TOOL_DEFINITIONS = [
                 "date_ranges": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "Date range objects with 'startDate' and 'endDate' (YYYY-MM-DD or 'today','7daysAgo')",
+                    "description": "Date range objects with 'startDate' and 'endDate' (YYYY-MM-DD or 'today','7daysAgo')",  # noqa: E501
                     "default": [{"startDate": "7daysAgo", "endDate": "today"}],
                 },
                 "limit": {"type": "integer", "default": 100},
@@ -120,7 +120,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "ga4_get_audience_overview",
-        "description": "Get audience overview metrics (users, sessions, pageviews, bounce rate) for a date range",
+        "description": "Get audience overview metrics (users, sessions, pageviews, bounce rate) for a date range",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

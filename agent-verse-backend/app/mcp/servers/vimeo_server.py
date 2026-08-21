@@ -30,7 +30,7 @@ TOOL_DEFINITIONS = [
                 },
                 "sort": {
                     "type": "string",
-                    "description": "Sort order: date, alphabetical, plays, likes, comments, duration",
+                    "description": "Sort order: date, alphabetical, plays, likes, comments, duration",  # noqa: E501
                 },
                 "direction": {
                     "type": "string",

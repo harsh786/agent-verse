@@ -54,7 +54,7 @@ TOOL_DEFINITIONS = [
                 "topic": {"type": "string", "description": "Meeting topic/title"},
                 "start_time": {
                     "type": "string",
-                    "description": "Meeting start time in ISO 8601 format (UTC), e.g. '2024-01-15T14:00:00Z'",
+                    "description": "Meeting start time in ISO 8601 format (UTC), e.g. '2024-01-15T14:00:00Z'",  # noqa: E501
                 },
                 "duration": {
                     "type": "integer",
@@ -65,13 +65,13 @@ TOOL_DEFINITIONS = [
                 "password": {"type": "string"},
                 "type": {
                     "type": "integer",
-                    "description": "1=Instant, 2=Scheduled, 3=Recurring(no fixed time), 8=Recurring(fixed time)",
+                    "description": "1=Instant, 2=Scheduled, 3=Recurring(no fixed time), 8=Recurring(fixed time)",  # noqa: E501
                     "default": 2,
                 },
                 "timezone": {"type": "string", "default": "UTC"},
                 "settings": {
                     "type": "object",
-                    "description": "Meeting settings (host_video, participant_video, waiting_room, etc.)",
+                    "description": "Meeting settings (host_video, participant_video, waiting_room, etc.)",  # noqa: E501
                 },
                 "user_id": {"type": "string", "default": "me"},
             },

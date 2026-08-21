@@ -73,7 +73,7 @@ class SelfImprovementEngine:
             actions.append(
                 ImprovementDecision(
                     action_type=ImprovementAction.BLACKLIST_TOOL_PATTERN,
-                    reason=f"tool_success_rate={scores.get('tool_success_rate', 0):.2f} critically low",
+                    reason=f"tool_success_rate={scores.get('tool_success_rate', 0):.2f} critically low",  # noqa: E501
                 )
             )
 

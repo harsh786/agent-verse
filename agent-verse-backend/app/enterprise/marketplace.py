@@ -130,7 +130,7 @@ _BUILTIN_TEMPLATES = [
         "template_id": "tpl-incident-response",
         "name": "Incident Response Agent",
         "domain": "devops",
-        "description": "Detect production incidents, page on-call, open Jira tickets, and post status updates",
+        "description": "Detect production incidents, page on-call, open Jira tickets, and post status updates",  # noqa: E501
         "connectors": ["datadog", "slack", "jira"],
         "required_connectors": ["datadog", "slack", "jira"],
         "trigger_type": "event",

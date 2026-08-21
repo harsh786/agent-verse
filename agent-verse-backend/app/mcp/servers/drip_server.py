@@ -35,7 +35,7 @@ TOOL_DEFINITIONS = [
                 "account_id": {"type": "string", "description": "Drip account ID"},
                 "status": {
                     "type": "string",
-                    "description": "Filter by status: active, unsubscribed, do_not_contact, removed",
+                    "description": "Filter by status: active, unsubscribed, do_not_contact, removed",  # noqa: E501
                 },
                 "per_page": {
                     "type": "integer",

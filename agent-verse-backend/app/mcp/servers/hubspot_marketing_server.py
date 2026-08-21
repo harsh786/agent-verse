@@ -29,7 +29,7 @@ TOOL_DEFINITIONS = [
                 "formTypes": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Filter by form type: ['hubspot', 'captured', 'flow', 'blog_comment', 'all']",
+                    "description": "Filter by form type: ['hubspot', 'captured', 'flow', 'blog_comment', 'all']",  # noqa: E501
                 },
             },
         },

@@ -103,7 +103,7 @@ TOOL_DEFINITIONS = [
                 "email_campaign_activities": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "Array of campaign activity objects with format, subject, from_name, from_email, html_content",
+                    "description": "Array of campaign activity objects with format, subject, from_name, from_email, html_content",  # noqa: E501
                 },
             },
             "required": ["name", "email_campaign_activities"],

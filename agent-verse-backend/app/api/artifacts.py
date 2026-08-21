@@ -94,8 +94,8 @@ async def get_artifact(request: Request, artifact_id: str) -> dict[str, Any]:
         }
     except HTTPException:
         raise
-    except Exception:
-        raise HTTPException(500, "Failed to fetch artifact")
+    except Exception as _b904_exc:
+        raise HTTPException(500, "Failed to fetch artifact") from _b904_exc
 
 
 @router.delete("/{artifact_id}", status_code=204)
@@ -126,5 +126,5 @@ async def delete_artifact(request: Request, artifact_id: str) -> None:
                 raise HTTPException(404, "Artifact not found")
     except HTTPException:
         raise
-    except Exception:
-        raise HTTPException(500, "Failed to delete artifact")
+    except Exception as _b904_exc:
+        raise HTTPException(500, "Failed to delete artifact") from _b904_exc

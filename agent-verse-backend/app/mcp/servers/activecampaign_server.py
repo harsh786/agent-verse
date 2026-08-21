@@ -107,7 +107,7 @@ TOOL_DEFINITIONS = [
                 },
                 "scheduled_date": {
                     "type": "string",
-                    "description": "ISO 8601 scheduled send datetime (optional, sends immediately if omitted)",
+                    "description": "ISO 8601 scheduled send datetime (optional, sends immediately if omitted)",  # noqa: E501
                 },
             },
             "required": ["campaign_id"],

@@ -51,7 +51,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "leadpages_get_page_stats",
-        "description": "Get performance statistics (views, conversions, conversion rate) for a landing page",
+        "description": "Get performance statistics (views, conversions, conversion rate) for a landing page",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

@@ -28,7 +28,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "cql": {
                     "type": "string",
-                    "description": "CQL query, e.g. 'space = MYSPACE AND type = page AND title ~ \"Architecture\"'",
+                    "description": "CQL query, e.g. 'space = MYSPACE AND type = page AND title ~ \"Architecture\"'",  # noqa: E501
                 },
                 "limit": {"type": "integer", "default": 25},
                 "start": {"type": "integer", "default": 0},
@@ -86,7 +86,7 @@ TOOL_DEFINITIONS = [
                 "body": {"type": "string", "description": "New body in Confluence Storage Format"},
                 "version_number": {
                     "type": "integer",
-                    "description": "Current version number (required by API). Fetched automatically if omitted.",
+                    "description": "Current version number (required by API). Fetched automatically if omitted.",  # noqa: E501
                 },
             },
             "required": ["page_id", "title", "body"],

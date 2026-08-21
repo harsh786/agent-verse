@@ -26,7 +26,7 @@ def upgrade() -> None:
         )
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_benchmark_runs_suite ON benchmark_runs (suite_name, created_at DESC)"
+        "CREATE INDEX IF NOT EXISTS ix_benchmark_runs_suite ON benchmark_runs (suite_name, created_at DESC)"  # noqa: E501
     )
 
 

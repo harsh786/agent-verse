@@ -34,8 +34,8 @@ def parse_openapi_spec(spec_text: str) -> dict[str, Any]:
         if not isinstance(parsed, dict):
             raise ValueError("OpenAPI spec must be a YAML/JSON object")
         return parsed
-    except ImportError:
-        raise ValueError("pyyaml required for YAML OpenAPI specs: pip install pyyaml")
+    except ImportError as _b904_exc:
+        raise ValueError("pyyaml required for YAML OpenAPI specs: pip install pyyaml") from _b904_exc  # noqa: E501
     except Exception as exc:
         raise ValueError(f"Invalid YAML OpenAPI spec: {exc}") from exc
 

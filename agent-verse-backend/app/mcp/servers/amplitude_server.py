@@ -186,7 +186,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 return {
                     "content_type": resp.headers.get("content-type", ""),
                     "content_length": len(resp.content),
-                    "note": "Raw export data received. Parse as zip containing newline-delimited JSON files.",
+                    "note": "Raw export data received. Parse as zip containing newline-delimited JSON files.",  # noqa: E501
                 }
 
             elif tool_name == "amplitude_user_profile":

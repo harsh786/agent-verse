@@ -145,7 +145,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "manifest": {
                     "type": "object",
-                    "description": "Kubernetes resource manifest (apiVersion, kind, metadata, spec)",
+                    "description": "Kubernetes resource manifest (apiVersion, kind, metadata, spec)",  # noqa: E501
                 },
                 "namespace": {"type": "string"},
             },

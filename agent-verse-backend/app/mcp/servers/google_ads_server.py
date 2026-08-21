@@ -32,7 +32,7 @@ TOOL_DEFINITIONS = [
                 },
                 "query": {
                     "type": "string",
-                    "description": "GAQL query string, e.g. SELECT campaign.id, campaign.name FROM campaign WHERE campaign.status = 'ENABLED'",
+                    "description": "GAQL query string, e.g. SELECT campaign.id, campaign.name FROM campaign WHERE campaign.status = 'ENABLED'",  # noqa: E501
                 },
             },
             "required": ["customer_id", "query"],
@@ -56,7 +56,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "gads_get_campaign_performance",
-        "description": "Get performance metrics for campaigns (impressions, clicks, cost, conversions)",
+        "description": "Get performance metrics for campaigns (impressions, clicks, cost, conversions)",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {
@@ -197,7 +197,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             elif tool_name == "gads_list_campaigns":
                 status = arguments.get("status_filter", "ENABLED")
                 where = "" if status == "ALL" else f"WHERE campaign.status = '{status}'"
-                query = f"SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type FROM campaign {where}"
+                query = f"SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type FROM campaign {where}"  # noqa: E501
                 return await _gaql_search(c, cid, query)
 
             elif tool_name == "gads_get_campaign_performance":

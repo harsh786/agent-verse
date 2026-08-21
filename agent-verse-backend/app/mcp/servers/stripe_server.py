@@ -255,7 +255,7 @@ TOOL_DEFINITIONS = [
                 "currency": {"type": "string", "default": "usd"},
                 "recurring": {
                     "type": "object",
-                    "description": "For subscription prices: {interval: 'month'|'year'|'week'|'day', interval_count: 1}",
+                    "description": "For subscription prices: {interval: 'month'|'year'|'week'|'day', interval_count: 1}",  # noqa: E501
                 },
                 "nickname": {"type": "string"},
             },

@@ -115,7 +115,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     private_key = os.getenv("BRAINTREE_PRIVATE_KEY", "")
     if not merchant_id or not public_key or not private_key:
         return {
-            "error": "BRAINTREE_MERCHANT_ID, BRAINTREE_PUBLIC_KEY, and BRAINTREE_PRIVATE_KEY must be configured"
+            "error": "BRAINTREE_MERCHANT_ID, BRAINTREE_PUBLIC_KEY, and BRAINTREE_PRIVATE_KEY must be configured"  # noqa: E501
         }
 
     auth = (public_key, private_key)

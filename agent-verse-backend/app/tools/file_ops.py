@@ -32,10 +32,10 @@ class FileOps:
         resolved = (self._workspace / path).resolve()
         try:
             resolved.relative_to(self._workspace)
-        except ValueError:
+        except ValueError as _b904_exc:
             raise PermissionError(
                 f"Path {path!r} resolves outside workspace for tenant {self._tenant_id}"
-            )
+            ) from _b904_exc
         return resolved
 
     async def read(self, path: str) -> str:

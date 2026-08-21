@@ -606,7 +606,7 @@ async def _test_jira(cfg: Any, started: float, server_id: str) -> dict[str, Any]
                 "reachable": True,
                 "status": "passed",
                 "latency_ms": latency_ms,
-                "detail": f"Authenticated as {data.get('displayName', data.get('emailAddress', '?'))}",
+                "detail": f"Authenticated as {data.get('displayName', data.get('emailAddress', '?'))}",  # noqa: E501
             }
         if resp.status_code == 401:
             return {
@@ -1598,7 +1598,7 @@ async def discover_connector_tools(request: Request, server_id: str) -> dict:
     try:
         tools = await mcp_client.discover_tools(server_id=server_id, tenant_ctx=tenant_ctx)
     except Exception as exc:
-        raise HTTPException(500, f"Discovery failed: {exc}")
+        raise HTTPException(500, f"Discovery failed: {exc}") from exc
 
     db = getattr(request.app.state, "db_session_factory", None)
     if db is None:

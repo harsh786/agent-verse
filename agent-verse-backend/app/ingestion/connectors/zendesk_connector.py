@@ -92,7 +92,7 @@ class ZendeskConnector(BaseConnector):
                         new_cursor = str(data.get("end_time", new_cursor))
                         text = (
                             f"Ticket #{ticket.get('id')}: {ticket.get('subject', '')}\n"
-                            f"Status: {ticket.get('status')}  Priority: {ticket.get('priority', 'normal')}\n"
+                            f"Status: {ticket.get('status')}  Priority: {ticket.get('priority', 'normal')}\n"  # noqa: E501
                             f"Updated: {updated}\n\n{ticket.get('description') or ''}"
                         )
                         doc = RawDocument(

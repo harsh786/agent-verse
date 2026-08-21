@@ -97,98 +97,98 @@ _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
     {
         "name": "Deploy Service to Environment",
         "description": "Deploy any service to a target environment with a version tag.",
-        "goal_text": "Deploy {{service}} to {{environment}} with version {{tag}}. Verify the deployment succeeds and all health checks pass.",
+        "goal_text": "Deploy {{service}} to {{environment}} with version {{tag}}. Verify the deployment succeeds and all health checks pass.",  # noqa: E501
         "domain": "devops",
     },
     {
         "name": "Create Incident Report",
         "description": "Document a production incident with root cause and action items.",
-        "goal_text": "Create an incident report for the {{service}} outage on {{date}}. Include root cause analysis, impact summary, and remediation steps.",
+        "goal_text": "Create an incident report for the {{service}} outage on {{date}}. Include root cause analysis, impact summary, and remediation steps.",  # noqa: E501
         "domain": "devops",
     },
     {
         "name": "Scale Kubernetes Deployment",
         "description": "Scale a Kubernetes deployment up or down.",
-        "goal_text": "Scale the {{deployment}} deployment in the {{namespace}} namespace to {{replicas}} replicas. Confirm rollout completes without errors.",
+        "goal_text": "Scale the {{deployment}} deployment in the {{namespace}} namespace to {{replicas}} replicas. Confirm rollout completes without errors.",  # noqa: E501
         "domain": "devops",
     },
     # Engineering
     {
         "name": "Fix Bug and Open PR",
         "description": "Investigate a bug, apply a fix, and open a pull request.",
-        "goal_text": "Fix the bug described in {{issue_id}} in the {{repository}} repository. Write a regression test, apply the fix, and open a pull request targeting {{branch}}.",
+        "goal_text": "Fix the bug described in {{issue_id}} in the {{repository}} repository. Write a regression test, apply the fix, and open a pull request targeting {{branch}}.",  # noqa: E501
         "domain": "engineering",
     },
     {
         "name": "Code Review Summary",
         "description": "Summarize a pull request and flag issues.",
-        "goal_text": "Review pull request {{pr_url}} in {{repository}}. Summarize the changes, highlight potential issues (security, performance, logic), and post a review comment.",
+        "goal_text": "Review pull request {{pr_url}} in {{repository}}. Summarize the changes, highlight potential issues (security, performance, logic), and post a review comment.",  # noqa: E501
         "domain": "engineering",
     },
     {
         "name": "Generate API Documentation",
         "description": "Generate OpenAPI documentation for a service.",
-        "goal_text": "Generate OpenAPI 3.0 documentation for the {{service_name}} service at {{base_url}}. Include all endpoints, request/response schemas, and authentication details. Save to {{output_path}}.",
+        "goal_text": "Generate OpenAPI 3.0 documentation for the {{service_name}} service at {{base_url}}. Include all endpoints, request/response schemas, and authentication details. Save to {{output_path}}.",  # noqa: E501
         "domain": "engineering",
     },
     # Data
     {
         "name": "Run Data Pipeline",
         "description": "Execute a named data pipeline and report results.",
-        "goal_text": "Run the {{pipeline_name}} data pipeline for date range {{start_date}} to {{end_date}}. Report row counts, validation errors, and total processing time.",
+        "goal_text": "Run the {{pipeline_name}} data pipeline for date range {{start_date}} to {{end_date}}. Report row counts, validation errors, and total processing time.",  # noqa: E501
         "domain": "data",
     },
     {
         "name": "Generate Analytics Report",
         "description": "Pull metrics from a data source and format a report.",
-        "goal_text": "Generate a {{report_type}} analytics report for {{metric_name}} from {{start_date}} to {{end_date}}. Include trend analysis, anomalies, and actionable insights.",
+        "goal_text": "Generate a {{report_type}} analytics report for {{metric_name}} from {{start_date}} to {{end_date}}. Include trend analysis, anomalies, and actionable insights.",  # noqa: E501
         "domain": "data",
     },
     # Marketing
     {
         "name": "Draft Marketing Campaign",
         "description": "Create a multi-channel marketing campaign brief.",
-        "goal_text": "Draft a {{campaign_type}} marketing campaign for {{product_name}} targeting {{audience}}. Include email copy, social media posts, and a landing page headline. Tone: {{tone}}.",
+        "goal_text": "Draft a {{campaign_type}} marketing campaign for {{product_name}} targeting {{audience}}. Include email copy, social media posts, and a landing page headline. Tone: {{tone}}.",  # noqa: E501
         "domain": "marketing",
     },
     {
         "name": "Competitor Analysis",
         "description": "Research and compare competitors in a market.",
-        "goal_text": "Analyze the top 5 competitors of {{company_name}} in the {{market}} market. Compare features, pricing, and positioning. Summarise key differentiators and opportunities.",
+        "goal_text": "Analyze the top 5 competitors of {{company_name}} in the {{market}} market. Compare features, pricing, and positioning. Summarise key differentiators and opportunities.",  # noqa: E501
         "domain": "marketing",
     },
     # Sales
     {
         "name": "Lead Follow-up Email",
         "description": "Draft a personalised follow-up email for a sales lead.",
-        "goal_text": "Write a follow-up email to {{lead_name}} at {{company}} about {{product_name}}. Reference our previous conversation on {{last_contact_date}}. Keep it under 150 words and include a clear CTA.",
+        "goal_text": "Write a follow-up email to {{lead_name}} at {{company}} about {{product_name}}. Reference our previous conversation on {{last_contact_date}}. Keep it under 150 words and include a clear CTA.",  # noqa: E501
         "domain": "sales",
     },
     {
         "name": "Sales Forecast Summary",
         "description": "Summarise pipeline data for a sales forecast.",
-        "goal_text": "Summarise the {{team_name}} sales pipeline for Q{{quarter}} {{year}}. List top 10 deals by ARR, probability-weighted total, and forecast vs quota.",
+        "goal_text": "Summarise the {{team_name}} sales pipeline for Q{{quarter}} {{year}}. List top 10 deals by ARR, probability-weighted total, and forecast vs quota.",  # noqa: E501
         "domain": "sales",
     },
     # Support
     {
         "name": "Customer Support Triage",
         "description": "Triage and categorise a batch of support tickets.",
-        "goal_text": "Triage the open support tickets in {{queue_name}} from {{start_date}} to {{end_date}}. Categorise by priority (P1-P4), assign to the correct team, and flag any SLA breaches.",
+        "goal_text": "Triage the open support tickets in {{queue_name}} from {{start_date}} to {{end_date}}. Categorise by priority (P1-P4), assign to the correct team, and flag any SLA breaches.",  # noqa: E501
         "domain": "support",
     },
     # Legal
     {
         "name": "Contract Review Checklist",
         "description": "Review a contract document for key clauses and risks.",
-        "goal_text": "Review the {{contract_type}} contract in {{document_url}}. Flag non-standard clauses, missing boilerplate, liability limits, and termination conditions. Output a risk matrix.",
+        "goal_text": "Review the {{contract_type}} contract in {{document_url}}. Flag non-standard clauses, missing boilerplate, liability limits, and termination conditions. Output a risk matrix.",  # noqa: E501
         "domain": "legal",
     },
     # Finance
     {
         "name": "Expense Report Reconciliation",
         "description": "Reconcile expense reports against budget.",
-        "goal_text": "Reconcile expense reports for {{department}} in {{month}} {{year}}. Flag expenses over {{threshold_usd}} USD, duplicate submissions, and missing receipts. Produce a summary CSV.",
+        "goal_text": "Reconcile expense reports for {{department}} in {{month}} {{year}}. Flag expenses over {{threshold_usd}} USD, duplicate submissions, and missing receipts. Produce a summary CSV.",  # noqa: E501
         "domain": "finance",
     },
 ]

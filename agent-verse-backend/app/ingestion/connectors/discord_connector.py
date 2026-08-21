@@ -100,7 +100,7 @@ class DiscordConnector(BaseConnector):
                             doc_id=str(uuid.uuid4()),
                             source_id=config.source_id,
                             tenant_id=config.tenant_id,
-                            source_url=f"https://discord.com/channels/{cc.get('guild_id', '_')}/{channel_id}/{msg_id}",
+                            source_url=f"https://discord.com/channels/{cc.get('guild_id', '_')}/{channel_id}/{msg_id}",  # noqa: E501
                             content=text.encode(),
                             content_type="text/plain",
                             metadata={

@@ -127,7 +127,7 @@ async def list_memories(
         try:
             from sqlalchemy import text
 
-            sql = "SELECT id, content, memory_type, confidence, tags, created_at FROM long_term_memory WHERE tenant_id=:tid"
+            sql = "SELECT id, content, memory_type, confidence, tags, created_at FROM long_term_memory WHERE tenant_id=:tid"  # noqa: E501
             params: dict[str, Any] = {"tid": tenant_ctx.tenant_id}
             if memory_type:
                 sql += " AND memory_type=:mt"

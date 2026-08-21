@@ -23,7 +23,7 @@ ToxicityCategory = Literal["hate_speech", "threat", "sexual", "self_harm", "viol
 # Heuristic pattern sets per category
 _PATTERNS: dict[str, list[str]] = {
     "hate_speech": [
-        r"\b(slur_placeholder|hate.*group|kill all \w+)\b",  # placeholder — replace with curated list
+        r"\b(slur_placeholder|hate.*group|kill all \w+)\b",  # placeholder — replace with curated list  # noqa: E501
         r"\b(racial|ethnic)\s+(inferior|subhuman)\b",
     ],
     "threat": [
@@ -39,7 +39,7 @@ _PATTERNS: dict[str, list[str]] = {
         r"\b(kill yourself|kys)\b",
     ],
     "violence": [
-        r"\b(step.by.step|instructions?|guide|tutorial) (to|for) (making|building) (bomb|explosive|weapon)\b",
+        r"\b(step.by.step|instructions?|guide|tutorial) (to|for) (making|building) (bomb|explosive|weapon)\b",  # noqa: E501
         r"\bhow to (make|build|create) (nerve agent|poison gas|bioweapon)\b",
     ],
 }
@@ -138,8 +138,8 @@ class ToxicityClassifier:
                     Message(
                         role="user",
                         content=(
-                            "Is the following text toxic? Rate it 0.0 (clean) to 1.0 (highly toxic). "
-                            "List any categories from: hate_speech, threat, sexual, self_harm, violence. "
+                            "Is the following text toxic? Rate it 0.0 (clean) to 1.0 (highly toxic). "  # noqa: E501
+                            "List any categories from: hate_speech, threat, sexual, self_harm, violence. "  # noqa: E501
                             'Respond as JSON: {"score": 0.0, "categories": []}.\n\n'
                             f"Text: {text[:300]}"
                         ),

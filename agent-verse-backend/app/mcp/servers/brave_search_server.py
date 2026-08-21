@@ -43,7 +43,7 @@ TOOL_DEFINITIONS = [
                 },
                 "freshness": {
                     "type": "string",
-                    "description": "Recency filter: 'pd' (past day), 'pw' (past week), 'pm' (past month), 'py' (past year)",
+                    "description": "Recency filter: 'pd' (past day), 'pw' (past week), 'pm' (past month), 'py' (past year)",  # noqa: E501
                 },
                 "result_filter": {
                     "type": "string",

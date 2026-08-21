@@ -85,11 +85,11 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "payment_status": {
                     "type": "string",
-                    "description": "Filter by payment status: AWAITING_PAYMENT, PAID, CANCELLED, REFUNDED",
+                    "description": "Filter by payment status: AWAITING_PAYMENT, PAID, CANCELLED, REFUNDED",  # noqa: E501
                 },
                 "fulfillment_status": {
                     "type": "string",
-                    "description": "Filter by fulfillment: AWAITING_PROCESSING, PROCESSING, SHIPPED, DELIVERED, RETURNED",
+                    "description": "Filter by fulfillment: AWAITING_PROCESSING, PROCESSING, SHIPPED, DELIVERED, RETURNED",  # noqa: E501
                 },
                 "limit": {
                     "type": "integer",
@@ -109,11 +109,11 @@ TOOL_DEFINITIONS = [
                 "order_id": {"type": "string", "description": "Ecwid order ID (orderNumber)"},
                 "payment_status": {
                     "type": "string",
-                    "description": "New payment status: AWAITING_PAYMENT, PAID, CANCELLED, REFUNDED",
+                    "description": "New payment status: AWAITING_PAYMENT, PAID, CANCELLED, REFUNDED",  # noqa: E501
                 },
                 "fulfillment_status": {
                     "type": "string",
-                    "description": "New fulfillment status: AWAITING_PROCESSING, PROCESSING, SHIPPED, DELIVERED",
+                    "description": "New fulfillment status: AWAITING_PROCESSING, PROCESSING, SHIPPED, DELIVERED",  # noqa: E501
                 },
                 "tracking_number": {"type": "string", "description": "Shipping tracking number"},
             },

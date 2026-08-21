@@ -232,7 +232,7 @@ async def create_civilization(request: Request, body: CreateCivilizationRequest)
             )
     except Exception as exc:
         logger.warning("civilization_create_failed", error=str(exc))
-        raise HTTPException(500, f"Failed to create civilization: {exc}")
+        raise HTTPException(500, f"Failed to create civilization: {exc}") from exc
 
     return {
         "id": civ_id,
@@ -318,7 +318,7 @@ async def get_civilization(request: Request, civ_id: str) -> dict:
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, str(exc)) from exc
 
     # Attach live society metrics
     try:
@@ -373,7 +373,7 @@ async def update_constitution(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, str(exc)) from exc
 
     return {"id": civ_id, "constitution": constitution.to_dict(), "updated": True}
 
@@ -412,7 +412,7 @@ async def add_civilization_member(request: Request, civ_id: str, body: AddMember
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, str(exc)) from exc
 
     # Verify the agent exists for this tenant
     agent_store = getattr(request.app.state, "agent_store", None)
@@ -456,7 +456,7 @@ async def add_civilization_member(request: Request, civ_id: str, body: AddMember
             await session.commit()
     except Exception as exc:
         logger.warning("add_member_failed", error=str(exc))
-        raise HTTPException(500, f"Failed to add member: {exc}")
+        raise HTTPException(500, f"Failed to add member: {exc}") from exc
 
     return {
         "civilization_id": civ_id,
@@ -545,7 +545,7 @@ async def remove_civilization_member(request: Request, civ_id: str, agent_id: st
             )
             await session.commit()
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, str(exc)) from exc
 
 
 @router.post("/{civ_id}/goals", status_code=status.HTTP_202_ACCEPTED)
@@ -580,7 +580,7 @@ async def submit_goal(request: Request, civ_id: str, body: SubmitGoalRequest) ->
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, str(exc)) from exc
 
     orchestrator = _build_orchestrator(civ_id, tenant_ctx.tenant_id, constitution_data, request)
     result = await orchestrator.submit_goal(body.goal, priority=body.priority)
@@ -890,7 +890,7 @@ async def control_civilization(
                 ):
                     await session.execute(
                         text(
-                            "UPDATE civilizations SET constitution=cast(:c as jsonb), updated_at=NOW() "
+                            "UPDATE civilizations SET constitution=cast(:c as jsonb), updated_at=NOW() "  # noqa: E501
                             "WHERE id=:id AND tenant_id=:tid"
                         ),
                         {

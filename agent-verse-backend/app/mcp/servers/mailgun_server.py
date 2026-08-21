@@ -72,7 +72,7 @@ TOOL_DEFINITIONS = [
                 "domain": {"type": "string", "description": "Domain name to fetch stats for"},
                 "event": {
                     "type": "string",
-                    "description": "Comma-separated events: accepted,delivered,failed,opened,clicked,unsubscribed,complained",
+                    "description": "Comma-separated events: accepted,delivered,failed,opened,clicked,unsubscribed,complained",  # noqa: E501
                 },
                 "duration": {
                     "type": "string",
@@ -92,7 +92,7 @@ TOOL_DEFINITIONS = [
                 "domain": {"type": "string", "description": "Domain to query events for"},
                 "event": {
                     "type": "string",
-                    "description": "Event type filter: accepted, rejected, delivered, failed, opened, clicked, unsubscribed, complained",
+                    "description": "Event type filter: accepted, rejected, delivered, failed, opened, clicked, unsubscribed, complained",  # noqa: E501
                 },
                 "limit": {"type": "integer", "description": "Max events to return", "default": 100},
             },

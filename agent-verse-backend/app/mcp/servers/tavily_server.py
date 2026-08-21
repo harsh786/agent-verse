@@ -20,7 +20,7 @@ TAVILY_BASE = "https://api.tavily.com"
 TOOL_DEFINITIONS = [
     {
         "name": "tavily_search",
-        "description": "Search the web using Tavily AI-powered search, optimized for LLM consumption",
+        "description": "Search the web using Tavily AI-powered search, optimized for LLM consumption",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

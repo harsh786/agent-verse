@@ -112,8 +112,8 @@ async def create_source(request: Request, body: CreateSourceRequest) -> dict:
     tenant = _require_tenant(request)
     try:
         family = SourceFamily(body.family)
-    except ValueError:
-        raise HTTPException(status_code=422, detail=f"Unknown family: {body.family!r}")
+    except ValueError as _b904_exc:
+        raise HTTPException(status_code=422, detail=f"Unknown family: {body.family!r}") from _b904_exc  # noqa: E501
 
     source_id = uuid.uuid4().hex
     config = SourceConfig(

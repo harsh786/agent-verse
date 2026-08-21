@@ -67,7 +67,7 @@ TOOL_DEFINITIONS = [
                 "dataset_id": {"type": "string", "description": "Unique ID for the new dataset"},
                 "fields": {
                     "type": "object",
-                    "description": "Field definitions as key->type mappings (e.g. {revenue: {type: number}})",
+                    "description": "Field definitions as key->type mappings (e.g. {revenue: {type: number}})",  # noqa: E501
                 },
                 "unique_by": {
                     "type": "array",

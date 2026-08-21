@@ -78,7 +78,7 @@ async def create_builder_project(
         except Exception as exc:
             raise HTTPException(
                 status_code=503, detail=f"Could not start builder: {type(exc).__name__}"
-            )
+            ) from exc
 
     return BuilderProject(
         project_id=project_id,

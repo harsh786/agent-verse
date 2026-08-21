@@ -70,7 +70,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "delighted_get_metrics",
-        "description": "Get overall NPS metrics including score, promoters, passives, and detractors",
+        "description": "Get overall NPS metrics including score, promoters, passives, and detractors",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

@@ -85,7 +85,7 @@ TOOL_DEFINITIONS = [
                 "metrics": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Metric names e.g. TOTAL_REACH, TOTAL_IMPRESSIONS, TOTAL_ENGAGEMENTS",
+                    "description": "Metric names e.g. TOTAL_REACH, TOTAL_IMPRESSIONS, TOTAL_ENGAGEMENTS",  # noqa: E501
                 },
                 "start_time": {
                     "type": "string",

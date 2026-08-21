@@ -327,8 +327,8 @@ async def analyze_failure(goal_id: str, request: Request) -> dict[str, Any]:
 
     try:
         goal = await goal_svc.get_goal(goal_id=goal_id, tenant_ctx=tenant)
-    except Exception:
-        raise HTTPException(404, "Goal not found")
+    except Exception as _b904_exc:
+        raise HTTPException(404, "Goal not found") from _b904_exc
 
     if not goal:
         raise HTTPException(404, "Goal not found")
@@ -395,7 +395,7 @@ async def analyze_failure(goal_id: str, request: Request) -> dict[str, Any]:
             suggestions.append(
                 {
                     "action": "Timeout",
-                    "description": "Increase the SLA budget or break the goal into smaller sub-goals.",
+                    "description": "Increase the SLA budget or break the goal into smaller sub-goals.",  # noqa: E501
                 }
             )
         if "permission" in text_lower or "unauthorized" in text_lower or "403" in text_lower:
@@ -420,7 +420,7 @@ async def analyze_failure(goal_id: str, request: Request) -> dict[str, Any]:
                 },
                 {
                     "action": "Check connectors",
-                    "description": "Verify all required MCP connectors are registered and authenticated.",
+                    "description": "Verify all required MCP connectors are registered and authenticated.",  # noqa: E501
                 },
                 {
                     "action": "Dry run",
@@ -681,7 +681,7 @@ async def get_agent_health(agent_id: str, request: Request) -> dict[str, Any]:
                         tool_rows = (
                             await session.execute(
                                 _t("""
-                                SELECT COUNT(DISTINCT (execution_context->>'last_tool_used')) AS unique_tools
+                                SELECT COUNT(DISTINCT (execution_context->>'last_tool_used')) AS unique_tools  # noqa: E501
                                 FROM goals
                                 WHERE tenant_id = :tid
                                   AND agent_id = :aid
@@ -708,7 +708,7 @@ async def get_agent_health(agent_id: str, request: Request) -> dict[str, Any]:
 
 @router.get("/benchmarks")
 async def get_benchmarks(request: Request) -> dict[str, Any]:
-    """Return platform-wide benchmarks. Uses real data when available, clearly-labeled estimates otherwise."""
+    """Return platform-wide benchmarks. Uses real data when available, clearly-labeled estimates otherwise."""  # noqa: E501
     _require_tenant(request)
     goal_svc = getattr(request.app.state, "goal_service", None)
 
@@ -729,18 +729,18 @@ async def get_benchmarks(request: Request) -> dict[str, Any]:
                             _t("""
                             SELECT
                                 COUNT(*) as total,
-                                AVG(CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as success_rate,
+                                AVG(CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as success_rate,  # noqa: E501
                                 AVG(COALESCE(cost_usd, 0)) as avg_cost,
                                 AVG(COALESCE(duration_s, 0)) as avg_duration,
                                 AVG(COALESCE(iterations, 0)) as avg_iterations,
-                                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p25_cost,
-                                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p50_cost,
-                                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p75_cost,
-                                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p90_cost,
-                                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p25_sr,
-                                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p50_sr,
-                                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p75_sr,
-                                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p90_sr
+                                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p25_cost,  # noqa: E501
+                                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p50_cost,  # noqa: E501
+                                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p75_cost,  # noqa: E501
+                                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p90_cost,  # noqa: E501
+                                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p25_sr,  # noqa: E501
+                                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p50_sr,  # noqa: E501
+                                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p75_sr,  # noqa: E501
+                                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p90_sr  # noqa: E501
                             FROM goals
                             WHERE status IN ('complete', 'failed')
                               AND cost_usd IS NOT NULL
@@ -796,7 +796,7 @@ async def get_benchmarks(request: Request) -> dict[str, Any]:
             "percentile_bands": {},
             "sample_count": 0,
             "data_source": "insufficient_data",
-            "message": "Benchmarks require at least 10 completed goals with cost data to compute. Run more goals to see real benchmarks.",
+            "message": "Benchmarks require at least 10 completed goals with cost data to compute. Run more goals to see real benchmarks.",  # noqa: E501
         }
 
     return benchmarks

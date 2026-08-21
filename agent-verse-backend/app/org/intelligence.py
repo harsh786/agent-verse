@@ -237,7 +237,7 @@ class DomainDiscovery:
                     unknown.append(
                         {
                             "capability": cap,
-                            "suggestion": f"Create new department or expand capabilities for '{cap}'",
+                            "suggestion": f"Create new department or expand capabilities for '{cap}'",  # noqa: E501
                             "severity": "gap",
                         }
                     )

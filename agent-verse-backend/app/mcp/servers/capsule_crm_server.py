@@ -20,7 +20,7 @@ CAPSULE_BASE = "https://api.capsulecrm.com/api/v2"
 TOOL_DEFINITIONS = [
     {
         "name": "capsule_list_contacts",
-        "description": "List contacts (people and organisations) in Capsule CRM with optional search and pagination",
+        "description": "List contacts (people and organisations) in Capsule CRM with optional search and pagination",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

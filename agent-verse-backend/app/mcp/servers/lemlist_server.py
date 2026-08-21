@@ -86,7 +86,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "lemlist_get_campaign_stats",
-        "description": "Get performance statistics for a Lemlist campaign (sent, opened, clicked, replied)",
+        "description": "Get performance statistics for a Lemlist campaign (sent, opened, clicked, replied)",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

@@ -342,12 +342,12 @@ def manifest_cmd(
                     typer.echo(
                         f"   Connectors: {[c.type for c in manifest.connector_requirements]}"
                     )
-        except FileNotFoundError:
+        except FileNotFoundError as _b904_exc:
             typer.echo(f"❌ File not found: {path}")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from _b904_exc
         except Exception as exc:
             typer.echo(f"❌ Error: {exc}")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from exc
     else:
         typer.echo(f"Unknown action: {action}. Use: validate")
         raise typer.Exit(1)
@@ -406,7 +406,7 @@ def dev_server(
         typer.echo("\n  Dev server stopped.")
     except subprocess.CalledProcessError as exc:
         typer.echo(f"\n  Server exited with code {exc.returncode}", err=True)
-        raise typer.Exit(exc.returncode)
+        raise typer.Exit(exc.returncode) from exc
 
 
 @app.command(name="test")

@@ -185,7 +185,7 @@ async def slack_interactive_callback(request: Request) -> dict:
             payload_json = body_str
         payload = json.loads(payload_json)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid payload: {exc}")
+        raise HTTPException(status_code=400, detail=f"Invalid payload: {exc}") from exc
 
     payload_type = payload.get("type")
     if payload_type != "block_actions":

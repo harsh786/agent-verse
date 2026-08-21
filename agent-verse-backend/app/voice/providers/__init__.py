@@ -105,10 +105,10 @@ async def get_tts() -> TTSProvider:
                     _tts_instance = cls()
                     log.info("voice.tts.fallback_loaded provider=%s", fallback)
                     break
-                except ImportError:
+                except ImportError as _b904_exc:
                     continue
             if _tts_instance is None:
-                raise RuntimeError(f"No TTS provider could be loaded (tried {provider_name})")
+                raise RuntimeError(f"No TTS provider could be loaded (tried {provider_name})") from _b904_exc  # noqa: E501
         return _tts_instance
 
 

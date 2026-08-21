@@ -45,7 +45,7 @@ class MCPTool:
 ORG_MCP_TOOLS: list[MCPTool] = [
     MCPTool(
         name="ask_organization",
-        description="Ask the AI organization anything in natural language. Returns an answer based on current org state, memory, and knowledge.",
+        description="Ask the AI organization anything in natural language. Returns an answer based on current org state, memory, and knowledge.",  # noqa: E501
         input_schema={
             "type": "object",
             "properties": {
@@ -80,7 +80,7 @@ ORG_MCP_TOOLS: list[MCPTool] = [
     ),
     MCPTool(
         name="get_status",
-        description="Get current organization status: active missions, agents, pending approvals, health score.",
+        description="Get current organization status: active missions, agents, pending approvals, health score.",  # noqa: E501
         input_schema={"type": "object", "properties": {}},
         output_schema={"type": "object"},
         rate_limit_per_hour=200,

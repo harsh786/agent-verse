@@ -78,7 +78,7 @@ class FasterWhisperSTT:
                 _pl.Path.home() / ".cache" / "agentverse" / "models"
             )
             _pl.Path(cache_dir).mkdir(parents=True, exist_ok=True)
-            # Use 'tiny' by default for local dev (37MB); set VOICE_STT_MODEL=large-v3-turbo for production
+            # Use 'tiny' by default for local dev (37MB); set VOICE_STT_MODEL=large-v3-turbo for production  # noqa: E501
             model_name = os.getenv("VOICE_STT_MODEL", "tiny")
             self._model = WhisperModel(
                 model_name,

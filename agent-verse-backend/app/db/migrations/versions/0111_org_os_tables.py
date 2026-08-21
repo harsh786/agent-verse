@@ -67,7 +67,7 @@ def upgrade() -> None:
         "CREATE INDEX IF NOT EXISTS idx_orgs_tenant_status  ON organizations(tenant_id, status)"
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_orgs_tenant_created ON organizations(tenant_id, created_at DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_orgs_tenant_created ON organizations(tenant_id, created_at DESC)"  # noqa: E501
     )
 
     # RLS
@@ -106,10 +106,10 @@ def upgrade() -> None:
         ),
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_depts_tenant_org    ON org_departments(tenant_id, org_id)"
+        "CREATE INDEX IF NOT EXISTS idx_org_depts_tenant_org    ON org_departments(tenant_id, org_id)"  # noqa: E501
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_depts_tenant_status ON org_departments(tenant_id, status)"
+        "CREATE INDEX IF NOT EXISTS idx_org_depts_tenant_status ON org_departments(tenant_id, status)"  # noqa: E501
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_org_depts_parent        ON org_departments(parent_dept_id)"
@@ -267,16 +267,16 @@ def upgrade() -> None:
         ),
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_missions_tenant_org      ON org_missions(tenant_id, org_id)"
+        "CREATE INDEX IF NOT EXISTS idx_org_missions_tenant_org      ON org_missions(tenant_id, org_id)"  # noqa: E501
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_missions_tenant_status   ON org_missions(tenant_id, org_id, status)"
+        "CREATE INDEX IF NOT EXISTS idx_org_missions_tenant_status   ON org_missions(tenant_id, org_id, status)"  # noqa: E501
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_missions_tenant_priority ON org_missions(tenant_id, org_id, priority)"
+        "CREATE INDEX IF NOT EXISTS idx_org_missions_tenant_priority ON org_missions(tenant_id, org_id, priority)"  # noqa: E501
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_missions_tenant_created  ON org_missions(tenant_id, org_id, created_at DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_org_missions_tenant_created  ON org_missions(tenant_id, org_id, created_at DESC)"  # noqa: E501
     )
     op.execute("ALTER TABLE org_missions ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE org_missions FORCE ROW LEVEL SECURITY")
@@ -316,7 +316,7 @@ def upgrade() -> None:
         ),
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_ws_tenant_mission ON org_workstreams(tenant_id, mission_id)"
+        "CREATE INDEX IF NOT EXISTS idx_org_ws_tenant_mission ON org_workstreams(tenant_id, mission_id)"  # noqa: E501
     )
     op.execute("ALTER TABLE org_workstreams ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE org_workstreams FORCE ROW LEVEL SECURITY")
@@ -387,13 +387,13 @@ def upgrade() -> None:
         "CREATE INDEX IF NOT EXISTS idx_org_tasks_tenant_org     ON org_tasks(tenant_id, org_id)"
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_tasks_tenant_mission ON org_tasks(tenant_id, mission_id)"
+        "CREATE INDEX IF NOT EXISTS idx_org_tasks_tenant_mission ON org_tasks(tenant_id, mission_id)"  # noqa: E501
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_tasks_tenant_status  ON org_tasks(tenant_id, org_id, status)"
+        "CREATE INDEX IF NOT EXISTS idx_org_tasks_tenant_status  ON org_tasks(tenant_id, org_id, status)"  # noqa: E501
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_tasks_depth          ON org_tasks(tenant_id, org_id, depth)"
+        "CREATE INDEX IF NOT EXISTS idx_org_tasks_depth          ON org_tasks(tenant_id, org_id, depth)"  # noqa: E501
     )  # anti-runaway
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_org_tasks_parent         ON org_tasks(parent_task_id)"
@@ -437,13 +437,13 @@ def upgrade() -> None:
         ),
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_decisions_tenant_org    ON org_decisions(tenant_id, org_id)"
+        "CREATE INDEX IF NOT EXISTS idx_org_decisions_tenant_org    ON org_decisions(tenant_id, org_id)"  # noqa: E501
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_decisions_entity        ON org_decisions(tenant_id, entity_type, entity_id)"
+        "CREATE INDEX IF NOT EXISTS idx_org_decisions_entity        ON org_decisions(tenant_id, entity_type, entity_id)"  # noqa: E501
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_decisions_approval      ON org_decisions(tenant_id, approval_status)"
+        "CREATE INDEX IF NOT EXISTS idx_org_decisions_approval      ON org_decisions(tenant_id, approval_status)"  # noqa: E501
     )
     op.execute("ALTER TABLE org_decisions ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE org_decisions FORCE ROW LEVEL SECURITY")
@@ -475,13 +475,13 @@ def upgrade() -> None:
         ),
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_events_tenant_org_time ON org_events(tenant_id, org_id, created_at DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_org_events_tenant_org_time ON org_events(tenant_id, org_id, created_at DESC)"  # noqa: E501
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_events_event_type      ON org_events(tenant_id, org_id, event_type)"
+        "CREATE INDEX IF NOT EXISTS idx_org_events_event_type      ON org_events(tenant_id, org_id, event_type)"  # noqa: E501
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_org_events_severity        ON org_events(tenant_id, org_id, severity)"
+        "CREATE INDEX IF NOT EXISTS idx_org_events_severity        ON org_events(tenant_id, org_id, severity)"  # noqa: E501
     )
     op.execute("ALTER TABLE org_events ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE org_events FORCE ROW LEVEL SECURITY")

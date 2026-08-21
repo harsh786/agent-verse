@@ -29,7 +29,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Drive query string, e.g. \"name contains 'report' and mimeType='application/pdf'\"",
+                    "description": "Drive query string, e.g. \"name contains 'report' and mimeType='application/pdf'\"",  # noqa: E501
                     "default": "",
                 },
                 "page_size": {"type": "integer", "default": 20},
@@ -246,9 +246,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 boundary = "boundary_agentverse_drive_upload"
                 meta_json = json.dumps(metadata).encode()
                 body = (
-                    f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".encode()
+                    f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".encode()  # noqa: E501
                     + meta_json
-                    + f"\r\n--{boundary}\r\nContent-Type: {arguments.get('mime_type', 'application/octet-stream')}\r\n\r\n".encode()
+                    + f"\r\n--{boundary}\r\nContent-Type: {arguments.get('mime_type', 'application/octet-stream')}\r\n\r\n".encode()  # noqa: E501
                     + content
                     + f"\r\n--{boundary}--".encode()
                 )

@@ -116,7 +116,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "gmail_search_messages",
-        "description": "Search Gmail messages using Gmail search syntax and return matching messages",
+        "description": "Search Gmail messages using Gmail search syntax and return matching messages",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

@@ -86,7 +86,7 @@ class JiraConnector(BaseConnector):
                         "jql": jql,
                         "maxResults": batch_size,
                         "startAt": start,
-                        "fields": "summary,description,comment,updated,status,assignee,reporter,priority,issuetype",
+                        "fields": "summary,description,comment,updated,status,assignee,reporter,priority,issuetype",  # noqa: E501
                     },
                     auth=auth,
                 )

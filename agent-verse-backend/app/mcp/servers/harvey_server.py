@@ -125,7 +125,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "harvey_check_compliance",
-        "description": "Check a document or business practice for compliance with specified regulations",
+        "description": "Check a document or business practice for compliance with specified regulations",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

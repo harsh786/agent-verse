@@ -109,7 +109,7 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
 
             if tool_name == "looker_run_look":
                 resp = await client.get(
-                    f"{_BASE_URL}/api/4.0/looks/{params['look_id']}/run/{params.get('result_format', 'json')}",
+                    f"{_BASE_URL}/api/4.0/looks/{params['look_id']}/run/{params.get('result_format', 'json')}",  # noqa: E501
                     params={"limit": params.get("limit", 500)},
                     headers=headers,
                 )

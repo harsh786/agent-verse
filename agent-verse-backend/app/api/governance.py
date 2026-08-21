@@ -1320,7 +1320,7 @@ async def rollback_policy(
                     "ver": new_ver,
                     "name": target[1],
                     "desc": target[2],
-                    "rules": _json.dumps(target[3]) if not isinstance(target[3], str) else target[3],
+                    "rules": _json.dumps(target[3]) if not isinstance(target[3], str) else target[3],  # noqa: E501
                     "summary": f"Rollback to v{body.target_version}: {body.reason}",
                 },
             )

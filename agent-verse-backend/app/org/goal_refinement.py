@@ -1,5 +1,5 @@
 """
-PART 11 — Goal Refinement Pipeline.
+part 11 — Goal Refinement Pipeline.
 
 CEO Agent refines a raw user goal into a structured OrgMission spec:
   raw_goal → decompose → requirements → success_criteria → constraints → risks
@@ -185,9 +185,15 @@ class GoalRefinementPipeline:
                 break
         if not reqs:
             reqs = [goal.strip()]
-        # Deduplicate
+        # Deduplicate — seen.add(r) returns None, so the `not seen.add(r)` trick
+        # always evaluates True. Use an explicit loop instead.
         seen: set[str] = set()
-        return [r for r in reqs if r not in seen and not seen.add(r)][:8]  # max 8
+        unique_reqs: list[str] = []
+        for r in reqs:
+            if r not in seen:
+                seen.add(r)
+                unique_reqs.append(r)
+        return unique_reqs[:8]  # max 8
 
     def _extract_success_criteria(self, goal: str, requirements: list[str]) -> list[str]:
         """Generate measurable success criteria from requirements."""

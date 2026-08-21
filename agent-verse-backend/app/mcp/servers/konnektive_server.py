@@ -21,7 +21,7 @@ KONNEKTIVE_BASE = "https://api.konnektive.com"
 TOOL_DEFINITIONS = [
     {
         "name": "konnektive_list_orders",
-        "description": "List orders in Konnektive CRM with optional date range and status filtering",
+        "description": "List orders in Konnektive CRM with optional date range and status filtering",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

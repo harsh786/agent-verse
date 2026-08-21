@@ -56,8 +56,8 @@ class MCPWebSocketClient:
         """Open WebSocket connection. Returns self for use as async context manager."""
         try:
             import websockets  # type: ignore[import-untyped]
-        except ImportError:
-            raise RuntimeError("websockets is not installed. Install with: pip install websockets")
+        except ImportError as _b904_exc:
+            raise RuntimeError("websockets is not installed. Install with: pip install websockets") from _b904_exc  # noqa: E501
 
         headers = {}
         if self._auth_token:
@@ -177,9 +177,9 @@ class MCPWebSocketClient:
 
         try:
             return await asyncio.wait_for(future, timeout=timeout)
-        except TimeoutError:
+        except TimeoutError as _b904_exc:
             self._pending.pop(msg_id, None)
-            raise TimeoutError(f"WebSocket tool call '{tool_name}' timed out after {timeout}s")
+            raise TimeoutError(f"WebSocket tool call '{tool_name}' timed out after {timeout}s") from _b904_exc  # noqa: E501
 
     # ── Streaming subscriptions ────────────────────────────────────────────────
 

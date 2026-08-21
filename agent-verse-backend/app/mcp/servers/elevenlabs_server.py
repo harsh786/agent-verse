@@ -76,7 +76,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "elevenlabs_list_models",
-        "description": "List all available TTS models with their capabilities and supported languages",
+        "description": "List all available TTS models with their capabilities and supported languages",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {},

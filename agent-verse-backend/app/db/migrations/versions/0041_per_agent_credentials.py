@@ -22,7 +22,7 @@ def upgrade() -> None:
         )
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_agent_creds_agent ON agent_connector_credentials (agent_id, tenant_id)"
+        "CREATE INDEX IF NOT EXISTS ix_agent_creds_agent ON agent_connector_credentials (agent_id, tenant_id)"  # noqa: E501
     )
 
 

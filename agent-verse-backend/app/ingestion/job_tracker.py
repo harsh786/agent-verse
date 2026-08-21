@@ -341,7 +341,7 @@ class IngestionJobTracker:
             async with self._db() as session, session.begin():
                 await session.execute(
                     text(
-                        "UPDATE source_configs SET consecutive_failures = COALESCE(consecutive_failures, 0) + 1 WHERE source_id = :id AND tenant_id = :tid"
+                        "UPDATE source_configs SET consecutive_failures = COALESCE(consecutive_failures, 0) + 1 WHERE source_id = :id AND tenant_id = :tid"  # noqa: E501
                     ),
                     {"id": source_id, "tid": tenant_id},
                 )
@@ -356,7 +356,7 @@ class IngestionJobTracker:
             async with self._db() as session, session.begin():
                 await session.execute(
                     text(
-                        "UPDATE source_configs SET consecutive_failures = 0 WHERE source_id = :id AND tenant_id = :tid"
+                        "UPDATE source_configs SET consecutive_failures = 0 WHERE source_id = :id AND tenant_id = :tid"  # noqa: E501
                     ),
                     {"id": source_id, "tid": tenant_id},
                 )
@@ -441,7 +441,7 @@ class IngestionJobTracker:
             async with self._db() as session, session.begin():
                 await session.execute(
                     text(
-                        "UPDATE ingestion_dlq SET retry_count = retry_count + 1, last_error = :error, last_retried_at = NOW() WHERE dlq_id = :id"
+                        "UPDATE ingestion_dlq SET retry_count = retry_count + 1, last_error = :error, last_retried_at = NOW() WHERE dlq_id = :id"  # noqa: E501
                     ),
                     {"id": dlq_id, "error": error},
                 )

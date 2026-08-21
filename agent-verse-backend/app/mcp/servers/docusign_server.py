@@ -26,7 +26,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "status": {
                     "type": "string",
-                    "description": "Filter by status: sent, delivered, signed, completed, declined, voided, created",
+                    "description": "Filter by status: sent, delivered, signed, completed, declined, voided, created",  # noqa: E501
                 },
                 "from_date": {"type": "string", "description": "ISO 8601 datetime filter"},
                 "to_date": {"type": "string", "description": "ISO 8601 datetime filter"},

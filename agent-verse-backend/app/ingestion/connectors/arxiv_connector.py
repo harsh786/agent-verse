@@ -102,7 +102,7 @@ class ArXivConnector(BaseConnector):
                 categories_el = entry.findall("arxiv:primary_category", ns)
                 primary_cat = categories_el[0].get("term", "") if categories_el else ""
 
-                text = f"# {title}\n\nAuthors: {authors}\nCategories: {primary_cat}\nPublished: {published}\n\n## Abstract\n\n{abstract}"
+                text = f"# {title}\n\nAuthors: {authors}\nCategories: {primary_cat}\nPublished: {published}\n\n## Abstract\n\n{abstract}"  # noqa: E501
 
                 doc = RawDocument(
                     doc_id=str(uuid.uuid4()),

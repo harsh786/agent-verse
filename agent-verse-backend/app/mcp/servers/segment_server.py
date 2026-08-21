@@ -20,7 +20,7 @@ SEGMENT_BASE = "https://api.segment.io/v1"
 TOOL_DEFINITIONS = [
     {
         "name": "segment_identify_user",
-        "description": "Identify a user in Segment and set traits like name, email, plan, and custom attributes",
+        "description": "Identify a user in Segment and set traits like name, email, plan, and custom attributes",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {
@@ -108,7 +108,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "segment_list_sources",
-        "description": "List Segment sources (data inputs) configured in your workspace via the Config API",
+        "description": "List Segment sources (data inputs) configured in your workspace via the Config API",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

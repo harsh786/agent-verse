@@ -220,7 +220,7 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
         )
         await tracker.increment_failure_counter(source_id, tenant_id)
         # Celery retry
-        raise task.retry(exc=exc, countdown=int(_backoff_seconds(1)))
+        raise task.retry(exc=exc, countdown=int(_backoff_seconds(1))) from exc
 
     finally:
         await tracker.release_lock(source_id, tenant_id)

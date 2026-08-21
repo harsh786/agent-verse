@@ -321,7 +321,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
 
             elif tool_name == "gcs_generate_signed_url":
-                # Signed URLs require service account credentials — return instructions if not available
+                # Signed URLs require service account credentials — return instructions if not available  # noqa: E501
                 sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
                 if not sa_json:
                     return {

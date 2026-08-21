@@ -31,7 +31,7 @@ TOOL_DEFINITIONS = [
                 "channels": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "Push notification channels, e.g. [{type: 'push', address: 'token', platform: 'ios'}]",
+                    "description": "Push notification channels, e.g. [{type: 'push', address: 'token', platform: 'ios'}]",  # noqa: E501
                 },
                 "data": {"type": "object", "description": "Additional custom attributes"},
             },

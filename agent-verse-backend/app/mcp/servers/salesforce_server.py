@@ -35,7 +35,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "salesforce_create_record",
-        "description": "Create a new record in a Salesforce object (Account, Contact, Lead, Opportunity, etc.)",
+        "description": "Create a new record in a Salesforce object (Account, Contact, Lead, Opportunity, etc.)",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {
@@ -95,7 +95,7 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "sosl": {
                     "type": "string",
-                    "description": "SOSL query, e.g. FIND {Acme} IN ALL FIELDS RETURNING Account(Id, Name)",
+                    "description": "SOSL query, e.g. FIND {Acme} IN ALL FIELDS RETURNING Account(Id, Name)",  # noqa: E501
                 },
             },
             "required": ["sosl"],

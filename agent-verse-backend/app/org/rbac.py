@@ -124,7 +124,7 @@ class OrgRBACGuard:
                             "type": "authorization-error",
                             "title": "Insufficient permissions",
                             "status": 403,
-                            "detail": f"Role '{actor_role}' does not have '{permission}' permission",
+                            "detail": f"Role '{actor_role}' does not have '{permission}' permission",  # noqa: E501
                         },
                     )
             return allowed

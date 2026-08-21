@@ -19,7 +19,7 @@ BASE_URL = "https://chat.googleapis.com/v1"
 TOOL_DEFINITIONS = [
     {
         "name": "google_chat_list_spaces",
-        "description": "List all Google Chat spaces (rooms and direct messages) accessible to the user",
+        "description": "List all Google Chat spaces (rooms and direct messages) accessible to the user",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

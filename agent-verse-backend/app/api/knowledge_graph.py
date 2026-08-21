@@ -113,8 +113,8 @@ async def query_nodes(
     if node_type:
         try:
             nt = NodeType(node_type)
-        except ValueError:
-            raise HTTPException(400, f"Invalid node_type: {node_type}")
+        except ValueError as _b904_exc:
+            raise HTTPException(400, f"Invalid node_type: {node_type}") from _b904_exc
 
     nodes = kg_store.query_nodes(
         tenant.tenant_id,
@@ -191,8 +191,8 @@ async def add_node(request: Request, body: AddNodeRequest) -> dict[str, Any]:
 
     try:
         nt = NodeType(body.node_type)
-    except ValueError:
-        raise HTTPException(400, f"Invalid node_type: {body.node_type}")
+    except ValueError as _b904_exc:
+        raise HTTPException(400, f"Invalid node_type: {body.node_type}") from _b904_exc
 
     node = GraphNode(
         node_id=str(uuid.uuid4()),
@@ -220,8 +220,8 @@ async def add_edge(request: Request, body: AddEdgeRequest) -> dict[str, Any]:
 
     try:
         et = EdgeType(body.edge_type)
-    except ValueError:
-        raise HTTPException(400, f"Invalid edge_type: {body.edge_type}")
+    except ValueError as _b904_exc:
+        raise HTTPException(400, f"Invalid edge_type: {body.edge_type}") from _b904_exc
 
     edge = GraphEdge(
         edge_id=str(uuid.uuid4()),

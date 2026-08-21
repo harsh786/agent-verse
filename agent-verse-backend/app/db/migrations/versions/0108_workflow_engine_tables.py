@@ -38,7 +38,7 @@ def upgrade() -> None:
         )
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_sys_tmpl_category ON system_workflow_templates (category, is_active)"
+        "CREATE INDEX IF NOT EXISTS idx_sys_tmpl_category ON system_workflow_templates (category, is_active)"  # noqa: E501
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_sys_tmpl_tags ON system_workflow_templates USING gin (tags)"
@@ -82,7 +82,7 @@ def upgrade() -> None:
         WITH CHECK (tenant_id::text = current_setting('app.tenant_id', TRUE))
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_wf_def_tenant ON workflow_definitions (tenant_id, status, updated_at DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_wf_def_tenant ON workflow_definitions (tenant_id, status, updated_at DESC)"  # noqa: E501
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_wf_def_tags ON workflow_definitions USING gin (tags)"
@@ -109,7 +109,7 @@ def upgrade() -> None:
         USING (tenant_id::text = current_setting('app.tenant_id', TRUE))
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_wf_def_ver ON workflow_definition_versions (workflow_id, published_at DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_wf_def_ver ON workflow_definition_versions (workflow_id, published_at DESC)"  # noqa: E501
     )
 
     # ── 4. workflow_runs ─────────────────────────────────────────────────
@@ -147,10 +147,10 @@ def upgrade() -> None:
         USING (tenant_id::text = current_setting('app.tenant_id', TRUE))
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_wf_runs_workflow ON workflow_runs (tenant_id, workflow_id, created_at DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_wf_runs_workflow ON workflow_runs (tenant_id, workflow_id, created_at DESC)"  # noqa: E501
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_wf_runs_status ON workflow_runs (tenant_id, status, created_at DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_wf_runs_status ON workflow_runs (tenant_id, status, created_at DESC)"  # noqa: E501
     )
     op.execute("CREATE INDEX IF NOT EXISTS idx_wf_runs_labels ON workflow_runs USING gin (labels)")
 
@@ -185,7 +185,7 @@ def upgrade() -> None:
         USING (tenant_id::text = current_setting('app.tenant_id', TRUE))
     """)
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_wf_step_results_run ON workflow_step_results (run_id, step_id)"
+        "CREATE INDEX IF NOT EXISTS idx_wf_step_results_run ON workflow_step_results (run_id, step_id)"  # noqa: E501
     )
 
     # ── 6. workflow_hitl_requests ────────────────────────────────────────
@@ -241,7 +241,7 @@ def upgrade() -> None:
         CREATE TABLE IF NOT EXISTS workflow_test_scenarios (
             id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             tenant_id            UUID NOT NULL,
-            workflow_id          UUID NOT NULL REFERENCES workflow_definitions(id) ON DELETE CASCADE,
+            workflow_id          UUID NOT NULL REFERENCES workflow_definitions(id) ON DELETE CASCADE,  # noqa: E501
             name                 TEXT NOT NULL,
             description          TEXT,
             input_fixture        JSONB NOT NULL DEFAULT '{}',

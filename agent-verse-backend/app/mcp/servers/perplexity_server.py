@@ -69,7 +69,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "perplexity_reasoning",
-        "description": "Use Perplexity reasoning model for complex, multi-step analysis with web access",
+        "description": "Use Perplexity reasoning model for complex, multi-step analysis with web access",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

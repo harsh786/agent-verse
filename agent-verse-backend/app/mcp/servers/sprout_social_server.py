@@ -87,7 +87,7 @@ TOOL_DEFINITIONS = [
                 "fields": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Metric fields: impressions, engagements, reach, followers_gained",
+                    "description": "Metric fields: impressions, engagements, reach, followers_gained",  # noqa: E501
                 },
             },
             "required": ["profile_ids", "start_date", "end_date"],

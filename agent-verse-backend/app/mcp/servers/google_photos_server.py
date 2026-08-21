@@ -19,7 +19,7 @@ BASE_URL = "https://photoslibrary.googleapis.com/v1"
 TOOL_DEFINITIONS = [
     {
         "name": "google_photos_list_media_items",
-        "description": "List all media items (photos and videos) in the user's Google Photos library",
+        "description": "List all media items (photos and videos) in the user's Google Photos library",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

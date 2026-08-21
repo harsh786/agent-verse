@@ -152,7 +152,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     app_pass = os.getenv("WORDPRESS_APP_PASSWORD", "")
     if not all([wp_url, username, app_pass]):
         return {
-            "error": "WORDPRESS_URL, WORDPRESS_USERNAME, and WORDPRESS_APP_PASSWORD must be configured"
+            "error": "WORDPRESS_URL, WORDPRESS_USERNAME, and WORDPRESS_APP_PASSWORD must be configured"  # noqa: E501
         }
 
     base = _base()

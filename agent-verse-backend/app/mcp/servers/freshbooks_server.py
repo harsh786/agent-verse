@@ -27,7 +27,7 @@ TOOL_DEFINITIONS = [
                 "account_id": {"type": "string", "description": "FreshBooks account ID"},
                 "invoice_status": {
                     "type": "integer",
-                    "description": "0=draft, 1=created, 2=sent, 4=viewed, 5=outstanding, 6=overdue, 7=disputed, 8=partial",
+                    "description": "0=draft, 1=created, 2=sent, 4=viewed, 5=outstanding, 6=overdue, 7=disputed, 8=partial",  # noqa: E501
                 },
                 "per_page": {"type": "integer", "default": 15},
                 "page": {"type": "integer", "default": 1},

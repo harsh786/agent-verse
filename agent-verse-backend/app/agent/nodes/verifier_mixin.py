@@ -449,7 +449,7 @@ class VerifierMixin:
                                                     config_patch={
                                                         "model_downgrade_recommended": True,
                                                         "last_switch_reason": "low_eval_score",
-                                                        "last_switch_score": _scorecard_result.overall_score,
+                                                        "last_switch_score": _scorecard_result.overall_score,  # noqa: E501
                                                     },
                                                 )
                                             )

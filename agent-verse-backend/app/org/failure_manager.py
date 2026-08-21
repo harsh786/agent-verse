@@ -241,7 +241,7 @@ class OrgFailureManager:
                     event_type="org.mission.blocked",
                     severity=NotificationSeverity.APPROVAL,
                     title=f"Mission Blocked: {failure.error_message[:80]}",
-                    body=f"Mission {failure.mission_id} is blocked and needs attention.\nError: {failure.error_message}",
+                    body=f"Mission {failure.mission_id} is blocked and needs attention.\nError: {failure.error_message}",  # noqa: E501
                     requires_action=True,
                 )
                 await self._notify.route(notif)
@@ -264,7 +264,7 @@ class OrgFailureManager:
                     event_type="org.anomaly.detected",
                     severity=NotificationSeverity.CRITICAL,
                     title=f"Fatal Failure — {failure.error_message[:60]}",
-                    body=f"Mission {failure.mission_id} encountered a fatal error and has been queued for recovery.",
+                    body=f"Mission {failure.mission_id} encountered a fatal error and has been queued for recovery.",  # noqa: E501
                     requires_action=True,
                 )
                 await self._notify.route(notif)

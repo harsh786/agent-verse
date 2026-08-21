@@ -16,7 +16,7 @@ def upgrade() -> None:
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS model_override TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS max_iterations INT NOT NULL DEFAULT 15",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS timeout_seconds INT NOT NULL DEFAULT 300",
-        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS allowed_collection_ids JSONB NOT NULL DEFAULT '[]'",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS allowed_collection_ids JSONB NOT NULL DEFAULT '[]'",  # noqa: E501
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS eval_suite_id TEXT",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS policy_ids JSONB NOT NULL DEFAULT '[]'",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS version INT NOT NULL DEFAULT 1",

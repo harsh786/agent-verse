@@ -37,7 +37,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "snowflake_execute",
-        "description": "Execute any SQL statement in Snowflake (requires SNOWFLAKE_ALLOW_WRITES=true for DML)",
+        "description": "Execute any SQL statement in Snowflake (requires SNOWFLAKE_ALLOW_WRITES=true for DML)",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

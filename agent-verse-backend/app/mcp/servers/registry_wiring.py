@@ -1339,7 +1339,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-customerio",
             "name": "Customer.io",
-            "description": "Customer.io — customer profiles, event tracking, and transactional email",
+            "description": "Customer.io — customer profiles, event tracking, and transactional email",  # noqa: E501
             "tool_definitions": customerio_server.TOOL_DEFINITIONS,
             "handler": customerio_server.call_tool,
             "requires_env": ["CUSTOMERIO_SITE_ID", "CUSTOMERIO_API_KEY"],
@@ -1355,7 +1355,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-mandrill",
             "name": "Mandrill",
-            "description": "Mandrill (Mailchimp Transactional) — send, template, and search transactional email",
+            "description": "Mandrill (Mailchimp Transactional) — send, template, and search transactional email",  # noqa: E501
             "tool_definitions": mandrill_server.TOOL_DEFINITIONS,
             "handler": mandrill_server.call_tool,
             "requires_env": ["MANDRILL_API_KEY"],
@@ -1412,7 +1412,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-mandrill",
             "name": "Mandrill",
-            "description": "Mandrill (Mailchimp Transactional) — send, template, and search transactional email",
+            "description": "Mandrill (Mailchimp Transactional) — send, template, and search transactional email",  # noqa: E501
             "tool_definitions": mandrill_server.TOOL_DEFINITIONS,
             "handler": mandrill_server.call_tool,
             "requires_env": ["MANDRILL_API_KEY"],
@@ -1627,7 +1627,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-activecampaign",
             "name": "ActiveCampaign",
-            "description": "ActiveCampaign MCP server — email marketing & CRM contacts, lists, and campaigns",
+            "description": "ActiveCampaign MCP server — email marketing & CRM contacts, lists, and campaigns",  # noqa: E501
             "tool_definitions": activecampaign_server.TOOL_DEFINITIONS,
             "handler": activecampaign_server.call_tool,
             "requires_env": ["ACTIVECAMPAIGN_API_KEY", "ACTIVECAMPAIGN_BASE_URL"],
@@ -1643,7 +1643,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-campaign-monitor",
             "name": "Campaign Monitor",
-            "description": "Campaign Monitor MCP server — email campaigns, subscriber lists, and delivery stats",
+            "description": "Campaign Monitor MCP server — email campaigns, subscriber lists, and delivery stats",  # noqa: E501
             "tool_definitions": campaign_monitor_server.TOOL_DEFINITIONS,
             "handler": campaign_monitor_server.call_tool,
             "requires_env": ["CAMPAIGN_MONITOR_API_KEY"],
@@ -1651,7 +1651,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-constant-contact",
             "name": "Constant Contact",
-            "description": "Constant Contact MCP server — email marketing contacts, lists, and campaigns",
+            "description": "Constant Contact MCP server — email marketing contacts, lists, and campaigns",  # noqa: E501
             "tool_definitions": constant_contact_server.TOOL_DEFINITIONS,
             "handler": constant_contact_server.call_tool,
             "requires_env": ["CONSTANT_CONTACT_API_KEY"],
@@ -1659,7 +1659,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-drip",
             "name": "Drip",
-            "description": "Drip MCP server — ecommerce CRM, subscriber management, and email automation",
+            "description": "Drip MCP server — ecommerce CRM, subscriber management, and email automation",  # noqa: E501
             "tool_definitions": drip_server.TOOL_DEFINITIONS,
             "handler": drip_server.call_tool,
             "requires_env": ["DRIP_API_TOKEN"],
@@ -1667,7 +1667,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-getresponse",
             "name": "GetResponse",
-            "description": "GetResponse MCP server — email marketing contacts, campaigns, and statistics",
+            "description": "GetResponse MCP server — email marketing contacts, campaigns, and statistics",  # noqa: E501
             "tool_definitions": getresponse_server.TOOL_DEFINITIONS,
             "handler": getresponse_server.call_tool,
             "requires_env": ["GETRESPONSE_API_KEY"],
@@ -1675,7 +1675,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-mailgun",
             "name": "Mailgun",
-            "description": "Mailgun MCP server — transactional email sending, domain management, and event logs",
+            "description": "Mailgun MCP server — transactional email sending, domain management, and event logs",  # noqa: E501
             "tool_definitions": mailgun_server.TOOL_DEFINITIONS,
             "handler": mailgun_server.call_tool,
             "requires_env": ["MAILGUN_API_KEY", "MAILGUN_DOMAIN"],
@@ -1691,7 +1691,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-omnisend",
             "name": "Omnisend",
-            "description": "Omnisend MCP server — omnichannel marketing contacts, segments, campaigns, and event tracking",
+            "description": "Omnisend MCP server — omnichannel marketing contacts, segments, campaigns, and event tracking",  # noqa: E501
             "tool_definitions": omnisend_server.TOOL_DEFINITIONS,
             "handler": omnisend_server.call_tool,
             "requires_env": ["OMNISEND_API_KEY"],
@@ -1707,7 +1707,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-acoustic",
             "name": "Acoustic (IBM) Marketing Cloud",
-            "description": "Acoustic (IBM) Marketing Cloud MCP server — campaigns, contacts, and email sends",
+            "description": "Acoustic (IBM) Marketing Cloud MCP server — campaigns, contacts, and email sends",  # noqa: E501
             "tool_definitions": acoustic_server.TOOL_DEFINITIONS,
             "handler": acoustic_server.call_tool,
             "requires_env": [
@@ -1719,7 +1719,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-autopilot",
             "name": "Autopilot (Ortto)",
-            "description": "Autopilot (Ortto) MCP server — marketing automation, journeys, and contact management",
+            "description": "Autopilot (Ortto) MCP server — marketing automation, journeys, and contact management",  # noqa: E501
             "tool_definitions": autopilot_server.TOOL_DEFINITIONS,
             "handler": autopilot_server.call_tool,
             "requires_env": ["AUTOPILOT_API_KEY"],
@@ -1727,7 +1727,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-egoi",
             "name": "E-goi",
-            "description": "E-goi MCP server — multi-channel marketing with SMS, email, and push notifications",
+            "description": "E-goi MCP server — multi-channel marketing with SMS, email, and push notifications",  # noqa: E501
             "tool_definitions": egoi_server.TOOL_DEFINITIONS,
             "handler": egoi_server.call_tool,
             "requires_env": ["EGOI_API_KEY"],
@@ -1735,7 +1735,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-emarsys",
             "name": "Emarsys",
-            "description": "Emarsys MCP server — marketing platform with contacts, campaigns, and analytics",
+            "description": "Emarsys MCP server — marketing platform with contacts, campaigns, and analytics",  # noqa: E501
             "tool_definitions": emarsys_server.TOOL_DEFINITIONS,
             "handler": emarsys_server.call_tool,
             "requires_env": ["EMARSYS_SECRET", "EMARSYS_USERNAME"],
@@ -1743,7 +1743,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-emma",
             "name": "Emma email marketing",
-            "description": "Emma email marketing MCP server — contacts, groups, mailings, and analytics",
+            "description": "Emma email marketing MCP server — contacts, groups, mailings, and analytics",  # noqa: E501
             "tool_definitions": emma_server.TOOL_DEFINITIONS,
             "handler": emma_server.call_tool,
             "requires_env": ["EMMA_ACCOUNT_ID", "EMMA_PRIVATE_KEY", "EMMA_PUBLIC_KEY"],
@@ -1751,7 +1751,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-esputnik",
             "name": "eSputnik",
-            "description": "eSputnik MCP server — omnichannel marketing automation and contact management",
+            "description": "eSputnik MCP server — omnichannel marketing automation and contact management",  # noqa: E501
             "tool_definitions": esputnik_server.TOOL_DEFINITIONS,
             "handler": esputnik_server.call_tool,
             "requires_env": ["ESPUTNIK_LOGIN", "ESPUTNIK_PASSWORD"],
@@ -1759,7 +1759,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-maropost",
             "name": "Maropost",
-            "description": "Maropost MCP server — email marketing, contact management, and campaign analytics",
+            "description": "Maropost MCP server — email marketing, contact management, and campaign analytics",  # noqa: E501
             "tool_definitions": maropost_server.TOOL_DEFINITIONS,
             "handler": maropost_server.call_tool,
             "requires_env": ["MAROPOST_ACCOUNT_ID", "MAROPOST_API_KEY"],
@@ -1768,7 +1768,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-manychat",
             "name": "ManyChat",
-            "description": "ManyChat MCP server — chat marketing subscriber management and content delivery",
+            "description": "ManyChat MCP server — chat marketing subscriber management and content delivery",  # noqa: E501
             "tool_definitions": manychat_server.TOOL_DEFINITIONS,
             "handler": manychat_server.call_tool,
             "requires_env": ["MANYCHAT_API_KEY"],
@@ -1776,7 +1776,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-onesignal",
             "name": "OneSignal",
-            "description": "OneSignal MCP server — push notifications, device management, and segments",
+            "description": "OneSignal MCP server — push notifications, device management, and segments",  # noqa: E501
             "tool_definitions": onesignal_server.TOOL_DEFINITIONS,
             "handler": onesignal_server.call_tool,
             "requires_env": ["ONESIGNAL_API_KEY", "ONESIGNAL_APP_ID"],
@@ -1784,7 +1784,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-pushover",
             "name": "Pushover",
-            "description": "Pushover MCP server — push notifications to mobile devices and desktop clients",
+            "description": "Pushover MCP server — push notifications to mobile devices and desktop clients",  # noqa: E501
             "tool_definitions": pushover_server.TOOL_DEFINITIONS,
             "handler": pushover_server.call_tool,
             "requires_env": ["PUSHOVER_TOKEN", "PUSHOVER_USER"],
@@ -1792,7 +1792,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-pushbullet",
             "name": "Pushbullet",
-            "description": "Pushbullet MCP server — push notifications, links, notes, and file sharing to devices",
+            "description": "Pushbullet MCP server — push notifications, links, notes, and file sharing to devices",  # noqa: E501
             "tool_definitions": pushbullet_server.TOOL_DEFINITIONS,
             "handler": pushbullet_server.call_tool,
             "requires_env": ["PUSHBULLET_API_KEY"],
@@ -1800,7 +1800,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-chatfuel",
             "name": "Chatfuel",
-            "description": "Chatfuel MCP server — chatbot platform for Facebook Messenger and Instagram",
+            "description": "Chatfuel MCP server — chatbot platform for Facebook Messenger and Instagram",  # noqa: E501
             "tool_definitions": chatfuel_server.TOOL_DEFINITIONS,
             "handler": chatfuel_server.call_tool,
             "requires_env": ["CHATFUEL_BOT_ID", "CHATFUEL_TOKEN"],
@@ -1808,7 +1808,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-ringcentral",
             "name": "RingCentral",
-            "description": "RingCentral MCP server — cloud communications: SMS, voice calls, and message management",
+            "description": "RingCentral MCP server — cloud communications: SMS, voice calls, and message management",  # noqa: E501
             "tool_definitions": ringcentral_server.TOOL_DEFINITIONS,
             "handler": ringcentral_server.call_tool,
             "requires_env": ["RINGCENTRAL_ACCESS_TOKEN"],
@@ -1816,7 +1816,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-plivo",
             "name": "Plivo",
-            "description": "Plivo MCP server — cloud communications: SMS, voice calls, and phone number management",
+            "description": "Plivo MCP server — cloud communications: SMS, voice calls, and phone number management",  # noqa: E501
             "tool_definitions": plivo_server.TOOL_DEFINITIONS,
             "handler": plivo_server.call_tool,
             "requires_env": ["PLIVO_AUTH_ID", "PLIVO_AUTH_TOKEN"],
@@ -1824,7 +1824,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-vonage",
             "name": "Vonage (Nexmo)",
-            "description": "Vonage (Nexmo) MCP server — SMS messaging, voice calls, and account management",
+            "description": "Vonage (Nexmo) MCP server — SMS messaging, voice calls, and account management",  # noqa: E501
             "tool_definitions": vonage_server.TOOL_DEFINITIONS,
             "handler": vonage_server.call_tool,
             "requires_env": ["VONAGE_API_KEY", "VONAGE_API_SECRET"],
@@ -1849,7 +1849,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-postmark",
             "name": "Postmark",
-            "description": "Postmark MCP server — transactional email sending, templates, streams, bounces, and stats",
+            "description": "Postmark MCP server — transactional email sending, templates, streams, bounces, and stats",  # noqa: E501
             "tool_definitions": postmark_server.TOOL_DEFINITIONS,
             "handler": postmark_server.call_tool,
             "requires_env": ["POSTMARK_SERVER_TOKEN"],
@@ -1866,7 +1866,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-airtable",
             "name": "Airtable",
-            "description": "Airtable MCP server — database records management across bases and tables",
+            "description": "Airtable MCP server — database records management across bases and tables",  # noqa: E501
             "tool_definitions": airtable_server.TOOL_DEFINITIONS,
             "handler": airtable_server.call_tool,
             "requires_env": ["AIRTABLE_API_KEY", "AIRTABLE_BASE_ID"],
@@ -1882,7 +1882,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-clearbit",
             "name": "Clearbit",
-            "description": "Clearbit MCP server — person/company enrichment, email lookup, and IP reveal",
+            "description": "Clearbit MCP server — person/company enrichment, email lookup, and IP reveal",  # noqa: E501
             "tool_definitions": clearbit_server.TOOL_DEFINITIONS,
             "handler": clearbit_server.call_tool,
             "requires_env": ["CLEARBIT_API_KEY"],
@@ -1890,7 +1890,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-dynamics365",
             "name": "Microsoft Dynamics 365 CRM",
-            "description": "Microsoft Dynamics 365 CRM MCP server — accounts, contacts, and leads management",
+            "description": "Microsoft Dynamics 365 CRM MCP server — accounts, contacts, and leads management",  # noqa: E501
             "tool_definitions": dynamics365_server.TOOL_DEFINITIONS,
             "handler": dynamics365_server.call_tool,
             "requires_env": ["DYNAMICS365_ACCESS_TOKEN", "DYNAMICS365_ORG_URL"],
@@ -1898,7 +1898,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-encharge",
             "name": "Encharge",
-            "description": "Encharge MCP server — marketing automation: users, tags, events, and segments",
+            "description": "Encharge MCP server — marketing automation: users, tags, events, and segments",  # noqa: E501
             "tool_definitions": encharge_server.TOOL_DEFINITIONS,
             "handler": encharge_server.call_tool,
             "requires_env": ["ENCHARGE_API_KEY"],
@@ -1914,7 +1914,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-fullcontact",
             "name": "FullContact",
-            "description": "FullContact MCP server — person/company enrichment, tag management, and contact creation",
+            "description": "FullContact MCP server — person/company enrichment, tag management, and contact creation",  # noqa: E501
             "tool_definitions": fullcontact_server.TOOL_DEFINITIONS,
             "handler": fullcontact_server.call_tool,
             "requires_env": ["FULLCONTACT_API_KEY"],
@@ -1922,7 +1922,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-gainsight",
             "name": "Gainsight",
-            "description": "Gainsight MCP server — customer success: accounts, CSMs, CTAs, and scorecards",
+            "description": "Gainsight MCP server — customer success: accounts, CSMs, CTAs, and scorecards",  # noqa: E501
             "tool_definitions": gainsight_server.TOOL_DEFINITIONS,
             "handler": gainsight_server.call_tool,
             "requires_env": ["GAINSIGHT_ACCESS_KEY"],
@@ -1930,7 +1930,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-highlevel",
             "name": "GoHighLevel CRM",
-            "description": "GoHighLevel CRM MCP server — contacts, campaigns, pipelines, opportunities, and SMS",
+            "description": "GoHighLevel CRM MCP server — contacts, campaigns, pipelines, opportunities, and SMS",  # noqa: E501
             "tool_definitions": highlevel_server.TOOL_DEFINITIONS,
             "handler": highlevel_server.call_tool,
             "requires_env": ["HIGHLEVEL_API_KEY"],
@@ -1938,7 +1938,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-hubspot-marketing",
             "name": "HubSpot Marketing Hub",
-            "description": "HubSpot Marketing Hub MCP server — forms, email campaigns, lists, and analytics",
+            "description": "HubSpot Marketing Hub MCP server — forms, email campaigns, lists, and analytics",  # noqa: E501
             "tool_definitions": hubspot_marketing_server.TOOL_DEFINITIONS,
             "handler": hubspot_marketing_server.call_tool,
             "requires_env": ["HUBSPOT_API_KEY"],
@@ -1946,7 +1946,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-insightly",
             "name": "Insightly CRM",
-            "description": "Insightly CRM MCP server — contacts, opportunities, projects, and tasks",
+            "description": "Insightly CRM MCP server — contacts, opportunities, projects, and tasks",  # noqa: E501
             "tool_definitions": insightly_server.TOOL_DEFINITIONS,
             "handler": insightly_server.call_tool,
             "requires_env": ["INSIGHTLY_API_KEY"],
@@ -1954,7 +1954,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-klenty",
             "name": "Klenty",
-            "description": "Klenty MCP server — sales engagement: prospects, cadences, and email analytics",
+            "description": "Klenty MCP server — sales engagement: prospects, cadences, and email analytics",  # noqa: E501
             "tool_definitions": klenty_server.TOOL_DEFINITIONS,
             "handler": klenty_server.call_tool,
             "requires_env": ["KLENTY_API_KEY"],
@@ -1962,7 +1962,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-konnektive",
             "name": "Konnektive CRM",
-            "description": "Konnektive CRM MCP server — orders, customers, and subscriptions management",
+            "description": "Konnektive CRM MCP server — orders, customers, and subscriptions management",  # noqa: E501
             "tool_definitions": konnektive_server.TOOL_DEFINITIONS,
             "handler": konnektive_server.call_tool,
             "requires_env": ["KONNEKTIVE_LOGIN_ID", "KONNEKTIVE_PASSWORD"],
@@ -1970,7 +1970,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-leadpages",
             "name": "Leadpages",
-            "description": "Leadpages MCP server — landing pages, leads, lead boxes, and conversion analytics",
+            "description": "Leadpages MCP server — landing pages, leads, lead boxes, and conversion analytics",  # noqa: E501
             "tool_definitions": leadpages_server.TOOL_DEFINITIONS,
             "handler": leadpages_server.call_tool,
             "requires_env": ["LEADPAGES_API_KEY"],
@@ -1978,7 +1978,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-lemlist",
             "name": "Lemlist",
-            "description": "Lemlist MCP server — sales outreach: campaigns, leads, and engagement analytics",
+            "description": "Lemlist MCP server — sales outreach: campaigns, leads, and engagement analytics",  # noqa: E501
             "tool_definitions": lemlist_server.TOOL_DEFINITIONS,
             "handler": lemlist_server.call_tool,
             "requires_env": ["LEMLIST_API_KEY"],
@@ -1986,7 +1986,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-outreach",
             "name": "Outreach",
-            "description": "Outreach MCP server — sales engagement: prospects, sequences, and analytics",
+            "description": "Outreach MCP server — sales engagement: prospects, sequences, and analytics",  # noqa: E501
             "tool_definitions": outreach_server.TOOL_DEFINITIONS,
             "handler": outreach_server.call_tool,
             "requires_env": ["OUTREACH_ACCESS_TOKEN"],
@@ -1994,7 +1994,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-overloop",
             "name": "Overloop (ex-Prospect.io)",
-            "description": "Overloop (ex-Prospect.io) MCP server — outreach prospecting and sequence management",
+            "description": "Overloop (ex-Prospect.io) MCP server — outreach prospecting and sequence management",  # noqa: E501
             "tool_definitions": overloop_server.TOOL_DEFINITIONS,
             "handler": overloop_server.call_tool,
             "requires_env": ["OVERLOOP_API_KEY"],
@@ -2002,7 +2002,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-reply-io",
             "name": "Reply.io",
-            "description": "Reply.io MCP server — sales automation: people, sequences, and email statistics",
+            "description": "Reply.io MCP server — sales automation: people, sequences, and email statistics",  # noqa: E501
             "tool_definitions": reply_io_server.TOOL_DEFINITIONS,
             "handler": reply_io_server.call_tool,
             "requires_env": ["REPLYIO_API_KEY"],
@@ -2010,7 +2010,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-salesloft",
             "name": "Salesloft",
-            "description": "Salesloft MCP server — sales engagement: people, cadences, calls, and analytics",
+            "description": "Salesloft MCP server — sales engagement: people, cadences, calls, and analytics",  # noqa: E501
             "tool_definitions": salesloft_server.TOOL_DEFINITIONS,
             "handler": salesloft_server.call_tool,
             "requires_env": ["SALESLOFT_API_KEY"],
@@ -2018,7 +2018,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-segment",
             "name": "Segment",
-            "description": "Segment MCP server — customer data platform: identify, track, page, group, and alias",
+            "description": "Segment MCP server — customer data platform: identify, track, page, group, and alias",  # noqa: E501
             "tool_definitions": segment_server.TOOL_DEFINITIONS,
             "handler": segment_server.call_tool,
             "requires_env": ["SEGMENT_WRITE_KEY"],
@@ -2026,7 +2026,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-snovio",
             "name": "Snov.io",
-            "description": "Snov.io MCP server — lead generation: email finding, verification, and prospect management",
+            "description": "Snov.io MCP server — lead generation: email finding, verification, and prospect management",  # noqa: E501
             "tool_definitions": snovio_server.TOOL_DEFINITIONS,
             "handler": snovio_server.call_tool,
             "requires_env": ["SNOVIO_CLIENT_ID", "SNOVIO_CLIENT_SECRET"],
@@ -2042,7 +2042,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-vero",
             "name": "Vero",
-            "description": "Vero MCP server — email & push: user identification, event tracking, and campaigns",
+            "description": "Vero MCP server — email & push: user identification, event tracking, and campaigns",  # noqa: E501
             "tool_definitions": vero_server.TOOL_DEFINITIONS,
             "handler": vero_server.call_tool,
             "requires_env": ["VERO_AUTH_TOKEN"],
@@ -2058,7 +2058,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-orbit",
             "name": "Orbit",
-            "description": "Orbit MCP server — community management: members, activities, and workspace analytics",
+            "description": "Orbit MCP server — community management: members, activities, and workspace analytics",  # noqa: E501
             "tool_definitions": orbit_server.TOOL_DEFINITIONS,
             "handler": orbit_server.call_tool,
             "requires_env": ["ORBIT_API_KEY", "ORBIT_WORKSPACE"],
@@ -2083,7 +2083,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-harvest",
             "name": "Harvest",
-            "description": "Harvest MCP server — time tracking, expense management, projects, and invoicing",
+            "description": "Harvest MCP server — time tracking, expense management, projects, and invoicing",  # noqa: E501
             "tool_definitions": harvest_server.TOOL_DEFINITIONS,
             "handler": harvest_server.call_tool,
             "requires_env": ["HARVEST_ACCESS_TOKEN", "HARVEST_ACCOUNT_ID"],
@@ -2099,7 +2099,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-hive",
             "name": "Hive",
-            "description": "Hive MCP server — project and action management, workspaces, and collaboration",
+            "description": "Hive MCP server — project and action management, workspaces, and collaboration",  # noqa: E501
             "tool_definitions": hive_server.TOOL_DEFINITIONS,
             "handler": hive_server.call_tool,
             "requires_env": ["HIVE_API_KEY", "HIVE_USER_ID"],
@@ -2123,7 +2123,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-procore",
             "name": "Procore",
-            "description": "Procore MCP server — construction management, projects, RFIs, submittals, and budgets",
+            "description": "Procore MCP server — construction management, projects, RFIs, submittals, and budgets",  # noqa: E501
             "tool_definitions": procore_server.TOOL_DEFINITIONS,
             "handler": procore_server.call_tool,
             "requires_env": ["PROCORE_ACCESS_TOKEN"],
@@ -2155,7 +2155,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-miro",
             "name": "Miro",
-            "description": "Miro MCP server — visual collaboration boards, sticky notes, frames, and items",
+            "description": "Miro MCP server — visual collaboration boards, sticky notes, frames, and items",  # noqa: E501
             "tool_definitions": miro_server.TOOL_DEFINITIONS,
             "handler": miro_server.call_tool,
             "requires_env": ["MIRO_ACCESS_TOKEN"],
@@ -2164,7 +2164,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-greenhouse",
             "name": "Greenhouse",
-            "description": "Greenhouse MCP server — applicant tracking, jobs, candidates, and applications",
+            "description": "Greenhouse MCP server — applicant tracking, jobs, candidates, and applications",  # noqa: E501
             "tool_definitions": greenhouse_server.TOOL_DEFINITIONS,
             "handler": greenhouse_server.call_tool,
             "requires_env": ["GREENHOUSE_API_KEY"],
@@ -2172,7 +2172,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-recruitee",
             "name": "Recruitee",
-            "description": "Recruitee MCP server — applicant tracking, candidates, offers, and stages",
+            "description": "Recruitee MCP server — applicant tracking, candidates, offers, and stages",  # noqa: E501
             "tool_definitions": recruitee_server.TOOL_DEFINITIONS,
             "handler": recruitee_server.call_tool,
             "requires_env": ["RECRUITEE_API_TOKEN", "RECRUITEE_COMPANY_ID"],
@@ -2197,7 +2197,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-wave",
             "name": "Wave",
-            "description": "Wave MCP server — accounting, invoices, customers, and transactions via GraphQL",
+            "description": "Wave MCP server — accounting, invoices, customers, and transactions via GraphQL",  # noqa: E501
             "tool_definitions": wave_server.TOOL_DEFINITIONS,
             "handler": wave_server.call_tool,
             "requires_env": ["WAVE_ACCESS_TOKEN"],
@@ -2213,7 +2213,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-netsuite",
             "name": "NetSuite",
-            "description": "NetSuite MCP server — ERP records, search, and saved searches via REST API",
+            "description": "NetSuite MCP server — ERP records, search, and saved searches via REST API",  # noqa: E501
             "tool_definitions": netsuite_server.TOOL_DEFINITIONS,
             "handler": netsuite_server.call_tool,
             "requires_env": ["NETSUITE_ACCOUNT_ID", "NETSUITE_CONSUMER_KEY", "NETSUITE_TOKEN_KEY"],
@@ -2221,7 +2221,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-braintree",
             "name": "Braintree",
-            "description": "Braintree MCP server — payment transactions, customers, and subscriptions",
+            "description": "Braintree MCP server — payment transactions, customers, and subscriptions",  # noqa: E501
             "tool_definitions": braintree_server.TOOL_DEFINITIONS,
             "handler": braintree_server.call_tool,
             "requires_env": [
@@ -2241,7 +2241,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-profitwell",
             "name": "ProfitWell",
-            "description": "ProfitWell MCP server — subscription metrics, MRR, churn, and customer analytics",
+            "description": "ProfitWell MCP server — subscription metrics, MRR, churn, and customer analytics",  # noqa: E501
             "tool_definitions": profitwell_server.TOOL_DEFINITIONS,
             "handler": profitwell_server.call_tool,
             "requires_env": ["PROFITWELL_API_KEY"],
@@ -2249,7 +2249,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-zuora",
             "name": "Zuora",
-            "description": "Zuora MCP server — subscription billing, accounts, invoices, and subscriptions",
+            "description": "Zuora MCP server — subscription billing, accounts, invoices, and subscriptions",  # noqa: E501
             "tool_definitions": zuora_server.TOOL_DEFINITIONS,
             "handler": zuora_server.call_tool,
             "requires_env": ["ZUORA_CLIENT_ID", "ZUORA_CLIENT_SECRET"],
@@ -2281,7 +2281,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-alpaca",
             "name": "Alpaca",
-            "description": "Alpaca MCP server — commission-free trading, market data, and portfolio management",
+            "description": "Alpaca MCP server — commission-free trading, market data, and portfolio management",  # noqa: E501
             "tool_definitions": alpaca_server.TOOL_DEFINITIONS,
             "handler": alpaca_server.call_tool,
             "requires_env": ["ALPACA_API_KEY", "ALPACA_SECRET_KEY"],
@@ -2289,7 +2289,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-brex",
             "name": "Brex",
-            "description": "Brex MCP server — corporate card management, transactions, and expense tracking",
+            "description": "Brex MCP server — corporate card management, transactions, and expense tracking",  # noqa: E501
             "tool_definitions": brex_server.TOOL_DEFINITIONS,
             "handler": brex_server.call_tool,
             "requires_env": ["BREX_TOKEN"],
@@ -2297,7 +2297,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-ramp",
             "name": "Ramp",
-            "description": "Ramp MCP server — corporate spend management, cards, and transaction approval",
+            "description": "Ramp MCP server — corporate spend management, cards, and transaction approval",  # noqa: E501
             "tool_definitions": ramp_server.TOOL_DEFINITIONS,
             "handler": ramp_server.call_tool,
             "requires_env": ["RAMP_ACCESS_TOKEN"],
@@ -2306,7 +2306,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-etsy",
             "name": "Etsy",
-            "description": "Etsy MCP server — Etsy marketplace shops, listings, and orders management",
+            "description": "Etsy MCP server — Etsy marketplace shops, listings, and orders management",  # noqa: E501
             "tool_definitions": etsy_server.TOOL_DEFINITIONS,
             "handler": etsy_server.call_tool,
             "requires_env": ["ETSY_ACCESS_TOKEN", "ETSY_API_KEY"],
@@ -2314,7 +2314,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-ebay",
             "name": "eBay",
-            "description": "eBay MCP server — eBay marketplace item search, orders, and selling statistics",
+            "description": "eBay MCP server — eBay marketplace item search, orders, and selling statistics",  # noqa: E501
             "tool_definitions": ebay_server.TOOL_DEFINITIONS,
             "handler": ebay_server.call_tool,
             "requires_env": ["EBAY_APP_ID", "EBAY_OAUTH_TOKEN"],
@@ -2322,7 +2322,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-ecwid",
             "name": "Ecwid",
-            "description": "Ecwid MCP server — Ecwid e-commerce store products, orders, and statistics",
+            "description": "Ecwid MCP server — Ecwid e-commerce store products, orders, and statistics",  # noqa: E501
             "tool_definitions": ecwid_server.TOOL_DEFINITIONS,
             "handler": ecwid_server.call_tool,
             "requires_env": ["ECWID_SECRET_TOKEN", "ECWID_STORE_ID"],
@@ -2330,7 +2330,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-magento",
             "name": "Magento",
-            "description": "Magento MCP server — Magento e-commerce products, orders, customers, and categories",
+            "description": "Magento MCP server — Magento e-commerce products, orders, customers, and categories",  # noqa: E501
             "tool_definitions": magento_server.TOOL_DEFINITIONS,
             "handler": magento_server.call_tool,
             "requires_env": ["MAGENTO_ACCESS_TOKEN", "MAGENTO_BASE_URL"],
@@ -2338,7 +2338,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-squarespace",
             "name": "Squarespace",
-            "description": "Squarespace MCP server — Squarespace website pages, products, orders, and inventory",
+            "description": "Squarespace MCP server — Squarespace website pages, products, orders, and inventory",  # noqa: E501
             "tool_definitions": squarespace_server.TOOL_DEFINITIONS,
             "handler": squarespace_server.call_tool,
             "requires_env": ["SQUARESPACE_API_KEY"],
@@ -2346,7 +2346,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-lightspeed",
             "name": "Lightspeed",
-            "description": "Lightspeed MCP server — Lightspeed Retail POS products, sales, customers, and inventory",
+            "description": "Lightspeed MCP server — Lightspeed Retail POS products, sales, customers, and inventory",  # noqa: E501
             "tool_definitions": lightspeed_server.TOOL_DEFINITIONS,
             "handler": lightspeed_server.call_tool,
             "requires_env": ["LIGHTSPEED_ACCESS_TOKEN", "LIGHTSPEED_ACCOUNT_ID"],
@@ -2354,7 +2354,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-shipstation",
             "name": "ShipStation",
-            "description": "ShipStation MCP server — ShipStation shipping, orders, shipments, and labels",
+            "description": "ShipStation MCP server — ShipStation shipping, orders, shipments, and labels",  # noqa: E501
             "tool_definitions": shipstation_server.TOOL_DEFINITIONS,
             "handler": shipstation_server.call_tool,
             "requires_env": ["SHIPSTATION_API_KEY", "SHIPSTATION_API_SECRET"],
@@ -2362,7 +2362,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-order-desk",
             "name": "Order Desk",
-            "description": "Order Desk MCP server — Order Desk order management, inventory, and shipments",
+            "description": "Order Desk MCP server — Order Desk order management, inventory, and shipments",  # noqa: E501
             "tool_definitions": order_desk_server.TOOL_DEFINITIONS,
             "handler": order_desk_server.call_tool,
             "requires_env": ["ORDER_DESK_API_KEY", "ORDER_DESK_STORE_ID"],
@@ -2370,7 +2370,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-yotpo",
             "name": "Yotpo",
-            "description": "Yotpo MCP server — Yotpo reviews, loyalty points, and marketing campaigns",
+            "description": "Yotpo MCP server — Yotpo reviews, loyalty points, and marketing campaigns",  # noqa: E501
             "tool_definitions": yotpo_server.TOOL_DEFINITIONS,
             "handler": yotpo_server.call_tool,
             "requires_env": ["YOTPO_APP_KEY", "YOTPO_SECRET"],
@@ -2378,7 +2378,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-gumroad",
             "name": "Gumroad",
-            "description": "Gumroad MCP server — Gumroad digital product sales, subscriptions, and license management",
+            "description": "Gumroad MCP server — Gumroad digital product sales, subscriptions, and license management",  # noqa: E501
             "tool_definitions": gumroad_server.TOOL_DEFINITIONS,
             "handler": gumroad_server.call_tool,
             "requires_env": ["GUMROAD_ACCESS_TOKEN"],
@@ -2386,7 +2386,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-kajabi",
             "name": "Kajabi",
-            "description": "Kajabi MCP server — Kajabi online courses, members, offers, and pipeline management",
+            "description": "Kajabi MCP server — Kajabi online courses, members, offers, and pipeline management",  # noqa: E501
             "tool_definitions": kajabi_server.TOOL_DEFINITIONS,
             "handler": kajabi_server.call_tool,
             "requires_env": ["KAJABI_API_KEY"],
@@ -2394,7 +2394,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-teachable",
             "name": "Teachable",
-            "description": "Teachable MCP server — Teachable online course users, enrollments, coupons, and progress",
+            "description": "Teachable MCP server — Teachable online course users, enrollments, coupons, and progress",  # noqa: E501
             "tool_definitions": teachable_server.TOOL_DEFINITIONS,
             "handler": teachable_server.call_tool,
             "requires_env": ["TEACHABLE_API_KEY"],
@@ -2402,7 +2402,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-thinkific",
             "name": "Thinkific",
-            "description": "Thinkific MCP server — Thinkific online courses, users, enrollments, and stats",
+            "description": "Thinkific MCP server — Thinkific online courses, users, enrollments, and stats",  # noqa: E501
             "tool_definitions": thinkific_server.TOOL_DEFINITIONS,
             "handler": thinkific_server.call_tool,
             "requires_env": ["THINKIFIC_API_KEY", "THINKIFIC_SUBDOMAIN"],
@@ -2410,7 +2410,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-thrivecart",
             "name": "ThriveCart",
-            "description": "ThriveCart MCP server — checkout platform, products, orders, and affiliates",
+            "description": "ThriveCart MCP server — checkout platform, products, orders, and affiliates",  # noqa: E501
             "tool_definitions": thrivecart_server.TOOL_DEFINITIONS,
             "handler": thrivecart_server.call_tool,
             "requires_env": ["THRIVECART_API_KEY"],
@@ -2418,7 +2418,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-clickfunnels",
             "name": "ClickFunnels",
-            "description": "ClickFunnels MCP server — sales funnel management, contacts, and orders",
+            "description": "ClickFunnels MCP server — sales funnel management, contacts, and orders",  # noqa: E501
             "tool_definitions": clickfunnels_server.TOOL_DEFINITIONS,
             "handler": clickfunnels_server.call_tool,
             "requires_env": ["CLICKFUNNELS_API_KEY"],
@@ -2426,7 +2426,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-digistore24",
             "name": "Digistore24",
-            "description": "Digistore24 MCP server — digital marketplace orders, products, and commissions",
+            "description": "Digistore24 MCP server — digital marketplace orders, products, and commissions",  # noqa: E501
             "tool_definitions": digistore24_server.TOOL_DEFINITIONS,
             "handler": digistore24_server.call_tool,
             "requires_env": ["DIGISTORE24_API_KEY"],
@@ -2435,7 +2435,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-substack",
             "name": "Substack",
-            "description": "Substack MCP server — Substack newsletter posts, subscribers, stats, and email sends",
+            "description": "Substack MCP server — Substack newsletter posts, subscribers, stats, and email sends",  # noqa: E501
             "tool_definitions": substack_server.TOOL_DEFINITIONS,
             "handler": substack_server.call_tool,
             "requires_env": ["SUBSTACK_API_KEY", "SUBSTACK_PUBLICATION"],
@@ -2443,7 +2443,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-storyblok",
             "name": "Storyblok",
-            "description": "Storyblok MCP server — Storyblok headless CMS stories, components, and publishing",
+            "description": "Storyblok MCP server — Storyblok headless CMS stories, components, and publishing",  # noqa: E501
             "tool_definitions": storyblok_server.TOOL_DEFINITIONS,
             "handler": storyblok_server.call_tool,
             "requires_env": ["STORYBLOK_ACCESS_TOKEN"],
@@ -2451,7 +2451,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-vimeo",
             "name": "Vimeo",
-            "description": "Vimeo MCP server — Vimeo video hosting, uploads, folders, and analytics",
+            "description": "Vimeo MCP server — Vimeo video hosting, uploads, folders, and analytics",  # noqa: E501
             "tool_definitions": vimeo_server.TOOL_DEFINITIONS,
             "handler": vimeo_server.call_tool,
             "requires_env": ["VIMEO_ACCESS_TOKEN"],
@@ -2459,7 +2459,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-wistia",
             "name": "Wistia",
-            "description": "Wistia MCP server — Wistia video hosting, media management, and analytics",
+            "description": "Wistia MCP server — Wistia video hosting, media management, and analytics",  # noqa: E501
             "tool_definitions": wistia_server.TOOL_DEFINITIONS,
             "handler": wistia_server.call_tool,
             "requires_env": ["WISTIA_API_PASSWORD"],
@@ -2475,7 +2475,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-feedly",
             "name": "Feedly",
-            "description": "Feedly MCP server — news aggregation, RSS stream reading, and article management",
+            "description": "Feedly MCP server — news aggregation, RSS stream reading, and article management",  # noqa: E501
             "tool_definitions": feedly_server.TOOL_DEFINITIONS,
             "handler": feedly_server.call_tool,
             "requires_env": ["FEEDLY_ACCESS_TOKEN"],
@@ -2483,7 +2483,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-evernote",
             "name": "Evernote",
-            "description": "Evernote MCP server — note-taking, notebooks, and search via Evernote API",
+            "description": "Evernote MCP server — note-taking, notebooks, and search via Evernote API",  # noqa: E501
             "tool_definitions": evernote_server.TOOL_DEFINITIONS,
             "handler": evernote_server.call_tool,
             "requires_env": ["EVERNOTE_ACCESS_TOKEN"],
@@ -2492,7 +2492,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-spotify",
             "name": "Spotify",
-            "description": "Spotify MCP server — Spotify music track search, playlists, and artist info",
+            "description": "Spotify MCP server — Spotify music track search, playlists, and artist info",  # noqa: E501
             "tool_definitions": spotify_server.TOOL_DEFINITIONS,
             "handler": spotify_server.call_tool,
             "requires_env": ["SPOTIFY_ACCESS_TOKEN"],
@@ -2508,7 +2508,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-hootsuite",
             "name": "Hootsuite",
-            "description": "Hootsuite MCP server — Hootsuite social media profile management, scheduling, and analytics",
+            "description": "Hootsuite MCP server — Hootsuite social media profile management, scheduling, and analytics",  # noqa: E501
             "tool_definitions": hootsuite_server.TOOL_DEFINITIONS,
             "handler": hootsuite_server.call_tool,
             "requires_env": ["HOOTSUITE_ACCESS_TOKEN"],
@@ -2516,7 +2516,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-sprout-social",
             "name": "Sprout Social",
-            "description": "Sprout Social MCP server — Sprout Social social media management, analytics, and tasks",
+            "description": "Sprout Social MCP server — Sprout Social social media management, analytics, and tasks",  # noqa: E501
             "tool_definitions": sprout_social_server.TOOL_DEFINITIONS,
             "handler": sprout_social_server.call_tool,
             "requires_env": ["SPROUT_SOCIAL_ACCESS_TOKEN"],
@@ -2524,7 +2524,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-buffer",
             "name": "Buffer",
-            "description": "Buffer MCP server — Buffer social media post scheduling, analytics, and profile management",
+            "description": "Buffer MCP server — Buffer social media post scheduling, analytics, and profile management",  # noqa: E501
             "tool_definitions": buffer_server.TOOL_DEFINITIONS,
             "handler": buffer_server.call_tool,
             "requires_env": ["BUFFER_ACCESS_TOKEN"],
@@ -2532,7 +2532,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-facebook-pages",
             "name": "Facebook Pages",
-            "description": "Facebook Pages MCP server — Facebook Page posts, insights, comments, and scheduling",
+            "description": "Facebook Pages MCP server — Facebook Page posts, insights, comments, and scheduling",  # noqa: E501
             "tool_definitions": facebook_pages_server.TOOL_DEFINITIONS,
             "handler": facebook_pages_server.call_tool,
             "requires_env": ["FACEBOOK_ACCESS_TOKEN", "FACEBOOK_PAGE_ID"],
@@ -2540,7 +2540,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-facebook-lead-ads",
             "name": "Facebook Lead Ads",
-            "description": "Facebook Lead Ads MCP server — Facebook Lead Ad forms, leads, ad accounts, and insights",
+            "description": "Facebook Lead Ads MCP server — Facebook Lead Ad forms, leads, ad accounts, and insights",  # noqa: E501
             "tool_definitions": facebook_lead_ads_server.TOOL_DEFINITIONS,
             "handler": facebook_lead_ads_server.call_tool,
             "requires_env": ["FACEBOOK_ACCESS_TOKEN"],
@@ -2548,7 +2548,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-facebook-conversions",
             "name": "Facebook Conversions",
-            "description": "Facebook Conversions MCP server — Facebook Conversions API server-side event tracking",
+            "description": "Facebook Conversions MCP server — Facebook Conversions API server-side event tracking",  # noqa: E501
             "tool_definitions": facebook_conversions_server.TOOL_DEFINITIONS,
             "handler": facebook_conversions_server.call_tool,
             "requires_env": ["FACEBOOK_ACCESS_TOKEN", "FACEBOOK_PIXEL_ID"],
@@ -2556,7 +2556,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-twitch",
             "name": "Twitch",
-            "description": "Twitch MCP server — streaming platform: streams, users, followers, videos, and channels",
+            "description": "Twitch MCP server — streaming platform: streams, users, followers, videos, and channels",  # noqa: E501
             "tool_definitions": twitch_server.TOOL_DEFINITIONS,
             "handler": twitch_server.call_tool,
             "requires_env": ["TWITCH_ACCESS_TOKEN", "TWITCH_CLIENT_ID"],
@@ -2573,7 +2573,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-apache-kafka",
             "name": "Apache Kafka",
-            "description": "Apache Kafka MCP server — topic and consumer-group management via Confluent Cloud REST Proxy",
+            "description": "Apache Kafka MCP server — topic and consumer-group management via Confluent Cloud REST Proxy",  # noqa: E501
             "tool_definitions": apache_kafka_server.TOOL_DEFINITIONS,
             "handler": apache_kafka_server.call_tool,
             "requires_env": ["KAFKA_API_KEY", "KAFKA_API_SECRET", "KAFKA_REST_ENDPOINT"],
@@ -2589,7 +2589,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-cloudflare",
             "name": "Cloudflare",
-            "description": "Cloudflare MCP server — CDN, DNS, and Workers management via Cloudflare API v4",
+            "description": "Cloudflare MCP server — CDN, DNS, and Workers management via Cloudflare API v4",  # noqa: E501
             "tool_definitions": cloudflare_server.TOOL_DEFINITIONS,
             "handler": cloudflare_server.call_tool,
             "requires_env": ["CLOUDFLARE_API_TOKEN"],
@@ -2609,7 +2609,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-firebase",
             "name": "Firebase / Firestore",
-            "description": "Firebase / Firestore MCP server — document database and push notifications",
+            "description": "Firebase / Firestore MCP server — document database and push notifications",  # noqa: E501
             "tool_definitions": firebase_server.TOOL_DEFINITIONS,
             "handler": firebase_server.call_tool,
             "requires_env": ["FIREBASE_ACCESS_TOKEN", "FIREBASE_PROJECT_ID"],
@@ -2649,7 +2649,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-gemini",
             "name": "Google Gemini",
-            "description": "Google Gemini MCP server — multimodal AI text generation and embeddings",
+            "description": "Google Gemini MCP server — multimodal AI text generation and embeddings",  # noqa: E501
             "tool_definitions": gemini_server.TOOL_DEFINITIONS,
             "handler": gemini_server.call_tool,
             "requires_env": ["GEMINI_API_KEY"],
@@ -2665,7 +2665,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-appsheet",
             "name": "AppSheet",
-            "description": "AppSheet MCP server — no-code app data management and action invocation",
+            "description": "AppSheet MCP server — no-code app data management and action invocation",  # noqa: E501
             "tool_definitions": appsheet_server.TOOL_DEFINITIONS,
             "handler": appsheet_server.call_tool,
             "requires_env": ["APPSHEET_ACCESS_KEY", "APPSHEET_APP_ID"],
@@ -2673,7 +2673,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-anvil",
             "name": "Anvil",
-            "description": "Anvil MCP server — PDF generation, form filling, and e-signature workflows",
+            "description": "Anvil MCP server — PDF generation, form filling, and e-signature workflows",  # noqa: E501
             "tool_definitions": anvil_server.TOOL_DEFINITIONS,
             "handler": anvil_server.call_tool,
             "requires_env": ["ANVIL_API_KEY"],
@@ -2743,7 +2743,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-microsoft-excel",
             "name": "Microsoft Excel",
-            "description": "Microsoft Excel MCP server — workbook and spreadsheet management via Microsoft Graph API",
+            "description": "Microsoft Excel MCP server — workbook and spreadsheet management via Microsoft Graph API",  # noqa: E501
             "tool_definitions": microsoft_excel_server.TOOL_DEFINITIONS,
             "handler": microsoft_excel_server.call_tool,
             "requires_env": ["MICROSOFT_ACCESS_TOKEN"],
@@ -2751,7 +2751,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-microsoft-outlook",
             "name": "Microsoft Outlook",
-            "description": "Microsoft Outlook MCP server — email management via Microsoft Graph API",
+            "description": "Microsoft Outlook MCP server — email management via Microsoft Graph API",  # noqa: E501
             "tool_definitions": microsoft_outlook_server.TOOL_DEFINITIONS,
             "handler": microsoft_outlook_server.call_tool,
             "requires_env": ["MICROSOFT_ACCESS_TOKEN"],
@@ -2759,7 +2759,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-microsoft-onenote",
             "name": "Microsoft OneNote",
-            "description": "Microsoft OneNote MCP server — notebook and page management via Microsoft Graph API",
+            "description": "Microsoft OneNote MCP server — notebook and page management via Microsoft Graph API",  # noqa: E501
             "tool_definitions": microsoft_onenote_server.TOOL_DEFINITIONS,
             "handler": microsoft_onenote_server.call_tool,
             "requires_env": ["MICROSOFT_ACCESS_TOKEN"],
@@ -2767,7 +2767,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-microsoft-todo",
             "name": "Microsoft To Do",
-            "description": "Microsoft To Do MCP server — task list management via Microsoft Graph API",
+            "description": "Microsoft To Do MCP server — task list management via Microsoft Graph API",  # noqa: E501
             "tool_definitions": microsoft_todo_server.TOOL_DEFINITIONS,
             "handler": microsoft_todo_server.call_tool,
             "requires_env": ["MICROSOFT_ACCESS_TOKEN"],
@@ -2776,7 +2776,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-gmail",
             "name": "Gmail",
-            "description": "Gmail MCP server — email reading, sending, drafts, and label management via Google APIs",
+            "description": "Gmail MCP server — email reading, sending, drafts, and label management via Google APIs",  # noqa: E501
             "tool_definitions": gmail_server.TOOL_DEFINITIONS,
             "handler": gmail_server.call_tool,
             "requires_env": ["GMAIL_ACCESS_TOKEN"],
@@ -2792,7 +2792,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-google-forms",
             "name": "Google Forms",
-            "description": "Google Forms MCP server — form creation and response management via Google Forms API",
+            "description": "Google Forms MCP server — form creation and response management via Google Forms API",  # noqa: E501
             "tool_definitions": google_forms_server.TOOL_DEFINITIONS,
             "handler": google_forms_server.call_tool,
             "requires_env": ["GOOGLE_ACCESS_TOKEN"],
@@ -2800,7 +2800,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-google-my-business",
             "name": "Google My Business",
-            "description": "Google My Business MCP server — manage business locations, reviews, and insights",
+            "description": "Google My Business MCP server — manage business locations, reviews, and insights",  # noqa: E501
             "tool_definitions": google_my_business_server.TOOL_DEFINITIONS,
             "handler": google_my_business_server.call_tool,
             "requires_env": ["GOOGLE_ACCESS_TOKEN"],
@@ -2808,7 +2808,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-google-photos",
             "name": "Google Photos",
-            "description": "Google Photos MCP server — manage photo library, albums, and media items",
+            "description": "Google Photos MCP server — manage photo library, albums, and media items",  # noqa: E501
             "tool_definitions": google_photos_server.TOOL_DEFINITIONS,
             "handler": google_photos_server.call_tool,
             "requires_env": ["GOOGLE_ACCESS_TOKEN"],
@@ -2816,7 +2816,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-google-slides",
             "name": "Google Slides",
-            "description": "Google Slides MCP server — presentation management via Google Slides API v1",
+            "description": "Google Slides MCP server — presentation management via Google Slides API v1",  # noqa: E501
             "tool_definitions": google_slides_server.TOOL_DEFINITIONS,
             "handler": google_slides_server.call_tool,
             "requires_env": ["GOOGLE_ACCESS_TOKEN"],
@@ -2824,7 +2824,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-google-tasks",
             "name": "Google Tasks",
-            "description": "Google Tasks MCP server — task list and task management via Google Tasks API v1",
+            "description": "Google Tasks MCP server — task list and task management via Google Tasks API v1",  # noqa: E501
             "tool_definitions": google_tasks_server.TOOL_DEFINITIONS,
             "handler": google_tasks_server.call_tool,
             "requires_env": ["GOOGLE_ACCESS_TOKEN"],
@@ -2849,7 +2849,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-fireflies",
             "name": "Fireflies.ai",
-            "description": "Fireflies.ai MCP server — meeting transcription and conversation intelligence",
+            "description": "Fireflies.ai MCP server — meeting transcription and conversation intelligence",  # noqa: E501
             "tool_definitions": fireflies_server.TOOL_DEFINITIONS,
             "handler": fireflies_server.call_tool,
             "requires_env": ["FIREFLIES_API_KEY"],
@@ -2857,7 +2857,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-phantombuster",
             "name": "PhantomBuster",
-            "description": "PhantomBuster MCP server — web automation and lead generation with Phantoms",
+            "description": "PhantomBuster MCP server — web automation and lead generation with Phantoms",  # noqa: E501
             "tool_definitions": phantombuster_server.TOOL_DEFINITIONS,
             "handler": phantombuster_server.call_tool,
             "requires_env": ["PHANTOMBUSTER_API_KEY"],
@@ -2865,7 +2865,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-fitbit",
             "name": "Fitbit",
-            "description": "Fitbit MCP server — fitness tracking, health data, and device management",
+            "description": "Fitbit MCP server — fitness tracking, health data, and device management",  # noqa: E501
             "tool_definitions": fitbit_server.TOOL_DEFINITIONS,
             "handler": fitbit_server.call_tool,
             "requires_env": ["FITBIT_ACCESS_TOKEN"],
@@ -2890,7 +2890,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-eventbrite",
             "name": "Eventbrite",
-            "description": "Eventbrite MCP server — event creation, ticketing, and attendee management",
+            "description": "Eventbrite MCP server — event creation, ticketing, and attendee management",  # noqa: E501
             "tool_definitions": eventbrite_server.TOOL_DEFINITIONS,
             "handler": eventbrite_server.call_tool,
             "requires_env": ["EVENTBRITE_API_KEY"],
@@ -2906,7 +2906,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-easywebinar",
             "name": "EasyWebinar",
-            "description": "EasyWebinar MCP server — automated webinar hosting and attendee management",
+            "description": "EasyWebinar MCP server — automated webinar hosting and attendee management",  # noqa: E501
             "tool_definitions": easywebinar_server.TOOL_DEFINITIONS,
             "handler": easywebinar_server.call_tool,
             "requires_env": ["EASYWEBINAR_API_KEY"],
@@ -2923,7 +2923,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-zoho-desk",
             "name": "Zoho Desk",
-            "description": "Zoho Desk MCP server — customer support ticketing and helpdesk management",
+            "description": "Zoho Desk MCP server — customer support ticketing and helpdesk management",  # noqa: E501
             "tool_definitions": zoho_desk_server.TOOL_DEFINITIONS,
             "handler": zoho_desk_server.call_tool,
             "requires_env": ["ZOHO_DESK_ACCESS_TOKEN", "ZOHO_DESK_ORG_ID"],
@@ -2931,7 +2931,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-help-scout",
             "name": "Help Scout",
-            "description": "Help Scout MCP server — customer support conversations and mailbox management",
+            "description": "Help Scout MCP server — customer support conversations and mailbox management",  # noqa: E501
             "tool_definitions": help_scout_server.TOOL_DEFINITIONS,
             "handler": help_scout_server.call_tool,
             "requires_env": ["HELP_SCOUT_API_KEY"],
@@ -2947,7 +2947,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-zenloop",
             "name": "Zenloop",
-            "description": "Zenloop MCP server — NPS surveys, feedback collection, and customer sentiment",
+            "description": "Zenloop MCP server — NPS surveys, feedback collection, and customer sentiment",  # noqa: E501
             "tool_definitions": zenloop_server.TOOL_DEFINITIONS,
             "handler": zenloop_server.call_tool,
             "requires_env": ["ZENLOOP_API_TOKEN"],
@@ -2964,7 +2964,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-athenahealth",
             "name": "Athenahealth EHR",
-            "description": "Athenahealth EHR MCP server — patient records, appointments, and clinical data",
+            "description": "Athenahealth EHR MCP server — patient records, appointments, and clinical data",  # noqa: E501
             "tool_definitions": athenahealth_server.TOOL_DEFINITIONS,
             "handler": athenahealth_server.call_tool,
             "requires_env": ["ATHENA_ACCESS_TOKEN", "ATHENA_PRACTICE_ID"],
@@ -2972,7 +2972,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-drchrono",
             "name": "DrChrono EHR",
-            "description": "DrChrono EHR MCP server — patient management, appointments, and clinical notes",
+            "description": "DrChrono EHR MCP server — patient management, appointments, and clinical notes",  # noqa: E501
             "tool_definitions": drchrono_server.TOOL_DEFINITIONS,
             "handler": drchrono_server.call_tool,
             "requires_env": ["DRCHRONO_ACCESS_TOKEN"],
@@ -2980,7 +2980,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-clio",
             "name": "Clio",
-            "description": "Clio MCP server — legal practice management, matters, contacts, and time tracking",
+            "description": "Clio MCP server — legal practice management, matters, contacts, and time tracking",  # noqa: E501
             "tool_definitions": clio_server.TOOL_DEFINITIONS,
             "handler": clio_server.call_tool,
             "requires_env": ["CLIO_ACCESS_TOKEN"],
@@ -2988,7 +2988,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-harvey",
             "name": "Harvey AI",
-            "description": "Harvey AI MCP server — AI-powered legal research, drafting, and document analysis",
+            "description": "Harvey AI MCP server — AI-powered legal research, drafting, and document analysis",  # noqa: E501
             "tool_definitions": harvey_server.TOOL_DEFINITIONS,
             "handler": harvey_server.call_tool,
             "requires_env": ["HARVEY_API_KEY"],
@@ -2997,7 +2997,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-zillow",
             "name": "Zillow",
-            "description": "Zillow MCP server — real estate search, property details, and market estimates",
+            "description": "Zillow MCP server — real estate search, property details, and market estimates",  # noqa: E501
             "tool_definitions": zillow_server.TOOL_DEFINITIONS,
             "handler": zillow_server.call_tool,
             "requires_env": ["ZILLOW_API_KEY"],
@@ -3005,7 +3005,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-buildium",
             "name": "Buildium",
-            "description": "Buildium MCP server — property management, leases, tenants, and financials",
+            "description": "Buildium MCP server — property management, leases, tenants, and financials",  # noqa: E501
             "tool_definitions": buildium_server.TOOL_DEFINITIONS,
             "handler": buildium_server.call_tool,
             "requires_env": ["BUILDIUM_CLIENT_ID", "BUILDIUM_CLIENT_SECRET"],
@@ -3022,7 +3022,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-canvas-lms",
             "name": "Canvas LMS",
-            "description": "Canvas LMS MCP server — course management, assignments, and student grading",
+            "description": "Canvas LMS MCP server — course management, assignments, and student grading",  # noqa: E501
             "tool_definitions": canvas_lms_server.TOOL_DEFINITIONS,
             "handler": canvas_lms_server.call_tool,
             "requires_env": ["CANVAS_ACCESS_TOKEN", "CANVAS_DOMAIN"],
@@ -3030,7 +3030,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-moodle",
             "name": "Moodle",
-            "description": "Moodle MCP server — e-learning course management, users, and assignments",
+            "description": "Moodle MCP server — e-learning course management, users, and assignments",  # noqa: E501
             "tool_definitions": moodle_server.TOOL_DEFINITIONS,
             "handler": moodle_server.call_tool,
             "requires_env": ["MOODLE_TOKEN", "MOODLE_URL"],
@@ -3047,7 +3047,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-aws-iot",
             "name": "AWS IoT Core",
-            "description": "AWS IoT Core MCP server — device management, shadows, and message publishing",
+            "description": "AWS IoT Core MCP server — device management, shadows, and message publishing",  # noqa: E501
             "tool_definitions": aws_iot_server.TOOL_DEFINITIONS,
             "handler": aws_iot_server.call_tool,
             "requires_env": ["AWS_ACCESS_KEY_ID", "AWS_REGION", "AWS_SECRET_ACCESS_KEY"],
@@ -3056,7 +3056,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-amadeus",
             "name": "Amadeus",
-            "description": "Amadeus MCP server — travel search, flight booking, and hotel discovery",
+            "description": "Amadeus MCP server — travel search, flight booking, and hotel discovery",  # noqa: E501
             "tool_definitions": amadeus_server.TOOL_DEFINITIONS,
             "handler": amadeus_server.call_tool,
             "requires_env": ["AMADEUS_CLIENT_ID", "AMADEUS_CLIENT_SECRET"],
@@ -3072,7 +3072,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-flexport",
             "name": "Flexport",
-            "description": "Flexport MCP server — supply chain logistics, shipments, and freight management",
+            "description": "Flexport MCP server — supply chain logistics, shipments, and freight management",  # noqa: E501
             "tool_definitions": flexport_server.TOOL_DEFINITIONS,
             "handler": flexport_server.call_tool,
             "requires_env": ["FLEXPORT_API_KEY"],
@@ -3080,7 +3080,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-toast-pos",
             "name": "Toast POS",
-            "description": "Toast POS MCP server — restaurant orders, menu management, and payments",
+            "description": "Toast POS MCP server — restaurant orders, menu management, and payments",  # noqa: E501
             "tool_definitions": toast_pos_server.TOOL_DEFINITIONS,
             "handler": toast_pos_server.call_tool,
             "requires_env": ["TOAST_CLIENT_ID", "TOAST_CLIENT_SECRET"],
@@ -3097,7 +3097,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-moralis",
             "name": "Moralis Web3",
-            "description": "Moralis Web3 MCP server — blockchain data, NFT collections, and wallet analytics",
+            "description": "Moralis Web3 MCP server — blockchain data, NFT collections, and wallet analytics",  # noqa: E501
             "tool_definitions": moralis_server.TOOL_DEFINITIONS,
             "handler": moralis_server.call_tool,
             "requires_env": ["MORALIS_API_KEY"],
@@ -3106,7 +3106,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-sportradar",
             "name": "Sportradar",
-            "description": "Sportradar MCP server — live scores, schedules, team stats, and sports data",
+            "description": "Sportradar MCP server — live scores, schedules, team stats, and sports data",  # noqa: E501
             "tool_definitions": sportradar_server.TOOL_DEFINITIONS,
             "handler": sportradar_server.call_tool,
             "requires_env": ["SPORTRADAR_API_KEY"],
@@ -3114,7 +3114,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-steam",
             "name": "Steam",
-            "description": "Steam MCP server — gaming platform data, player profiles, and game info",
+            "description": "Steam MCP server — gaming platform data, player profiles, and game info",  # noqa: E501
             "tool_definitions": steam_server.TOOL_DEFINITIONS,
             "handler": steam_server.call_tool,
             "requires_env": ["STEAM_API_KEY"],
@@ -3131,7 +3131,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-sap",
             "name": "SAP ERP",
-            "description": "SAP ERP MCP server — purchase orders, materials, inventory, and procurement",
+            "description": "SAP ERP MCP server — purchase orders, materials, inventory, and procurement",  # noqa: E501
             "tool_definitions": sap_server.TOOL_DEFINITIONS,
             "handler": sap_server.call_tool,
             "requires_env": ["SAP_BASE_URL", "SAP_CLIENT_ID", "SAP_CLIENT_SECRET"],
@@ -3139,7 +3139,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-channable",
             "name": "Channable",
-            "description": "Channable MCP server — product feed management, channel publishing, and rules",
+            "description": "Channable MCP server — product feed management, channel publishing, and rules",  # noqa: E501
             "tool_definitions": channable_server.TOOL_DEFINITIONS,
             "handler": channable_server.call_tool,
             "requires_env": ["CHANNABLE_API_KEY", "CHANNABLE_COMPANY_ID"],
@@ -3155,7 +3155,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-gust",
             "name": "Gust",
-            "description": "Gust MCP server — startup funding platform, investor profiles, and applications",
+            "description": "Gust MCP server — startup funding platform, investor profiles, and applications",  # noqa: E501
             "tool_definitions": gust_server.TOOL_DEFINITIONS,
             "handler": gust_server.call_tool,
             "requires_env": ["GUST_ACCESS_TOKEN"],
@@ -3163,7 +3163,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-koala",
             "name": "Koala intent data",
-            "description": "Koala intent data MCP server — visitor tracking, account signals, and firmographics",
+            "description": "Koala intent data MCP server — visitor tracking, account signals, and firmographics",  # noqa: E501
             "tool_definitions": koala_server.TOOL_DEFINITIONS,
             "handler": koala_server.call_tool,
             "requires_env": ["KOALA_API_KEY"],
@@ -3171,7 +3171,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-logmein",
             "name": "LogMeIn Rescue",
-            "description": "LogMeIn Rescue MCP server — remote access sessions and computer management",
+            "description": "LogMeIn Rescue MCP server — remote access sessions and computer management",  # noqa: E501
             "tool_definitions": logmein_server.TOOL_DEFINITIONS,
             "handler": logmein_server.call_tool,
             "requires_env": ["LOGMEIN_API_KEY"],
@@ -3179,7 +3179,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-mendeley",
             "name": "Mendeley",
-            "description": "Mendeley MCP server — academic research platform, documents, and groups",
+            "description": "Mendeley MCP server — academic research platform, documents, and groups",  # noqa: E501
             "tool_definitions": mendeley_server.TOOL_DEFINITIONS,
             "handler": mendeley_server.call_tool,
             "requires_env": ["MENDELEY_ACCESS_TOKEN"],
@@ -3187,7 +3187,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-upkeep",
             "name": "UpKeep",
-            "description": "UpKeep MCP server — maintenance management, work orders, and asset tracking",
+            "description": "UpKeep MCP server — maintenance management, work orders, and asset tracking",  # noqa: E501
             "tool_definitions": upkeep_server.TOOL_DEFINITIONS,
             "handler": upkeep_server.call_tool,
             "requires_env": ["UPKEEP_API_KEY"],
@@ -3195,7 +3195,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-yandex",
             "name": "Yandex",
-            "description": "Yandex MCP server — translation, disk storage, metrica analytics, and geocoding",
+            "description": "Yandex MCP server — translation, disk storage, metrica analytics, and geocoding",  # noqa: E501
             "tool_definitions": yandex_server.TOOL_DEFINITIONS,
             "handler": yandex_server.call_tool,
             "requires_env": ["YANDEX_API_KEY", "YANDEX_OAUTH_TOKEN"],
@@ -3203,7 +3203,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-unbounce",
             "name": "Unbounce",
-            "description": "Unbounce MCP server — landing pages, lead capture, and conversion analytics",
+            "description": "Unbounce MCP server — landing pages, lead capture, and conversion analytics",  # noqa: E501
             "tool_definitions": unbounce_server.TOOL_DEFINITIONS,
             "handler": unbounce_server.call_tool,
             "requires_env": ["UNBOUNCE_API_KEY"],
@@ -3219,7 +3219,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-elavon",
             "name": "Elavon",
-            "description": "Elavon MCP server — payment processing, transaction management, and batch operations",
+            "description": "Elavon MCP server — payment processing, transaction management, and batch operations",  # noqa: E501
             "tool_definitions": elavon_server.TOOL_DEFINITIONS,
             "handler": elavon_server.call_tool,
             "requires_env": ["ELAVON_MERCHANT_ID", "ELAVON_PIN", "ELAVON_USER_ID"],

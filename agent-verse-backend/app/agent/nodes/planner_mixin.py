@@ -214,7 +214,7 @@ class PlannerMixin:
             if _plan_variant is not None:
                 agent_state.context["planner_variant_id"] = _plan_variant.variant_id
         else:
-            # Use structured planner when goal-tree is enabled for dependency-aware parallel execution
+            # Use structured planner when goal-tree is enabled for dependency-aware parallel execution  # noqa: E501
             _planner_prompt = (
                 STRUCTURED_PLANNER_SYSTEM if self._enable_goal_tree else PLANNER_SYSTEM
             )

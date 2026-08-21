@@ -33,7 +33,7 @@ TOOL_DEFINITIONS = [
                 },
                 "priority": {
                     "type": "integer",
-                    "description": "Filter by priority (0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low)",
+                    "description": "Filter by priority (0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low)",  # noqa: E501
                 },
                 "first": {
                     "type": "integer",

@@ -79,13 +79,13 @@ class ArtifactTool:
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Filename including extension (e.g. 'report.csv', 'summary.md')",
+                        "description": "Filename including extension (e.g. 'report.csv', 'summary.md')",  # noqa: E501
                     },
                     "content": {"type": "string", "description": "File content as text"},
                     "content_type": {
                         "type": "string",
                         "default": "text/plain",
-                        "description": "MIME type: text/plain, text/csv, application/json, text/markdown",
+                        "description": "MIME type: text/plain, text/csv, application/json, text/markdown",  # noqa: E501
                     },
                     "expires_hours": {
                         "type": "integer",

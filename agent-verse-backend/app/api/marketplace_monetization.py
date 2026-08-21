@@ -39,8 +39,8 @@ def _stripe():
             raise HTTPException(503, "Stripe not configured. Set STRIPE_API_KEY.")
         stripe.api_key = s.stripe_api_key
         return stripe
-    except ImportError:
-        raise HTTPException(503, "stripe package not installed. Run: pip install stripe")
+    except ImportError as _b904_exc:
+        raise HTTPException(503, "stripe package not installed. Run: pip install stripe") from _b904_exc  # noqa: E501
 
 
 @router.post("/set-price")
@@ -90,7 +90,7 @@ async def onboard_author(body: OnboardAuthorRequest, request: Request) -> dict[s
         )
         return {"onboarding_url": link.url, "stripe_account_id": account.id}
     except Exception as exc:
-        raise HTTPException(500, f"Stripe onboarding failed: {exc}")
+        raise HTTPException(500, f"Stripe onboarding failed: {exc}") from exc
 
 
 @router.post("/purchase/{template_id}")
@@ -123,4 +123,4 @@ async def purchase_template(template_id: str, request: Request) -> dict[str, Any
         )
         return {"client_secret": intent.client_secret, "amount_usd": price_usd}
     except Exception as exc:
-        raise HTTPException(500, f"Purchase failed: {exc}")
+        raise HTTPException(500, f"Purchase failed: {exc}") from exc

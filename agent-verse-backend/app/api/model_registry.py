@@ -149,10 +149,10 @@ async def set_routing_policy(request: Request, task_type: str) -> dict[str, Any]
 
     try:
         tt = TaskType(task_type)
-    except ValueError:
+    except ValueError as _b904_exc:
         from fastapi import HTTPException
 
-        raise HTTPException(400, f"Invalid task type: {task_type}")
+        raise HTTPException(400, f"Invalid task type: {task_type}") from _b904_exc
 
     policy = ModelRoutePolicy(
         task_type=tt,

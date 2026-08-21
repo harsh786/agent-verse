@@ -240,3 +240,6 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     except Exception as exc:
         logger.exception("pinecone_call_tool_error tool=%s", tool_name)
         return {"error": str(exc)}
+
+    # Fallback: no tool branch matched (should be unreachable due to else above)
+    return {"error": f"Tool '{tool_name}' did not produce a result"}

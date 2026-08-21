@@ -30,7 +30,7 @@ def upgrade() -> None:
         "CREATE INDEX IF NOT EXISTS ix_artifacts_goal ON artifacts (goal_id) WHERE goal_id != ''"
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_artifacts_expires ON artifacts (expires_at) WHERE expires_at IS NOT NULL"
+        "CREATE INDEX IF NOT EXISTS ix_artifacts_expires ON artifacts (expires_at) WHERE expires_at IS NOT NULL"  # noqa: E501
     )
 
 

@@ -21,7 +21,7 @@ AIRTABLE_BASE = "https://api.airtable.com/v0"
 TOOL_DEFINITIONS = [
     {
         "name": "airtable_list_records",
-        "description": "List records from an Airtable table with optional filtering, sorting, and field selection",
+        "description": "List records from an Airtable table with optional filtering, sorting, and field selection",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {
@@ -67,7 +67,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "airtable_update_record",
-        "description": "Update an existing Airtable record by record ID (PATCH — only specified fields changed)",
+        "description": "Update an existing Airtable record by record ID (PATCH — only specified fields changed)",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {
@@ -107,7 +107,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "airtable_search_records",
-        "description": "Search records in an Airtable table by matching a value in a specific field",
+        "description": "Search records in an Airtable table by matching a value in a specific field",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {

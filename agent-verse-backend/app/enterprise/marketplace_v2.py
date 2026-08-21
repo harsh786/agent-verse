@@ -1584,7 +1584,7 @@ class MarketplaceV2:
                             VALUES
                                 (:id, :tenant_id, :name, :slug, :description,
                                  :long_description, :domain, :subdomain, :category,
-                                 :tags, CAST(:template_config AS jsonb), CAST(:parameters_schema AS jsonb),
+                                 :tags, CAST(:template_config AS jsonb), CAST(:parameters_schema AS jsonb),  # noqa: E501
                                  :required_connectors, :optional_connectors,
                                  :author_name, :icon_url, :visibility, :review_status,
                                  :is_builtin, :is_verified, :version)
