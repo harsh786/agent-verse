@@ -205,7 +205,7 @@ export function AuthPage() {
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full py-2 px-4 bg-[#00D4FF] text-[#00D4FF]-foreground text-sm font-medium rounded-md hover:opacity-90 transition-opacity"
+              className="w-full py-2 px-4 bg-[#00D4FF] text-primary-foreground text-sm font-medium rounded-md hover:opacity-90 transition-opacity"
             >
               {isSubmitting ? 'Signing in…' : 'Sign in'}
             </button>

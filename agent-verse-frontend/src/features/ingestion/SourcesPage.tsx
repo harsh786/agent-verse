@@ -35,7 +35,7 @@ export function SourcesPage() {
         </div>
         <button
           onClick={() => setShowCreate(true)}
-          className="inline-flex items-center gap-2 rounded-lg bg-[#00D4FF] text-[#00D4FF]-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
+          className="inline-flex items-center gap-2 rounded-lg bg-[#00D4FF] text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
         >
           <Plus className="h-4 w-4" />
           Add Source
@@ -118,7 +118,7 @@ function FamilyChip({
       aria-checked={active}
       className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
         active
-          ? 'bg-primary text-[#00D4FF]-foreground border-[#00D4FF]'
+          ? 'bg-primary text-primary-foreground border-[#00D4FF]'
           : 'bg-background text-muted-foreground border-border hover:border-primary hover:text-foreground'
       }`}
     >

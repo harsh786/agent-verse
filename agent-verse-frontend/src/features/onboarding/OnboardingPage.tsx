@@ -93,7 +93,7 @@ function Step1LLM({ onNext }: { onNext: () => void }) {
       <button
         onClick={handleSave}
         disabled={saving || saved}
-        className="flex items-center gap-2 px-5 py-2.5 bg-[#00D4FF] text-[#00D4FF]-foreground text-sm rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
+        className="flex items-center gap-2 px-5 py-2.5 bg-[#00D4FF] text-primary-foreground text-sm rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
       >
         {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
         {saved ? "Saved!" : "Save & Continue"}
@@ -200,7 +200,7 @@ function Step2Connector({ onNext, onSkip }: { onNext: () => void; onSkip: () => 
         <button
           onClick={handleRegister}
           disabled={saving || saved}
-          className="flex items-center gap-2 px-5 py-2.5 bg-primary text-[#00D4FF]-foreground text-sm rounded-lg hover:opacity-90 disabled:opacity-50"
+          className="flex items-center gap-2 px-5 py-2.5 bg-primary text-primary-foreground text-sm rounded-lg hover:opacity-90 disabled:opacity-50"
         >
           {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
           {saved ? "Registered!" : "Register & Continue"}

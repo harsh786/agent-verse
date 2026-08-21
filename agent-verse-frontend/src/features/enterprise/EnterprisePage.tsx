@@ -150,7 +150,7 @@ function SAMLWizard(): JSX.Element {
               onClick={() => i <= step && setStep(i)}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                 i === step
-                  ? 'bg-[#00D4FF] text-[#00D4FF]-foreground'
+                  ? 'bg-[#00D4FF] text-primary-foreground'
                   : i < step
                   ? 'bg-primary/10 text-[#00D4FF]'
                   : 'text-muted-foreground'
