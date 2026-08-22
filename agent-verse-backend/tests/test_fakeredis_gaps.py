@@ -7,9 +7,12 @@ Missing lines targeted:
 """
 from __future__ import annotations
 
+import json
 import time
+from unittest.mock import patch
 
 import pytest
+from fastapi import FastAPI
 
 # ── import _FakeRedis and _FakeLuaScript from main.py ─────────────────────────
 
@@ -217,3 +220,113 @@ async def test_lua_1key_success(fake_redis):
         args=["3.0", "100.0", str(future_ts)],
     )
     assert result == "3.0"
+
+
+# ── Error handlers (lines 404-417) ────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_platform_error_handler_returns_json():
+    """The PlatformError exception handler returns a JSONResponse with the error dict."""
+    from app.main import _register_error_handlers
+    from app.core.errors import PlatformError, Severity
+
+    app = FastAPI()
+    _register_error_handlers(app)
+
+    # Find the handler and invoke it directly with a mock PlatformError
+    exc = PlatformError(
+        message="Something went wrong",
+        code="test-error",
+        severity=Severity.HIGH,
+    )
+
+    # Get the registered handler from the app's exception_handlers
+    handler = app.exception_handlers.get(PlatformError)
+    assert handler is not None
+
+    from starlette.requests import Request
+    mock_request = Request({"type": "http", "headers": []})
+    response = await handler(mock_request, exc)
+
+    assert response.status_code == 500
+    body = json.loads(response.body)
+    assert body["error"]["code"] == "test-error"
+
+
+@pytest.mark.asyncio
+async def test_platform_error_handler_critical_severity_logs():
+    """Critical severity platform errors are logged at error level."""
+    from app.main import _register_error_handlers
+    from app.core.errors import PlatformError, Severity
+
+    app = FastAPI()
+    _register_error_handlers(app)
+
+    exc = PlatformError(
+        code="critical-outage",
+        message="System outage",
+        severity=Severity.CRITICAL,
+    )
+
+    handler = app.exception_handlers.get(PlatformError)
+    with patch("app.main.logger") as mock_logger:
+        from starlette.requests import Request
+        mock_request = Request({"type": "http", "headers": []})
+        await handler(mock_request, exc)
+    mock_logger.error.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_unhandled_error_handler_wraps_in_internal_error():
+    """The unhandled Exception handler wraps the cause in InternalError and returns 500."""
+    from app.main import _register_error_handlers
+
+    app = FastAPI()
+    _register_error_handlers(app)
+
+    original_exc = RuntimeError("database connection lost")
+    handler = app.exception_handlers.get(Exception)
+    assert handler is not None
+
+    from starlette.requests import Request
+    mock_request = Request({"type": "http", "headers": []})
+    response = await handler(mock_request, original_exc)
+
+    assert response.status_code == 500
+    body = json.loads(response.body)
+    # Body is nested under "error" key; should NOT leak the original message
+    error_obj = body.get("error", body)
+    assert "database connection lost" not in error_obj.get("message", "")
+    assert error_obj.get("code", "").startswith("INTERNAL") or "internal" in error_obj.get("code", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_unhandled_error_handler_logs_real_cause():
+    """The handler logs the real exception server-side (exc_info)."""
+    from app.main import _register_error_handlers
+
+    app = FastAPI()
+    _register_error_handlers(app)
+
+    handler = app.exception_handlers.get(Exception)
+    with patch("app.main.logger") as mock_logger:
+        from starlette.requests import Request
+        mock_request = Request({"type": "http", "headers": []})
+        await handler(mock_request, ValueError("secret value"))
+
+    mock_logger.error.assert_called()
+    # The log call should include exc_info
+    call_kwargs = mock_logger.error.call_args.kwargs
+    assert "exc_info" in call_kwargs or len(mock_logger.error.call_args.args) > 1
+
+
+def test_register_error_handlers_registers_both_handlers():
+    """_register_error_handlers registers handlers for PlatformError and Exception."""
+    from app.main import _register_error_handlers
+    from app.core.errors import PlatformError
+
+    app = FastAPI()
+    _register_error_handlers(app)
+
+    assert PlatformError in app.exception_handlers
+    assert Exception in app.exception_handlers
