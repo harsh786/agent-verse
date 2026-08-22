@@ -354,7 +354,7 @@ class TestMarketplaceV2InMemory:
         mock_store = MagicMock()
         mock_store.list_connectors = AsyncMock(return_value=[])
         result = await mp.install(
-            template_id="tpl-conn", params={}, tenant_ctx=TA, agent_store=mock_store
+            template_id="tpl-conn", params={"task": "x"}, tenant_ctx=TA, agent_store=mock_store
         )
         assert result["success"] is False
         assert "missing_connectors" in result
@@ -371,7 +371,7 @@ class TestMarketplaceV2InMemory:
         mock_store = MagicMock()
         mock_store.list_connectors = AsyncMock(return_value=[mock_connector])
         result = await mp.install(
-            template_id="tpl-conn2", params={}, tenant_ctx=TA, agent_store=mock_store
+            template_id="tpl-conn2", params={"task": "x"}, tenant_ctx=TA, agent_store=mock_store
         )
         assert result["success"] is True
 
@@ -389,7 +389,9 @@ class TestMarketplaceV2InMemory:
             }),
         }
         mp._cache["tpl-json-cfg"] = tpl
-        result = await mp.install(template_id="tpl-json-cfg", params={}, tenant_ctx=TA)
+        result = await mp.install(
+            template_id="tpl-json-cfg", params={"task": "x"}, tenant_ctx=TA
+        )
         assert result["success"] is True
 
     @pytest.mark.asyncio
@@ -398,7 +400,9 @@ class TestMarketplaceV2InMemory:
         mp = MarketplaceV2()
         tpl = {**_SAFE, "template_id": "tpl-bad-json", "template_config": "not-json!!!"}
         mp._cache["tpl-bad-json"] = tpl
-        result = await mp.install(template_id="tpl-bad-json", params={}, tenant_ctx=TA)
+        result = await mp.install(
+            template_id="tpl-bad-json", params={"task": "x"}, tenant_ctx=TA
+        )
         assert result["success"] is True  # Should not crash
 
     @pytest.mark.asyncio
