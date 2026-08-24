@@ -515,3 +515,46 @@ async def test_validate_plan_tools_with_mcp_exception_returns_empty() -> None:
     steps = ["some_step"]
     result = await g._validate_plan_tools(steps, _TENANT)
     assert result == []
+
+
+@pytest.mark.asyncio
+async def test_emit_no_event_callback_is_noop() -> None:
+    """_emit is a no-op when _event_callback is None."""
+    p = _fake_provider()
+    g = AgentGraph(planner=p, executor=p, verifier=p)
+    # No event_callback configured → emit should be a no-op
+    await g._emit({"type": "goal_started"})
+
+
+@pytest.mark.asyncio
+async def test_emit_calls_event_callback_with_timestamp_added() -> None:
+    """_emit adds a 'ts' timestamp and invokes _event_callback when set."""
+    p = _fake_provider()
+    callback = AsyncMock()
+    g = AgentGraph(planner=p, executor=p, verifier=p, event_callback=callback)
+    # event_callback passed to __init__ is only used during run() — set _event_callback directly
+    g._event_callback = callback
+    # event without ts → should get one added
+    await g._emit({"type": "step_completed"})
+    callback.assert_awaited_once()
+    # The first argument should be the event dict with ts key added
+    args = callback.call_args.args
+    assert "ts" in args[0]
+    assert args[0]["type"] == "step_completed"
+
+
+@pytest.mark.asyncio
+async def test_emit_preserves_existing_ts() -> None:
+    """_emit does not overwrite an existing 'ts' key."""
+    p = _fake_provider()
+    callback = AsyncMock()
+    g = AgentGraph(planner=p, executor=p, verifier=p, event_callback=callback)
+    g._event_callback = callback  # set directly since __init__ only uses it in run()
+    await g._emit({"type": "goal_started", "ts": "2024-01-01T00:00:00Z"})
+    callback.assert_awaited_once()
+    args = callback.call_args.args
+    # ts value should be preserved
+    assert args[0]["ts"] == "2024-01-01T00:00:00Z"
+
+
+# ── _validate_plan_tools helper (re-added) ───────────────────────────────────
