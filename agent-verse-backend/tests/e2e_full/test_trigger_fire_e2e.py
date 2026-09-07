@@ -73,6 +73,13 @@ async def test_fire_creates_real_goal_and_dedups_second_fire(tenant_client: Any)
     # gap tracked separately; it does not affect the trigger→goal proof here.
     assert goal.get("goal_text") or goal.get("goal")
 
+    # NOTE: reading back the persisted trigger_events audit row is intentionally
+    # NOT asserted here. The tz-aware/naive _persist_event write bug is fixed
+    # (no more persist_event_failed), but the /events read path does not set the
+    # RLS tenant GUC on the trigger_events table, so it returns [] under RLS —
+    # a separate gap tracked for a follow-up (needs rls_context on both the
+    # write and the read).
+
     # ── Second identical fire: deduplicated, no new goal ──────────────────────
     second = await tenant_client.post(
         f"/triggers/{schedule_id}/fire",

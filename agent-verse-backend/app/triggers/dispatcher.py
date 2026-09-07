@@ -352,7 +352,14 @@ class TriggerDispatcher:
                         "trigger_id": event.trigger_id,
                         "trigger_type": event.trigger_type,
                         "idempotency_key": event.idempotency_key,
-                        "fired_at": event.fired_at,
+                        # trigger_events.fired_at is a naive timestamp column; bind
+                        # a naive UTC value so asyncpg does not reject the tz-aware one
+                        # (which silently dropped every trigger audit row).
+                        "fired_at": (
+                            event.fired_at.replace(tzinfo=None)
+                            if getattr(event.fired_at, "tzinfo", None) is not None
+                            else event.fired_at
+                        ),
                         "goal_created": event.goal_created,
                         "goal_id": event.goal_id,
                         "skip_reason": event.skip_reason,
