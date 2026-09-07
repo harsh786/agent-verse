@@ -82,7 +82,7 @@ def test_guardrail_unknown_tool_blocked_with_registry() -> None:
 
 # ── PROFILE-BASED GUARDRAIL ENFORCER ─────────────────────────────────────────
 
-def test_guardrail_enforcer_uses_tenant_plan(tenant_ctx: TenantContext) -> None:
+async def test_guardrail_enforcer_uses_tenant_plan(tenant_ctx: TenantContext) -> None:
     from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
     from app.orchestration.runtime_profile import (
         GoalRuntimeProfile,
@@ -109,7 +109,7 @@ def test_guardrail_enforcer_uses_tenant_plan(tenant_ctx: TenantContext) -> None:
         eval_config=EvalConfig(),
         tenant_plan="free",  # Free plan
     )
-    result = enforcer.check_tool_args(
+    result = await enforcer.check_tool_args(
         tool_name="jira.search_issues",
         tool_args={},
         profile=profile,
@@ -117,7 +117,7 @@ def test_guardrail_enforcer_uses_tenant_plan(tenant_ctx: TenantContext) -> None:
     assert result.checked is True
 
 
-def test_guardrail_enforcer_catches_injection_in_args() -> None:
+async def test_guardrail_enforcer_catches_injection_in_args() -> None:
     from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
     from app.orchestration.runtime_profile import (
         GoalRuntimeProfile,
@@ -143,7 +143,7 @@ def test_guardrail_enforcer_catches_injection_in_args() -> None:
         memory_cache=MemoryCacheConfig(),
         eval_config=EvalConfig(),
     )
-    result = enforcer.check_tool_args(
+    result = await enforcer.check_tool_args(
         tool_name="postgres_query",
         tool_args={"query": "SELECT 1; DROP TABLE users; --"},
         profile=profile,

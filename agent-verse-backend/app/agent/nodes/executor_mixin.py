@@ -629,7 +629,7 @@ class ExecutorMixin:
                 _ge_flags.dynamic_orchestration or _ge_flags.enable_guardrail_profile
             ) and _runtime_profile is not None:
                 _ge = GuardrailEnforcer()
-                _ge_result = _ge.check_tool_args(
+                _ge_result = await _ge.check_tool_args(
                     tool_name=tool_name,
                     tool_args={},  # C2 fix: tool_args not defined at pre-LLM check stage
                     profile=_runtime_profile,
