@@ -64,27 +64,24 @@ class ChunkingStrategySelector:
 
         Used by IngestionPipeline Stage 8.
         """
-        from app.ingestion.content_classifier import ContentType as CT
-
-        ct = content_type if isinstance(content_type, CT) else CT.TEXT
+        ct = content_type if isinstance(content_type, ContentType) else ContentType.TEXT
         strategy = strategy_override or self.select(ct)
+        # P0-8: record the resolved strategy so callers/tests can assert no silent
+        # fixed-chunk fallback occurred for an advertised strategy.
+        self.last_strategy = strategy
 
-        # Dispatch to the appropriate chunker
-        chunker_map = {
-            "semantic": "_semantic_chunk",
-            "heading": "_heading_chunk",
-            "ast": "_ast_chunk",
-            "table": "_table_chunk",
-            "timestamp": "_timestamp_chunk",
-            "scene": "_scene_chunk",
-            "fixed": "_fixed_chunk",
-        }
-        method_name = chunker_map.get(strategy, "_fixed_chunk")
-        method = getattr(self, method_name, self._fixed_chunk)
+        # Dispatch through the complete strategy->chunker map shared with the
+        # orchestrator, so advertised strategies (layout/paragraph/dom/region/
+        # row_group/record) reach their real chunker instead of silently
+        # degrading to fixed-size chunking.
+        from app.ingestion.chunkers import get_chunker_for_strategy
+
         try:
-            result = method(text)
+            chunker = get_chunker_for_strategy(strategy)
+            result = [c.content for c in chunker.chunk(text)]
             return [c for c in result if c.strip()]
         except Exception:
+            self.last_strategy = "fixed"
             return self._fixed_chunk(text)
 
     def _fixed_chunk(self, text: str, size: int = 400, overlap: int = 50) -> list[str]:
