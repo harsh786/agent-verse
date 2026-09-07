@@ -3233,34 +3233,23 @@ def process_dpdp_erasures(self: Any) -> dict:
                     )
                 )
             ).fetchall()
+        from app.governance.audit_v3 import AuditV3
+        from app.lifecycle.deletion_orchestrator import DeletionOrchestrator
+
+        orchestrator = DeletionOrchestrator(db_factory=db, audit=AuditV3(db_factory=db))
         for row in rows:
             req_id, tenant_id, dpid = row
             try:
+                # Real, verifiable erasure cascade (suspends on active legal hold).
+                receipt = await orchestrator.execute_deletion(tenant_id, dpid)
+                new_status = "suspended" if receipt.suspended else "completed"
                 async with db() as session:
-                    # Delete personal data associated with this data principal
                     await session.execute(
                         text(
-                            "UPDATE dpdp_erasure_requests SET status = 'completed', "
+                            "UPDATE dpdp_erasure_requests SET status = :st, "
                             "completed_at = NOW() WHERE id = :rid"
                         ),
-                        {"rid": req_id},
-                    )
-                    # Delete any goal feedback linked to this principal
-                    await session.execute(
-                        text(
-                            "DELETE FROM goal_feedback WHERE tenant_id = :tid "
-                            "AND goal_id IN (SELECT id FROM goals WHERE tenant_id = :tid "
-                            "AND execution_context::text ILIKE :dpid_pattern)"
-                        ),
-                        {"tid": tenant_id, "dpid_pattern": f"%{dpid}%"},
-                    )
-                    # Delete DPDP consents for this principal
-                    await session.execute(
-                        text(
-                            "DELETE FROM dpdp_consents WHERE tenant_id = :tid "
-                            "AND data_principal_id = :dpid"
-                        ),
-                        {"tid": tenant_id, "dpid": dpid},
+                        {"st": new_status, "rid": req_id},
                     )
                     await session.commit()
                 processed += 1

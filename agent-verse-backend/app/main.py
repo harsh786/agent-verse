@@ -1656,6 +1656,21 @@ def create_app(
             except Exception as _lhm_exc:
                 logger.warning("legal_hold_manager_wire_failed", error=str(_lhm_exc))
 
+            # ── P0-2: Wire DeletionOrchestrator with DB + audit chain ─────────────
+            try:
+                from app.governance.audit_v3 import AuditV3 as _AuditV3
+                from app.lifecycle.deletion_orchestrator import (
+                    DeletionOrchestrator as _DeletionOrch,
+                )
+
+                app.state.deletion_orchestrator = _DeletionOrch(
+                    db_factory=db_factory,
+                    audit=_AuditV3(db_factory=db_factory, redis=redis_for_runtime),
+                )
+                logger.info("deletion_orchestrator_wired")
+            except Exception as _del_exc:
+                logger.warning("deletion_orchestrator_wire_failed", error=str(_del_exc))
+
             # Orchestration persistence: hydrate tool trust from DB (always-on, no flag gate)
             try:
                 from app.services.orchestration_persistence import OrchestrationPersistence
@@ -1865,6 +1880,11 @@ def create_app(
     app.state.cost_controller = _cost
     app.state.policy_engine = _policy_engine
     app.state.permission_matrix = _permission_matrix
+    # Data-subject deletion (GDPR/DPDP erasure) — in-memory placeholder; the
+    # lifespan upgrades it with the DB factory + audit chain below.
+    from app.lifecycle.deletion_orchestrator import DeletionOrchestrator as _DeletionOrch
+
+    app.state.deletion_orchestrator = _DeletionOrch()
     # Scheduling
     app.state.schedule_store = _schedule_store
     app.state.nl_scheduler = _nl_sched

@@ -110,6 +110,42 @@ async def request_erasure(body: ErasureRequest, request: Request) -> dict[str, A
     }
 
 
+@router.post("/erasure/{data_principal_id}/execute")
+async def execute_erasure(data_principal_id: str, request: Request) -> dict[str, Any]:
+    """Execute the erasure cascade now and return a verifiable deletion receipt.
+
+    Runs the real :class:`DeletionOrchestrator` cascade across every store that
+    supports subject-scoped deletion. An active legal hold SUSPENDS the run
+    (nothing is destroyed). Any matching pending erasure requests are marked
+    completed (or noted as suspended).
+    """
+    tenant = _req_tenant(request)
+    orchestrator = getattr(request.app.state, "deletion_orchestrator", None)
+    if orchestrator is None or getattr(orchestrator, "_db", None) is None:
+        raise HTTPException(503, "Deletion orchestrator unavailable")
+
+    receipt = await orchestrator.execute_deletion(tenant.tenant_id, data_principal_id)
+
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is not None:
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        new_status = "suspended" if receipt.suspended else "completed"
+        async with db() as session, session.begin(), sqlalchemy_rls_context(
+            session, tenant.tenant_id
+        ):
+            await session.execute(
+                text(
+                    "UPDATE dpdp_erasure_requests SET status = :st, completed_at = NOW() "
+                    "WHERE tenant_id = :tid AND data_principal_id = :dpid AND status = 'pending'"
+                ),
+                {"st": new_status, "tid": tenant.tenant_id, "dpid": data_principal_id},
+            )
+    return receipt.to_dict()
+
+
 @router.get("/grievance-officer")
 async def grievance_officer_contact() -> dict[str, Any]:
     """Grievance officer contact — required by DPDP Act."""
