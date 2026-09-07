@@ -360,7 +360,9 @@ class DeletionOrchestrator:
             return int(n or 0)
         except Exception as exc:
             logger.warning("deletion_verify_failed", table=table, error=str(exc)[:120])
-            return 0
+            # Fail closed: an unverifiable count must NOT read as "clean". -1 is
+            # truthy, so verify_deleted records it as residue -> verified=False.
+            return -1
 
     async def _delete_edges(
         self, tenant_id: str, node_ids: list[str], *, dry_run: bool
