@@ -96,9 +96,14 @@ class MultimodalPipeline:
         try:
             job.status = "processing"
             transcript = await self._transcribe_audio(audio_base64)
-            job.spans = [
-                ExtractedSpan(content=transcript, modality=Modality.AUDIO, confidence=0.85)
-            ]
+            if transcript.strip():
+                job.spans = [
+                    ExtractedSpan(content=transcript, modality=Modality.AUDIO, confidence=0.85)
+                ]
+            else:
+                # No fabricated span — record the gap honestly.
+                job.spans = []
+                job.metadata["audio_transcription"] = "unavailable"
             job.status = "completed"
         except Exception as exc:
             job.status = "failed"
@@ -117,9 +122,9 @@ class MultimodalPipeline:
         try:
             job.status = "processing"
             spans = []
-            # Transcript
+            # Transcript — the audio track is transcribed for real.
             transcript = await self._transcribe_audio(video_base64)
-            if transcript:
+            if transcript.strip():
                 spans.append(
                     ExtractedSpan(
                         content=f"[Transcript] {transcript}",
@@ -127,15 +132,18 @@ class MultimodalPipeline:
                         timestamp_start=0.0,
                     )
                 )
-            # Scene summary (placeholder — needs real video processing)
+            # Visual/scene analysis is NOT implemented — gate it honestly rather
+            # than emitting a placeholder string as if it were extracted data.
+            job.metadata["video_visual_processing"] = "unavailable"
+            job.metadata["video_frames_extracted"] = 0
             spans.append(
                 ExtractedSpan(
                     content=(
-                        "[Video] Video content extracted. "
-                        "Real-time processing requires video provider integration."
+                        "[Video visual analysis unavailable — keyframe/scene "
+                        "extraction requires a video provider integration]"
                     ),
                     modality=Modality.VIDEO,
-                    confidence=0.5,
+                    confidence=0.0,
                 )
             )
             job.spans = spans
@@ -234,9 +242,25 @@ class MultimodalPipeline:
             ]
 
     async def _transcribe_audio(self, audio_base64: str) -> str:
-        """Transcribe audio to text."""
-        # Real implementation requires speech-to-text provider
-        return "[Audio transcript - speech-to-text provider not configured]"
+        """Transcribe audio to text via the real Whisper-backed AudioParser.
+
+        Returns an empty string on failure rather than a fabricated stub, so
+        callers never persist placeholder text as if it were a transcript.
+        """
+        import base64
+
+        from app.ingestion.parsers.audio_parser import AudioParser
+
+        try:
+            audio_bytes = base64.b64decode(audio_base64)
+        except Exception as exc:
+            _log.warning("audio_decode_failed: %s", exc)
+            return ""
+        result = await AudioParser().parse_bytes(audio_bytes, "audio", "audio/mpeg")
+        if result.error:
+            _log.warning("audio_transcription_failed: %s", result.error)
+            return ""
+        return result.transcript
 
     def get_job(self, job_id: str, tenant_id: str) -> AssetIngestionJob | None:
         job = self._jobs.get(job_id)
