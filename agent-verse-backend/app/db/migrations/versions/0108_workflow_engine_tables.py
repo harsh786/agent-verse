@@ -241,7 +241,8 @@ def upgrade() -> None:
         CREATE TABLE IF NOT EXISTS workflow_test_scenarios (
             id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             tenant_id            UUID NOT NULL,
-            workflow_id          UUID NOT NULL REFERENCES workflow_definitions(id) ON DELETE CASCADE,  # noqa: E501
+            workflow_id          UUID NOT NULL
+                                 REFERENCES workflow_definitions(id) ON DELETE CASCADE,
             name                 TEXT NOT NULL,
             description          TEXT,
             input_fixture        JSONB NOT NULL DEFAULT '{}',

@@ -1,0 +1,51 @@
+# Minimal backing services for the `e2e_full` test tier.
+#
+# This tier boots the FastAPI app in-process via create_app(manage_pools=True)
+# wrapped in asgi_lifespan.LifespanManager (so the real lifespan wiring runs) and
+# drives it over an httpx ASGITransport client — the app itself is NOT
+# containerized here, only its two hard dependencies (Postgres + Redis).
+#
+# The e2e_full conftest prefers ephemeral testcontainers so the suite is
+# self-contained and needs no manual setup. To instead run against this compose
+# stack (e.g. in CI, or to inspect the DB after a run), bring it up and export the
+# two URLs the conftest looks for:
+#
+#   docker-compose -f infra/docker-compose.e2e.yml up -d
+#   export E2E_DATABASE_URL="postgresql+asyncpg://agentverse:agentverse@localhost:55432/agentverse"
+#   export E2E_REDIS_URL="redis://localhost:56379/0"
+#   uv run pytest tests/e2e_full -m e2e_full -v
+#   docker-compose -f infra/docker-compose.e2e.yml down -v
+#
+# Ports are deliberately non-default (55432 / 56379) to avoid clashing with the
+# full dev stack in infra/docker-compose.yml (5432 / 6379).
+
+name: agentverse-e2e-full
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: agentverse
+      POSTGRES_PASSWORD: agentverse
+      POSTGRES_DB: agentverse
+    ports:
+      - "55432:5432"
+    tmpfs:
+      # Ephemeral storage — this DB is disposable test state, never persisted.
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentverse"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
