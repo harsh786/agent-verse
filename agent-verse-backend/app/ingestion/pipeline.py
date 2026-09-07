@@ -76,6 +76,29 @@ class IngestionPipeline:
         self._chunker_selector = ChunkingStrategySelector()
         self._parser_registry = ParserRegistry()
 
+    async def run(
+        self,
+        raw_doc: RawDocument,
+        *,
+        tenant_context: Any = None,
+        source_config: SourceConfig | None = None,
+    ) -> PipelineResult:
+        """Adapter for callers holding a RawDocument (e.g. the DLQ-retry path).
+
+        P0-11: a SourceConfig is required to select the correct parser/chunker.
+        Without one the document is cleanly *skipped* (``no_source_config``)
+        rather than processed against a fabricated config or crashing.
+        """
+        if source_config is None:
+            return PipelineResult(
+                doc_id=raw_doc.doc_id,
+                source_id=raw_doc.source_id,
+                tenant_id=raw_doc.tenant_id,
+                status="skipped",
+                skip_reason="no_source_config",
+            )
+        return await self.ingest(raw_doc, source_config)
+
     async def ingest(
         self,
         raw_doc: RawDocument,

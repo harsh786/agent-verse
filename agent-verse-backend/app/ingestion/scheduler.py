@@ -152,7 +152,7 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
                     plan=PlanTier.FREE,
                 )
 
-                result = await pipeline.run(raw_doc, tenant_context=tenant_ctx)
+                result = await pipeline.ingest(raw_doc, config)
 
                 if result.success:
                     docs_indexed += 1
@@ -289,7 +289,11 @@ async def _retry_dlq_async() -> dict:
                 api_key_id="dlq_retry",
                 plan=getattr(settings, "DEFAULT_PLAN", "free"),
             )
-            result = await pipeline.run(entry.raw_doc, tenant_context=tenant_ctx)
+            result = await pipeline.run(
+                entry.raw_doc,
+                tenant_context=tenant_ctx,
+                source_config=getattr(entry, "source_config", None),
+            )
             if result.success:
                 await tracker.resolve_dlq_entry(entry.dlq_id)
                 succeeded += 1

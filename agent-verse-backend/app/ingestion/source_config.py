@@ -196,3 +196,12 @@ class PipelineResult:
     processing_ms: float = 0.0
     error: str = ""
     collection_id: str = ""
+
+    # P0-11: read-only status accessors the scheduler consumes.
+    @property
+    def success(self) -> bool:
+        return self.status == "indexed"
+
+    @property
+    def skipped(self) -> bool:
+        return self.status == "skipped"
