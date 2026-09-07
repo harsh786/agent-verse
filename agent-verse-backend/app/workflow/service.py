@@ -16,19 +16,27 @@ from typing import Any
 
 import structlog
 
+from app.workflow.state import WorkflowRunStatus
+
 _log = structlog.get_logger(__name__)
+
+# Statuses that mean a run is finished — cannot be cancelled/paused/resumed.
+_TERMINAL_STATUSES = {"complete", "failed", "cancelled", "timed_out"}
 
 
 class WorkflowService:
     """Full-featured workflow service used by app/workflow/router.py."""
 
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any, run_store: Any | None = None) -> None:
         """
         Args:
             store: _WorkflowStore instance from app.api.workflows (already on
                    app.state.workflow_store). Provides create/list/get/update/delete.
+            run_store: WorkflowRunStore (PostgresWorkflowRunStore) for run/step
+                   queries. When ``None`` the run-query methods return empty results.
         """
         self._store = store
+        self._run_store = run_store
 
     # ── Basic CRUD (delegated to _WorkflowStore) ─────────────────────────────
 
@@ -237,6 +245,132 @@ class WorkflowService:
         per_page: int = 20,
     ) -> tuple[list[dict[str, Any]], int]:
         return [], 0
+
+    # ── Runs (delegated to the injected WorkflowRunStore) ─────────────────────
+
+    async def list_runs(
+        self,
+        tenant_id: str,
+        *,
+        workflow_id: str | None = None,
+        status_filter: str | None = None,
+        page: int = 1,
+        per_page: int = 20,
+    ) -> tuple[list[dict[str, Any]], int]:
+        if self._run_store is None:
+            return [], 0
+        return await self._run_store.list(
+            tenant_id,
+            workflow_id=workflow_id,
+            status=status_filter,
+            limit=per_page,
+            offset=(page - 1) * per_page,
+        )
+
+    async def get_run(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+        if self._run_store is None:
+            return None
+        return await self._run_store.get(tenant_id, run_id)
+
+    async def list_step_results(self, tenant_id: str, run_id: str) -> list[dict[str, Any]]:
+        if self._run_store is None:
+            return []
+        return await self._run_store.list_step_results(tenant_id, run_id)
+
+    async def get_step_result(
+        self, tenant_id: str, run_id: str, step_id: str
+    ) -> dict[str, Any] | None:
+        if self._run_store is None:
+            return None
+        return await self._run_store.get_step_result(tenant_id, run_id, step_id)
+
+    async def cancel_run(self, tenant_id: str, run_id: str) -> bool:
+        """Cancel a run unless it is already in a terminal state."""
+        if self._run_store is None:
+            return False
+        run = await self._run_store.get(tenant_id, run_id)
+        if run is None or run.get("status") in _TERMINAL_STATUSES:
+            return False
+        return await self._run_store.update_status(
+            run_id, WorkflowRunStatus.CANCELLED, tenant_id=tenant_id
+        )
+
+    async def pause_run(self, tenant_id: str, run_id: str) -> bool:
+        """Pause a run that is currently pending or running."""
+        if self._run_store is None:
+            return False
+        run = await self._run_store.get(tenant_id, run_id)
+        if run is None or run.get("status") not in ("pending", "running"):
+            return False
+        return await self._run_store.update_status(
+            run_id, WorkflowRunStatus.PAUSED, tenant_id=tenant_id
+        )
+
+    async def resume_run(self, tenant_id: str, run_id: str) -> bool:
+        """Resume a paused run."""
+        if self._run_store is None:
+            return False
+        run = await self._run_store.get(tenant_id, run_id)
+        if run is None or run.get("status") != "paused":
+            return False
+        return await self._run_store.update_status(
+            run_id, WorkflowRunStatus.RUNNING, tenant_id=tenant_id
+        )
+
+    async def retry_run(self, tenant_id: str, run_id: str) -> str | None:
+        """Create a fresh run from a failed run's inputs. Returns the new run_id."""
+        if self._run_store is None:
+            return None
+        run = await self._run_store.get(tenant_id, run_id)
+        if run is None or run.get("status") != "failed":
+            return None
+        import uuid as _uuid
+
+        new_run_id = str(_uuid.uuid4())
+        await self._run_store.create(
+            run_id=new_run_id,
+            workflow_id=run.get("workflow_id", ""),
+            tenant_id=tenant_id,
+            trigger_type="retry",
+            inputs=run.get("inputs", {}),
+        )
+        return new_run_id
+
+    async def get_run_debug(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+        """Return the run plus its step results and variable snapshot for debugging."""
+        if self._run_store is None:
+            return None
+        run = await self._run_store.get(tenant_id, run_id)
+        if run is None:
+            return None
+        steps = await self._run_store.list_step_results(tenant_id, run_id)
+        return {
+            "run": run,
+            "step_outputs": {s["step_id"]: s.get("output") for s in steps},
+            "steps": steps,
+            "vars": run.get("outputs", {}),
+        }
+
+    async def stream_run_events(
+        self, tenant_id: str, run_id: str
+    ) -> Any:
+        """Minimal terminal-state SSE stream: emits step results then a final event."""
+        run = await self.get_run(tenant_id, run_id) if self._run_store else None
+        if run is None:
+            yield {"event": "run_failed", "status": "failed", "error": "run not found"}
+            return
+        for step in await self.list_step_results(tenant_id, run_id):
+            yield {
+                "event": "step_completed",
+                "step_id": step["step_id"],
+                "status": step.get("status"),
+            }
+        terminal = run.get("status") in _TERMINAL_STATUSES
+        yield {
+            "event": "run_completed" if terminal else "run_failed",
+            "status": run.get("status"),
+            "outputs": run.get("outputs", {}),
+        }
 
     # ── Marketplace ───────────────────────────────────────────────────────────
 

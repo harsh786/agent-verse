@@ -22,7 +22,7 @@ from app.observability.logging import get_logger
 from app.workflow.context import ContextResolver
 from app.workflow.dsl import WorkflowDefinition
 from app.workflow.registry import StepTypeRegistry
-from app.workflow.state import WorkflowRunStatus, WorkflowState
+from app.workflow.state import StepStatus, WorkflowRunStatus, WorkflowState
 
 _log = get_logger(__name__)
 
@@ -152,15 +152,78 @@ class WorkflowCompiler:
         """Build the async node function for a step."""
         node_class = StepTypeRegistry.get(step.type)
         node = node_class(step, self._ctx, **self._services)
+        run_store = self._services.get("run_store")
 
         async def node_fn(state: WorkflowState) -> dict[str, Any]:
             # Check operator pause before each step
             if state.get("paused_by"):
                 return {"status": WorkflowRunStatus.PAUSED}
-            return await node.execute(state)  # type: ignore[arg-type]
+
+            # Persist step-result rows when a run store is wired (skip test runs,
+            # which have no persisted run row to attach to).
+            persist = (
+                run_store is not None
+                and state.get("run_id")
+                and state.get("tenant_id")
+                and not state.get("is_test_run")
+            )
+            if persist:
+                await self._record_step_start(run_store, state, step)
+            try:
+                result = await node.execute(state)  # type: ignore[arg-type]
+            except Exception as exc:
+                if persist:
+                    await self._record_step_finish(
+                        run_store, state, step, StepStatus.FAILED, None, str(exc)
+                    )
+                raise
+            if persist:
+                await self._record_step_finish(
+                    run_store,
+                    state,
+                    step,
+                    result.get("status") or StepStatus.COMPLETE,
+                    (result.get("step_outputs") or {}).get(step.id),
+                    result.get("error"),
+                )
+            return result
 
         node_fn.__name__ = f"step_{step.id}"
         return node_fn
+
+    @staticmethod
+    async def _record_step_start(run_store: Any, state: WorkflowState, step: Any) -> None:
+        try:
+            await run_store.record_step_start(
+                run_id=state["run_id"],
+                tenant_id=state["tenant_id"],
+                step_id=step.id,
+                step_type=step.type,
+                step_name=getattr(step, "name", None) or None,
+            )
+        except Exception as exc:  # persistence must never break execution
+            _log.warning("step_start_persist_failed", step_id=step.id, error=str(exc))
+
+    @staticmethod
+    async def _record_step_finish(
+        run_store: Any,
+        state: WorkflowState,
+        step: Any,
+        status: Any,
+        output: Any,
+        error: str | None,
+    ) -> None:
+        try:
+            await run_store.record_step_finish(
+                run_id=state["run_id"],
+                tenant_id=state["tenant_id"],
+                step_id=step.id,
+                status=status,
+                output=output if isinstance(output, dict) else None,
+                error=error,
+            )
+        except Exception as exc:
+            _log.warning("step_finish_persist_failed", step_id=step.id, error=str(exc))
 
     @staticmethod
     def _find_downstream(step_id: str, definition: WorkflowDefinition) -> list[str]:
