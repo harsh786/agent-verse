@@ -5,8 +5,10 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+
+from app.tenancy.rbac import require_role
 
 router = APIRouter(prefix="/compliance/dpdp", tags=["compliance"])
 
@@ -111,7 +113,11 @@ async def request_erasure(body: ErasureRequest, request: Request) -> dict[str, A
 
 
 @router.post("/erasure/{data_principal_id}/execute")
-async def execute_erasure(data_principal_id: str, request: Request) -> dict[str, Any]:
+async def execute_erasure(
+    data_principal_id: str,
+    request: Request,
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
     """Execute the erasure cascade now and return a verifiable deletion receipt.
 
     Runs the real :class:`DeletionOrchestrator` cascade across every store that
@@ -132,7 +138,14 @@ async def execute_erasure(data_principal_id: str, request: Request) -> dict[str,
 
         from app.db.rls import sqlalchemy_rls_context
 
-        new_status = "suspended" if receipt.suspended else "completed"
+        # Do not claim completion unless the independent re-scan verified zero
+        # residue — a cascade that left data behind must not read as "completed".
+        if receipt.suspended:
+            new_status = "suspended"
+        elif receipt.verified:
+            new_status = "completed"
+        else:
+            new_status = "failed"
         async with db() as session, session.begin(), sqlalchemy_rls_context(
             session, tenant.tenant_id
         ):

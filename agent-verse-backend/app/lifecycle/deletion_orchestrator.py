@@ -118,8 +118,20 @@ class DeletionOrchestrator:
         dry_run: bool = False,
     ) -> DeletionReceipt:
         """Delete (or, if *dry_run*, count) a subject's data across all stores."""
+        # SAFETY (mass-deletion guard): the subject match uses ILIKE against
+        # serialized JSON, so an empty/short/wildcard subject_ref would match —
+        # and permanently delete — unrelated subjects' (or the whole tenant's)
+        # data. Refuse anything that is not a specific identifier.
+        subject_ref = (subject_ref or "").strip()
+        if len(subject_ref) < 3 or "%" in subject_ref or "\\" in subject_ref:
+            raise ValueError(
+                "refusing deletion: subject_ref must be a specific identifier "
+                "(non-empty, >= 3 chars, no LIKE wildcards)"
+            )
         started_at = datetime.now(UTC)
-        pat = f"%{subject_ref}%"
+        # Match the subject as a complete JSON string value (quoted), not an
+        # arbitrary substring, so 'subject-1' cannot match 'subject-12' etc.
+        pat = f'%"{subject_ref}"%'
 
         receipt = DeletionReceipt(
             subject_ref=subject_ref,
@@ -217,7 +229,10 @@ class DeletionOrchestrator:
         """
         if self._db is None:
             return {}
-        pat = f"%{subject_ref}%"
+        subject_ref = (subject_ref or "").strip()
+        if len(subject_ref) < 3 or "%" in subject_ref or "\\" in subject_ref:
+            return {}
+        pat = f'%"{subject_ref}"%'
         residue: dict[str, int] = {}
 
         goal_ids = await self._subject_goal_ids(tenant_id, pat)
