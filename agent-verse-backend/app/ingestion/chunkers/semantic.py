@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+from app.agent.tokenizer import count_tokens
 from app.ingestion.chunkers.base import Chunk, ChunkerBase
-
-_CHARS_PER_TOKEN = 4
 
 
 class SemanticChunker(ChunkerBase):
     def __init__(self, max_chunk_tokens: int = 512) -> None:
-        self._max_chars = max_chunk_tokens * _CHARS_PER_TOKEN
+        # ING-9: size by real tokens via the shared tokenizer, not char//4.
+        self._max_tokens = max_chunk_tokens
 
     def chunk(self, content: str) -> list[Chunk]:
         paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
@@ -16,12 +16,13 @@ class SemanticChunker(ChunkerBase):
         chunks: list[Chunk] = []
         current = ""
         for para in paragraphs:
-            if len(current) + len(para) <= self._max_chars:
-                current = f"{current}\n\n{para}".strip()
+            combined = f"{current}\n\n{para}".strip() if current else para
+            if count_tokens(combined) <= self._max_tokens:
+                current = combined
             else:
                 if current:
                     chunks.append(Chunk(content=current, chunk_index=len(chunks)))
-                if len(para) > self._max_chars:
+                if count_tokens(para) > self._max_tokens:
                     for sent in self._split_sentences(para):
                         chunks.append(Chunk(content=sent, chunk_index=len(chunks)))
                     current = ""
@@ -38,13 +39,14 @@ class SemanticChunker(ChunkerBase):
         parts: list[str] = []
         current = ""
         for s in sentences:
-            if len(current) + len(s) <= self._max_chars:
-                current = f"{current} {s}".strip()
+            combined = f"{current} {s}".strip() if current else s
+            if count_tokens(combined) <= self._max_tokens:
+                current = combined
             else:
                 if current:
                     parts.append(current)
-                # If a single sentence still exceeds max_chars, split by words
-                if len(s) > self._max_chars:
+                # If a single sentence still exceeds the budget, split by words
+                if count_tokens(s) > self._max_tokens:
                     parts.extend(self._split_by_words(s))
                     current = ""
                 else:
@@ -58,8 +60,9 @@ class SemanticChunker(ChunkerBase):
         parts: list[str] = []
         current = ""
         for word in words:
-            if len(current) + len(word) + 1 <= self._max_chars:
-                current = f"{current} {word}".strip()
+            combined = f"{current} {word}".strip() if current else word
+            if count_tokens(combined) <= self._max_tokens:
+                current = combined
             else:
                 if current:
                     parts.append(current)
