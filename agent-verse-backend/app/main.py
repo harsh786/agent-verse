@@ -1339,6 +1339,15 @@ def create_app(
                 if _sem_cache is not None and hasattr(_sem_cache, "_redis"):
                     _sem_cache._redis = redis_for_runtime
 
+                # IngestionPipeline: wire the runtime Redis pub/sub bus so Stage 13
+                # publishes knowledge.updated across replicas (ING-8).
+                _ing_pipe = getattr(app.state, "ingestion_pipeline", None)
+                if _ing_pipe is not None and redis_for_runtime is not None:
+                    from app.ingestion.pipeline import RedisKnowledgeEventBus
+
+                    _ing_pipe._event_bus = RedisKnowledgeEventBus(redis_for_runtime)
+                    logger.info("ingestion_pipeline_event_bus_wired")
+
                 # SemanticCache: wire pgvector ANN backend for O(log n) L2 lookup.
                 try:
                     from app.rag.vector_cache_backend import select_cache_backend as _scb_select
