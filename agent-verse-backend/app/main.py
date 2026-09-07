@@ -1109,6 +1109,46 @@ def create_app(
                 _workflow_store.set_db(db_factory)
                 logger.info("workflow_store_db_wired")
 
+            # ── Workflow Automation Engine — swap in DB/Celery-backed runtime ──
+            # create_app() built an in-memory compiler+runner+service. Rebuild them
+            # here with the persistent run store, the shared LangGraph checkpointer,
+            # the real MCP client, and Celery for per-plan queue routing.
+            try:
+                from app.scaling.celery_app import celery_app as _celery_app
+                from app.workflow.compiler import WorkflowCompiler as _WFCompiler
+                from app.workflow.context import ContextResolver as _WFCtx
+                from app.workflow.run_store import (
+                    PostgresWorkflowRunStore as _PgRunStore,
+                )
+                from app.workflow.runner import WorkflowRunner as _WFRunner
+                from app.workflow.service import WorkflowService as _WFService
+
+                _wf_run_store = _PgRunStore(db_factory)
+                _wf_checkpointer = getattr(app.state, "langgraph_checkpointer", None)
+                _wf_mcp_client = getattr(app.state, "mcp_client", None)
+                _wf_compiler_db = _WFCompiler(
+                    context_resolver=_WFCtx(),
+                    checkpointer=_wf_checkpointer,
+                    mcp_client=_wf_mcp_client,
+                    run_store=_wf_run_store,
+                )
+                _wf_runner_db = _WFRunner(
+                    compiler=_wf_compiler_db,
+                    run_store=_wf_run_store,
+                    celery_app=_celery_app,
+                    tenant_service=getattr(app.state, "tenant_service", None),
+                )
+                app.state.workflow_run_store = _wf_run_store
+                app.state.workflow_compiler = _wf_compiler_db
+                app.state.workflow_runner = _wf_runner_db
+                if _workflow_store is not None:
+                    app.state.workflow_service = _WFService(
+                        _workflow_store, run_store=_wf_run_store
+                    )
+                logger.info("workflow_engine_db_wired")
+            except Exception as _wf_db_exc:
+                logger.warning("workflow_engine_db_wire_failed", error=str(_wf_db_exc))
+
             # Wire DB into TemplateStore
             from app.api.templates import template_store as _tmpl_store_ref
 
