@@ -32,7 +32,9 @@ class ContextBudget:
             if len(included) >= self._max_chunks:
                 break
             if token_count + chunk_tokens > self._max_tokens and included:
-                break
+                # Skip this oversized chunk but keep filling — a single large
+                # chunk must not discard every later chunk that would still fit.
+                continue
 
             included.append(chunk)
             token_count += chunk_tokens

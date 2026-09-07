@@ -114,7 +114,7 @@ class CorrectiveRAGPattern(RAGPattern):
         tenant_ctx: Any,
         collection_ids: list[str] | None = None,
         top_k: int = 5,
-        confidence_threshold: float = 0.5,
+        confidence_threshold: float = CORRECTIVE_RELEVANCE_THRESHOLD,
         **kwargs: Any,
     ) -> Any:
         return await retriever_tool.retrieve_corrective(
