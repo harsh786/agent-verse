@@ -259,6 +259,53 @@ class ScheduleStore:
             if strict:
                 raise
 
+    async def update_secret_async(
+        self,
+        schedule_id: str,
+        *,
+        new_secret: str,
+        tenant_id: str,
+        grace_period_seconds: int = 0,
+    ) -> bool:
+        """Rotate a webhook signing secret, retaining the previous one for a grace
+        window so in-flight deliveries signed with the old secret still verify.
+
+        WT-5: returns True if a record was updated. Persists to the DB backend
+        when one is configured (following the store's existing write pattern).
+        """
+        import time as _time
+
+        rec = self._data.get((tenant_id, schedule_id))
+        if rec is None:
+            return False
+        spec = rec["spec"]
+        prev = getattr(spec, "webhook_signature_secret", "") or ""
+        spec.webhook_signature_secret = new_secret
+        rec["previous_webhook_secret"] = prev
+        rec["secret_grace_until"] = _time.time() + max(0, grace_period_seconds)
+        if self._db is not None:
+            await self._db_update_secret(schedule_id, tenant_id, new_secret)
+        return True
+
+    async def _db_update_secret(self, schedule_id: str, tenant_id: str, new_secret: str) -> None:
+        """Persist a rotated secret to the DB backend. Best-effort, non-fatal."""
+        if self._db is None:
+            return
+        try:
+            from sqlalchemy import text
+
+            async with self._db() as session:
+                await session.execute(
+                    text(
+                        "UPDATE schedules SET webhook_signature_secret = :s "
+                        "WHERE id = :sid AND tenant_id = :tid"
+                    ),
+                    {"s": new_secret, "sid": schedule_id, "tid": tenant_id},
+                )
+                await session.commit()
+        except Exception as exc:
+            _log.warning("schedule secret DB persist failed id=%s: %s", schedule_id, exc)
+
     def get(self, schedule_id: str, *, tenant_ctx: TenantContext) -> dict[str, Any] | None:
         return self._data.get((tenant_ctx.tenant_id, schedule_id))
 
