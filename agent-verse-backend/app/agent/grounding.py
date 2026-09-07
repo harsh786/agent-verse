@@ -76,6 +76,7 @@ def check_grounding(
     tool_outputs: list[str],
     *,
     strict: bool = False,
+    max_ungrounded_ratio: float | None = None,
 ) -> GroundingResult:
     """
     Check if claims in `output` are grounded in `tool_outputs`.
@@ -83,20 +84,20 @@ def check_grounding(
     Args:
         output: The LLM's step output / summary to check.
         tool_outputs: Raw outputs from all tool calls in this step.
-        strict: If True, any ungrounded claim → ungrounded result.
-                If False (default), 25%+ ungrounded → ungrounded result.
+        strict: If True, any ungrounded claim → ungrounded result (ratio 0.0).
+        max_ungrounded_ratio: Fraction of claims allowed to be ungrounded.
+            When None, defaults to 0.0 for strict and 0.25 otherwise. High/
+            critical-risk callers must pass 0.0 for zero tolerance.
 
     Returns:
         GroundingResult with grounded status and details.
+
+    P0-4: absent evidence with present claims is NOT grounded (was fail-open).
     """
-    if not output or not tool_outputs:
+    if not output:
         return GroundingResult(
             grounded=True, ungrounded_claims=[], checked_claims=0, evidence_length=0
         )
-
-    # Combine all tool outputs into evidence string
-    evidence = " ".join(str(t) for t in tool_outputs if t)
-    evidence_lower = evidence.lower()
 
     claims = extract_claims(output)
     all_claims: list[str] = []
@@ -104,9 +105,23 @@ def check_grounding(
         all_claims.extend(claim_list)
 
     if not all_claims:
+        # No concrete claims to verify — nothing can be ungrounded.
         return GroundingResult(
-            grounded=True, ungrounded_claims=[], checked_claims=0, evidence_length=len(evidence)
+            grounded=True, ungrounded_claims=[], checked_claims=0, evidence_length=0
         )
+
+    if not tool_outputs:
+        # Claims exist but there is no evidence at all → cannot be grounded.
+        return GroundingResult(
+            grounded=False,
+            ungrounded_claims=list(all_claims),
+            checked_claims=len(all_claims),
+            evidence_length=0,
+        )
+
+    # Combine all tool outputs into evidence string
+    evidence = " ".join(str(t) for t in tool_outputs if t)
+    evidence_lower = evidence.lower()
 
     ungrounded: list[str] = []
     for claim in all_claims:
@@ -114,9 +129,10 @@ def check_grounding(
         if claim.lower() not in evidence_lower:
             ungrounded.append(claim)
 
-    # Threshold: 25% ungrounded → mark as ungrounded
-    threshold = 1 if strict else max(1, len(all_claims) // 4)
-    grounded = len(ungrounded) < threshold
+    if max_ungrounded_ratio is None:
+        max_ungrounded_ratio = 0.0 if strict else 0.25
+    allowed = int(len(all_claims) * max_ungrounded_ratio)
+    grounded = len(ungrounded) <= allowed
 
     if ungrounded:
         logger.info(

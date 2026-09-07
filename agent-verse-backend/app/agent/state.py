@@ -94,6 +94,8 @@ class AgentState:
 
     # Grounding / provenance fields (Phase 3 Track B/C)
     ungrounded_claims: list[str] = field(default_factory=list)
+    # P0-4: consecutive ungrounded steps → replan trigger (reset on a grounded step)
+    consecutive_ungrounded: int = 0
     cited_answer: str = ""
     provenance: list[dict[str, Any]] = field(default_factory=list)
 

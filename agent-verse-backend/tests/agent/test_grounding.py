@@ -69,8 +69,16 @@ class TestCheckGrounding:
         result = check_grounding("", ["evidence"])
         assert result.grounded is True
 
-    def test_empty_evidence_returns_grounded(self) -> None:
+    def test_empty_evidence_with_claims_is_not_grounded(self) -> None:
+        # P0-4: a concrete claim with no evidence at all cannot be grounded
+        # (previously this fail-open path returned grounded=True).
         result = check_grounding("Found JIRA-123", [])
+        assert result.grounded is False
+        assert "JIRA-123" in result.ungrounded_claims
+
+    def test_empty_evidence_with_no_claims_is_grounded(self) -> None:
+        # No extractable claims → nothing can be ungrounded, even with no evidence.
+        result = check_grounding("The task finished.", [])
         assert result.grounded is True
 
     def test_strict_mode_fails_any_ungrounded(self) -> None:

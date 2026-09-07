@@ -1872,32 +1872,65 @@ class ExecutorMixin:
                 if tc.get("output")
             ]
             if raw_output and _tool_outputs_for_grounding and not _is_structured_tool_output:
+                # P0-4: high/critical-risk goals get zero ungrounded tolerance.
+                _rp_ground = state.context.get("_runtime_profile")
+                _risk_ground = str(
+                    getattr(
+                        getattr(getattr(_rp_ground, "properties", None), "risk", None),
+                        "value",
+                        "",
+                    )
+                    or ""
+                ).lower()
+                _ground_ratio = 0.0 if _risk_ground in ("high", "critical") else None
                 _ground_result = check_grounding(
                     output=raw_output,
                     tool_outputs=_tool_outputs_for_grounding,
+                    max_ungrounded_ratio=_ground_ratio,
                 )
                 if not _ground_result.grounded:
+                    state.consecutive_ungrounded += 1
                     self._logger.info(
                         "grounding_failed",
                         ungrounded=_ground_result.ungrounded_claims[:3],
+                        consecutive=state.consecutive_ungrounded,
                         step=step[:100],
                     )
                     raw_output = annotate_ungrounded(raw_output, _ground_result)
                     state.ungrounded_claims.extend(_ground_result.ungrounded_claims[:5])
-                    # C4: Mark the current step as UNGROUNDED
-                    if state.steps:
-                        _last_step = state.steps[-1]
-                        if hasattr(_last_step, "status"):
-                            from app.agent.state import StepStatus
+                    from app.agent.state import StepStatus
 
-                            _last_step.status = StepStatus.UNGROUNDED
-                    await self._emit(
-                        {
-                            "type": "grounding_warning",
-                            "ungrounded_claims": _ground_result.ungrounded_claims[:5],
-                            "step": step,
-                        }
-                    )
+                    if state.consecutive_ungrounded >= 2:
+                        # P0-4: two consecutive ungrounded steps → fail the step and
+                        # drive a replan using only evidence present in tool outputs.
+                        if state.steps and hasattr(state.steps[-1], "status"):
+                            state.steps[-1].status = StepStatus.FAILED
+                        state.verification_feedback = (
+                            "Two consecutive steps produced ungrounded claims: "
+                            f"{'; '.join(_ground_result.ungrounded_claims[:5])}. "
+                            "Replan using only evidence present in tool outputs."
+                        )
+                        await self._emit(
+                            {
+                                "type": "grounding_blocked",
+                                "ungrounded_claims": _ground_result.ungrounded_claims[:5],
+                                "consecutive": state.consecutive_ungrounded,
+                                "step": step,
+                            }
+                        )
+                    else:
+                        # C4: Mark the current step as UNGROUNDED (first occurrence)
+                        if state.steps and hasattr(state.steps[-1], "status"):
+                            state.steps[-1].status = StepStatus.UNGROUNDED
+                        await self._emit(
+                            {
+                                "type": "grounding_warning",
+                                "ungrounded_claims": _ground_result.ungrounded_claims[:5],
+                                "step": step,
+                            }
+                        )
+                else:
+                    state.consecutive_ungrounded = 0
                 state.context["grounding_checked"] = True
         except Exception as exc:
             # Log but don't block execution — fail-open only on grounding check errors
