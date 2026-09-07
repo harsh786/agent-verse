@@ -100,4 +100,6 @@ class ContextPipeline:
             citations=citations,
             total_tokens=budget_result.total_tokens,
             dedup_removed=dedup_removed,
+            # P1-6: chunks dropped by the token-budget filter (was always 0).
+            filtered_removed=budget_result.excluded_count,
         )
