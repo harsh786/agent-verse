@@ -23,6 +23,19 @@ def _is_high_risk_step(step: str) -> bool:
     )
 
 
+def _guardrail_should_fail_closed(step: str, risk_level: Any = None) -> bool:
+    """SAFE-4 (P0-15): decide whether an errored safety check must fail CLOSED.
+
+    A guardrail engine that raises must not be treated as "allowed" on high-risk
+    work. Returns True when the run is high risk — either an explicit
+    ``_risk_level`` of ``high``/``critical`` in context, or a step whose text
+    matches the high-risk keyword heuristic.
+    """
+    if risk_level is not None and str(risk_level).lower() in {"high", "critical"}:
+        return True
+    return _is_high_risk_step(step)
+
+
 def _is_ungrounded_status(status: Any) -> bool:
     """Return True when status equals StepStatus.UNGROUNDED without a hard import."""
     return str(status) == "ungrounded"

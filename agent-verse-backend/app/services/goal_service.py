@@ -899,6 +899,11 @@ class GoalService:
             "rollback_engine": RollbackEngine(),
             "guardrail_checker": GuardrailChecker(),
             "policy_engine": policy_engine,
+            # SAFE-1 (P0-12): wire the default-deny permission matrix so the
+            # executor's per-tool governance check is live (previously always None).
+            "permission_matrix": (
+                getattr(app_state, "permission_matrix", None) if app_state else None
+            ),
             # Phase 22: per-connector circuit breakers
             "circuit_breakers": _circuit_breakers,
             # Execution memory (H-3)
@@ -1206,6 +1211,29 @@ class GoalService:
             return
         if agent_store.get(agent_id, tenant_ctx=tenant_ctx) is None:
             raise NotFoundError(f"Agent not found: {agent_id}")
+
+    @staticmethod
+    def _register_tools_from_context(loop: Any, tool_context: Any) -> None:
+        """SAFE-2 (P0-13): register the tenant's discovered tool names into the
+        agent's GuardrailChecker so hallucinated tool names are rejected.
+
+        Without this the checker's known-tools registry stays empty and any
+        tool name passes the hallucination guard.
+        """
+        checker = getattr(loop, "_guardrail_checker", None)
+        if checker is None or tool_context is None:
+            return
+        try:
+            names = {
+                str(getattr(t, "name", "") or "")
+                for t in (getattr(tool_context, "tools", None) or [])
+                if getattr(t, "name", None)
+            }
+            names.discard("")
+            if names:
+                checker.register_tools(names)
+        except Exception as _reg_exc:  # never break execution over registry wiring
+            _svc_logger.warning("guardrail_tool_registration_failed", error=str(_reg_exc))
 
     async def _build_tool_context(
         self, agent_id: str | None, tenant_ctx: TenantContext, goal: str = ""
@@ -1734,6 +1762,8 @@ class GoalService:
                         )
             loop._agent_collection_ids = _persist_collection_ids
             if tool_context is not None:
+                # SAFE-2 (P0-13): register discovered tool names for hallucination guard.
+                self._register_tools_from_context(loop, tool_context)
                 # Seed initial_context into the agent's run via a wrapper
                 _tc = tool_context
 

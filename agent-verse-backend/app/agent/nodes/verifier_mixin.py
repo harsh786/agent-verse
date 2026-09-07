@@ -34,6 +34,7 @@ import contextlib
 from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
 from app.agent.nodes._helpers import (
     _build_verifier_summary,
+    _guardrail_should_fail_closed,
 )
 
 
@@ -554,8 +555,16 @@ class VerifierMixin:
                         )
                         if _g2_final_result.get("blocked"):
                             agent_state.cited_answer = "[Output redacted by guardrail policy]"
-                except Exception:
-                    pass  # Guardrail errors must never block completion
+                except Exception as _gv_exc:
+                    # SAFE-4 (P0-15): an errored final-output guardrail must not
+                    # let a high-risk answer through unredacted — fail closed.
+                    if _guardrail_should_fail_closed(
+                        agent_state.goal, agent_state.context.get("_risk_level")
+                    ):
+                        agent_state.cited_answer = "[Output redacted by guardrail policy]"
+                        self._logger.warning(
+                            "verifier_guardrail_failed_closed", error=str(_gv_exc)
+                        )
 
             # Phase 3 Track C: synthesize cited answer on success
             if self._answer_synthesizer is not None:
