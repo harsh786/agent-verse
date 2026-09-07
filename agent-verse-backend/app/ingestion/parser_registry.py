@@ -185,3 +185,157 @@ class ParserRegistry:
         except Exception:
             # Ultimate fallback: raw decode
             return content.decode("utf-8", errors="replace")
+
+    async def parse_bytes_async(
+        self,
+        content: bytes,
+        content_type: object,
+        *,
+        filename: str = "",
+        mime_type: str = "",
+        ocr_engine: object | None = None,
+        vision_provider: object | None = None,
+    ) -> tuple[str, dict[str, object]]:
+        """MIME-aware, byte-native parse bridging to the real parsers.
+
+        Routes core binary/structured formats (PDF, DOCX, CSV, IMAGE, AUDIO)
+        through the real ``app.ingestion.parsers.*`` implementations, awaiting
+        the async ones. Returns ``(text, degradation_metadata)``.
+
+        When an optional binary (fitz / pdfminer / python-docx) is missing, the
+        degradation is surfaced in the metadata dict instead of returning raw
+        container garbage (``PK``, ``<w:...>``).
+        """
+        from app.ingestion.content_classifier import ContentType
+
+        ct = content_type if isinstance(content_type, ContentType) else ContentType.TEXT
+        meta: dict[str, object] = {}
+        name = filename or "document"
+
+        try:
+            if ct == ContentType.PDF:
+                return await self._parse_pdf(content, name, meta, ocr_engine, vision_provider)
+            if ct == ContentType.DOCX:
+                return self._parse_docx(content, name, meta)
+            if ct == ContentType.CSV:
+                from app.ingestion.parsers.csv_parser import CSVParser as RealCSVParser
+
+                text = RealCSVParser().parse(
+                    content.decode("utf-8", errors="replace"), filename=name
+                )
+                return text, meta
+            if ct == ContentType.IMAGE:
+                return await self._parse_image(content, name, meta, ocr_engine, vision_provider)
+            if ct == ContentType.AUDIO:
+                return await self._parse_audio(content, name, mime_type, meta)
+        except Exception as exc:  # never leak binary garbage on unexpected failure
+            meta["parse_error"] = str(exc)[:200]
+            return "", meta
+
+        # Generic str-based parsers (TEXT, MARKDOWN, CODE, HTML, JSON, EXCEL, …)
+        return self.parse(content, ct), meta
+
+    def _parse_docx(
+        self, content: bytes, name: str, meta: dict[str, object]
+    ) -> tuple[str, dict[str, object]]:
+        import importlib.util
+
+        if importlib.util.find_spec("docx") is None:
+            # Without python-docx the .docx is a zip container — refuse to emit
+            # its raw bytes (which would leak "PK"/"<w:" garbage).
+            meta["docx_degraded"] = "python-docx not installed"
+            return "", meta
+        from app.ingestion.parsers.docx_parser import DOCXParser
+
+        result = DOCXParser().parse_bytes(content, name)
+        if result.error:
+            meta["docx_error"] = result.error
+        return "\n\n".join(result.paragraphs), meta
+
+    async def _parse_pdf(
+        self,
+        content: bytes,
+        name: str,
+        meta: dict[str, object],
+        ocr_engine: object | None,
+        vision_provider: object | None,
+    ) -> tuple[str, dict[str, object]]:
+        import importlib.util
+
+        from app.ingestion.parsers.pdf_parser import PDFParser
+
+        has_fitz = importlib.util.find_spec("fitz") is not None
+        has_pdfminer = importlib.util.find_spec("pdfminer") is not None
+        if not has_fitz and not has_pdfminer:
+            meta["pdf_degraded"] = "no fitz/pdfminer — text-layer extraction unavailable"
+
+        result = PDFParser().parse_bytes(content, name)
+        text = result.full_text
+
+        # Scanned-PDF branch: no extractable text layer → OCR the rendered pages.
+        if not text.strip() and ocr_engine is not None:
+            ocr_res = await ocr_engine.extract(pdf_bytes=content, provider=vision_provider)  # type: ignore[attr-defined]
+            ocr_text = getattr(ocr_res, "raw_text", "") or ""
+            if ocr_text.strip():
+                text = ocr_text
+                meta["ocr_used"] = True
+                engine_used = getattr(ocr_res, "engine_used", "")
+                meta["ocr_engine"] = engine_used
+                if engine_used and engine_used != "tesseract":
+                    meta["ocr_fallback"] = engine_used
+        return text, meta
+
+    async def _parse_image(
+        self,
+        content: bytes,
+        name: str,
+        meta: dict[str, object],
+        ocr_engine: object | None,
+        vision_provider: object | None,
+    ) -> tuple[str, dict[str, object]]:
+        parts: list[str] = []
+
+        # OCR text (Tesseract → LLM-vision fallback, honestly recorded).
+        if ocr_engine is not None:
+            ocr_res = await ocr_engine.extract(image_bytes=content, provider=vision_provider)  # type: ignore[attr-defined]
+            ocr_text = getattr(ocr_res, "raw_text", "") or ""
+            if ocr_text.strip():
+                parts.append(ocr_text.strip())
+            engine_used = getattr(ocr_res, "engine_used", "")
+            if engine_used:
+                meta["ocr_engine"] = engine_used
+                if engine_used != "tesseract":
+                    meta["ocr_fallback"] = engine_used
+
+        # Vision description — only when a provider is configured (avoids
+        # blind SDK calls when no credentials are available).
+        if vision_provider is not None:
+            from app.ingestion.parsers.vision_parser import VisionParser
+
+            vres = await VisionParser(provider=vision_provider).parse_image_bytes(content, name)
+            desc = vres.description or ""
+            if desc.strip() and not desc.startswith("[Image:"):
+                parts.append(desc.strip())
+            if vres.error:
+                meta["vision_error"] = vres.error
+
+        if not parts:
+            meta.setdefault("image_degraded", "no OCR/vision text extracted")
+        return "\n\n".join(parts), meta
+
+    async def _parse_audio(
+        self,
+        content: bytes,
+        name: str,
+        mime_type: str,
+        meta: dict[str, object],
+    ) -> tuple[str, dict[str, object]]:
+        from app.ingestion.parsers.audio_parser import AudioParser
+
+        result = await AudioParser().parse_bytes(
+            content, name, mime_type or "audio/mpeg"
+        )
+        if result.error:
+            meta["audio_degraded"] = result.error
+            return "", meta
+        return result.transcript, meta

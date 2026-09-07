@@ -58,6 +58,7 @@ class IngestionPipeline:
         quota_enforcer: Any = None,  # TenantQuotaEnforcer (optional)
         metrics: Any = None,  # Prometheus metrics registry
         tracer: Any = None,  # OTel tracer (optional)
+        event_bus: Any = None,  # ING-8: publishes knowledge.updated (async publish())
         dry_run: bool = False,  # LAW-22: parse+chunk but skip embed/index
     ) -> None:
         self._kb = knowledge_store
@@ -66,7 +67,13 @@ class IngestionPipeline:
         self._quota = quota_enforcer
         self._metrics = metrics
         self._tracer = tracer
+        self._event_bus = event_bus
         self._dry_run = dry_run
+        self._ocr: Any = None  # lazily constructed OcrEngine (ING-11)
+
+        # Test seams (ING-4): last parse output + strategy for assertions.
+        self.last_parsed_text: str = ""
+        self.last_strategy: str = ""
 
         from app.ingestion.chunking_strategy_selector import ChunkingStrategySelector
         from app.ingestion.content_classifier import ContentClassifier
@@ -120,6 +127,10 @@ class IngestionPipeline:
             status="pending",
             collection_id=source_config.collection_id,
         )
+        # ING-4/ING-11: surface parse degradation + OCR provenance to callers.
+        # PipelineResult is a plain dataclass (no __slots__), so an ad-hoc
+        # metadata dict is safe and avoids editing source_config.py.
+        result.metadata = {}  # type: ignore[attr-defined]
 
         try:
             # ── Stage 1: RECEIVE — quota check ────────────────────────────────
@@ -163,19 +174,39 @@ class IngestionPipeline:
                     return result
 
             # ── Stage 4: CLASSIFY ─────────────────────────────────────────────
-            try:
-                content_type = self._classifier.classify(
-                    raw_doc.content.decode("utf-8", errors="replace")
-                )
-            except Exception as e:
-                _log.warning("pipeline_stage=classify error doc=%s: %s", raw_doc.doc_id, e)
-                from app.ingestion.content_classifier import ContentType
+            # Prefer the connector-supplied MIME type (trustworthy for binary
+            # formats); fall back to content sniffing only for generic types.
+            from app.ingestion.content_classifier import ContentType
 
-                content_type = ContentType.TEXT
+            content_type = None
+            mime = getattr(raw_doc, "content_type", "") or ""
+            try:
+                content_type = self._classifier.classify_mime(mime)
+            except Exception as e:
+                _log.debug("pipeline_stage=classify mime_error doc=%s: %s", raw_doc.doc_id, e)
+            if content_type is None:
+                try:
+                    content_type = self._classifier.classify(
+                        raw_doc.content.decode("utf-8", errors="replace")
+                    )
+                except Exception as e:
+                    _log.warning("pipeline_stage=classify error doc=%s: %s", raw_doc.doc_id, e)
+                    content_type = ContentType.TEXT
 
             # ── Stage 5: PARSE ────────────────────────────────────────────────
+            # MIME-aware, byte-native path bridging to the real parsers; async
+            # parsers (audio/OCR) are awaited. Degradation → result.metadata.
             try:
-                text = self._parser_registry.parse(raw_doc.content, content_type)
+                text, parse_meta = await self._parser_registry.parse_bytes_async(
+                    raw_doc.content,
+                    content_type,
+                    filename=raw_doc.title or raw_doc.doc_id,
+                    mime_type=mime,
+                    ocr_engine=self._get_ocr_engine(),
+                    vision_provider=self._embedder,
+                )
+                if parse_meta:
+                    result.metadata.update(parse_meta)  # type: ignore[attr-defined]
             except Exception as e:
                 _log.warning("pipeline_stage=parse error doc=%s: %s", raw_doc.doc_id, e)
                 # Try decoding raw bytes as text fallback
@@ -185,6 +216,10 @@ class IngestionPipeline:
                     result.status = "failed"
                     result.error = f"parse_failed: {e}"
                     return result
+
+            # Test seams (ING-4).
+            self.last_parsed_text = text
+            self.last_strategy = str(content_type)
 
             if not text.strip() or len(text) < _MIN_TEXT_LENGTH:
                 result.status = "skipped"
@@ -212,8 +247,6 @@ class IngestionPipeline:
                 return result
 
             # ── Stage 8: CHUNK ────────────────────────────────────────────────
-            from app.ingestion.content_classifier import ContentType
-
             chunks_text = self._chunk(
                 text,
                 content_type,
@@ -281,6 +314,18 @@ class IngestionPipeline:
         return result
 
     # ── Stage helpers ─────────────────────────────────────────────────────────
+
+    def _get_ocr_engine(self) -> Any:
+        """Lazily construct the OCR engine (ING-11). None if unavailable."""
+        if self._ocr is None:
+            try:
+                from app.ocr.engine import OcrEngine
+
+                self._ocr = OcrEngine()
+            except Exception as e:  # pragma: no cover - defensive
+                _log.debug("ocr_engine_unavailable: %s", e)
+                return None
+        return self._ocr
 
     async def _check_existing_hash(self, content_hash: str, config: SourceConfig) -> bool:
         """Return True if this content hash is already indexed for this tenant."""
@@ -487,37 +532,45 @@ class IngestionPipeline:
         config: SourceConfig,
         chunk_count: int,
     ) -> None:
-        """Emit knowledge.updated Redis event and update stats (Stage 13)."""
-        try:
-            import json
+        """Emit knowledge.updated event and update stats (Stage 13).
 
-            # LAW-23: semantic cache invalidation key published
-            json.dumps(
-                {
-                    "source_id": config.source_id,
-                    "doc_id": raw_doc.doc_id,
-                    "collection_id": config.collection_id,
-                    "chunks_added": chunk_count,
-                    "tenant_id": config.tenant_id,
-                }
-            )
-            # Redis publish is best-effort; failure doesn't break ingestion
-            _log.debug(
-                "pipeline_stage=emit doc=%s chunks=%d collection=%s",
-                raw_doc.doc_id,
-                chunk_count,
-                config.collection_id,
-            )
-        except Exception as e:
-            _log.debug("pipeline_emit_error: %s", e)
+        LAW-23: publishes to the ``knowledge.updated`` channel so downstream
+        consumers (e.g. a future semantic-cache invalidator) can react. Publish
+        is best-effort — a bus failure never breaks ingestion.
+        """
+        payload = {
+            "source_id": config.source_id,
+            "doc_id": raw_doc.doc_id,
+            "collection_id": config.collection_id,
+            "chunks_added": chunk_count,
+            "tenant_id": config.tenant_id,
+        }
+        if self._event_bus is not None:
+            try:
+                await self._event_bus.publish("knowledge.updated", payload)
+            except Exception as e:
+                _log.debug("pipeline_emit_publish_error: %s", e)
+        _log.debug(
+            "pipeline_stage=emit doc=%s chunks=%d collection=%s",
+            raw_doc.doc_id,
+            chunk_count,
+            config.collection_id,
+        )
 
     def _emit_metrics(self, result: PipelineResult, config: SourceConfig) -> None:
         """Record Prometheus metrics for this pipeline result (LAW-12)."""
         try:
-            from app.triggers.metrics import TRIGGER_FIRED_TOTAL  # noqa: F401
-            # Use same pattern as trigger metrics
-        except Exception:
-            pass
+            from app.ingestion.metrics import INGEST_CHUNKS_TOTAL, INGEST_DOCS_TOTAL
+
+            INGEST_DOCS_TOTAL.labels(
+                source_type=config.source_type, status=result.status
+            ).inc()
+            if result.chunks_created:
+                INGEST_CHUNKS_TOTAL.labels(source_type=config.source_type).inc(
+                    result.chunks_created
+                )
+        except Exception as e:  # pragma: no cover - defensive
+            _log.debug("pipeline_metrics_error: %s", e)
         _log.debug(
             "pipeline_result doc=%s status=%s chunks=%d ms=%.0f",
             result.doc_id,
@@ -525,3 +578,20 @@ class IngestionPipeline:
             result.chunks_created,
             result.processing_ms,
         )
+
+
+class RedisKnowledgeEventBus:
+    """Adapts a raw Redis client to the pipeline's event-bus contract.
+
+    The pipeline calls ``await bus.publish(channel, payload_dict)``; this wraps
+    a redis client whose ``publish`` expects a string message, JSON-encoding the
+    payload. Used to wire the ingestion pipeline to the runtime Redis pub/sub.
+    """
+
+    def __init__(self, redis: Any) -> None:
+        self._redis = redis
+
+    async def publish(self, channel: str, payload: dict[str, Any]) -> None:
+        import json
+
+        await self._redis.publish(channel, json.dumps(payload))

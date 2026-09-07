@@ -79,6 +79,16 @@ _EXT_MAP: dict[str, ContentType] = {
     ".ipynb": ContentType.NOTEBOOK,
 }
 
+# MIME content-type → ContentType for core binary/structured formats. Prefixes
+# (image/, audio/, video/) are handled separately in classify_mime().
+_MIME_MAP: dict[str, ContentType] = {
+    "application/pdf": ContentType.PDF,
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ContentType.DOCX,
+    "application/msword": ContentType.DOCX,
+    "text/csv": ContentType.CSV,
+    "text/tab-separated-values": ContentType.CSV,
+}
+
 _CODE_PATTERNS = re.compile(
     r"(?m)^(?:def |class |import |from .+ import |function |const |let |var |public class )"
 )
@@ -104,3 +114,23 @@ class ContentClassifier:
 
         _, ext = os.path.splitext(filename.lower())
         return _EXT_MAP.get(ext, ContentType.TEXT)
+
+    def classify_mime(self, mime_type: str) -> ContentType | None:
+        """Map a MIME content-type to a ContentType, or None if unrecognised.
+
+        Preferred over content sniffing when a connector supplies a trustworthy
+        MIME type (e.g. ``application/pdf``). Returns None for generic/unknown
+        types (like ``text/plain``) so the caller can fall back to sniffing.
+        """
+        if not mime_type:
+            return None
+        mt = mime_type.split(";", 1)[0].strip().lower()
+        if mt in _MIME_MAP:
+            return _MIME_MAP[mt]
+        if mt.startswith("image/"):
+            return ContentType.IMAGE
+        if mt.startswith("audio/"):
+            return ContentType.AUDIO
+        if mt.startswith("video/"):
+            return ContentType.VIDEO
+        return None
