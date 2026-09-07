@@ -446,6 +446,11 @@ def create_app(
     _hitl = HITLGateway()
     _cost = CostController()
     _policy_engine = PolicyEngine()
+    # SAFE-1 (P0-12): default-deny permission matrix — destructive tool globs are
+    # DENIED for every tenant until an explicit ALLOW rule is registered.
+    from app.governance.permissions import build_default_permission_matrix
+
+    _permission_matrix = build_default_permission_matrix()
     _agent_store = AgentStore()
     # C6: Use the declarative provider registry directly; fall back to wrapper on error
     try:
@@ -1859,6 +1864,7 @@ def create_app(
     app.state.audit_log = _audit_log
     app.state.cost_controller = _cost
     app.state.policy_engine = _policy_engine
+    app.state.permission_matrix = _permission_matrix
     # Scheduling
     app.state.schedule_store = _schedule_store
     app.state.nl_scheduler = _nl_sched

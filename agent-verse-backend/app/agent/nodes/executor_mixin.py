@@ -51,6 +51,7 @@ import contextlib
 from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
 from app.agent.nodes._helpers import (
     _extract_scope_value,
+    _guardrail_should_fail_closed,
     _is_high_risk_step,
 )
 
@@ -528,6 +529,8 @@ class ExecutorMixin:
         tool_name = self._extract_tool_name(step)
 
         # H23-H26: Action safety profile — assess per-tool risk
+        _asp_hitl_required = False
+        _asp_reason = ""
         try:
             from app.security_runtime.action_safety_profile import (
                 ActionSafetyLevel,
@@ -543,8 +546,45 @@ class ExecutorMixin:
             )
             if _asp.safety_level.value == ActionSafetyLevel.BLOCKED.value:
                 return f"Action blocked by safety profile: {_asp.reason}"
+            if _asp.safety_level.value == ActionSafetyLevel.HITL_REQUIRED.value:
+                _asp_hitl_required = True
+                _asp_reason = _asp.reason
         except Exception:
             pass
+
+        # SAFE-3 (P0-14): route an action-safety HITL_REQUIRED verdict through the
+        # HITL gateway. This is intentionally OUTSIDE the try/except above so an
+        # approval rejection/timeout can never be swallowed and silently allowed.
+        _asp_hitl_done = False
+        if _asp_hitl_required and self._hitl_gateway is not None:
+            req_id = str(
+                self._hitl_gateway.request_approval(
+                    goal_id=state.goal_id,
+                    action=step,
+                    risk_level="high",
+                    tenant_ctx=tenant_ctx,
+                )
+            )
+            _asp_hitl_done = True
+            if self._autonomy_mode == "supervised":
+                await self._emit(
+                    {"type": "waiting_approval", "request_id": req_id, "action": step}
+                )
+                approval_started = time.monotonic()
+                final_status = await self._hitl_gateway.wait_for_approval(
+                    req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
+                )
+                record_approval_wait(time.monotonic() - approval_started)
+                if final_status == ApprovalStatus.REJECTED:
+                    raise PermissionError(
+                        f"Step '{step}' rejected by human approver "
+                        f"(action-safety: {_asp_reason})."
+                    )
+                if final_status == ApprovalStatus.TIMED_OUT:
+                    raise PermissionError(
+                        f"Step '{step}' approval timed out (action-safety: {_asp_reason})."
+                    )
+                await self._emit({"type": "approval_granted", "request_id": req_id})
 
         # 1. Cost check deferred — actual cost calculated after LLM call below.
 
@@ -662,7 +702,8 @@ class ExecutorMixin:
                 pass
 
         # 6b. Policy engine check (glob-based policies)
-        _hitl_already_requested = False
+        # Carry forward the action-safety HITL request so we do not double-prompt.
+        _hitl_already_requested = _asp_hitl_done
         if self._policy_engine is not None:
             policy_result = self._policy_engine.evaluate(tool_name=tool_name, tenant_ctx=tenant_ctx)
             if policy_result == PolicyResult.DENY:
@@ -671,7 +712,11 @@ class ExecutorMixin:
                     f"Tool '{tool_name}' denied by governance policy "
                     f"for tenant '{tenant_ctx.tenant_id}'."
                 )
-            elif policy_result == PolicyResult.REQUIRE_APPROVAL and self._hitl_gateway is not None:
+            elif (
+                policy_result == PolicyResult.REQUIRE_APPROVAL
+                and self._hitl_gateway is not None
+                and not _hitl_already_requested
+            ):
                 req_id = str(
                     self._hitl_gateway.request_approval(
                         goal_id=state.goal_id,
@@ -1091,6 +1136,15 @@ class ExecutorMixin:
                     raise
                 except Exception as _ge_exc:
                     self._logger.warning("guardrail_engine_v2_pre_check_failed", error=str(_ge_exc))
+                    # SAFE-4 (P0-15): an errored guardrail check must not read as
+                    # "allowed" on high-risk work — fail closed.
+                    if _guardrail_should_fail_closed(
+                        step, state.context.get("_risk_level")
+                    ):
+                        raise PermissionError(
+                            f"Guardrail check errored on high-risk tool "
+                            f"'{tool_name}'; failing closed."
+                        ) from _ge_exc
 
             # Guardrail check: tool_args (Guardrails 2.0)
             if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx:
@@ -1114,8 +1168,14 @@ class ExecutorMixin:
                         raise PermissionError(f"Tool call blocked by guardrail: {_g2_viol_name}")
                 except PermissionError:
                     raise
-                except Exception:
-                    pass  # Guardrail errors must never break execution
+                except Exception as _g2_exc:
+                    # SAFE-4 (P0-15): fail closed on high-risk work when the
+                    # guardrail engine errors instead of silently allowing.
+                    if _guardrail_should_fail_closed(step, state.context.get("_risk_level")):
+                        raise PermissionError(
+                            f"Guardrail (tool_args) errored on high-risk step "
+                            f"'{tool_name}'; failing closed."
+                        ) from _g2_exc
 
             tool_call_started = time.monotonic()
             if self._mcp_client is None:
