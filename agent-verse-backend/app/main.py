@@ -1103,6 +1103,16 @@ def create_app(
             app.state.knowledge_store = _knowledge_store_db
             app.state.collab_store = _collab_store_db
 
+            # WT-3: wire the TriggerDispatcher so trigger fires actually create
+            # goals (previously never instantiated -> every fire returned 503).
+            from app.triggers.dispatcher import TriggerDispatcher as _TriggerDispatcher
+
+            app.state.trigger_dispatcher = _TriggerDispatcher(
+                goal_service=app.state.goal_service,
+                db_session_factory=db_factory,
+                redis=redis_for_runtime,
+            )
+
             # Wire DB session factory into WorkflowStore for Postgres-backed persistence
             _workflow_store = getattr(app.state, "workflow_store", None)
             if _workflow_store is not None:
@@ -1803,6 +1813,15 @@ def create_app(
     # Scheduling
     app.state.schedule_store = _schedule_store
     app.state.nl_scheduler = _nl_sched
+    # WT-3: in-memory-phase TriggerDispatcher so non-lifespan API tests get a
+    # live dispatcher (lifespan upgrades it to the DB/Redis-backed version).
+    from app.triggers.dispatcher import TriggerDispatcher as _TriggerDispatcher
+
+    app.state.trigger_dispatcher = _TriggerDispatcher(
+        goal_service=_goal_svc,
+        db_session_factory=None,
+        redis=None,
+    )
     # Knowledge + Memory
     app.state.knowledge_store = _knowledge_store
     app.state.repository_ingestion_tasks = set()
