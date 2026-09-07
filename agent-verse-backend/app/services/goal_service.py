@@ -2165,6 +2165,35 @@ class GoalService:
 
     # ── public API ────────────────────────────────────────────────────────────
 
+    async def create_goal(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        goal_text: str,
+        agent_id: str | None = None,
+        idempotency_key: str | None = None,
+        priority: str = "normal",
+    ) -> dict[str, Any]:
+        """Trigger-facing adapter over :meth:`submit_goal` (WT-1 / P0-5).
+
+        The TriggerDispatcher codes to this signature. Delegating to
+        ``submit_goal`` preserves the single execution entrypoint that owns
+        dedup, daily-limit, and concurrency enforcement rather than
+        duplicating that governance in the dispatcher. The trigger's
+        idempotency key is parked in ``execution_context`` for traceability.
+        """
+        return await self.submit_goal(
+            goal=goal_text,
+            priority=priority,
+            dry_run=False,
+            tenant_ctx=tenant_ctx,
+            agent_id=agent_id,
+            execution_context={
+                "source": "trigger",
+                "trigger_idempotency_key": idempotency_key,
+            },
+        )
+
     async def submit_goal(
         self,
         goal: str,
