@@ -34,7 +34,8 @@ def _get_dispatcher(request: Request) -> Any:
 
 
 def _get_db(request: Request) -> Any:
-    return getattr(request.app.state, "db", None)
+    # WT-2/G5: app.state.db is never set; the DB session factory lives here.
+    return getattr(request.app.state, "db_session_factory", None)
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -270,7 +271,7 @@ async def simulate_trigger(
 
     dispatcher = _get_dispatcher(request)
     if dispatcher is not None:
-        result = await dispatcher.dispatch(spec, sample, tenant_ctx, simulate=True)
+        result = await dispatcher.dispatch(spec, sample, tenant_ctx, simulation=True)
         import dataclasses
 
         return dataclasses.asdict(result) if dataclasses.is_dataclass(result) else vars(result)
@@ -303,7 +304,9 @@ async def fire_trigger_now(schedule_id: str, request: Request, body: FireRequest
 
     event = await dispatcher.dispatch(spec, sample, tenant_ctx)
     return {
-        "goal_id": getattr(event, "goal_id_created", None),
+        "goal_id": getattr(event, "goal_id", None),  # WT-2/G3: field is goal_id
+        "goal_created": getattr(event, "goal_created", None),
+        "skip_reason": getattr(event, "skip_reason", None),
         "fired_at": getattr(event, "fired_at", None),
     }
 
@@ -323,8 +326,8 @@ async def list_trigger_events(
         async with db() as session:
             rows = await session.execute(
                 text(
-                    "SELECT event_id, trigger_id, trigger_type, idempotency_key, "
-                    "payload, goal_id_created, fired_at, simulated "
+                    "SELECT id AS event_id, trigger_id, trigger_type, idempotency_key, "
+                    "payload, goal_id, goal_created, skip_reason, fired_at "
                     "FROM trigger_events WHERE trigger_id = :tid "
                     "ORDER BY fired_at DESC LIMIT :lim"
                 ),
