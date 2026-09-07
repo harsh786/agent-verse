@@ -50,6 +50,35 @@ class WorkflowRunner:
         self._ctx = context_resolver or ContextResolver()
         self._services = services
 
+    async def trigger(
+        self,
+        *,
+        workflow_id: str,
+        tenant_id: str,
+        inputs: dict[str, Any],
+        idempotency_key: str | None = None,
+        dry_run: bool = False,
+        callback_url: str | None = None,
+    ) -> dict[str, Any]:
+        """Router-facing entrypoint (WT-7/P0-6).
+
+        Maps the ``POST /workflows/{id}/trigger`` contract onto :meth:`run` and
+        returns a RunResponse-shaped dict. Previously the router called this
+        method, which did not exist -> AttributeError -> HTTP 500.
+        """
+        run_id = await self.run(
+            workflow_id=workflow_id,
+            tenant_id=tenant_id,
+            inputs=inputs,
+            is_test_run=dry_run,
+            run_metadata={"idempotency_key": idempotency_key, "callback_url": callback_url},
+        )
+        if self._run_store is not None:
+            rec = await self._run_store.get(tenant_id, run_id)
+            if rec:
+                return rec
+        return {"run_id": run_id, "workflow_id": workflow_id, "status": "pending"}
+
     async def run(
         self,
         workflow_id: str,
