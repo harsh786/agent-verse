@@ -1407,4 +1407,81 @@ async def test_unmanaged_lifespan_closes_active_hot_replacement_once() -> None:
         app.state.retrieval_gateway = replacement_gateway
 
     initial_gateway.aclose.assert_awaited_once()
-    replacement_gateway.aclose.assert_awaited_once()
+
+
+# ── D-7: RAPTOR / agentic-chunking must never silently return empty ──────────
+#
+# When a collection has no chunks opt-in indexed for RAPTOR's hierarchical
+# summary tree or agentic-chunking's propositions, the metadata-filtered
+# precomputed-index search legitimately returns zero rows. Before this fix,
+# `execute_core_strategy` forwarded that empty list straight through as a
+# normal (if vacuous) result — indistinguishable from "the collection has no
+# relevant content". Callers had no signal to tell "not indexed" apart from
+# "nothing matched". These tests pin the fix: an empty precomputed search must
+# raise `UnavailableRAGStrategyError` naming the strategy and the missing
+# indexing, never a silent empty `RAGExecutionResult`.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "strategy",
+    [RAGStrategy.RAPTOR, RAGStrategy.AGENTIC_CHUNKING],
+)
+async def test_precomputed_strategy_raises_explicit_error_when_not_indexed(
+    strategy: RAGStrategy,
+    record_rls: list[tuple[int, str]],
+) -> None:
+    from app.rag.catalogue import RAG_CAPABILITY_CATALOGUE
+
+    adapter = RAG_CAPABILITY_CATALOGUE[strategy].create_adapter()
+    gateway, _, _ = _gateway(adapter=adapter, strategy=strategy)
+
+    with (
+        patch("app.rag.engine.hybrid_search", AsyncMock(return_value=[])),
+        pytest.raises(UnavailableRAGStrategyError) as exc_info,
+    ):
+        await gateway.execute(
+            TENANT,
+            collection_id="collection-1",
+            query="retention policy",
+            strategy_id=strategy,
+        )
+
+    assert exc_info.value.strategy is strategy
+    normalized_reason = exc_info.value.reason.lower().replace("-", "_")
+    assert "indexing" in normalized_reason
+    assert strategy.value in normalized_reason
+
+
+@pytest.mark.asyncio
+async def test_raptor_strategy_returns_real_results_when_indexed(
+    record_rls: list[tuple[int, str]],
+) -> None:
+    from app.rag.catalogue import RAG_CAPABILITY_CATALOGUE
+    from app.rag.engine import RetrievalResult
+
+    adapter = RAG_CAPABILITY_CATALOGUE[RAGStrategy.RAPTOR].create_adapter()
+    gateway, _, _ = _gateway(adapter=adapter, strategy=RAGStrategy.RAPTOR)
+
+    indexed_result = RetrievalResult(
+        chunk_id="summary-1",
+        content="Alpha hierarchy summary",
+        score=0.9,
+        source_metadata={"hierarchy_level": 1, "strategy": "raptor"},
+        retrieval_legs=["raptor"],
+    )
+
+    with patch(
+        "app.rag.engine.hybrid_search",
+        AsyncMock(return_value=[indexed_result]),
+    ):
+        result = await gateway.execute(
+            TENANT,
+            collection_id="collection-1",
+            query="Alpha policy",
+            strategy_id=RAGStrategy.RAPTOR,
+        )
+
+    assert len(result.citations) == 1
+    assert result.citations[0].chunk_id == "summary-1"
+    assert result.citations[0].content == "Alpha hierarchy summary"

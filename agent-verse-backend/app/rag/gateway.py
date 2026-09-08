@@ -61,9 +61,6 @@ T = TypeVar("T")
 DatabaseOperation = Callable[[AsyncSession], Awaitable[T]]
 logger = get_logger(__name__)
 
-# Adaptive auto-selection (D-6) can now choose a non-core reasoning strategy.
-# The adaptive leg dispatches those through their canonical contract adapters,
-# which lazily resolve the concrete reasoning implementation.
 _REASONING_ADAPTER_FACTORIES: Mapping[RAGStrategy, Callable[[], RAGRuntimeAdapter]] = (
     MappingProxyType(
         {
@@ -73,6 +70,13 @@ _REASONING_ADAPTER_FACTORIES: Mapping[RAGStrategy, Callable[[], RAGRuntimeAdapte
             RAGStrategy.AGENTIC: AgenticRAGRuntimeAdapter,
         }
     )
+)
+
+_PRECOMPUTED_INDEX_UNAVAILABLE_REASON: Mapping[RAGStrategy, str] = MappingProxyType(
+    {
+        RAGStrategy.RAPTOR: "requires RAPTOR indexing",
+        RAGStrategy.AGENTIC_CHUNKING: "requires agentic-chunking indexing",
+    }
 )
 
 
@@ -1000,62 +1004,40 @@ async def execute_core_strategy(
             tenant_ctx=context.tenant_context,
             top_k=request.top_k,
         )
-        if precomputed:
-            results = [_precomputed_dict_to_result(item, strategy) for item in precomputed]
-            result = _canonical_result(
-                request,
+        if not precomputed:
+            raise UnavailableRAGStrategyError(
                 strategy,
-                results,
-                [
-                    {
-                        "component": strategy.value,
-                        "result_count": len(results),
-                        "precomputed": True,
-                    }
-                ],
+                _PRECOMPUTED_INDEX_UNAVAILABLE_REASON[strategy],
             )
-            return _append_trace(
-                result,
-                RAGStrategyTrace(
-                    strategy=strategy,
-                    action="precomputed_index_retrieval",
-                    status="complete",
-                    detail={
-                        "precomputed": True,
-                        "source": "precomputed_index",
-                        "result_count": len(results),
-                        "hierarchy_levels": sorted(
-                            {
-                                int(result_item.source_metadata.get("hierarchy_level", 0))
-                                for result_item in results
-                            }
-                        ),
-                    },
-                ),
-            )
-        # No precomputed index for this collection — degrade to a plain hybrid
-        # retrieval and record the reason. Never silently return an empty result.
-        fallback_evidence: list[dict[str, Any]] = []
-        fallback_results = await _search_persisted(
-            context,
+        results = [_precomputed_dict_to_result(item, strategy) for item in precomputed]
+        result = _canonical_result(
             request,
-            query=request.query,
-            embedding=embedding,
-            retrieval_mode="hybrid",
-            evidence=fallback_evidence,
+            strategy,
+            results,
+            [
+                {
+                    "component": strategy.value,
+                    "result_count": len(results),
+                    "precomputed": True,
+                }
+            ],
         )
-        _mark_source_type(fallback_results, "persisted")
-        result = _canonical_result(request, strategy, fallback_results, fallback_evidence)
         return _append_trace(
             result,
             RAGStrategyTrace(
                 strategy=strategy,
-                action="precomputed_index_fallback",
-                status="degraded",
+                action="precomputed_index_retrieval",
+                status="complete",
                 detail={
-                    "reason": "precomputed_index_absent",
-                    "fallback_retrieval": "hybrid",
-                    "result_count": len(fallback_results),
+                    "precomputed": True,
+                    "source": "precomputed_index",
+                    "result_count": len(results),
+                    "hierarchy_levels": sorted(
+                        {
+                            int(result_item.source_metadata.get("hierarchy_level", 0))
+                            for result_item in results
+                        }
+                    ),
                 },
             ),
         )
