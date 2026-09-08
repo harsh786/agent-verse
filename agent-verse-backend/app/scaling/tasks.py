@@ -1786,6 +1786,37 @@ def _schedule_datetime(value: Any) -> datetime.datetime | None:
     return dt
 
 
+def _cron_prev_fire_utc(
+    cron_expr: str, now_utc: datetime.datetime, tz_name: str
+) -> datetime.datetime:
+    """Previous cron fire instant, honouring the schedule's timezone (2.W-9).
+
+    The cron expression is evaluated in ``tz_name`` (e.g. a ``"0 9 * * *"``
+    schedule fires at 09:00 *local* time), then the result is returned as naive
+    UTC so it compares directly against ``last_fired_at`` (also naive UTC). Prior
+    to this, cron ran against naive UTC and ignored the timezone entirely, firing
+    at the wrong wall-clock instant for non-UTC schedules. An unknown/empty
+    timezone degrades to UTC.
+    """
+    import croniter as _croniter_pkg
+
+    tz: datetime.tzinfo = datetime.UTC
+    if tz_name and tz_name.upper() != "UTC":
+        try:
+            from zoneinfo import ZoneInfo
+
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = datetime.UTC
+    base = now_utc if now_utc.tzinfo is not None else now_utc.replace(tzinfo=datetime.UTC)
+    now_local = base.astimezone(tz)
+    cron = _croniter_pkg.croniter(cron_expr, now_local + datetime.timedelta(seconds=1))
+    prev_local = cast(datetime.datetime, cron.get_prev(datetime.datetime))
+    if prev_local.tzinfo is None:
+        prev_local = prev_local.replace(tzinfo=tz)
+    return prev_local.astimezone(datetime.UTC).replace(tzinfo=None)
+
+
 def _db_schedule_payload(row: Any) -> dict[str, Any]:
     goal_template = str(getattr(row, "goal_id_template", "") or "")
     tenant_id = str(getattr(row, "tenant_id", "") or "")
@@ -2230,15 +2261,12 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                     cron_expr = sched.get("cron_expression", "")
                     if cron_expr:
                         try:
-                            import croniter as _croniter_pkg  # type: ignore[import-untyped]
-
-                            cron = _croniter_pkg.croniter(
-                                cron_expr, now + datetime.timedelta(seconds=1)
+                            # 2.W-9: evaluate cron in the schedule's timezone so a
+                            # "0 9 * * *" schedule fires at 09:00 *local* time, not
+                            # 09:00 UTC. Returned as naive UTC for comparison.
+                            previous_run = _cron_prev_fire_utc(
+                                cron_expr, now, str(sched.get("timezone") or "UTC")
                             )
-                            cron_previous_run = cast(
-                                datetime.datetime, cron.get_prev(datetime.datetime)
-                            )
-                            previous_run = _schedule_datetime(cron_previous_run)
                             last_fired_dt = _schedule_datetime(sched.get("last_fired_at"))
                         except Exception as cron_exc:
                             logger.warning("Cron parse error for %s: %s", key, cron_exc)
