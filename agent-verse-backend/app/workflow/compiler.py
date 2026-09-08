@@ -13,6 +13,7 @@ The compiler:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -169,24 +170,45 @@ class WorkflowCompiler:
             )
             if persist:
                 await self._record_step_start(run_store, state, step)
-            try:
-                result = await node.execute(state)  # type: ignore[arg-type]
-            except Exception as exc:
-                if persist:
-                    await self._record_step_finish(
-                        run_store, state, step, StepStatus.FAILED, None, str(exc)
+
+            # DSL enforcement (2.W-7): retry with backoff, per-step deadline,
+            # and on_failure routing on exhaustion.
+            max_attempts = max(1, getattr(step.retry, "max_attempts", 1))
+            timeout_s = self._parse_step_timeout(step.timeout)
+            last_exc: BaseException | None = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    if timeout_s and timeout_s > 0:
+                        result = await asyncio.wait_for(node.execute(state), timeout_s)
+                    else:
+                        result = await node.execute(state)  # type: ignore[arg-type]
+                except TimeoutError:
+                    last_exc = TimeoutError(
+                        f"step {step.id!r} exceeded timeout {step.timeout}"
                     )
-                raise
-            if persist:
-                await self._record_step_finish(
-                    run_store,
-                    state,
-                    step,
-                    result.get("status") or StepStatus.COMPLETE,
-                    (result.get("step_outputs") or {}).get(step.id),
-                    result.get("error"),
-                )
-            return result
+                except Exception as exc:  # routed per step.on_failure below
+                    last_exc = exc
+                    if not self._should_retry(step.retry, exc):
+                        break
+                else:
+                    if persist:
+                        await self._record_step_finish(
+                            run_store,
+                            state,
+                            step,
+                            result.get("status") or StepStatus.COMPLETE,
+                            (result.get("step_outputs") or {}).get(step.id),
+                            result.get("error"),
+                        )
+                    return result
+                if attempt < max_attempts:
+                    delay = self._retry_delay(step.retry, attempt)
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+
+            return await self._handle_step_failure(
+                run_store, state, step, last_exc, persist
+            )
 
         node_fn.__name__ = f"step_{step.id}"
         return node_fn
@@ -224,6 +246,95 @@ class WorkflowCompiler:
             )
         except Exception as exc:
             _log.warning("step_finish_persist_failed", step_id=step.id, error=str(exc))
+
+    # ── DSL enforcement helpers (2.W-7) ──────────────────────────────────────
+
+    @staticmethod
+    def _parse_step_timeout(timeout_str: str) -> float:
+        """Parse '30s' / '5m' / '2h' / bare seconds → float seconds (0 = none)."""
+        if not timeout_str:
+            return 0.0
+        s = timeout_str.strip()
+        try:
+            if s.endswith("ms"):
+                return float(s[:-2]) / 1000.0
+            if s.endswith("s"):
+                return float(s[:-1])
+            if s.endswith("m"):
+                return float(s[:-1]) * 60
+            if s.endswith("h"):
+                return float(s[:-1]) * 3600
+            return float(s)
+        except ValueError:
+            return 0.0
+
+    @staticmethod
+    def _should_retry(retry: Any, exc: BaseException) -> bool:
+        """Honour RetryConfig.fail_on / retry_on exception-name filters."""
+        name = type(exc).__name__
+        fail_on = getattr(retry, "fail_on", None) or []
+        if name in fail_on:
+            return False
+        retry_on = getattr(retry, "retry_on", None) or []
+        return not (retry_on and name not in retry_on)
+
+    @staticmethod
+    def _retry_delay(retry: Any, attempt: int) -> float:
+        """Backoff delay in seconds before the next attempt (1-based)."""
+        base = max(0, getattr(retry, "base_delay_ms", 0)) / 1000.0
+        backoff = getattr(retry, "backoff", "exponential")
+        if backoff == "fixed":
+            return base
+        if backoff == "linear":
+            return base * attempt
+        return base * (2 ** (attempt - 1))
+
+    async def _handle_step_failure(
+        self,
+        run_store: Any,
+        state: WorkflowState,
+        step: Any,
+        exc: BaseException | None,
+        persist: bool,
+    ) -> dict[str, Any]:
+        """Route a step that has exhausted its retries per step.on_failure."""
+        policy = getattr(step, "on_failure", "pause")
+        err = str(exc) if exc is not None else "step failed"
+        outputs = state.get("step_outputs") or {}
+
+        if policy == "skip":
+            if persist:
+                await self._record_step_finish(
+                    run_store, state, step, StepStatus.SKIPPED, None, err
+                )
+            return {"step_outputs": {**outputs, step.id: {"_skipped": True, "error": err}}}
+
+        if policy == "use_default":
+            default = getattr(step, "on_failure_default", None)
+            out = default if isinstance(default, dict) else {"result": default}
+            if persist:
+                await self._record_step_finish(
+                    run_store, state, step, StepStatus.COMPLETE, out, err
+                )
+            return {"step_outputs": {**outputs, step.id: out}}
+
+        # Both "pause" and "abort" record the step as failed.
+        if persist:
+            await self._record_step_finish(
+                run_store, state, step, StepStatus.FAILED, None, err
+            )
+
+        if policy == "abort":
+            raise exc if exc is not None else RuntimeError(err)
+
+        # Default "pause": halt the run for operator intervention. Downstream
+        # nodes short-circuit on ``paused_by`` (see node_fn guard).
+        return {
+            "status": WorkflowRunStatus.PAUSED,
+            "paused_by": f"step_failure:{step.id}",
+            "error": err,
+            "error_step_id": step.id,
+        }
 
     @staticmethod
     def _find_downstream(step_id: str, definition: WorkflowDefinition) -> list[str]:
