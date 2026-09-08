@@ -693,10 +693,11 @@ def create_app(
         allowed_domains=parse_allowed_domains(settings.web_search_allowed_domains),
     )
     from app.rag.raft import InMemoryRAFTRepository, RAFTService
+    from app.rag.raft_openai_provider import build_raft_providers
 
     _raft_service = RAFTService(
         repository=InMemoryRAFTRepository(),
-        providers={},
+        providers=build_raft_providers(settings),
     )
     _rag_adapter_configuration = RAGAdapterConfiguration(
         colbert_checkpoint=settings.colbert_checkpoint
@@ -1264,6 +1265,9 @@ def create_app(
             except Exception as _kg_exc:
                 logger.warning("knowledge_graph_db_wire_failed", error=str(_kg_exc))
 
+            from app.rag.raft_openai_provider import (
+                build_raft_providers as _build_raft_providers,
+            )
             from app.rag.raft_repository import SQLRAFTRepository
 
             db_retrieval_gateway = RetrievalGateway(
@@ -1283,7 +1287,7 @@ def create_app(
                     strategy_capabilities=core_strategy_capabilities(_rag_adapter_configuration),
                     raft_service=RAFTService(
                         repository=SQLRAFTRepository(db_factory),
-                        providers={},
+                        providers=_build_raft_providers(settings),
                     ),
                     long_term_memory=_long_term_memory,
                     colbert_checkpoint=settings.colbert_checkpoint,
