@@ -40,6 +40,11 @@ class GraphFactory:
             "enable_self_consistency": "self_consistency" in selected_ids,
             "enable_tree_of_thoughts": "tree_of_thoughts" in selected_ids,
             "enable_peer_review": "peer_review" in selected_ids,
+            # D-2: multi-agent pattern nodes — kept in the same explicit flag set as
+            # the other reasoning nodes so agent_config overrides apply uniformly in
+            # the v2 path (AgentGraph also re-derives these from the profile).
+            "enable_supervisor": "supervisor" in selected_ids,
+            "enable_debate": "debate" in selected_ids,
         }
         for flag_name, selected in tuple(flags.items()):
             if flag_name in config:

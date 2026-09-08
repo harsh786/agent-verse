@@ -881,6 +881,12 @@ class GoalService:
         _enable_self_consistency = bool(_agent_config.get("enable_self_consistency", False))
         _enable_tree_of_thoughts = bool(_agent_config.get("enable_tree_of_thoughts", False))
         _enable_peer_review = bool(_agent_config.get("enable_peer_review", False))
+        # D-2: multi-agent pattern flags were extracted for the other reasoning nodes
+        # but supervisor/debate were dropped here, so an agent configured for them
+        # never got the real SupervisorAgent/DebateOrchestrator nodes on the default
+        # (non-dynamic-orchestration) path. Thread them through like the others.
+        _enable_supervisor = bool(_agent_config.get("enable_supervisor", False))
+        _enable_debate = bool(_agent_config.get("enable_debate", False))
         graph_services = {
             "planner": provider,
             "executor": provider,
@@ -925,6 +931,9 @@ class GoalService:
             "enable_self_consistency": _enable_self_consistency,
             "enable_tree_of_thoughts": _enable_tree_of_thoughts,
             "enable_peer_review": _enable_peer_review,
+            # D-2: real supervisor decomposition / debate voting nodes, opt-in per agent
+            "enable_supervisor": _enable_supervisor,
+            "enable_debate": _enable_debate,
             # Use RedisSaver when available for cross-replica state persistence (Fix 7)
             "checkpointer": _resolve_checkpointer(app_state),
             # H-1: real token-cost tracker

@@ -84,6 +84,17 @@ def test_all_selected_existing_reasoning_patterns_compile_before_run() -> None:
     assert {"refine", "self_consistency", "tree_of_thoughts", "peer_review", "reflect"} <= nodes
 
 
+def test_profile_selecting_supervisor_and_debate_compiles_those_nodes() -> None:
+    """D-2: a LOCAL-tier profile that selects the supervisor/debate strategies must
+    compile the real multi-agent nodes (previously they were the only reasoning
+    nodes GraphFactory did not surface in its flag set)."""
+    graph = GraphFactory().create(profile("react", "supervisor", "debate"), services())
+    nodes = set(graph._graph.get_graph().nodes)
+    assert {"supervisor", "debate"} <= nodes
+    assert graph._enable_supervisor is True
+    assert graph._enable_debate is True
+
+
 def test_distributed_primary_is_not_compiled_as_local_hidden_flag() -> None:
     distributed = replace(
         profile("debate"),
