@@ -33,6 +33,7 @@ import time
 import uuid
 from typing import Any
 
+from app.agent.tokenizer import count_tokens
 from app.ingestion.source_config import PipelineResult, RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
@@ -270,7 +271,7 @@ class IngestionPipeline:
             if self._dry_run:
                 result.status = "dry_run"
                 result.chunks_created = len(enriched_chunks)
-                result.tokens_consumed = sum(len(c["text"].split()) for c in enriched_chunks)
+                result.tokens_consumed = sum(count_tokens(c["text"]) for c in enriched_chunks)
                 return result
 
             # ── Stage 10: EMBED ───────────────────────────────────────────────
@@ -280,7 +281,7 @@ class IngestionPipeline:
                 return result
 
             embedded_chunks = await self._embed(enriched_chunks, source_config)
-            result.tokens_consumed = sum(len(c["text"].split()) for c in embedded_chunks)
+            result.tokens_consumed = sum(count_tokens(c["text"]) for c in embedded_chunks)
 
             # ── Stage 11: DEDUP CHUNKS ────────────────────────────────────────
             unique_chunks = self._dedup_chunks(embedded_chunks)
