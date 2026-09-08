@@ -39,6 +39,82 @@ class RerankStrategy(enum.StrEnum):
     AUTO = "auto"
 
 
+# ---------------------------------------------------------------------------
+# Value scoring for value-based context packing (Phase-2, task 2.2).
+#
+# A chunk's *predicted value* combines the signals that make a chunk worth its
+# tokens: how relevant retrieval judged it, how much we trust its source, how
+# fresh it is, and (when available) how useful it has historically proven.
+# ContextBudget uses this to pack for maximum total value under a token budget.
+# This is additive to (and independent of) the reranking strategies above.
+# ---------------------------------------------------------------------------
+
+# Trust priors per source type. Overridable per chunk via a "source_trust" field.
+_SOURCE_TRUST: dict[str, float] = {
+    "curated": 1.0,
+    "internal": 0.95,
+    "internal_doc": 0.95,
+    "documentation": 0.9,
+    "docs": 0.9,
+    "knowledge_base": 0.9,
+    "code": 0.85,
+    "web": 0.6,
+    "search": 0.6,
+    "user": 0.5,
+    "unknown": 0.7,
+}
+
+# Recency half-life in days for the exponential freshness decay.
+_RECENCY_HALFLIFE_DAYS = 30.0
+
+
+def source_trust(chunk: dict[str, Any]) -> float:
+    """Trust multiplier in (0, 1] for a chunk's source.
+
+    Honours an explicit ``source_trust`` float when present, else looks up the
+    ``source_type`` prior, else falls back to the neutral ``unknown`` prior.
+    """
+    explicit = chunk.get("source_trust")
+    if explicit is not None:
+        return max(0.0, float(explicit))
+    stype = str(chunk.get("source_type", "unknown")).lower()
+    return _SOURCE_TRUST.get(stype, _SOURCE_TRUST["unknown"])
+
+
+def recency_weight(chunk: dict[str, Any]) -> float:
+    """Freshness multiplier in (0, 1]. 1.0 when age is unknown.
+
+    Honours an explicit ``recency`` float; otherwise applies an exponential
+    half-life decay over ``age_days`` (older chunks are worth less).
+    """
+    explicit = chunk.get("recency")
+    if explicit is not None:
+        return max(0.0, float(explicit))
+    age_days = chunk.get("age_days")
+    if age_days is None:
+        return 1.0
+    return float(0.5 ** (max(0.0, float(age_days)) / _RECENCY_HALFLIFE_DAYS))
+
+
+def predict_chunk_value(chunk: dict[str, Any]) -> float:
+    """Predicted value of a chunk = relevance x trust x recency x usefulness.
+
+    - relevance: the retrieval ``score`` (neutral 0.5 when absent);
+    - trust: :func:`source_trust`;
+    - recency: :func:`recency_weight`;
+    - usefulness: optional ``historical_usefulness`` multiplier (1.0 default).
+
+    Always returns a small positive floor so a zero-scored chunk can still fill
+    leftover budget rather than being silently un-packable.
+    """
+    relevance = chunk.get("score")
+    relevance = 0.5 if relevance is None else float(relevance)
+    usefulness = chunk.get("historical_usefulness")
+    usefulness = 1.0 if usefulness is None else float(usefulness)
+    value = relevance * source_trust(chunk) * recency_weight(chunk) * usefulness
+    return max(value, 1e-6)
+
+
 def rrf_fuse(ranked_lists: list[list[dict]], k: int = 60) -> list[dict]:
     """Reciprocal Rank Fusion — 1/(k+rank) per Cormack 2009 (1-indexed ranks)."""
     scores: dict[str, float] = defaultdict(float)
