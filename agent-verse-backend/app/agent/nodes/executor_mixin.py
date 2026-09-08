@@ -866,6 +866,20 @@ class ExecutorMixin:
                     )
                 )
 
+        # Civilization: advertise the spawn tool so the LLM can actually call it.
+        # Without this the SPAWN_TOOL_DEFINITION is never offered and the spawn
+        # dispatch branch below is unreachable.
+        if self._civilization_spawn_enabled and self._civilization_id:
+            from app.civilization.spawn_tool import SPAWN_TOOL_DEFINITION
+
+            _tool_defs.append(
+                ToolDefinition(
+                    name=str(SPAWN_TOOL_DEFINITION["name"]),
+                    description=str(SPAWN_TOOL_DEFINITION["description"]),
+                    input_schema=dict(SPAWN_TOOL_DEFINITION["parameters"]),
+                )
+            )
+
         # Build allowed-tools allowlist for anti-hallucination grounding
         _allowed_tools_set: set[str] = set()
         if _tc_ctx is not None:
@@ -874,6 +888,15 @@ class ExecutorMixin:
                 _allowed_tools_set = {t.name for t in _tools_list if hasattr(t, "name")}
             except Exception:
                 pass
+
+        # Keep the civilization spawn tool in the anti-hallucination allowlist so
+        # it is listed in the executor system prompt's ALLOWED TOOLS grounding.
+        if self._civilization_spawn_enabled and self._civilization_id:
+            from app.civilization.spawn_tool import (
+                SPAWN_TOOL_DEFINITION as _SPAWN_TOOL_DEFINITION,
+            )
+
+            _allowed_tools_set.add(str(_SPAWN_TOOL_DEFINITION["name"]))
 
         # ToolPromptBuilder — enrich content with formatted tool descriptions (M5b)
         try:
@@ -1220,12 +1243,17 @@ class ExecutorMixin:
                     else None
                 )
                 if tool_ref is None:
+                    # Tracks whether the civilization spawn branch already handled
+                    # this call, so the RPA / "tool not found" fallthrough below
+                    # does not clobber its result with a spurious failure.
+                    _civ_spawn_handled = False
                     # Check if it's a civilization spawn tool call
                     if (
                         self._civilization_spawn_enabled
                         and self._civilization_id
                         and tool_call.tool == "civilization_spawn"
                     ):
+                        _civ_spawn_handled = True
                         try:
                             from app.civilization.governor import Governor
                             from app.civilization.spawn_tool import execute_spawn_tool
@@ -1246,11 +1274,24 @@ class ExecutorMixin:
                             if _civ_const_placeholder is not None:
                                 _gov_kwargs["constitution"] = _civ_const_placeholder
                             governor = Governor(**_gov_kwargs)
+                            _spawn_args = tool_call.arguments or {}
+                            _spawn_ctx = state.context if isinstance(state.context, dict) else {}
                             spawn_result = await execute_spawn_tool(
-                                arguments=tool_call.arguments or {},
+                                capability=str(_spawn_args.get("capability", "")),
+                                goal=str(_spawn_args.get("goal", "")),
+                                priority=str(_spawn_args.get("priority", "normal")),
                                 governor=governor,
-                                goal_service=self._goal_service,
+                                requester_agent_id=str(getattr(state, "agent_id", "") or ""),
+                                depth=int(_spawn_ctx.get("civilization_depth", 0) or 0),
+                                parent_budget_usd=float(
+                                    _spawn_ctx.get("civilization_parent_budget_usd", 0.0) or 0.0
+                                ),
+                                parent_policy_ids=list(
+                                    _spawn_ctx.get("civilization_parent_policy_ids", []) or []
+                                ),
                                 tenant_ctx=tenant_ctx,
+                                goal_service=self._goal_service,
+                                civilization_id=self._civilization_id,
                             )
                             raw_output = str(spawn_result)
                             await self._emit(
@@ -1260,9 +1301,7 @@ class ExecutorMixin:
                                     "child_agent_id": spawn_result.get("agent_id"),
                                     "child_goal_id": spawn_result.get("goal_id"),
                                     "depth": spawn_result.get("depth", 0),
-                                    "capability": (tool_call.arguments or {}).get(
-                                        "requested_capability", ""
-                                    ),
+                                    "capability": str(_spawn_args.get("capability", "")),
                                 }
                             )
                             raw_output_sanitized = True
@@ -1434,8 +1473,9 @@ class ExecutorMixin:
                                 "failed",
                                 time.monotonic() - tool_call_started,
                             )
-                    else:
-                        # Existing "tool_ref is None" error handling
+                    elif not _civ_spawn_handled:
+                        # Existing "tool_ref is None" error handling (skipped when
+                        # the civilization spawn branch already handled the call).
                         raw_output = self._sanitize_tool_raw_output(
                             f"Tool not found: {tool_call.tool}"
                         )
