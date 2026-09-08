@@ -1,7 +1,7 @@
 # tests/integration/test_orchestration_integration.py
 """Integration tests requiring real Postgres + Redis (testcontainers).
 
-Run with: DOCKER_HOST=unix:///Users/harsh.kumar01/.colima/default/docker.sock \
+Run with: DOCKER_HOST=unix://$HOME/.colima/default/docker.sock \
           TESTCONTAINERS_RYUK_DISABLED=true \
           uv run pytest tests/integration/test_orchestration_integration.py -m integration
 """

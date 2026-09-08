@@ -22,12 +22,12 @@ import os
 import pytest
 from dotenv import load_dotenv
 
+from tests._paths import BACKEND_ROOT
+
 # ---------------------------------------------------------------------------
 # Environment bootstrap — must happen before any app imports
 # ---------------------------------------------------------------------------
-load_dotenv(
-    "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/.env"
-)
+load_dotenv(BACKEND_ROOT / ".env")
 
 # Force HuggingFace offline mode so ColBERT's sentence-transformers encoder
 # does NOT try to download all-MiniLM-L6-v2.  If the model isn't already

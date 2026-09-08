@@ -2,6 +2,8 @@
 import pytest
 import asyncio
 
+from tests._paths import INFRA_DIR, MIGRATIONS_DIR
+
 
 def test_artifact_tool_importable():
     from app.tools.artifact_tool import ArtifactTool
@@ -53,13 +55,13 @@ def test_artifact_tool_definition_valid():
 
 def test_migration_0036_exists():
     import os
-    files = os.listdir("/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/app/db/migrations/versions")
+    files = os.listdir(MIGRATIONS_DIR)
     assert any("0036" in f for f in files), "Migration 0036 must exist"
 
 
 def test_grafana_dashboard_exists():
     import os
-    dashboard_dir = "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/infra/grafana/dashboards"
+    dashboard_dir = INFRA_DIR / "grafana" / "dashboards"
     assert os.path.exists(dashboard_dir), "Grafana dashboards directory must exist"
     files = os.listdir(dashboard_dir)
     assert any(".json" in f for f in files), "At least one Grafana dashboard JSON must exist"
@@ -67,7 +69,7 @@ def test_grafana_dashboard_exists():
 
 def test_helm_backup_cronjob_exists():
     import os
-    path = "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/infra/helm/agentverse/templates/backup-cronjob.yaml"
+    path = INFRA_DIR / "helm" / "agentverse" / "templates" / "backup-cronjob.yaml"
     assert os.path.exists(path), "Helm backup CronJob template must exist"
 
 

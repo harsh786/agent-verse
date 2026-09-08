@@ -17,13 +17,13 @@ import os
 import pytest
 from dotenv import load_dotenv
 
+from tests._paths import BACKEND_ROOT
+
 # ---------------------------------------------------------------------------
 # Environment bootstrap — must happen before any app import
 # ---------------------------------------------------------------------------
 
-load_dotenv(
-    "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/.env"
-)
+load_dotenv(BACKEND_ROOT / ".env")
 
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
 if not OPENAI_KEY:

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests._paths import require_sdk_typescript
+
 
 def test_phase_6_pause_polling_in_tasks():
     """Celery tasks must poll pause/cancel signals during execution."""
@@ -50,11 +52,8 @@ def test_phase_17_rotate_key_re_encrypts():
 
 def test_phase_20_ts_sdk_has_hitl_methods():
     """TypeScript SDK must have HITL approve/reject methods."""
-    with open(
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse"
-        "/Archived/agent-verse-sdk-typescript/src/client.ts"
-    ) as f:
-        src = f.read()
+    sdk = require_sdk_typescript()
+    src = (sdk / "src" / "client.ts").read_text()
     assert "approveRequest" in src, "TypeScript SDK must have approveRequest method"
     assert "rejectRequest" in src, "TypeScript SDK must have rejectRequest method"
     assert "simulate" in src, "TypeScript SDK must have simulate method"
@@ -63,11 +62,8 @@ def test_phase_20_ts_sdk_has_hitl_methods():
 
 def test_phase_20_ts_sdk_has_simulation_types():
     """TypeScript SDK must have SimulationResult and GoalTimeline types."""
-    with open(
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse"
-        "/Archived/agent-verse-sdk-typescript/src/types.ts"
-    ) as f:
-        src = f.read()
+    sdk = require_sdk_typescript()
+    src = (sdk / "src" / "types.ts").read_text()
     assert "SimulationResult" in src, "TypeScript SDK types must have SimulationResult"
     assert "GoalTimeline" in src, "TypeScript SDK types must have GoalTimeline"
 

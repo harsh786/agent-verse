@@ -56,10 +56,10 @@ def test_clear_emergency_stop_endpoint_exists():
 
 def test_audit_immutability_trigger_in_migration():
     import os
-    files = os.listdir(
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/"
-        "agent-verse-backend/app/db/migrations/versions"
-    )
+
+    from tests._paths import MIGRATIONS_DIR
+
+    files = os.listdir(MIGRATIONS_DIR)
     assert any("0031" in f for f in files), (
         "Migration 0031 (audit immutability) must exist"
     )

@@ -28,9 +28,10 @@ def test_embedding_dim_migration_uses_1536():
         pass  # Module names starting with digits can't be imported via dotted path
 
     import os
-    migration_files = os.listdir(
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/app/db/migrations/versions"
-    )
+
+    from tests._paths import MIGRATIONS_DIR
+
+    migration_files = os.listdir(MIGRATIONS_DIR)
     assert any("0028" in f for f in migration_files), "0028 migration must exist"
     assert any("embedding" in f and "0028" in f for f in migration_files), \
         "Migration 0028 must be the embedding resize"

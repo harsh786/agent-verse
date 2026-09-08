@@ -4,12 +4,11 @@ from __future__ import annotations
 import os
 import pytest
 
+from tests._paths import MIGRATIONS_DIR, require_frontend
+
 
 def test_migration_0043_exists():
-    files = os.listdir(
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend"
-        "/app/db/migrations/versions"
-    )
+    files = os.listdir(MIGRATIONS_DIR)
     assert any("0043" in f for f in files), "Migration 0043 for debate audit must exist"
 
 
@@ -82,35 +81,27 @@ def test_debate_persist_method_exists():
 
 
 def test_simulation_page_exists():
-    path = (
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse"
-        "/agent-verse-frontend/src/features/simulation/SimulationPage.tsx"
-    )
-    assert os.path.exists(path), "SimulationPage.tsx must exist"
+    frontend = require_frontend()
+    path = frontend / "src" / "features" / "simulation" / "SimulationPage.tsx"
+    assert path.exists(), "SimulationPage.tsx must exist"
 
 
 def test_rpa_live_page_exists():
-    path = (
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse"
-        "/agent-verse-frontend/src/features/rpa/RpaLivePage.tsx"
-    )
-    assert os.path.exists(path), "RpaLivePage.tsx must exist"
+    frontend = require_frontend()
+    path = frontend / "src" / "features" / "rpa" / "RpaLivePage.tsx"
+    assert path.exists(), "RpaLivePage.tsx must exist"
 
 
 def test_audit_explorer_page_exists():
-    path = (
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse"
-        "/agent-verse-frontend/src/features/audit/AuditExplorerPage.tsx"
-    )
-    assert os.path.exists(path), "AuditExplorerPage.tsx must exist"
+    frontend = require_frontend()
+    path = frontend / "src" / "features" / "audit" / "AuditExplorerPage.tsx"
+    assert path.exists(), "AuditExplorerPage.tsx must exist"
 
 
 def test_app_tsx_has_simulation_route():
-    path = (
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse"
-        "/agent-verse-frontend/src/app/App.tsx"
-    )
-    content = open(path).read()
+    frontend = require_frontend()
+    path = frontend / "src" / "app" / "App.tsx"
+    content = path.read_text()
     assert "simulation" in content, "App.tsx must have /simulation route"
     assert "audit" in content, "App.tsx must have /audit route"
     assert "rpa/live" in content, "App.tsx must have /rpa/live route"

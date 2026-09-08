@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests._paths import MIGRATIONS_DIR, require_frontend, require_sdk_python
+
 
 def test_beat_schedule_uses_correct_task_name():
     """Celery beat must use the actual registered task name for stuck-goal detection."""
@@ -90,8 +92,8 @@ def test_shell_tool_validate_working_dir_safe_paths():
 
 def test_frontend_api_client_getEventLog_uses_correct_endpoint():
     """getEventLog must call /goals/{id}/events or /goals/{id}/replay, not /goals/{id}."""
-    with open("/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-frontend/src/lib/api/client.ts") as f:
-        src = f.read()
+    frontend = require_frontend()
+    src = (frontend / "src" / "lib" / "api" / "client.ts").read_text()
     assert (
         "events-log" in src
         or "/events`" in src
@@ -105,7 +107,7 @@ def test_mock_server_goal_auto_completes():
     """Mock server must auto-complete goals for SDK testing."""
     import inspect
     import sys
-    sdk_path = "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/Archived/agent-verse-sdk-python"
+    sdk_path = str(require_sdk_python())
     sys.path.insert(0, sdk_path)
     # Clear any cached agentverse modules so the local SDK path takes priority
     # over the installed venv package (which may lack mock_server when imported
@@ -131,10 +133,7 @@ def test_mock_server_goal_auto_completes():
 def test_migration_0034_filename_correct():
     """Migration file for RLS fix must be named 0034_*.py."""
     import os
-    files = os.listdir(
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend"
-        "/app/db/migrations/versions"
-    )
+    files = os.listdir(MIGRATIONS_DIR)
     has_0034 = any("0034" in f for f in files)
     assert has_0034, "0034 migration file must exist (for RLS fix)"
 
@@ -147,11 +146,8 @@ def test_migration_0034_filename_correct():
 
 def test_frontend_workflow_mode_is_single_agent():
     """GoalsListPage must submit workflow_mode='single_agent', not 'auto_route'."""
-    with open(
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-frontend"
-        "/src/features/goals/GoalsListPage.tsx"
-    ) as f:
-        src = f.read()
+    frontend = require_frontend()
+    src = (frontend / "src" / "features" / "goals" / "GoalsListPage.tsx").read_text()
     assert "auto_route" not in src, (
         "GoalsListPage must not submit workflow_mode='auto_route'"
     )

@@ -57,8 +57,7 @@ def test_tool_reliability_api_endpoint_exists():
 def test_migration_0037_exists():
     import os
 
-    files = os.listdir(
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/"
-        "agent-verse-backend/app/db/migrations/versions"
-    )
+    from tests._paths import MIGRATIONS_DIR
+
+    files = os.listdir(MIGRATIONS_DIR)
     assert any("0037" in f for f in files)

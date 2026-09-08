@@ -3,6 +3,8 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from tests._paths import MIGRATIONS_DIR
+
 
 def test_golden_task_class_exists():
     from app.intelligence.eval_suite import GoldenTask
@@ -82,18 +84,12 @@ def test_get_golden_tasks_is_coroutine():
 def test_migration_0038_exists():
     import os
 
-    files = os.listdir(
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/"
-        "agent-verse-backend/app/db/migrations/versions"
-    )
+    files = os.listdir(MIGRATIONS_DIR)
     assert any("0038" in f for f in files)
 
 
 def test_migration_0039_exists():
     import os
 
-    files = os.listdir(
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/"
-        "agent-verse-backend/app/db/migrations/versions"
-    )
+    files = os.listdir(MIGRATIONS_DIR)
     assert any("0039" in f for f in files)

@@ -29,8 +29,10 @@ def test_hitl_has_startup_restore():
 
 def test_migration_0029_exists():
     import os
-    migrations_dir = "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/app/db/migrations/versions"
-    files = os.listdir(migrations_dir)
+
+    from tests._paths import MIGRATIONS_DIR
+
+    files = os.listdir(MIGRATIONS_DIR)
     assert any("0029" in f for f in files), "Migration 0029 (prompt_variants) must exist"
     assert any("prompt" in f and "0029" in f for f in files), \
         "Migration 0029 must be named with 'prompt' or 'variant'"

@@ -1,6 +1,8 @@
 """Tests for the knowledge ingestion pipeline — Phase P0.2."""
 import os
 
+from tests._paths import MIGRATIONS_DIR
+
 
 def test_pdf_ingestor_importable():
     from app.knowledge.ingestors.pdf_ingestor import PdfIngestor
@@ -108,9 +110,7 @@ def test_knowledge_ingestors_all_importable():
 
 
 def test_migration_0035_exists():
-    files = os.listdir(
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/app/db/migrations/versions"
-    )
+    files = os.listdir(MIGRATIONS_DIR)
     assert any("0035" in f for f in files), "Migration 0035 must exist for knowledge citations"
 
 

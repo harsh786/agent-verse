@@ -254,20 +254,18 @@ def test_create_agent_request_defaults():
 
 def test_migration_0033_exists():
     import os
-    migration_dir = (
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/"
-        "agent-verse-backend/app/db/migrations/versions"
-    )
-    files = os.listdir(migration_dir)
+
+    from tests._paths import MIGRATIONS_DIR
+
+    files = os.listdir(MIGRATIONS_DIR)
     assert any("0033" in f for f in files), "Migration 0033 must exist"
 
 
 def test_migration_0033_has_required_columns():
     """Migration 0033 must add all required columns."""
-    migration_path = (
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/"
-        "agent-verse-backend/app/db/migrations/versions/0033_agent_schema_upgrade.py"
-    )
+    from tests._paths import MIGRATIONS_DIR
+
+    migration_path = MIGRATIONS_DIR / "0033_agent_schema_upgrade.py"
     with open(migration_path) as f:
         src = f.read()
     for col in [

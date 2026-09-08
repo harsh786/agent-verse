@@ -2,10 +2,12 @@
 import pytest
 import os
 
+from tests._paths import BACKEND_ROOT, INFRA_DIR
+
 
 def test_dockerfile_runs_migrations():
     """Dockerfile CMD must run alembic upgrade head before starting server."""
-    dockerfile_path = "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/Dockerfile"
+    dockerfile_path = BACKEND_ROOT / "Dockerfile"
     with open(dockerfile_path) as f:
         content = f.read()
     assert "alembic upgrade head" in content, \
@@ -15,7 +17,7 @@ def test_dockerfile_runs_migrations():
 def test_minio_healthcheck_uses_mc():
     """MinIO healthcheck must use mc not curl (curl not in minio image)."""
     import yaml
-    compose_path = "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/infra/docker-compose.yml"
+    compose_path = INFRA_DIR / "docker-compose.yml"
     with open(compose_path) as f:
         compose = yaml.safe_load(f)
     minio_health = compose.get("services", {}).get("minio", {}).get("healthcheck", {})
@@ -50,7 +52,7 @@ def test_no_duplicate_server_ids():
 
 def test_worker_has_llm_key_guidance():
     """docker-compose.yml worker service must document LLM key configuration."""
-    compose_path = "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/infra/docker-compose.yml"
+    compose_path = INFRA_DIR / "docker-compose.yml"
     with open(compose_path) as f:
         content = f.read()
     assert "ANTHROPIC_API_KEY" in content, \

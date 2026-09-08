@@ -1,6 +1,8 @@
 """Tests for P2.7: Vault key rotation and BYOK."""
 import pytest
 
+from tests._paths import MIGRATIONS_DIR
+
 
 def test_vault_has_rotate_key_method():
     from app.providers.vault import CredentialVault
@@ -59,17 +61,11 @@ def test_vault_rotate_key_rejects_short_key():
 
 def test_migration_0040_exists():
     import os
-    files = os.listdir(
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend"
-        "/app/db/migrations/versions"
-    )
+    files = os.listdir(MIGRATIONS_DIR)
     assert any("0040" in f for f in files)
 
 
 def test_migration_0041_exists():
     import os
-    files = os.listdir(
-        "/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend"
-        "/app/db/migrations/versions"
-    )
+    files = os.listdir(MIGRATIONS_DIR)
     assert any("0041" in f for f in files)
