@@ -115,15 +115,11 @@ async def test_raptor_invokes_real_precomputed_path_when_index_exists(
 
 
 @pytest.mark.asyncio
-async def test_agentic_chunking_records_fallback_when_index_absent(
+async def test_agentic_chunking_raises_when_index_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls = {"retrieve_precomputed": 0, "fallback_search": 0}
-    original = AgenticChunkingPattern.retrieve_precomputed
-
-    async def spy_retrieve(self: AgenticChunkingPattern, **kwargs: Any) -> Any:
-        calls["retrieve_precomputed"] += 1
-        return await original(self, **kwargs)
+    """D-7: empty precomputed index now raises UnavailableRAGStrategyError."""
+    from app.rag.contracts import UnavailableRAGStrategyError
 
     async def empty_search(self: Any, **kwargs: Any) -> list[dict[str, Any]]:
         return []
@@ -131,52 +127,15 @@ async def test_agentic_chunking_records_fallback_when_index_absent(
     async def fake_embed(context: Any, text: str, strategy: RAGStrategy) -> list[float]:
         return [1.0, 0.0]
 
-    async def fake_search_persisted(
-        context: Any,
-        request: Any,
-        *,
-        query: str,
-        embedding: Any,
-        retrieval_mode: str,
-        evidence: list[dict[str, Any]] | None = None,
-        top_k: int | None = None,
-    ) -> list[RetrievalResult]:
-        calls["fallback_search"] += 1
-        assert retrieval_mode == "hybrid"
-        if evidence is not None:
-            evidence.append({"component": "hybrid", "result_count": 1})
-        return [
-            RetrievalResult(
-                chunk_id="fallback-1",
-                content="Fallback hybrid evidence",
-                score=0.55,
-                source_metadata={"source": "policy.pdf"},
-                retrieval_legs=["hybrid"],
-            )
-        ]
-
-    monkeypatch.setattr(AgenticChunkingPattern, "retrieve_precomputed", spy_retrieve)
     monkeypatch.setattr(
         "app.rag.gateway._GatewaySessionStore.search_precomputed_index",
         empty_search,
     )
     monkeypatch.setattr("app.rag.gateway._embed_text", fake_embed)
-    monkeypatch.setattr("app.rag.gateway._search_persisted", fake_search_persisted)
 
-    result = await execute_core_strategy(
-        RAGStrategy.AGENTIC_CHUNKING,
-        _request(RAGStrategy.AGENTIC_CHUNKING),
-        _context(RAGStrategy.AGENTIC_CHUNKING),
-    )
-
-    # Real precomputed path was attempted, then a recorded hybrid fallback ran.
-    assert calls["retrieve_precomputed"] == 1
-    assert calls["fallback_search"] == 1
-    assert [citation.chunk_id for citation in result.citations] == ["fallback-1"]
-    fallback_trace = next(
-        trace
-        for trace in result.strategy_trace
-        if trace.detail.get("reason") == "precomputed_index_absent"
-    )
-    assert fallback_trace.detail["fallback_retrieval"] == "hybrid"
-    assert fallback_trace.detail["result_count"] == 1
+    with pytest.raises(UnavailableRAGStrategyError, match="agentic_chunking"):
+        await execute_core_strategy(
+            RAGStrategy.AGENTIC_CHUNKING,
+            _request(RAGStrategy.AGENTIC_CHUNKING),
+            _context(RAGStrategy.AGENTIC_CHUNKING),
+        )
