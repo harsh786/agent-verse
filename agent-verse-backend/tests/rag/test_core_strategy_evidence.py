@@ -551,6 +551,11 @@ class _AllowWebPolicy:
         return "allow"
 
 
+class _LongTermMemory:
+    async def recall_async(self, **_: object) -> list[object]:
+        return []
+
+
 class _ProbeTransaction:
     async def __aenter__(self) -> _ProbeTransaction:
         return self
@@ -589,6 +594,7 @@ async def test_readiness_reflects_core_dependencies() -> None:
         graph_capability=TenantScopedGraphCapabilityAdapter(),
         search_capability=_SearchCapability(),
         policy_services=(_AllowWebPolicy(),),
+        long_term_memory=_LongTermMemory(),
     )
     gateway = RetrievalGateway(dependencies)
 
@@ -887,6 +893,7 @@ async def test_api_discovery_exposes_exactly_ready_core_capabilities() -> None:
             graph_capability=TenantScopedGraphCapabilityAdapter(),
             search_capability=_SearchCapability(),
             policy_services=(_AllowWebPolicy(),),
+            long_term_memory=_LongTermMemory(),
         )
     )
     configured_request = SimpleNamespace(

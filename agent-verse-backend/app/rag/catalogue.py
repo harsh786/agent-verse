@@ -1,4 +1,4 @@
-"""Authoritative runtime catalogue for the 18 canonical RAG strategies."""
+"""Authoritative runtime catalogue for the 20 canonical RAG strategies."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ class RAGRuntimeDependency(StrEnum):
     COLBERT_CHECKPOINT = "colbert_checkpoint"
     RAFT_SERVICE = "raft_service"
     RAFT_MODEL = "raft_model"
+    LONG_TERM_MEMORY = "long_term_memory"
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,6 +269,14 @@ RAG_CAPABILITY_CATALOGUE: Mapping[RAGStrategy, RAGCapabilityCatalogueEntry] = Ma
                 RAGRuntimeDependency.RAFT_SERVICE,
                 RAGRuntimeDependency.RAFT_MODEL,
             ),
+        ),
+        RAGStrategy.MEMORY_AUGMENTED: RAGCapabilityCatalogueEntry(
+            RAGStrategy.MEMORY_AUGMENTED,
+            "app.rag.contracts:MemoryAugmentedRAGRuntimeAdapter",
+            (*_DB_EMBED, RAGRuntimeDependency.LONG_TERM_MEMORY),
+        ),
+        RAGStrategy.CODE: RAGCapabilityCatalogueEntry(
+            RAGStrategy.CODE, "app.rag.contracts:CodeRAGRuntimeAdapter", _DB_EMBED
         ),
     }
 )

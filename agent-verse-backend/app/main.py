@@ -713,6 +713,7 @@ def create_app(
             collection_authorizer=KnowledgeStoreCollectionAuthorizer(_knowledge_store),
             strategy_capabilities=core_strategy_capabilities(_rag_adapter_configuration),
             raft_service=_raft_service,
+            long_term_memory=_long_term_memory,
             colbert_checkpoint=settings.colbert_checkpoint,
         )
     )
@@ -1275,6 +1276,7 @@ def create_app(
                         repository=SQLRAFTRepository(db_factory),
                         providers={},
                     ),
+                    long_term_memory=_long_term_memory,
                     colbert_checkpoint=settings.colbert_checkpoint,
                 )
             )

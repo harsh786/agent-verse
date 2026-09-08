@@ -32,6 +32,8 @@ class RAGStrategy(StrEnum):
     AGENTIC_CHUNKING = "agentic_chunking"
     COLBERT = "colbert"
     RAFT = "raft"
+    MEMORY_AUGMENTED = "memory_augmented"
+    CODE = "code"
 
 
 DIRECT_CORE_RAG_STRATEGIES: frozenset[RAGStrategy] = frozenset(
@@ -46,6 +48,8 @@ DIRECT_CORE_RAG_STRATEGIES: frozenset[RAGStrategy] = frozenset(
         RAGStrategy.FUSION,
         RAGStrategy.RAPTOR,
         RAGStrategy.AGENTIC_CHUNKING,
+        RAGStrategy.MEMORY_AUGMENTED,
+        RAGStrategy.CODE,
     }
 )
 
@@ -58,6 +62,10 @@ RAG_STRATEGY_ALIASES: Mapping[str, RAGStrategy] = MappingProxyType(
         "colbert_late_interaction": RAGStrategy.COLBERT,
         "multi_hop_rag": RAGStrategy.MULTI_HOP,
         "graph_rag": RAGStrategy.GRAPH,
+        # D-9: promote the historical string-only entry points to the
+        # canonical, certified enum members.
+        "memory": RAGStrategy.MEMORY_AUGMENTED,
+        "code_rag": RAGStrategy.CODE,
     }
 )
 
@@ -272,6 +280,18 @@ class AgenticChunkingRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
     strategy = RAGStrategy.AGENTIC_CHUNKING
     probe_action = "probe_semantic_boundaries"
     probe_evidence = "semantic boundary chunking"
+
+
+class MemoryAugmentedRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
+    strategy = RAGStrategy.MEMORY_AUGMENTED
+    probe_action = "probe_long_term_memory_fusion"
+    probe_evidence = "long-term memory and persisted evidence fusion"
+
+
+class CodeRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):
+    strategy = RAGStrategy.CODE
+    probe_action = "probe_symbol_boosted_retrieval"
+    probe_evidence = "identifier-boosted code retrieval"
 
 
 class ColBERTRAGRuntimeAdapter(_CoreRAGRuntimeAdapter):

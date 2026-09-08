@@ -25,7 +25,7 @@ from app.rag.agentic.patterns.web_augmented import (
     WebSearchRequest,
 )
 from app.rag.catalogue import RAG_RUNTIME_CAPABILITIES
-from app.rag.contracts import RAGExecutionRequest, RAGStrategy
+from app.rag.contracts import RAGExecutionRequest, RAGStrategy, UnavailableRAGStrategyError
 from app.rag.engine import RetrievalResult, RetrievalStrategyExecutionError
 from app.rag.gateway import (
     KnowledgeStoreCollectionAuthorizer,
@@ -297,6 +297,7 @@ def _context(
     policies: tuple[object, ...] = (),
     available: tuple[RAGStrategy, ...] = (),
     runner: Callable[[Callable[[Any], Awaitable[Any]]], Awaitable[Any]] | None = None,
+    long_term_memory: object | None = None,
 ) -> RetrievalExecutionContext:
     return RetrievalExecutionContext(
         tenant_context=TENANT,
@@ -313,6 +314,7 @@ def _context(
             search_capability=web,
             policy_services=policies,
             available_strategies=available,
+            long_term_memory=long_term_memory,
         ),
         _db_operation_runner=runner,
     )
@@ -600,6 +602,308 @@ async def test_adaptive_selects_only_available_strategy_and_records_reason() -> 
     assert decision.detail["selected_strategy"] == "hybrid"
     assert decision.detail["reason"] == "graph_unavailable; selected_default_hybrid"
     assert decision.detail["decision_count"] == 1
+
+
+# ── D-9: memory-augmented and code RAG are first-class certified strategies ──
+
+
+class _RecordingLongTermMemory:
+    """Deterministic long-term-memory double recording every recall call."""
+
+    def __init__(self, memories: list[SimpleNamespace] | None = None) -> None:
+        self._memories = memories if memories is not None else []
+        self.calls: list[dict[str, Any]] = []
+
+    async def recall_async(self, **kwargs: Any) -> list[SimpleNamespace]:
+        self.calls.append(kwargs)
+        return self._memories
+
+
+class _FailingLongTermMemory:
+    async def recall_async(self, **_: Any) -> list[SimpleNamespace]:
+        raise RuntimeError("backend outage")
+
+
+async def test_memory_augmented_merges_long_term_memory_with_persisted_evidence() -> None:
+    async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+        return await operation(_AuthorizedSession())
+
+    async def persisted_search(_session: object, **kwargs: Any) -> list[RetrievalResult]:
+        assert kwargs["retrieval_mode"] == "hybrid"
+        return [
+            RetrievalResult(
+                "doc-1",
+                "Persisted retention policy text.",
+                0.6,
+                {"source": "policy.pdf"},
+                ["vector"],
+            )
+        ]
+
+    long_term_memory = _RecordingLongTermMemory(
+        [
+            SimpleNamespace(
+                memory_id="m1",
+                content="Past goal: retention audits run quarterly.",
+                confidence=0.9,
+                memory_type="domain_fact",
+                source_goal_id="goal-1",
+            )
+        ]
+    )
+
+    adapter = core_strategy_capabilities()[RAGStrategy.MEMORY_AUGMENTED].adapter
+    with patch("app.rag.engine.hybrid_search", side_effect=persisted_search):
+        result = await adapter.execute(
+            _request(RAGStrategy.MEMORY_AUGMENTED),
+            _context(
+                RAGStrategy.MEMORY_AUGMENTED,
+                embedder=_Embedder(),
+                runner=runner,
+                long_term_memory=long_term_memory,
+            ),
+        )
+
+    chunk_ids = {citation.chunk_id for citation in result.citations}
+    assert chunk_ids == {"doc-1", "ltm_m1"}
+    ltm_citation = next(c for c in result.citations if c.chunk_id == "ltm_m1")
+    assert "retention audits" in ltm_citation.content
+    assert ltm_citation.metadata["source"] == "long_term_memory"
+    assert result.resolved_strategy_id is RAGStrategy.MEMORY_AUGMENTED
+    assert result.strategy_trace[-1].action == "memory_persisted_merge"
+    assert result.strategy_trace[-1].detail["persisted_count"] == 1
+    assert result.strategy_trace[-1].detail["memory_count"] == 1
+    assert long_term_memory.calls[0]["tenant_ctx"] is TENANT
+
+
+async def test_memory_augmented_raises_explicit_error_when_unconfigured() -> None:
+    adapter = core_strategy_capabilities()[RAGStrategy.MEMORY_AUGMENTED].adapter
+
+    with pytest.raises(UnavailableRAGStrategyError) as exc_info:
+        await adapter.execute(
+            _request(RAGStrategy.MEMORY_AUGMENTED),
+            _context(RAGStrategy.MEMORY_AUGMENTED, embedder=_Embedder()),
+        )
+
+    assert exc_info.value.strategy is RAGStrategy.MEMORY_AUGMENTED
+    assert exc_info.value.reason == "long_term_memory_unavailable"
+
+
+async def test_memory_augmented_surfaces_recall_failure_instead_of_swallowing_it() -> None:
+    async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+        return await operation(_AuthorizedSession())
+
+    async def persisted_search(_session: object, **_: Any) -> list[RetrievalResult]:
+        return []
+
+    adapter = core_strategy_capabilities()[RAGStrategy.MEMORY_AUGMENTED].adapter
+    with (
+        patch("app.rag.engine.hybrid_search", side_effect=persisted_search),
+        pytest.raises(RetrievalStrategyExecutionError, match="memory_augmented"),
+    ):
+        await adapter.execute(
+            _request(RAGStrategy.MEMORY_AUGMENTED),
+            _context(
+                RAGStrategy.MEMORY_AUGMENTED,
+                embedder=_Embedder(),
+                runner=runner,
+                long_term_memory=_FailingLongTermMemory(),
+            ),
+        )
+
+
+async def test_code_rag_boosts_exact_symbol_matches_over_plain_hybrid_ranking() -> None:
+    async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+        return await operation(_AuthorizedSession())
+
+    async def persisted_search(_session: object, **kwargs: Any) -> list[RetrievalResult]:
+        assert kwargs["retrieval_mode"] == "hybrid"
+        # The higher-scored candidate never mentions the symbol the caller
+        # asked about; the lower-scored one defines it verbatim.
+        return [
+            RetrievalResult("prose-1", "General retention policy prose.", 0.95, {}, ["vector"]),
+            RetrievalResult(
+                "def-1",
+                "def parse_request_id(raw): return raw.strip()",
+                0.4,
+                {},
+                ["vector"],
+            ),
+        ]
+
+    adapter = core_strategy_capabilities()[RAGStrategy.CODE].adapter
+    request = RAGExecutionRequest(
+        tenant_id=TENANT.tenant_id,
+        query="what does parse_request_id do",
+        requested_strategy_id=RAGStrategy.CODE.value,
+        collection_id="collection-1",
+        top_k=2,
+    )
+    with patch("app.rag.engine.hybrid_search", side_effect=persisted_search):
+        result = await adapter.execute(
+            request,
+            _context(RAGStrategy.CODE, embedder=_Embedder(), runner=runner),
+        )
+
+    assert [citation.chunk_id for citation in result.citations] == ["def-1", "prose-1"]
+    assert result.citations[0].metadata["matched_symbols"] == 1
+    assert result.citations[1].metadata["matched_symbols"] == 0
+    assert result.strategy_trace[-1].action == "code_symbol_boost"
+    assert result.strategy_trace[-1].detail["symbols_detected"] == ["parse_request_id"]
+
+
+async def test_code_rag_preserves_hybrid_ranking_for_symbol_free_queries() -> None:
+    async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+        return await operation(_AuthorizedSession())
+
+    async def persisted_search(_session: object, **_: Any) -> list[RetrievalResult]:
+        return [
+            RetrievalResult("a", "first result", 0.9, {}, ["vector"]),
+            RetrievalResult("b", "second result", 0.5, {}, ["vector"]),
+        ]
+
+    adapter = core_strategy_capabilities()[RAGStrategy.CODE].adapter
+    request = RAGExecutionRequest(
+        tenant_id=TENANT.tenant_id,
+        query="what is our retention policy",
+        requested_strategy_id=RAGStrategy.CODE.value,
+        collection_id="collection-1",
+        top_k=2,
+    )
+    with patch("app.rag.engine.hybrid_search", side_effect=persisted_search):
+        result = await adapter.execute(
+            request,
+            _context(RAGStrategy.CODE, embedder=_Embedder(), runner=runner),
+        )
+
+    assert [citation.chunk_id for citation in result.citations] == ["a", "b"]
+    assert result.strategy_trace[-1].detail["symbols_detected"] == []
+
+
+def test_adaptive_selects_memory_augmented_for_memory_context_query() -> None:
+    from app.rag.agentic.patterns.adaptive import select_adaptive_strategy
+
+    decision = select_adaptive_strategy(
+        "remember what we discussed about the onboarding flow",
+        (RAGStrategy.HYBRID, RAGStrategy.MEMORY_AUGMENTED),
+    )
+
+    assert decision.strategy is RAGStrategy.MEMORY_AUGMENTED
+    assert decision.reason == "memory_context_query; memory_augmented_available"
+
+
+def test_adaptive_selects_code_for_code_shaped_query() -> None:
+    from app.rag.agentic.patterns.adaptive import select_adaptive_strategy
+
+    decision = select_adaptive_strategy(
+        "what does parse_request_id() do",
+        (RAGStrategy.HYBRID, RAGStrategy.CODE),
+    )
+
+    assert decision.strategy is RAGStrategy.CODE
+    assert decision.reason == "code_query; code_available"
+
+
+def test_adaptive_falls_back_to_hybrid_when_memory_and_code_are_unavailable() -> None:
+    from app.rag.agentic.patterns.adaptive import select_adaptive_strategy
+
+    memory_decision = select_adaptive_strategy(
+        "remember what we discussed",
+        (RAGStrategy.HYBRID,),
+    )
+    assert memory_decision.strategy is RAGStrategy.HYBRID
+    assert memory_decision.reason == "memory_augmented_unavailable; selected_default_hybrid"
+
+    code_decision = select_adaptive_strategy(
+        "what does parse_request_id() do",
+        (RAGStrategy.HYBRID,),
+    )
+    assert code_decision.strategy is RAGStrategy.HYBRID
+    assert code_decision.reason == "code_unavailable; selected_default_hybrid"
+
+
+async def test_adaptive_gateway_dispatches_code_query_to_code_rag_adapter() -> None:
+    async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+        return await operation(_AuthorizedSession())
+
+    async def persisted_search(_session: object, **_: Any) -> list[RetrievalResult]:
+        return [
+            RetrievalResult(
+                "def-1",
+                "def parse_request_id(raw): return raw.strip()",
+                0.4,
+                {},
+                ["vector"],
+            ),
+        ]
+
+    adapter = core_strategy_capabilities()[RAGStrategy.ADAPTIVE].adapter
+    with patch("app.rag.engine.hybrid_search", side_effect=persisted_search):
+        result = await adapter.execute(
+            RAGExecutionRequest(
+                tenant_id=TENANT.tenant_id,
+                query="what does parse_request_id() do",
+                requested_strategy_id="adaptive",
+                collection_id="collection-1",
+            ),
+            _context(
+                RAGStrategy.ADAPTIVE,
+                embedder=_Embedder(),
+                available=(RAGStrategy.HYBRID, RAGStrategy.CODE),
+                runner=runner,
+            ),
+        )
+
+    assert result.resolved_strategy_id is RAGStrategy.ADAPTIVE
+    decision = result.strategy_trace[0]
+    assert decision.detail["selected_strategy"] == "code"
+    assert result.citations
+    assert result.citations[0].chunk_id == "def-1"
+    assert result.citations[0].metadata["matched_symbols"] == 1
+
+
+async def test_adaptive_gateway_dispatches_memory_query_to_memory_augmented_adapter() -> None:
+    async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+        return await operation(_AuthorizedSession())
+
+    async def persisted_search(_session: object, **_: Any) -> list[RetrievalResult]:
+        return []
+
+    long_term_memory = _RecordingLongTermMemory(
+        [
+            SimpleNamespace(
+                memory_id="m1",
+                content="You told me the API key rotates every 90 days.",
+                confidence=0.8,
+                memory_type="domain_fact",
+                source_goal_id="goal-1",
+            )
+        ]
+    )
+
+    adapter = core_strategy_capabilities()[RAGStrategy.ADAPTIVE].adapter
+    with patch("app.rag.engine.hybrid_search", side_effect=persisted_search):
+        result = await adapter.execute(
+            RAGExecutionRequest(
+                tenant_id=TENANT.tenant_id,
+                query="remember what you told me about API key rotation",
+                requested_strategy_id="adaptive",
+                collection_id="collection-1",
+            ),
+            _context(
+                RAGStrategy.ADAPTIVE,
+                embedder=_Embedder(),
+                available=(RAGStrategy.HYBRID, RAGStrategy.MEMORY_AUGMENTED),
+                runner=runner,
+                long_term_memory=long_term_memory,
+            ),
+        )
+
+    assert result.resolved_strategy_id is RAGStrategy.ADAPTIVE
+    decision = result.strategy_trace[0]
+    assert decision.detail["selected_strategy"] == "memory_augmented"
+    assert result.citations
+    assert result.citations[0].chunk_id == "ltm_m1"
 
 
 async def test_adaptive_resolves_the_selected_strategys_configured_model() -> None:

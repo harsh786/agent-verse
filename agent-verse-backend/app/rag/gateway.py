@@ -521,6 +521,7 @@ class RetrievalDependencies:
     cost_controller: RAGCostController | None = None
     modular_pipeline: ModularPipelineSpec | None = None
     raft_service: RAFTService | None = None
+    long_term_memory: object | None = None
     colbert_checkpoint: str = "colbert-ir/colbertv2.0"
     strategy_timeout_seconds: float = 30.0
     statement_timeout_ms: int = 30_000
@@ -540,6 +541,7 @@ class RetrievalRuntimeDependencies:
     cost_guard: _RAGCostGuard | None = None
     modular_pipeline: ModularPipelineSpec | None = None
     raft_service: RAFTService | None = None
+    long_term_memory: object | None = None
 
 
 class CollectionNotFoundError(LookupError):
@@ -1038,6 +1040,87 @@ async def execute_core_strategy(
                             for result_item in results
                         }
                     ),
+                },
+            ),
+        )
+
+    if strategy is RAGStrategy.MEMORY_AUGMENTED:
+        long_term_memory = context.dependencies.long_term_memory
+        if not _has_async_method(long_term_memory, "recall_async"):
+            raise UnavailableRAGStrategyError(strategy, "long_term_memory_unavailable")
+        embedding = await _embed_text(context, request.query, strategy)
+        evidence: list[dict[str, Any]] = []
+        persisted = await _search_persisted(
+            context,
+            request,
+            query=request.query,
+            embedding=embedding,
+            retrieval_mode="hybrid",
+            evidence=evidence,
+        )
+        _mark_source_type(persisted, "persisted")
+        memory_results = await rag_engine.recall_long_term_memory(
+            long_term_memory,
+            query=request.query,
+            tenant_ctx=context.tenant_context,
+            top_k=request.top_k,
+            embedder=context.dependencies.embedder,
+            strict=True,
+        )
+        evidence.append(
+            {
+                "component": "long_term_memory",
+                "query": request.query,
+                "result_count": len(memory_results),
+            }
+        )
+        results = rag_engine.merge_grounding_results(
+            [persisted, memory_results],
+            top_k=request.top_k,
+        )
+        result = _canonical_result(request, strategy, results, evidence)
+        return _append_trace(
+            result,
+            RAGStrategyTrace(
+                strategy=strategy,
+                action="memory_persisted_merge",
+                status="complete",
+                detail={
+                    "persisted_count": len(persisted),
+                    "memory_count": len(memory_results),
+                    "result_count": len(results),
+                },
+            ),
+        )
+
+    if strategy is RAGStrategy.CODE:
+        from app.rag.agentic.patterns.code_rag import boost_symbol_matches, extract_code_symbols
+
+        embedding = await _embed_text(context, request.query, strategy)
+        evidence = []
+        candidates = await _search_persisted(
+            context,
+            request,
+            query=request.query,
+            embedding=embedding,
+            retrieval_mode="hybrid",
+            evidence=evidence,
+            top_k=min(request.top_k * 4, 50),
+        )
+        _mark_source_type(candidates, "persisted")
+        symbols = extract_code_symbols(request.query)
+        results = boost_symbol_matches(symbols, candidates, top_k=request.top_k)
+        result = _canonical_result(request, strategy, results, evidence)
+        return _append_trace(
+            result,
+            RAGStrategyTrace(
+                strategy=strategy,
+                action="code_symbol_boost",
+                status="complete",
+                detail={
+                    "symbols_detected": symbols,
+                    "candidate_count": len(candidates),
+                    "result_count": len(results),
                 },
             ),
         )
@@ -1701,6 +1784,13 @@ class RetrievalGateway:
             isinstance(service, RAFTService),
             "ready" if isinstance(service, RAFTService) else "raft_service_unavailable",
         )
+        long_term_memory_available = _has_async_method(
+            self.dependencies.long_term_memory, "recall_async"
+        )
+        long_term_memory_fact = ReadinessFact(
+            long_term_memory_available,
+            "ready" if long_term_memory_available else "long_term_memory_unavailable",
+        )
         if collection_id is None:
             raft_model_fact = ReadinessFact(False, "raft_model_selection_required")
         else:
@@ -1734,6 +1824,7 @@ class RetrievalGateway:
                 RAGRuntimeDependency.COLBERT_CHECKPOINT: colbert_checkpoint_fact,
                 RAGRuntimeDependency.RAFT_SERVICE: raft_service_fact,
                 RAGRuntimeDependency.RAFT_MODEL: raft_model_fact,
+                RAGRuntimeDependency.LONG_TERM_MEMORY: long_term_memory_fact,
             }
         )
         strategy_facts: dict[RAGStrategy, Mapping[RAGRuntimeDependency, ReadinessFact]] = {}
@@ -1891,6 +1982,7 @@ class RetrievalGateway:
                 cost_guard=cost_guard,
                 modular_pipeline=self.dependencies.modular_pipeline,
                 raft_service=self.dependencies.raft_service,
+                long_term_memory=self.dependencies.long_term_memory,
             ),
             _db_operation_runner=runner.run if runner is not None else None,
             _repeatable_read_db_operation_runner=(

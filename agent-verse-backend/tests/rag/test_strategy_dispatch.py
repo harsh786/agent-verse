@@ -87,6 +87,8 @@ def test_strategy_registry_implemented_patterns():
         "flare",
         "modular",
         "raft",
+        "memory_augmented",
+        "code",
     }
     assert all(
         reg.is_available(cap.strategy_id)

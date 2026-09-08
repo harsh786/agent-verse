@@ -208,7 +208,7 @@ async def test_rag_strategy_discovery_lists_all_canonical_strategies_unavailable
     assert {entry["id"] for entry in strategies} == {
         strategy.value for strategy in RAGStrategy
     }
-    assert len(strategies) == 18
+    assert len(strategies) == len(RAGStrategy)
     assert all(entry["available"] is False for entry in strategies)
     assert "multimodal" not in {entry["id"] for entry in strategies}
 

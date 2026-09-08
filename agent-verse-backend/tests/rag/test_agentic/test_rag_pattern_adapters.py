@@ -77,7 +77,7 @@ def test_all_patterns_list_in_init():
     from app.rag.catalogue import RAG_RUNTIME_CAPABILITIES
 
     assert patterns_pkg.RAG_RUNTIME_ADAPTERS is RAG_RUNTIME_CAPABILITIES
-    assert len(patterns_pkg.RAG_RUNTIME_ADAPTERS) == 18
+    assert len(patterns_pkg.RAG_RUNTIME_ADAPTERS) == 20
 
 
 def test_registry_pattern_ids_match_adapters():

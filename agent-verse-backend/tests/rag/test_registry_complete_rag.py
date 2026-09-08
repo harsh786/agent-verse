@@ -73,6 +73,8 @@ EXPECTED_PROBE_EVIDENCE = {
     RAGStrategy.AGENTIC_CHUNKING: "semantic boundary chunking",
     RAGStrategy.COLBERT: "late-interaction token scoring",
     RAGStrategy.RAFT: "compatible completed RAFT model inference",
+    RAGStrategy.MEMORY_AUGMENTED: "long-term memory and persisted evidence fusion",
+    RAGStrategy.CODE: "identifier-boosted code retrieval",
 }
 
 EXPECTED_DEPENDENCIES = {
@@ -151,6 +153,12 @@ EXPECTED_DEPENDENCIES = {
         RAGRuntimeDependency.RAFT_SERVICE,
         RAGRuntimeDependency.RAFT_MODEL,
     },
+    RAGStrategy.MEMORY_AUGMENTED: {
+        RAGRuntimeDependency.DATABASE,
+        RAGRuntimeDependency.EMBEDDER,
+        RAGRuntimeDependency.LONG_TERM_MEMORY,
+    },
+    RAGStrategy.CODE: {RAGRuntimeDependency.DATABASE, RAGRuntimeDependency.EMBEDDER},
 }
 
 
@@ -171,7 +179,7 @@ def _request() -> Any:
 def test_single_catalogue_owns_all_runtime_contracts() -> None:
     assert isinstance(RAG_CAPABILITY_CATALOGUE, MappingProxyType)
     assert tuple(RAG_CAPABILITY_CATALOGUE) == tuple(RAGStrategy)
-    assert len(RAG_CAPABILITY_CATALOGUE) == 18
+    assert len(RAG_CAPABILITY_CATALOGUE) == len(RAGStrategy)
     assert {
         strategy: set(entry.required_dependencies)
         for strategy, entry in RAG_CAPABILITY_CATALOGUE.items()
@@ -186,7 +194,7 @@ def test_single_catalogue_owns_all_runtime_contracts() -> None:
     )
     assert len(
         {entry.adapter_class for entry in RAG_CAPABILITY_CATALOGUE.values()}
-    ) == 18
+    ) == len(RAGStrategy)
     assert RAG_RUNTIME_CAPABILITIES is RAG_RUNTIME_ADAPTERS
     assert not hasattr(rag_contracts, "RAG_RUNTIME_CAPABILITIES")
 
@@ -289,7 +297,7 @@ def test_registry_invokes_every_adapter_owned_probe_with_exact_evidence() -> Non
         probe.trace.detail["adapter_strategy"] == probe.strategy_id
         for probe in probes
     )
-    assert len({probe.trace.action for probe in probes}) == 18
+    assert len({probe.trace.action for probe in probes}) == len(RAGStrategy)
 
 
 async def test_registry_core_capabilities_and_api_derive_from_catalogue() -> None:

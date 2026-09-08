@@ -6,8 +6,22 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.rag.agentic.patterns.base import RAGPattern, RAGPatternState
+from app.rag.agentic.patterns.code_rag import has_code_intent
 from app.rag.contracts import RAGStrategy
 from app.rag.engine import RetrievalPlanner, retrieve
+
+_MEMORY_CONTEXT_TERMS = (
+    "remember",
+    "recall",
+    "you mentioned",
+    "we discussed",
+    "we talked about",
+    "earlier you",
+    "last time",
+    "previously discussed",
+    "from our conversation",
+    "my previous goal",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,13 +41,25 @@ def select_adaptive_strategy(
     if not available:
         raise ValueError("No certified retrieval strategy is currently available")
     normalized = query.lower()
+    unavailable_reason = ""
+
+    if any(term in normalized for term in _MEMORY_CONTEXT_TERMS):
+        if RAGStrategy.MEMORY_AUGMENTED in available:
+            return AdaptiveDecision(
+                RAGStrategy.MEMORY_AUGMENTED,
+                "memory_context_query; memory_augmented_available",
+            )
+        unavailable_reason += "memory_augmented_unavailable; "
+
+    if has_code_intent(query):
+        if RAGStrategy.CODE in available:
+            return AdaptiveDecision(RAGStrategy.CODE, "code_query; code_available")
+        unavailable_reason += "code_unavailable; "
 
     if any(term in normalized for term in ("graph", "relationship", "connected")):
         if RAGStrategy.GRAPH in available:
             return AdaptiveDecision(RAGStrategy.GRAPH, "graph_query; graph_available")
-        unavailable_reason = "graph_unavailable; "
-    else:
-        unavailable_reason = ""
+        unavailable_reason += "graph_unavailable; "
 
     if any(term in normalized for term in ("current", "latest", "web", "internet")):
         if RAGStrategy.WEB_AUGMENTED in available:

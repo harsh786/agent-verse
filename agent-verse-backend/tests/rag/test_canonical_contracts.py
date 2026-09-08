@@ -44,6 +44,8 @@ CANONICAL_STRATEGY_IDS = {
     "agentic_chunking",
     "colbert",
     "raft",
+    "memory_augmented",
+    "code",
 }
 
 
@@ -67,6 +69,8 @@ def test_strategy_enum_and_registry_share_exactly_the_canonical_ids() -> None:
         ("colbert_late_interaction", RAGStrategy.COLBERT),
         ("multi_hop_rag", RAGStrategy.MULTI_HOP),
         ("graph_rag", RAGStrategy.GRAPH),
+        ("memory", RAGStrategy.MEMORY_AUGMENTED),
+        ("code_rag", RAGStrategy.CODE),
     ],
 )
 def test_historical_strategy_ids_resolve_to_canonical_ids(
@@ -109,6 +113,8 @@ def test_one_alias_map_is_the_authoritative_compatibility_contract() -> None:
         "colbert_late_interaction": RAGStrategy.COLBERT,
         "multi_hop_rag": RAGStrategy.MULTI_HOP,
         "graph_rag": RAGStrategy.GRAPH,
+        "memory": RAGStrategy.MEMORY_AUGMENTED,
+        "code_rag": RAGStrategy.CODE,
     }
 
 
@@ -244,6 +250,8 @@ def test_registry_only_marks_registered_runtime_capabilities_implemented() -> No
         RAGStrategy.FLARE,
         RAGStrategy.MODULAR,
         RAGStrategy.RAFT,
+        RAGStrategy.MEMORY_AUGMENTED,
+        RAGStrategy.CODE,
     }
     assert set(RAG_RUNTIME_CAPABILITIES) == expected
     assert implemented_ids == expected

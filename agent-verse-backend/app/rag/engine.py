@@ -1219,6 +1219,61 @@ async def retrieve_fusion(
     return fused_results[:top_k]
 
 
+async def recall_long_term_memory(
+    long_term_memory: Any,
+    *,
+    query: str,
+    tenant_ctx: Any,
+    top_k: int,
+    embedder: Any = None,
+    provider: Any = None,
+    strict: bool = False,
+) -> list[RetrievalResult]:
+    """Recall cross-session long-term-memory entries as retrieval evidence.
+
+    Shared by the legacy ``strategy="memory"`` engine dispatch (``strict=False``,
+    degrades to an empty list on recall failure) and the canonical
+    ``RAGStrategy.MEMORY_AUGMENTED`` gateway adapter (``strict=True``, surfaces a
+    recall failure as ``RetrievalStrategyExecutionError`` instead of swallowing it).
+    """
+    if long_term_memory is None or tenant_ctx is None:
+        return []
+    try:
+        ltm_results = await long_term_memory.recall_async(
+            query=query,
+            tenant_ctx=tenant_ctx,
+            top_k=top_k,
+            db=(
+                getattr(long_term_memory, "_db_factory", None)
+                or getattr(long_term_memory, "_db", None)
+            ),
+            embedder=embedder or provider,
+        )
+    except Exception as exc:
+        if strict:
+            raise RetrievalStrategyExecutionError(
+                "memory_augmented", "long-term memory recall failed"
+            ) from exc
+        logger.warning("memory_strategy_recall_failed", error=str(exc)[:80])
+        return []
+    if not ltm_results:
+        return []
+    return [
+        RetrievalResult(
+            chunk_id=f"ltm_{getattr(m, 'memory_id', str(i))}",
+            content=getattr(m, "content", str(m)),
+            score=float(getattr(m, "confidence", 0.7)),
+            source_metadata={
+                "memory_type": getattr(m, "memory_type", "ltm"),
+                "source": "long_term_memory",
+                "source_goal_id": getattr(m, "source_goal_id", ""),
+            },
+            retrieval_legs=["long_term_memory"],
+        )
+        for i, m in enumerate(ltm_results)
+    ]
+
+
 async def retrieve(
     session: AsyncSession,
     *,
@@ -1625,37 +1680,15 @@ async def retrieve(
 
         if strategy == "memory":
             # Memory retrieval — LTM semantic recall using pgvector cosine similarity
-            if long_term_memory is not None and tenant_ctx is not None:
-                try:
-                    ltm_results = await long_term_memory.recall_async(
-                        query=query,
-                        tenant_ctx=tenant_ctx,
-                        top_k=top_k,
-                        db=(
-                            getattr(long_term_memory, "_db_factory", None)
-                            or getattr(long_term_memory, "_db", None)
-                        ),
-                        embedder=embedder or provider,
-                    )
-                    if ltm_results:
-                        return [
-                            RetrievalResult(
-                                chunk_id=f"ltm_{getattr(m, 'memory_id', str(i))}",
-                                content=getattr(m, "content", str(m)),
-                                score=float(getattr(m, "confidence", 0.7)),
-                                source_metadata={
-                                    "memory_type": getattr(m, "memory_type", "ltm"),
-                                    "source": "long_term_memory",
-                                    "source_goal_id": getattr(m, "source_goal_id", ""),
-                                },
-                                retrieval_legs=["long_term_memory"],
-                            )
-                            for i, m in enumerate(ltm_results)
-                        ]
-                except Exception as exc:
-                    logger.warning("memory_strategy_recall_failed", error=str(exc)[:80])
-            # Fallback: empty (LTM not available in this context)
-            return []
+            return await recall_long_term_memory(
+                long_term_memory,
+                query=query,
+                tenant_ctx=tenant_ctx,
+                top_k=top_k,
+                embedder=embedder,
+                provider=provider,
+                strict=False,
+            )
 
         if strategy == "graph":
             if strict:

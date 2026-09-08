@@ -343,7 +343,7 @@ def test_rag_strategies_exposes_exact_canonical_contract_with_availability_metad
 
     assert response.status_code == 200
     strategies = response.json()["strategies"]
-    assert len(strategies) == 18
+    assert len(strategies) == len(RAGStrategy)
     assert {item["id"] for item in strategies} == {strategy.value for strategy in RAGStrategy}
     assert all(
         {"state", "registry_available", "capability_available", "available"}

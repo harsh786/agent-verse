@@ -423,6 +423,8 @@ def test_supported_fallbacks_are_exactly_the_direct_internal_dispatch_branches()
         RAGStrategy.WEB_AUGMENTED,
         RAGStrategy.RAPTOR,
         RAGStrategy.AGENTIC_CHUNKING,
+        RAGStrategy.MEMORY_AUGMENTED,
+        RAGStrategy.CODE,
     } == DIRECT_CORE_RAG_STRATEGIES
 
 

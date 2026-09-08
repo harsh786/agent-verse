@@ -54,12 +54,12 @@ def _scenarios(now: datetime) -> tuple[RAGCertificationScenario, ...]:
     )
 
 
-def test_report_contains_exactly_18_sorted_strategies_and_rejects_stale_or_fake_live_evidence() -> (
+def test_report_contains_every_sorted_strategy_and_rejects_stale_or_fake_live_evidence() -> (
     None
 ):
     now = datetime.now(UTC)
     report = build_report(_scenarios(now), environment="test", live=False, now=now)
-    assert len(report.results) == 18
+    assert len(report.results) == len(RAGStrategy)
     assert [item.strategy.value for item in report.results] == sorted(
         strategy.value for strategy in RAGStrategy
     )
@@ -80,7 +80,7 @@ async def test_runner_covers_all_strategies_and_fails_closed_on_missing_checks()
     report = await RAGCertificationRunner(probe).run_all(
         environment="test", live=False
     )
-    assert len(report.results) == 18
+    assert len(report.results) == len(RAGStrategy)
     naive = next(item for item in report.results if item.strategy is RAGStrategy.NAIVE)
     assert naive.passed is False
 def test_all_catalogue_entries_have_semantic_adapter_versions() -> None:
