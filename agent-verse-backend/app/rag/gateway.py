@@ -982,30 +982,82 @@ async def execute_core_strategy(
         )
 
     if strategy in {RAGStrategy.RAPTOR, RAGStrategy.AGENTIC_CHUNKING}:
+        from app.rag.agentic.patterns.agentic_chunking import AgenticChunkingPattern
+        from app.rag.agentic.patterns.raptor import RAPTORPattern
+
         embedding = await _embed_text(context, request.query, strategy)
-        results = await context.retrieve_engine(
+        store = _GatewaySessionStore(context)
+        pattern: Any = (
+            RAPTORPattern() if strategy is RAGStrategy.RAPTOR else AgenticChunkingPattern()
+        )
+        # Drive the real precomputed-retrieval path (tree levels for RAPTOR,
+        # propositions + parent windows for agentic chunking).
+        precomputed = await pattern.retrieve_precomputed(
+            store=store,
             query=request.query,
             query_embedding=embedding,
             collection_id=collection_id,
+            tenant_ctx=context.tenant_context,
             top_k=request.top_k,
         )
-        return _canonical_result(
+        if precomputed:
+            results = [_precomputed_dict_to_result(item, strategy) for item in precomputed]
+            result = _canonical_result(
+                request,
+                strategy,
+                results,
+                [
+                    {
+                        "component": strategy.value,
+                        "result_count": len(results),
+                        "precomputed": True,
+                    }
+                ],
+            )
+            return _append_trace(
+                result,
+                RAGStrategyTrace(
+                    strategy=strategy,
+                    action="precomputed_index_retrieval",
+                    status="complete",
+                    detail={
+                        "precomputed": True,
+                        "source": "precomputed_index",
+                        "result_count": len(results),
+                        "hierarchy_levels": sorted(
+                            {
+                                int(result_item.source_metadata.get("hierarchy_level", 0))
+                                for result_item in results
+                            }
+                        ),
+                    },
+                ),
+            )
+        # No precomputed index for this collection — degrade to a plain hybrid
+        # retrieval and record the reason. Never silently return an empty result.
+        fallback_evidence: list[dict[str, Any]] = []
+        fallback_results = await _search_persisted(
+            context,
             request,
-            strategy,
-            results,
-            [
-                {
-                    "component": strategy.value,
-                    "result_count": len(results),
-                    "precomputed": True,
-                    "hierarchy_levels": sorted(
-                        {
-                            int(result.source_metadata.get("hierarchy_level", 0))
-                            for result in results
-                        }
-                    ),
-                }
-            ],
+            query=request.query,
+            embedding=embedding,
+            retrieval_mode="hybrid",
+            evidence=fallback_evidence,
+        )
+        _mark_source_type(fallback_results, "persisted")
+        result = _canonical_result(request, strategy, fallback_results, fallback_evidence)
+        return _append_trace(
+            result,
+            RAGStrategyTrace(
+                strategy=strategy,
+                action="precomputed_index_fallback",
+                status="degraded",
+                detail={
+                    "reason": "precomputed_index_absent",
+                    "fallback_retrieval": "hybrid",
+                    "result_count": len(fallback_results),
+                },
+            ),
         )
 
     llm = context.llm
@@ -1284,6 +1336,79 @@ async def execute_core_strategy(
         )
 
     raise RetrievalStrategyExecutionError(strategy.value, "adapter is not certified")
+
+
+@dataclass(frozen=True, slots=True)
+class _GatewaySessionStore:
+    """Session-backed precomputed-index store bridging query patterns to the gateway.
+
+    RAPTOR / agentic-chunking query patterns retrieve through a store's
+    ``search_precomputed_index``. The gateway operates over tenant-scoped
+    sessions rather than a long-lived store, so this adapter runs the same
+    strategy-filtered precomputed retrieval the persistent store performs,
+    inside the gateway's RLS-scoped session and fail-closed engine core.
+    """
+
+    _context: RetrievalExecutionContext
+
+    async def search_precomputed_index(
+        self,
+        *,
+        strategy: RAGStrategy,
+        query: str,
+        query_embedding: list[float],
+        collection_id: str,
+        tenant_ctx: TenantContext,
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        context = self._context
+
+        async def operation(session: AsyncSession) -> list[EngineRetrievalResult]:
+            await _require_active_collection(session, tenant_ctx, collection_id)
+            return await rag_engine.retrieve(
+                session,
+                query=query,
+                query_embedding=query_embedding,
+                collection_id=collection_id,
+                top_k=top_k,
+                strategy=strategy.value,
+                provider=context.llm.provider if context.llm is not None else None,
+                model=context.llm.model if context.llm is not None else "",
+                metadata_filter=context.filters,
+                embedder=context.dependencies.embedder,
+                tenant_ctx=tenant_ctx,
+                strict=True,
+            )
+
+        results = await context.run_db_operation(operation, repeatable_read=True)
+        return [
+            {
+                "chunk_id": result.chunk_id,
+                "content": result.content,
+                "score": result.score,
+                "metadata": dict(result.source_metadata),
+                "citation_chunk_id": result.chunk_id,
+                "citation_content": result.content,
+            }
+            for result in results
+        ]
+
+
+def _precomputed_dict_to_result(
+    item: dict[str, Any],
+    strategy: RAGStrategy,
+) -> EngineRetrievalResult:
+    """Normalize a precomputed-index dict back into a canonical engine result."""
+
+    metadata = dict(item.get("metadata", {}))
+    metadata.setdefault("precomputed", True)
+    return EngineRetrievalResult(
+        chunk_id=str(item.get("chunk_id", "")),
+        content=str(item.get("content", "")),
+        score=float(item.get("score", 0.0)),
+        source_metadata=metadata,
+        retrieval_legs=[strategy.value],
+    )
 
 
 async def _embed_text(
