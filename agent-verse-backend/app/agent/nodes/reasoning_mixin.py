@@ -326,33 +326,118 @@ class ReasoningMixin:
         return {"agent_state": agent_state}
 
     # ------------------------------------------------------------------
-    # H8: Supervisor / debate node stubs
+    # H8 / D-1 / D-2: Supervisor and debate multi-agent pattern nodes
     # ------------------------------------------------------------------
 
-    async def _node_supervisor_check(self, state: GraphState) -> dict[str, Any]:
-        """Supervisor check stub — delegates to app.agent.supervisor when available."""
-        agent_state: AgentState = state.get("agent_state")
-        try:
-            from app.observability.logging import get_logger
+    async def _record_pattern_decision(
+        self, agent_state: AgentState, decision: dict[str, Any]
+    ) -> None:
+        """Record a pattern-selection decision into state and emit an SSE event.
 
-            get_logger(__name__).warning(
-                "supervisor_node_stub_invoked",
-                goal_id=getattr(agent_state, "goal_id", None),
+        Makes pattern execution observable (D-2): every time a supervisor/debate
+        node runs it appends a structured record to ``context['pattern_decisions']``
+        and, when an event callback is wired, emits it as a decision-trace event.
+        """
+        agent_state.context.setdefault("pattern_decisions", []).append(decision)
+        emit = getattr(self, "_emit", None)
+        if emit is not None:
+            with contextlib.suppress(Exception):
+                await emit({"type": "pattern_decision", **decision})
+
+    async def _node_supervisor_check(self, state: GraphState) -> dict[str, Any]:
+        """Supervisor node — runs the real SupervisorAgent decomposition pattern.
+
+        Decomposes the goal into sub-tasks, dispatches them across sub-agents via
+        the wired GoalService, and folds the synthesized result into state so the
+        planner can build on it. Defensive: never crashes the graph; runs at most
+        once per goal (guards replan loops); no-ops when no GoalService is wired
+        (which would make sub-agent dispatch impossible).
+        """
+        agent_state: AgentState = state.get("agent_state")
+        if agent_state is None:
+            return {}
+        if agent_state.context.get("supervisor_applied"):
+            return {"agent_state": agent_state}
+        goal_service = getattr(self, "_goal_service", None)
+        if goal_service is None:
+            return {"agent_state": agent_state}
+        try:
+            from app.agent.supervisor import SupervisorAgent
+
+            tenant_ctx = getattr(agent_state, "tenant_ctx", None) or getattr(
+                self, "_tenant_ctx_ref", None
             )
-        except Exception:
-            pass
-        return {"agent_state": agent_state} if agent_state is not None else {}
+            supervisor = SupervisorAgent(
+                planner_provider=self._planner,
+                goal_service=goal_service,
+                agent_router=getattr(self, "_agent_router", None),
+            )
+            result = await supervisor.run(
+                goal=agent_state.goal,
+                tenant_ctx=tenant_ctx,
+                event_callback=getattr(self, "_event_callback", None),
+            )
+            agent_state.context["supervisor_applied"] = True
+            synthesized = getattr(result, "synthesized_result", "") or ""
+            if synthesized:
+                agent_state.context["supervisor_result"] = synthesized
+            await self._record_pattern_decision(
+                agent_state,
+                {
+                    "pattern": "supervisor",
+                    "goal_id": getattr(agent_state, "goal_id", None),
+                    "success": bool(getattr(result, "success", False)),
+                    "task_count": len(getattr(result, "tasks", []) or []),
+                },
+            )
+        except Exception as exc:
+            try:
+                from app.observability.logging import get_logger
+
+                get_logger(__name__).warning("node_supervisor_failed", error=str(exc))
+            except Exception:
+                pass
+        return {"agent_state": agent_state}
 
     async def _node_debate(self, state: GraphState) -> dict[str, Any]:
-        """Debate node stub — delegates to app.agent.debate when available."""
-        agent_state: AgentState = state.get("agent_state")
-        try:
-            from app.observability.logging import get_logger
+        """Debate node — runs the real DebateOrchestrator voting pattern.
 
-            get_logger(__name__).warning(
-                "debate_node_stub_invoked",
-                goal_id=getattr(agent_state, "goal_id", None),
+        N agents independently propose, critique, and vote; the winning proposal is
+        folded into state as deliberation context for the planner. Defensive: never
+        crashes the graph; runs at most once per goal (guards replan loops).
+        """
+        agent_state: AgentState = state.get("agent_state")
+        if agent_state is None:
+            return {}
+        if agent_state.context.get("debate_applied"):
+            return {"agent_state": agent_state}
+        try:
+            from app.agent.debate import DebateOrchestrator
+
+            orchestrator = DebateOrchestrator(provider=self._planner)
+            result = await orchestrator.run(
+                goal=agent_state.goal,
+                context=str(agent_state.context.get("rag_context", "")),
+                event_callback=getattr(self, "_event_callback", None),
             )
-        except Exception:
-            pass
-        return {"agent_state": agent_state} if agent_state is not None else {}
+            agent_state.context["debate_applied"] = True
+            winning = getattr(result, "winning_proposal", "") or ""
+            if winning:
+                agent_state.context["debate_result"] = winning
+            await self._record_pattern_decision(
+                agent_state,
+                {
+                    "pattern": "debate",
+                    "goal_id": getattr(agent_state, "goal_id", None),
+                    "winning_agent": getattr(result, "winning_agent", ""),
+                    "consensus_level": float(getattr(result, "consensus_level", 0.0)),
+                },
+            )
+        except Exception as exc:
+            try:
+                from app.observability.logging import get_logger
+
+                get_logger(__name__).warning("node_debate_failed", error=str(exc))
+            except Exception:
+                pass
+        return {"agent_state": agent_state}
