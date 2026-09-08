@@ -25,9 +25,18 @@ jobs:
         run: uv sync --all-extras
         working-directory: agent-verse-backend
 
-      - name: Run ruff (lint + format check)
+      - name: Run ruff (lint)
         run: uv run ruff check app/ tests/
         working-directory: agent-verse-backend
+
+      # TODO(hardening): flip this to a blocking gate once the pre-existing
+      # formatting debt is cleared (`uv run ruff format .` reformats ~960 files
+      # today, almost all under tests/). Kept advisory so the gate is wired and
+      # visible now without reddening CI on legacy formatting.
+      - name: Run ruff format check (advisory)
+        run: uv run ruff format --check .
+        working-directory: agent-verse-backend
+        continue-on-error: true
 
       - name: Run mypy
         run: uv run mypy app/
@@ -51,6 +60,24 @@ jobs:
         run: uv sync --all-extras
         working-directory: agent-verse-backend
 
+      # Guard: a whole test tier must never silently vanish (bad marker, broken
+      # import in a conftest, accidental collection error). Assert the unit tier
+      # still collects a sane number of tests before we trust a green run. Floor
+      # is well below the current count (~20k) so it only trips on a real collapse.
+      - name: Assert unit test tier is not silently empty
+        run: |
+          count=$(uv run pytest tests/ \
+            --ignore=tests/core/test_pools_integration.py \
+            --ignore=tests/db/test_tenancy_integration.py \
+            -m "not integration and not slow" \
+            --co -q -p no:cacheprovider --no-cov 2>/dev/null | grep -cE '::')
+          echo "Collected unit tests: $count"
+          if [ "$count" -lt 15000 ]; then
+            echo "::error::Unit test tier collapsed: $count tests collected (floor 15000)."
+            exit 1
+          fi
+        working-directory: agent-verse-backend
+
       - name: Run unit tests (excluding integration)
         run: |
           uv run pytest tests/ \
@@ -58,6 +85,7 @@ jobs:
             --ignore=tests/db/test_tenancy_integration.py \
             -m "not integration and not slow" \
             --cov=app --cov-report=xml --cov-report=term-missing \
+            --cov-fail-under=75 \
             -q
         working-directory: agent-verse-backend
 
@@ -110,6 +138,20 @@ jobs:
         run: uv sync --all-extras
         working-directory: agent-verse-backend
 
+      # Guard: the integration tier is env-gated (needs real Postgres/Redis). If a
+      # broken conftest or a mis-set marker makes it collect nothing, the job would
+      # go green having tested nothing. Assert a sane collected count first.
+      - name: Assert integration test tier is not silently empty
+        run: |
+          count=$(uv run pytest tests/ -m "integration" \
+            --co -q -p no:cacheprovider --no-cov 2>/dev/null | grep -cE '::')
+          echo "Collected integration tests: $count"
+          if [ "$count" -lt 150 ]; then
+            echo "::error::Integration test tier collapsed: $count tests collected (floor 150)."
+            exit 1
+          fi
+        working-directory: agent-verse-backend
+
       - name: Run integration tests
         env:
           DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse
@@ -142,10 +184,17 @@ jobs:
         run: uv sync
         working-directory: agent-verse-backend
 
-      - name: Run pip-audit
+      # TODO(hardening): make this blocking (drop `|| true`) once the current
+      # advisories are triaged. As of this change pip-audit reports real fixable
+      # CVEs in transitive deps (cryptography, pillow, torch, pyasn1, ecdsa,
+      # setuptools). Bump those pins, then remove `|| true` so a new CVE fails CI.
+      - name: Run pip-audit (advisory)
         run: pip-audit --requirement <(uv export --no-hashes) || true
         working-directory: agent-verse-backend
 
+      # TODO(hardening): remove continue-on-error to make secret scanning blocking
+      # once a clean baseline run is confirmed (kept advisory to avoid a surprise
+      # red on historical commits during the phase-0/1 hardening window).
       - name: Scan for secrets (gitleaks)
         uses: gitleaks/gitleaks-action@v2
         with:
