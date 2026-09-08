@@ -271,7 +271,7 @@ class CollaborationStore:
                     raise VersionConflictError(
                         f"Optimistic concurrency conflict: expected {expected_version}, current {current_v}",  # noqa: E501
                         current_version=current_v,
-                        expected_version=expected_version,
+                        expected_version=expected_version or 0,
                     )
 
                 op_id, new_version, created_at = inserted

@@ -264,7 +264,7 @@ class OrgAnalyticsService:
                 results.append(
                     DeptAnalytics(
                         department_id=str(dept.id),
-                        department_name=dept.name,
+                        department_name=str(dept.name),
                         total_missions=total,
                         completed_missions=completed,
                     )

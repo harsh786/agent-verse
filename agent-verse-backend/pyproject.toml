@@ -118,7 +118,7 @@ packages = ["app"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --cov=app --cov-report=term-missing -p no:unraisableexception"
+addopts = "-ra --strict-markers --cov=app --cov-report=term-missing"
 markers = [
     "integration: tests requiring real Redis/Postgres (testcontainers)",
     "slow: tests that hit real LLM providers (opt-in)",
@@ -133,8 +133,11 @@ filterwarnings = [
     # asyncpg GC cleanup — unclosed connections are harmless in tests (pool teardown timing).
     "ignore::ResourceWarning:asyncpg.*",
     "ignore::ResourceWarning",
-    # asyncpg cancel-coroutine GC noise (Connection._cancel never awaited on teardown).
-    "ignore:coroutine.*was never awaited:RuntimeWarning",
+    # TODO(hardening): NARROW third-party scope. asyncpg's Connection._cancel coroutine is
+    # abandoned during pool teardown (a driver-internal fire-and-forget cancel). This ignore is
+    # deliberately keyed to that exact coroutine name so ALL app-code "coroutine was never
+    # awaited" bugs still surface as errors (the global ignore that hid P0-1 has been removed).
+    "ignore:coroutine 'Connection._cancel' was never awaited:RuntimeWarning",
     # Background asyncio tasks from app startup fire-and-forget patterns (LangGraph checkpoint
     # setup, Redis pub/sub, audit flusher). These are intentional fire-and-forget; the tasks
     # raise when the event loop closes after the test. They are not test failures.
@@ -152,6 +155,12 @@ filterwarnings = [
 ]
 
 [tool.coverage.report]
+# Ratchet, not aspiration. Measured true coverage on the fast tier
+# (`-m "not integration and not slow and not e2e_full"`) was 75.87%; this floor
+# is that value rounded DOWN to the nearest whole percent so a silent regression
+# (a deleted test, a whole module going uncovered) trips the gate. Raise it as
+# coverage climbs — never lower it to make a red run pass.
+fail_under = 75
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
 omit = [
     # Alembic auto-generated DDL migrations — SQL schema definitions only.
@@ -209,8 +218,6 @@ disable_error_code = [
     "call-overload",
     "attr-defined",
     "index",
-    "call-arg",
-    "arg-type",
     "operator",
     "name-defined",
     "list-item",

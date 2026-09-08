@@ -6,7 +6,7 @@ Tier 2: LLM-based (~200ms) — runs only for MEDIUM complexity when confidence <
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 from app.orchestration.runtime_profile import (
     Complexity,
@@ -213,7 +213,7 @@ class GoalClassifier:
         tokens = set(re.findall(r"\b\w+\b", lower))
 
         risk = RiskLevel.LOW
-        reversibility = "reversible"
+        reversibility: Literal["reversible", "irreversible"] = "reversible"
         for phrase in _CRITICAL_RISK:
             if _phrase_in(phrase, lower, tokens):
                 risk = RiskLevel.CRITICAL
