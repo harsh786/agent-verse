@@ -155,12 +155,17 @@ async def client(app: Any) -> AsyncIterator[Any]:
 # ── Tenant / API-key seeding ──────────────────────────────────────────────────
 
 
-@pytest_asyncio.fixture(loop_scope="session")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def tenant_client(app: Any, client: Any) -> AsyncIterator[Any]:
-    """A fresh client whose ``X-API-Key`` header authenticates a new tenant.
+    """A client whose ``X-API-Key`` header authenticates a seeded tenant.
 
     Mirrors the seeding used elsewhere (``tests/conftest.py::signed_up_client``):
     POST /tenants/signup returns an ``api_key`` we attach to every request.
+
+    Session-scoped: ``/tenants/signup`` is IP-rate-limited (a real protection),
+    so seeding one tenant per test trips a 429 once the suite grows. All e2e
+    tests share this tenant and use unique per-test resource names (uuid), so
+    isolation assertions (separate collections/triggers/agents) still hold.
     """
     import uuid
 
