@@ -375,6 +375,18 @@ class EvalSuiteRunner:
                 }
             )
 
+        # Suite-level aggregate judge score: mean of per-task ``overall`` scores.
+        # Distinct from ``pass_rate`` (deterministic pass/fail) — this is the
+        # judge-derived quality signal the offline suite discriminates on.
+        overall_scores = [
+            float(r["scores"]["overall"])
+            for r in judge_results
+            if isinstance(r.get("scores"), dict) and "overall" in r["scores"]
+        ]
+        aggregate_score = (
+            round(sum(overall_scores) / len(overall_scores), 4) if overall_scores else 0.0
+        )
+
         output: dict[str, Any] = {
             "suite_id": suite_result.suite_id,
             "run_id": suite_result.run_id,
@@ -382,6 +394,7 @@ class EvalSuiteRunner:
             "passed_tasks": suite_result.passed_tasks,
             "failed_tasks": suite_result.failed_tasks,
             "pass_rate": suite_result.pass_rate,
+            "aggregate_score": aggregate_score,
             "judge_results": judge_results,
             "llm_judged": self._llm_judge is not None,
         }
@@ -395,7 +408,8 @@ class EvalSuiteRunner:
                         text(
                             """INSERT INTO evaluations
                                (id, suite_id, run_id, pass_rate, results, evaluated_at)
-                               VALUES (:id, :suite_id, :run_id, :pass_rate, CAST(:results AS jsonb), NOW())
+                               VALUES (:id, :suite_id, :run_id, :pass_rate,
+                                       CAST(:results AS jsonb), NOW())
                                ON CONFLICT (id) DO NOTHING"""
                         ),
                         {
