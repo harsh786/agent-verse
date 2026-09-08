@@ -1,15 +1,14 @@
 """Tests for the triggers API router."""
 from __future__ import annotations
 
-import pytest
-from fastapi.testclient import TestClient
-from fastapi import FastAPI
 from types import SimpleNamespace
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from app.api.triggers import router
 from app.triggers.store import ScheduleStore
-from app.triggers.models import TriggerSpec, TriggerType
-
 
 # ── App fixture ───────────────────────────────────────────────────────────────
 
@@ -213,3 +212,31 @@ def test_retry_dlq_entry(client):
     resp = client.post("/triggers/dlq/fake-dlq-id/retry")
     assert resp.status_code == 202
     assert resp.json()["status"] == "queued"
+
+
+# ── 2.W-10: unsupported trigger types are rejected at registration ────────────
+
+def test_create_rejects_unsupported_trigger_type(client):
+    """A type with no runtime dispatch path (google_sheets) must be refused so a
+    tenant cannot register a trigger that could never fire."""
+    resp = client.post("/triggers", json={
+        "spec": {
+            "trigger_type": "google_sheets",
+            "description": "poll a sheet that never fires",
+        },
+        "goal_template": "handle {{payload}}",
+    })
+    assert resp.status_code == 422
+    assert "not yet supported" in resp.json()["detail"]
+
+
+def test_create_accepts_supported_consumer_type(client):
+    """A supported type (goal_completed → chain consumer) is accepted."""
+    resp = client.post("/triggers", json={
+        "spec": {
+            "trigger_type": "goal_completed",
+            "description": "chain off a completed goal",
+        },
+        "goal_template": "follow up on {{payload.goal_id}}",
+    })
+    assert resp.status_code == 201

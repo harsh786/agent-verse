@@ -9390,9 +9390,9 @@
     "semantic_hash": "66a47875c50f732b2181959dc18ef5b6"
   },
   "agent-verse-backend/app/workflow/service.py": {
-    "mtime": 1788860870.5165117,
-    "seen": 1788900052.1777432,
-    "ast_hash": "96f47639ef1fd50b0dc119c74519cbf5",
+    "mtime": 1788901324.4155312,
+    "seen": 1788901638.114723,
+    "ast_hash": "6b608a353de0a706258ee495b136ac97",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/workflow/state.py": {
@@ -12762,9 +12762,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/app/workflow/run_store.py": {
-    "mtime": 1788892217.6612527,
-    "seen": 1788900052.177742,
-    "ast_hash": "7374a3a42ea951f53bcff5312739c968",
+    "mtime": 1788901362.6719434,
+    "seen": 1788901638.114721,
+    "ast_hash": "2c80cae8feb08ab381d9840f6b375449",
     "semantic_hash": ""
   },
   "agent-verse-backend/infra/dr-drill.sh": {
@@ -20346,9 +20346,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/workflow/test_run_store.py": {
-    "mtime": 1788801389.020241,
-    "seen": 1788900052.178445,
-    "ast_hash": "2b5256f5455269dcc6d9745d09b37840",
+    "mtime": 1788901423.6572337,
+    "seen": 1788901638.115577,
+    "ast_hash": "4539945d0c91130d82c01e69a45cb883",
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/workflow/test_runner.py": {
@@ -24981,6 +24981,18 @@
     "mtime": 1788637207.6665723,
     "seen": 1788900052.179224,
     "ast_hash": "b4113e4ec3b80917d457924134e1046c",
+    "semantic_hash": ""
+  },
+  "agent-verse-backend/tests/workflow/test_service_advanced.py": {
+    "mtime": 1788901345.7631626,
+    "seen": 1788901638.1155798,
+    "ast_hash": "89dd1fce7f090c9d43dd72845b0809ae",
+    "semantic_hash": ""
+  },
+  "agent-verse-backend/tests/workflow/test_template_dsl_validity.py": {
+    "mtime": 1788901549.7118137,
+    "seen": 1788901638.115584,
+    "ast_hash": "79f4defb63647ea011b9a7928925795d",
     "semantic_hash": ""
   }
 }

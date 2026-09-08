@@ -165,6 +165,14 @@ async def create_trigger(request: Request, body: CreateTriggerRequest) -> dict[s
         raise HTTPException(status_code=503, detail="Trigger store unavailable")
 
     spec = _build_spec(body.spec)
+
+    # Reject trigger types that have no runtime dispatch path — a tenant must not
+    # be able to register a trigger that could never fire (2.W-10).
+    from app.triggers.dispatch_map import is_supported, unsupported_reason
+
+    if not is_supported(spec.trigger_type):
+        raise HTTPException(status_code=422, detail=unsupported_reason(spec.trigger_type))
+
     schedule_id = store.create(
         spec=spec,
         tenant_ctx=tenant_ctx,
@@ -454,24 +462,10 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
 
     verifier = WebhookSignatureVerifier()
 
-    # Map webhook_type to TriggerType value
-    type_map = {
-        "github": "github_webhook",
-        "stripe": "stripe_webhook",
-        "jira": "jira_webhook",
-        "pagerduty": "pagerduty",
-        "linear": "linear_webhook",
-        "sentry": "sentry_issue",
-        "grafana": "grafana_alert",
-        "cloudwatch": "cloudwatch",
-        "datadog": "datadog",
-        "alertmanager": "alertmanager",
-        "confluence": "confluence_webhook",
-        "salesforce": "salesforce_event",
-        "slack": "slack_event",
-        "teams": "teams_webhook",
-    }
-    trigger_type = type_map.get(webhook_type, "webhook")
+    # Map webhook_type → TriggerType value (single source of truth: dispatch_map)
+    from app.triggers.dispatch_map import WEBHOOK_TYPE_MAP
+
+    trigger_type = WEBHOOK_TYPE_MAP.get(webhook_type, "webhook")
 
     # Enrich payload with parsed data
     from app.triggers.webhooks import parsers as _parsers
