@@ -49,13 +49,19 @@ class MultiHopReasoner:
     """BFS multi-hop path finding and ego-network extraction over a KG store.
 
     The *store* must expose:
-    - `get_neighbors(node_id: str) -> list[dict]` — each dict has keys
-      `target`, `relation`, and optionally `weight`.
-    - `get_node(node_id: str) -> dict | None` — node metadata.
+    - `get_neighbors(node_id: str[, tenant_id: str]) -> list[dict]` — each dict
+      has keys `target`, `relation`, and optionally `weight`.
+    - `get_node(node_id: str[, tenant_id: str]) -> dict | None` — node metadata.
+
+    When *tenant_id* is provided it is forwarded to the store, so a reasoner can
+    be bound to :class:`~app.knowledge_graph.store.KnowledgeGraphStore` (whose
+    ``get_neighbors``/``get_node`` are tenant-scoped). A ``None`` tenant calls
+    the single-argument form used by simpler/test stores.
     """
 
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any, tenant_id: str | None = None) -> None:
         self._store = store
+        self._tenant_id = tenant_id
 
     # ------------------------------------------------------------------
     # Public API
@@ -180,13 +186,27 @@ class MultiHopReasoner:
 
     def _neighbours(self, node_id: str) -> list[dict[str, Any]]:
         try:
-            result = self._store.get_neighbors(node_id)
+            if self._tenant_id is not None:
+                result = self._store.get_neighbors(node_id, self._tenant_id)
+            else:
+                result = self._store.get_neighbors(node_id)
             return result if isinstance(result, list) else []
         except Exception:
             return []
 
     def _get_node(self, node_id: str) -> dict[str, Any] | None:
         try:
-            return self._store.get_node(node_id)
+            if self._tenant_id is not None:
+                node = self._store.get_node(node_id, self._tenant_id)
+            else:
+                node = self._store.get_node(node_id)
         except Exception:
             return None
+        if node is None:
+            return None
+        if isinstance(node, dict):
+            return node
+        # Coerce a GraphNode-like object (e.g. from KnowledgeGraphStore) to a dict.
+        label = getattr(node, "label", None)
+        nid = getattr(node, "node_id", None) or getattr(node, "id", node_id)
+        return {"id": nid, "label": label if label is not None else nid}

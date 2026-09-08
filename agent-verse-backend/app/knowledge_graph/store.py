@@ -115,6 +115,35 @@ class KnowledgeGraphStore:
             )
         ]
 
+    def get_neighbors(self, node_id: str, tenant_id: str) -> list[dict[str, Any]]:
+        """Return the (undirected) adjacency of *node_id* within *tenant_id*.
+
+        Each neighbour dict has keys ``target`` (the adjacent node id),
+        ``relation`` (the edge type), ``edge_id`` and ``confidence``. Adjacency
+        is undirected: both outgoing (``source == node_id``) and incoming
+        (``target == node_id``) edges are followed, which is what multi-hop
+        reasoning and ego-network extraction need.
+
+        Backs :class:`~app.knowledge_graph.multi_hop.MultiHopReasoner` (D-16).
+        """
+        neighbors: list[dict[str, Any]] = []
+        for edge in self.get_edges_for_node(node_id, tenant_id):
+            if edge.source_node_id == node_id:
+                other = edge.target_node_id
+            elif edge.target_node_id == node_id:
+                other = edge.source_node_id
+            else:  # pragma: no cover - get_edges_for_node only returns incident edges
+                continue
+            neighbors.append(
+                {
+                    "target": other,
+                    "relation": edge.edge_type.value,
+                    "edge_id": edge.edge_id,
+                    "confidence": edge.confidence,
+                }
+            )
+        return neighbors
+
     def find_path(
         self, source_id: str, target_id: str, tenant_id: str, max_hops: int = 3
     ) -> list[list[str]]:
