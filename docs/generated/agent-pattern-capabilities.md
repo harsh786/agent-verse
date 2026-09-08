@@ -34,7 +34,7 @@ Certification is evidence-derived; missing or stale evidence is shown as not cer
 | `program_of_thought` | reasoning | `1.0.0` | implemented | partial | not_certified |
 | `react` | reasoning | `1.0.0` | implemented | partial | not_certified |
 | `reflection` | reasoning | `1.0.0` | implemented | partial | not_certified |
-| `reflexion` | reasoning | `1.0.0` | partial | partial | not_certified |
+| `reflexion` | reasoning | `1.0.0` | implemented | partial | not_certified |
 | `rewoo` | reasoning | `1.0.0` | implemented | partial | not_certified |
 | `scratchpad` | reasoning | `1.0.0` | implemented | partial | not_certified |
 | `self_consistency` | reasoning | `1.0.0` | implemented | partial | not_certified |
@@ -49,6 +49,7 @@ Certification is evidence-derived; missing or stale evidence is shown as not cer
 | `adaptive` | rag | `1.0.0` | implemented | partial | not_certified |
 | `agentic` | rag | `1.0.0` | implemented | partial | not_certified |
 | `agentic_chunking` | rag | `1.0.0` | implemented | partial | not_certified |
+| `code` | rag | `1.0.0` | implemented | partial | not_certified |
 | `colbert` | rag | `1.0.0` | implemented | partial | not_certified |
 | `corrective` | rag | `1.0.0` | implemented | partial | not_certified |
 | `flare` | rag | `1.0.0` | implemented | partial | not_certified |
@@ -56,6 +57,7 @@ Certification is evidence-derived; missing or stale evidence is shown as not cer
 | `graph` | rag | `1.0.0` | implemented | partial | not_certified |
 | `hybrid` | rag | `1.0.0` | implemented | partial | not_certified |
 | `hyde` | rag | `1.0.0` | implemented | partial | not_certified |
+| `memory_augmented` | rag | `1.0.0` | implemented | partial | not_certified |
 | `modular` | rag | `1.0.0` | implemented | partial | not_certified |
 | `multi_hop` | rag | `1.0.0` | implemented | partial | not_certified |
 | `naive` | rag | `1.0.0` | implemented | partial | not_certified |

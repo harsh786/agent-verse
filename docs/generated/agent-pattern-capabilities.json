@@ -1359,7 +1359,7 @@
       "certification_state": "not_certified",
       "evidence_links": [],
       "family": "reasoning",
-      "implementation_state": "partial",
+      "implementation_state": "implemented",
       "learning_phase": 2,
       "limits": {
         "calls": 32,
@@ -1378,7 +1378,7 @@
         "task": "runtime implementation and evidence certification"
       },
       "readiness_requirements": [
-        "registry_contract"
+        "strategy_runner"
       ],
       "required_dependencies": [],
       "safe_explanation_fields": [
@@ -2031,6 +2031,54 @@
     },
     {
       "adapter_version": "1.0.0",
+      "capability_id": "code",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
       "capability_id": "colbert",
       "certification_state": "not_certified",
       "evidence_links": [],
@@ -2363,6 +2411,56 @@
         "database",
         "embedder",
         "provider"
+      ],
+      "safe_explanation_fields": [
+        "status",
+        "reason_codes",
+        "evidence",
+        "cost",
+        "limits"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py",
+      "surfaces": {
+        "api": false,
+        "frontend": false,
+        "python_sdk": false,
+        "typescript_sdk": false
+      }
+    },
+    {
+      "adapter_version": "1.0.0",
+      "capability_id": "memory_augmented",
+      "certification_state": "not_certified",
+      "evidence_links": [],
+      "family": "rag",
+      "implementation_state": "implemented",
+      "learning_phase": 3,
+      "limits": {
+        "calls": 32,
+        "cost_usd": 5.0,
+        "depth": 8,
+        "duration_seconds": 600,
+        "edges": 128,
+        "fan_out": 8,
+        "nodes": 64,
+        "rounds": 16,
+        "tokens": 64000
+      },
+      "operational_readiness": "partial",
+      "owner": {
+        "program": "12",
+        "task": "runtime implementation and evidence certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "long_term_memory",
+        "strategy_runner"
+      ],
+      "required_dependencies": [
+        "database",
+        "embedder",
+        "long_term_memory"
       ],
       "safe_explanation_fields": [
         "status",

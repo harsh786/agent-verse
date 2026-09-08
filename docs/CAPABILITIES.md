@@ -1294,7 +1294,7 @@ Generated from executable registry metadata and evidence-derived state. Do not e
 | `program_of_thought` | `1.0.0` | implemented | partial | code_interpreter, production_sandbox, artifact_store, checkpoint_store, strategy_runner |
 | `react` | `1.0.0` | implemented | partial | strategy_runner |
 | `reflection` | `1.0.0` | implemented | partial | strategy_runner |
-| `reflexion` | `1.0.0` | partial | partial | registry_contract |
+| `reflexion` | `1.0.0` | implemented | partial | strategy_runner |
 | `rewoo` | `1.0.0` | implemented | partial | provider, checkpoint_store, governed_tool_dispatcher, strategy_runner |
 | `scratchpad` | `1.0.0` | implemented | partial | strategy_runner |
 | `self_consistency` | `1.0.0` | implemented | partial | strategy_runner |
@@ -1309,6 +1309,7 @@ Generated from executable registry metadata and evidence-derived state. Do not e
 | `adaptive` | `1.0.0` | implemented | partial | database, embedder, strategy_runner |
 | `agentic` | `1.0.0` | implemented | partial | database, embedder, provider, strategy_runner |
 | `agentic_chunking` | `1.0.0` | implemented | partial | database, embedder, strategy_runner |
+| `code` | `1.0.0` | implemented | partial | database, embedder, strategy_runner |
 | `colbert` | `1.0.0` | implemented | partial | database, embedder, colbert_library, colbert_checkpoint, strategy_runner |
 | `corrective` | `1.0.0` | implemented | partial | database, embedder, provider, strategy_runner |
 | `flare` | `1.0.0` | implemented | partial | database, embedder, provider, strategy_runner |
@@ -1316,6 +1317,7 @@ Generated from executable registry metadata and evidence-derived state. Do not e
 | `graph` | `1.0.0` | implemented | partial | database, embedder, graph, strategy_runner |
 | `hybrid` | `1.0.0` | implemented | partial | database, embedder, strategy_runner |
 | `hyde` | `1.0.0` | implemented | partial | database, embedder, provider, strategy_runner |
+| `memory_augmented` | `1.0.0` | implemented | partial | database, embedder, long_term_memory, strategy_runner |
 | `modular` | `1.0.0` | implemented | partial | database, embedder, provider, strategy_runner |
 | `multi_hop` | `1.0.0` | implemented | partial | database, embedder, provider, strategy_runner |
 | `naive` | `1.0.0` | implemented | partial | database, embedder, strategy_runner |

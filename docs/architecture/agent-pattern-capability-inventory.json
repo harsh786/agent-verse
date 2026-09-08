@@ -997,17 +997,17 @@
         "tenant_isolation",
         "unit"
       ],
-      "current_registry_state": "partial",
+      "current_registry_state": "implemented",
       "dependencies": [],
       "deprecation_rationale": null,
-      "intended_final_state": "partial",
+      "intended_final_state": "implemented",
       "learning_phase": 2,
       "owner": {
         "program": "01",
         "task": "capability implementation and certification"
       },
       "readiness_requirements": [
-        "registry_contract"
+        "strategy_runner"
       ],
       "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py"
     },
@@ -1465,6 +1465,41 @@
     {
       "actual_production_state": "partial",
       "aliases": [],
+      "canonical_id": "code",
+      "certification_requirements": [
+        "authorization_policy",
+        "budget_timeout_cancellation",
+        "canary",
+        "duplicate_delivery",
+        "integration",
+        "load",
+        "observability_explainability",
+        "restart_resume",
+        "tenant_isolation",
+        "unit"
+      ],
+      "current_registry_state": "implemented",
+      "dependencies": [
+        "database",
+        "embedder"
+      ],
+      "deprecation_rationale": null,
+      "intended_final_state": "implemented",
+      "learning_phase": 3,
+      "owner": {
+        "program": "12",
+        "task": "capability implementation and certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "strategy_runner"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py"
+    },
+    {
+      "actual_production_state": "partial",
+      "aliases": [],
       "canonical_id": "colbert",
       "certification_requirements": [
         "authorization_policy",
@@ -1717,6 +1752,43 @@
         "database",
         "embedder",
         "provider",
+        "strategy_runner"
+      ],
+      "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py"
+    },
+    {
+      "actual_production_state": "partial",
+      "aliases": [],
+      "canonical_id": "memory_augmented",
+      "certification_requirements": [
+        "authorization_policy",
+        "budget_timeout_cancellation",
+        "canary",
+        "duplicate_delivery",
+        "integration",
+        "load",
+        "observability_explainability",
+        "restart_resume",
+        "tenant_isolation",
+        "unit"
+      ],
+      "current_registry_state": "implemented",
+      "dependencies": [
+        "database",
+        "embedder",
+        "long_term_memory"
+      ],
+      "deprecation_rationale": null,
+      "intended_final_state": "implemented",
+      "learning_phase": 3,
+      "owner": {
+        "program": "12",
+        "task": "capability implementation and certification"
+      },
+      "readiness_requirements": [
+        "database",
+        "embedder",
+        "long_term_memory",
         "strategy_runner"
       ],
       "source_evidence": "agent-verse-backend/app/orchestration/strategy_registry.py"
