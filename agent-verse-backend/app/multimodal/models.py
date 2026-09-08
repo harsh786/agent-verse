@@ -38,11 +38,11 @@ class ExtractedSpan:
 class AssetIngestionJob:
     """A multimodal asset ingestion job.
 
-    TODO(row-16/D-23): asset-ingestion jobs are currently held only in the
-    in-memory ``MultimodalPipeline._jobs`` dict — they do not survive a process
-    restart and are not shared across replicas. Persisting them requires a new
-    ``asset_ingestion_jobs`` DB model + Alembic migration (with tenant RLS), which
-    is out of scope for this change. Follow-up.
+    Persisted via ``app.multimodal.job_store.AssetJobStore`` (D-23): the store
+    is in-memory-only by default (matches this dataclass being lightweight and
+    test-friendly) but is upgraded to a Redis-backed instance in the FastAPI
+    lifespan when a Redis connection is available, so jobs survive a process
+    restart and are visible across replicas.
     """
 
     job_id: str
