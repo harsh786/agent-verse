@@ -347,6 +347,41 @@ async def test_node_plan_emits_plan_ready_event() -> None:
     assert any(e.get("type") == "plan_ready" for e in events)
 
 
+@pytest.mark.asyncio
+async def test_node_plan_forwards_prompt_builder_sources(monkeypatch) -> None:
+    """D-20: _node_plan must forward execution/long-term memory + graph_facts +
+    semantic_cache_hits from state into ContextPipeline.run."""
+    from app.context import context_pipeline as _cp
+
+    captured: dict = {}
+    _orig_run = _cp.ContextPipeline.run
+
+    def _spy_run(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return _orig_run(self, *args, **kwargs)
+
+    monkeypatch.setattr(_cp.ContextPipeline, "run", _spy_run)
+
+    provider = FakeProvider()
+    graph = AgentGraph(planner=provider, executor=provider, verifier=provider)
+    graph._event_callback = None
+    agent_state = AgentState(goal="Summarize orchestration", tenant_ctx=T)
+    agent_state.context["_retrieved_chunks"] = [
+        {"content": "orchestration is dynamic", "score": 0.9, "chunk_id": "c1"}
+    ]
+    agent_state.context["_execution_memory_records"] = [{"plan": ["win-plan-x"]}]
+    agent_state.context["_long_term_memory_records"] = [{"content": "ltm-pref-y"}]
+    agent_state.context["_graph_facts"] = [{"fact": "kg-fact-z"}]
+    agent_state.context["_semantic_cache_hits"] = [{"content": "cache-hit-w"}]
+    state = _make_state(agent_state=agent_state)
+    await graph._node_plan(state)
+
+    assert captured.get("execution_memory") == [{"plan": ["win-plan-x"]}]
+    assert captured.get("long_term_memory") == [{"content": "ltm-pref-y"}]
+    assert captured.get("graph_facts") == [{"fact": "kg-fact-z"}]
+    assert captured.get("semantic_cache_hits") == [{"content": "cache-hit-w"}]
+
+
 # ---------------------------------------------------------------------------
 # _node_verify
 # ---------------------------------------------------------------------------

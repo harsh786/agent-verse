@@ -66,11 +66,24 @@ class PlannerMixin:
             if retrieved_chunks:
                 pipeline = ContextPipeline(max_tokens=6000, rerank_strategy=rerank_strategy)
                 reflexion_lessons = agent_state.context.get("_reflexion_lessons", [])
+                # D-20: forward structured prompt-builder sources fetched by rag_mixin
+                # (execution/long-term memory) plus graph_facts + semantic_cache_hits
+                # when present in state. Each defaults to [] so this stays additive.
+                _exec_mem = agent_state.context.get("_execution_memory_records", [])
+                _ltm = agent_state.context.get("_long_term_memory_records", [])
+                _graph_facts = agent_state.context.get("_graph_facts", [])
+                _sem_cache_hits = agent_state.context.get("_semantic_cache_hits", [])
                 pipeline_result = pipeline.run(
                     chunks=retrieved_chunks,
                     query=agent_state.goal,
                     goal_context=agent_state.goal,
                     reflexion_lessons=reflexion_lessons,
+                    execution_memory=_exec_mem if isinstance(_exec_mem, list) else [],
+                    long_term_memory=_ltm if isinstance(_ltm, list) else [],
+                    semantic_cache_hits=(
+                        _sem_cache_hits if isinstance(_sem_cache_hits, list) else []
+                    ),
+                    graph_facts=_graph_facts if isinstance(_graph_facts, list) else [],
                 )
                 if pipeline_result.planner_context:
                     rag_context = pipeline_result.planner_context

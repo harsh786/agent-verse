@@ -104,6 +104,9 @@ class RAGMixin:
             if exec_plans:
                 mem_text = "\n".join(f"- Past plan: {m.get('plan', [])}" for m in exec_plans)
                 context_parts.append(f"[Past winning plans]\n{mem_text}")
+                # D-20: stash structured records so the planner can forward them to
+                # ContextPipeline.run (PromptBuilder consumes execution_memory as dicts).
+                agent_state.context["_execution_memory_records"] = list(exec_plans)
 
         # 1b. Execution memory: recall past failure patterns to avoid repeating them
         if self._exec_memory is not None:
@@ -134,6 +137,10 @@ class RAGMixin:
             if ltm:
                 ltm_text = "\n".join(f"- {m.content}" for m in ltm)
                 context_parts.append(f"[Domain knowledge]\n{ltm_text}")
+                # D-20: stash structured records for ContextPipeline.run forwarding.
+                agent_state.context["_long_term_memory_records"] = [
+                    {"content": m.content} for m in ltm
+                ]
 
         # 3. Required collection retrieval through the tenant-aware gateway.
         search_collections = list(self._agent_collection_ids[:3])
