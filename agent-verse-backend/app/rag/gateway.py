@@ -28,12 +28,17 @@ from app.rag.catalogue import (
 )
 from app.rag.contracts import (
     DIRECT_CORE_RAG_STRATEGIES,
+    AgenticRAGRuntimeAdapter,
+    FLARERAGRuntimeAdapter,
     RAGCitation,
     RAGExecutionRequest,
     RAGExecutionResult,
     RAGRetrievalLeg,
+    RAGRuntimeAdapter,
     RAGStrategy,
     RAGStrategyTrace,
+    SelfRAGRuntimeAdapter,
+    SpeculativeRAGRuntimeAdapter,
     UnavailableRAGStrategyError,
     resolve_rag_strategy,
 )
@@ -55,6 +60,20 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 DatabaseOperation = Callable[[AsyncSession], Awaitable[T]]
 logger = get_logger(__name__)
+
+# Adaptive auto-selection (D-6) can now choose a non-core reasoning strategy.
+# The adaptive leg dispatches those through their canonical contract adapters,
+# which lazily resolve the concrete reasoning implementation.
+_REASONING_ADAPTER_FACTORIES: Mapping[RAGStrategy, Callable[[], RAGRuntimeAdapter]] = (
+    MappingProxyType(
+        {
+            RAGStrategy.SELF_RAG: SelfRAGRuntimeAdapter,
+            RAGStrategy.SPECULATIVE: SpeculativeRAGRuntimeAdapter,
+            RAGStrategy.FLARE: FLARERAGRuntimeAdapter,
+            RAGStrategy.AGENTIC: AgenticRAGRuntimeAdapter,
+        }
+    )
+)
 
 
 class AsyncSessionFactory(Protocol):
@@ -935,7 +954,16 @@ async def execute_core_strategy(
             strategy=decision.strategy,
             dependencies=selected_dependencies,
         )
-        selected = await execute_core_strategy(decision.strategy, request, selected_context)
+        if decision.strategy in DIRECT_CORE_RAG_STRATEGIES:
+            selected = await execute_core_strategy(decision.strategy, request, selected_context)
+        else:
+            reasoning_factory = _REASONING_ADAPTER_FACTORIES.get(decision.strategy)
+            if reasoning_factory is None:
+                raise UnavailableRAGStrategyError(
+                    strategy,
+                    f"adaptive selected an undispatchable strategy: {decision.strategy.value}",
+                )
+            selected = await reasoning_factory().execute(request, selected_context)
         decision_trace = RAGStrategyTrace(
             strategy=strategy,
             action="adaptive_selection",

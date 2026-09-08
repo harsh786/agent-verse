@@ -42,6 +42,102 @@ def select_adaptive_strategy(
                 "freshness_query; web_augmented_available",
             )
         unavailable_reason += "web_augmented_unavailable; "
+
+    # Self-RAG: the user explicitly asks whether a stated claim is correct, so a
+    # retrieval-relevance self-critique loop is warranted over a single lookup.
+    if any(
+        term in normalized
+        for term in (
+            "fact-check",
+            "fact check",
+            "is this accurate",
+            "is it accurate",
+            "is this true",
+            "is it true",
+            "double-check",
+            "double check",
+        )
+    ):
+        if RAGStrategy.SELF_RAG in available:
+            return AdaptiveDecision(
+                RAGStrategy.SELF_RAG,
+                "verification_claim_query; self_rag_available",
+            )
+        unavailable_reason += "self_rag_unavailable; "
+
+    # Speculative: an explicit latency demand — draft-and-verify overlaps
+    # generation with retrieval to return a grounded answer sooner.
+    if any(
+        term in normalized
+        for term in (
+            "quick",
+            "quickly",
+            "fast",
+            "asap",
+            "brief",
+            "briefly",
+            "tl;dr",
+            "in short",
+            "at a glance",
+        )
+    ):
+        if RAGStrategy.SPECULATIVE in available:
+            return AdaptiveDecision(
+                RAGStrategy.SPECULATIVE,
+                "latency_sensitive_query; speculative_available",
+            )
+        unavailable_reason += "speculative_unavailable; "
+
+    # FLARE: long-form generation benefits from uncertainty-triggered retrieval
+    # that fetches evidence mid-generation as the draft grows.
+    if any(
+        term in normalized
+        for term in (
+            "write ",
+            "essay",
+            "comprehensive",
+            "in detail",
+            "in-depth",
+            "in depth",
+            "detailed",
+            "long-form",
+            "long form",
+            "draft ",
+            "report on",
+        )
+    ):
+        if RAGStrategy.FLARE in available:
+            return AdaptiveDecision(
+                RAGStrategy.FLARE,
+                "long_form_generation_query; flare_available",
+            )
+        unavailable_reason += "flare_unavailable; "
+
+    # Fusion: multi-facet / ambiguous queries benefit from query expansion with
+    # reciprocal-rank fusion across the expanded variants.
+    if any(
+        term in normalized
+        for term in (
+            "pros and cons",
+            "trade-offs",
+            "tradeoffs",
+            "options",
+            "alternatives",
+            "various",
+            "several",
+            "multiple",
+            "different aspects",
+            "facets",
+            "ambiguous",
+        )
+    ):
+        if RAGStrategy.FUSION in available:
+            return AdaptiveDecision(
+                RAGStrategy.FUSION,
+                "multi_facet_query; fusion_available",
+            )
+        unavailable_reason += "fusion_unavailable; "
+
     if any(term in normalized for term in ("compare", "contrast", "across")):
         if RAGStrategy.MULTI_HOP in available:
             return AdaptiveDecision(RAGStrategy.MULTI_HOP, "comparison_query; multi_hop_available")
