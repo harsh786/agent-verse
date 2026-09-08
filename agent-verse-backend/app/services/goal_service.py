@@ -124,10 +124,16 @@ def _resolve_checkpointer(app_state: Any) -> Any:
             # API — the agent graph runs via ``ainvoke``. A sync-only saver whose
             # ``aget_tuple`` is the base ``NotImplementedError`` would crash every
             # goal, so fall through to the async-capable resolution below.
-            if isinstance(cp, BaseCheckpointSaver) and (
-                type(cp).aget_tuple is not BaseCheckpointSaver.aget_tuple
-            ):
-                return cp
+            # Introspection defaults to "accept" when it cannot be evaluated
+            # (e.g. a MagicMock(spec=...) whose class has no real ``aget_tuple``),
+            # preserving the direct-return behaviour for test-injected savers.
+            if isinstance(cp, BaseCheckpointSaver):
+                try:
+                    async_impl_ok = type(cp).aget_tuple is not BaseCheckpointSaver.aget_tuple
+                except Exception:
+                    async_impl_ok = True
+                if async_impl_ok:
+                    return cp
         except Exception:
             pass
 

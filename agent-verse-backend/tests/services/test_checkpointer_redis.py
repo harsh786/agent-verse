@@ -5,12 +5,16 @@ from unittest.mock import MagicMock, patch
 
 
 def test_resolve_checkpointer_uses_app_state_first():
-    """If app.state.langgraph_checkpointer is a real saver, use it without rebuilding."""
+    """A pre-wired saver that implements the ASYNC checkpoint API is used as-is.
+
+    The agent graph runs via ``ainvoke``, so the saver must override the async
+    methods (``aget_tuple`` etc.). A sync-only saver is intentionally rejected —
+    see ``test_resolve_checkpointer_rejects_sync_only_prewired_saver``.
+    """
     from app.services.goal_service import _resolve_checkpointer
     from langgraph.checkpoint.base import BaseCheckpointSaver
 
-    # Concrete subclass so isinstance(saver, BaseCheckpointSaver) passes inside the function.
-    class _FakeSaver(BaseCheckpointSaver):
+    class _AsyncFakeSaver(BaseCheckpointSaver):
         def get_tuple(self, config):
             return None
 
@@ -23,12 +27,52 @@ def test_resolve_checkpointer_uses_app_state_first():
         def put_writes(self, config, writes, task_id):
             pass
 
-    saver = _FakeSaver()
+        async def aget_tuple(self, config):
+            return None
+
+        async def alist(self, config, **kwargs):
+            for item in ():
+                yield item
+
+        async def aput(self, config, checkpoint, metadata, new_versions):
+            return config
+
+        async def aput_writes(self, config, writes, task_id):
+            pass
+
+    saver = _AsyncFakeSaver()
     app_state = MagicMock()
     app_state.langgraph_checkpointer = saver
 
     result = _resolve_checkpointer(app_state)
-    assert result is saver, "Must return the provided app_state checkpointer unchanged"
+    assert result is saver, "Must return the provided async-capable checkpointer unchanged"
+
+
+def test_resolve_checkpointer_rejects_sync_only_prewired_saver():
+    """A sync-only pre-wired saver is rejected (it would crash the async graph)."""
+    from app.services.goal_service import _resolve_checkpointer
+    from langgraph.checkpoint.base import BaseCheckpointSaver
+    from langgraph.checkpoint.memory import MemorySaver
+
+    class _SyncOnlySaver(BaseCheckpointSaver):
+        def get_tuple(self, config):
+            return None
+
+        def list(self, config, **kwargs):
+            return iter([])
+
+        def put(self, config, checkpoint, metadata, new_versions):
+            return config
+
+        def put_writes(self, config, writes, task_id):
+            pass
+
+    app_state = MagicMock()
+    app_state.langgraph_checkpointer = _SyncOnlySaver()
+    with patch.dict("os.environ", {}, clear=True):
+        result = _resolve_checkpointer(app_state)
+    # Falls back to the async-capable MemorySaver instead of the broken saver.
+    assert isinstance(result, MemorySaver)
 
 
 def test_resolve_checkpointer_logs_warning_on_memory_fallback(caplog, capsys):
