@@ -2736,6 +2736,100 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                             schedule_id=sched.get("schedule_id", key),
                         )
 
+                # ── API_POLL trigger ──────────────────────────────────────────
+                elif trigger_type == "api_poll":
+                    # Poll a JSON endpoint; fire when the extracted value changes
+                    # (and, if set, matches poll_expected_value). Deduped by the
+                    # last-seen value in Redis.
+                    try:
+                        from app.triggers.polling import (
+                            extract_path,
+                            fetch_json,
+                            poll_should_fire,
+                        )
+
+                        poll_url = sched.get("poll_url", "")
+                        _tenant_id_ap = str(sched.get("tenant_id") or "")
+                        if poll_url and _tenant_id_ap:
+                            last_key = f"api_poll_last:{key}"
+                            last_value: Any = None
+                            if r is not None:
+                                _lv = r.get(last_key)
+                                if _lv is not None:
+                                    last_value = _lv.decode() if isinstance(_lv, bytes) else _lv
+                            try:
+                                data = fetch_json(
+                                    poll_url, method=sched.get("poll_method", "GET")
+                                )
+                            except Exception as _ap_fetch_exc:
+                                logger.warning(
+                                    "api_poll_fetch_error url=%s error=%s",
+                                    poll_url,
+                                    str(_ap_fetch_exc)[:100],
+                                )
+                                data = None
+
+                            if data is not None:
+                                current = extract_path(data, sched.get("poll_jsonpath", ""))
+                                if poll_should_fire(
+                                    current,
+                                    last_value,
+                                    sched.get("poll_expected_value", ""),
+                                ):
+                                    from app.tenancy.context import (
+                                        PlanTier as _PT_ap,
+                                    )
+                                    from app.tenancy.context import (
+                                        TenantContext as _TC_ap,
+                                    )
+
+                                    _tc_ap = _TC_ap(
+                                        tenant_id=_tenant_id_ap,
+                                        plan=_PT_ap.PROFESSIONAL,
+                                        api_key_id="trigger-api-poll",
+                                    )
+                                    _ap_alert = {
+                                        "poll_url": poll_url,
+                                        "value": current,
+                                        "jsonpath": sched.get("poll_jsonpath", ""),
+                                    }
+                                    _ap_kw = _run_async(
+                                        _build_goal_kwargs_for_alert(
+                                            sched,
+                                            "api_poll",
+                                            _ap_alert,
+                                            goal_service=None,
+                                            tenant_ctx=_tc_ap,
+                                        )
+                                    )
+                                    if _ap_kw:
+                                        _ap_goal_id = _scheduled_goal_id(
+                                            key, fire_instance_id=f"apipoll:{current}"
+                                        )
+                                        run_goal.apply_async(
+                                            kwargs={
+                                                "goal_id": _ap_goal_id,
+                                                "tenant_id": _tenant_id_ap,
+                                                "goal_text": _ap_kw["goal"],
+                                                "priority": _ap_kw["priority"],
+                                                "agent_id": str(_ap_kw.get("agent_id") or ""),
+                                            },
+                                            queue="schedules",
+                                        )
+                                        fired += 1
+                                        logger.info(
+                                            "api_poll_trigger_fired",
+                                            schedule_id=sched.get("schedule_id", key),
+                                        )
+                                if r is not None and current is not None:
+                                    r.set(last_key, str(current), ex=604800)
+                    except Exception as _ap_err:
+                        logger.warning(
+                            "api_poll_trigger_error",
+                            error=str(_ap_err)[:100],
+                            schedule_id=sched.get("schedule_id", key),
+                        )
+
                 # ── External alert triggers (Alertmanager / Datadog / PagerDuty) ─
                 elif trigger_type in ("alertmanager", "datadog", "pagerduty"):
                     # External alert triggers: read payload from Redis webhook cache

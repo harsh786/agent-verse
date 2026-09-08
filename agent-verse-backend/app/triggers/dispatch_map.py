@@ -82,6 +82,7 @@ BEAT_TYPES: frozenset[TriggerType] = frozenset(
         TriggerType.ONCE,
         TriggerType.FILE_DROP,
         TriggerType.RSS_FEED,
+        TriggerType.API_POLL,
     }
 )
 
