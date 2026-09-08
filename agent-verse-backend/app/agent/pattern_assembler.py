@@ -240,7 +240,8 @@ class PatternAssembler:
                     if rule.priority == "CRITICAL":
                         critical_safety.add(p)
                     reasons[p] = rule.reason_value
-            config_overrides.update(rule.config_overrides)
+            if rule.config_overrides:
+                config_overrides.update(rule.config_overrides)
 
         # Agent config additions (non-safety only — CRITICAL safety cannot be overridden)
         if agent_config.get("enable_cot") and "chain_of_thought" not in reasoning:

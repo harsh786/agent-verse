@@ -31,7 +31,7 @@ def register_inverse(tool_name: str, fn: Callable) -> None:
 
 def get_inverse_fn(
     tool_name: str, arguments: dict[str, Any] | None = None
-) -> Callable[[], Any] | Callable[..., Any] | None:
+) -> Callable[..., Any] | None:
     """Return a callable that undoes the named tool call.
 
     Two modes depending on whether *arguments* is supplied:

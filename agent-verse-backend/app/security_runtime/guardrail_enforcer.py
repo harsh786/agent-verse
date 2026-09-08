@@ -129,24 +129,31 @@ class GuardrailEnforcer:
         )
 
     def _check_with_engine(self, content: str, config: Any, layer: str) -> EnforcementResult:
+        # NOTE(hardening): guardrails_v2.engine.evaluate() is an async, rule-based
+        # (per-tenant configured rules) coroutine. It was previously invoked here
+        # WITHOUT await, so it silently returned a never-awaited coroutine object;
+        # reading .blocked/.injection_detected off that coroutine always yielded
+        # False, disabling enforcement entirely (and leaking the coroutine). These
+        # enforcement entry points are synchronous, so run the same deterministic
+        # pattern scans the fallback path uses, honouring the resolved config, so
+        # no tool call or output bypasses injection/PII detection.
         try:
-            from app.guardrails_v2.engine import guardrails_engine
-            from app.guardrails_v2.models import GuardrailLayer
-
-            layer_map = {
-                "tool_args": GuardrailLayer.TOOL_ARGS,
-                "final_output": GuardrailLayer.FINAL_OUTPUT,
-            }
-            result = guardrails_engine.evaluate(
-                content=content,
-                layer=layer_map.get(layer, GuardrailLayer.TOOL_ARGS),
-            )
+            injection = False
+            pii = False
+            if layer == "final_output":
+                pii = self._check_pii(content) if config.scan_output_pii else False
+            else:
+                injection = (
+                    self._check_injection(content) if config.scan_prompt_injection else False
+                )
+            blocked = (injection and config.block_on_injection) or (pii and config.block_on_pii)
+            reason = "injection_detected" if injection else ("pii_detected" if pii else "")
             return EnforcementResult(
                 checked=True,
-                blocked=getattr(result, "blocked", False),
-                injection_detected=getattr(result, "injection_detected", False),
-                pii_detected=getattr(result, "pii_detected", False),
-                reason=getattr(result, "reason", ""),
+                blocked=blocked,
+                injection_detected=injection,
+                pii_detected=pii,
+                reason=reason,
             )
         except Exception:
             return self._fallback_check(content)

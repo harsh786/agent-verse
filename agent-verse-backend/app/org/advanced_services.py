@@ -231,6 +231,7 @@ class StrategicAdvisor:
             resp = await provider.complete(
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
+                    model=getattr(provider, "default_model", "claude-sonnet-4-5"),
                     max_tokens=600,
                     temperature=0.3,
                 )
