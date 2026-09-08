@@ -217,8 +217,8 @@ class TestMultimodalPipeline:
     def test_pipeline_instantiates(self, pipeline) -> None:
         assert pipeline is not None
 
-    def test_get_nonexistent_job_returns_none(self, pipeline) -> None:
-        result = pipeline.get_job("nonexistent-job", "tenant-x")
+    async def test_get_nonexistent_job_returns_none(self, pipeline) -> None:
+        result = await pipeline.get_job("nonexistent-job", "tenant-x")
         assert result is None
 
     @pytest.mark.asyncio
@@ -227,13 +227,13 @@ class TestMultimodalPipeline:
         # Create and store a job for tenant-a via ingest
         job = await pipeline.ingest_text(tenant_id="tenant-a", content="secret")
         # Try to retrieve it as tenant-b
-        result = pipeline.get_job(job.job_id, "tenant-b")
+        result = await pipeline.get_job(job.job_id, "tenant-b")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_get_job_correct_tenant_returns_job(self, pipeline) -> None:
         job = await pipeline.ingest_text(tenant_id="tenant-c", content="my data")
-        result = pipeline.get_job(job.job_id, "tenant-c")
+        result = await pipeline.get_job(job.job_id, "tenant-c")
         assert result is not None
         assert result.job_id == job.job_id
 
