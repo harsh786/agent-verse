@@ -272,6 +272,34 @@ def _fake_provider() -> Any:
     )
 
 
+def _populate_guardrail_allowlist(
+    checker: Any,
+    tool_context: Any,
+) -> None:
+    """Populate the GuardrailChecker's known-tools allowlist from discovered tools.
+
+    SAFE-2 fix: Without this, the checker is constructed with an empty known_tools
+    set, which disables the registry check entirely — any tool name (including
+    hallucinated ones) passes validation.
+
+    Args:
+        checker: A GuardrailChecker instance (or any object with register_tools).
+        tool_context: A ToolContext whose .tools list holds ToolRef objects, or None.
+    """
+    if tool_context is None:
+        return
+    tools = getattr(tool_context, "tools", None)
+    if not tools:
+        return
+    tool_names: set[str] = set()
+    for tool_ref in tools:
+        name = getattr(tool_ref, "name", "")
+        if name:
+            tool_names.add(str(name))
+    if tool_names:
+        checker.register_tools(tool_names)
+
+
 def _build_dedup_cache(redis: Any) -> Any:
     """Build the best available dedup cache: Redis-backed when Redis is available."""
     from app.reliability.dedup import DeduplicationCache as _DedupCache
@@ -1830,6 +1858,10 @@ class GoalService:
                             _persist_agent.get("allowed_collection_ids", [])
                         )
             loop._agent_collection_ids = _persist_collection_ids
+            # SAFE-2: populate guardrail allowlist in persistent loop path too
+            _gc = getattr(loop, "_guardrail_checker", None)
+            if _gc is not None and tool_context is not None:
+                _populate_guardrail_allowlist(_gc, tool_context)
             if tool_context is not None:
                 # SAFE-2 (P0-13): register discovered tool names for hallucination guard.
                 self._register_tools_from_context(loop, tool_context)
@@ -1994,6 +2026,12 @@ class GoalService:
                     )
                 except Exception as _tc_exc:
                     _svc_logger.warning("tool_context_build_failed", error=str(_tc_exc))
+
+            # SAFE-2: Populate the guardrail checker's tool allowlist from
+            # discovered tools so hallucinated tool names are rejected.
+            _guardrail_checker = getattr(loop, "_guardrail_checker", None)
+            if _guardrail_checker is not None and tool_context is not None:
+                _populate_guardrail_allowlist(_guardrail_checker, tool_context)
 
             initial_context: dict[str, Any] = {}
             if tool_context is not None:
