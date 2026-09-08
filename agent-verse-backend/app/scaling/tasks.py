@@ -2608,6 +2608,21 @@ async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
                     counts[table] = r.rowcount
                 except Exception as exc:
                     counts[table] = f"error: {exc}"
+            # D-18: physically purge expired memory rows. Unlike the tables above
+            # (age-based via the global retention window), each memory record carries
+            # its own retention deadline in ``expires_at`` — previously enforced only
+            # at read time, so expired rows accumulated forever. Delete them here so
+            # the scheduled retention policy actually reclaims them tenant-wide.
+            try:
+                r = await session.execute(
+                    text(
+                        "DELETE FROM memory_records "
+                        "WHERE expires_at IS NOT NULL AND expires_at < NOW()"
+                    )
+                )
+                counts["memory_records"] = r.rowcount
+            except Exception as exc:
+                counts["memory_records"] = f"error: {exc}"
         return {"retention_days": retention_days, "cutoff": cutoff.isoformat(), "deleted": counts}
     except Exception as exc:
         return {"error": str(exc)}

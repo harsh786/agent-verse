@@ -79,6 +79,32 @@ class TestMaintenanceRLS:
             mock_sys.assert_called()
 
     @pytest.mark.asyncio
+    async def test_delete_expired_records_purges_memory_records_by_expires_at(self) -> None:
+        """D-18: the retention task must issue a DELETE against memory_records keyed on
+        expires_at — expired memory rows were previously never physically removed."""
+        from app.db import rls as rls_module
+
+        execute_result = MagicMock()
+        execute_result.rowcount = 0
+        mock_session = _make_mock_session(execute_result)
+
+        with patch.object(rls_module, "system_session") as mock_sys:
+            mock_sys.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_sys.return_value.__aexit__ = AsyncMock(return_value=False)
+            mock_factory = _make_session_factory_patch(mock_session)
+
+            _sf_target = "app.db.session.get_session_factory"
+            with patch(_sf_target, return_value=mock_factory.return_value):
+                from app.scaling.tasks import _delete_expired_records
+                await _delete_expired_records(90)
+
+        executed_sql = [str(call.args[0]) for call in mock_session.execute.call_args_list]
+        memory_deletes = [
+            sql for sql in executed_sql if "memory_records" in sql and "expires_at" in sql
+        ]
+        assert memory_deletes, f"no memory_records expiry purge issued; ran: {executed_sql}"
+
+    @pytest.mark.asyncio
     async def test_expire_db_approvals_uses_system_session(self) -> None:
         """_expire_db_approvals must invoke system_session."""
         from app.db import rls as rls_module
