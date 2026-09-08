@@ -1042,16 +1042,46 @@ async def _completed_service() -> tuple[RAFTService, RecordingFineTuneProvider, 
     return service, provider, job.job_id, dataset.dataset_id
 
 
-async def test_raft_retrieval_requires_model_and_traces_job_and_model_ids() -> None:
+async def test_raft_degrades_to_hybrid_when_no_completed_model() -> None:
     unavailable = RAFTService(repository=InMemoryRAFTRepository(), providers={})
     adapter = RAFTRAGRuntimeAdapter(unavailable)
 
-    with pytest.raises(
-        RetrievalStrategyExecutionError,
-        match="RAFT inference capability is unavailable",
-    ):
-        await adapter.execute(execution_request(), execution_context())
+    fallback_results = [
+        RetrievalResult(
+            chunk_id="hybrid-1",
+            content="Hybrid fallback evidence",
+            score=0.6,
+            source_metadata={"source": "policy.pdf"},
+            retrieval_legs=["hybrid"],
+        )
+    ]
 
+    async def embed(*args: object, **kwargs: object) -> list[float]:
+        del args, kwargs
+        return [1.0, 0.0]
+
+    async def search(*args: object, **kwargs: object) -> list[RetrievalResult]:
+        del args, kwargs
+        return fallback_results
+
+    with (
+        patch("app.rag.gateway._embed_text", side_effect=embed),
+        patch("app.rag.gateway._search_persisted", side_effect=search),
+    ):
+        result = await adapter.execute(execution_request(), execution_context())
+
+    # Honest degradation: a real (fallback) result, not an unhandled exception.
+    assert result.resolved_strategy_id is RAGStrategy.RAFT
+    assert result.citations[0].chunk_id == "hybrid-1"
+    fallback_trace = next(
+        item for item in result.strategy_trace if item.action == "raft_fallback"
+    )
+    assert fallback_trace.status == "degraded"
+    assert fallback_trace.detail["reason"] == "raft_unavailable"
+    assert fallback_trace.detail["fallback_retrieval"] == "hybrid"
+
+
+async def test_raft_retrieval_uses_completed_model_and_traces_job_and_model_ids() -> None:
     service, provider, job_id, dataset_id = await _completed_service()
     assert await service.has_completed_model(
         TENANT,

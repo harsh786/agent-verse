@@ -42,11 +42,31 @@ class RAFTRAGRuntimeAdapter(RAFTRAGRuntimeContract):
                 "tenant-scoped collection context is required",
             )
         service = self._service or getattr(context.dependencies, "raft_service", None)
+
+        # Honest degradation (D-8): when no completed RAFT model is durable for
+        # this tenant/collection, fall back to hybrid retrieval with a recorded
+        # reason rather than raising an unhandled error that breaks the request.
+        # TODO(main.py): app.main.create_app wires RAFTService(providers={}),
+        # so no completed model can ever exist and RAFT always degrades here.
+        # Pass real fine-tune/inference providers so completed RAFT models can
+        # actually serve inference before removing this fallback.
+        degrade_cause: str | None = None
         if not isinstance(service, RAFTService):
-            raise RetrievalStrategyExecutionError(
-                self.strategy.value,
-                "RAFT lifecycle service is unavailable",
-            )
+            degrade_cause = "raft_service_unavailable"
+        else:
+            try:
+                has_model = await service.has_completed_model(
+                    context.tenant_context,
+                    collection_id=request.collection_id,
+                )
+            except Exception:
+                has_model = False
+            if not has_model:
+                degrade_cause = "no_completed_model"
+        if degrade_cause is not None:
+            return await self._degrade_to_hybrid(request, context, cause=degrade_cause)
+        assert isinstance(service, RAFTService)
+
         dataset_id = request.filters.get("raft_dataset_id")
         provider_id = request.filters.get("raft_provider_id")
         base_model = request.filters.get("raft_base_model")
@@ -126,6 +146,50 @@ class RAFTRAGRuntimeAdapter(RAFTRAGRuntimeContract):
                         "base_model": job.base_model,
                         "compatibility_key": job.compatibility_key,
                         "capability": job.capability,
+                    },
+                )
+            ],
+        )
+
+    async def _degrade_to_hybrid(
+        self,
+        request: RAGExecutionRequest,
+        context: Any,
+        *,
+        cause: str,
+    ) -> RAGExecutionResult:
+        """Serve a recorded hybrid-retrieval result when RAFT is unavailable."""
+        from app.rag.gateway import (
+            _canonical_result,
+            _embed_text,
+            _extend_trace,
+            _search_persisted,
+        )
+
+        embedding = await _embed_text(context, request.query, self.strategy)
+        evidence: list[dict[str, Any]] = []
+        results = await _search_persisted(
+            context,
+            request,
+            query=request.query,
+            embedding=embedding,
+            retrieval_mode="hybrid",
+            evidence=evidence,
+        )
+        result = _canonical_result(request, self.strategy, results, evidence)
+        result = result.model_copy(update={"grounded": bool(results)})
+        return _extend_trace(
+            result,
+            [
+                RAGStrategyTrace(
+                    strategy=self.strategy,
+                    action="raft_fallback",
+                    status="degraded",
+                    detail={
+                        "reason": "raft_unavailable",
+                        "fallback_retrieval": "hybrid",
+                        "cause": cause,
+                        "result_count": len(results),
                     },
                 )
             ],
