@@ -10,6 +10,8 @@ burn_rate > 1.0  → budget will be exhausted before the window ends
 
 from __future__ import annotations
 
+import contextlib
+import json
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -41,15 +43,66 @@ class SLOStatus:
 
 
 class SLOTracker:
-    """In-memory SLO burn-rate tracker.
+    """SLO burn-rate tracker with optional Redis-backed persistence.
 
-    Uses a simple in-memory time-series of events (tuples of timestamp+success).
-    For production use, replace the in-memory store with Redis sorted sets.
+    Uses a simple time-series of events (tuples of timestamp+success). By default the
+    series lives purely in-memory and therefore resets on process restart.
+
+    Pass a *redis* client (any object exposing synchronous ``get(key)`` / ``set(key, value)``
+    — e.g. ``redis.Redis``) to persist the series so burn-rate / error-budget state survives
+    a restart: every mutation writes the full state as a JSON blob, and reads load it back,
+    so a fresh ``SLOTracker`` bound to the same backend sees the same events. When *redis* is
+    absent (or unreachable) the tracker degrades gracefully to the in-memory series.
+
+    NOTE: the JSON-blob-per-mutation scheme is a persistence stopgap; a high-throughput
+    deployment should move to Redis sorted sets keyed per ``(tenant, slo)``.
     """
 
-    def __init__(self) -> None:
+    _STATE_SEP = "\x1f"  # unit separator — safe delimiter for (tenant, slo) redis members
+
+    def __init__(self, redis: Any | None = None, *, key_prefix: str = "slo") -> None:
         # {(tenant_id, slo_name): [(timestamp, success_bool), ...]}
         self._events: dict[tuple[str, str], list[tuple[float, bool]]] = {}
+        self._redis = redis
+        self._state_key = f"{key_prefix}:state"
+
+    # ------------------------------------------------------------------
+    # Persistence helpers
+    # ------------------------------------------------------------------
+
+    def _load_state(self) -> dict[tuple[str, str], list[tuple[float, bool]]]:
+        """Return the authoritative event map (Redis when configured, else in-memory)."""
+        if self._redis is None:
+            return self._events
+        try:
+            raw = self._redis.get(self._state_key)
+        except Exception:
+            # Backend unreachable — fall back to whatever we have locally.
+            return self._events
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+        state: dict[tuple[str, str], list[tuple[float, bool]]] = {}
+        for member, events in data.items():
+            tenant, _, slo_name = member.partition(self._STATE_SEP)
+            state[(tenant, slo_name)] = [(float(ts), bool(ok)) for ts, ok in events]
+        return state
+
+    def _persist_state(self, state: dict[tuple[str, str], list[tuple[float, bool]]]) -> None:
+        # Always keep the in-memory copy current so a broken backend still tracks locally.
+        self._events = state
+        if self._redis is None:
+            return
+        payload = {
+            f"{tenant}{self._STATE_SEP}{slo_name}": [[ts, ok] for ts, ok in events]
+            for (tenant, slo_name), events in state.items()
+        }
+        # Persistence is best-effort; never let a Redis hiccup break event recording.
+        with contextlib.suppress(Exception):
+            self._redis.set(self._state_key, json.dumps(payload))
 
     # ------------------------------------------------------------------
     # Public API
@@ -61,17 +114,19 @@ class SLOTracker:
         slo: SLODefinition,
     ) -> None:
         """Record a single success or failure event for *slo*."""
+        state = self._load_state()
         key = (slo.tenant_id, slo.name)
-        self._events.setdefault(key, [])
-        self._events[key].append((time.time(), success))
+        events = state.setdefault(key, [])
+        events.append((time.time(), success))
         # Prune events older than the SLO window
         cutoff = time.time() - slo.window_hours * 3600
-        self._events[key] = [e for e in self._events[key] if e[0] >= cutoff]
+        state[key] = [e for e in events if e[0] >= cutoff]
+        self._persist_state(state)
 
     def burn_rate(self, slo: SLODefinition) -> SLOStatus:
         """Compute the current SLO status and burn rate for *slo*."""
         key = (slo.tenant_id, slo.name)
-        events = self._events.get(key, [])
+        events = self._load_state().get(key, [])
         cutoff = time.time() - slo.window_hours * 3600
         window_events = [(ts, ok) for ts, ok in events if ts >= cutoff]
 
@@ -115,7 +170,7 @@ class SLOTracker:
     def summary(self, tenant_id: str = "") -> list[dict[str, Any]]:
         """Return a summary of all tracked SLOs for *tenant_id*."""
         results = []
-        for (tid, slo_name), events in self._events.items():
+        for (tid, slo_name), events in self._load_state().items():
             if tenant_id and tid != tenant_id:
                 continue
             total = len(events)

@@ -1,7 +1,9 @@
 # tests/test_spec_coverage.py
 """Verifies all 84 spec files exist as importable modules."""
 from __future__ import annotations
+
 import importlib
+
 import pytest
 
 SPEC_MODULES = [
@@ -63,8 +65,9 @@ SPEC_MODULES = [
     "app.optimization.model_optimizer", "app.optimization.cache_optimizer",
     "app.optimization.ab_testing",
     # Layer 12
-    "app.observability.runtime_decision_trace", "app.observability.rag_trace",
-    "app.observability.pattern_trace", "app.observability.model_trace",
+    # NOTE(D-21a): the standalone app.observability.{rag,pattern,model}_trace modules were
+    # dead duplicates superseded by RuntimeSSEEmitter and have been deleted.
+    "app.observability.runtime_decision_trace",
 ]
 
 

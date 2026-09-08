@@ -125,26 +125,44 @@ def test_emitter_creates_embedding_strategy_selected_event():
     assert event["modality"] == "text"
 
 
-def test_rag_trace_emitter():
-    from app.observability.rag_trace import emit_rag_trace
-
-    event = emit_rag_trace("g1", "hybrid", 5, 0.82)
-    assert event["type"] == "rag_trace"
-    assert event["goal_id"] == "g1"
-    assert event["result_count"] == 5
+# D-21a: the standalone emit_rag_trace / emit_pattern_trace / emit_model_trace modules were
+# dead duplicates (zero production callers) superseded by RuntimeSSEEmitter below. They have
+# been deleted; RuntimeSSEEmitter is the single live tracing path for these decision events.
 
 
-def test_pattern_trace_emitter():
-    from app.observability.pattern_trace import emit_pattern_trace
+def test_dead_trace_modules_are_removed():
+    """The superseded standalone trace emitters must no longer be importable."""
+    for mod in (
+        "app.observability.rag_trace",
+        "app.observability.pattern_trace",
+        "app.observability.model_trace",
+    ):
+        with pytest.raises(ModuleNotFoundError):
+            __import__(mod)
 
-    event = emit_pattern_trace("g1", {"reasoning": ["react", "reflection"]}, 1.5)
-    assert event["type"] == "pattern_trace"
-    assert event["assembly_latency_ms"] == 1.5
 
+def test_runtime_sse_emitter_is_the_live_trace_path():
+    """RuntimeSSEEmitter carries the rag / pattern / model decision traces going forward."""
+    emitter = RuntimeSSEEmitter()
 
-def test_model_trace_emitter():
-    from app.observability.model_trace import emit_model_trace
+    rag = emitter.rag_strategy_selected(
+        goal_id="g1", strategy="hybrid", sources=["kb"], reranker="rrf"
+    )
+    assert rag["type"] == SSEEventType.RAG_STRATEGY_SELECTED
 
-    event = emit_model_trace("g1", "gpt-5.2", "gpt-5.2", "gpt-4o-mini", "high")
-    assert event["type"] == "model_trace"
-    assert event["tier"] == "high"
+    pattern = emitter.pattern_assembled(
+        goal_id="g1",
+        complexity="expert",
+        risk="low",
+        patterns_active={"reasoning": ["react", "reflection"]},
+        models={"planner": "gpt-5.2"},
+        selection_reasons={},
+        assembly_latency_ms=1.5,
+    )
+    assert pattern["type"] == SSEEventType.PATTERN_ASSEMBLED
+
+    model = emitter.model_route_selected(
+        goal_id="g1", planner="gpt-5.2", executor="gpt-5.2", verifier="gpt-4o-mini",
+        cost_class="high",
+    )
+    assert model["type"] == SSEEventType.MODEL_ROUTE_SELECTED
