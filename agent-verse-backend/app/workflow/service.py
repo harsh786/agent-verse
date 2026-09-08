@@ -82,9 +82,13 @@ class WorkflowService:
         self,
         tenant_id: str,
         workflow_id: str,
+        updates: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any] | None:
-        return await self._store.update(tenant_id=tenant_id, workflow_id=workflow_id, **kwargs)
+        # Accept both the router's ``updates={...}`` dict and direct field kwargs
+        # (used by archive/publish); merge into one partial-field set.
+        fields = {**(updates or {}), **kwargs}
+        return await self._store.update(tenant_id=tenant_id, workflow_id=workflow_id, **fields)
 
     async def archive(self, tenant_id: str, workflow_id: str) -> bool:
         """Archive (soft-delete) a workflow by setting status=archived."""

@@ -180,26 +180,26 @@ class _WorkflowStore:
         self._mem[wf["id"]] = wf
         return wf
 
+    # Fields a partial update may set. ``published_at`` is a service-level
+    # convenience (no ORM column) — applied in-memory, dropped on the DB path.
+    _UPDATABLE_FIELDS = ("name", "description", "definition", "labels", "status", "published_at")
+
     async def update(
         self,
         tenant_id: str,
         workflow_id: str,
-        name: str,
-        description: str,
-        definition: dict[str, Any],
+        **fields: Any,
     ) -> dict[str, Any] | None:
+        """Partial update — only the provided fields are changed; version bumps."""
+        updates = {k: v for k, v in fields.items() if k in self._UPDATABLE_FIELDS}
         if self._db is not None:
-            return await self._update_db(tenant_id, workflow_id, name, description, definition)
+            return await self._update_db(tenant_id, workflow_id, updates)
         w = self._mem.get(workflow_id)
         if not w or w["tenant_id"] != tenant_id:
             return None
-        w.update(
-            name=name,
-            description=description,
-            definition=definition,
-            version=w["version"] + 1,
-            updated_at=datetime.now(UTC),
-        )
+        w.update(updates)
+        w["version"] = w["version"] + 1
+        w["updated_at"] = datetime.now(UTC)
         return w
 
     async def delete(self, tenant_id: str, workflow_id: str) -> bool:
@@ -287,9 +287,7 @@ class _WorkflowStore:
         self,
         tenant_id: str,
         workflow_id: str,
-        name: str,
-        description: str,
-        definition: dict[str, Any],
+        updates: dict[str, Any],
     ) -> dict[str, Any] | None:
         from sqlalchemy import select
         from sqlalchemy import text as sa_text
@@ -309,9 +307,10 @@ class _WorkflowStore:
             wf = result.scalar_one_or_none()
             if wf is None:
                 return None
-            wf.name = name
-            wf.description = description
-            wf.definition = definition
+            # Apply only fields that map to a real column (published_at has none).
+            for key, value in updates.items():
+                if hasattr(wf, key):
+                    setattr(wf, key, value)
             wf.version = wf.version + 1
             wf.updated_at = datetime.now(UTC)
             await session.commit()
