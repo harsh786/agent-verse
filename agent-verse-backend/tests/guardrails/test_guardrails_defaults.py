@@ -228,17 +228,14 @@ class TestEnforcerSeedsDefaultsOnCheck:
             eval_config=EvalConfig(),
         )
 
-    def test_invoking_enforcer_seeds_engine_defaults(self) -> None:
+    async def test_invoking_enforcer_seeds_engine_defaults(self) -> None:
         from app.guardrails_v2.engine import guardrails_engine
         from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
 
         tenant = _tenant()
         assert guardrails_engine.get_rules(tenant) == []
         enforcer = GuardrailEnforcer()
-        # check_tool_args / check_final_output both call selector.select -> seeds.
-        maybe = enforcer.check_tool_args("t", {"a": "b"}, self._profile(tenant))
-        if hasattr(maybe, "__await__"):  # forward-compatible with the P0-1 async enforcer
-            import asyncio
-
-            asyncio.get_event_loop().run_until_complete(maybe)
+        # The P0-1 enforcer is async; check_tool_args -> _resolve_config ->
+        # GuardrailProfileSelector.select -> ensure_default_rules seeds the tenant.
+        await enforcer.check_tool_args("t", {"a": "b"}, self._profile(tenant))
         assert guardrails_engine.get_rules(tenant), "enforcer.check must seed baseline rules"
