@@ -120,7 +120,13 @@ def _resolve_checkpointer(app_state: Any) -> Any:
         try:
             from langgraph.checkpoint.base import BaseCheckpointSaver
 
-            if isinstance(cp, BaseCheckpointSaver):
+            # Only accept a pre-wired saver that implements the ASYNC checkpoint
+            # API — the agent graph runs via ``ainvoke``. A sync-only saver whose
+            # ``aget_tuple`` is the base ``NotImplementedError`` would crash every
+            # goal, so fall through to the async-capable resolution below.
+            if isinstance(cp, BaseCheckpointSaver) and (
+                type(cp).aget_tuple is not BaseCheckpointSaver.aget_tuple
+            ):
                 return cp
         except Exception:
             pass
@@ -172,7 +178,14 @@ def _resolve_checkpointer(app_state: Any) -> Any:
             return _saver
         except Exception:
             pass
-        # Sync RedisSaver (fallback).
+        # Sync RedisSaver (fallback) — ONLY if it implements the async API.
+        # The agent graph always runs via ``ainvoke``, which calls
+        # ``aget_tuple``/``aput``. A sync-only ``RedisSaver`` leaves those as the
+        # base ``NotImplementedError``, so returning it makes every goal crash
+        # with ``NotImplementedError`` the moment the graph starts — a
+        # production-only failure (Redis present, langgraph-checkpoint-redis's
+        # async saver absent) invisible to MemorySaver-based tests. Reject such a
+        # saver and fall through to MemorySaver instead of shipping a broken one.
         try:
             from langgraph.checkpoint.base import BaseCheckpointSaver as _BCS2
             from langgraph.checkpoint.redis import RedisSaver
@@ -182,6 +195,11 @@ def _resolve_checkpointer(app_state: Any) -> Any:
                 raise TypeError(
                     f"RedisSaver.from_conn_string returned {type(_saver2).__name__}, "
                     "not a BaseCheckpointSaver"
+                )
+            if type(_saver2).aget_tuple is _BCS2.aget_tuple:
+                raise TypeError(
+                    "sync RedisSaver does not implement the async checkpoint API "
+                    "(aget_tuple); it is unusable by the async agent graph"
                 )
             _svc_logger.info("checkpointer_redis_sync_wired")
             return _saver2
@@ -301,16 +319,27 @@ def _populate_guardrail_allowlist(
 
 
 def _build_dedup_cache(redis: Any) -> Any:
-    """Build the best available dedup cache: Redis-backed when Redis is available."""
+    """Build the executor's tool-call dedup cache.
+
+    This cache backs the executor's *content-hash* idempotency check
+    (``executor_mixin.py`` calls ``is_duplicate``/``mark_seen`` **synchronously**
+    per step). That is inherently a per-goal-run, in-process concern — a single
+    goal executes on one worker — so the in-memory ``DeduplicationCache`` is the
+    correct backing here.
+
+    It must NOT be a ``RedisDeduplicationCache``: that class implements a
+    completely different, *async* goal-submission dedup API
+    (``get_existing``/``register``) and has no ``is_duplicate``/``mark_seen``.
+    Wiring it into this slot made every goal crash on its first step whenever
+    Redis was available (``'RedisDeduplicationCache' object has no attribute
+    'is_duplicate'``) — a production-only failure invisible to the in-memory
+    unit tests. Cross-replica *goal-submission* dedup is handled separately by
+    ``app.services.dedup._default_deduplicator`` in ``submit_goal``.
+
+    ``redis`` is accepted for call-site compatibility but intentionally unused.
+    """
     from app.reliability.dedup import DeduplicationCache as _DedupCache
 
-    try:
-        from app.reliability.dedup import RedisDeduplicationCache
-
-        if redis is not None:
-            return RedisDeduplicationCache(redis=redis)
-    except Exception:
-        pass
     return _DedupCache()
 
 
@@ -696,12 +725,36 @@ class GoalService:
         from app.reliability.result_processor import ResultProcessor
         from app.reliability.rollback import RollbackEngine
 
+        # ── Normalise app_state → the State object ───────────────────────────────
+        # ``self._app_state`` is set to the FastAPI *app* (which carries ``.state``),
+        # but every governance/RAG/memory service is registered on ``app.state``.
+        # Only ``retrieval_gateway`` had a ``.state`` fallback below, so the live
+        # agent graph was silently built with hitl_gateway / audit_log /
+        # knowledge_store / cost_controller / policy_engine / eval_runner all None —
+        # HITL gating, audit, budget, and policy enforcement disabled on the goal
+        # loop. Unwrap once here so every lookup resolves against app.state. Guarded
+        # to the real Starlette/FastAPI app so tests that pass app.state directly or
+        # a mock object are unaffected.
+        try:
+            from starlette.applications import Starlette as _Starlette
+
+            if isinstance(app_state, _Starlette):
+                app_state = app_state.state
+        except Exception:
+            pass
+
         # ── LLM provider (real or fallback) ─────────────────────────────────────
-        provider: Any = None
+        # 0. Explicit provider override on app.state. This is the single injection
+        # seam used by the simulation sandbox, deterministic-replay harness, and
+        # eval/e2e tiers to pin a specific LLMProvider for every goal without
+        # touching per-tenant credentials. Highest precedence by design; the rest
+        # of the resolution below is skipped because it is guarded on
+        # ``provider is None``.
+        provider: Any = getattr(app_state, "_llm_provider_override", None) if app_state else None
 
         # 1. Check per-tenant config from app.state
         llm_configs: dict[str, Any] = getattr(app_state, "_llm_configs", {}) if app_state else {}
-        tenant_cfg = llm_configs.get(tenant_ctx.tenant_id)
+        tenant_cfg = llm_configs.get(tenant_ctx.tenant_id) if provider is None else None
         if tenant_cfg:
             encrypted_key = tenant_cfg.get("encrypted_key", "")
             api_key = ""
@@ -3380,7 +3433,10 @@ class GoalService:
             )
         else:
             ok = False
-        return {"request_id": request_id, "action": action, "accepted": ok}
+        # ``HITLGateway.approve`` returns a dual sync/async ``_AwaitableBool`` which
+        # FastAPI/pydantic cannot serialize; coerce to a plain bool for the
+        # response payload.
+        return {"request_id": request_id, "action": action, "accepted": bool(ok)}
 
     # ── DB persistence helpers ────────────────────────────────────────────────
 
