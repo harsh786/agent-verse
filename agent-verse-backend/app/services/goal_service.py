@@ -948,35 +948,41 @@ class GoalService:
             "procedural_memory": getattr(app_state, "procedural_memory", None),
         }
         if runtime_profile is not None:
-            from app.orchestration.graph_factory import GraphFactory
+            from app.orchestration.strategy_adapters import ExecutionTier
 
-            try:
-                graph = GraphFactory().create(
+            if runtime_profile.execution_tier is ExecutionTier.DISTRIBUTED:
+                _distributed_loop = self._try_build_distributed_strategy_loop(
                     runtime_profile,
-                    graph_services,
-                    agent_config=_agent_config,
+                    tenant_ctx=tenant_ctx,
+                    app_state=app_state,
+                    agent_id=agent_id,
+                    provider=provider,
                 )
-            except ValueError as _gf_exc:
-                # D-1: a DISTRIBUTED-tier strategy needs the StrategyRunner distributed
-                # executor, which is not wired on the live path yet. Rather than fail the
-                # goal with an opaque error, degrade to the local AgentGraph kernel so the
-                # goal still executes — and make the fallback observable instead of silent.
-                _svc_logger.warning(
-                    "runtime_profile_local_fallback",
-                    goal_id=getattr(runtime_profile, "goal_id", None),
-                    tenant=tenant_ctx.tenant_id,
-                    execution_tier=getattr(
-                        getattr(runtime_profile, "execution_tier", None), "value", None
-                    ),
-                    primary_strategy=getattr(
-                        getattr(runtime_profile, "primary_strategy", None), "strategy_id", None
-                    ),
-                    reason=str(_gf_exc),
-                )
-                # Base local kernel (no profile-derived topology); the profile is kept
-                # only as an observability attribute below, not as a ctor arg.
-                graph = AgentGraph(**graph_services)
-                graph._runtime_profile = runtime_profile
+                if _distributed_loop is not None:
+                    graph = _distributed_loop
+                else:
+                    _svc_logger.warning(
+                        "distributed_strategy_runner_unavailable_local_fallback",
+                        strategy_id=runtime_profile.primary_strategy.strategy_id,
+                        goal_id=runtime_profile.goal_id,
+                    )
+                    graph = AgentGraph(**graph_services)
+            else:
+                from app.orchestration.graph_factory import GraphFactory
+
+                try:
+                    graph = GraphFactory().create(
+                        runtime_profile,
+                        graph_services,
+                        agent_config=_agent_config,
+                    )
+                except ValueError as _graph_factory_exc:
+                    _svc_logger.warning(
+                        "graph_factory_compile_failed_local_fallback",
+                        error=str(_graph_factory_exc),
+                        goal_id=runtime_profile.goal_id,
+                    )
+                    graph = AgentGraph(**graph_services)
         else:
             graph = AgentGraph(**graph_services)
         # Wire attributes that are set externally (not constructor params)
@@ -1011,6 +1017,37 @@ class GoalService:
             pass
 
         return graph
+
+    def _try_build_distributed_strategy_loop(
+        self,
+        runtime_profile: Any,
+        *,
+        tenant_ctx: TenantContext,
+        app_state: Any,
+        agent_id: str | None,
+        provider: Any,
+    ) -> Any | None:
+        """Build a DistributedStrategyLoop when the app has a genuinely wired StrategyRunner.
+
+        Returns ``None`` (never raises) when the runner is absent or still carrying the inert
+        default executor, so the caller can fall back to the local AgentGraph kernel — the
+        DISTRIBUTED tier must never fail a goal outright just because the runner isn't wired.
+        """
+        strategy_runner = getattr(app_state, "strategy_runner", None) if app_state else None
+        if strategy_runner is None or not getattr(strategy_runner, "has_real_executor", False):
+            return None
+        context_store = getattr(app_state, "strategy_goal_context_store", None)
+        if context_store is None:
+            return None
+        from app.orchestration.distributed_strategy_loop import DistributedStrategyLoop
+
+        return DistributedStrategyLoop(
+            strategy_runner=strategy_runner,
+            context_store=context_store,
+            profile=runtime_profile,
+            provider=provider,
+            agent_id=agent_id,
+        )
 
     def _select_models_for_tenant(self, tenant_ctx: TenantContext) -> dict[str, str]:
         """Use AI Router to select optimal models for each role."""

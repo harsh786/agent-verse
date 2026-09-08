@@ -83,6 +83,17 @@ class StrategyRunner:
         self._results: dict[tuple[str, str], StrategyExecutionResult] = {}
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
 
+    @property
+    def has_real_executor(self) -> bool:
+        """False while this runner still carries the inert module-default executor.
+
+        D-1: a ``StrategyRunner`` built with no ``executor=`` override always fails every
+        execution with ``RuntimeError("strategy executor is not configured")``. Callers (e.g.
+        ``GoalService``) use this to decide whether to dispatch through the runner at all or
+        fall back to the local AgentGraph kernel.
+        """
+        return self._executor is not _default_executor
+
     def cancel(self, cancellation_token: str) -> None:
         self._cancel_events.setdefault(cancellation_token, asyncio.Event()).set()
 

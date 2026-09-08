@@ -1826,6 +1826,11 @@ def create_app(
     app.state.goal_service = _goal_svc
     from app.orchestration.graph_factory import GraphFactory
     from app.orchestration.strategy_certification import CertificationEvaluator
+    from app.orchestration.strategy_context_store import StrategyGoalContextStore
+    from app.orchestration.strategy_executor import (
+        DistributedStrategyExecutor,
+        default_distributed_admission,
+    )
     from app.orchestration.strategy_readiness import ReadinessEvaluator
     from app.orchestration.strategy_registry import build_default_registry
     from app.orchestration.strategy_runner import StrategyRunner
@@ -1833,7 +1838,17 @@ def create_app(
     app.state.strategy_registry = build_default_registry()
     app.state.strategy_readiness = ReadinessEvaluator()
     app.state.strategy_certification = CertificationEvaluator()
-    app.state.strategy_runner = StrategyRunner(app.state.strategy_registry)
+    # D-1: StrategyRunner previously used the inert module-default executor (always raised
+    # "strategy executor is not configured") and nothing ever called .run() on it. Wire a real
+    # executor for the DISTRIBUTED strategies that have a genuine execution driver (see
+    # app/orchestration/strategy_executor.py); everything else is denied at admission rather
+    # than faked.
+    app.state.strategy_goal_context_store = StrategyGoalContextStore()
+    app.state.strategy_runner = StrategyRunner(
+        app.state.strategy_registry,
+        executor=DistributedStrategyExecutor(context_store=app.state.strategy_goal_context_store),
+        admission=default_distributed_admission,
+    )
     app.state.graph_factory = GraphFactory()
     from app.routing_runtime.decision_store import InMemoryDecisionStore
     from app.routing_runtime.embedding_router import EmbeddingRouter as CanonicalEmbeddingRouter
