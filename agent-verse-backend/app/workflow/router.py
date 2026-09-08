@@ -54,10 +54,13 @@ def _get_tenant(request: Request) -> Any:
     # TenantMiddleware sets ``request.state.tenant`` in production; the rest of the
     # workflow package (router_runs / router_templates / router_hitl / router_versions)
     # resolves the tenant from ``app.state.tenant_context``. Prefer the per-request
-    # value and fall back to the app-state context so both wirings work.
+    # value and fall back to the app-state context so both wirings work; 401 when
+    # neither is present rather than returning None (which 500'd downstream).
     tenant = getattr(request.state, "tenant", None)
     if tenant is None:
         tenant = getattr(request.app.state, "tenant_context", None)
+    if tenant is None:
+        raise HTTPException(status_code=401, detail="Tenant context not resolved")
     return tenant
 
 
