@@ -8,7 +8,10 @@ seam tests monkeypatch; ``extract_path`` is pure and unit-tested.
 
 from __future__ import annotations
 
+import json
 from typing import Any
+
+_MAX_POLL_BYTES = 4 * 1024 * 1024  # cap polled JSON response size
 
 
 def extract_path(obj: Any, path: str) -> Any:
@@ -54,16 +57,30 @@ def fetch_json(
     body: dict[str, Any] | None = None,
     timeout: float = 10.0,
 ) -> Any:
-    """Fetch a JSON endpoint. Raises on transport/HTTP/JSON error (caller logs)."""
+    """Fetch a JSON endpoint. Raises on transport/HTTP/JSON error (caller logs).
+
+    The URL is tenant-controlled, so it is SSRF-guarded before the request
+    (public host only; loopback/private/link-local/metadata blocked, fail-closed)
+    and redirects are disabled so a public URL cannot bounce to an internal one.
+    """
     import httpx
 
-    resp = httpx.request(
+    from app.net.ssrf_guard import assert_public_url
+
+    assert_public_url(url, context="api_poll")  # raises SSRFError if unsafe
+    # Stream with a hard size cap so a huge response cannot exhaust memory.
+    with httpx.stream(
         method.upper() or "GET",
         url,
         headers=headers or {},
         json=body or None,
         timeout=timeout,
-        follow_redirects=True,
-    )
-    resp.raise_for_status()
-    return resp.json()
+        follow_redirects=False,
+    ) as resp:
+        resp.raise_for_status()
+        buf = bytearray()
+        for chunk in resp.iter_bytes():
+            buf.extend(chunk)
+            if len(buf) > _MAX_POLL_BYTES:
+                raise ValueError("api_poll response exceeds size cap")
+    return json.loads(bytes(buf))

@@ -78,9 +78,23 @@ def new_entries(entries: list[FeedEntry], processed_ids: set[str]) -> list[FeedE
 
 def fetch_rss_entries(url: str, *, timeout: float = 10.0) -> list[FeedEntry]:
     """Fetch and parse a feed URL. Network/parse failures yield [] (logged by
-    the caller). This is the seam tests monkeypatch to avoid real network."""
+    the caller). This is the seam tests monkeypatch to avoid real network.
+
+    The URL is tenant-controlled, so it is SSRF-guarded before the request
+    (public host only; loopback/private/link-local/metadata blocked, fail-closed)
+    and redirects are disabled so a public URL cannot bounce to an internal one.
+    """
     import httpx
 
-    resp = httpx.get(url, timeout=timeout, follow_redirects=True)
-    resp.raise_for_status()
-    return parse_feed(resp.text)
+    from app.net.ssrf_guard import assert_public_url
+
+    assert_public_url(url, context="rss_feed")  # raises SSRFError if unsafe
+    # Stream with a hard size cap so a malicious/huge feed cannot exhaust memory.
+    with httpx.stream("GET", url, timeout=timeout, follow_redirects=False) as resp:
+        resp.raise_for_status()
+        body = bytearray()
+        for chunk in resp.iter_bytes():
+            body.extend(chunk)
+            if len(body) > _MAX_FEED_BYTES:
+                return []  # oversized feed → treat as empty
+    return parse_feed(bytes(body))

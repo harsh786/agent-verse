@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from app.triggers.rss import FeedEntry, new_entries, parse_feed
+import pytest
+
+from app.net.ssrf_guard import SSRFError
+from app.triggers.rss import FeedEntry, fetch_rss_entries, new_entries, parse_feed
 
 _RSS = """<?xml version="1.0"?>
 <rss version="2.0"><channel>
@@ -61,3 +64,19 @@ def test_new_entries_dedup() -> None:
     entries = [FeedEntry("a", "A", ""), FeedEntry("b", "B", ""), FeedEntry("c", "C", "")]
     fresh = new_entries(entries, processed_ids={"a", "c"})
     assert [e.entry_id for e in fresh] == ["b"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://169.254.169.254/latest/meta-data/",  # cloud metadata
+        "http://127.0.0.1/feed.xml",  # loopback
+        "http://localhost/feed.xml",  # loopback by name
+        "file:///etc/passwd",  # non-http scheme
+    ],
+)
+def test_fetch_rss_ssrf_guarded(url: str) -> None:
+    # The SSRF guard runs before any network call — a tenant cannot point the
+    # feed URL at internal/metadata/loopback targets.
+    with pytest.raises(SSRFError):
+        fetch_rss_entries(url)

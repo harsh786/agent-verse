@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from app.triggers.polling import extract_path, poll_should_fire
+import pytest
+
+from app.net.ssrf_guard import SSRFError
+from app.triggers.polling import extract_path, fetch_json, poll_should_fire
 
 
 def test_extract_dotted_path() -> None:
@@ -42,3 +45,17 @@ def test_poll_respects_expected_value() -> None:
     assert poll_should_fire("down", last_value="ok", expected_value="up") is False
     # changed and matches expected -> fire
     assert poll_should_fire("up", last_value="ok", expected_value="up") is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://169.254.169.254/latest/meta-data/",  # cloud metadata
+        "http://127.0.0.1:8000/internal",  # loopback
+        "http://localhost/status",  # loopback by name
+        "gopher://evil/",  # non-http scheme
+    ],
+)
+def test_fetch_json_ssrf_guarded(url: str) -> None:
+    with pytest.raises(SSRFError):
+        fetch_json(url)
