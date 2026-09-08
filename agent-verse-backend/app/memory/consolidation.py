@@ -104,6 +104,14 @@ class MemoryConsolidator:
             clusters_merged=clusters_merged,
         )
 
+    def cluster_memories(self, memories: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+        """Group memories by keyword (jaccard) similarity.
+
+        Public entry point for callers that only need the clustering decision
+        (e.g. the memory_v2 dedup surface) rather than a full merge/summarise.
+        """
+        return self._cluster(memories)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

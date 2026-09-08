@@ -28,6 +28,7 @@ class MemoryRepository(Protocol):
     async def update_lifecycle(
         self, tenant_id: str, memory_id: str, *, state: str, expected_version: int
     ) -> MemoryRecord: ...
+    async def purge_expired(self, tenant_id: str, *, now: datetime) -> int: ...
 
 
 class InMemoryMemoryRepository:
@@ -78,6 +79,9 @@ class InMemoryMemoryRepository:
                 source_execution_id=request.source_execution_id,
                 evidence_refs=request.evidence_refs,
                 classification=request.classification,
+                agent_id=request.agent_id,
+                collection_id=request.collection_id,
+                source=request.source,
                 confidence=request.confidence,
                 lifecycle_state="quarantined"
                 if quarantined or not request.evidence_refs
@@ -111,6 +115,8 @@ class InMemoryMemoryRepository:
             ):
                 continue
             if record.classification not in request.allowed_data_classes:
+                continue
+            if not _matches_scope(record, request):
                 continue
             allowed_states = {"active"}
             if request.include_disputed:
@@ -208,6 +214,29 @@ class InMemoryMemoryRepository:
             validated = MemoryRecord.model_validate(updated.model_dump())
             self._records[key] = validated
             return validated
+
+    async def purge_expired(self, tenant_id: str, *, now: datetime) -> int:
+        """Hard-delete this tenant's records whose retention window has elapsed."""
+        async with self._lock:
+            expired = [
+                key
+                for key, record in self._records.items()
+                if record.tenant_id == tenant_id
+                and record.expires_at is not None
+                and record.expires_at <= now
+            ]
+            for key in expired:
+                del self._records[key]
+            return len(expired)
+
+
+def _matches_scope(record: MemoryRecord, request: MemoryRecallRequest) -> bool:
+    """Apply optional agent/collection/source scoping filters (None = no filter)."""
+    if request.agent_id is not None and record.agent_id != request.agent_id:
+        return False
+    if request.collection_id is not None and record.collection_id != request.collection_id:
+        return False
+    return not (request.source is not None and record.source != request.source)
 
 
 def _similarity(

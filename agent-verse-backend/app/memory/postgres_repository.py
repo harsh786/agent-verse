@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.coordination.store import OptimisticConflictError
@@ -18,7 +18,7 @@ from app.memory.contracts import (
     MemoryRecord,
     MemoryWriteRequest,
 )
-from app.memory.repository import Embedder, _similarity
+from app.memory.repository import Embedder, _matches_scope, _similarity
 
 
 class PostgresMemoryRepository:
@@ -51,6 +51,11 @@ class PostgresMemoryRepository:
                 uuid.NAMESPACE_URL,
                 f"{request.tenant_id}:{request.memory_kind}:{request.idempotency_key}",
             ).hex
+            # FOLLOW-UP (out of this change's scope: app/db is not touched here):
+            # persist request.agent_id / collection_id / source once a migration
+            # adds those columns to memory_records. Until then Postgres-backed
+            # scope filtering only excludes rows whose (absent) scope is None; the
+            # in-memory repository is the fully-scoped reference implementation.
             sensitive = request.classification in {"confidential", "restricted"}
             poisoned = any(
                 marker in request.content.casefold()
@@ -119,6 +124,8 @@ class PostgresMemoryRepository:
         for record in candidates:
             states = {"active"} | ({"disputed"} if request.include_disputed else set())
             if record.lifecycle_state not in states:
+                continue
+            if not _matches_scope(record, request):
                 continue
             if record.expires_at is not None and record.expires_at <= request.as_of:
                 continue
@@ -239,6 +246,25 @@ class PostgresMemoryRepository:
             row.updated_at = datetime.now(UTC)
             return MemoryRecord.model_validate(_record(row).model_dump())
 
+    async def purge_expired(self, tenant_id: str, *, now: datetime) -> int:
+        """Hard-delete this tenant's rows whose retention window has elapsed.
+
+        Runs inside the tenant's RLS scope so the delete cannot cross tenants.
+        """
+        async with (
+            self._sessions() as db,
+            db.begin(),
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
+            result = await db.execute(
+                delete(CanonicalMemoryRecord).where(
+                    CanonicalMemoryRecord.tenant_id == tenant_id,
+                    CanonicalMemoryRecord.expires_at.is_not(None),
+                    CanonicalMemoryRecord.expires_at <= now,
+                )
+            )
+            return result.rowcount or 0
+
 
 def _record(row: CanonicalMemoryRecord) -> MemoryRecord:
     embedding = (
@@ -254,6 +280,11 @@ def _record(row: CanonicalMemoryRecord) -> MemoryRecord:
         source_execution_id=row.source_execution_id,
         evidence_refs=tuple(row.evidence_refs),
         classification=row.classification,
+        # Scope columns are a follow-up migration (see write()); read defensively
+        # so the field is populated automatically once the columns land.
+        agent_id=getattr(row, "agent_id", None),
+        collection_id=getattr(row, "collection_id", None),
+        source=getattr(row, "source", None),
         confidence=row.confidence,
         lifecycle_state=row.lifecycle_state,
         version=row.version,

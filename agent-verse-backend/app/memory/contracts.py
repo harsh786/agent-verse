@@ -32,6 +32,10 @@ class MemoryRecord(BaseModel):
     source_execution_id: str
     evidence_refs: tuple[str, ...]
     classification: Classification
+    # Optional scoping dimensions (default None keeps legacy behaviour).
+    agent_id: str | None = None
+    collection_id: str | None = None
+    source: str | None = None
     confidence: int = Field(ge=0, le=10_000)
     lifecycle_state: LifecycleState
     version: int = Field(gt=0)
@@ -68,6 +72,10 @@ class MemoryWriteRequest(BaseModel):
     source_execution_id: str
     evidence_refs: tuple[str, ...]
     classification: Classification
+    # Optional scoping dimensions carried onto the stored record.
+    agent_id: str | None = None
+    collection_id: str | None = None
+    source: str | None = None
     confidence: int = Field(ge=0, le=10_000)
     idempotency_key: str
     retention_policy_id: str
@@ -85,6 +93,10 @@ class MemoryRecallRequest(BaseModel):
     as_of: datetime
     token_budget: int = Field(gt=0)
     include_disputed: bool = False
+    # Optional additive scoping filters (None = do not filter on that dimension).
+    agent_id: str | None = None
+    collection_id: str | None = None
+    source: str | None = None
 
 
 class MemoryRecallHit(BaseModel):
