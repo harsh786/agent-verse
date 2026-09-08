@@ -138,6 +138,29 @@ def select_adaptive_strategy(
             )
         unavailable_reason += "fusion_unavailable; "
 
+    # Agentic RAG: an explicit multi-step research/investigation intent benefits
+    # from an iterative retrieve-reason-retrieve loop over a single lookup. The
+    # gateway has a dispatchable AgenticRAGRuntimeAdapter, so this becomes
+    # auto-selectable (D-6) — but only when the capability is certified/available.
+    if any(
+        term in normalized
+        for term in (
+            "step by step",
+            "step-by-step",
+            "multi-step",
+            "multi step",
+            "investigate",
+            "look into",
+            "find out how",
+        )
+    ):
+        if RAGStrategy.AGENTIC in available:
+            return AdaptiveDecision(
+                RAGStrategy.AGENTIC,
+                "multi_step_research_query; agentic_available",
+            )
+        unavailable_reason += "agentic_unavailable; "
+
     if any(term in normalized for term in ("compare", "contrast", "across")):
         if RAGStrategy.MULTI_HOP in available:
             return AdaptiveDecision(RAGStrategy.MULTI_HOP, "comparison_query; multi_hop_available")
