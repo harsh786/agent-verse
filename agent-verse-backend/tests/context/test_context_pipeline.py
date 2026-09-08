@@ -209,3 +209,62 @@ def test_llm_reranker_returns_chunks(sample_chunks):
     reranked = policy.rerank(sample_chunks, query="orchestration")
     assert len(reranked) >= 1
     assert all(isinstance(c, dict) for c in reranked)
+
+
+# ── ContextPipeline multi-source injection (D-20) ─────────────────────────────
+
+
+def test_pipeline_threads_all_context_sources_into_planner(sample_chunks):
+    """D-20: graph_facts / execution_memory / long_term_memory / semantic_cache_hits
+    passed to ContextPipeline.run must reach PromptBuilder and render in the planner
+    context (previously-dead builder branches now execute end-to-end)."""
+    from app.context.context_pipeline import ContextPipeline
+
+    pipeline = ContextPipeline(max_tokens=6000)
+    result = pipeline.run(
+        chunks=sample_chunks,
+        query="orchestration",
+        goal_context="explain orchestration",
+        graph_facts=[{"fact": "GraphFactAlpha connects A to B"}],
+        execution_memory=[{"plan": ["ExecPlanBeta step one", "ExecPlanBeta step two"]}],
+        long_term_memory=[{"content": "LongTermPrefGamma: prefer concise output"}],
+        semantic_cache_hits=[{"content": "SemanticCacheDelta previously answered"}],
+    )
+    planner = result.planner_context
+    # Each previously-unreachable source now renders in the planner context.
+    assert "GraphFactAlpha" in planner
+    assert "ExecPlanBeta" in planner
+    assert "LongTermPrefGamma" in planner
+    assert "SemanticCacheDelta" in planner
+    # Section headers from the builder branches are present too.
+    assert "Knowledge graph context" in planner
+    assert "Prior successful approaches" in planner
+    assert "Learned preferences" in planner
+    assert "Cached context" in planner
+
+
+def test_pipeline_omitting_new_sources_preserves_behavior(sample_chunks):
+    """Omitting the new sources must not change existing chunk/citation behavior:
+    no section headers for the new sources appear, and chunks/citations still render."""
+    from app.context.context_pipeline import ContextPipeline
+
+    pipeline = ContextPipeline(max_tokens=6000)
+    result = pipeline.run(
+        chunks=sample_chunks,
+        query="orchestration",
+        goal_context="explain orchestration",
+        reflexion_lessons=["always verify"],
+        web_results=[{"content": "web snippet about orchestration"}],
+    )
+    planner = result.planner_context
+    # Existing behavior intact.
+    assert "explain orchestration" in planner
+    assert "dynamic orchestration" in planner
+    assert "Past lessons" in planner
+    assert "Web context" in planner
+    # None of the new-source section headers leak in when their inputs are absent.
+    assert "Knowledge graph context" not in planner
+    assert "Prior successful approaches" not in planner
+    assert "Learned preferences" not in planner
+    assert "Cached context" not in planner
+    assert result.included_chunks  # chunks still flow through

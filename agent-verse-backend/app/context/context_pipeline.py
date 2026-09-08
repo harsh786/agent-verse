@@ -63,6 +63,10 @@ class ContextPipeline:
         session_memory: list[dict[str, Any]] | None = None,
         reflexion_lessons: list[str] | None = None,
         web_results: list[dict[str, Any]] | None = None,
+        graph_facts: list[dict[str, Any]] | None = None,
+        execution_memory: list[dict[str, Any]] | None = None,
+        long_term_memory: list[dict[str, Any]] | None = None,
+        semantic_cache_hits: list[dict[str, Any]] | None = None,
     ) -> PipelineResult:
         original_count = len(chunks)
         reranked = self._reranker.rerank(chunks, query=query)
@@ -81,6 +85,19 @@ class ContextPipeline:
             pass
 
         cited_chunks, citations = self._citations_mgr.attach_citations(included)
+        # D-20: thread the previously-unpopulated context sources into the bundle so
+        # PromptBuilder's graph_facts / execution_memory / long_term_memory /
+        # semantic_cache_hits branches actually render at runtime. Callers that omit
+        # them get the historical chunks/reflexion/web behavior unchanged.
+        # TODO(D-20 wiring): app/agent/nodes/planner_mixin.py `_node_plan` (the
+        #   `pipeline.run(...)` call ~L69) should forward these four sources, which
+        #   app/agent/nodes/rag_mixin.py already fetches but currently flattens into
+        #   free-text `context_parts`: execution_memory from `_exec_memory.recall_async`
+        #   (rag_mixin ~L93 "[Past winning plans]"), long_term_memory from
+        #   `_long_term_memory.recall_async` (rag_mixin ~L127 "[Domain knowledge]"),
+        #   graph_facts from the knowledge-graph recall, and semantic_cache_hits from
+        #   the SemanticCache. Passing them structured here keeps the unified builder as
+        #   the single injection point instead of ad-hoc prompt concatenation.
         bundle = PromptContextBundle(
             goal_context=goal_context,
             knowledge_chunks=cited_chunks,
@@ -88,6 +105,10 @@ class ContextPipeline:
             session_memory=session_memory or [],
             reflexion_lessons=reflexion_lessons or [],
             web_results=web_results or [],
+            graph_facts=graph_facts or [],
+            execution_memory=execution_memory or [],
+            long_term_memory=long_term_memory or [],
+            semantic_cache_hits=semantic_cache_hits or [],
         )
         planner_ctx = self._prompt_builder.build_planner_context(bundle)
         executor_ctx = self._prompt_builder.build_executor_context(bundle, step=step_context)
