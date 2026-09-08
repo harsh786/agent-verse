@@ -39,12 +39,16 @@ class ClaimDecomposer:
     async def decompose(
         self,
         text: str,
-        provider: LLMProvider,
+        provider: LLMProvider | None = None,
     ) -> list[str]:
-        """Split *text* into atomic factual claims via LLM.
+        """Split *text* into atomic factual claims.
 
-        Falls back to sentence splitting on failure.
+        With a *provider*, an LLM produces atomic claims; without one (or on any
+        error) it falls back to deterministic sentence splitting so the pipeline
+        runs offline.
         """
+        if provider is None:
+            return self._sentence_split(text)
         try:
             from app.providers.base import CompletionRequest, Message
 
@@ -74,8 +78,8 @@ class ClaimDecomposer:
         self,
         claims: list[str],
         evidence_chunks: list[str],
-        nli: NLIChecker,
-        provider: LLMProvider,
+        nli: NLIChecker | None = None,
+        provider: LLMProvider | None = None,
     ) -> ClaimVerificationReport:
         """Verify each claim against the combined evidence.
 
@@ -85,18 +89,23 @@ class ClaimDecomposer:
             Atomic claims to verify.
         evidence_chunks : list[str]
             Retrieved RAG chunks that constitute the ground truth.
-        nli : NLIChecker
-            NLI checking engine.
-        provider : LLMProvider
-            LLM provider for NLI calls.
+        nli : NLIChecker | None
+            NLI checking engine. A default :class:`NLIChecker` is created when
+            omitted.
+        provider : LLMProvider | None
+            LLM provider for NLI calls. When ``None``, the NLI checker uses its
+            deterministic heuristic so verification runs without an LLM.
         """
+        from app.intelligence.nli_checker import NLIChecker
+
+        checker = nli if nli is not None else NLIChecker()
         combined_evidence = " ".join(evidence_chunks[:3])[:1500]
         verdicts: list[NLIVerdict] = []
         unsupported: list[str] = []
         contradicted: list[str] = []
 
         for claim in claims:
-            result = await nli.check_consistency(claim, combined_evidence, provider)
+            result = await checker.check_consistency(claim, combined_evidence, provider)
             verdicts.append(result.verdict)
             if result.verdict == "NEUTRAL":
                 unsupported.append(claim)
@@ -119,10 +128,14 @@ class ClaimDecomposer:
         self,
         answer: str,
         evidence_chunks: list[str],
-        nli: NLIChecker,
-        provider: LLMProvider,
+        nli: NLIChecker | None = None,
+        provider: LLMProvider | None = None,
     ) -> ClaimVerificationReport:
-        """Convenience: decompose + verify in one call."""
+        """Convenience: decompose + verify in one call.
+
+        Works with or without an LLM ``provider`` (see :meth:`decompose` and
+        :meth:`verify_claims`).
+        """
         claims = await self.decompose(answer, provider)
         return await self.verify_claims(claims, evidence_chunks, nli, provider)
 

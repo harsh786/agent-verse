@@ -59,6 +59,9 @@ class AttributionVerifier:
         if citation_indices is None:
             citation_indices = self._extract_citation_indices(answer)
 
+        # Dedupe while preserving order: the same citation must be scored once.
+        citation_indices = list(dict.fromkeys(citation_indices))
+
         if not citation_indices or not chunks:
             return AttributionReport(
                 verified_count=0,
