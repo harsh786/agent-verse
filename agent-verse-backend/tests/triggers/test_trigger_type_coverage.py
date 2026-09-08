@@ -81,10 +81,10 @@ def test_distribution_matches_verified_ground_truth() -> None:
     counts: dict[DispatchMechanism, int] = dict.fromkeys(DispatchMechanism, 0)
     for mech in TRIGGER_DISPATCH.values():
         counts[mech] += 1
-    assert counts[DispatchMechanism.BEAT] == 4
+    assert counts[DispatchMechanism.BEAT] == 5  # cron/interval/once/file_drop/rss_feed
     assert counts[DispatchMechanism.PUSH] == 16
     assert counts[DispatchMechanism.CONSUMER] == 6
-    assert counts[DispatchMechanism.UNSUPPORTED] == 32
+    assert counts[DispatchMechanism.UNSUPPORTED] == 31
 
 
 def test_known_unsupported_types_are_unsupported() -> None:

@@ -1960,7 +1960,10 @@ def _db_schedule_payload(row: Any) -> dict[str, Any]:
     goal_template = str(getattr(row, "goal_id_template", "") or "")
     tenant_id = str(getattr(row, "tenant_id", "") or "")
     schedule_id = str(getattr(row, "id", "") or "")
-    return {
+    # Family-specific fields (file_watch_path, rss_url, poll_url, …) live in the
+    # schedules.config JSONB; merge them so the beat branches can read them.
+    config = getattr(row, "config", None) or {}
+    payload = {
         "schedule_id": schedule_id,
         "tenant_id": tenant_id,
         "goal_id": goal_template,
@@ -1978,6 +1981,9 @@ def _db_schedule_payload(row: Any) -> dict[str, Any]:
         "paused": bool(getattr(row, "paused", False)),
         "last_fired_at": _datetime_to_naive_iso(getattr(row, "last_fired_at", None)),
     }
+    if isinstance(config, dict):
+        payload.update(config)
+    return payload
 
 
 async def _load_db_schedules() -> dict[str, dict[str, Any]]:
@@ -2632,6 +2638,101 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                         logger.warning(
                             "file_drop_trigger_error",
                             error=str(_fd_exc)[:100],
+                            schedule_id=sched.get("schedule_id", key),
+                        )
+
+                # ── RSS_FEED trigger ──────────────────────────────────────────
+                elif trigger_type == "rss_feed":
+                    # Poll the configured feed, dispatch one goal per *new* entry
+                    # (deduped by entry id in Redis), capped at 5 per cycle.
+                    try:
+                        import json as _json_rss
+
+                        from app.triggers.rss import fetch_rss_entries, new_entries
+
+                        rss_url = sched.get("rss_url", "")
+                        _tenant_id_rss = str(sched.get("tenant_id") or "")
+                        if rss_url and _tenant_id_rss:
+                            processed_key = f"processed_rss:{key}"
+                            processed_rss: set[str] = set()
+                            if r is not None:
+                                _rss_raw = r.get(processed_key)
+                                if _rss_raw:
+                                    processed_rss = set(_json_rss.loads(_rss_raw))
+                            try:
+                                entries = fetch_rss_entries(rss_url)
+                            except Exception as _rss_fetch_exc:
+                                logger.warning(
+                                    "rss_fetch_error url=%s error=%s",
+                                    rss_url,
+                                    str(_rss_fetch_exc)[:100],
+                                )
+                                entries = []
+
+                            fresh_entries = new_entries(entries, processed_rss)
+                            from app.tenancy.context import (
+                                PlanTier as _PT_rss,
+                            )
+                            from app.tenancy.context import (
+                                TenantContext as _TC_rss,
+                            )
+
+                            _tenant_ctx_rss = _TC_rss(
+                                tenant_id=_tenant_id_rss,
+                                plan=_PT_rss.PROFESSIONAL,
+                                api_key_id="trigger-rss",
+                            )
+                            for _entry in fresh_entries[:5]:
+                                _rss_alert = {
+                                    "entry_id": _entry.entry_id,
+                                    "title": _entry.title,
+                                    "link": _entry.link,
+                                    "rss_url": rss_url,
+                                }
+                                _rss_kw = _run_async(
+                                    _build_goal_kwargs_for_alert(
+                                        sched,
+                                        "rss_feed",
+                                        _rss_alert,
+                                        goal_service=None,
+                                        tenant_ctx=_tenant_ctx_rss,
+                                    )
+                                )
+                                if _rss_kw:
+                                    _rss_goal_id = _scheduled_goal_id(
+                                        key, fire_instance_id=f"rss:{_entry.entry_id}"
+                                    )
+                                    run_goal.apply_async(
+                                        kwargs={
+                                            "goal_id": _rss_goal_id,
+                                            "tenant_id": _tenant_id_rss,
+                                            "goal_text": _rss_kw["goal"],
+                                            "priority": _rss_kw["priority"],
+                                            "agent_id": str(_rss_kw.get("agent_id") or ""),
+                                        },
+                                        queue="schedules",
+                                    )
+                                    fired += 1
+
+                            if entries and r is not None:
+                                _all_rss = list(
+                                    processed_rss | {e.entry_id for e in entries}
+                                )
+                                r.set(
+                                    processed_key,
+                                    _json_rss.dumps(_all_rss[-1000:]),
+                                    ex=604800,
+                                )
+                            if fresh_entries:
+                                logger.info(
+                                    "rss_trigger_fired",
+                                    new_entries=len(fresh_entries),
+                                    schedule_id=sched.get("schedule_id", key),
+                                )
+                    except Exception as _rss_exc:
+                        logger.warning(
+                            "rss_trigger_error",
+                            error=str(_rss_exc)[:100],
                             schedule_id=sched.get("schedule_id", key),
                         )
 

@@ -24,6 +24,26 @@ _log = logging.getLogger(__name__)
 _SECRET_REDIS_FIELDS = frozenset({"webhook_token", "token", "password", "api_key", "secret"})
 
 
+def spec_config(spec: TriggerSpec) -> dict[str, Any]:
+    """Family-specific fields the beat loop reads, keyed exactly as the loop
+    expects them (bridging spec field names, e.g. ``file_drop_path`` →
+    ``file_watch_path``). Carried in the schedule's ``config`` JSONB and merged
+    into the discovered schedule dict so ``sched.get("rss_url")`` etc. work.
+    """
+    cfg: dict[str, Any] = {}
+    if getattr(spec, "file_drop_path", ""):
+        cfg["file_watch_path"] = spec.file_drop_path
+        cfg["file_pattern"] = getattr(spec, "file_pattern", "") or "*"
+    if getattr(spec, "rss_url", ""):
+        cfg["rss_url"] = spec.rss_url
+    if getattr(spec, "poll_url", ""):
+        cfg["poll_url"] = spec.poll_url
+        cfg["poll_method"] = getattr(spec, "poll_method", "") or "GET"
+        cfg["poll_jsonpath"] = getattr(spec, "poll_jsonpath", "") or ""
+        cfg["poll_expected_value"] = getattr(spec, "poll_expected_value", "") or ""
+    return cfg
+
+
 def _strip_secret_redis_fields(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if key.lower() not in _SECRET_REDIS_FIELDS}
 
@@ -62,6 +82,9 @@ class ScheduleStore:
                 "condition": spec.condition or "",
                 "description": spec.description or "",
                 "paused": bool(rec.get("paused", False)),
+                # Family-specific fields (file_watch_path, rss_url, poll_url, …)
+                # merged so the beat loop can read them from the schedule dict.
+                **spec_config(spec),
             }
         )
 
@@ -251,6 +274,7 @@ class ScheduleStore:
                     fire_at_iso=spec.fire_at_iso or "",
                     condition=spec.condition or "",
                     description=spec.description or "",
+                    config=spec_config(spec),
                     paused=False,
                 )
                 session.add(row)

@@ -52,6 +52,9 @@ class Schedule(Base):
     fire_at_iso: Mapped[str | None] = mapped_column(String(100), nullable=True, default="")
     condition: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
     description: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
+    # Family-specific config carried to the beat loop (file_watch_path, rss_url,
+    # poll_url, …) — see app.triggers.store.spec_config (migration 0116).
+    config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
