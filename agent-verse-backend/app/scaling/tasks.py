@@ -1786,35 +1786,174 @@ def _schedule_datetime(value: Any) -> datetime.datetime | None:
     return dt
 
 
-def _cron_prev_fire_utc(
-    cron_expr: str, now_utc: datetime.datetime, tz_name: str
-) -> datetime.datetime:
-    """Previous cron fire instant, honouring the schedule's timezone (2.W-9).
+# Upper bound on how many missed fires a single schedule may replay in one beat
+# cycle after an outage. Prevents a high-frequency schedule (e.g. every minute)
+# that has been dark for hours from flooding the queue with thousands of goals.
+_MISSED_FIRE_CAP = 60
 
-    The cron expression is evaluated in ``tz_name`` (e.g. a ``"0 9 * * *"``
-    schedule fires at 09:00 *local* time), then the result is returned as naive
-    UTC so it compares directly against ``last_fired_at`` (also naive UTC). Prior
-    to this, cron ran against naive UTC and ignored the timezone entirely, firing
-    at the wrong wall-clock instant for non-UTC schedules. An unknown/empty
-    timezone degrades to UTC.
+
+def _to_utc_naive(dt: datetime.datetime, assume_tz: datetime.tzinfo) -> datetime.datetime:
+    """Return ``dt`` as a UTC-naive datetime.
+
+    Naive inputs are assumed to already be wall-clock time in ``assume_tz``.
     """
-    import croniter as _croniter_pkg
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=assume_tz)
+    return dt.astimezone(datetime.UTC).replace(tzinfo=None)
 
-    tz: datetime.tzinfo = datetime.UTC
-    if tz_name and tz_name.upper() != "UTC":
-        try:
-            from zoneinfo import ZoneInfo
 
-            tz = ZoneInfo(tz_name)
-        except Exception:
-            tz = datetime.UTC
-    base = now_utc if now_utc.tzinfo is not None else now_utc.replace(tzinfo=datetime.UTC)
-    now_local = base.astimezone(tz)
-    cron = _croniter_pkg.croniter(cron_expr, now_local + datetime.timedelta(seconds=1))
-    prev_local = cast(datetime.datetime, cron.get_prev(datetime.datetime))
-    if prev_local.tzinfo is None:
-        prev_local = prev_local.replace(tzinfo=tz)
-    return prev_local.astimezone(datetime.UTC).replace(tzinfo=None)
+def _norm_utc_naive(dt: datetime.datetime | None) -> datetime.datetime | None:
+    """Normalise an already-UTC datetime (naive or aware) to UTC-naive."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(datetime.UTC).replace(tzinfo=None)
+    return dt
+
+
+def _resolve_tz(tz_name: str) -> datetime.tzinfo:
+    if not tz_name or tz_name.upper() == "UTC":
+        return datetime.UTC
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(tz_name)
+    except Exception:
+        return datetime.UTC
+
+
+def _cron_missed_runs_utc(
+    cron_expr: str,
+    last_fired_utc: datetime.datetime | None,
+    now_utc: datetime.datetime,
+    tz_name: str = "UTC",
+    cap: int = _MISSED_FIRE_CAP,
+) -> list[datetime.datetime]:
+    """Return every cron fire slot that is due but unfired, as UTC-naive datetimes.
+
+    The cron expression is evaluated on wall-clock time in ``tz_name``. Results are
+    returned oldest-first and cover the window ``(last_fired_utc, now_utc]``:
+
+    * ``last_fired_utc is None`` — the schedule has never fired: only the single
+      most-recent slot at/before ``now_utc`` is returned (no history backfill).
+    * otherwise — every slot strictly after ``last_fired_utc`` and at/before
+      ``now_utc`` is returned, capped to the most-recent ``cap`` slots.
+
+    Raises whatever ``croniter`` raises for an invalid expression (callers catch
+    and skip the schedule).
+    """
+    import croniter as _croniter_pkg  # type: ignore[import-untyped]
+
+    tz = _resolve_tz(tz_name)
+    now_naive = _norm_utc_naive(now_utc)
+    assert now_naive is not None
+    now_local = now_naive.replace(tzinfo=datetime.UTC).astimezone(tz)
+
+    if last_fired_utc is None:
+        itr = _croniter_pkg.croniter(cron_expr, now_local + datetime.timedelta(seconds=1))
+        prev = cast(datetime.datetime, itr.get_prev(datetime.datetime))
+        return [_to_utc_naive(prev, tz)]
+
+    last_naive = _norm_utc_naive(last_fired_utc)
+    itr = _croniter_pkg.croniter(cron_expr, now_local + datetime.timedelta(seconds=1))
+    runs: list[datetime.datetime] = []
+    while len(runs) < cap:
+        prev_local = cast(datetime.datetime, itr.get_prev(datetime.datetime))
+        prev_naive = _to_utc_naive(prev_local, tz)
+        if last_naive is not None and prev_naive <= last_naive:
+            break
+        runs.append(prev_naive)
+    runs.reverse()
+    return runs
+
+
+def _rrule_missed_runs_utc(
+    rrule_string: str,
+    last_fired_utc: datetime.datetime | None,
+    now_utc: datetime.datetime,
+    cap: int = _MISSED_FIRE_CAP,
+) -> list[datetime.datetime]:
+    """rrule analogue of :func:`_cron_missed_runs_utc`.
+
+    ``rrule_string`` is an iCalendar RRULE (optionally with a ``DTSTART`` line),
+    parsed by :func:`dateutil.rrule.rrulestr`. A naive ``DTSTART`` is treated as
+    UTC. Semantics (window, never-fired backfill, cap) match the cron helper.
+
+    Raises if dateutil is unavailable or the rule is unparseable.
+    """
+    from dateutil import rrule as _rrule
+
+    rule = _rrule.rrulestr(rrule_string)
+    dtstart = getattr(rule, "_dtstart", None)
+    aware = dtstart is not None and dtstart.tzinfo is not None
+
+    def _as_arg(dt: datetime.datetime | None) -> datetime.datetime | None:
+        if dt is None:
+            return None
+        naive = _norm_utc_naive(dt)
+        assert naive is not None
+        if aware:
+            return naive.replace(tzinfo=datetime.UTC).astimezone(dtstart.tzinfo)
+        return naive
+
+    now_arg = _as_arg(now_utc)
+    last_arg = _as_arg(last_fired_utc)
+    assert now_arg is not None
+
+    if last_arg is None:
+        occ = rule.before(now_arg, inc=True)
+        if occ is None:
+            return []
+        result = _norm_utc_naive(occ)
+        return [result] if result is not None else []
+
+    runs: list[datetime.datetime] = []
+    for occ in rule.between(last_arg, now_arg, inc=True):
+        occ_naive = _norm_utc_naive(occ)
+        last_naive = _norm_utc_naive(last_arg)
+        if occ_naive is None or last_naive is None:
+            continue
+        if occ_naive > last_naive:
+            runs.append(occ_naive)
+    if len(runs) > cap:
+        runs = runs[-cap:]
+    return runs
+
+
+def _solar_due_run_utc(
+    sched: dict[str, Any],
+    now_utc: datetime.datetime,
+) -> datetime.datetime | None:
+    """Compute today's solar-event fire time (UTC-naive) for a solar schedule.
+
+    Reads ``solar_event`` (sunrise|sunset|dawn|dusk|noon), ``solar_latitude``,
+    ``solar_longitude`` and ``solar_offset_seconds`` from the schedule payload.
+    Returns ``None`` when astral is unavailable in this worker (so the caller can
+    warn instead of firing silently). Raises on a malformed solar event name.
+    """
+    try:
+        from astral import LocationInfo
+        from astral.sun import sun as _astral_sun
+    except ImportError:
+        return None
+
+    now_naive = _norm_utc_naive(now_utc)
+    assert now_naive is not None
+    lat = float(sched.get("solar_latitude", 0.0) or 0.0)
+    lon = float(sched.get("solar_longitude", 0.0) or 0.0)
+    event = str(sched.get("solar_event", "sunrise") or "sunrise").lower()
+    offset = int(sched.get("solar_offset_seconds", 0) or 0)
+
+    location = LocationInfo(latitude=lat, longitude=lon)
+    events = _astral_sun(
+        location.observer,
+        date=now_naive.date(),
+        tzinfo=datetime.UTC,
+    )
+    if event not in events:
+        raise ValueError(f"unknown solar_event {event!r}")
+    fire_time = events[event] + datetime.timedelta(seconds=offset)
+    return _norm_utc_naive(fire_time)
 
 
 def _db_schedule_payload(row: Any) -> dict[str, Any]:
@@ -2247,6 +2386,38 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
             _record_schedule_fire_metric("success")
             return goal_kwargs
 
+        def dispatch_missed_slots(
+            key: str,
+            sched: dict[str, Any],
+            slots: list[datetime.datetime],
+            *,
+            kind: str,
+        ) -> int:
+            """Fire each missed slot (oldest first), or just the last one when the
+            schedule opts into ``coalesce_missed_runs``. Returns the number fired."""
+            if not slots:
+                return 0
+            if sched.get("coalesce_missed_runs"):
+                slots = [slots[-1]]
+            count = 0
+            for slot in slots:
+                goal_kwargs = advance_and_dispatch_schedule(
+                    key,
+                    sched,
+                    fired_at=slot,
+                    fire_instance_id=slot.isoformat(),
+                )
+                if goal_kwargs is not None:
+                    count += 1
+                    logger.info(
+                        "Fired %s schedule %s for tenant %s (slot %s)",
+                        kind,
+                        key,
+                        goal_kwargs["tenant_id"],
+                        slot.isoformat(),
+                    )
+            return count
+
         logger.info("fire_due_schedules: checking %d schedule keys", len(schedules))
 
         for key, sched in schedules.items():
@@ -2260,33 +2431,55 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                 if trigger_type == "cron":
                     cron_expr = sched.get("cron_expression", "")
                     if cron_expr:
+                        tz_name = sched.get("timezone") or "UTC"
+                        last_fired_dt = _schedule_datetime(sched.get("last_fired_at"))
                         try:
-                            # 2.W-9: evaluate cron in the schedule's timezone so a
-                            # "0 9 * * *" schedule fires at 09:00 *local* time, not
-                            # 09:00 UTC. Returned as naive UTC for comparison.
-                            previous_run = _cron_prev_fire_utc(
-                                cron_expr, now, str(sched.get("timezone") or "UTC")
-                            )
-                            last_fired_dt = _schedule_datetime(sched.get("last_fired_at"))
+                            missed = _cron_missed_runs_utc(cron_expr, last_fired_dt, now, tz_name)
                         except Exception as cron_exc:
                             logger.warning("Cron parse error for %s: %s", key, cron_exc)
                             continue
-                        if previous_run is not None and (
-                            last_fired_dt is None or last_fired_dt < previous_run
-                        ):
-                            goal_kwargs = advance_and_dispatch_schedule(
+                        fired += dispatch_missed_slots(key, sched, missed, kind="cron")
+
+                # ── RRULE schedules (iCalendar recurrence) ────────────────────
+                elif trigger_type == "rrule":
+                    rrule_string = sched.get("rrule_string", "")
+                    if rrule_string:
+                        last_fired_dt = _schedule_datetime(sched.get("last_fired_at"))
+                        try:
+                            missed = _rrule_missed_runs_utc(rrule_string, last_fired_dt, now)
+                        except Exception as rrule_exc:
+                            logger.warning("rrule parse error for %s: %s", key, rrule_exc)
+                            continue
+                        fired += dispatch_missed_slots(key, sched, missed, kind="rrule")
+
+                # ── SOLAR schedules (sunrise/sunset) ──────────────────────────
+                elif trigger_type == "solar":
+                    try:
+                        solar_run = _solar_due_run_utc(sched, now)
+                    except Exception as solar_exc:
+                        logger.warning("solar computation error for %s: %s", key, solar_exc)
+                        continue
+                    if solar_run is None:
+                        # astral unavailable in the worker — surface, do not fire silently
+                        logger.warning(
+                            "solar schedule %s skipped: astral unavailable in worker", key
+                        )
+                        continue
+                    last_fired_dt = _schedule_datetime(sched.get("last_fired_at"))
+                    if solar_run <= now and (last_fired_dt is None or last_fired_dt < solar_run):
+                        goal_kwargs = advance_and_dispatch_schedule(
+                            key,
+                            sched,
+                            fired_at=solar_run,
+                            fire_instance_id=solar_run.isoformat(),
+                        )
+                        if goal_kwargs is not None:
+                            fired += 1
+                            logger.info(
+                                "Fired solar schedule %s for tenant %s",
                                 key,
-                                sched,
-                                fired_at=previous_run,
-                                fire_instance_id=previous_run.isoformat(),
+                                goal_kwargs["tenant_id"],
                             )
-                            if goal_kwargs is not None:
-                                fired += 1
-                                logger.info(
-                                    "Fired cron schedule %s for tenant %s",
-                                    key,
-                                    goal_kwargs["tenant_id"],
-                                )
 
                 # ── INTERVAL schedules ────────────────────────────────────────
                 elif trigger_type == "interval":

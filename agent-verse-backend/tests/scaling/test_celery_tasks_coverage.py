@@ -1004,6 +1004,9 @@ def test_fire_due_schedules_cron_due_dispatches_goal(monkeypatch: pytest.MonkeyP
         "cron_expression": "* * * * *",  # Every minute
         "paused": False,
         "last_fired_at": old_time,
+        # Coalesce the hour-long backlog into a single fire (bounded catch-up would
+        # otherwise replay every missed minute-slot up to _MISSED_FIRE_CAP).
+        "coalesce_missed_runs": True,
     }
 
     mock_r = MagicMock()
