@@ -301,6 +301,72 @@ async def test_pipeline_full_happy_path():
     mock_kb.ingest_chunks_async.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_pipeline_populates_knowledge_graph_per_indexed_doc():
+    """D-15: the KG ingestion hook runs once per indexed document with chunk texts,
+    and its counts are recorded on the result — without ever failing ingestion."""
+    from app.ingestion.pipeline import IngestionPipeline
+    from app.ingestion.source_config import RawDocument, SourceConfig, SourceFamily
+
+    mock_kb = MagicMock()
+    mock_kb.exists_by_hash = AsyncMock(return_value=False)
+    mock_kb.ingest_chunks_async = AsyncMock(return_value=["chunk1", "chunk2"])
+    mock_embedder = MagicMock()
+
+    kg_hook = MagicMock()
+    kg_hook.process = AsyncMock(return_value={"entities": 3, "relations": 2})
+
+    with patch("app.providers.base.embed_texts", AsyncMock(return_value=[[0.1] * 10, [0.2] * 10])):
+        pipeline = IngestionPipeline(
+            knowledge_store=mock_kb, embedder=mock_embedder, kg_hook=kg_hook
+        )
+        content = ("Ada Lovelace worked with Charles Babbage on the engine. " * 20).encode()
+        raw = RawDocument(doc_id="doc-kg-1", source_id="s1", tenant_id="t9",
+                          content=content, content_type="text/plain")
+        config = SourceConfig(source_id="s1", tenant_id="t9", name="T",
+                              family=SourceFamily.WEB, source_type="test", collection_id="c1")
+        result = await pipeline.ingest(raw, config)
+
+    assert result.status == "indexed"
+    kg_hook.process.assert_called_once()
+    _, kwargs = kg_hook.process.call_args
+    assert kwargs["document_id"] == "doc-kg-1"
+    assert kwargs["tenant_id"] == "t9"
+    assert kwargs["chunks"] and all(isinstance(c, str) for c in kwargs["chunks"])
+    assert result.kg_entities == 3
+    assert result.kg_relations == 2
+
+
+@pytest.mark.asyncio
+async def test_pipeline_kg_hook_failure_never_blocks_ingestion():
+    """D-15: a KG extraction error must not fail the indexed document."""
+    from app.ingestion.pipeline import IngestionPipeline
+    from app.ingestion.source_config import RawDocument, SourceConfig, SourceFamily
+
+    mock_kb = MagicMock()
+    mock_kb.exists_by_hash = AsyncMock(return_value=False)
+    mock_kb.ingest_chunks_async = AsyncMock(return_value=["chunk1"])
+    mock_embedder = MagicMock()
+
+    kg_hook = MagicMock()
+    kg_hook.process = AsyncMock(side_effect=RuntimeError("KG store down"))
+
+    with patch("app.providers.base.embed_texts", AsyncMock(return_value=[[0.1] * 10, [0.2] * 10])):
+        pipeline = IngestionPipeline(
+            knowledge_store=mock_kb, embedder=mock_embedder, kg_hook=kg_hook
+        )
+        content = ("Some indexable content here for the pipeline. " * 20).encode()
+        raw = RawDocument(doc_id="doc-kg-2", source_id="s1", tenant_id="t9",
+                          content=content, content_type="text/plain")
+        config = SourceConfig(source_id="s1", tenant_id="t9", name="T",
+                              family=SourceFamily.WEB, source_type="test", collection_id="c1")
+        result = await pipeline.ingest(raw, config)
+
+    assert result.status == "indexed"
+    assert result.kg_entities == 0
+    kg_hook.process.assert_called_once()
+
+
 # ── IngestionJobTracker ───────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

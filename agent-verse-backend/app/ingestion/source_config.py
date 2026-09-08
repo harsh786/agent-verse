@@ -196,6 +196,8 @@ class PipelineResult:
     processing_ms: float = 0.0
     error: str = ""
     collection_id: str = ""
+    kg_entities: int = 0  # D-15: entities added to the knowledge graph
+    kg_relations: int = 0  # D-15: relations added to the knowledge graph
 
     # P0-11: read-only status accessors the scheduler consumes.
     @property

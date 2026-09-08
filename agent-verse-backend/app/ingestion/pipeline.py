@@ -60,6 +60,8 @@ class IngestionPipeline:
         tracer: Any = None,  # OTel tracer (optional)
         event_bus: Any = None,  # ING-8: publishes knowledge.updated (async publish())
         dry_run: bool = False,  # LAW-22: parse+chunk but skip embed/index
+        kg_hook: Any = None,  # KGIngestionHook (optional) — D-15 auto-population
+        kg_provider: Any = None,  # LLMProvider for KG extraction (optional)
     ) -> None:
         self._kb = knowledge_store
         self._embedder = embedder
@@ -69,6 +71,8 @@ class IngestionPipeline:
         self._tracer = tracer
         self._event_bus = event_bus
         self._dry_run = dry_run
+        self._kg_hook = kg_hook
+        self._kg_provider = kg_provider
         self._ocr: Any = None  # lazily constructed OcrEngine (ING-11)
 
         # Test seams (ING-4): last parse output + strategy for assertions.
@@ -292,6 +296,29 @@ class IngestionPipeline:
             )
             result.chunks_created = len(chunk_ids)
 
+            # ── D-15: KG auto-population — extract entities/relations per indexed
+            # doc. Guarded: never fail ingestion on a KG extraction error.
+            if self._kg_hook is not None and chunk_ids:
+                try:
+                    _kg_chunk_texts = [
+                        str(c.get("text", "")) for c in unique_chunks if c.get("text")
+                    ]
+                    if _kg_chunk_texts:
+                        _kg_summary = await self._kg_hook.process(
+                            chunks=_kg_chunk_texts,
+                            document_id=raw_doc.doc_id,
+                            tenant_id=source_config.tenant_id,
+                            provider=self._kg_provider,
+                        )
+                        result.kg_entities = int(_kg_summary.get("entities", 0))
+                        result.kg_relations = int(_kg_summary.get("relations", 0))
+                except Exception as _kg_exc:
+                    _log.warning(
+                        "pipeline_stage=kg_populate doc=%s kg_extraction_failed: %s",
+                        raw_doc.doc_id,
+                        str(_kg_exc)[:200],
+                    )
+
             # ── Stage 13: EMIT ────────────────────────────────────────────────
             await self._emit(raw_doc, source_config, len(chunk_ids))
 
@@ -371,7 +398,7 @@ class IngestionPipeline:
             return text, False
 
     def _quality_score(self, text: str) -> float:
-        """Compute a quality score 0.0–1.0 for the text."""
+        """Compute a quality score 0.0-1.0 for the text."""
         try:
             from app.ingestion.quality_checks import QualityChecker
 
