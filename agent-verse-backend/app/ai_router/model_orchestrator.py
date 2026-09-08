@@ -52,6 +52,7 @@ _MODEL_PROVIDER: dict[str, str] = {
     "gpt-5.2": "openai",
     "gpt-4o": "openai",
     "gpt-4o-mini": "openai",
+    "gpt-4o-audio": "openai",
     "claude-3-5-sonnet": "anthropic",
     "claude-3-haiku": "anthropic",
     "gemini-2.5-pro": "google",
@@ -60,11 +61,38 @@ _MODEL_PROVIDER: dict[str, str] = {
     "voyage-3-lite": "voyage",
 }
 
-_FALLBACK_MODELS: dict[str, str] = {
-    "openai": "claude-3-5-sonnet",
-    "anthropic": "gpt-4o",
-    "google": "gpt-4o",
+# Health-based failover target: when a provider's circuit is open, prefer this
+# provider first. The full search order also sweeps the remaining chat providers.
+_FALLBACK_PROVIDER: dict[str, str] = {
+    "openai": "anthropic",
+    "anthropic": "openai",
+    "google": "openai",
+    "voyage": "openai",
 }
+
+# Representative chat model per provider (generic failover target).
+_PROVIDER_CHAT_MODEL: dict[str, str] = {
+    "openai": "gpt-4o",
+    "anthropic": "claude-3-5-sonnet",
+    "google": "gemini-2.5-pro",
+}
+
+# Vision-capable model per provider (failover for image/video extraction).
+_PROVIDER_VISION_MODEL: dict[str, str] = {
+    "openai": "gpt-4o",
+    "anthropic": "claude-3-5-sonnet",
+    "google": "gemini-2.5-pro",
+}
+
+# Audio-capable model per provider (failover for audio extraction). Anthropic has
+# no audio model, so it is deliberately absent — audio fails over to google.
+_PROVIDER_AUDIO_MODEL: dict[str, str] = {
+    "openai": "gpt-4o-audio",
+    "google": "gemini-2.5-pro",
+}
+
+# Ordered provider preference used when sweeping for a healthy fallback.
+_PROVIDER_ORDER: tuple[str, ...] = ("openai", "anthropic", "google")
 
 _CONTENT_TYPE_MODALITY: dict[str, str] = {
     "image": "image",
@@ -160,26 +188,99 @@ class ModelOrchestrator:
         )
 
     def select_for_content_type(self, content_type: ContentType) -> MultimodalModelAssignment:
+        """Pick a vision/audio-aware extractor+reasoner pair for a classified content type.
+
+        TODO(D-14 wiring): call this from the multimodal ingestion path in
+        ``app/ingestion/`` (the multimodal parser/transcription dispatch, e.g. where
+        ``ContentType.IMAGE``/``AUDIO``/``VIDEO`` are routed to a parser) to choose the
+        extraction model instead of a hardcoded one. Do NOT edit the ingestion package
+        as part of this ai_router change.
+        """
         modality = _CONTENT_TYPE_MODALITY.get(content_type.value, "text")
         spec = _MULTIMODAL_MODELS.get(modality, _MULTIMODAL_MODELS["text"])
+        requires_vision = bool(spec.get("requires_vision", False))
+        requires_audio = modality == "audio"
+        # The extractor must preserve the modality capability across a failover;
+        # the reasoner reasons over already-extracted text, so a plain chat model is fine.
         return MultimodalModelAssignment(
             modality=modality,
-            extractor_model=self._with_failover(spec["extractor"]),
-            reasoner_model=self._with_failover(spec["reasoner"]),
-            requires_vision=spec.get("requires_vision", False),
-            requires_audio=modality == "audio",
+            extractor_model=self._with_failover(
+                str(spec["extractor"]),
+                requires_vision=requires_vision,
+                requires_audio=requires_audio,
+            ),
+            reasoner_model=self._with_failover(str(spec["reasoner"])),
+            requires_vision=requires_vision,
+            requires_audio=requires_audio,
         )
 
-    def _with_failover(self, model: str) -> str:
+    def provider_for_model(self, model: str) -> str:
+        """Map a model name to its provider (defaults to ``openai`` for unknown models)."""
+        return _MODEL_PROVIDER.get(model, "openai")
+
+    def record_provider_result(
+        self,
+        provider: str,
+        *,
+        ok: bool,
+        latency_ms: float | None = None,
+    ) -> None:
+        """Record the outcome of a provider call so the circuit breaker can trip/recover.
+
+        This is the public entry point the agent loop invokes at each real
+        provider-call site. On success it feeds latency to the health policy; on
+        failure it advances the provider toward an open circuit, after which
+        :meth:`select_models` / :meth:`select_for_content_type` route away from it.
+
+        TODO(D-13 wiring): call this from the executor/verifier/planner provider-call
+        site in ``app/agent/nodes/executor_mixin.py`` (around the LLM ``complete``/
+        ``_active_breaker`` block, ~line 941) — pass ``provider_for_model(model)`` and
+        the measured latency. Do NOT edit the mixin as part of this ai_router change.
+        """
+        if ok:
+            self._health_policy.record_success(
+                provider, latency_ms if latency_ms is not None else 500.0
+            )
+        else:
+            self._health_policy.record_failure(provider)
+
+    def _provider_open(self, provider: str) -> bool:
+        return self._health_policy.check(provider).circuit_open
+
+    def _capability_model(self, provider: str, *, vision: bool, audio: bool) -> str | None:
+        if audio:
+            return _PROVIDER_AUDIO_MODEL.get(provider)
+        if vision:
+            return _PROVIDER_VISION_MODEL.get(provider)
+        return _PROVIDER_CHAT_MODEL.get(provider)
+
+    def _with_failover(
+        self,
+        model: str,
+        *,
+        requires_vision: bool = False,
+        requires_audio: bool = False,
+    ) -> str:
         provider = _MODEL_PROVIDER.get(model, "openai")
-        if not self._health_policy.check(provider).circuit_open:
+        if not self._provider_open(provider):
             return model
-        fallback_provider = _FALLBACK_MODELS.get(provider, "openai")
-        if not self._health_policy.check(fallback_provider).circuit_open:
-            for m, p in _MODEL_PROVIDER.items():
-                if p == fallback_provider and "embedding" not in m and "mini" not in m:
-                    return m
-        return "gpt-4o-mini"
+
+        # Sweep providers (preferred fallback first) for a healthy one that still
+        # offers the required capability.
+        preferred = _FALLBACK_PROVIDER.get(provider, "anthropic")
+        order = [preferred, *(p for p in _PROVIDER_ORDER if p != preferred and p != provider)]
+        for candidate in order:
+            if self._provider_open(candidate):
+                continue
+            fallback = self._capability_model(
+                candidate, vision=requires_vision, audio=requires_audio
+            )
+            if fallback:
+                return fallback
+
+        # Every candidate is unhealthy or lacks the capability — keep the original
+        # model as a last resort so selection is never empty.
+        return model
 
 
 class ModelOrchestratorAdapter:
