@@ -85,8 +85,15 @@ def _svc(request: Request) -> Any:
 
 
 def _tenant_id(request: Request) -> Any:
-    tc = request.app.state.tenant_context
-    return tc.tenant_id
+    # Prefer the per-request tenant set by TenantMiddleware; fall back to the
+    # app-state context (used in some test harnesses). Nothing sets
+    # app.state.tenant_context in production, so the per-request path is normal.
+    tenant = getattr(request.state, "tenant", None)
+    if tenant is None:
+        tenant = getattr(request.app.state, "tenant_context", None)
+    if tenant is None:
+        raise HTTPException(status_code=401, detail="Tenant context not resolved")
+    return tenant.tenant_id
 
 
 # ---------------------------------------------------------------------------

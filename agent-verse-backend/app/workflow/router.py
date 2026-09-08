@@ -51,7 +51,15 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 
 
 def _get_tenant(request: Request) -> Any:
-    return getattr(request.state, "tenant", None)  # set by TenantMiddleware as request.state.tenant
+    # Prefer the per-request tenant set by TenantMiddleware; fall back to the
+    # app-state context (used in some test harnesses). Nothing sets
+    # app.state.tenant_context in production, so the per-request path is normal.
+    tenant = getattr(request.state, "tenant", None)
+    if tenant is None:
+        tenant = getattr(request.app.state, "tenant_context", None)
+    if tenant is None:
+        raise HTTPException(status_code=401, detail="Tenant context not resolved")
+    return tenant
 
 
 def _get_workflow_service(request: Request) -> Any:
