@@ -61,6 +61,17 @@ _MODEL_PROVIDER: dict[str, str] = {
     "voyage-3-lite": "voyage",
 }
 
+
+def provider_for_model(model: str) -> str:
+    """Module-level model→provider map (defaults to ``openai`` for unknown models).
+
+    Mirror of :meth:`ModelOrchestrator.provider_for_model`; exposed so call sites
+    that only have a model name (e.g. the executor's provider-health wiring) can
+    resolve the provider without an orchestrator instance.
+    """
+    return _MODEL_PROVIDER.get(model, "openai")
+
+
 # Health-based failover target: when a provider's circuit is open, prefer this
 # provider first. The full search order also sweeps the remaining chat providers.
 _FALLBACK_PROVIDER: dict[str, str] = {
@@ -366,3 +377,14 @@ class ModelOrchestratorAdapter:
     def model_for_goal(self, task_type: str, *, goal: str = "") -> str:
         """Alias for model_for() with goal context (unused in orchestrator path)."""
         return self.model_for(task_type, goal=goal)
+
+    def provider_for_model(self, model: str) -> str:
+        """Delegate model→provider mapping to the wrapped orchestrator."""
+        return self._orchestrator.provider_for_model(model)
+
+    def record_provider_result(self, model: str, ok: bool, latency_ms: float = 0.0) -> None:
+        """D-13: feed a live provider-call outcome into the health policy so failover
+        learns. Accepts a *model* name (the executor's call site has the model, not the
+        provider), maps it to its provider, and delegates to the orchestrator."""
+        provider = self._orchestrator.provider_for_model(model)
+        self._orchestrator.record_provider_result(provider, ok=ok, latency_ms=latency_ms)

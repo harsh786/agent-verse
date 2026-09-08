@@ -382,6 +382,31 @@ async def test_node_plan_forwards_prompt_builder_sources(monkeypatch) -> None:
     assert captured.get("semantic_cache_hits") == [{"content": "cache-hit-w"}]
 
 
+@pytest.mark.asyncio
+async def test_executor_records_provider_health(monkeypatch) -> None:
+    """D-13: the executor's _record_provider_health helper must forward outcomes to
+    the model router's record_provider_result so failover learns."""
+    import time as _t
+
+    from app.ai_router.model_orchestrator import ModelOrchestrator, ModelOrchestratorAdapter
+
+    orch = ModelOrchestrator()
+    adapter = ModelOrchestratorAdapter(orch)
+    graph = _make_graph()
+    graph._model_router = adapter
+
+    start = _t.monotonic()
+    for _ in range(10):
+        graph._record_provider_health("gpt-5.2", ok=False, start=start)
+    assert orch._health_policy.check("openai").circuit_open is True
+
+    # Guarded: a router without the method (or None) must not raise.
+    graph._model_router = object()
+    graph._record_provider_health("gpt-5.2", ok=True, start=start)
+    graph._model_router = None
+    graph._record_provider_health("gpt-5.2", ok=True, start=start)
+
+
 # ---------------------------------------------------------------------------
 # _node_verify
 # ---------------------------------------------------------------------------

@@ -159,3 +159,38 @@ def test_provider_health_recovers_on_success() -> None:
     status = hp.check("openai")
     assert status.circuit_open is False
     assert status.healthy is True
+
+
+# ── D-13: record_provider_result feeds health so failover learns ──────────────
+
+def test_record_provider_result_flips_selection_off_failed_provider() -> None:
+    """Recording repeated openai failures via record_provider_result must trip its
+    circuit and steer a high/critical selection away from the openai model."""
+    from app.ai_router.model_orchestrator import provider_for_model
+
+    assert provider_for_model("gpt-5.2") == "openai"
+
+    orch = ModelOrchestrator()
+    cfg = _make_config(complexity=Complexity.EXPERT, risk=RiskLevel.CRITICAL)
+    # Baseline: high tier planner is the openai gpt-5.2 model.
+    assert orch.select_models(cfg).planner == "gpt-5.2"
+
+    # Record live openai failures through the wiring entry point. The inner
+    # orchestrator method is provider-based; the model→provider hop is what the
+    # adapter/executor call sites do (see test_adapter_record_provider_result_delegates).
+    for _ in range(10):
+        orch.record_provider_result(provider_for_model("gpt-5.2"), ok=False, latency_ms=1200.0)
+
+    assert orch._health_policy.check("openai").circuit_open is True
+    # Subsequent selection must no longer return the failed openai model.
+    assert orch.select_models(cfg).planner != "gpt-5.2"
+
+
+def test_adapter_record_provider_result_delegates() -> None:
+    from app.ai_router.model_orchestrator import ModelOrchestrator, ModelOrchestratorAdapter
+
+    orch = ModelOrchestrator()
+    adapter = ModelOrchestratorAdapter(orch)
+    for _ in range(10):
+        adapter.record_provider_result("gpt-5.2", ok=False, latency_ms=900.0)
+    assert orch._health_policy.check("openai").circuit_open is True

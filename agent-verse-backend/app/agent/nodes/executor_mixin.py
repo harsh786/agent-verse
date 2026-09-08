@@ -59,6 +59,18 @@ from app.agent.nodes._helpers import (
 class ExecutorMixin:
     """Mixin: _node_execute, _execute_step_with_loop, _execute_step, _execute_step_with_cache."""
 
+    def _record_provider_health(self, model: str, *, ok: bool, start: float) -> None:
+        """D-13: report a live LLM provider-call outcome to the model router's health
+        policy so orchestrator failover learns. Fully guarded — never raises."""
+        router = getattr(self, "_model_router", None)
+        if router is None or not hasattr(router, "record_provider_result"):
+            return
+        try:
+            latency_ms = (time.monotonic() - start) * 1000.0
+            router.record_provider_result(model or "", ok, latency_ms)
+        except Exception:
+            pass
+
     async def _node_execute(self, state: GraphState) -> dict[str, Any]:
         agent_state: AgentState = state["agent_state"]
         tenant_ctx: TenantContext = state["tenant_ctx"]
@@ -978,15 +990,19 @@ class ExecutorMixin:
                 }
             )
 
+        _llm_call_start = time.monotonic()
         try:
             try:
                 async with track_tool_call(tool_name=tool_name, tenant_id=tenant_ctx.tenant_id):
                     resp = await self._executor.stream_tokens(req, _on_token)
                 if _active_breaker is not None:
                     _active_breaker.record_success()
+                # D-13: feed provider health so ModelOrchestrator failover learns.
+                self._record_provider_health(_exec_model, ok=True, start=_llm_call_start)
             except Exception:
                 if _active_breaker is not None:
                     _active_breaker.record_failure()
+                self._record_provider_health(_exec_model, ok=False, start=_llm_call_start)
                 raise
         finally:
             if _bulkhead_acquired and _bulkhead is not None:
