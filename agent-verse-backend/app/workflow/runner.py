@@ -190,10 +190,17 @@ class WorkflowRunner:
         try:
             await compiled.ainvoke(initial_state, config)
         except Exception as exc:
-            _log.error("workflow_run_failed_inline", run_id=run_id, error=str(exc))
+            _log.error(
+                "workflow_run_failed_inline", run_id=run_id, error=repr(exc), exc_info=True
+            )
             if self._run_store:
+                # tenant_id is keyword-only-required (RLS-scoped); read it from
+                # the run state so the failure update targets the right tenant.
                 await self._run_store.update_status(
-                    run_id, WorkflowRunStatus.FAILED, error=str(exc)
+                    run_id,
+                    WorkflowRunStatus.FAILED,
+                    tenant_id=initial_state["tenant_id"],
+                    error=str(exc),
                 )
 
     async def resume_from_hitl(
@@ -242,7 +249,13 @@ class WorkflowRunner:
     async def _load_definition(self, workflow_id: str, tenant_id: str) -> WorkflowDefinition:
         if self._run_store is not None:
             data = await self._run_store.get_definition(workflow_id, tenant_id)
-            return WorkflowDefinition.from_json(data)
+            definition = WorkflowDefinition.from_json(data)
+            # API-created DSL carries no ``id``; stamp the workflow id so the
+            # compiler's per-(id, version) graph cache doesn't collide across
+            # distinct workflows (each would otherwise share key ":<version>").
+            if not definition.id:
+                definition.id = workflow_id
+            return definition
         # Fallback for tests — return minimal definition
         return WorkflowDefinition(name="test", id=workflow_id)
 

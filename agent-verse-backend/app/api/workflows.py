@@ -24,6 +24,7 @@ Design notes
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -262,26 +263,128 @@ class _WorkflowStore:
         from app.db.models.workflow import Workflow
 
         now = datetime.now(UTC)
+        workflow_id = str(uuid.uuid4())
+        labels = labels or {}
         async with self._db() as session:
             await session.execute(
                 sa_text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
             )
             wf = Workflow(
-                id=str(uuid.uuid4()),
+                id=workflow_id,
                 tenant_id=tenant_id,
                 name=name,
                 description=description,
                 definition=definition,
-                labels=labels or {},
+                labels=labels,
                 status="draft",
                 version=1,
                 created_at=now,
                 updated_at=now,
             )
             session.add(wf)
+            # Bridge: mirror into the run engine's ``workflow_definitions`` table
+            # (same uuid id) so this workflow is triggerable — ``workflow_runs``
+            # FK-references it. Same transaction, so the two stay consistent.
+            await self._bridge_upsert_definition(
+                session,
+                workflow_id=workflow_id,
+                tenant_id=tenant_id,
+                name=name,
+                description=description,
+                definition=definition,
+                status="draft",
+            )
             await session.commit()
-            await session.refresh(wf)
-            return _orm_to_dict(wf)
+            # Build the result from local values rather than a post-commit
+            # refresh: the tenant GUC set above is transaction-local, so a reload
+            # in a fresh transaction would be filtered out by RLS.
+            return {
+                "id": workflow_id,
+                "tenant_id": tenant_id,
+                "name": name,
+                "description": description,
+                "definition": definition,
+                "labels": labels,
+                "status": "draft",
+                "version": 1,
+                "created_at": now,
+                "updated_at": now,
+            }
+
+    # ── workflows → workflow_definitions bridge ────────────────────────────────
+    # The visual builder persists to the legacy ``workflows`` table (Text id); the
+    # run engine is built around ``workflow_definitions`` (uuid id) and nothing
+    # else populates it. These helpers keep a mirror row in sync so an
+    # API-created workflow can be triggered and run.
+
+    @staticmethod
+    async def _bridge_upsert_definition(
+        session: Any,
+        *,
+        workflow_id: str,
+        tenant_id: str,
+        name: str,
+        description: str,
+        definition: dict[str, Any],
+        status: str,
+    ) -> None:
+        """Upsert the run-engine ``workflow_definitions`` mirror row.
+
+        No-op when ``tenant_id`` is not a UUID: the run engine casts tenant_id to
+        uuid everywhere, so such tenants cannot use it anyway, and the CAST here
+        would abort the surrounding transaction (and the primary create/update).
+        """
+        from sqlalchemy import text as sa_text
+
+        try:
+            uuid.UUID(str(tenant_id))
+        except (ValueError, TypeError, AttributeError):
+            return
+        await session.execute(
+            sa_text(
+                "INSERT INTO workflow_definitions "
+                "(id, tenant_id, name, slug, description, definition_json, status, version) "
+                "VALUES (CAST(:id AS uuid), CAST(:tenant_id AS uuid), :name, :slug, "
+                " :description, CAST(:definition AS jsonb), :status, '1.0.0') "
+                "ON CONFLICT (id) DO UPDATE SET "
+                " name = EXCLUDED.name, description = EXCLUDED.description, "
+                " definition_json = EXCLUDED.definition_json, status = EXCLUDED.status, "
+                " updated_at = NOW()"
+            ),
+            {
+                "id": workflow_id,
+                "tenant_id": str(tenant_id),
+                "name": name,
+                # slug is UNIQUE(tenant_id, slug); the workflow id guarantees it.
+                "slug": workflow_id,
+                "description": description or "",
+                "definition": json.dumps(definition or {}),
+                "status": status,
+            },
+        )
+
+    @staticmethod
+    async def _bridge_delete_definition(
+        session: Any, *, workflow_id: str, tenant_id: str
+    ) -> None:
+        """Delete the mirror row, but only when no runs reference it.
+
+        ``workflow_runs.workflow_id`` FK has no ``ON DELETE CASCADE``; keeping the
+        definition when runs exist preserves historical runs' interpretability.
+        """
+        from sqlalchemy import text as sa_text
+
+        try:
+            uuid.UUID(str(tenant_id))
+        except (ValueError, TypeError, AttributeError):
+            return
+        await session.execute(
+            sa_text(
+                "DELETE FROM workflow_definitions d WHERE d.id = CAST(:id AS uuid) "
+                "AND NOT EXISTS (SELECT 1 FROM workflow_runs r WHERE r.workflow_id = d.id)"
+            ),
+            {"id": workflow_id},
+        )
 
     async def _update_db(
         self,
@@ -313,9 +416,21 @@ class _WorkflowStore:
                     setattr(wf, key, value)
             wf.version = wf.version + 1
             wf.updated_at = datetime.now(UTC)
+            # Snapshot while still inside the tenant-scoped transaction, so the
+            # return value never depends on a post-commit reload (RLS-filtered).
+            snapshot = _orm_to_dict(wf)
+            # Bridge: keep the run-engine mirror row in sync with the edit.
+            await self._bridge_upsert_definition(
+                session,
+                workflow_id=snapshot["id"],
+                tenant_id=tenant_id,
+                name=snapshot["name"],
+                description=snapshot["description"],
+                definition=snapshot["definition"],
+                status=snapshot["status"],
+            )
             await session.commit()
-            await session.refresh(wf)
-            return _orm_to_dict(wf)
+            return snapshot
 
     async def _delete_db(self, tenant_id: str, workflow_id: str) -> bool:
         from sqlalchemy import select
@@ -337,6 +452,10 @@ class _WorkflowStore:
             if wf is None:
                 return False
             await session.delete(wf)
+            # Bridge: drop the run-engine mirror row too (unless runs reference it).
+            await self._bridge_delete_definition(
+                session, workflow_id=workflow_id, tenant_id=tenant_id
+            )
             await session.commit()
             return True
 

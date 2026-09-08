@@ -335,16 +335,14 @@ class PostgresWorkflowRunStore:
 
         async with self._db() as session:
             await self._set_tenant(session, tenant_id)
-            # NOTE: the run engine's schema (migration 0108: workflow_runs /
-            # step_results / schedules / permissions) is built entirely around
-            # the ``workflow_definitions`` table (uuid id). But the live create
+            # The run engine's schema (migration 0108) is built around the
+            # ``workflow_definitions`` table (uuid id). The visual-builder create
             # path (POST /api/v1/workflows -> WorkflowService -> _WorkflowStore)
-            # writes the DSL to the legacy ``workflows`` table (Text id) and
-            # NOTHING populates ``workflow_definitions`` — so triggering an
-            # API-created workflow fails a workflow_runs.workflow_id FK violation.
-            # Reconciling the two persistence systems is tracked as a dedicated
-            # task; keep this read on the run engine's own table for internal
-            # consistency until then.
+            # writes the DSL to the legacy ``workflows`` table (Text id) but now
+            # also mirrors each workflow into ``workflow_definitions`` with the
+            # same id (see _WorkflowStore._bridge_upsert_definition; migration
+            # 0115 backfills pre-existing rows). So this read resolves the DSL for
+            # any API-created workflow, and workflow_runs' FK is satisfied.
             row = (
                 await session.execute(
                     sa_text(

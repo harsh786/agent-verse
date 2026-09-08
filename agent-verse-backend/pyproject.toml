@@ -152,6 +152,13 @@ filterwarnings = [
     "ignore:app.enterprise.compliance is deprecated.*:DeprecationWarning",
     "ignore:app.enterprise.marketplace is deprecated.*:DeprecationWarning",
     "ignore:app.intelligence.self_optimization is deprecated.*:DeprecationWarning",
+    # langgraph-checkpoint-redis's AsyncRedisSaver initialises through redisvl, which emits a
+    # DeprecationWarning ("get_async_redis_connection will become async..."). Under
+    # filterwarnings=error this aborts async-saver setup and forces a sync RedisSaver fallback
+    # whose async methods raise NotImplementedError — breaking inline workflow runs in the
+    # e2e harness. Scope-ignore this dependency-internal deprecation so tests exercise the
+    # same async checkpointer production uses.
+    "ignore:get_async_redis_connection will become async.*:DeprecationWarning",
 ]
 
 [tool.coverage.report]
