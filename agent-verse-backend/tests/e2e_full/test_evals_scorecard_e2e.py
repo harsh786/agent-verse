@@ -104,18 +104,12 @@ async def test_completed_goal_produces_scorecard(evals_client: Any, _inline_prov
     assert cached["passed"] in (True, False)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Auto-eval on goal_complete is disconnected: the completion hook reads "
-        "getattr(self._app_state, 'eval_runner') but _app_state is the FastAPI "
-        "app while eval_runner is on app.state — so the lookup is always None and "
-        "GET /eval stays 'not_evaluated' until an on-demand POST /eval runs."
-    ),
-)
 async def test_scorecard_is_produced_automatically_on_completion(
     evals_client: Any, _inline_provider: Any
 ) -> None:
+    """Auto-eval on completion now runs: the completion hook reads eval_runner via
+    the app.state unwrap (previously it read the FastAPI app directly → always
+    None → GET /eval stuck at 'not_evaluated')."""
     submit = await evals_client.post("/goals", json={"goal": "Analyze the churn cohort"})
     assert submit.status_code == 202
     goal_id = submit.json()["goal_id"]
@@ -124,4 +118,6 @@ async def test_scorecard_is_produced_automatically_on_completion(
     # DESIRED: scoring happens automatically on completion, no on-demand call.
     got = await evals_client.get(f"/goals/{goal_id}/eval")
     assert got.status_code == 200
-    assert got.json()["status"] == "evaluated", "auto-eval on completion did not populate a scorecard"
+    assert got.json()["status"] == "evaluated", (
+        "auto-eval on completion did not populate a scorecard"
+    )

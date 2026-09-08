@@ -1650,7 +1650,12 @@ class GoalService:
             # ── Eval scoring on completion (Task 3) ────────────────────────────
             _logger = _svc_logger
             try:
-                eval_runner = getattr(self._app_state, "eval_runner", None)
+                # ``self._app_state`` is the FastAPI app; eval_runner (like every
+                # other service) lives on ``app.state``. Reading it off the app
+                # directly always returned None, so auto-eval on goal completion
+                # never ran (GET /eval stayed 'not_evaluated'). Unwrap to app.state.
+                _eval_aps = getattr(self._app_state, "state", self._app_state)
+                eval_runner = getattr(_eval_aps, "eval_runner", None)
                 if eval_runner is not None:
                     tenant_ctx_for_record: TenantContext = (
                         tenant_ctx
