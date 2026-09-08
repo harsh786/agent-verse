@@ -227,8 +227,28 @@ class VerifierMixin:
                     for tc in getattr(step, "tool_calls", [])
                     if tc.get("output")
                 ]
+                # Retrieved knowledge is also grounding evidence — an answer can be
+                # supported by RAG context without any tool call. Include it so a
+                # knowledge-grounded answer is not a false positive.
+                _rag_knowledge = agent_state.context.get("rag_knowledge")
+                if isinstance(_rag_knowledge, str) and _rag_knowledge.strip():
+                    _evidence.append(_rag_knowledge)
                 _high_risk = _is_high_risk_step(agent_state.goal)
-                if _final_answer and _evidence:
+                # Whether there was any real evidence (tool outputs or retrieved
+                # knowledge) to check the answer against. The gate always *warns*
+                # when the answer is ungrounded, but only *fails closed* (drives a
+                # replan) when there was evidence that failed to support it — an
+                # answer produced with zero evidence on a text-only path is warned
+                # and annotated, not force-replanned, to avoid breaking legitimate
+                # evidence-free completions.
+                _had_evidence = bool(_evidence)
+                # Run the grounding check whenever there is a final answer — NOT only
+                # when tool evidence exists. check_grounding's own "concrete claims
+                # present + no supporting evidence → ungrounded" branch is exactly the
+                # high-risk hallucination case (an answer asserting facts with nothing
+                # to back them). Guarding on ``and _evidence`` made that case
+                # unreachable on the common text-only execution path.
+                if _final_answer:
                     _grounding = check_grounding(
                         output=_final_answer,
                         tool_outputs=_evidence,
@@ -247,7 +267,7 @@ class VerifierMixin:
                                 "ungrounded_claims": _grounding.ungrounded_claims[:5],
                             }
                         )
-                        if _high_risk:
+                        if _high_risk and _had_evidence:
                             # Fail-closed: drive a replan instead of emitting.
                             success = False
                             retry = True
@@ -296,7 +316,7 @@ class VerifierMixin:
                                 "contradicted": _verdict.contradicted_claims[:3],
                             }
                         )
-                        if _high_risk and success:
+                        if _high_risk and success and _had_evidence:
                             success = False
                             retry = True
                             agent_state.context["verification_retry"] = True

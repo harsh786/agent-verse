@@ -98,16 +98,6 @@ def _inline_provider(app: Any) -> Any:
         gs._task_queue = prev_queue
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Grounding gates are guarded on non-empty tool-call evidence "
-        "(verifier: 'if _final_answer and _evidence'); the e2e path has no "
-        "executable tools, so step.tool_calls is empty, the gate is skipped, and "
-        "an ungrounded claim on a high-risk goal completes instead of being "
-        "flipped to replan/failed."
-    ),
-)
 async def test_ungrounded_high_risk_answer_is_flipped(
     halluc_client: Any, _inline_provider: Any
 ) -> None:
