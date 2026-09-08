@@ -13,6 +13,7 @@ reports ``embedding_input="text_of_caption"`` — never a native multimodal vect
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -22,6 +23,8 @@ from app.embedding.dimension_policy import DimensionPolicy
 from app.embedding.model_registry import EmbeddingModelRegistry
 from app.embedding.vector_index_policy import VectorIndexPolicy
 from app.ingestion.content_classifier import ContentType
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from app.tenancy.context import TenantContext
@@ -74,7 +77,16 @@ class EmbeddingSelectionResult:
 
 @dataclass
 class BatchEmbeddingResult:
-    embeddings: list[list[float]]
+    """Result of a batch embedding operation.
+
+    ``embeddings[i]`` is ``None`` when all providers failed for the batch
+    containing item *i*.  Callers **must** check for ``None`` before
+    inserting into a vector index — a ``None`` signals an embedding that
+    could not be computed (as opposed to a zero vector, which would
+    silently corrupt cosine-similarity search).
+    """
+
+    embeddings: list[list[float] | None]
     model_id: str
     provider: str
     errors: list[str] = field(default_factory=list)
@@ -187,14 +199,20 @@ class EmbeddingOrchestrator:
     ) -> BatchEmbeddingResult:
         """Embed *texts* in batches of *batch_size*, with provider fallback per batch.
 
-        Returns embeddings in the same order as *texts*. Failed batches are
+        Returns embeddings in the same order as *texts*.  Failed batches are
         retried with the next provider; errors for individual batches are
         recorded in the result.
+
+        Items whose batch could not be embedded by **any** provider are set to
+        ``None`` (never a zero vector) so callers can distinguish "no
+        embedding available" from a real vector.  A zero vector has
+        cosine-similarity ~0 to everything and would silently corrupt the
+        vector index.
         """
         if not texts:
             return BatchEmbeddingResult(embeddings=[], model_id="", provider="none")
 
-        all_embeddings: list[list[float]] = [[] for _ in texts]
+        all_embeddings: list[list[float] | None] = [None] * len(texts)
         errors: list[str] = []
         failed_indices: list[int] = []
         num_batches = math.ceil(len(texts) / batch_size)
@@ -222,14 +240,18 @@ class EmbeddingOrchestrator:
                     continue
 
             if not batch_ok:
-                # D-12: DO NOT fill zero vectors — a zero vector matches nothing and
-                # distorts similarity, silently corrupting the index. Leave the
-                # empty-list sentinel and surface the failed indices so callers can
-                # skip or retry them.
+                _log.warning(
+                    "embed_batch: batch %d (%d items) failed across all providers; "
+                    "marking as None (not zero vectors) to prevent silent index "
+                    "corruption.  Errors: %s",
+                    batch_idx,
+                    len(batch_texts),
+                    "; ".join(
+                        e for e in errors if e.startswith(f"batch_{batch_idx}:")
+                    ),
+                )
                 for i in range(len(batch_texts)):
-                    idx = start + i
-                    all_embeddings[idx] = []
-                    failed_indices.append(idx)
+                    failed_indices.append(start + i)
 
         return BatchEmbeddingResult(
             embeddings=all_embeddings,
