@@ -21,7 +21,9 @@ import soundfile as sf
 from fastapi import WebSocket, WebSocketDisconnect
 from opentelemetry import trace
 
+from app.voice.consent import VoiceConsentError, VoiceConsentPolicy
 from app.voice.intent_router import route_voice_command
+from app.voice.retention import VoiceRetentionPolicy, apply_retention
 from app.voice.stt_engine import transcribe
 from app.voice.tts_engine import synthesize_streaming
 
@@ -42,6 +44,10 @@ class VoiceStreamingSession:
         ref_audio: bytes | None = None,
         ref_text: str | None = None,
         language: str = "en",
+        consent_granted: bool = False,
+        speaker_id: str | None = None,
+        consent_policy: VoiceConsentPolicy | None = None,
+        retention_policy: VoiceRetentionPolicy | None = None,
     ) -> None:
         self.ws = ws
         self.tenant_id = tenant_id
@@ -54,6 +60,14 @@ class VoiceStreamingSession:
         self._active = True
         self._turns = 0
         self._pending_decision_id: str | None = None  # D-4: voice approval
+        # D-24: consent + retention governance for voice audio/transcripts.
+        # Speaker identity defaults to the org (one session == one speaker) but the
+        # client may name a distinct speaker via the `consent` control message.
+        self._speaker_id = speaker_id or f"{org_id}:default"
+        self._consent = consent_policy or VoiceConsentPolicy()  # fail-closed default
+        self._retention = retention_policy or VoiceRetentionPolicy()
+        if consent_granted:
+            self._grant_consent(speaker_id=self._speaker_id)
 
     async def run(self) -> None:
         with tracer.start_as_current_span("voice.stream.session") as span:
@@ -96,13 +110,50 @@ class VoiceStreamingSession:
                 await self._run_pipeline()
             elif mtype == "set_pending_decision":
                 self._pending_decision_id = msg.get("decision_id")
+            elif mtype == "consent":
+                # D-24: client records processing consent for this session.
+                if msg.get("granted", True):
+                    self._grant_consent(speaker_id=msg.get("speaker_id"))
+                    await self._send({"type": "consent_ack", "granted": True})
+                else:
+                    self._consent.revoke(self.tenant_id, self._speaker_id)
+                    await self._send({"type": "consent_ack", "granted": False})
             elif mtype == "cancel":
                 self._buf.clear()
                 self._active = False
 
+    def _grant_consent(self, *, speaker_id: str | None = None) -> None:
+        """Record voice-processing consent for this session's speaker."""
+        if speaker_id:
+            self._speaker_id = speaker_id
+        self._consent.record_consent(self.tenant_id, self._speaker_id, granted=True)
+
+    def has_consent(self) -> bool:
+        """Whether this session's speaker has recorded processing consent."""
+        return self._consent.has_consent(self.tenant_id, self._speaker_id)
+
+    async def _ensure_consent(self) -> bool:
+        """Fail closed: refuse (and notify the client) when consent is absent."""
+        try:
+            self._consent.require(self.tenant_id, self._speaker_id)
+            return True
+        except VoiceConsentError as exc:
+            self._buf.clear()  # do not retain unconsented audio
+            log.info(
+                "voice.stream.consent_required tenant=%s speaker=%s",
+                self.tenant_id,
+                self._speaker_id,
+            )
+            await self._send(
+                {"type": "error", "code": exc.code, "detail": str(exc)}
+            )
+            return False
+
     async def _emit_interim(self) -> None:
         """Send interim (non-final) transcript while user is still speaking."""
         if not self._buf:
+            return
+        if not await self._ensure_consent():  # D-24: fail closed
             return
         audio = np.concatenate(self._buf)
         wav = self._to_wav(audio)
@@ -121,6 +172,8 @@ class VoiceStreamingSession:
         """Process complete utterance: STT → IntentRouter → TTS."""
         if not self._buf:
             return
+        if not await self._ensure_consent():  # D-24: fail closed, no transcription
+            return
         audio = np.concatenate(self._buf)
         self._buf.clear()
         if len(audio) < 800:  # < 50 ms — skip noise
@@ -128,7 +181,16 @@ class VoiceStreamingSession:
 
         wav = self._to_wav(audio)
         result = await transcribe(wav, "audio/wav")
-        transcript = result["transcript"].strip()
+
+        # D-24: retention — drop raw audio (default) and PII-redact the transcript
+        # before it is forwarded or logged. Raw `wav`/`audio` are not persisted here;
+        # applying the policy makes the drop explicit and testable.
+        retained = apply_retention(
+            self._retention, audio=wav, transcript=result["transcript"]
+        )
+        if retained.audio_dropped:
+            audio = np.empty(0, dtype=np.float32)
+        transcript = (retained.transcript or "").strip()
         if not transcript:
             return
 

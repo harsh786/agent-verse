@@ -292,8 +292,18 @@ async def voice_persona_delete(org_id: str, request: Request) -> None:
 
 
 @router.websocket("/stream/{org_id}")
-async def voice_stream(ws: WebSocket, org_id: str, api_key: str = Query(default="")) -> None:
-    """D-1/D-3/D-4: Real-time voice session — speak goals, approve missions."""
+async def voice_stream(
+    ws: WebSocket,
+    org_id: str,
+    api_key: str = Query(default=""),
+    consent: bool = Query(default=False),
+) -> None:
+    """D-1/D-3/D-4: Real-time voice session — speak goals, approve missions.
+
+    D-24: audio processing requires recorded consent. The client either passes
+    ``?consent=true`` at connect time or sends a ``{"type":"consent"}`` control
+    message; without it the session fails closed and refuses to transcribe.
+    """
     await ws.accept()
     tenant_id = await _ws_auth(ws, api_key)
     if not tenant_id:
@@ -328,6 +338,8 @@ async def voice_stream(ws: WebSocket, org_id: str, api_key: str = Query(default=
         ref_audio=ref_audio,
         ref_text=ref_text,
         language=language,
+        consent_granted=consent,
+        speaker_id=f"{tenant_id}:{org_id}",
     )
     await sess.run()
 
