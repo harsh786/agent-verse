@@ -60,9 +60,6 @@ SPEC_MODULES = [
     "app.evals.model_score", "app.evals.runtime_scorecard",
     "app.evals.regression_gate",
     # Layer 11
-    "app.optimization.token_optimizer", "app.optimization.cost_optimizer",
-    "app.optimization.latency_optimizer", "app.optimization.prompt_optimizer",
-    "app.optimization.model_optimizer", "app.optimization.cache_optimizer",
     "app.optimization.ab_testing",
     # Layer 12
     # NOTE(D-21a): the standalone app.observability.{rag,pattern,model}_trace modules were
