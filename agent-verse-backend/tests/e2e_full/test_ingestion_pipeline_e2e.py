@@ -40,6 +40,7 @@ def _fake_embedder(app: Any) -> Any:
     frozen ``dependencies.embedder``. Collections default to a 768-dim pgvector
     column, so the fake must emit 768-dim vectors.
     """
+    import contextlib
     import dataclasses
 
     fake = FakeProvider(embed_dim=768)
@@ -50,10 +51,8 @@ def _fake_embedder(app: Any) -> Any:
     prev_deps = None
     if gw is not None and hasattr(gw, "dependencies"):
         prev_deps = gw.dependencies
-        try:
+        with contextlib.suppress(Exception):
             gw.dependencies = dataclasses.replace(gw.dependencies, embedder=fake)
-        except Exception:
-            pass
     try:
         yield
     finally:
