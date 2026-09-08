@@ -25,6 +25,9 @@ class _FakePubSub:
     async def subscribe(self, *channels: str) -> None:
         self._record.extend(channels)
 
+    async def psubscribe(self, *patterns: str) -> None:
+        self._record.extend(patterns)
+
     async def listen(self) -> Any:
         # One non-"message" frame (consumers skip it), then block until cancelled.
         yield {"type": "subscribe", "channel": b"chan", "data": 1}
@@ -70,12 +73,13 @@ async def test_start_spawns_one_task_per_core_consumer() -> None:
     sup = _full_supervisor()
     try:
         await sup.start()
-        # chain, hitl, memory
-        assert len(sup.tasks) == 3
+        # chain, hitl, memory, event
+        assert len(sup.tasks) == 4
         assert {c.__class__.__name__ for c in sup.consumers} == {
             "ChainTriggerConsumer",
             "HITLTriggerConsumer",
             "MemoryTriggerConsumer",
+            "EventTriggerConsumer",
         }
         assert not sup.skipped
     finally:
@@ -87,8 +91,8 @@ async def test_start_skips_all_when_redis_missing() -> None:
     try:
         await sup.start()
         assert sup.tasks == []
-        # All three core consumers skipped for the missing dependency.
-        assert len(sup.skipped) == 3
+        # All four core consumers skipped for the missing dependency.
+        assert len(sup.skipped) == 4
         assert all(reason == "missing_deps" for _, reason in sup.skipped)
     finally:
         await sup.stop()
@@ -99,7 +103,7 @@ async def test_start_skips_when_dispatcher_missing() -> None:
     try:
         await sup.start()
         assert sup.tasks == []
-        assert len(sup.skipped) == 3
+        assert len(sup.skipped) == 4
     finally:
         await sup.stop()
 
@@ -123,7 +127,7 @@ async def test_extended_families_mix_when_flag_on() -> None:
         await sup.start()
         started = {c.__class__.__name__ for c in sup.consumers}
         assert "ChainTriggerConsumer" in started
-        assert len(sup.tasks) == 3
+        assert len(sup.tasks) == 4
         skipped_names = {name for name, _ in sup.skipped}
         assert "MQTTTriggerConsumer" in skipped_names
     finally:
@@ -218,7 +222,7 @@ async def test_consumer_start_invoked_under_lifespan() -> None:
         assert fake_redis.subscribed_channels, "consumer .start() was not invoked"
         assert "goal.completed" in fake_redis.subscribed_channels
         sup = app.state.trigger_consumers
-        assert len(sup.tasks) == 3
+        assert len(sup.tasks) == 4
 
     # After shutdown, tasks were cancelled and awaited.
     assert app.state.trigger_consumers.tasks == []

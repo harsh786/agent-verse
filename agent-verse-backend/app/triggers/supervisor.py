@@ -139,6 +139,7 @@ class TriggerConsumerSupervisor:
 
     def _consumer_specs(self) -> list[_ConsumerSpec]:
         from app.triggers.consumers.chain import ChainTriggerConsumer
+        from app.triggers.consumers.event import EventTriggerConsumer
         from app.triggers.consumers.hitl import HITLTriggerConsumer
         from app.triggers.consumers.memory import MemoryTriggerConsumer
 
@@ -169,6 +170,11 @@ class TriggerConsumerSupervisor:
             _ConsumerSpec(
                 name="MemoryTriggerConsumer",
                 factory=lambda: MemoryTriggerConsumer(**_core_kwargs()),
+                required=dict(core_deps),
+            ),
+            _ConsumerSpec(
+                name="EventTriggerConsumer",
+                factory=lambda: EventTriggerConsumer(**_core_kwargs()),
                 required=dict(core_deps),
             ),
         ]

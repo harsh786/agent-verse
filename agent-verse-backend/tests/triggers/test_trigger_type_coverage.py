@@ -83,8 +83,8 @@ def test_distribution_matches_verified_ground_truth() -> None:
         counts[mech] += 1
     assert counts[DispatchMechanism.BEAT] == 6  # cron/interval/once/file_drop/rss_feed/api_poll
     assert counts[DispatchMechanism.PUSH] == 16
-    assert counts[DispatchMechanism.CONSUMER] == 6
-    assert counts[DispatchMechanism.UNSUPPORTED] == 30
+    assert counts[DispatchMechanism.CONSUMER] == 7  # + event
+    assert counts[DispatchMechanism.UNSUPPORTED] == 29
 
 
 def test_known_unsupported_types_are_unsupported() -> None:
@@ -92,7 +92,6 @@ def test_known_unsupported_types_are_unsupported() -> None:
     for t in (
         TriggerType.GOOGLE_SHEETS,
         TriggerType.SHAREPOINT,
-        TriggerType.EVENT,
         TriggerType.DISCORD_EVENT,
         TriggerType.MQTT,
     ):

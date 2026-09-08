@@ -71,6 +71,7 @@ CONSUMER_TYPES: frozenset[TriggerType] = frozenset(
         TriggerType.HITL_APPROVED,
         TriggerType.HITL_REJECTED,
         TriggerType.MEMORY_CREATED,
+        TriggerType.EVENT,
     }
 )
 
