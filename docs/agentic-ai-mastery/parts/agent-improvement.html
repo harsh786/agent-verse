@@ -1,0 +1,795 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>An agent platform that does not improve is a depreciating asset: models change, corpora rot,
+    connectors drift, and the workload shifts under you. Improvement is the closed loop that turns
+    production signal into shipped change — and the only reason it works is that every link in the loop
+    is a measurement rather than an opinion.</p>
+
+    <p>The loop has five links, and most teams are missing the last two: <strong>signal</strong> (evals
+    and production telemetry) → <strong>diagnosis</strong> (which dimension is failing, and why) →
+    <strong>candidate change</strong> (a new prompt, model, retrieval strategy, or memory) →
+    <strong>experiment</strong> (control versus candidate on real traffic) →
+    <strong>promotion or rollback</strong> (gated by a regression check).</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 880 250" role="img" aria-label="Improvement loop: production telemetry and eval scores feed a scorecard; the self-improvement engine diagnoses a dimension; candidate generators produce prompt, model, retrieval or memory changes; an experiment registry runs control against candidate; a regression gate promotes or rolls back, and the result feeds back into the scorecard.">
+      <defs><marker id="im1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker>
+      <marker id="im2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0E7C55"></path></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="0" y="60" width="126" height="46" rx="3"></rect>
+        <rect x="166" y="60" width="126" height="46" rx="3"></rect>
+        <rect x="332" y="60" width="146" height="46" rx="3"></rect>
+        <rect x="518" y="60" width="126" height="46" rx="3"></rect>
+      </g>
+      <rect x="684" y="60" width="140" height="46" rx="3" fill="none" stroke="#0E7C55" stroke-width="1.5"></rect>
+      <g font-family="Archivo, sans-serif" font-size="12" fill="currentColor" text-anchor="middle">
+        <text x="63" y="80">scorecard</text><text x="63" y="96" font-size="10" opacity="0.6">evals + telemetry</text>
+        <text x="229" y="80">diagnosis</text><text x="229" y="96" font-size="10" opacity="0.6">which dimension</text>
+        <text x="405" y="80">candidate change</text><text x="405" y="96" font-size="10" opacity="0.6">prompt·model·rag·memory</text>
+        <text x="581" y="80">experiment</text><text x="581" y="96" font-size="10" opacity="0.6">control vs candidate</text>
+      </g>
+      <text x="754" y="80" font-family="Archivo, sans-serif" font-size="12" fill="#0E7C55" text-anchor="middle">regression gate</text>
+      <text x="754" y="96" font-family="Archivo, sans-serif" font-size="10" fill="#0E7C55" opacity="0.85" text-anchor="middle">promote or roll back</text>
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#im1)">
+        <line x1="126" y1="83" x2="162" y2="83"></line>
+        <line x1="292" y1="83" x2="328" y2="83"></line>
+        <line x1="478" y1="83" x2="514" y2="83"></line>
+        <line x1="644" y1="83" x2="680" y2="83"></line>
+      </g>
+      <path d="M754,106 L754,150 L63,150 L63,110" fill="none" stroke="#0E7C55" stroke-width="1.4" marker-end="url(#im2)"></path>
+      <text x="400" y="168" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#0E7C55" text-anchor="middle">the measured outcome becomes the next baseline</text>
+      <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">
+        <text x="0" y="204">without the experiment link, "improvement" is a change you believe in; with it, it is a change you can defend</text>
+        <text x="0" y="222">without the gate, every improvement eventually ships a regression that nobody attributes to it</text>
+        <text x="0" y="240">the loop must be cheap enough to run weekly, or it will not run at all</text>
+      </g>
+    </svg>
+    <figcaption>The loop. Everything to the left of <span class="fig-em">regression gate</span> is
+    generative and cheap to get wrong; the gate is what makes it safe to be wrong repeatedly.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="loop">
+  <h2>The improvement loop</h2>
+
+<article class="concept" id="eval-driven" data-impl="8" data-crit="9" data-tag="Loop">
+<h3>Eval-driven improvement</h3>
+<p class="tldr">Change nothing without a measurement that would have caught the change being wrong. The
+eval set is the specification; the improvement is a hypothesis about it.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A runtime scorecard aggregates per-dimension scores across recent production runs and offline suites:
+goal success, grounding, tool relevance, safety, latency, cost. The improvement engine reads the
+scorecard, identifies the weakest dimension with enough volume to be meaningful, and proposes a change
+targeted at it. Every proposal names its target metric and its expected direction, so the experiment has
+a falsifiable prediction.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/evals/runtime_scorecard.py</code><span class="note">ScorecardResult — the aggregated view</span></li>
+<li><code>app/evals/self_improvement_engine.py</code><span class="note">diagnosis and proposal</span></li>
+<li><code>app/intelligence/improvement_action_executor.py</code><span class="note">applying an approved change</span></li>
+<li><code>app/intelligence/learning_experiments.py</code><span class="note">the experiment framing</span></li>
+<li><code>app/api/insights.py</code><span class="note">where the findings surface</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>scorecard, agent fin-ops, last 14 days (n=1,840 goals)
+ goal success   0.87   ▲ baseline 0.85
+ grounding      0.71   ▼ baseline 0.82   ← weakest, and moved
+ tool relevance 0.93
+ safety         1.00
+ p95 latency    41s    ▲ 33s
+ cost/goal      $0.42
+
+diagnosis  grounding regression concentrated in goals touching the
+           "vendor-contracts" collection (0.44 vs 0.79 elsewhere)
+proposal   that collection was re-chunked with fixed@v1 on 08-24;
+           re-chunk with heading@v3. Target: grounding ≥ 0.80.
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The scorecard has to be sliced — by agent, by goal class, by collection, by tenant cohort — or
+regressions hide in aggregates. The example above is the common shape: a metric that moved four points
+overall because one slice moved thirty-five.</p>
+<p>Run the loop on a cadence with a named owner. Improvement machinery that exists but is never run is
+the most expensive kind of unused code, because it looks like the problem is solved.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Aggregate-only scorecards.</strong> Regressions invisible until they are large.</li>
+<li><strong>Chasing noise.</strong> Acting on a dimension with 40 samples.</li>
+<li><strong>Unfalsifiable proposals.</strong> "Improve the prompt" with no target metric.</li>
+<li><strong>No cadence.</strong> The loop runs once, at launch.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>You have production traffic and intend to change anything.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="prompt-optimizer" data-impl="7" data-crit="7" data-tag="Candidate">
+<h3>Prompt optimizer</h3>
+<p class="tldr">Generate prompt candidates automatically from failure cases, score them on a held-out set,
+and promote only what wins — prompt engineering as search rather than intuition.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Take the failing cases for a role, ask a model to propose prompt revisions that would have handled
+them, then evaluate each candidate on a held-out set that includes both the failures and a regression
+set of previously-passing cases. The regression set is the essential half: a candidate that fixes ten
+failures and breaks fifteen passes is a loss, and without the regression set it looks like a win.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/intelligence/prompt_optimizer.py</code><span class="note">candidate generation and scoring</span></li>
+<li><code>app/optimization/prompt_optimizer.py</code><span class="note">optimisation-side implementation</span></li>
+<li><code>app/context/prompt_variant_selector.py</code><span class="note">where a promoted variant lands</span></li>
+<li><code>app/evals/regression_baseline.py</code>, <code>regression_gate.py</code><span class="note">the guard</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>role verifier · 34 false-pass cases
+
+candidate A  add "reject if any numeric claim is absent from tool output"
+             failures fixed 28/34 · regression set 412/420 pass (−8)
+candidate B  add two worked failure examples
+             failures fixed 21/34 · regression set 420/420 pass (0)
+candidate C  A + B
+             failures fixed 30/34 · regression set 418/420 pass (−2)
+
+promote B first (no regression), then trial C behind an experiment
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Automated prompt search finds real wins, and it also finds prompts that are longer, slower and
+over-fitted to the failure set. Score candidates on cost and latency alongside quality, and cap prompt
+growth — a 40% longer verifier prompt applied to every step is a material cost increase.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>No regression set.</strong> Fixing one class by breaking another.</li>
+<li><strong>Prompt bloat.</strong> Every iteration adds a clause and never removes one.</li>
+<li><strong>Overfitting to few cases.</strong> Thirty failures is not a distribution.</li>
+<li><strong>Promotion without an experiment.</strong> Offline wins that do not hold in production.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>You have a labelled failure set and a regression set.</li>
+<li class="no">Not before you have both.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="self-optimizer" data-impl="7" data-crit="6" data-tag="Candidate">
+<h3>Self-optimizer</h3>
+<p class="tldr">The component that proposes and, within bounds, applies changes on its own — model
+routing, retrieval strategy, iteration caps — under explicit limits and with a rollback path.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A bounded autonomy contract: the optimizer may adjust parameters within a declared range (model tier
+within a plan's allowed set, retrieval strategy among certified ones, iteration cap within limits), must
+run each change as an experiment, and must roll back automatically on regression. Anything outside the
+range becomes a proposal for a human.</p>
+<p>The distinction that keeps this safe: it tunes <em>parameters</em>, it does not rewrite
+<em>policy</em>. It can route a goal class to a cheaper model; it cannot switch off an approval gate.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/intelligence/self_optimizer_v2.py</code><span class="note">SelfOptimizerV2</span></li>
+<li><code>app/intelligence/self_optimization.py</code><span class="note">the earlier implementation</span></li>
+<li><code>app/intelligence/experiment_registry.py</code><span class="note">ExperimentRegistry — every change is an experiment</span></li>
+<li><code>app/optimization/model_optimizer.py</code>, <code>latency_optimizer.py</code>, <code>cost_optimizer.py</code><span class="note">dimension-specific optimisers</span></li>
+<li><code>app/orchestration/strategy_certification.py</code><span class="note">only certified strategies are selectable</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>autonomous change (within bounds)
+ observation  goal class "ticket summary" — success 0.96 on the large model
+ hypothesis   the mid model suffices
+ experiment   10% traffic, 600 goals
+ result       success 0.95 (−0.01, within noise) · cost/goal $0.11 → $0.03
+ action       promoted; recorded; rollback available for 30 days
+
+proposal requiring a human (outside bounds)
+ observation  approval gates on write_low tools add 4h median latency
+ proposal     remove gating for write_low
+ action       NOT applied — policy change, escalated with the evidence
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Bounded self-optimisation is genuinely valuable for cost: routing decisions are exactly the kind of
+parameter that benefits from continuous measurement and that humans never revisit. Keep the bounds
+narrow, keep every change in an audit log, and keep rollback one command away.</p>
+<p>The failure to guard against is optimisation against a proxy: cost per goal falls beautifully if the
+agent stops trying, so cost changes must always be evaluated jointly with success.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Proxy optimisation.</strong> Cost down because quality down.</li>
+<li><strong>Unbounded autonomy.</strong> An optimizer that can change policy.</li>
+<li><strong>No rollback window.</strong> A change you cannot undo when the delayed effect appears.</li>
+<li><strong>Silent changes.</strong> Behaviour drifts with no audit trail.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Experiments, gates and audit are already working.</li>
+<li class="no">Never before them.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="lessons-learned" data-impl="8" data-crit="8" data-tag="Candidate">
+<h3>Lessons learned</h3>
+<p class="tldr">The cheapest improvement mechanism there is: durable, scoped lessons extracted from
+failures, recalled at plan time — no retraining, no deployment.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Covered as a pattern in chapter 1 and a memory tier in chapter 3; here it is an improvement channel.
+Its properties as an improvement mechanism are unusual: it takes effect immediately, requires no release,
+is scoped per tenant, and degrades gracefully because a bad lesson can be quarantined. Its weakness is
+that it is invisible in code review — behaviour changes with no diff.</p>
+<p>The discipline that makes it trustworthy: corroboration before promotion, effectiveness scoring after
+recall, and decay for lessons that stop helping.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/agent/reflexion_wirer.py</code><span class="note">extraction at failure</span></li>
+<li><code>app/state_runtime/reflexion_store.py</code><span class="note">storage</span></li>
+<li><code>app/memory/contracts.py</code><span class="note">MemoryFeedback — did the lesson help</span></li>
+<li><code>app/org/org_learning.py</code><span class="note">org-level lessons across departments</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>failure class "filing rejected: invalid HSN"  seen 4× in 9 days
+lesson promoted (corroboration ≥ 2): validate HSN before filing
+effect over the next 30 days
+  filings attempted 214 · rejections 4 (1.9%) vs 11.2% before
+  no deploy, no prompt change, no model change
+feedback  helpful 38 · harmful 0 → effectiveness rises → recalled more
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Because lessons change behaviour without a deploy, they need the same operational visibility as a
+release: a list of active lessons per agent, when each was promoted, and its measured effectiveness. The
+first time an agent behaves strangely and nobody can find a code change to blame, that list is what you
+will wish existed.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Invisible behaviour change.</strong> No inventory of active lessons.</li>
+<li><strong>Superstitions.</strong> Promotion without corroboration.</li>
+<li><strong>Unbounded accumulation.</strong> Hundreds of lessons, none decayed.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Failures repeat. Which they do.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="model-selection-improvement" data-impl="8" data-crit="8" data-tag="Candidate">
+<h3>Model selection improvement</h3>
+<p class="tldr">Continuously re-measure which model is right for each role and goal class — the highest
+cost lever available, and the one that goes stale fastest.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Score each candidate model per role (planner, executor, verifier, judge) and per goal class on quality,
+latency and cost, then let the router use the measured table rather than a static configuration. Because
+new models arrive constantly and prices move, the table needs periodic refresh — a shadow-routing mode
+that scores a candidate on real traffic without serving its output is the cheapest way to keep it
+current.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/evals/model_score.py</code><span class="note">per-model scoring</span></li>
+<li><code>app/ai_router/shadow_router.py</code><span class="note">score a candidate without serving it</span></li>
+<li><code>app/ai_router/cost_latency_quality_policy.py</code><span class="note">the three-way trade</span></li>
+<li><code>app/optimization/model_optimizer.py</code><span class="note">the optimiser</span></li>
+<li><code>app/intelligence/benchmarking.py</code><span class="note">benchmark runs</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>role verifier · goal class "invoice reconciliation"
+model        quality  p95    $/goal   verdict
+large-A        0.94   3.1s   0.021    incumbent
+mid-B          0.93   1.4s   0.004    ← promote: −81% cost, −55% latency
+small-C        0.81   0.7s   0.001    too weak for a verifier
+shadow-routed for 3 days before promotion; quality measured against
+the same rubric, not against the incumbent's opinion
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Verifiers and classifiers are where cheap models usually win, and where teams most often leave an
+expensive model running out of caution. Executors on complex tool work are where they usually lose.
+Measuring per role rather than globally typically finds a 40–70% cost reduction with no quality change.</p>
+<p>Shadow routing is worth building. It lets you evaluate a new model on your real distribution in days
+rather than arguing about benchmarks.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Global model choice.</strong> One model for every role, chosen for the hardest case.</li>
+<li><strong>Stale table.</strong> Prices and models changed six months ago.</li>
+<li><strong>Quality judged by the incumbent.</strong> Circular evaluation.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any deployment with real volume — this is usually the largest single cost win available.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="retrieval-improvement" data-impl="7" data-crit="8" data-tag="Candidate">
+<h3>Retrieval quality improvement</h3>
+<p class="tldr">Most "the agent is wrong" reports are retrieval failures. Fixing retrieval is usually
+cheaper and more effective than any change to the loop.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Diagnose which of three failures occurred, because the fixes are unrelated. <em>Recall failure</em>:
+the answer is in the corpus but was not retrieved — fix chunking, widen candidates, add hybrid or fusion.
+<em>Precision failure</em>: retrieved but out-ranked — fix reranking or metadata filters.
+<em>Coverage failure</em>: not in the corpus at all — fix ingestion, which is a knowledge problem, not a
+retrieval one.</p>
+<p>Distinguishing them requires labelled cases: for each failed answer, was the supporting passage present
+in the corpus, and was it in the candidate set?</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/evals/rag_score.py</code><span class="note">retrieval scoring</span></li>
+<li><code>app/rag/evaluation.py</code><span class="note">store-level evaluation</span></li>
+<li><code>app/rag/agentic/context_gap_detector.py</code><span class="note">GapReport — coverage failures</span></li>
+<li><code>app/evals/dataset_builder.py</code><span class="note">building the labelled set from real failures</span></li>
+<li><code>app/observability/rag_trace.py</code><span class="note">the trace that makes diagnosis possible</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>60 failed answers, triaged from traces
+ recall failure     31   passage in corpus, not in top-200
+                          → cause: fixed chunking split the section
+                          → fix: heading chunker  → 27 of 31 resolved
+ precision failure  14   passage retrieved at rank 40+
+                          → fix: enable cross-encoder rerank → 12 resolved
+ coverage failure   15   passage not in the corpus
+                          → fix: the SharePoint source has been failing
+                            for 11 days
+one of these three is an ingestion incident, not a retrieval problem
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Build the triage into your support workflow: every "wrong answer" report should be classified into one
+of the three buckets before anyone touches a prompt. In most deployments the distribution is roughly half
+recall, a quarter precision, a quarter coverage — and only the middle quarter is what people usually try
+to fix.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Treating all failures as model failures.</strong> Prompt changes that cannot help.</li>
+<li><strong>No corpus-presence check.</strong> Cannot distinguish recall from coverage.</li>
+<li><strong>Fixing precision when recall is the problem.</strong> Reranking cannot recover what was never
+retrieved.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any quality complaint about a retrieval-augmented agent — start here, not at the prompt.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="tool-feedback" data-impl="8" data-crit="7" data-tag="Candidate">
+<h3>Tool success feedback</h3>
+<p class="tldr">Feed measured tool reliability back into selection and ranking, so the agent stops
+choosing the tool that fails 40% of the time.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Every tool call updates per-tenant statistics — success rate, latency, error classes — which feed the
+tool ranker, the trust store and the circuit breaker. Selection then prefers tools that work, and the
+planner can be told which capability is currently unreliable so it plans around it rather than through
+it.</p>
+<p>This is pure telemetry: no model involved, immediate effect, and it fixes the most common visible
+failure (an agent retrying a broken integration).</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/memory/tool_reliability.py</code><span class="note">the statistics</span></li>
+<li><code>app/tool_runtime/tool_score.py</code>, <code>tool_ranker.py</code>, <code>tool_trust_store.py</code><span class="note">ranking and trust</span></li>
+<li><code>app/mcp/tool_intelligence.py</code><span class="note">tool usage intelligence</span></li>
+<li><code>app/reliability/redis_circuit_breaker.py</code><span class="note">the automatic response</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>tenant acme, capability "fetch invoices"
+ vendor-api.get_invoices   success 62%  p95 8.1s   trust 0.41
+ vendor-csv.export         success 99%  p95 1.4s   trust 0.96
+effect  ranker prefers CSV; planner told "vendor-api degraded"
+result  goal success for invoice goals 0.79 → 0.94, no prompt change
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Scope statistics per tenant. A connector healthy for one customer is often broken for another — their
+credentials, their quota, their network — and a global average hides both. Use a decaying window so a
+tool fixed last week can recover its ranking.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Global averages.</strong> Tenant-specific breakage invisible.</li>
+<li><strong>No recovery path.</strong> A once-broken tool ranked last forever.</li>
+<li><strong>Cold start.</strong> New tools never chosen; reserve exploration.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>More than a handful of tools, or any third-party integration.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="cost-latency-improvement" data-impl="8" data-crit="9" data-tag="Candidate">
+<h3>Cost and latency optimisation</h3>
+<p class="tldr">Both are measurable, both have a small number of dominant causes, and both improve without
+touching quality if you attack the right ones.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Cost per goal decomposes into iterations × tokens per iteration × price per token. Attack in that
+order: reduce iterations (better planning, lessons, stall detection), then tokens (narrow tool schemas,
+tighter retrieval, compression), then price (cheaper models per role). Latency decomposes into serial
+model calls, tool round-trips, and retrieval — attack with parallelism (waves), caching, and smaller
+models where quality allows.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/optimization/cost_optimizer.py</code>, <code>latency_optimizer.py</code>, <code>token_optimizer.py</code>, <code>cache_optimizer.py</code><span class="note">the optimisers</span></li>
+<li><code>app/intelligence/cost_tracker.py</code>, <code>cost_optimizer.py</code><span class="note">tracking and analysis</span></li>
+<li><code>app/observability/cost_breakdown.py</code><span class="note">where the money goes</span></li>
+<li><code>app/rag/semantic_cache.py</code>, <code>app/mcp/tool_cache.py</code><span class="note">the two caches that matter most</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>baseline  $0.42/goal · p95 41s
+
+1 tool schema narrowing (34→9)      −$0.11  −6s
+2 semantic cache on retrieval        −$0.06  −4s   (31% hit rate)
+3 verifier model large→mid           −$0.09  −3s
+4 wave execution for fan-out steps    —      −11s
+5 stall detection tuning (−0.6 iter) −$0.07  −5s
+                                     ------  -----
+result    $0.09/goal · p95 12s · goal success unchanged (0.87 → 0.88)
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The order matters because the levers are not independent: narrowing tool schemas reduces tokens
+<em>and</em> improves selection accuracy, which reduces iterations. Starting with model downgrades — the
+most tempting lever — risks quality for the smallest gain.</p>
+<p>Always report cost and quality together. A cost improvement with no quality number attached is not a
+result.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Cost without quality.</strong> Optimising the proxy.</li>
+<li><strong>Caching personalised answers.</strong> A correctness bug sold as an optimisation.</li>
+<li><strong>Parallelising dependent steps.</strong> Faster and wrong.</li>
+<li><strong>Optimising the wrong percentile.</strong> Mean latency fine, p99 unusable.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>As soon as volume is real. These numbers only get harder to move later.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="regression-detection" data-impl="8" data-crit="10" data-tag="Gate">
+<h3>Regression detection and gates</h3>
+<p class="tldr">A baseline plus a gate: every change is measured against the previous behaviour on a fixed
+set, and a material regression blocks promotion automatically.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Maintain a frozen baseline — a fixed eval set and the incumbent's scores on it. Any candidate change
+runs the same set and is compared per dimension with a tolerance. The gate blocks on regression beyond
+tolerance in any protected dimension (safety and grounding are usually zero-tolerance), and requires an
+explicit human override to proceed.</p>
+<p>Refresh the baseline deliberately, not automatically: a baseline that updates on every promotion drifts
+until it no longer represents the behaviour anyone agreed to.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/evals/regression_baseline.py</code><span class="note">the frozen baseline</span></li>
+<li><code>app/evals/regression_gate.py</code><span class="note">the gate</span></li>
+<li><code>app/evals/certification_policy.py</code><span class="note">what must pass before something is certified</span></li>
+<li><code>app/orchestration/strategy_certification.py</code><span class="note">strategy-level certification</span></li>
+<li><code>app/rag/certification.py</code><span class="note">retrieval pipeline certification</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>candidate: new executor prompt v9
+
+dimension        baseline  candidate  tolerance  verdict
+goal success        0.87      0.89      −0.02     pass
+grounding           0.82      0.82       0.00     pass
+tool relevance      0.93      0.91      −0.02     pass (at the edge)
+safety              1.00      0.98       0.00     BLOCK ← zero tolerance
+cost/goal          $0.42     $0.38      +10%      pass
+p95 latency          33s       36s       +15%     pass
+
+gate result: BLOCKED on safety. Two cases now produce an unsafe refusal
+failure; fix or override with a named approver.
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The gate is what makes rapid iteration safe. Without it, an improvement programme reliably ships a
+regression within a few months and loses organisational trust — after which nobody is allowed to change
+anything, which is worse than never having optimised.</p>
+<p>Keep safety and grounding at zero tolerance. Everything else can trade.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>No gate.</strong> Regressions found by customers.</li>
+<li><strong>Auto-updating baseline.</strong> Slow drift with nothing to compare against.</li>
+<li><strong>Tolerance too loose.</strong> A gate that never blocks.</li>
+<li><strong>Silent overrides.</strong> Overrides must be named and recorded.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Before the first automated improvement ships.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="experiments" data-impl="7" data-crit="8" data-tag="Gate">
+<h3>Experiments</h3>
+<p class="tldr">Control versus candidate on real traffic, with an assignment recorded on every run — the
+only way to know a change works on your distribution rather than your eval set.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>An experiment specification names the kind of change (prompt, model, retrieval), the target key, and the
+control and candidate versions. Assignment is deterministic per unit (tenant, agent, or goal fingerprint)
+so a user does not oscillate between behaviours mid-conversation. The assignment is stamped on every run,
+which is what makes attribution possible afterwards.</p>
+<p>Choose the assignment unit carefully: per-goal randomisation gives faster statistics; per-tenant
+assignment gives coherent user experience and is usually the right answer for anything a person notices.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/intelligence/experiment_registry.py</code><span class="note">ExperimentRegistry</span></li>
+<li><code>app/memory/contracts.py</code><span class="note">ExperimentSpec — kind, target_key, control_version, candidate_version</span></li>
+<li><code>app/optimization/ab_testing.py</code><span class="note">assignment and analysis</span></li>
+<li><code>app/intelligence/learning_experiments.py</code><span class="note">learning-specific experiments</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>ExperimentSpec
+  kind             model
+  target_key       role:verifier · goal_class:invoice_reconciliation
+  control_version  large-A
+  candidate_version mid-B
+  assignment       per tenant, 15% candidate
+  guardrail        stop if candidate safety < control
+
+after 9 days · 2,140 control / 380 candidate goals
+  success   0.94 vs 0.93   (Δ −0.01, ns)
+  cost      $0.021 vs $0.004
+  decision  promote; keep control available for 30 days
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Two practical rules. Run few experiments at once — overlapping experiments on the same traffic make
+attribution impossible and neither reaches significance. And define the stopping rule in advance,
+including the guardrail that aborts on a safety regression, because "let it run a bit longer" is how a
+bad candidate serves a thousand more goals.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Unrecorded assignment.</strong> Results cannot be attributed.</li>
+<li><strong>Overlapping experiments.</strong> Confounded outcomes.</li>
+<li><strong>Per-goal assignment for user-visible behaviour.</strong> Inconsistent experience.</li>
+<li><strong>No stopping rule.</strong> Peeking until the numbers look good.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any change whose effect you cannot fully measure offline — which is most of them.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="meta-agent" data-impl="7" data-crit="6" data-tag="Candidate">
+<h3>Meta-agent: agents that configure agents</h3>
+<p class="tldr">Turn a natural-language description into an agent configuration — role, tools,
+collections, patterns, models — and let the improvement loop tune it from there.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A planner-style model reads a description of the job ("handle vendor invoice reconciliation for the
+finance team") and emits a configuration: system prompt, tool allowlist, knowledge collections, pattern
+set, model tiers, and approval requirements. The output is a proposal, validated against what the tenant
+actually has (tools that exist, collections that are populated, plans that permit those models) and
+reviewed before activation.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/intelligence/meta_agent.py</code><span class="note">MetaAgentPlanner</span></li>
+<li><code>app/org/team_formation.py</code><span class="note">the multi-agent equivalent (chapter 22)</span></li>
+<li><code>app/capabilities/resolver.py</code><span class="note">validating that the requested capabilities exist</span></li>
+<li><code>app/api/builder.py</code>, <code>app/api/lab.py</code><span class="note">the authoring surfaces</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>input  "an agent that reconciles vendor invoices against POs every month
+        and flags mismatches over ₹5,000 for the finance lead"
+
+proposal
+  tools        invoices.query, po.query, notify.slack, gst.fetch_filed
+  collections  acme/finance-policies, acme/vendor-contracts
+  patterns     plan_execute + reflection + rollback
+  models       planner mid · executor mid · verifier mid
+  approvals    any write, and any flag notification over ₹5,000
+  schedule     monthly, 2nd business day
+
+validation  po.query does not exist for this tenant → flagged
+review      finance lead approves with one edit (threshold ₹10,000)
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Meta-agents are excellent at producing a sensible starting configuration and poor at getting the
+approval and threshold details right — which are exactly the details that matter. Treat the output as a
+draft for review, always validate against real capabilities, and never let a generated configuration
+grant permissions the requester did not already have.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Hallucinated capabilities.</strong> Tools and collections that do not exist.</li>
+<li><strong>Over-permissive configuration.</strong> A generated allowlist wider than the requester's own
+access.</li>
+<li><strong>Unreviewed activation.</strong> An agent nobody approved acting on real systems.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Non-engineers need to create agents, with review.</li>
+<li class="no">Never auto-activate a generated configuration.</li>
+</ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="ch9-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Learned pattern selection.</strong> The improvement loop can tune models and prompts but
+      does not yet tune which agent patterns are used per goal class, which is where a lot of the
+      remaining cost sits.</li>
+      <li><strong>Counterfactual memory attribution.</strong> Ablating a recalled memory to measure its
+      real contribution is not implemented.</li>
+      <li><strong>Cross-tenant learning.</strong> Every tenant improves in isolation; privacy-preserving
+      aggregation is the obvious unrealised value.</li>
+      <li><strong>Automatic corpus-gap backlog.</strong> Coverage failures are detectable per query but do
+      not roll up into a prioritised "documents you should ingest" list.</li>
+      <li><strong>Improvement cost accounting.</strong> Nothing tracks what the improvement loop itself
+      costs against the savings it produces.</li>
+    </ul>
+  </div>
+</section>

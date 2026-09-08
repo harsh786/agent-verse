@@ -1,0 +1,1202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Governance · AgentVerse Field Manual</title>
+<meta name="description" content="CH 13 · Governance">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>/* ==========================================================================
+   AgentVerse Field Manual — instrument chrome + engineering-manual body.
+   Tokens: complete light palette on :root; dark redefined for the two
+   dark states (un-stamped OS-dark, and explicit data-theme="dark").
+   ========================================================================== */
+
+:root {
+  /* ground + surfaces (cool slate neutrals, biased toward the cyan accent) */
+  --bg:        #EFF2F5;
+  --paper:     #FFFFFF;
+  --raised:    #F6F8FA;
+  --sunken:    #E7ECF1;
+  --rail:      #FBFCFD;
+
+  /* ink */
+  --ink:       #0B1220;
+  --ink-2:     #3C4A5A;
+  --ink-3:     #6B7A8B;
+  --ink-4:     #93A1B0;
+
+  /* lines */
+  --line:      #D5DDE5;
+  --line-soft: #E4EAF0;
+  --line-hard: #B9C5D0;
+
+  /* accent — JARVIS electric, darkened for contrast on paper */
+  --accent:      #007D9C;
+  --accent-2:    #00A8CC;
+  --accent-wash: rgba(0,168,204,0.10);
+  --accent-line: rgba(0,125,156,0.35);
+
+  /* semantic (ratings, status, diagram emphasis) */
+  --good:      #0E7C55;
+  --good-wash: rgba(14,124,85,0.10);
+  --warn:      #A2650A;
+  --warn-wash: rgba(162,101,10,0.10);
+  --bad:       #B3303B;
+  --bad-wash:  rgba(179,48,59,0.10);
+  --note:      #6D46C4;
+  --note-wash: rgba(109,70,196,0.10);
+
+  --shadow-1: 0 1px 2px rgba(11,18,32,0.05);
+  --shadow-2: 0 8px 28px rgba(11,18,32,0.10);
+
+  --measure: 68ch;
+  --rail-w: 274px;
+  --topbar-h: 52px;
+
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #070A10;
+    --paper:     #0C1017;
+    --raised:    #12171F;
+    --sunken:    #090D13;
+    --rail:      #0A0E15;
+
+    --ink:       #E9EFF5;
+    --ink-2:     #B3C0CD;
+    --ink-3:     #8593A2;
+    --ink-4:     #5D6C7B;
+
+    --line:      rgba(255,255,255,0.09);
+    --line-soft: rgba(255,255,255,0.055);
+    --line-hard: rgba(255,255,255,0.16);
+
+    --accent:      #35D8F5;
+    --accent-2:    #00D4FF;
+    --accent-wash: rgba(0,212,255,0.10);
+    --accent-line: rgba(0,212,255,0.35);
+
+    --good:      #2ED08C;
+    --good-wash: rgba(46,208,140,0.12);
+    --warn:      #F0B429;
+    --warn-wash: rgba(240,180,41,0.12);
+    --bad:       #FF6B78;
+    --bad-wash:  rgba(255,107,120,0.12);
+    --note:      #B08CFF;
+    --note-wash: rgba(176,140,255,0.12);
+
+    --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+    --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #070A10;
+  --paper:     #0C1017;
+  --raised:    #12171F;
+  --sunken:    #090D13;
+  --rail:      #0A0E15;
+
+  --ink:       #E9EFF5;
+  --ink-2:     #B3C0CD;
+  --ink-3:     #8593A2;
+  --ink-4:     #5D6C7B;
+
+  --line:      rgba(255,255,255,0.09);
+  --line-soft: rgba(255,255,255,0.055);
+  --line-hard: rgba(255,255,255,0.16);
+
+  --accent:      #35D8F5;
+  --accent-2:    #00D4FF;
+  --accent-wash: rgba(0,212,255,0.10);
+  --accent-line: rgba(0,212,255,0.35);
+
+  --good:      #2ED08C;
+  --good-wash: rgba(46,208,140,0.12);
+  --warn:      #F0B429;
+  --warn-wash: rgba(240,180,41,0.12);
+  --bad:       #FF6B78;
+  --bad-wash:  rgba(255,107,120,0.12);
+  --note:      #B08CFF;
+  --note-wash: rgba(176,140,255,0.12);
+
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+  color-scheme: dark;
+}
+
+/* -------------------------------------------------- base */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 17.5px;
+  line-height: 1.62;
+  font-synthesis-weight: none;
+}
+
+a { color: var(--accent); text-decoration-color: var(--accent-line); text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
+
+h1, h2, h3, h4, h5 { font-family: var(--f-display); font-weight: 650; letter-spacing: -0.015em; text-wrap: balance; margin: 0; }
+p { margin: 0 0 0.85em; }
+p:last-child { margin-bottom: 0; }
+ul, ol { margin: 0 0 0.9em; padding-left: 1.25em; }
+li { margin: 0.25em 0; }
+li > ul, li > ol { margin-bottom: 0.2em; }
+strong { font-weight: 650; }
+code, kbd, samp { font-family: var(--f-mono); font-size: 0.855em; }
+:not(pre) > code {
+  background: var(--sunken); border: 1px solid var(--line-soft);
+  padding: 0.08em 0.34em; border-radius: 3px; color: var(--ink-2);
+  word-break: break-word;
+}
+hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+
+.mono { font-family: var(--f-mono); }
+.eyebrow {
+  font-family: var(--f-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3);
+}
+
+/* -------------------------------------------------- top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  height: var(--topbar-h);
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .brand {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink);
+  text-decoration: none; white-space: nowrap;
+}
+.topbar .brand b { color: var(--accent); font-weight: 600; }
+.topbar .crumb {
+  font-family: var(--f-mono); font-size: 11px; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar .spacer { flex: 1 1 auto; }
+.tb-btn {
+  font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  background: transparent; color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 5px 9px; cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.tb-btn:hover { border-color: var(--accent-line); color: var(--accent); }
+
+/* -------------------------------------------------- shell */
+.shell { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); align-items: start; }
+
+.rail {
+  position: sticky; top: var(--topbar-h);
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--rail);
+  border-right: 1px solid var(--line);
+  padding: 18px 0 40px;
+}
+.rail h4 { font-size: 10.5px; font-family: var(--f-mono); font-weight: 500; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-4); padding: 0 18px; margin: 16px 0 8px; }
+.rail .part-label { padding: 0 18px; margin: 20px 0 6px; }
+.rail nav a {
+  display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: baseline;
+  padding: 5px 18px; text-decoration: none; color: var(--ink-2);
+  font-family: var(--f-display); font-size: 13.5px; line-height: 1.35; letter-spacing: -0.005em;
+  border-left: 2px solid transparent;
+}
+.rail nav a .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.rail nav a:hover { background: var(--accent-wash); color: var(--ink); }
+.rail nav a[aria-current="page"] { color: var(--accent); border-left-color: var(--accent); background: var(--accent-wash); }
+.rail nav a[aria-current="page"] .n { color: var(--accent); }
+.rail .inpage { border-top: 1px solid var(--line-soft); margin-top: 14px; padding-top: 4px; }
+.rail .inpage a { grid-template-columns: 26px 1fr; font-size: 12.5px; color: var(--ink-3); }
+.rail .filter { padding: 0 14px 6px; }
+.rail .filter input {
+  width: 100%; font-family: var(--f-mono); font-size: 11.5px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
+}
+.rail .filter input::placeholder { color: var(--ink-4); }
+
+main { min-width: 0; padding: 0 0 96px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 clamp(18px, 4vw, 52px); }
+.prose { max-width: var(--measure); }
+
+/* -------------------------------------------------- chapter head */
+.chead { padding: 46px 0 26px; border-bottom: 1px solid var(--line); }
+.chead .kicker { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.chead .cnum {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
+  color: var(--accent); border: 1px solid var(--accent-line); border-radius: 3px; padding: 3px 7px;
+}
+.chead h1 { font-size: clamp(30px, 4.4vw, 46px); line-height: 1.06; font-weight: 700; letter-spacing: -0.028em; }
+.chead .lede { font-size: 20px; line-height: 1.5; color: var(--ink-2); margin-top: 16px; max-width: 62ch; }
+
+.statstrip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 0; margin-top: 26px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--paper); overflow: hidden;
+}
+.statstrip div { padding: 11px 16px; border-right: 1px solid var(--line-soft); }
+.statstrip div:last-child { border-right: 0; }
+.statstrip .k { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.statstrip .v { font-family: var(--f-display); font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------- sections */
+section.block { padding: 38px 0 8px; }
+section.block > h2 {
+  font-size: 25px; font-weight: 700; letter-spacing: -0.022em; padding-bottom: 8px;
+  border-bottom: 2px solid var(--ink); display: inline-block; margin-bottom: 20px;
+}
+section.block > .prose { margin-bottom: 8px; }
+
+.callout {
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  background: var(--paper); padding: 14px 16px; margin: 18px 0; border-radius: 0 4px 4px 0;
+  font-size: 16.5px;
+}
+.callout.warn { border-left-color: var(--warn); }
+.callout.bad  { border-left-color: var(--bad); }
+.callout.good { border-left-color: var(--good); }
+.callout .lbl { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); display: block; margin-bottom: 5px; }
+
+/* -------------------------------------------------- concept card */
+.concept {
+  border-top: 1px solid var(--line);
+  padding: 30px 0 34px;
+  scroll-margin-top: calc(var(--topbar-h) + 12px);
+}
+.concept:first-of-type { border-top-width: 2px; border-top-color: var(--ink); }
+.concept > h3 {
+  font-size: 23px; font-weight: 700; letter-spacing: -0.022em; line-height: 1.18;
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.concept > h3 .idx {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 500; color: var(--ink-4);
+  letter-spacing: 0.06em; font-variant-numeric: tabular-nums;
+}
+.concept > h3 a.anchor { color: var(--ink-4); text-decoration: none; font-family: var(--f-mono); font-size: 13px; opacity: 0; }
+.concept:hover > h3 a.anchor { opacity: 1; }
+
+.dials { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 12px 0 16px; }
+.dial { display: flex; align-items: center; gap: 8px; }
+.dial .dl { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-4); }
+.meter { display: inline-flex; gap: 2px; }
+.meter i { display: block; width: 7px; height: 12px; background: var(--line); border-radius: 1px; }
+.meter i.on { background: var(--accent); }
+.dial.crit .meter i.on { background: var(--note); }
+.dial .dv { font-family: var(--f-mono); font-size: 12px; font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.dial .dv small { font-weight: 400; color: var(--ink-4); }
+.pill {
+  font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap;
+}
+.pill.shipped { color: var(--good); background: var(--good-wash); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.pill.partial { color: var(--warn); background: var(--warn-wash); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.pill.thin    { color: var(--bad);  background: var(--bad-wash);  border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.pill.tag     { color: var(--ink-3); background: var(--sunken); border-color: var(--line-soft); }
+
+.tldr { font-size: 18.5px; line-height: 1.5; color: var(--ink); max-width: 66ch; }
+.tldr b, .tldr strong { color: var(--ink); }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 20px 0 0; }
+.cols > section { min-width: 0; }
+.cols h4, .band h4 {
+  font-family: var(--f-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px;
+  padding-bottom: 5px; border-bottom: 1px solid var(--line-soft);
+}
+.cols section p, .band p, .cols section li, .band li { font-size: 16.5px; }
+
+.band { margin-top: 18px; padding: 15px 17px; border-radius: 4px; border: 1px solid var(--line-soft); background: var(--raised); }
+.band.example { background: var(--sunken); }
+.band.prod  { border-color: color-mix(in srgb, var(--accent) 22%, var(--line-soft)); background: var(--accent-wash); }
+.band.fail  { border-color: color-mix(in srgb, var(--bad) 22%, var(--line-soft)); background: var(--bad-wash); }
+.band.when  { background: var(--paper); }
+.band.example h4 { color: var(--ink-2); }
+.band.prod h4 { color: var(--accent); border-bottom-color: var(--accent-line); }
+.band.fail h4 { color: var(--bad); border-bottom-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+
+.band.when ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.band.when li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; }
+.band.when li::before { content: "+"; font-family: var(--f-mono); color: var(--good); font-weight: 600; }
+.band.when li.no::before { content: "\2212"; color: var(--bad); }
+
+/* -------------------------------------------------- code + pre */
+pre {
+  margin: 12px 0; padding: 13px 15px; overflow-x: auto;
+  background: var(--sunken); border: 1px solid var(--line-soft); border-radius: 4px;
+  font-family: var(--f-mono); font-size: 12.5px; line-height: 1.62; color: var(--ink-2);
+  tab-size: 2;
+}
+:root[data-theme="dark"] pre, :root:not([data-theme="light"]) pre { color: var(--ink-2); }
+pre .c { color: var(--ink-4); }
+pre .k { color: var(--accent); }
+pre .s { color: var(--good); }
+
+.filelist { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.filelist li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; font-size: 15px; }
+.filelist code { font-size: 12.3px; background: none; border: 0; padding: 0; color: var(--accent); word-break: break-all; }
+.filelist .note { color: var(--ink-3); font-size: 15px; }
+
+/* -------------------------------------------------- tables */
+.tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+table { border-collapse: collapse; width: 100%; font-family: var(--f-display); font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+th {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-3); background: var(--raised); border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+td code { font-size: 12px; }
+
+/* -------------------------------------------------- figures */
+figure { margin: 22px 0; }
+figure svg { display: block; max-width: 100%; height: auto; color: var(--ink-2); }
+figcaption { font-size: 14.5px; color: var(--ink-3); margin-top: 9px; font-family: var(--f-display); max-width: 70ch; }
+.fig-em { color: var(--accent); }
+
+/* -------------------------------------------------- index page bits */
+.chapgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 4px; overflow: hidden; margin: 22px 0; }
+.chapgrid a {
+  background: var(--paper); padding: 16px 17px; text-decoration: none; color: var(--ink);
+  display: flex; flex-direction: column; gap: 7px; min-height: 128px;
+}
+.chapgrid a:hover { background: var(--accent-wash); }
+.chapgrid .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--accent); letter-spacing: 0.1em; }
+.chapgrid .t { font-family: var(--f-display); font-size: 16.5px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.25; }
+.chapgrid .d { font-size: 14.5px; color: var(--ink-3); line-height: 1.45; }
+.chapgrid .m { margin-top: auto; font-family: var(--f-mono); font-size: 10px; color: var(--ink-4); letter-spacing: 0.06em; }
+
+.matrix td.c1 { font-family: var(--f-display); font-weight: 600; }
+.matrix .bar { display: inline-flex; gap: 2px; vertical-align: middle; }
+.matrix .bar i { width: 5px; height: 10px; background: var(--line); border-radius: 1px; display: block; }
+.matrix .bar i.on { background: var(--accent); }
+.matrix .bar.crit i.on { background: var(--note); }
+
+/* -------------------------------------------------- footer nav */
+.pagenav { display: flex; gap: 12px; justify-content: space-between; margin-top: 54px; padding-top: 20px; border-top: 1px solid var(--line); }
+.pagenav a { flex: 1 1 0; text-decoration: none; border: 1px solid var(--line); border-radius: 4px; padding: 13px 15px; background: var(--paper); color: var(--ink); }
+.pagenav a:hover { border-color: var(--accent-line); }
+.pagenav .d { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.pagenav .t { font-family: var(--f-display); font-weight: 650; font-size: 15.5px; letter-spacing: -0.015em; }
+.pagenav a.next { text-align: right; }
+
+.footnote { margin-top: 30px; font-size: 14.5px; color: var(--ink-3); font-family: var(--f-display); }
+
+/* -------------------------------------------------- responsive */
+@media (max-width: 1080px) {
+  .cols { grid-template-columns: 1fr; gap: 14px; }
+}
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail {
+    position: static; height: auto; max-height: 340px;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  body { font-size: 17px; }
+  .chead { padding-top: 30px; }
+}
+@media print {
+  .rail, .topbar, .pagenav { display: none; }
+  body { background: #fff; color: #000; font-size: 10.5pt; }
+  .shell { grid-template-columns: 1fr; }
+}
+
+.idxhead { background: var(--raised); font-family: var(--f-mono); font-size: 11px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">AgentVerse <b>Field Manual</b></a>
+  <span class="crumb">CH 13 · Governance</span>
+  <span class="spacer"></span>
+  <button class="tb-btn" data-theme-toggle type="button">Theme</button>
+</header>
+<div class="shell">
+<aside class="rail"><h4>Field manual</h4><nav><a href="index.html"><span class="n">00</span><span>Hub &amp; how to read</span></a></nav></nav><div class="part-label eyebrow">I · The agent</div><nav><a href="agent-patterns.html"><span class="n">01</span><span>Agent patterns</span></a><a href="rag-patterns.html"><span class="n">02</span><span>RAG patterns</span></a><a href="agent-memory.html"><span class="n">03</span><span>Agent memories</span></a></nav><div class="part-label eyebrow">II · Knowledge</div><nav><a href="knowledge-and-graphs.html"><span class="n">04</span><span>Knowledge &amp; knowledge graph</span></a><a href="ingestion.html"><span class="n">05</span><span>Ingestion</span></a><a href="retrieval-strategies.html"><span class="n">06</span><span>Retrieval strategies</span></a><a href="embeddings.html"><span class="n">07</span><span>Embeddings</span></a><a href="chunking.html"><span class="n">17</span><span>Chunking strategies</span></a></nav><div class="part-label eyebrow">III · Context &amp; quality</div><nav><a href="prompt-builder.html"><span class="n">08</span><span>Prompt builder</span></a><a href="agent-improvement.html"><span class="n">09</span><span>Agent improvement</span></a><a href="evals.html"><span class="n">10</span><span>Evals</span></a><a href="hallucination.html"><span class="n">18</span><span>Hallucination handling</span></a></nav><div class="part-label eyebrow">IV · Safety &amp; control</div><nav><a href="guardrails.html"><span class="n">12</span><span>Guardrails</span></a><a href="governance.html" aria-current="page"><span class="n">13</span><span>Governance</span></a><a href="scopes.html"><span class="n">14</span><span>Scopes</span></a><a href="observability.html"><span class="n">11</span><span>Observability</span></a></nav><div class="part-label eyebrow">V · Modality &amp; models</div><nav><a href="multimodal.html"><span class="n">15</span><span>Multimodal</span></a><a href="ocr.html"><span class="n">21</span><span>OCR</span></a><a href="model-router.html"><span class="n">16</span><span>Multi-model router</span></a></nav><div class="part-label eyebrow">VI · The platform</div><nav><a href="platform-workflows.html"><span class="n">19</span><span>Core platform workflows</span></a><a href="platform-concepts.html"><span class="n">20</span><span>Other core platform concepts</span></a><a href="agent-teams.html"><span class="n">22</span><span>AI agent teams</span></a><a href="jarvis.html"><span class="n">23</span><span>Jervis (JARVIS) console</span></a></nav><div class="part-label eyebrow">VII · Not on the list</div><nav><a href="coordination-protocols.html"><span class="n">24</span><span>Coordination protocols</span></a><a href="code-execution.html"><span class="n">25</span><span>Code execution &amp; sandboxing</span></a><a href="voice.html"><span class="n">26</span><span>Voice &amp; realtime agents</span></a><a href="triggers.html"><span class="n">27</span><span>Triggers &amp; event-driven agents</span></a><a href="reliability-qos.html"><span class="n">28</span><span>Reliability &amp; QoS</span></a><a href="cost-capacity.html"><span class="n">29</span><span>Cost &amp; capacity engineering</span></a><a href="data-lifecycle.html"><span class="n">30</span><span>Data lifecycle &amp; provenance</span></a><a href="testing-certification.html"><span class="n">31</span><span>Testing &amp; certification</span></a><a href="scale-playbook.html"><span class="n">32</span><span>Scale playbook</span></a><a href="workflow-engine.html"><span class="n">34</span><span>Workflow engine</span></a><a href="frontier.html"><span class="n">33</span><span>Frontier &amp; gaps</span></a></nav><div class="part-label eyebrow">Appendix</div><nav><a href="appendix-ratings.html"><span class="n">A</span><span>Ratings matrix</span></a><a href="appendix-glossary.html"><span class="n">B</span><span>Glossary</span></a></nav><div class="inpage"><h4>In this chapter</h4><nav><a href="#tenant-isolation"><span class="n">01</span><span>Tenant isolation</span></a><a href="#api-key-scopes"><span class="n">02</span><span>API key scopes</span></a><a href="#rbac"><span class="n">03</span><span>RBAC and the permission matrix</span></a><a href="#policy-engine"><span class="n">04</span><span>The policy engine</span></a><a href="#cost-control"><span class="n">05</span><span>Cost control and budget enforcement</span></a><a href="#audit-trail"><span class="n">06</span><span>The audit trail</span></a><a href="#compliance-controls"><span class="n">07</span><span>Compliance controls and bundles</span></a><a href="#approval-workflows"><span class="n">08</span><span>Approval workflows and chains</span></a><a href="#tool-risk-classification"><span class="n">09</span><span>Tool risk classification</span></a><a href="#enterprise-controls"><span class="n">10</span><span>Enterprise controls</span></a></nav></div></aside>
+<main><div class="wrap">
+<header class="chead"><div class="kicker"><span class="cnum">CH 13</span><span class="eyebrow">IV · Safety &amp; control</span></div><h1>Governance</h1><p class="lede">Tenancy, RBAC, RLS, policy engine, budgets, hash-chained audit.</p><div class="statstrip"><div><div class="k">Concepts</div><div class="v">10</div></div><div><div class="k">Mean impl</div><div class="v">8.2</div></div><div><div class="k">Mean criticality</div><div class="v">9.1</div></div><div><div class="k">Shipped</div><div class="v">9</div></div><div><div class="k">Thin / missing</div><div class="v">0</div></div></div></header><section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>Guardrails stop unsafe <em>actions</em>. Governance answers a different set of questions: who is
+    allowed to do what, who pays, who approved it, and can you prove all of it afterwards. It is the layer
+    that makes an agent platform sellable to a regulated enterprise, and it is enforced in three places —
+    the application, the database, and an append-only audit trail — because a control that exists in only
+    one of them is a control someone will eventually route around.</p>
+
+    <p>The organising idea is <strong>defence in depth through independent enforcement</strong>: tenant
+    isolation is checked in app code <em>and</em> in Postgres row-level security; a budget is checked in
+    the app <em>and</em> recorded in Redis for cross-replica accuracy; every consequential action is both
+    gated <em>and</em> written to a tamper-evident log.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 880 270" role="img" aria-label="Governance enforcement layers around a request: API key scope, RBAC roles, policy engine, cost and budget check, then the action, with row-level security enforcing tenant isolation at the database and an append-only hash-chained audit recording everything.">
+      <defs><marker id="gv1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="0" y="40" width="120" height="42" rx="3"></rect>
+        <rect x="150" y="40" width="120" height="42" rx="3"></rect>
+        <rect x="300" y="40" width="120" height="42" rx="3"></rect>
+        <rect x="450" y="40" width="120" height="42" rx="3"></rect>
+        <rect x="600" y="40" width="120" height="42" rx="3"></rect>
+      </g>
+      <rect x="750" y="40" width="120" height="42" rx="3" fill="none" stroke="#0E7C55" stroke-width="1.5"></rect>
+      <g font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor" text-anchor="middle">
+        <text x="60" y="58">API key scope</text><text x="60" y="73" font-size="9.5" opacity="0.6">what the key can do</text>
+        <text x="210" y="58">RBAC</text><text x="210" y="73" font-size="9.5" opacity="0.6">role → permission</text>
+        <text x="360" y="58">policy engine</text><text x="360" y="73" font-size="9.5" opacity="0.6">tool + data rules</text>
+        <text x="510" y="58">cost / budget</text><text x="510" y="73" font-size="9.5" opacity="0.6">can afford it?</text>
+        <text x="660" y="58">the action</text><text x="660" y="73" font-size="9.5" opacity="0.6">tool call</text>
+      </g>
+      <text x="810" y="58" font-family="Archivo, sans-serif" font-size="11.5" fill="#0E7C55" text-anchor="middle">audit</text>
+      <text x="810" y="73" font-family="Archivo, sans-serif" font-size="9.5" fill="#0E7C55" opacity="0.85" text-anchor="middle">hash-chained</text>
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#gv1)">
+        <line x1="120" y1="61" x2="146" y2="61"></line>
+        <line x1="270" y1="61" x2="296" y2="61"></line>
+        <line x1="420" y1="61" x2="446" y2="61"></line>
+        <line x1="570" y1="61" x2="596" y2="61"></line>
+        <line x1="720" y1="61" x2="746" y2="61"></line>
+      </g>
+      <rect x="0" y="128" width="720" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-dasharray="4 3"></rect>
+      <text x="360" y="146" font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor" text-anchor="middle">Postgres row-level security — SET LOCAL app.tenant_id</text>
+      <text x="360" y="161" font-family="Archivo, sans-serif" font-size="9.5" fill="currentColor" opacity="0.6" text-anchor="middle">tenant isolation enforced at the database, independent of every check above</text>
+      <line x1="360" y1="82" x2="360" y2="126" stroke="currentColor" stroke-width="1.1" stroke-dasharray="3 3" marker-end="url(#gv1)"></line>
+      <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">
+        <text x="0" y="204">two independent enforcement planes: app-level checks (top row) AND database RLS (below) — a bug in one is caught by the other</text>
+        <text x="0" y="222">every box writes to the audit trail: the decision, the actor, the reason — so "who approved this" is always answerable</text>
+        <text x="0" y="240">policy propagates across replicas via Redis pub/sub, so a rule change takes effect everywhere within seconds, not on next deploy</text>
+      </g>
+    </svg>
+    <figcaption>Governance is enforced twice. The top row is the application's decision chain; the dashed
+    plane is the database enforcing the same tenant boundary underneath it — which is why a missed check in
+    app code is not a data leak.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="governance">
+  <h2>The controls</h2>
+
+<article class="concept" id="tenant-isolation" data-impl="9" data-crit="10" data-tag="Isolation">
+<h3><span class="idx">01</span>Tenant isolation<a class="anchor" href="#tenant-isolation" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Isolation</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">Every row belongs to a tenant, and the boundary is enforced in two independent places: app
+code that filters by tenant, and a database that refuses to return another tenant's rows regardless of
+what the query asks for.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A <code>TenantContext</code> — an immutable, per-request identity — flows through the whole request. App
+code scopes every query by its tenant id. Underneath, Postgres row-level security policies filter rows by
+a session variable (<code>app.tenant_id</code>) set with <code>SET LOCAL</code> inside the transaction, so
+even a query that forgot its tenant filter returns nothing from other tenants. The two layers are
+independent by design: RLS is the backstop for the app bug that will eventually happen.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/tenancy/context.py</code><span class="note">TenantContext — the immutable per-request identity (a top-10 hub node)</span></li>
+<li><code>app/db/rls.py</code><span class="note">sqlalchemy_rls_context() — SET LOCAL app.tenant_id per transaction</span></li>
+<li><code>app/tenancy/middleware.py</code><span class="note">TenantMiddleware — establishes the context from the API key</span></li>
+<li><code>app/tenancy/sub_tenants.py</code><span class="note">nested tenancy</span></li>
+<li><code>app/tenancy/store.py</code><span class="note">tenant records</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>request with API key for tenant acme
+ middleware  → TenantContext(tenant_id="acme", plan="enterprise", ...)
+ transaction → SET LOCAL app.tenant_id = 'acme'
+ query       SELECT * FROM goals WHERE status = 'running'
+             (developer forgot the tenant filter)
+ RLS policy  rewrites to ... AND tenant_id = current_setting('app.tenant_id')
+ result      only acme's running goals — the bug did not leak
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The single most important test in the whole platform asserts that a request in tenant A can never
+return a tenant B row — through the API, through retrieval, through memory recall, through the cache.
+Cross-tenant leakage is the incident that ends contracts, and the reason RLS exists is that app-code
+discipline alone is not enough at the scale of hundreds of queries written by dozens of people.</p>
+<p>Watch for the paths that bypass RLS: raw connections, admin tooling, background jobs that use a system
+session. Each is a legitimate exception and each is where the next leak will come from.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>App-only isolation.</strong> One forgotten filter is a leak.</li>
+<li><strong>RLS bypassed by system sessions.</strong> Background jobs that see everything — scope them
+explicitly.</li>
+<li><strong>Shared caches without tenant keys.</strong> The cache becomes the leak.</li>
+<li><strong>Context not propagated to async work.</strong> A spawned task losing its tenant.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any multi-tenant system. Both layers, from day one.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="api-key-scopes" data-impl="8" data-crit="9" data-tag="AuthZ">
+<h3><span class="idx">02</span>API key scopes<a class="anchor" href="#api-key-scopes" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">AuthZ</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">A key is not all-or-nothing: each carries a scope limiting which operations it can perform,
+so a compromised read key cannot write and a CI key cannot touch billing.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Each API key is bound to a tenant and a set of scopes — read goals, submit goals, manage agents, admin
+— plus optional constraints like an IP allowlist and an expiry. Scope is checked before the request reaches
+the business logic, and it is the narrowest of the authorisation layers: it bounds what the credential can
+do before RBAC even considers who the user is.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/auth/scope_enforcement.py</code><span class="note">scope checks</span></li>
+<li><code>app/auth/scope_seeder.py</code><span class="note">default scopes</span></li>
+<li><code>app/tenancy/tenant_users.py</code>, <code>rbac.py</code><span class="note">key-to-role binding</span></li>
+<li><code>app/auth/ip_allowlist.py</code><span class="note">IP constraints per key</span></li>
+<li><code>app/auth/goal_tokens.py</code><span class="note">scoped, short-lived tokens for a single goal</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>key ak_ci_… (CI pipeline)
+ scopes      [goals:submit, goals:read]  · IP allowlist [CI egress range]
+ submit goal → allowed
+ delete agent → DENIED (no agents:admin scope)
+ request from a laptop → DENIED (IP not in allowlist)
+
+goal token gt_… (issued for one goal, expires in 1h)
+ scope       exactly the tools that goal needs, nothing else
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Goal tokens are the underused idea here: a short-lived, narrowly-scoped credential issued per goal means
+a leaked token grants access to one goal's tool set for one hour, not the tenant's whole surface. Combined
+with an IP allowlist, it turns key compromise from a breach into an inconvenience.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>God keys.</strong> One key with every scope, used everywhere.</li>
+<li><strong>No expiry.</strong> Keys that outlive the person who created them.</li>
+<li><strong>Scope checked after side effects.</strong> Authorisation that runs too late.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any API with more than one kind of caller.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="rbac" data-impl="8" data-crit="9" data-tag="AuthZ">
+<h3><span class="idx">03</span>RBAC and the permission matrix<a class="anchor" href="#rbac" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">AuthZ</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Roles map to permissions, users and keys map to roles, and the effective permission set is
+computed by expanding a role hierarchy — so access is describable, auditable, and changeable in one place.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A role (tenant_admin, org_admin, org_member, org_viewer, approver, billing_admin) carries a set of
+permissions; roles form a hierarchy so higher roles inherit lower ones. A user or key holds roles, and the
+effective permission set is the union after hierarchy expansion. Custom roles let a tenant define its own,
+and temporary elevation grants a permission for a bounded window with an audit record.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/tenancy/rbac.py</code><span class="note">effective_roles() — hierarchy expansion</span></li>
+<li><code>app/tenancy/tenant_users.py</code><span class="note">TenantRole enum</span></li>
+<li><code>app/auth/custom_roles.py</code><span class="note">tenant-defined roles</span></li>
+<li><code>app/auth/temp_elevation.py</code><span class="note">bounded privilege elevation</span></li>
+<li><code>app/auth/permission_cache.py</code><span class="note">cached decisions with TTL</span></li>
+<li><code>app/governance/permissions.py</code><span class="note">the permission matrix</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>user j.iyer  roles [org_member, approver]
+ org_member → [goals:submit, goals:read, agents:read]
+ approver   → [approvals:act]
+ effective  = union → can submit/read goals, read agents, act on approvals
+             cannot create agents (needs org_admin) or view billing
+
+temp elevation: granted agents:admin for 2h to run a migration
+ → recorded: who granted, why, expiry → auto-revoked, audited
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The permission decision is on the hot path of every request, so it is cached with a short TTL — and the
+cache is the thing that bites you when a revocation does not take effect for thirty seconds. Make the TTL a
+conscious choice, and invalidate on role change for anything security-critical. Temporary elevation with an
+audit record is how you handle "I need admin just for this" without permanent scope creep.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Permission sprawl.</strong> Everyone accumulating roles until the matrix is meaningless.</li>
+<li><strong>Stale cache after revocation.</strong> Access that outlives its removal.</li>
+<li><strong>Permanent elevation.</strong> "Temporary" admin that was never revoked.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>More than a couple of users per tenant, or any role distinction.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="policy-engine" data-impl="8" data-crit="9" data-tag="Policy">
+<h3><span class="idx">04</span>The policy engine<a class="anchor" href="#policy-engine" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Policy</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Compile a goal's context into a set of runtime constraints — which tools are allowed, what
+requires approval, the cost ceiling, what is denied — evaluated deterministically and propagated across
+replicas in seconds.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>The compiler takes the goal's runtime profile (tenant, plan, risk, domain, compliance regime) and
+produces <code>RuntimeConstraints</code>: allowed and denied tools, approval requirements, cost and
+iteration limits, data-class restrictions. The computation is deterministic and shares its dimension logic
+so the same inputs always produce the same constraints, and a policy trace records every dimension, its
+value, and why. Changes propagate through Redis pub/sub, so a rule edit takes effect fleet-wide without a
+deploy.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/policy_runtime/compiler.py</code><span class="note">PolicyCompiler.compile() → RuntimeConstraints</span></li>
+<li><code>app/policy_runtime/constraint_model.py</code><span class="note">RuntimeConstraints</span></li>
+<li><code>app/policy_runtime/runtime_enforcer.py</code><span class="note">enforcement at runtime</span></li>
+<li><code>app/policy_runtime/policy_trace.py</code><span class="note">PolicyTrace — per-goal decision audit</span></li>
+<li><code>app/governance/policies.py</code>, <code>policy_rules.py</code><span class="note">the policy definitions + Redis pub/sub propagation</span></li>
+<li><code>app/security_runtime/policy_bundle_selector.py</code><span class="note">selecting the right bundle</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>goal profile  tenant=acme plan=enterprise risk=high domain=finance
+              compliance=[SOC2, DPDP]
+
+compiled constraints
+ allowed tools    finance.* invoices.* gst.* notify.slack
+ denied tools     admin.* infra.* (not in scope for this domain)
+ approvals        any write_high, any external notification
+ cost ceiling     $8.00
+ max iterations   25
+ data classes     may not place 'restricted' data in tool args
+policy trace: each line above with its source rule and reason
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Deterministic compilation plus a policy trace is what lets you answer a regulator's "why was this
+allowed?" with a document rather than a shrug. Redis propagation matters operationally: when you discover a
+tool is dangerous, you disable it fleet-wide in seconds, not at the next release — which is the difference
+between an incident and a near-miss.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Non-deterministic policy.</strong> The same goal allowed on one replica, denied on another.</li>
+<li><strong>No trace.</strong> Decisions that cannot be explained.</li>
+<li><strong>Propagation lag.</strong> A disabled tool still callable for minutes.</li>
+<li><strong>Policy that can loosen safety.</strong> Optimisation rules removing an approval — the
+append-only safety rule (chapter 1) exists to prevent this.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any deployment where different goals need different rules — which is any real one.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="cost-control" data-impl="9" data-crit="10" data-tag="Cost">
+<h3><span class="idx">05</span>Cost control and budget enforcement<a class="anchor" href="#cost-control" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Cost</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">Every goal and every tenant has a budget, checked before each model and tool call, backed
+by Redis so the accounting is accurate across replicas — a goal cannot overspend by racing itself on two
+workers.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Cost accumulates in Redis keyed by goal and tenant, so a check-and-increment is atomic across the fleet.
+Before each metered operation the controller checks the remaining budget; over the limit, the goal pauses
+or fails rather than continuing. Budgets exist at several scopes — per goal, per tenant per period, per
+plan — and the tightest binding wins. Cross-replica accuracy is the whole point: an app-local counter lets
+a goal running on two workers spend twice its budget.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/governance/cost.py</code><span class="note">RedisCostController, get_cost_tier(), the pre-call check</span></li>
+<li><code>app/governance/pricing.py</code><span class="note">the price table</span></li>
+<li><code>app/intelligence/cost_tracker.py</code><span class="note">per-run accumulation</span></li>
+<li><code>app/tenancy/limits.py</code>, <code>limits_v2.py</code><span class="note">per-plan limits</span></li>
+<li><code>app/tenancy/billing.py</code><span class="note">tenant accounting</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>goal budget $5.00, running on worker-3
+ before executor call: spent $4.80 + estimated $0.35 = $5.15 > $5.00
+ → BLOCK the call → goal pauses at "budget exceeded", not silently over
+tenant budget $2,000/month, at $1,900
+ → new goals warned at 90%, blocked at 100% (except allowlisted critical)
+Redis atomicity: two workers on the same goal cannot both pass the check
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Redis-backed budgets are the difference between a cost model and a cost hope. The check is on the hot
+path, so it must be a single atomic operation, not a read-then-write. And it must include tool and
+compute cost, not just model tokens — in tool-heavy or code-execution workloads, model tokens are
+frequently the minority of spend.</p>
+<p>Attribute sub-agent spend to the parent goal, or multi-agent goals appear cheap and your per-goal costs
+do not reconcile with the provider invoice.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>App-local counters.</strong> Overspend by racing across replicas.</li>
+<li><strong>Post-hoc accounting.</strong> Finding out you overspent after the fact.</li>
+<li><strong>Model-tokens-only.</strong> Missing tool and compute cost.</li>
+<li><strong>No sub-agent attribution.</strong> Costs that do not add up.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always. Unbudgeted agents are how a platform gets a surprise invoice.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="audit-trail" data-impl="9" data-crit="10" data-tag="Audit">
+<h3><span class="idx">06</span>The audit trail<a class="anchor" href="#audit-trail" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Audit</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">An append-only, hash-chained record of every consequential action — tamper-evident, so a
+modified or deleted entry breaks the chain and is detectable.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Each audit entry includes the actor, action, target, tenant, timestamp, and a hash of the entry plus the
+previous entry's hash — a chain. Altering or removing any entry breaks every subsequent hash, so tampering
+is detectable even by someone with database write access. A background flusher batches writes for
+throughput without losing the ordering the chain depends on, and entries can be exported to WORM storage
+and to SIEM systems.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/governance/audit_v3.py</code><span class="note">AuditV3 — hash-chained append-only, _hash_dict(), AuditFlusher, system_session()</span></li>
+<li><code>app/governance/audit.py</code>, <code>audit_v2.py</code><span class="note">earlier audit implementations</span></li>
+<li><code>app/governance/siem_adapters.py</code><span class="note">export to SIEM</span></li>
+<li><code>app/provenance/export.py</code><span class="note">WORM export</span></li>
+<li><code>app/workflow/audit_middleware.py</code><span class="note">audit for workflow steps</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>entry n     {actor:"j.iyer", action:"approve", target:"goal:g-8891",
+             detail:"filing amendment, ₹418,200", ts:..., 
+             prev_hash:"7c1f...", hash:"9a02..."}
+entry n+1   {..., prev_hash:"9a02...", hash:"b41d..."}
+
+tamper attempt: someone edits entry n's detail
+ → entry n's hash no longer matches its content
+ → and every entry after it now has a wrong prev_hash
+ → chain verification fails at exactly entry n → tampering located
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The hash chain is what lets you say "this log has not been altered" rather than "we don't think anyone
+changed it". For regulated deployments that distinction is the difference between an audit that passes and
+one that does not. Export to WORM storage and SIEM so the record survives even a full compromise of the
+primary database, and batch writes carefully — throughput matters, but never at the cost of the ordering
+the chain depends on.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Mutable audit.</strong> A log you can edit is not evidence.</li>
+<li><strong>Gaps.</strong> Actions that bypass the audit path.</li>
+<li><strong>Chain broken by batching bugs.</strong> Out-of-order writes that break verification legitimately.</li>
+<li><strong>Audit only in the primary DB.</strong> Lost with it.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any action a regulator, auditor, or customer might ask about — so most of them.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="compliance-controls" data-impl="8" data-crit="9" data-tag="Compliance">
+<h3><span class="idx">07</span>Compliance controls and bundles<a class="anchor" href="#compliance-controls" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Compliance</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Regulatory regimes — GDPR, DPDP, SOC2, PCI, HIPAA — are pre-configured as bundles that set
+policy, redaction, retention, and audit requirements together, so a tenant selects a regime rather than
+assembling a hundred settings.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A compliance bundle is a coherent set of controls: which data classes must be redacted, retention
+periods, residency requirements, consent handling, audit granularity, and approval requirements. Selecting
+a bundle configures the policy engine, the redaction layer, the retention policy, and the audit level in
+one act — and the bundle is versioned, so a change to a regime's interpretation is a bundle update, not a
+scramble across subsystems.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/governance/compliance_bundles.py</code><span class="note">the bundles</span></li>
+<li><code>app/enterprise/compliance.py</code>, <code>compliance_v2.py</code><span class="note">compliance controls</span></li>
+<li><code>app/api/dpdp.py</code><span class="note">DPDP data-subject rights</span></li>
+<li><code>app/lifecycle/retention_policy.py</code>, <code>legal_hold_policy.py</code><span class="note">retention and hold</span></li>
+<li><code>app/governance/legal_holds.py</code><span class="note">legal holds that suspend deletion</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>tenant selects "HIPAA" bundle
+ → redaction: PHI classes always redacted before external calls
+ → retention: 6 years, with legal-hold override
+ → residency: US only; connectors outside the region blocked
+ → audit: full detail on every access to PHI-classed data
+ → approvals: any disclosure of PHI requires a named approver
+one selection, five subsystems configured consistently
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Bundles are what make multi-regime, multi-tenant compliance tractable. The alternative — configuring each
+control per tenant — guarantees that some tenant is misconfigured, and the one that is will be the one
+audited. Version the bundles and record which version a tenant is on, so when a regime's requirements
+change you know exactly who needs re-configuring.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Per-setting configuration.</strong> Inconsistent controls, inevitable gaps.</li>
+<li><strong>Unversioned bundles.</strong> No way to track who is on which interpretation.</li>
+<li><strong>Bundle selected but not enforced.</strong> A regime chosen in the UI that does not reach the
+policy engine.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any regulated tenant, and before you sign the first one.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="approval-workflows" data-impl="8" data-crit="9" data-tag="Workflow">
+<h3><span class="idx">08</span>Approval workflows and chains<a class="anchor" href="#approval-workflows" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Workflow</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Some actions need more than one signature. Approval chains route a request through an
+ordered set of approvers, each recorded, with escalation and expiry.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A chain defines an ordered sequence of required approvers (or roles), optionally with conditions — a
+₹10,000 refund needs a manager, a ₹1,000,000 refund needs the finance director too. Each step is durable
+(the request waits, it does not block), recorded, and subject to escalation if an approver does not respond
+within a window. The chain composes with the HITL gateway: the gate triggers the chain, the chain gathers
+the signatures.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/org/approval_chain.py</code><span class="note">ApprovalChain</span></li>
+<li><code>app/governance/hitl.py</code><span class="note">the gateway that triggers it</span></li>
+<li><code>app/recovery/escalation_policy.py</code><span class="note">escalation on no-response</span></li>
+<li><code>app/collaboration_runtime/human_decision_trace.py</code><span class="note">the record</span></li>
+<li><code>app/integrations/email/approval_sender.py</code>, <code>app/gateway/channels/*</code><span class="note">how approvals reach people</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>action: refund ₹1,200,000
+chain  1 team lead        → approved 14:05
+       2 finance manager  → approved 14:40
+       3 finance director → no response by 18:00
+                          → escalated to deputy director → approved 18:20
+each step recorded; the refund executes only after step 3 completes;
+the executed amount is hashed against the approved amount
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Chains are where governance meets human latency, so the escalation and expiry behaviour matters as much
+as the chain itself: a request stuck on an unavailable approver is an outage nobody gets paged for. Define
+what happens on timeout explicitly, and make chain depth proportional to the stakes — a two-signature
+chain for routine actions trains everyone to rubber-stamp.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Chains too long for the stakes.</strong> Approval fatigue.</li>
+<li><strong>No escalation.</strong> Stuck on an unavailable approver.</li>
+<li><strong>Approve-then-substitute.</strong> Hash the approved action against the executed one.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>High-value or regulated actions needing more than one signature.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="tool-risk-classification" data-impl="8" data-crit="9" data-tag="Policy">
+<h3><span class="idx">09</span>Tool risk classification<a class="anchor" href="#tool-risk-classification" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Policy</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Every tool is classified by what it can do — read, write-low, write-high, destructive — and
+that class drives whether it needs approval, whether it needs a compensating action registered, and how it
+is audited.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Classification combines the connector and the operation: <code>github.get_issue</code> is read,
+<code>github.create_issue</code> is write-low, <code>github.delete_repo</code> is destructive. Some
+connectors use token-based classifiers preserved for backward compatibility; most use substring matching
+over the breadth of real MCP tool names. The class then drives policy: destructive tools require approval
+and a registered inverse, write-high tools require approval, reads flow freely.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/agent/tool_risk.py</code><span class="note">classify_tool_risk() — read/write_low/write_high/destructive</span></li>
+<li><code>app/tool_runtime/tool_policy.py</code><span class="note">class → policy</span></li>
+<li><code>app/reliability/tool_inverses.py</code><span class="note">compensating actions for reversible risk</span></li>
+<li><code>app/governance/policies.py</code><span class="note">the rules that consume the class</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>tool                     class         policy
+crm.get_contact         read          allowed, standard audit
+crm.update_contact      write_low     allowed, detailed audit
+crm.bulk_delete         destructive   approval + inverse required + full audit
+stripe.create_refund    write_high    approval + full audit
+db.execute("DROP ...")  destructive   approval + no inverse → HITL mandatory
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The pairing that matters is <em>irreversible ⇒ approved</em>: a destructive tool with no registered
+inverse must go through a human, because there is no automated way to undo it. Classification also needs to
+be conservative on unknown tools — a newly-connected MCP server's tools should default to a higher risk
+class until reviewed, not flow freely.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Unknown tools default to read.</strong> A new connector's destructive tool flowing freely.</li>
+<li><strong>Name-based misclassification.</strong> "update" that actually deletes.</li>
+<li><strong>Destructive without inverse or gate.</strong> Irreversible and unapproved.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any agent with write-capable tools.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="enterprise-controls" data-impl="7" data-crit="7" data-tag="Enterprise">
+<h3><span class="idx">10</span>Enterprise controls<a class="anchor" href="#enterprise-controls" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Enterprise</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">The features that appear on a security questionnaire: SSO/SAML/SCIM, MFA, IP allowlists,
+data residency, break-glass access, and legal holds — each unglamorous and each a deal-breaker if absent.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Identity federation (SAML, OIDC via Keycloak) and user provisioning (SCIM) so enterprises manage access
+in their own IdP; MFA for sensitive operations; IP allowlists per key and per tenant; data residency
+enforced at the connector and storage layer; break-glass access for emergencies that requires elevated
+approval and generates a prominent audit record; and legal holds that suspend deletion for named subjects
+or matters.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/auth/saml_provider.py</code>, <code>keycloak.py</code>, <code>google_oauth.py</code><span class="note">federation</span></li>
+<li><code>app/auth/scim_handler.py</code><span class="note">SCIM provisioning</span></li>
+<li><code>app/auth/mfa.py</code>, <code>app/api/mfa.py</code>, <code>mfa_crypto.py</code><span class="note">multi-factor</span></li>
+<li><code>app/auth/delegation.py</code><span class="note">delegated access</span></li>
+<li><code>app/governance/audit_v3.py</code><span class="note">break-glass approval path</span></li>
+<li><code>app/enterprise/solutions_catalog.py</code><span class="note">enterprise solution packaging</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>enterprise onboarding
+ SSO      SAML to the customer's Okta → users authenticate there
+ SCIM     provisioning/deprovisioning driven by their IdP → a departed
+          employee loses access automatically
+ MFA      required for approvals and admin actions
+ residency EU tenant → connectors and storage pinned to EU regions
+ break-glass on-call access to a customer's data requires two approvals
+          and generates a red-flagged audit entry the customer can see
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>These are the controls that gate enterprise sales, and the one most often underestimated is SCIM
+deprovisioning — automatic access removal when someone leaves is both a security requirement and the thing
+a customer's own auditor checks first. Break-glass is the honest acknowledgement that emergencies happen:
+better a controlled, audited, two-approval path than an undocumented back door someone builds under
+pressure.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>No SCIM deprovisioning.</strong> Departed employees retaining access.</li>
+<li><strong>Break-glass without audit.</strong> An emergency path that becomes a routine bypass.</li>
+<li><strong>Residency enforced only in storage.</strong> A connector that egresses data out of region.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Selling to enterprises. These are table stakes, not differentiators.</li></ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="ch13-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Continuous access review.</strong> Roles and scopes are granted but there is no periodic
+      attestation flow ("confirm these 12 people still need admin").</li>
+      <li><strong>Policy simulation at tenant scale.</strong> The guardrail engine has simulate mode; the
+      policy engine has no equivalent "what would this rule change block across all goals" preview.</li>
+      <li><strong>Audit analytics.</strong> The trail is tamper-evident but there is no built-in anomaly
+      detection over it ("this approver approved 200 refunds in an hour").</li>
+      <li><strong>Cross-tenant policy templates.</strong> Compliance bundles are shared, but tenant-authored
+      policies cannot be templated and shared with governance review.</li>
+    </ul>
+  </div>
+</section>
+
+<div class="pagenav"><a class="prev" href="guardrails.html"><div class="d">Previous · CH 12</div><div class="t">Guardrails</div></a><a class="next" href="scopes.html"><div class="d">Next · CH 14</div><div class="t">Scopes</div></a></div>
+<p class="footnote">AgentVerse Field Manual · ratings are this author's judgement of the code as it stands, not a vendor claim. File paths are navigation anchors; line numbers drift.</p>
+</div></main>
+</div>
+<script>
+(function () {
+  var r = document.documentElement;
+  try { var t = localStorage.getItem('avfm-theme'); if (t) r.setAttribute('data-theme', t); } catch (e) {}
+  function cur() {
+    var a = r.getAttribute('data-theme');
+    if (a) return a;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  document.addEventListener('click', function (ev) {
+    var b = ev.target.closest('[data-theme-toggle]');
+    if (!b) return;
+    var n = cur() === 'dark' ? 'light' : 'dark';
+    r.setAttribute('data-theme', n);
+    try { localStorage.setItem('avfm-theme', n); } catch (e) {}
+  });
+  var f = document.querySelector('[data-filter]');
+  if (f) {
+    f.addEventListener('input', function () {
+      var q = f.value.trim().toLowerCase();
+      document.querySelectorAll('[data-filter-row]').forEach(function (el) {
+        el.hidden = q.length > 0 && el.getAttribute('data-filter-row').indexOf(q) === -1;
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>

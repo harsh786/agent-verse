@@ -1,0 +1,1105 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>Retrieval patterns (chapter 2) assume something to retrieve <em>from</em>. This chapter is that
+    something: the object model — collection, document, chunk, metadata, citation — the two index shapes
+    that make it searchable, and the graph that makes relationships answerable.</p>
+
+    <p>The object model looks trivial and is where most production RAG problems actually live. A chunk
+    with no stable id cannot be cited. A document with no source reference cannot be re-synced. A
+    collection with no authorisation boundary is a data-leak vector. Get these five nouns right and the
+    interesting patterns become easy; get them wrong and no amount of clever retrieval saves you.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 900 320" role="img" aria-label="Object model: a source syncs documents into a collection; each document is parsed and split into chunks; each chunk carries metadata and an embedding, is written to a vector index and a lexical index, and is the unit a citation points at. Separately, entity extraction turns chunks into graph nodes and edges, which support traversal queries.">
+      <defs><marker id="k1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker>
+      <marker id="k2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#00A8CC"></path></marker></defs>
+
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="0" y="40" width="104" height="40" rx="3"></rect>
+        <rect x="140" y="40" width="104" height="40" rx="3"></rect>
+        <rect x="280" y="40" width="104" height="40" rx="3"></rect>
+        <rect x="420" y="40" width="118" height="40" rx="3"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="12" fill="currentColor" text-anchor="middle">
+        <text x="52" y="58">source</text><text x="52" y="72" font-size="10" opacity="0.6">connector + cursor</text>
+        <text x="192" y="58">collection</text><text x="192" y="72" font-size="10" opacity="0.6">authz boundary</text>
+        <text x="332" y="58">document</text><text x="332" y="72" font-size="10" opacity="0.6">hash + provenance</text>
+        <text x="479" y="58">chunk</text><text x="479" y="72" font-size="10" opacity="0.6">stable id + metadata</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#k1)">
+        <line x1="104" y1="60" x2="136" y2="60"></line>
+        <line x1="244" y1="60" x2="276" y2="60"></line>
+        <line x1="384" y1="60" x2="416" y2="60"></line>
+      </g>
+
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#k1)">
+        <path d="M479,80 L479,116 L300,116 L300,140" fill="none"></path>
+        <path d="M479,80 L479,116 L640,116 L640,140" fill="none"></path>
+      </g>
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="220" y="140" width="160" height="40" rx="3"></rect>
+        <rect x="560" y="140" width="160" height="40" rx="3"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="12" fill="currentColor" text-anchor="middle">
+        <text x="300" y="158">vector index</text><text x="300" y="172" font-size="10" opacity="0.6">pgvector · meaning</text>
+        <text x="640" y="158">lexical index</text><text x="640" y="172" font-size="10" opacity="0.6">FTS · trigram · BM25</text>
+      </g>
+
+      <path d="M479,80 L479,116 L790,116 L790,140" fill="none" stroke="#00A8CC" stroke-width="1.3" marker-end="url(#k2)"></path>
+      <rect x="740" y="140" width="150" height="40" rx="3" fill="none" stroke="#00A8CC" stroke-width="1.5"></rect>
+      <text x="815" y="158" font-family="Archivo, sans-serif" font-size="12" fill="#00A8CC" text-anchor="middle">graph nodes/edges</text>
+      <text x="815" y="172" font-family="Archivo, sans-serif" font-size="10" fill="#00A8CC" opacity="0.8" text-anchor="middle">entity extraction</text>
+
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="220" y="228" width="500" height="40" rx="3"></rect>
+      </g>
+      <text x="470" y="246" font-family="Archivo, sans-serif" font-size="12" fill="currentColor" text-anchor="middle">citation → chunk id → document → source URL</text>
+      <text x="470" y="261" font-family="Archivo, sans-serif" font-size="10" fill="currentColor" opacity="0.6" text-anchor="middle">the chain a human follows to check the answer</text>
+      <g stroke="currentColor" stroke-width="1.1" marker-end="url(#k1)">
+        <line x1="300" y1="180" x2="300" y2="224"></line>
+        <line x1="640" y1="180" x2="640" y2="224"></line>
+      </g>
+      <line x1="815" y1="180" x2="815" y2="246" stroke="#00A8CC" stroke-width="1.1" marker-end="url(#k2)"></line>
+      <line x1="720" y1="246" x2="806" y2="246" stroke="#00A8CC" stroke-width="1.1" opacity="0"></line>
+
+      <text x="0" y="300" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.6">the chunk is the atom: it is what gets embedded, what gets scored, what gets cited, and what gets deleted</text>
+    </svg>
+    <figcaption>Five nouns and three indexes. Everything a user experiences as "the AI knows our
+    documents" is this diagram working correctly, including the <span class="fig-em">graph branch</span>
+    that answers the questions vectors cannot.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="objects">
+  <h2>The object model</h2>
+
+<article class="concept" id="collections" data-impl="9" data-crit="9" data-tag="Object">
+<h3>Knowledge collections</h3>
+<p class="tldr">A collection is the unit of authorisation, configuration and lifecycle — not a folder.
+Which chunks an agent can see, which embedding model was used, and what happens on deletion are all
+collection-level facts.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A collection binds: a tenant, an access rule, an embedding model and dimension, a chunking strategy,
+a retention policy, and a set of sources that sync into it. Because the embedding model is fixed per
+collection, the index stays homogeneous — which is the property that makes vector search meaningful at
+all (chapter 7).</p>
+<p>The practical design rule: split collections by <em>who may read them</em> and by
+<em>what kind of content they hold</em>, not by topic. Mixing code and prose in one collection breaks
+embedding quality; mixing HR and engineering breaks access control.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/db/models/knowledge.py</code><span class="note">collection, document, chunk tables</span></li>
+<li><code>app/rag/store.py</code><span class="note">KnowledgeStore — collection-scoped operations</span></li>
+<li><code>app/rag/gateway.py</code><span class="note">SQLCollectionAuthorizer — per-collection authorisation before retrieval</span></li>
+<li><code>app/api/knowledge.py</code><span class="note">the CRUD and search surface</span></li>
+<li><code>app/embedding/vector_index_policy.py</code><span class="note">index policy per collection</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>collection  acme/policies
+  embedding    text-embedding-3-large @ 3072
+  chunking     markdown_heading, 800 tokens, 80 overlap
+  access       roles [employee, analyst, admin]
+  retention    7 years (regulatory)
+  sources      confluence:space=POL, s3:bucket/policies/
+
+collection  acme/code-monorepo
+  embedding    code-embedding model @ 1536      ← different index entirely
+  chunking     ast_chunker
+  access       roles [engineer]
+  retention    90 days rolling
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Collection count grows faster than anyone plans for — per team, per product, per compliance regime.
+Two things must be cheap: creating one (so nobody stuffs unrelated content into an existing collection)
+and enumerating what an agent may search (so retrieval can fan out safely). Cache the authorisation
+decision per (principal, collection) with a short TTL; it is on the hot path of every retrieval.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Mixed-model collections.</strong> Two embedding models in one index — scores are
+incomparable and results are quietly wrong.</li>
+<li><strong>Collection sprawl.</strong> Hundreds of near-duplicates; retrieval fans out over everything.</li>
+<li><strong>Authorisation drift.</strong> A collection created outside the normal path with default-open
+access.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always — a single global namespace fails on the first access-control requirement.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="documents" data-impl="9" data-crit="8" data-tag="Object">
+<h3>Documents</h3>
+<p class="tldr">The unit of ingestion and of identity: a document has a stable id, a content hash, a
+source reference, and a version — which together are what make re-sync, dedup and deletion possible.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A document is the thing a connector fetched: a PDF, a Confluence page, a Jira issue, a source file.
+It carries provenance (which source, which external id, which revision), a content hash for
+idempotency, and the metadata that will be copied onto every chunk. Re-ingesting a document with an
+unchanged hash is a no-op; with a changed hash it supersedes the previous version and its chunks are
+replaced, not appended.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/source_config.py</code><span class="note">RawDocument, SourceConfig</span></li>
+<li><code>app/ingestion/pipeline.py</code><span class="note">stage 3 computes the content hash; duplicates skip the embedder entirely</span></li>
+<li><code>app/ingestion/provenance_builder.py</code><span class="note">provenance records</span></li>
+<li><code>app/provenance/source_ref.py</code><span class="note">the canonical source reference</span></li>
+</ul>
+<p><code>RawDocument</code> is one of the platform's ten most-connected abstractions — everything
+downstream of acquisition speaks it.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>document
+  doc_id      acme:confluence:POL-118
+  source_ref  confluence://space/POL/page/118?version=7
+  hash        sha256:9f2c…
+  metadata    {space:POL, author:"r.iyer", updated:2026-08-02,
+               labels:[policy, refunds], classification:internal}
+re-sync at 03:00  → hash unchanged → skipped at stage 3, 0 embedding calls
+edit at 11:20     → hash changes   → version 8, chunks replaced, citations
+                                      to old chunk ids resolve to superseded
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Content hashing at stage 3 — <em>before</em> parsing and embedding — is the single largest cost
+control in ingestion. Most connectors re-deliver most documents on every sync; without the hash gate
+you pay to embed an unchanged corpus nightly.</p>
+<p>Keep the external revision alongside your own version. When a user says "the answer is out of date",
+the first question is which revision was indexed, and only provenance can answer it.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Unstable ids.</strong> A connector that generates a new id per sync creates duplicates
+forever.</li>
+<li><strong>Hash over the wrong bytes.</strong> Hashing a rendering that includes a timestamp makes
+every document look changed.</li>
+<li><strong>Append instead of replace.</strong> Old and new chunks both retrievable; the model sees a
+contradiction.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always. Without document identity you cannot re-sync, dedup, or delete.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="chunks" data-impl="9" data-crit="10" data-tag="Object">
+<h3>Chunks</h3>
+<p class="tldr">The atom of the whole system: what gets embedded, scored, budgeted, cited and deleted.
+Every quality argument about RAG is ultimately an argument about chunk boundaries.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A chunk is a span of a document with a stable id, its text, an embedding, inherited document
+metadata, structural position (heading path, page, line range, symbol name), and optionally a parent
+reference. The id must be stable across re-ingestion for the same content, or citations rot.</p>
+<p>Chunking strategy is a per-collection decision covered in full in chapter 17; the object model
+requirement is simply that a chunk knows where it came from precisely enough to be quoted.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/store.py</code><span class="note">Chunk ingestion, search, parent-citation expansion</span></li>
+<li><code>app/rag/parent_child_chunker.py</code><span class="note">retrieve small, return large</span></li>
+<li><code>app/rag/chunker.py</code>, <code>app/knowledge/chunker_v2.py</code><span class="note">chunkers</span></li>
+<li><code>app/rag/indexing.py</code><span class="note">RAGIndexRecord — the persisted index row</span></li>
+<li><code>app/ingestion/pipeline.py</code><span class="note">stage 11 dedups chunks before indexing</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>chunk
+  chunk_id   acme:confluence:POL-118#h2-refunds#0
+  text       "Refunds are accepted within 30 days of delivery…"
+  position   {heading_path:["Policies","Refunds"], page:null, order:3}
+  parent     acme:confluence:POL-118#h2-refunds
+  metadata   inherited from the document + {tokens:412, lang:en}
+  embedding  3072-d, model text-embedding-3-large
+
+retrieval returns the child (precise match) but the prompt receives the
+parent (full section) — better answers, same precision
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Chunk count, not document count, is your capacity unit: a 10k-document corpus at 40 chunks per
+document is 400k vectors, and that number drives index size, memory, and re-embedding cost. Track it
+per collection and alarm on unexpected growth — a chunker misconfiguration can 10× it overnight.</p>
+<p>Deduplicating chunks (stage 11) matters more than it sounds. Boilerplate headers, footers and legal
+notices repeat across thousands of documents; without dedup they dominate retrieval for generic
+queries.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Unstable chunk ids.</strong> Every re-ingest invalidates every citation.</li>
+<li><strong>Chunks without position.</strong> A citation you cannot follow is not a citation.</li>
+<li><strong>Boilerplate flood.</strong> The same footer retrieved for everything.</li>
+<li><strong>Orphaned vectors.</strong> Chunk deleted, embedding retained — it still comes back in
+search.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always. The only question is how you cut them (chapter 17).</li></ul>
+</section>
+</article>
+
+<article class="concept" id="metadata" data-impl="8" data-crit="9" data-tag="Object">
+<h3>Metadata</h3>
+<p class="tldr">The fields you can filter on before you ever compute a similarity — and therefore the
+cheapest precision improvement available, as well as the enforcement point for jurisdiction and
+sensitivity.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Document metadata is copied onto chunks at ingestion so filters apply at the index level. Four
+categories, each earning its keep differently:</p>
+<ul>
+<li><strong>Provenance</strong> — source, external id, revision, ingested-at.</li>
+<li><strong>Structural</strong> — heading path, page, section, symbol.</li>
+<li><strong>Semantic</strong> — labels, author, product, language, dates.</li>
+<li><strong>Governance</strong> — classification, jurisdiction, retention policy, legal-hold flag.</li>
+</ul>
+<p>Governance metadata is not decoration: it is what lets a retrieval filter enforce "this tenant's EU
+users may only see EU-resident documents" as a pre-filter rather than a hopeful post-check.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/pipeline.py</code><span class="note">metadata preserved through parse, chunk and enrich</span></li>
+<li><code>app/rag/contextual_enricher.py</code><span class="note">adds derived context to chunks at stage 9</span></li>
+<li><code>app/data_classification/schema.py</code><span class="note">classification vocabulary</span></li>
+<li><code>app/lifecycle/retention_policy.py</code><span class="note">retention bound to metadata</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query "notice period" for a user in the German entity
+naive     top hits are the US handbook (better written, more chunks)
+filtered  metadata.jurisdiction == "DE" applied as a pre-filter
+          → 14 candidates instead of 900 → correct answer, faster query
+governance the US chunks were never scored, never logged, never returned
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Metadata filtering routinely beats better embeddings. Narrowing 900 candidates to 14 with a
+jurisdiction filter improves both precision and latency more than any reranker would, at zero model
+cost.</p>
+<p>Index the filter fields. A metadata filter that forces a sequential scan turns a 20ms query into
+900ms, and it will be blamed on "the vector database being slow".</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Metadata loss at parse.</strong> The parser returns text and drops everything else — the
+most common ingestion bug.</li>
+<li><strong>Inconsistent vocabularies.</strong> <code>DE</code>, <code>de-DE</code>,
+<code>Germany</code> in the same field.</li>
+<li><strong>Over-filtering.</strong> Filters so narrow nothing matches; retrieval returns empty and the
+agent replans forever.</li>
+<li><strong>Unindexed filters.</strong> Correct results, unacceptable latency.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always, and design the vocabulary before ingesting a million documents with the wrong one.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="citations" data-impl="8" data-crit="10" data-tag="Object">
+<h3>Citations</h3>
+<p class="tldr">A citation is a machine-checkable claim that a specific span of output is supported by a
+specific chunk — the difference between an answer a user can verify and one they must believe.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Three requirements make citations real rather than cosmetic. They must be <em>resolvable</em> — chunk
+id → document → source URL a human can open. They must be <em>verifiable</em> — a checker can confirm
+the cited chunk actually supports the claim. And they must be <em>threaded</em> — carried through
+multi-hop retrieval, synthesis and summarisation rather than lost at the first transformation.</p>
+<p>Citation management is therefore a pipeline component, not a prompt instruction. Asking a model to
+"include citations" produces plausible-looking references to chunks that do not exist.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/context/citation_manager.py</code><span class="note">assigns and tracks citation ids during context assembly</span></li>
+<li><code>app/rag/agentic/citation_threader.py</code><span class="note">carries citations across hops</span></li>
+<li><code>app/agent/synthesis.py</code><span class="note">AnswerSynthesizer — citation-carrying final answers</span></li>
+<li><code>app/evals/attribution_verifier.py</code><span class="note">checks that citations support the claims</span></li>
+<li><code>app/provenance/claim_trace.py</code>, <code>provenance_verifier.py</code><span class="note">claim-level provenance</span></li>
+<li><code>app/rag/contracts.py</code><span class="note">RAGCitation</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>answer
+  "Refunds are accepted within 30 days [1]. Damaged goods are exempt from
+   the window [2], and enterprise contracts may override both [3]."
+
+[1] POL-118 §Refunds  → confluence.acme/POL/118#refunds   verified
+[2] POL-118 §Damaged  → confluence.acme/POL/118#damaged    verified
+[3] —                                                       UNSUPPORTED
+     → the claim is stripped, or the answer is marked partial
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Citations are the primary hallucination control that users can actually see, and the primary reason
+regulated teams accept agent output at all. Two operational rules: verify before display (an unverified
+citation is worse than none, because it manufactures trust), and keep citation ids stable so a
+screenshot from three months ago still resolves.</p>
+<p>Measure citation precision — the share of citations that genuinely support their claim — as a
+first-class quality metric alongside answer accuracy (chapter 10).</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Fabricated references.</strong> The model invents a plausible id. Only emit citations the
+pipeline assigned.</li>
+<li><strong>Citation drift.</strong> Citation attached to the wrong sentence after a rewrite.</li>
+<li><strong>Broken resolution.</strong> The chunk was re-ingested with a new id and the link 404s.</li>
+<li><strong>Citation theatre.</strong> Every sentence cited, none verified.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Any output a human relies on, and every regulated flow.</li>
+<li class="no">Never ship "citations" you do not verify.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="knowledge-store" data-impl="9" data-crit="9" data-tag="Runtime">
+<h3>KnowledgeStore behaviour</h3>
+<p class="tldr">One component owns the index: writes chunks, runs hybrid search two ways (in-memory fast
+path and pushed-down SQL), expands parent citations, and serves precomputed indexes.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>The store exposes a small surface with a deliberate duality. <code>hybrid_search()</code> is an
+in-memory path that combines cosine similarity, trigram scoring and BM25 — always available, no
+database required, which is what makes tests and single-node deployments simple.
+<code>hybrid_search_db()</code> pushes the same computation into Postgres, where the data already is,
+for production scale. A precomputed-index path serves collections whose vectors are prepared offline.</p>
+<p>It also owns <em>parent citation expansion</em>: retrieval matched a child chunk, but the citation
+and the prompt should reference the parent section.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/store.py</code><span class="note">KnowledgeStore: hybrid_search(), hybrid_search_db(), search_precomputed_index(), _search_precomputed_memory(), _expand_agentic_parent_citations(), HybridSearchResult</span></li>
+<li><code>app/rag/indexing.py</code><span class="note">RAGIndexingPipeline → persist_index_records</span></li>
+<li><code>app/rag/evaluation.py</code><span class="note">store-level retrieval evaluation</span></li>
+<li><code>app/main.py</code><span class="note">constructed in create_app(), upgraded to the DB-backed version in lifespan</span></li>
+</ul>
+<p>The in-memory/DB swap at startup is the same two-phase wiring pattern the whole platform uses
+(chapter 19) — and it is why "works in tests, differs in prod" bugs cluster here.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>dev / tests      KnowledgeStore (in-memory)
+                 hybrid_search: python cosine + trigram + BM25 over 2k chunks
+                 ~8ms, zero dependencies
+
+production       KnowledgeStore (DB-backed, swapped in lifespan)
+                 hybrid_search_db: one SQL statement, pgvector + tsvector +
+                 pg_trgm, LIMIT 50, ~22ms over 1.2M chunks
+identical result shape → the same retrieval code runs in both
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Push search into the database. Fetching candidates into the application to rank them costs more in
+serialisation than the query itself, and it breaks as soon as the corpus outgrows one process's memory.
+The in-memory path should stay a genuine fast path — small collections, tests, degraded mode — not the
+production route.</p>
+<p>Keep the two implementations behaviourally identical and test them against the same fixtures.
+Divergence here produces the worst class of bug: correct in CI, subtly wrong for customers.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Path divergence.</strong> The two implementations rank differently.</li>
+<li><strong>Missing tenant filter on one path.</strong> A leak that tests never see.</li>
+<li><strong>Unbounded candidate fetch.</strong> No LIMIT, and one query reads the collection.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always; the duality is worth it, but only with shared tests.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="vector-index" data-impl="9" data-crit="9" data-tag="Index">
+<h3>Vector index</h3>
+<p class="tldr">Approximate nearest-neighbour search over embeddings, in the same database as the
+metadata — which is the decision that makes filtered vector search a single query instead of two
+systems and a join.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Embeddings live in a pgvector column with an ANN index (HNSW or IVFFlat). The index type is a real
+trade: HNSW gives better recall and query speed at higher build cost and memory; IVFFlat builds fast
+and is cheaper but needs list tuning and degrades on updates. Distance metric must match how the
+embedding model was trained — cosine for most, inner product for some — and mixing them silently
+degrades ranking.</p>
+<p>The reason to keep vectors in Postgres rather than a dedicated vector database: filters, joins,
+transactions and row-level security come for free, and RLS is how tenant isolation is enforced at the
+storage layer.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/db/models/knowledge.py</code><span class="note">the vector columns</span></li>
+<li><code>app/embedding/vector_index_policy.py</code><span class="note">index configuration policy</span></li>
+<li><code>app/embedding/dimension_policy.py</code><span class="note">dimension compatibility rules</span></li>
+<li><code>app/db/rls.py</code><span class="note">tenant isolation at the row level, including vectors</span></li>
+<li><code>app/db/migrations/</code><span class="note">index creation and changes</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>SELECT chunk_id, content, 1 - (embedding &lt;=&gt; $1) AS score
+FROM chunks
+WHERE tenant_id = current_setting('app.tenant_id')      -- RLS also enforces
+  AND collection_id = ANY($2)
+  AND metadata->>'jurisdiction' = 'DE'                  -- pre-filter
+ORDER BY embedding &lt;=&gt; $1
+LIMIT 50;
+
+one statement: tenant isolation + collection scope + metadata filter + ANN
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Three numbers to know for your corpus: index build time (HNSW on a million vectors is minutes to
+hours), memory footprint (the index wants to be resident), and recall at your <code>ef_search</code>
+setting. Tune recall explicitly — the default parameters of most ANN indexes trade away more recall
+than teams realise, and it shows up as "the answer was in the corpus but not in the context".</p>
+<p>Rebuilds are the operational hazard: a dimension change or a model change means a full re-embed and
+re-index, which must be done online with a shadow index unless you can afford downtime (chapter 7).</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Dimension mismatch.</strong> A query vector of the wrong size — either an error or, worse,
+a silently meaningless result.</li>
+<li><strong>Metric mismatch.</strong> Cosine index queried with L2.</li>
+<li><strong>Filter-then-ANN vs ANN-then-filter.</strong> Filtering after the ANN limit returns fewer
+rows than requested, sometimes zero.</li>
+<li><strong>Index bloat after churn.</strong> Heavy update workloads need periodic maintenance.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any semantic retrieval. The question is not whether but where it lives — and next to your
+metadata is usually the right answer.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="lexical-index" data-impl="9" data-crit="9" data-tag="Index">
+<h3>Lexical indexes: full-text, trigram, BM25</h3>
+<p class="tldr">Three different keyword mechanisms with three different jobs — stemmed full-text for
+natural language, trigram for typos and partial identifiers, BM25 for term-importance ranking.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p><em>Full-text search</em> tokenises and stems with a language configuration, then matches on lexemes
+— good for prose, blind to typos. <em>Trigram</em> similarity compares three-character sequences, so
+"invocie" still finds "invoice" and <code>INV-2024</code> matches <code>INV-2024-8891</code>.
+<em>BM25</em> is a ranking function: term frequency saturating, inverse document frequency, length
+normalisation — the reason a rare term in a short document ranks above a common term in a long one.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/bm25.py</code><span class="note">BM25Retriever</span></li>
+<li><code>app/rag/store.py</code><span class="note">_trigram_score(), FTS in the DB path</span></li>
+<li><code>app/db/migrations/</code><span class="note">tsvector columns, GIN and pg_trgm indexes</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query "recieve payment confirmation"     (typo, and stemmed forms differ)
+
+FTS      'receive' & 'payment' & 'confirm'  → misses "recieve" entirely
+trigram  0.78 similarity to "receive payment confirmation" → hit
+BM25     ranks the payments runbook above the 40-page handbook that
+         mentions "payment" 200 times, because of length normalisation
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Language configuration matters more than teams expect: an English stemmer on German content produces
+poor matches, and a multi-tenant platform will have both. Store the language on the document and pick
+the configuration per row.</p>
+<p>Trigram indexes are large and writes are slower — enable them where identifiers matter (invoices,
+tickets, SKUs, code) rather than globally.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Wrong language config.</strong> Silent quality loss.</li>
+<li><strong>Missing GIN index.</strong> Full-text search that sequential-scans.</li>
+<li><strong>BM25 on the wrong corpus statistics.</strong> IDF computed globally instead of per
+collection skews ranking.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Alongside vectors, always. Lexical search is not a legacy fallback; it is half of hybrid.</li></ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="graph">
+  <h2>The knowledge graph</h2>
+
+<article class="concept" id="graph-model" data-impl="8" data-crit="7" data-tag="Graph">
+<h3>Nodes, edges, and where they come from</h3>
+<p class="tldr">A tenant-scoped property graph built as a side effect of ingestion: entities become
+nodes, relations become edges, and every edge remembers the chunk it was extracted from.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>An extractor reads each chunk and proposes typed entities and relations. Nodes carry a type, a
+canonical name, aliases and properties; edges carry a relation type, a confidence, and the source chunk
+id. The graph is built incrementally as documents arrive rather than as a separate batch job, which
+keeps it as fresh as the corpus.</p>
+<p>Extraction quality is dominated by two things: a constrained schema (a fixed set of entity and
+relation types beats open-ended extraction) and entity resolution (below).</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/knowledge_graph/models.py</code><span class="note">GraphNode, GraphEdge</span></li>
+<li><code>app/knowledge_graph/extractor.py</code><span class="note">EntityExtractor</span></li>
+<li><code>app/knowledge_graph/ingestion_hook.py</code><span class="note">KGIngestionHook — graph built during ingestion</span></li>
+<li><code>app/knowledge_graph/store.py</code><span class="note">KnowledgeGraphStore, tenant-scoped</span></li>
+<li><code>app/db/models/knowledge_graph.py</code><span class="note">persistence</span></li>
+<li><code>app/api/knowledge_graph.py</code><span class="note">the API surface, including export</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>chunk  "The payments service is maintained by the fin-platform team and
+        depends on Razorpay under contract C-2291."
+
+nodes  (service:payments) (team:fin-platform) (vendor:Razorpay)
+       (contract:C-2291)
+edges  payments —maintained_by→ fin-platform     conf 0.93  src chunk#12
+       payments —depends_on→    Razorpay          conf 0.88  src chunk#12
+       Razorpay —governed_by→   C-2291            conf 0.81  src chunk#12
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Extraction is an LLM call per chunk, so the graph costs roughly what embedding costs, again. Build it
+selectively: collections where relationship questions are common (architecture, contracts, org data),
+not the whole corpus. Store edge confidence and use it — low-confidence edges should be visible in
+exploration but excluded from answers.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Schema-free extraction.</strong> Ten relation types meaning the same thing. Constrain the
+schema.</li>
+<li><strong>Hallucinated edges.</strong> Require the source chunk and sample-audit edges.</li>
+<li><strong>Graph and corpus divergence.</strong> Documents updated, edges not. Rebuild affected
+subgraphs on re-ingest.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Users ask about relationships, ownership, dependency, or impact.</li>
+<li class="no">Skip for corpora that are purely narrative.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="entity-resolution" data-impl="6" data-crit="8" data-tag="Graph">
+<h3>Entity resolution</h3>
+<p class="tldr">The step that decides whether your graph is knowledge or noise: merging "Acme Corp",
+"ACME", "Acme Corporation" and "acme-corp" into one node.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A cascade, cheapest first: exact match on a canonical key, then normalised string match (case,
+punctuation, legal suffixes), then alias table lookup, then embedding similarity above a threshold,
+then — only for the remainder — an LLM adjudication. Every merge should be recorded so it can be undone,
+because a wrong merge is worse than a missed one: it fuses two real entities into a fiction.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/knowledge_graph/extractor.py</code><span class="note">where canonicalisation happens today</span></li>
+<li><code>app/knowledge_graph/models.py</code><span class="note">node aliases</span></li>
+<li><code>app/knowledge_graph/store.py</code><span class="note">upsert-by-canonical-name behaviour</span></li>
+</ul>
+<p>Rated 6: canonicalisation and aliases exist, but there is no dedicated resolution service with a
+reviewable merge log — which is what this problem needs at scale.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>observed   "Acme Corp"  "ACME"  "Acme Corporation"  "acme-corp"  "Acme Inc"
+resolution normalise → strip suffixes → "acme" for the first four
+           "Acme Inc" → embedding 0.91 but LEGAL SUFFIX DIFFERS
+           → held for review: Acme Inc may be a different legal entity
+result     one node with 4 aliases + 1 pending review, not 5 nodes
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Entity resolution is where knowledge-graph projects succeed or quietly fail. Two rules from practice:
+maintain an explicit alias table that humans can edit (it is the highest-leverage manual data in the
+system), and never auto-merge across a legal-entity or tenant boundary.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Fragmentation.</strong> Five nodes, no traversal works.</li>
+<li><strong>Over-merging.</strong> Two subsidiaries fused; answers become wrong in a way that is hard to
+detect.</li>
+<li><strong>Unreviewable merges.</strong> No log, no undo.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any graph. Skipping it does not save time; it moves the cost to every query.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="community-detection" data-impl="7" data-crit="5" data-tag="Graph">
+<h3>Community detection</h3>
+<p class="tldr">Cluster the graph into densely-connected groups and summarise each — the graph's answer
+to "what are the themes here", and the structure that makes a large graph navigable.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Run a modularity-based clustering algorithm over the edges to find communities, then generate a
+summary per community from its member nodes and their source chunks. Global questions are answered from
+community summaries; specific questions drill into nodes. It is structurally the same idea as RAPTOR
+(chapter 2) applied to a graph instead of text.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/knowledge_graph/community_detection.py</code><span class="note">the detector</span></li>
+<li><code>app/api/knowledge_graph.py</code><span class="note">community endpoints + export</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>graph  4,100 nodes / 9,800 edges from architecture + contract docs
+communities
+  c1  "payments stack and its vendors"        (86 nodes)
+  c2  "identity and access"                    (54 nodes)
+  c3  "data platform and warehouse contracts"  (71 nodes)
+question "where is our vendor concentration risk?"
+  → answered from c1 and c3 summaries, then drilled into 4 contract nodes
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Communities are most useful as a <em>navigation</em> device for humans and agents alike — a map of a
+graph too large to read. Summaries go stale, so regenerate on significant graph change rather than on a
+fixed schedule, and always keep the drill-down path to real nodes so a summary is never the only
+evidence.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Unstable communities.</strong> Small graph changes reshuffle everything; summaries churn.</li>
+<li><strong>Hub distortion.</strong> One highly-connected node dominates and communities become
+meaningless.</li>
+<li><strong>Stale summaries.</strong> Regenerate on change.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>The graph is large and users ask thematic questions.</li>
+<li class="no">Unnecessary on a small graph you can traverse directly.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="graph-retrieval-path" data-impl="8" data-crit="7" data-tag="Graph">
+<h3>The graph retrieval path</h3>
+<p class="tldr">Resolve the question's entities to nodes, traverse to bounded depth under an access
+filter, then return the subgraph <em>and</em> the chunks that produced each edge.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Four steps. <em>Anchor</em>: map question entities to node ids (this is entity resolution again, at
+query time). <em>Traverse</em>: expand along permitted relation types to a depth and degree bound.
+<em>Filter</em>: apply role and tenant access to nodes and edges during traversal, not after.
+<em>Serialise</em>: render the subgraph compactly for the prompt, attaching the source chunk for each
+edge so the answer can cite documents rather than the graph.</p>
+<p>The last point is what keeps graph answers auditable: the graph is an index over the corpus, and the
+corpus is the evidence.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/knowledge_graph/multi_hop.py</code><span class="note">the multi-hop reasoner</span></li>
+<li><code>app/knowledge_graph/access_control.py</code><span class="note">GraphAccessControl — role-gated traversal</span></li>
+<li><code>app/state_runtime/kg_query_engine.py</code><span class="note">runtime query engine</span></li>
+<li><code>app/rag/agentic/patterns/graph.py</code><span class="note">graph as a RAG strategy</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>question "if Razorpay is down, which teams are affected?"
+anchor    "Razorpay" → (vendor:Razorpay)
+traverse  depth 2, relations {depends_on⁻¹, maintained_by}
+          → payments, payouts, refunds services
+          → fin-platform, treasury teams
+filter    caller role=engineer → treasury contract nodes excluded
+serialise 7 nodes, 9 edges, each edge citing its source chunk
+answer    two teams, with the dependency chain and 6 document citations
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Bound the traversal hard. A depth-4 expansion from a hub node returns a large fraction of the graph
+and produces a prompt nobody can use. Depth 2 with a degree cap answers most real questions.</p>
+<p>Graph queries are milliseconds where iterative retrieval is seconds — if your workload is dominated
+by relationship questions, the graph is not a luxury, it is the performance fix.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Anchor failure.</strong> The entity is not in the graph, so the answer is empty even though
+the corpus contains it. Fall back to vector search.</li>
+<li><strong>Traversal explosion.</strong> Bound depth and degree.</li>
+<li><strong>Post-filtering.</strong> Access applied after traversal means restricted nodes were read.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>The question is structural. Otherwise use vectors.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="graph-vs-vector" data-impl="7" data-crit="8" data-tag="Decision framework">
+<h3>Graph retrieval versus vector retrieval</h3>
+<p class="tldr">Vectors answer "what does the corpus say about X"; graphs answer "how is X connected to
+Y". Choosing wrongly is the most common architectural mistake in knowledge systems.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Use the shape of the question, not the shape of the data:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Question shape</th><th>Use</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>"What is our refund policy?"</td><td>Vector / hybrid</td><td>Answer is a passage</td></tr>
+<tr><td>"Summarise this contract"</td><td>Vector</td><td>Needs the prose, not the structure</td></tr>
+<tr><td>"Who owns service X?"</td><td>Graph</td><td>A single relation</td></tr>
+<tr><td>"What breaks if X fails?"</td><td>Graph</td><td>Transitive closure</td></tr>
+<tr><td>"Which vendors appear in both contracts?"</td><td>Graph</td><td>Set intersection over entities</td></tr>
+<tr><td>"How did our policy change over time?"</td><td>Vector + metadata filter</td><td>Versioned prose</td></tr>
+<tr><td>"What themes recur in incidents?"</td><td>RAPTOR or communities</td><td>Aggregation</td></tr>
+<tr><td>"Everything about vendor X"</td><td>Both</td><td>Graph for scope, vectors for content</td></tr>
+</tbody>
+</table></div>
+<p>The general rule: <strong>graphs are an index, not a knowledge base.</strong> They tell you what to
+read; the chunks are what you read.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<p>Both are strategies in the same vocabulary (<code>RAGStrategy.GRAPH</code> versus
+<code>HYBRID</code>), selected by <code>app/rag/agentic/retrieval_policy.py</code> and by the pattern
+assembler. Because they share the result contract, an agent can use graph retrieval to scope and vector
+retrieval to read within one goal — which is usually the best answer.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>"prepare a risk brief on our payment vendors"
+graph    scope: 3 vendors, 5 contracts, 2 services, 4 owning teams
+vector   read: the risk clauses in those 5 contracts, the incident write-ups
+                for those 2 services
+result   a brief that is both complete (graph found everything) and
+         substantive (vectors supplied the text) with citations to documents
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The failure to watch for is a team building a graph because graphs are interesting, then discovering
+that 90% of their questions are passage questions. Instrument question shapes before investing: if
+relationship questions are under a fifth of traffic, hybrid retrieval plus good metadata will serve you
+better than an extraction pipeline you have to maintain.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Graph for prose questions.</strong> Structurally correct, substantively empty answers.</li>
+<li><strong>Vectors for structural questions.</strong> Confident answers that miss two thirds of the
+affected systems.</li>
+<li><strong>Two disconnected systems.</strong> A graph that cannot cite chunks is unauditable.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Every time you design a knowledge feature. Ask what shape the question is.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="graph-rag-memory-agents" data-impl="8" data-crit="8" data-tag="Integration">
+<h3>How graph, RAG, memory and agents compose</h3>
+<p class="tldr">Four sources of context with four different trust levels, merged under one token budget
+with per-source caps — the composition is where a platform is won or lost.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>At context assembly time, four kinds of material compete for the same window:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Source</th><th>Trust</th><th>Typical cap</th><th>Verifiable?</th></tr></thead>
+<tbody>
+<tr><td>Retrieved chunks</td><td>High — a document said it</td><td>50–70%</td><td>Yes, cite the chunk</td></tr>
+<tr><td>Graph subgraph</td><td>Medium — extracted, may be wrong</td><td>10–20%</td><td>Via the edge's source chunk</td></tr>
+<tr><td>Memory</td><td>Lower — the system inferred it</td><td>5–10%</td><td>Via evidence refs</td></tr>
+<tr><td>Tool output</td><td>Fresh but untrusted</td><td>10–25%</td><td>Yes, but wrap as untrusted</td></tr>
+</tbody>
+</table></div>
+<p>Per-source caps prevent the failure where one source crowds out the others — usually memory or a
+verbose tool output eliminating the evidence the answer needed.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/context/context_pipeline.py</code><span class="note">the 7-step assembly</span></li>
+<li><code>app/context/rerank_policy.py</code><span class="note">source caps</span></li>
+<li><code>app/context/context_budget.py</code><span class="note">the budget</span></li>
+<li><code>app/context/citation_manager.py</code><span class="note">unified citation ids across sources</span></li>
+<li><code>app/context/prompt_builder.py</code><span class="note">per-role prompt construction</span></li>
+</ul>
+<p>Chapter 8 covers this pipeline in detail; the point here is that all four knowledge sources arrive
+through it, with one citation namespace.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>goal "brief me before the Razorpay renewal call"  budget 16k tokens
+
+graph      2 hops from Razorpay → contract, services, owner   1.4k  [G1-G4]
+chunks     renewal clauses, SLA breaches, pricing history     9.2k  [1-11]
+memory     "their AM prefers a written agenda"                0.3k  [M1]
+tools      live uptime for last 90 days                       2.1k  [T1]
+reserved   response                                           3.0k
+
+answer cites [3][7] for terms, [T1] for uptime, [G2] for ownership,
+and flags [M1] as a system-inferred preference
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Log the composition of every prompt: how many tokens came from each source, and which ids. When
+answer quality drops, the composition log tells you whether retrieval degraded, memory crowded in, or a
+tool started returning verbose junk. Without it you are guessing at a system with four moving parts.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Uncapped sources.</strong> One source eats the window.</li>
+<li><strong>Mixed trust, uniform presentation.</strong> The model treats an inferred memory as
+authoritative as a contract clause. Label sources in the prompt.</li>
+<li><strong>Citation namespace collisions.</strong> Two sources both using "[1]".</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>As soon as you have more than one context source — which is immediately.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="knowledge-freshness" data-impl="8" data-crit="8" data-tag="Operations">
+<h3>Freshness, sync state and readiness</h3>
+<p class="tldr">A collection has an operational state — last synced, documents pending, index built,
+embedder available — and retrieval quality is a direct function of it.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Per source: a cursor (where the last sync stopped), a last-success timestamp, a failure count, and a
+dead-letter queue for documents that could not be processed. Per collection: chunk count, index
+build state, embedding model, and readiness facts the retrieval gateway consults before promising a
+strategy.</p>
+<p>Making this visible is what converts "the AI is wrong" into "the Confluence connector has been
+failing for six days".</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/job_tracker.py</code><span class="note">due sources, Redis locks, DLQ</span></li>
+<li><code>app/ingestion/scheduler.py</code><span class="note">jitter, cursor commits, backoff</span></li>
+<li><code>app/rag/readiness.py</code>, <code>app/rag/gateway.py</code><span class="note">readiness facts and context</span></li>
+<li><code>app/rag/certification.py</code><span class="note">certifying a collection fit to serve</span></li>
+<li><code>app/api/public_status.py</code><span class="note">externally visible status</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>collection acme/policies
+  chunks         41,208
+  last sync      2026-09-06 03:12  ✓
+  sources        confluence ✓ (cursor page 1180) · s3 ✗ (6 failures, DLQ 14)
+  index          vector ✓ · trigram ✓ · colbert ✗ (never built)
+  embedder       text-embedding-3-large, reachable
+readiness  hybrid ✓ · fusion ✓ · colbert ✗ → delegated to hybrid+rerank
+support answer: "S3 policy documents from the last 6 days are not indexed"
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Alarm on sync staleness per source, not on ingestion errors in aggregate. A connector that fails
+silently is indistinguishable from a corpus that has nothing to say — and users experience it as the
+agent getting dumber. The DLQ needs an owner and a retry path, or it becomes a graveyard.</p>
+<p>Jitter the schedules. Fifty sources all syncing at 03:00 is a self-inflicted thundering herd against
+both your database and the upstream APIs.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Silent sync failure.</strong> The most damaging knowledge bug there is.</li>
+<li><strong>Cursor loss.</strong> Full re-sync of a large source, and a large bill.</li>
+<li><strong>Unattended DLQ.</strong> Documents that never make it in, with nobody looking.</li>
+<li><strong>Readiness not surfaced.</strong> Support cannot explain degraded quality.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any scheduled ingestion — that is, any real knowledge base.</li></ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="ch4-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>A dedicated entity-resolution service.</strong> Canonicalisation exists inside the
+      extractor; a reviewable merge log, an editable alias table and a resolution API do not.</li>
+      <li><strong>Temporal graph edges.</strong> Relations have no validity interval, so "who owned this
+      last quarter" cannot be answered from the graph.</li>
+      <li><strong>Citation stability guarantees.</strong> Chunk ids are stable by convention rather than
+      by contract; a formal supersede/redirect record would keep old citations resolvable.</li>
+      <li><strong>Cross-collection deduplication.</strong> The same document ingested into two
+      collections is embedded twice and retrieved twice.</li>
+      <li><strong>Knowledge quality scoring per collection.</strong> Readiness says whether a strategy
+      can run, not whether the corpus is any good — no continuous coverage or contradiction metric.</li>
+    </ul>
+  </div>
+</section>

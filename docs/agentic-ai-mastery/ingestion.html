@@ -1,0 +1,2233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ingestion · AgentVerse Field Manual</title>
+<meta name="description" content="CH 05 · Ingestion">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>/* ==========================================================================
+   AgentVerse Field Manual — instrument chrome + engineering-manual body.
+   Tokens: complete light palette on :root; dark redefined for the two
+   dark states (un-stamped OS-dark, and explicit data-theme="dark").
+   ========================================================================== */
+
+:root {
+  /* ground + surfaces (cool slate neutrals, biased toward the cyan accent) */
+  --bg:        #EFF2F5;
+  --paper:     #FFFFFF;
+  --raised:    #F6F8FA;
+  --sunken:    #E7ECF1;
+  --rail:      #FBFCFD;
+
+  /* ink */
+  --ink:       #0B1220;
+  --ink-2:     #3C4A5A;
+  --ink-3:     #6B7A8B;
+  --ink-4:     #93A1B0;
+
+  /* lines */
+  --line:      #D5DDE5;
+  --line-soft: #E4EAF0;
+  --line-hard: #B9C5D0;
+
+  /* accent — JARVIS electric, darkened for contrast on paper */
+  --accent:      #007D9C;
+  --accent-2:    #00A8CC;
+  --accent-wash: rgba(0,168,204,0.10);
+  --accent-line: rgba(0,125,156,0.35);
+
+  /* semantic (ratings, status, diagram emphasis) */
+  --good:      #0E7C55;
+  --good-wash: rgba(14,124,85,0.10);
+  --warn:      #A2650A;
+  --warn-wash: rgba(162,101,10,0.10);
+  --bad:       #B3303B;
+  --bad-wash:  rgba(179,48,59,0.10);
+  --note:      #6D46C4;
+  --note-wash: rgba(109,70,196,0.10);
+
+  --shadow-1: 0 1px 2px rgba(11,18,32,0.05);
+  --shadow-2: 0 8px 28px rgba(11,18,32,0.10);
+
+  --measure: 68ch;
+  --rail-w: 274px;
+  --topbar-h: 52px;
+
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #070A10;
+    --paper:     #0C1017;
+    --raised:    #12171F;
+    --sunken:    #090D13;
+    --rail:      #0A0E15;
+
+    --ink:       #E9EFF5;
+    --ink-2:     #B3C0CD;
+    --ink-3:     #8593A2;
+    --ink-4:     #5D6C7B;
+
+    --line:      rgba(255,255,255,0.09);
+    --line-soft: rgba(255,255,255,0.055);
+    --line-hard: rgba(255,255,255,0.16);
+
+    --accent:      #35D8F5;
+    --accent-2:    #00D4FF;
+    --accent-wash: rgba(0,212,255,0.10);
+    --accent-line: rgba(0,212,255,0.35);
+
+    --good:      #2ED08C;
+    --good-wash: rgba(46,208,140,0.12);
+    --warn:      #F0B429;
+    --warn-wash: rgba(240,180,41,0.12);
+    --bad:       #FF6B78;
+    --bad-wash:  rgba(255,107,120,0.12);
+    --note:      #B08CFF;
+    --note-wash: rgba(176,140,255,0.12);
+
+    --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+    --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #070A10;
+  --paper:     #0C1017;
+  --raised:    #12171F;
+  --sunken:    #090D13;
+  --rail:      #0A0E15;
+
+  --ink:       #E9EFF5;
+  --ink-2:     #B3C0CD;
+  --ink-3:     #8593A2;
+  --ink-4:     #5D6C7B;
+
+  --line:      rgba(255,255,255,0.09);
+  --line-soft: rgba(255,255,255,0.055);
+  --line-hard: rgba(255,255,255,0.16);
+
+  --accent:      #35D8F5;
+  --accent-2:    #00D4FF;
+  --accent-wash: rgba(0,212,255,0.10);
+  --accent-line: rgba(0,212,255,0.35);
+
+  --good:      #2ED08C;
+  --good-wash: rgba(46,208,140,0.12);
+  --warn:      #F0B429;
+  --warn-wash: rgba(240,180,41,0.12);
+  --bad:       #FF6B78;
+  --bad-wash:  rgba(255,107,120,0.12);
+  --note:      #B08CFF;
+  --note-wash: rgba(176,140,255,0.12);
+
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+  color-scheme: dark;
+}
+
+/* -------------------------------------------------- base */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 17.5px;
+  line-height: 1.62;
+  font-synthesis-weight: none;
+}
+
+a { color: var(--accent); text-decoration-color: var(--accent-line); text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
+
+h1, h2, h3, h4, h5 { font-family: var(--f-display); font-weight: 650; letter-spacing: -0.015em; text-wrap: balance; margin: 0; }
+p { margin: 0 0 0.85em; }
+p:last-child { margin-bottom: 0; }
+ul, ol { margin: 0 0 0.9em; padding-left: 1.25em; }
+li { margin: 0.25em 0; }
+li > ul, li > ol { margin-bottom: 0.2em; }
+strong { font-weight: 650; }
+code, kbd, samp { font-family: var(--f-mono); font-size: 0.855em; }
+:not(pre) > code {
+  background: var(--sunken); border: 1px solid var(--line-soft);
+  padding: 0.08em 0.34em; border-radius: 3px; color: var(--ink-2);
+  word-break: break-word;
+}
+hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+
+.mono { font-family: var(--f-mono); }
+.eyebrow {
+  font-family: var(--f-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3);
+}
+
+/* -------------------------------------------------- top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  height: var(--topbar-h);
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .brand {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink);
+  text-decoration: none; white-space: nowrap;
+}
+.topbar .brand b { color: var(--accent); font-weight: 600; }
+.topbar .crumb {
+  font-family: var(--f-mono); font-size: 11px; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar .spacer { flex: 1 1 auto; }
+.tb-btn {
+  font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  background: transparent; color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 5px 9px; cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.tb-btn:hover { border-color: var(--accent-line); color: var(--accent); }
+
+/* -------------------------------------------------- shell */
+.shell { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); align-items: start; }
+
+.rail {
+  position: sticky; top: var(--topbar-h);
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--rail);
+  border-right: 1px solid var(--line);
+  padding: 18px 0 40px;
+}
+.rail h4 { font-size: 10.5px; font-family: var(--f-mono); font-weight: 500; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-4); padding: 0 18px; margin: 16px 0 8px; }
+.rail .part-label { padding: 0 18px; margin: 20px 0 6px; }
+.rail nav a {
+  display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: baseline;
+  padding: 5px 18px; text-decoration: none; color: var(--ink-2);
+  font-family: var(--f-display); font-size: 13.5px; line-height: 1.35; letter-spacing: -0.005em;
+  border-left: 2px solid transparent;
+}
+.rail nav a .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.rail nav a:hover { background: var(--accent-wash); color: var(--ink); }
+.rail nav a[aria-current="page"] { color: var(--accent); border-left-color: var(--accent); background: var(--accent-wash); }
+.rail nav a[aria-current="page"] .n { color: var(--accent); }
+.rail .inpage { border-top: 1px solid var(--line-soft); margin-top: 14px; padding-top: 4px; }
+.rail .inpage a { grid-template-columns: 26px 1fr; font-size: 12.5px; color: var(--ink-3); }
+.rail .filter { padding: 0 14px 6px; }
+.rail .filter input {
+  width: 100%; font-family: var(--f-mono); font-size: 11.5px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
+}
+.rail .filter input::placeholder { color: var(--ink-4); }
+
+main { min-width: 0; padding: 0 0 96px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 clamp(18px, 4vw, 52px); }
+.prose { max-width: var(--measure); }
+
+/* -------------------------------------------------- chapter head */
+.chead { padding: 46px 0 26px; border-bottom: 1px solid var(--line); }
+.chead .kicker { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.chead .cnum {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
+  color: var(--accent); border: 1px solid var(--accent-line); border-radius: 3px; padding: 3px 7px;
+}
+.chead h1 { font-size: clamp(30px, 4.4vw, 46px); line-height: 1.06; font-weight: 700; letter-spacing: -0.028em; }
+.chead .lede { font-size: 20px; line-height: 1.5; color: var(--ink-2); margin-top: 16px; max-width: 62ch; }
+
+.statstrip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 0; margin-top: 26px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--paper); overflow: hidden;
+}
+.statstrip div { padding: 11px 16px; border-right: 1px solid var(--line-soft); }
+.statstrip div:last-child { border-right: 0; }
+.statstrip .k { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.statstrip .v { font-family: var(--f-display); font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------- sections */
+section.block { padding: 38px 0 8px; }
+section.block > h2 {
+  font-size: 25px; font-weight: 700; letter-spacing: -0.022em; padding-bottom: 8px;
+  border-bottom: 2px solid var(--ink); display: inline-block; margin-bottom: 20px;
+}
+section.block > .prose { margin-bottom: 8px; }
+
+.callout {
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  background: var(--paper); padding: 14px 16px; margin: 18px 0; border-radius: 0 4px 4px 0;
+  font-size: 16.5px;
+}
+.callout.warn { border-left-color: var(--warn); }
+.callout.bad  { border-left-color: var(--bad); }
+.callout.good { border-left-color: var(--good); }
+.callout .lbl { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); display: block; margin-bottom: 5px; }
+
+/* -------------------------------------------------- concept card */
+.concept {
+  border-top: 1px solid var(--line);
+  padding: 30px 0 34px;
+  scroll-margin-top: calc(var(--topbar-h) + 12px);
+}
+.concept:first-of-type { border-top-width: 2px; border-top-color: var(--ink); }
+.concept > h3 {
+  font-size: 23px; font-weight: 700; letter-spacing: -0.022em; line-height: 1.18;
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.concept > h3 .idx {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 500; color: var(--ink-4);
+  letter-spacing: 0.06em; font-variant-numeric: tabular-nums;
+}
+.concept > h3 a.anchor { color: var(--ink-4); text-decoration: none; font-family: var(--f-mono); font-size: 13px; opacity: 0; }
+.concept:hover > h3 a.anchor { opacity: 1; }
+
+.dials { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 12px 0 16px; }
+.dial { display: flex; align-items: center; gap: 8px; }
+.dial .dl { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-4); }
+.meter { display: inline-flex; gap: 2px; }
+.meter i { display: block; width: 7px; height: 12px; background: var(--line); border-radius: 1px; }
+.meter i.on { background: var(--accent); }
+.dial.crit .meter i.on { background: var(--note); }
+.dial .dv { font-family: var(--f-mono); font-size: 12px; font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.dial .dv small { font-weight: 400; color: var(--ink-4); }
+.pill {
+  font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap;
+}
+.pill.shipped { color: var(--good); background: var(--good-wash); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.pill.partial { color: var(--warn); background: var(--warn-wash); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.pill.thin    { color: var(--bad);  background: var(--bad-wash);  border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.pill.tag     { color: var(--ink-3); background: var(--sunken); border-color: var(--line-soft); }
+
+.tldr { font-size: 18.5px; line-height: 1.5; color: var(--ink); max-width: 66ch; }
+.tldr b, .tldr strong { color: var(--ink); }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 20px 0 0; }
+.cols > section { min-width: 0; }
+.cols h4, .band h4 {
+  font-family: var(--f-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px;
+  padding-bottom: 5px; border-bottom: 1px solid var(--line-soft);
+}
+.cols section p, .band p, .cols section li, .band li { font-size: 16.5px; }
+
+.band { margin-top: 18px; padding: 15px 17px; border-radius: 4px; border: 1px solid var(--line-soft); background: var(--raised); }
+.band.example { background: var(--sunken); }
+.band.prod  { border-color: color-mix(in srgb, var(--accent) 22%, var(--line-soft)); background: var(--accent-wash); }
+.band.fail  { border-color: color-mix(in srgb, var(--bad) 22%, var(--line-soft)); background: var(--bad-wash); }
+.band.when  { background: var(--paper); }
+.band.example h4 { color: var(--ink-2); }
+.band.prod h4 { color: var(--accent); border-bottom-color: var(--accent-line); }
+.band.fail h4 { color: var(--bad); border-bottom-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+
+.band.when ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.band.when li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; }
+.band.when li::before { content: "+"; font-family: var(--f-mono); color: var(--good); font-weight: 600; }
+.band.when li.no::before { content: "\2212"; color: var(--bad); }
+
+/* -------------------------------------------------- code + pre */
+pre {
+  margin: 12px 0; padding: 13px 15px; overflow-x: auto;
+  background: var(--sunken); border: 1px solid var(--line-soft); border-radius: 4px;
+  font-family: var(--f-mono); font-size: 12.5px; line-height: 1.62; color: var(--ink-2);
+  tab-size: 2;
+}
+:root[data-theme="dark"] pre, :root:not([data-theme="light"]) pre { color: var(--ink-2); }
+pre .c { color: var(--ink-4); }
+pre .k { color: var(--accent); }
+pre .s { color: var(--good); }
+
+.filelist { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.filelist li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; font-size: 15px; }
+.filelist code { font-size: 12.3px; background: none; border: 0; padding: 0; color: var(--accent); word-break: break-all; }
+.filelist .note { color: var(--ink-3); font-size: 15px; }
+
+/* -------------------------------------------------- tables */
+.tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+table { border-collapse: collapse; width: 100%; font-family: var(--f-display); font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+th {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-3); background: var(--raised); border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+td code { font-size: 12px; }
+
+/* -------------------------------------------------- figures */
+figure { margin: 22px 0; }
+figure svg { display: block; max-width: 100%; height: auto; color: var(--ink-2); }
+figcaption { font-size: 14.5px; color: var(--ink-3); margin-top: 9px; font-family: var(--f-display); max-width: 70ch; }
+.fig-em { color: var(--accent); }
+
+/* -------------------------------------------------- index page bits */
+.chapgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 4px; overflow: hidden; margin: 22px 0; }
+.chapgrid a {
+  background: var(--paper); padding: 16px 17px; text-decoration: none; color: var(--ink);
+  display: flex; flex-direction: column; gap: 7px; min-height: 128px;
+}
+.chapgrid a:hover { background: var(--accent-wash); }
+.chapgrid .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--accent); letter-spacing: 0.1em; }
+.chapgrid .t { font-family: var(--f-display); font-size: 16.5px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.25; }
+.chapgrid .d { font-size: 14.5px; color: var(--ink-3); line-height: 1.45; }
+.chapgrid .m { margin-top: auto; font-family: var(--f-mono); font-size: 10px; color: var(--ink-4); letter-spacing: 0.06em; }
+
+.matrix td.c1 { font-family: var(--f-display); font-weight: 600; }
+.matrix .bar { display: inline-flex; gap: 2px; vertical-align: middle; }
+.matrix .bar i { width: 5px; height: 10px; background: var(--line); border-radius: 1px; display: block; }
+.matrix .bar i.on { background: var(--accent); }
+.matrix .bar.crit i.on { background: var(--note); }
+
+/* -------------------------------------------------- footer nav */
+.pagenav { display: flex; gap: 12px; justify-content: space-between; margin-top: 54px; padding-top: 20px; border-top: 1px solid var(--line); }
+.pagenav a { flex: 1 1 0; text-decoration: none; border: 1px solid var(--line); border-radius: 4px; padding: 13px 15px; background: var(--paper); color: var(--ink); }
+.pagenav a:hover { border-color: var(--accent-line); }
+.pagenav .d { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.pagenav .t { font-family: var(--f-display); font-weight: 650; font-size: 15.5px; letter-spacing: -0.015em; }
+.pagenav a.next { text-align: right; }
+
+.footnote { margin-top: 30px; font-size: 14.5px; color: var(--ink-3); font-family: var(--f-display); }
+
+/* -------------------------------------------------- responsive */
+@media (max-width: 1080px) {
+  .cols { grid-template-columns: 1fr; gap: 14px; }
+}
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail {
+    position: static; height: auto; max-height: 340px;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  body { font-size: 17px; }
+  .chead { padding-top: 30px; }
+}
+@media print {
+  .rail, .topbar, .pagenav { display: none; }
+  body { background: #fff; color: #000; font-size: 10.5pt; }
+  .shell { grid-template-columns: 1fr; }
+}
+
+.idxhead { background: var(--raised); font-family: var(--f-mono); font-size: 11px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">AgentVerse <b>Field Manual</b></a>
+  <span class="crumb">CH 05 · Ingestion</span>
+  <span class="spacer"></span>
+  <button class="tb-btn" data-theme-toggle type="button">Theme</button>
+</header>
+<div class="shell">
+<aside class="rail"><h4>Field manual</h4><nav><a href="index.html"><span class="n">00</span><span>Hub &amp; how to read</span></a></nav></nav><div class="part-label eyebrow">I · The agent</div><nav><a href="agent-patterns.html"><span class="n">01</span><span>Agent patterns</span></a><a href="rag-patterns.html"><span class="n">02</span><span>RAG patterns</span></a><a href="agent-memory.html"><span class="n">03</span><span>Agent memories</span></a></nav><div class="part-label eyebrow">II · Knowledge</div><nav><a href="knowledge-and-graphs.html"><span class="n">04</span><span>Knowledge &amp; knowledge graph</span></a><a href="ingestion.html" aria-current="page"><span class="n">05</span><span>Ingestion</span></a><a href="retrieval-strategies.html"><span class="n">06</span><span>Retrieval strategies</span></a><a href="embeddings.html"><span class="n">07</span><span>Embeddings</span></a><a href="chunking.html"><span class="n">17</span><span>Chunking strategies</span></a></nav><div class="part-label eyebrow">III · Context &amp; quality</div><nav><a href="prompt-builder.html"><span class="n">08</span><span>Prompt builder</span></a><a href="agent-improvement.html"><span class="n">09</span><span>Agent improvement</span></a><a href="evals.html"><span class="n">10</span><span>Evals</span></a><a href="hallucination.html"><span class="n">18</span><span>Hallucination handling</span></a></nav><div class="part-label eyebrow">IV · Safety &amp; control</div><nav><a href="guardrails.html"><span class="n">12</span><span>Guardrails</span></a><a href="governance.html"><span class="n">13</span><span>Governance</span></a><a href="scopes.html"><span class="n">14</span><span>Scopes</span></a><a href="observability.html"><span class="n">11</span><span>Observability</span></a></nav><div class="part-label eyebrow">V · Modality &amp; models</div><nav><a href="multimodal.html"><span class="n">15</span><span>Multimodal</span></a><a href="ocr.html"><span class="n">21</span><span>OCR</span></a><a href="model-router.html"><span class="n">16</span><span>Multi-model router</span></a></nav><div class="part-label eyebrow">VI · The platform</div><nav><a href="platform-workflows.html"><span class="n">19</span><span>Core platform workflows</span></a><a href="platform-concepts.html"><span class="n">20</span><span>Other core platform concepts</span></a><a href="agent-teams.html"><span class="n">22</span><span>AI agent teams</span></a><a href="jarvis.html"><span class="n">23</span><span>Jervis (JARVIS) console</span></a></nav><div class="part-label eyebrow">VII · Not on the list</div><nav><a href="coordination-protocols.html"><span class="n">24</span><span>Coordination protocols</span></a><a href="code-execution.html"><span class="n">25</span><span>Code execution &amp; sandboxing</span></a><a href="voice.html"><span class="n">26</span><span>Voice &amp; realtime agents</span></a><a href="triggers.html"><span class="n">27</span><span>Triggers &amp; event-driven agents</span></a><a href="reliability-qos.html"><span class="n">28</span><span>Reliability &amp; QoS</span></a><a href="cost-capacity.html"><span class="n">29</span><span>Cost &amp; capacity engineering</span></a><a href="data-lifecycle.html"><span class="n">30</span><span>Data lifecycle &amp; provenance</span></a><a href="testing-certification.html"><span class="n">31</span><span>Testing &amp; certification</span></a><a href="scale-playbook.html"><span class="n">32</span><span>Scale playbook</span></a><a href="workflow-engine.html"><span class="n">34</span><span>Workflow engine</span></a><a href="frontier.html"><span class="n">33</span><span>Frontier &amp; gaps</span></a></nav><div class="part-label eyebrow">Appendix</div><nav><a href="appendix-ratings.html"><span class="n">A</span><span>Ratings matrix</span></a><a href="appendix-glossary.html"><span class="n">B</span><span>Glossary</span></a></nav><div class="inpage"><h4>In this chapter</h4><nav><a href="#thirteen-stages"><span class="n">01</span><span>The 13-stage pipeline</span></a><a href="#connectors"><span class="n">02</span><span>Source configuration and connectors</span></a><a href="#scheduling-sync"><span class="n">03</span><span>Scheduled sync: locks, jitter, cursors, backoff</span></a><a href="#content-classification"><span class="n">04</span><span>Content classification</span></a><a href="#parser-selection"><span class="n">05</span><span>Parser selection</span></a><a href="#pdf-ingestion"><span class="n">06</span><span>PDF ingestion</span></a><a href="#docx-ingestion"><span class="n">07</span><span>DOCX and Office formats</span></a><a href="#markdown-text"><span class="n">08</span><span>Markdown and plain text</span></a><a href="#html-web"><span class="n">09</span><span>HTML and web pages</span></a><a href="#code-ingestion"><span class="n">10</span><span>Code ingestion</span></a><a href="#structured-data"><span class="n">11</span><span>CSV, JSON, and columnar data</span></a><a href="#image-ingestion"><span class="n">12</span><span>Image ingestion</span></a><a href="#audio-ingestion"><span class="n">13</span><span>Audio ingestion</span></a><a href="#video-ingestion"><span class="n">14</span><span>Video ingestion</span></a><a href="#email-ingestion"><span class="n">15</span><span>Email ingestion</span></a><a href="#github-ingestion"><span class="n">16</span><span>GitHub ingestion</span></a><a href="#jira-ingestion"><span class="n">17</span><span>Jira ingestion</span></a><a href="#confluence-ingestion"><span class="n">18</span><span>Confluence ingestion</span></a><a href="#slack-ingestion"><span class="n">19</span><span>Slack ingestion</span></a><a href="#rpa-extraction"><span class="n">20</span><span>Browser and RPA extraction</span></a><a href="#pii-redaction"><span class="n">21</span><span>PII detection and redaction</span></a><a href="#quality-gate"><span class="n">22</span><span>The quality gate</span></a><a href="#dedup-hashing"><span class="n">23</span><span>Deduplication and hashing</span></a><a href="#enrichment"><span class="n">24</span><span>Contextual enrichment</span></a><a href="#ingestion-failure"><span class="n">25</span><span>Failure handling and reprocessing</span></a></nav></div></aside>
+<main><div class="wrap">
+<header class="chead"><div class="kicker"><span class="cnum">CH 05</span><span class="eyebrow">II · Knowledge</span></div><h1>Ingestion</h1><p class="lede">A 13-stage pipeline, 40+ connectors, and everything that breaks.</p><div class="statstrip"><div><div class="k">Concepts</div><div class="v">25</div></div><div><div class="k">Mean impl</div><div class="v">7.9</div></div><div><div class="k">Mean criticality</div><div class="v">7.4</div></div><div><div class="k">Shipped</div><div class="v">18</div></div><div><div class="k">Thin / missing</div><div class="v">0</div></div></div></header><section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>Ingestion is the least glamorous and most consequential subsystem in an agent platform. Every
+    retrieval quality problem, every "the AI doesn't know about X", every compliance incident involving
+    a document that should never have been indexed — all of it originates here.</p>
+
+    <p>The design that survives production is a <strong>single pipeline with explicit numbered
+    stages</strong>, the same for every source and every format, where the format-specific work is
+    isolated to one stage (parse) and the strategy-specific work to another (chunk). AgentVerse runs
+    thirteen stages, and the ordering encodes hard rules: idempotency before any paid work, PII
+    detection before the embedder ever sees the text, quality gating before storage.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 920 300" role="img" aria-label="Thirteen-stage ingestion pipeline: receive, validate, content hash, classify, parse, PII redaction, quality gate, chunk, enrich, embed, dedup chunks, index, emit. Content hash short-circuits duplicates before embedding; PII redaction happens before the embedder; the quality gate can drop a document; failures go to a dead letter queue.">
+      <defs><marker id="i1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker>
+      <marker id="i2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#B3303B"></path></marker>
+      <marker id="i3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#00A8CC"></path></marker></defs>
+
+      <g fill="none" stroke="currentColor" stroke-width="1.1">
+        <rect x="0" y="56" width="128" height="34" rx="3"></rect>
+        <rect x="148" y="56" width="128" height="34" rx="3"></rect>
+        <rect x="296" y="56" width="128" height="34" rx="3"></rect>
+        <rect x="444" y="56" width="128" height="34" rx="3"></rect>
+        <rect x="592" y="56" width="128" height="34" rx="3"></rect>
+        <rect x="740" y="56" width="128" height="34" rx="3"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor" text-anchor="middle">
+        <text x="64" y="77"><tspan font-family="IBM Plex Mono, monospace" font-size="10" opacity="0.6">1 </tspan>receive · quota</text>
+        <text x="212" y="77"><tspan font-family="IBM Plex Mono, monospace" font-size="10" opacity="0.6">2 </tspan>validate · size</text>
+        <text x="360" y="77"><tspan font-family="IBM Plex Mono, monospace" font-size="10" opacity="0.6">3 </tspan>content hash</text>
+        <text x="508" y="77"><tspan font-family="IBM Plex Mono, monospace" font-size="10" opacity="0.6">4 </tspan>classify</text>
+        <text x="656" y="77"><tspan font-family="IBM Plex Mono, monospace" font-size="10" opacity="0.6">5 </tspan>parse</text>
+        <text x="804" y="77"><tspan font-family="IBM Plex Mono, monospace" font-size="10" opacity="0.6">6 </tspan>PII redact</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.1" marker-end="url(#i1)">
+        <line x1="128" y1="73" x2="144" y2="73"></line>
+        <line x1="276" y1="73" x2="292" y2="73"></line>
+        <line x1="424" y1="73" x2="440" y2="73"></line>
+        <line x1="572" y1="73" x2="588" y2="73"></line>
+        <line x1="720" y1="73" x2="736" y2="73"></line>
+      </g>
+      <path d="M868,73 L890,73 L890,120 L30,120 L30,142" fill="none" stroke="currentColor" stroke-width="1.1" marker-end="url(#i1)"></path>
+
+      <g fill="none" stroke="currentColor" stroke-width="1.1">
+        <rect x="0" y="142" width="128" height="34" rx="3"></rect>
+        <rect x="148" y="142" width="128" height="34" rx="3"></rect>
+        <rect x="296" y="142" width="128" height="34" rx="3"></rect>
+        <rect x="444" y="142" width="128" height="34" rx="3"></rect>
+        <rect x="592" y="142" width="128" height="34" rx="3"></rect>
+      </g>
+      <rect x="740" y="142" width="128" height="34" rx="3" fill="none" stroke="#00A8CC" stroke-width="1.5"></rect>
+      <g font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor" text-anchor="middle">
+        <text x="64" y="163"><tspan font-family="IBM Plex Mono, monospace" font-size="10" opacity="0.6">7 </tspan>quality gate</text>
+        <text x="212" y="163"><tspan font-family="IBM Plex Mono, monospace" font-size="10" opacity="0.6">8 </tspan>chunk</text>
+        <text x="360" y="163"><tspan font-family="IBM Plex Mono, monospace" font-size="10" opacity="0.6">9 </tspan>enrich</text>
+        <text x="508" y="163"><tspan font-family="IBM Plex Mono, monospace" font-size="10" opacity="0.6">10 </tspan>embed</text>
+        <text x="656" y="163"><tspan font-family="IBM Plex Mono, monospace" font-size="10" opacity="0.6">11 </tspan>dedup chunks</text>
+      </g>
+      <text x="804" y="158" font-family="Archivo, sans-serif" font-size="11.5" fill="#00A8CC" text-anchor="middle"><tspan font-family="IBM Plex Mono, monospace" font-size="10">12 </tspan>index</text>
+      <text x="804" y="171" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="#00A8CC" text-anchor="middle">13 emit event</text>
+      <g stroke="currentColor" stroke-width="1.1" marker-end="url(#i1)">
+        <line x1="128" y1="159" x2="144" y2="159"></line>
+        <line x1="276" y1="159" x2="292" y2="159"></line>
+        <line x1="424" y1="159" x2="440" y2="159"></line>
+        <line x1="572" y1="159" x2="588" y2="159"></line>
+      </g>
+      <line x1="720" y1="159" x2="736" y2="159" stroke="#00A8CC" stroke-width="1.2" marker-end="url(#i3)"></line>
+
+      <path d="M360,90 L360,108 L906,108 L906,215" fill="none" stroke="#00A8CC" stroke-width="1.3" marker-end="url(#i3)"></path>
+      <text x="612" y="104" font-family="IBM Plex Mono, monospace" font-size="10" fill="#00A8CC">hash unchanged → skip everything downstream (no embed spend)</text>
+
+      <g stroke="#B3303B" stroke-width="1.2" marker-end="url(#i2)">
+        <line x1="656" y1="90" x2="656" y2="212"></line>
+        <line x1="64" y1="176" x2="64" y2="212"></line>
+      </g>
+      <rect x="0" y="212" width="720" height="34" rx="3" fill="none" stroke="#B3303B" stroke-width="1.2"></rect>
+      <text x="360" y="234" font-family="Archivo, sans-serif" font-size="11.5" fill="#B3303B" text-anchor="middle">dead-letter queue · classified failure · bounded retry with backoff</text>
+
+      <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.65">
+        <text x="0" y="272">every stage emits an OTel span and a Prometheus counter; one correlation id spans all 13 — so "where did this document die" is one query</text>
+        <text x="0" y="290">stage 6 is before stage 10 by law: raw PII must never reach an external embedding provider</text>
+      </g>
+    </svg>
+    <figcaption>The pipeline. Two orderings carry the weight: the <span class="fig-em">hash gate at 3</span>
+    (so unchanged documents cost nothing) and PII redaction at 6, strictly before the embedder at 10.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="pipeline">
+  <h2>Pipeline and sources</h2>
+
+<article class="concept" id="thirteen-stages" data-impl="9" data-crit="10" data-tag="Pipeline">
+<h3><span class="idx">01</span>The 13-stage pipeline<a class="anchor" href="#thirteen-stages" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Pipeline</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">One code path for every document from every source: receive, validate, hash, classify,
+parse, redact, quality-gate, chunk, enrich, embed, dedup, index, emit.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Each stage is small, individually observable, and can drop or skip a document with a recorded reason.
+The stage boundaries are chosen so that expensive and irreversible work happens as late as possible:
+quota check first (free), hash third (cheap, prevents everything downstream), parse fifth (moderate),
+embed tenth (paid, external), index twelfth (durable).</p>
+<p>Four platform rules are enforced structurally rather than by convention: content hashing for
+idempotency at 3; PII detection and redaction before the embedder at 6; an OTel span plus a metric
+counter at every stage; and one correlation id carried through all thirteen.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/pipeline.py</code><span class="note">IngestionPipeline.ingest() — all 13 stages, plus _enrich, _embed, _index, _emit, _emit_metrics</span></li>
+<li><code>app/ingestion/orchestrator.py</code><span class="note">orchestration across sources</span></li>
+<li><code>app/ingestion/quality_checks.py</code><span class="note">QualityChecker (stage 7)</span></li>
+<li><code>app/ingestion/content_classifier.py</code><span class="note">ContentClassifier (stage 4)</span></li>
+<li><code>app/ingestion/parser_registry.py</code><span class="note">ParserRegistry (stage 5)</span></li>
+<li><code>app/ingestion/chunking_strategy_selector.py</code><span class="note">strategy dispatch (stage 8)</span></li>
+<li><code>app/ingestion/embedding_policy_selector.py</code><span class="note">which embedder (stage 10)</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>doc  contract.pdf, 4.2MB, from s3://acme-legal/
+
+1  receive       tenant quota 12GB/40GB              ok
+2  validate      4.2MB &lt; 50MB limit                  ok
+3  hash          sha256:c19a… new                    proceed
+4  classify      application/pdf, has text layer     → pdf parser
+5  parse         38 pages → 91k chars + layout
+6  PII           4 emails, 1 IBAN → redacted, flags recorded
+7  quality       score 0.86 ≥ 0.40 min               ok
+8  chunk         pdf_layout strategy → 142 chunks
+9  enrich        + heading path, page no, doc summary
+10 embed         142 vectors, 1 batched provider call
+11 dedup         6 boilerplate chunks dropped → 136
+12 index         136 rows + vectors + tsvector
+13 emit          knowledge.updated → SSE → the UI count ticks up
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Per-stage metrics are what make ingestion operable. The three most valuable: skip rate at stage 3
+(should be high on re-syncs — if it is near zero your hashing is broken), drop rate at stage 7 (a spike
+means a parser regressed), and stage-10 latency (the external dependency that will eventually be your
+bottleneck).</p>
+<p>Batch the embed stage. One call with 142 texts instead of 142 calls is the difference between
+minutes and hours on a large corpus, and most providers price it identically.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Wrong stage order.</strong> Embedding before redaction sends raw PII to a third party — a
+reportable incident, not a bug.</li>
+<li><strong>Silent stage failure.</strong> A stage that swallows an exception and returns empty text
+produces indexed documents with no content.</li>
+<li><strong>Unbounded documents.</strong> A 2GB PDF that OOMs the worker; stage 2 exists for that.</li>
+<li><strong>Partial indexing.</strong> A crash between 10 and 12 leaves paid embeddings unindexed —
+make 12 idempotent and re-runnable.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always. Ad-hoc per-format scripts are how ingestion becomes unmaintainable.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="connectors" data-impl="9" data-crit="9" data-tag="Sources">
+<h3><span class="idx">02</span>Source configuration and connectors<a class="anchor" href="#connectors" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Sources</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">A connector's job is narrow and precise: given a cursor, return the documents that
+changed since it — nothing about parsing, chunking or embedding.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Every connector implements the same contract, centred on <code>get_delta(cursor)</code>. That single
+method shape is what makes forty-plus integrations maintainable: incremental sync, resumption, and
+backfill are all the same operation with a different starting cursor. Credentials come from the vault,
+never from the source config. Connectors are registered in a registry so sources are configuration,
+not code.</p>
+<p>The catalogue spans six families: SaaS apps (Jira, Confluence, Slack, Notion, Salesforce, HubSpot,
+Zendesk, ServiceNow, Teams, Discord, PagerDuty, Sentry), object stores (S3, GCS, Azure Blob, MinIO,
+SharePoint, Drive), databases and warehouses (Postgres, MySQL, MongoDB, Snowflake, BigQuery,
+ClickHouse, DuckDB, Elasticsearch, Neo4j, InfluxDB), streams (Kafka, Kinesis, Pub/Sub, MQTT), the open
+web (crawl, RSS, arXiv, YouTube), and email (IMAP).</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/base_connector.py</code><span class="note">the contract, incl. get_delta()</span></li>
+<li><code>app/ingestion/connector_registry.py</code><span class="note">registration and lookup</span></li>
+<li><code>app/ingestion/source_config.py</code><span class="note">SourceConfig, RawDocument</span></li>
+<li><code>app/ingestion/connectors/</code><span class="note">40+ connector modules</span></li>
+<li><code>app/providers/vault.py</code><span class="note">encrypted credential resolution</span></li>
+<li><code>app/api/connectors.py</code><span class="note">management API</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>SourceConfig
+  source_id     acme:jira:PROJ
+  connector     jira
+  collection    acme/engineering
+  credential    vault://acme/jira-token        ← never inline
+  config        {project:"PROJ", include_comments:true}
+  schedule      every 15m
+  cursor        {updated_after:"2026-09-06T02:59:11Z"}
+
+get_delta(cursor) → 14 issues changed → 14 RawDocuments → pipeline
+cursor committed only after successful indexing
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Commit the cursor <em>after</em> the pipeline succeeds, not after fetching. Committing early loses
+documents on a crash; committing late re-processes a few, which the hash gate makes nearly free. That
+asymmetry is why at-least-once with idempotency is the right design here.</p>
+<p>Every connector will eventually rate-limit you. Per-source concurrency limits and respect for
+<code>Retry-After</code> belong in the base connector, not in each implementation.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Cursor semantics mismatch.</strong> A source whose "updated_after" is not monotonic silently
+skips documents.</li>
+<li><strong>Credential expiry.</strong> Sync fails for days; nobody notices without staleness alarms.</li>
+<li><strong>Full re-sync on cursor loss.</strong> Expensive and slow; keep cursors durable and backed up.</li>
+<li><strong>Permission over-fetch.</strong> A connector with admin scope ingesting documents the tenant's
+users may not see.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any recurring source. One-off uploads can go straight to the pipeline.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="scheduling-sync" data-impl="8" data-crit="8" data-tag="Sources">
+<h3><span class="idx">03</span>Scheduled sync: locks, jitter, cursors, backoff<a class="anchor" href="#scheduling-sync" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Sources</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">The distributed-systems half of ingestion — due-source dispatch, one worker per source
+at a time, periodic cursor commits, exponential backoff, and a dead-letter queue.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A tracker finds sources whose next-run time has passed. Each acquires a Redis lock so two workers
+cannot sync one source concurrently (the classic cause of duplicate ingestion). Schedules are jittered
+so fifty sources do not fire simultaneously. Long syncs commit the cursor periodically — every hundred
+documents — so a failure at document 9,000 does not restart from zero. Failures back off exponentially
+and eventually land in a DLQ with the classified reason.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/job_tracker.py</code><span class="note">get_due_sources(), Redis lock, DLQ</span></li>
+<li><code>app/ingestion/scheduler.py</code><span class="note">jitter, cursor-every-100, backoff, _sync_source_async(), _retry_dlq_async()</span></li>
+<li><code>app/scaling/tasks.py</code><span class="note">the Celery tasks that run it</span></li>
+<li><code>app/reliability/distributed_lock.py</code><span class="note">the lock primitive</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>03:00  62 sources due → jittered across 03:00–03:09
+       s3-legal: lock acquired by worker-4
+                 14,200 documents; cursor committed at 100, 200, …
+                 fails at 9,340 (S3 throttle)
+       backoff 1m → 2m → 4m; resumes from cursor 9,300
+       3 documents exceed retries → DLQ with reason=parse_error
+       confluence-POL: lock held by worker-1, worker-7 skips (no duplicate)
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Ingestion is bursty and competes with the agent workload for the same database and the same embedding
+quota. Give it its own queue and its own concurrency ceiling, or a nightly backfill will degrade
+interactive goals. The DLQ needs a named owner and a review cadence; unattended, it is where knowledge
+silently goes missing.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Missing lock.</strong> Two workers, duplicate documents, doubled embedding spend.</li>
+<li><strong>Thundering herd.</strong> Unjittered schedules taking out the database at 03:00.</li>
+<li><strong>Poison document.</strong> One document crashes the worker repeatedly and blocks the source —
+classify, DLQ, and move on.</li>
+<li><strong>Retry without backoff.</strong> Turning an upstream hiccup into an outage.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any source that syncs on a schedule — which is nearly all of them.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="content-classification" data-impl="8" data-crit="8" data-tag="Pipeline">
+<h3><span class="idx">04</span>Content classification<a class="anchor" href="#content-classification" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Pipeline</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Decide what a document actually <em>is</em> — by sniffing bytes, not by trusting the
+filename or the declared MIME type — because the parser choice depends on it.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Three signals in order of trust: magic bytes (a PDF starts <code>%PDF-</code>), structural probes
+(does this "PDF" have a text layer or is it scanned images?), and only then extension and declared type.
+The output is a content type plus attributes that steer downstream choices: has-text-layer, is-scanned,
+language, encoding, and whether it looks like code.</p>
+<p>Sniffing is a security control as well as a routing decision: a file named <code>report.pdf</code>
+that is actually an HTML document with a script payload should be handled as what it is.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/content_classifier.py</code><span class="note">sniffing and attributes (stage 4)</span></li>
+<li><code>app/ocr/classifier.py</code><span class="note">DocumentClassifier — document <em>kind</em> for OCR routing (invoice, ID, statement)</span></li>
+<li><code>app/ingestion/modality_pipeline.py</code><span class="note">routes by modality</span></li>
+</ul>
+<p>Two different classifiers, deliberately: one answers "what format is this file", the other "what kind
+of business document is this" (chapter 21).</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>scan-0041.pdf
+  magic bytes  %PDF-1.7                      → pdf
+  text layer   0 extractable characters      → scanned
+  route        pdf → OCR path, not text parse
+  attributes   {pages:3, scanned:true, dpi:300}
+
+notes.txt
+  magic bytes  none
+  content      "{\"invoices\":[…" → actually JSON
+  route        json parser, not text parser
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Misclassification is silent and expensive: a scanned PDF sent down the text path produces a document
+with no content, which indexes successfully and answers nothing. Assert non-empty extracted text as a
+pipeline invariant and route empties to OCR or the DLQ rather than indexing them.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Trusting extensions.</strong> The most common source of empty documents.</li>
+<li><strong>Missing the scanned case.</strong> Text-layer probing is not optional for real-world PDFs.</li>
+<li><strong>Encoding guesswork.</strong> Latin-1 read as UTF-8 produces mojibake that embeds
+meaninglessly.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always. Never trust the filename.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="parser-selection" data-impl="9" data-crit="8" data-tag="Pipeline">
+<h3><span class="idx">05</span>Parser selection<a class="anchor" href="#parser-selection" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Pipeline</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">A registry maps content type to parser, every parser returns the same structure, and one
+bad parser cannot take down the pipeline.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Parsers implement a common interface: bytes plus attributes in, structured text plus metadata plus
+elements (tables, images, code blocks) out. The registry resolves by content type with a fallback
+chain — try the specialised parser, then a generic one, then the DLQ. Because the interface is uniform,
+adding a format is one file and one registration, and the pipeline never grows a
+<code>if content_type == …</code> chain.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parser_registry.py</code><span class="note">parse_bytes() and resolution</span></li>
+<li><code>app/ingestion/parsers/base.py</code><span class="note">the interface</span></li>
+<li><code>app/ingestion/parsers/*.py</code><span class="note">pdf, docx, excel, html, markdown, csv, json, yaml, latex, notebook, email, audio, video, vision, parquet, avro</span></li>
+<li><code>app/tools/document_parser.py</code><span class="note">the same capability exposed to agents as a tool</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>content type          parser          returns
+application/pdf       pdf_parser      text + page map + tables + images
+…/wordprocessingml    docx_parser     text + heading tree + comments
+text/html             html_parser     main content (boilerplate stripped)
+text/markdown         markdown_parser text + heading hierarchy
+text/csv              csv_parser      rows + inferred schema
+application/json      json_parser     flattened paths + values
+.ipynb                notebook_parser cells: code + markdown + outputs
+audio/*               audio_parser    transcript + timestamps
+video/*               video_parser     transcript + scene boundaries + frames
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Parsers are where third-party libraries crash on real-world files. Run parsing with a timeout and a
+memory cap, and treat a parser exception as a document-level failure, never a pipeline-level one. Keep a
+corpus of nasty real documents as a regression suite — every parser bug you fix should add a file to it.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Parser hangs.</strong> A malformed file that loops forever; timeouts are mandatory.</li>
+<li><strong>Metadata dropped.</strong> A parser that returns only text discards the structure chunking
+needs.</li>
+<li><strong>Silent empties.</strong> Success with zero characters — assert against it.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>More than one format — so, immediately.</li></ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="formats">
+  <h2>Formats</h2>
+
+<article class="concept" id="pdf-ingestion" data-impl="8" data-crit="9" data-tag="Format">
+<h3><span class="idx">06</span>PDF ingestion<a class="anchor" href="#pdf-ingestion" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Format</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">The hardest common format: a page-description language with no semantic structure, three
+distinct sub-cases (digital text, scanned images, hybrid), and tables that are just lines and glyphs.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Detect the sub-case first. <em>Digital</em> PDFs have an extractable text layer, but reading order is
+not guaranteed — multi-column layouts need geometric reconstruction from character positions.
+<em>Scanned</em> PDFs have no text and must go to OCR. <em>Hybrid</em> documents have both, page by page,
+and must be handled per page rather than per document.</p>
+<p>Layout-aware extraction is what separates usable PDF ingestion from garbage: headers and footers
+identified and dropped, columns ordered correctly, tables extracted as structures, figure captions kept
+with their figures, page numbers preserved for citation.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parsers/pdf_parser.py</code><span class="note">extraction</span></li>
+<li><code>app/ingestion/chunkers/pdf_layout.py</code><span class="note">layout-aware chunking</span></li>
+<li><code>app/ingestion/chunkers/table.py</code><span class="note">table chunking</span></li>
+<li><code>app/ocr/engine.py</code><span class="note">the OCR path for scanned pages (chapter 21)</span></li>
+<li><code>app/knowledge/ingestors/pdf_ingestor.py</code><span class="note">higher-level PDF ingestion</span></li>
+<li><code>app/ingestion/connectors/pdf_file_connector.py</code><span class="note">file acquisition</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>annual-report.pdf, 84 pages
+ pages 1-2    cover + contents      → dropped (low information)
+ pages 3-61   two-column prose      → column-ordered, headers/footers stripped
+ pages 62-79  financial tables      → table chunker: 22 tables as structures
+ pages 80-84  scanned appendix      → no text layer → OCR path
+citations keep page numbers: "[4] annual-report.pdf p.47"
+naive extraction on the same file interleaves the two columns line by line
+and produces text that reads as noise
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>PDFs will be the majority of enterprise ingestion volume and the majority of your ingestion bugs.
+Budget for it: keep per-page metadata (a citation to "page 47" is worth far more than one to "the
+document"), handle hybrid documents per page, and measure extracted-characters-per-page as a health
+metric — a drop signals a parser or upstream change.</p>
+<p>Tables are the highest-value and hardest part. A financial table flattened into prose is worse than
+absent, because it produces confidently wrong numbers.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Column interleaving.</strong> Text that is technically extracted and semantically ruined.</li>
+<li><strong>Missed scanned pages.</strong> A hybrid document treated as digital loses the appendix.</li>
+<li><strong>Table flattening.</strong> Rows and columns collapsed; numbers attach to the wrong labels.</li>
+<li><strong>Header/footer pollution.</strong> The same company name in every chunk dominates retrieval.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any enterprise corpus. Invest here first — it has the highest ratio of quality gained to effort
+spent.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="docx-ingestion" data-impl="8" data-crit="7" data-tag="Format">
+<h3><span class="idx">07</span>DOCX and Office formats<a class="anchor" href="#docx-ingestion" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Format</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Structurally far kinder than PDF — real heading hierarchies, real tables, real
+comments — and the trap is ingesting the parts you should not: tracked changes, hidden text, and
+speaker notes.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Office files are zipped XML with explicit semantics, so extraction can recover a heading tree,
+tables as tables, footnotes, and comments. That makes heading-based chunking accurate rather than
+heuristic. The judgement calls are about inclusion: tracked changes and deleted text may be
+confidential or simply wrong; comments are often the most useful content in a draft; hidden slides and
+speaker notes frequently contain internal commentary never meant for wider circulation.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parsers/docx_parser.py</code><span class="note">documents</span></li>
+<li><code>app/ingestion/parsers/excel_parser.py</code><span class="note">workbooks: sheets, formulas, named ranges</span></li>
+<li><code>app/ingestion/chunkers/heading.py</code><span class="note">heading-based chunking over the recovered tree</span></li>
+<li><code>app/knowledge/ingestors/docx_ingestor.py</code><span class="note">higher-level ingestion</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>policy-draft-v7.docx
+  headings      4 levels → chunk boundaries at H2, path preserved
+  tables        3 → structured, not flattened
+  comments      11 → indexed separately, marked as review commentary
+  tracked       deletions EXCLUDED (superseded text)
+  metadata      author, last-modified, template
+spreadsheet: each sheet a document, formulas kept as metadata,
+values as content — a formula string is not an answer
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Decide the inclusion policy explicitly and record it, because it is a governance question: an
+organisation may be perfectly happy indexing comments internally and horrified to find them surfacing
+in a customer-facing agent. Default to excluding tracked deletions and hidden content, and make
+inclusion an opt-in per collection.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Deleted text indexed.</strong> The agent quotes a clause the legal team removed.</li>
+<li><strong>Formulas as content.</strong> "=SUM(B2:B40)" retrieved as a number.</li>
+<li><strong>Merged-cell tables.</strong> Header/value misalignment.</li>
+<li><strong>Password-protected files.</strong> Fail clearly to the DLQ; do not index the error message.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any corpus with authored documents — usually the highest-quality material you have.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="markdown-text" data-impl="9" data-crit="7" data-tag="Format">
+<h3><span class="idx">08</span>Markdown and plain text<a class="anchor" href="#markdown-text" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Format</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">The easiest format and the one most worth chunking well, because the heading structure is
+already a semantic outline the author wrote for you.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Parse the heading hierarchy and use it directly as chunk boundaries, carrying the full heading path
+into chunk metadata. Preserve code fences intact — splitting a code block is always wrong — and keep
+tables and lists whole. For plain text with no structure, fall back to token-aware or semantic chunking.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parsers/markdown_parser.py</code><span class="note">structure recovery</span></li>
+<li><code>app/ingestion/chunkers/heading.py</code><span class="note">heading chunker</span></li>
+<li><code>app/ingestion/parsers/latex_parser.py</code><span class="note">LaTeX: sections, equations, citations</span></li>
+<li><code>app/ingestion/parsers/notebook_parser.py</code><span class="note">notebooks: code + markdown + outputs</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>runbook.md
+  # Payments runbook
+  ## Payout failures        → chunk 1, path ["Payments runbook","Payout failures"]
+  ### Diagnosis             → chunk 2, path [… ,"Diagnosis"]
+  ```bash …```              → kept whole inside chunk 2, never split
+  ## Escalation             → chunk 3
+retrieval on "how do I diagnose a payout failure" matches chunk 2 and the
+prompt shows the full heading path, so the model knows the context
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Markdown corpora (runbooks, wikis, docs sites, READMEs) are usually the highest-signal content in an
+organisation and the cheapest to ingest well. Heading paths in metadata double as navigation and as
+filter fields; they are worth preserving even when the chunker does not need them.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Split code fences.</strong> Half a command is worse than none.</li>
+<li><strong>Giant sections.</strong> One H2 with 8,000 tokens still needs sub-splitting.</li>
+<li><strong>Lost heading context.</strong> A chunk that says "run the second command" with no path.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always available; start your knowledge base here.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="html-web" data-impl="8" data-crit="7" data-tag="Format">
+<h3><span class="idx">09</span>HTML and web pages<a class="anchor" href="#html-web" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Format</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Nine tenths of a web page is not content — navigation, cookie banners, footers, related
+links. Boilerplate removal is the whole job, and untrusted-input handling is the whole risk.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Extract the main content region (readability-style heuristics or explicit selectors), convert
+surviving structure to markdown-like text so headings and lists persist, resolve relative links, and
+strip scripts and styles. For crawling, respect robots directives, bound depth and page count, and stay
+within an allowlist for anything that feeds an agent's answer.</p>
+<p>Everything fetched from the web is attacker-controlled input. It must be scanned for injection and
+labelled untrusted before it becomes a chunk or a memory.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parsers/html_parser.py</code><span class="note">extraction and boilerplate removal</span></li>
+<li><code>app/ingestion/connectors/web_crawl_connector.py</code><span class="note">crawling with bounds</span></li>
+<li><code>app/ingestion/connectors/rss_connector.py</code>, <code>arxiv_connector.py</code><span class="note">structured feeds</span></li>
+<li><code>app/net/ssrf_guard.py</code><span class="note">SSRF protection on every fetch</span></li>
+<li><code>app/agent/exfil_guard.py</code><span class="note">injection scan on retrieved content</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>fetched  vendor pricing page, 180KB HTML
+strip    nav, cookie banner, footer, 14 "related" cards, 3 scripts
+extract  main article → 4.1KB of text + 1 pricing table
+resolve  12 relative links → absolute, for citation
+scan     no injection markers → indexed, marked source=external
+crawl bounds: depth 2, 200 pages, allowlist [vendor.example]
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Web content changes and you will re-crawl. Hash the extracted <em>content</em>, not the raw HTML —
+otherwise a rotating ad slot or a timestamp makes every page look changed and you pay to re-embed the
+web weekly.</p>
+<p>Keep external content in its own collection. Mixing authoritative internal docs with scraped pages in
+one collection makes it impossible to reason about trust at query time.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Boilerplate indexed.</strong> Cookie-banner text retrieved as policy.</li>
+<li><strong>SPA with no server HTML.</strong> Empty extraction; needs a rendering fetch (chapter 15).</li>
+<li><strong>Injection via page content.</strong> The main reason to keep this content labelled and
+scanned.</li>
+<li><strong>Crawl runaway.</strong> Bound depth, count and time.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Public knowledge matters and you accept the trust cost.</li>
+<li class="no">Avoid crawling as a substitute for a real integration.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="code-ingestion" data-impl="8" data-crit="8" data-tag="Format">
+<h3><span class="idx">10</span>Code ingestion<a class="anchor" href="#code-ingestion" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Format</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Chunk on the syntax tree, keep symbol metadata, index by revision, and scan for secrets
+<em>before</em> anything is stored.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Parse to an AST and emit one chunk per function, method or class, with the enclosing signature and
+module imports attached as context. Metadata carries language, path, symbol name, and revision. Secret
+scanning runs before indexing — an index is a search engine over your repository, and a leaked
+credential in git history becomes trivially findable by every agent in the tenant.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/ast_chunker.py</code><span class="note">syntax-aware chunking</span></li>
+<li><code>app/ingestion/repository_security.py</code><span class="note">secret scanning</span></li>
+<li><code>app/embedding/router.py</code><span class="note">routes code to a code embedding model</span></li>
+<li><code>app/ingestion/connectors/github_connector.py</code>, <code>gitlab_connector.py</code><span class="note">acquisition</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>src/payments/webhooks.py @ commit a91f2
+ chunk 1  def verify_signature(payload, sig)  + imports + decorator
+ chunk 2  class WebhookHandler                 + docstring
+ chunk 3  def handle(self, event)              + enclosing class signature
+metadata {lang:python, path:…, symbol:verify_signature, rev:a91f2}
+secret scan: 1 hit in tests/fixtures.py (test key) → excluded from index
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Index by revision and re-index on merge. An agent reasoning about <code>main</code> with a two-week-old
+index gives confidently stale answers about code that no longer exists, and it is very hard to debug
+because the answer looks plausible.</p>
+<p>Keep code in its own collection with its own embedding model. Code and prose in one index degrade
+each other measurably.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Prose chunker on code.</strong> Meaningless chunks; the single most common mistake.</li>
+<li><strong>Secrets indexed.</strong> Scan first, always.</li>
+<li><strong>Vendored dependencies.</strong> 200k chunks of <code>node_modules</code> drowning your own
+code. Exclude aggressively.</li>
+<li><strong>Stale index.</strong> Re-index on merge, not weekly.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Agents answer questions about or modify code.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="structured-data" data-impl="8" data-crit="7" data-tag="Format">
+<h3><span class="idx">11</span>CSV, JSON, and columnar data<a class="anchor" href="#structured-data" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Format</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Rows are not prose. Either summarise the table into text worth embedding, or keep it as
+data and let the agent query it with code — but do not embed ten thousand rows one at a time.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Three viable strategies, chosen by shape. <em>Schema + sample</em>: embed a description of the table
+(columns, types, ranges, a few example rows) so the agent knows it exists and what it contains, then
+answer questions with code execution against the real file. <em>Row grouping</em>: for small tables,
+serialise groups of rows as labelled text. <em>Path flattening</em>: for JSON, emit
+<code>path: value</code> lines so nested structure survives embedding.</p>
+<p>The anti-pattern is embedding each row separately: 50,000 near-identical vectors that answer "find me
+a row like this" and nothing else.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parsers/csv_parser.py</code>, <code>json_parser.py</code>, <code>yaml_parser.py</code><span class="note">parsing and flattening</span></li>
+<li><code>app/ingestion/parsers/parquet_parser.py</code>, <code>avro_parser.py</code><span class="note">columnar and binary formats</span></li>
+<li><code>app/ingestion/chunkers/table.py</code><span class="note">table chunking</span></li>
+<li><code>app/ingestion/connectors/postgresql_connector.py</code>, <code>snowflake_connector.py</code>, <code>bigquery_connector.py</code>, <code>clickhouse_connector.py</code>, <code>duckdb_connector.py</code>, <code>mongodb_connector.py</code>, <code>elasticsearch_connector.py</code>, <code>influxdb_connector.py</code>, <code>neo4j_connector.py</code>, <code>mysql_connector.py</code><span class="note">database and warehouse sources</span></li>
+<li><code>app/tools/code_interpreter.py</code><span class="note">where the real querying happens (chapter 25)</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>transactions.csv — 2.4M rows
+
+embed-each-row     2.4M vectors, $180 of embedding, answers nothing useful
+schema + sample    1 chunk:
+  "transactions: txn_id, date (2024-01-01…2026-09-05), amount
+   (0.5–184,220 INR), status (settled|failed|pending), vendor (412 distinct).
+   Sample: TXN-88, 2026-03-04, 4,120.00, settled, Razorpay"
+then  "how many failed over ₹10k in March?" → code execution, exact answer
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The schema-plus-code-execution pattern is the correct default for tabular data and it is dramatically
+cheaper and more accurate than embedding rows. It also changes the security posture: the data stays in
+its store, and the agent gets a query capability rather than a copy.</p>
+<p>For database connectors, sync summaries and schemas rather than table contents unless the table is
+genuinely small and genuinely textual.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Row-per-vector.</strong> Expensive, useless, and hard to undo.</li>
+<li><strong>Lost headers.</strong> Values with no column names.</li>
+<li><strong>Type loss.</strong> Dates and numbers as strings, so no comparison works.</li>
+<li><strong>Whole-warehouse ingestion.</strong> Ingest the schema, query the data.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Agents answer analytical questions — use schema plus execution.</li>
+<li class="no">Do not embed large tables row-wise.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="image-ingestion" data-impl="7" data-crit="6" data-tag="Format">
+<h3><span class="idx">12</span>Image ingestion<a class="anchor" href="#image-ingestion" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Format</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">Three extractions per image, and you usually want all three: OCR for text in the image,
+a vision-model caption for what it depicts, and the surrounding document context.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Route by image content: photographs and diagrams get a vision-model description; screenshots and
+scans get OCR; charts benefit from both plus, ideally, data extraction. The caption or transcript is
+what gets embedded (text vectors are more useful than image vectors for most retrieval), while the
+image itself is stored as an artifact by reference and linked from the chunk.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parsers/vision_parser.py</code><span class="note">vision-model description</span></li>
+<li><code>app/ocr/engine.py</code>, <code>extractors/*</code><span class="note">OCR and field extraction (chapter 21)</span></li>
+<li><code>app/multimodal/pipeline.py</code>, <code>models.py</code><span class="note">multimodal asset handling (chapter 15)</span></li>
+<li><code>app/perception/multimodal.py</code><span class="note">perception-side analysis</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>architecture-diagram.png inside design-doc.pdf p.12
+ OCR       box labels: "API GW", "auth-svc", "payments", "pgbouncer"
+ caption   "Request flow diagram: API gateway routes to auth and payments
+            services; both connect to Postgres through pgbouncer."
+ context   surrounding paragraph + section heading
+ chunk     caption + OCR text + context, with artifact ref to the image
+"what sits between payments and the database?" now answerable
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Vision captioning is metered per image, so gate it: caption images in documents users actually query,
+skip decorative assets, and cache by image hash — the same logo appears in 4,000 documents. Images are
+also the most likely place for personal data to hide, so classify them as sensitive by default.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Captioning everything.</strong> Including 4,000 copies of the letterhead.</li>
+<li><strong>OCR on photographs.</strong> Garbage text embedded as content.</li>
+<li><strong>Lost linkage.</strong> A caption with no reference back to the image or its page.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Documents carry meaning in diagrams, screenshots or scans.</li>
+<li class="no">Skip for decorative imagery.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="audio-ingestion" data-impl="7" data-crit="6" data-tag="Format">
+<h3><span class="idx">13</span>Audio ingestion<a class="anchor" href="#audio-ingestion" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Format</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">Transcribe, then treat the transcript as a timestamped document — the timestamps are the
+feature, because they let a citation point at a moment.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Speech-to-text produces text plus word or segment timing, and ideally speaker labels. Chunk on
+timestamp windows with overlap, keep the time range in metadata, and preserve speaker attribution where
+diarisation is available. A citation then resolves to "call recording, 14:32–15:05", which is far more
+useful than "the recording".</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parsers/audio_parser.py</code><span class="note">transcription in the pipeline</span></li>
+<li><code>app/ingestion/chunkers/timestamp.py</code><span class="note">timestamp-window chunking</span></li>
+<li><code>app/voice/stt_engine.py</code>, <code>providers/stt/*</code><span class="note">Whisper API, faster-whisper, AssemblyAI (chapter 26)</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>sales-call-2026-09-02.m4a, 48 min
+ transcript  9,400 words, 2 speakers
+ chunks      90-second windows, 15s overlap → 34 chunks
+ metadata    {t_start, t_end, speaker, call_id, participants}
+query "did they mention the renewal date?"
+ → chunk at 22:15–23:45, speaker=customer
+ → citation plays from 22:15
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Transcription is priced per minute and is the dominant cost of audio ingestion, so gate it by value:
+transcribe customer calls and meetings, not every voicemail. Recordings are also among the most
+regulated data you will hold — consent, retention and residency all apply, and a transcript inherits
+every obligation of the recording.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>No timestamps.</strong> A wall of text with no way to cite a moment.</li>
+<li><strong>Missing diarisation.</strong> Customer statements attributed to the rep.</li>
+<li><strong>Accent and jargon errors.</strong> Domain terms mangled; supply a vocabulary hint where the
+provider supports it.</li>
+<li><strong>Consent gaps.</strong> Ingesting a recording you had no right to process.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Calls and meetings hold knowledge nobody wrote down — which is most organisations.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="video-ingestion" data-impl="6" data-crit="5" data-tag="Format">
+<h3><span class="idx">14</span>Video ingestion<a class="anchor" href="#video-ingestion" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Format</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i></span><span class="dv">5<small>/10</small></span></span></div>
+<p class="tldr">Audio track plus sampled frames plus scene boundaries — three streams that must stay
+aligned on a single timeline.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Extract and transcribe the audio, detect scene changes, sample a keyframe per scene, and caption or
+OCR those frames. Chunk by scene so that each chunk has both the words spoken and a description of what
+was on screen. On-screen text is often the highest-value content in a demo or a tutorial, and it exists
+only in the frames.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parsers/video_parser.py</code><span class="note">audio + frames + scenes</span></li>
+<li><code>app/ingestion/chunkers/scene.py</code><span class="note">scene-boundary chunking</span></li>
+<li><code>app/ingestion/connectors/youtube_connector.py</code><span class="note">a source with captions already available</span></li>
+</ul>
+<p>Rated 6: the parser and scene chunker exist, but frame captioning at scale and tight audio/visual
+alignment are thinner than the audio path.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>product-demo.mp4, 12 min
+ scenes  9 detected
+ scene 4 (3:40–5:10)
+   speech "and here you can configure the retry policy"
+   frame  OCR: "Retry attempts: 3 · Backoff: exponential · Jitter: on"
+   chunk  speech + on-screen settings, t_start 3:40
+query "what's the default backoff?" → answered from the frame, not the audio
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Video is the most expensive modality per minute of content and usually the least queried — sample
+frames sparsely (one per scene, not one per second) and prefer existing captions when the source
+provides them. Where a video has an accompanying document, ingest the document first; it is almost
+always better value.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Frame flood.</strong> One frame per second at 30 minutes is 1,800 vision calls.</li>
+<li><strong>Timeline drift.</strong> Frames and transcript misaligned, so citations point at the wrong
+moment.</li>
+<li><strong>Ignored on-screen text.</strong> The actual answer, discarded.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Training material, demos, or recorded walkthroughs are the knowledge.</li>
+<li class="no">Skip when a written equivalent exists.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="email-ingestion" data-impl="7" data-crit="6" data-tag="Format">
+<h3><span class="idx">15</span>Email ingestion<a class="anchor" href="#email-ingestion" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Format</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">Threads, not messages — plus quoted-reply explosion, attachments that are the real
+content, and the highest PII density of any source you will ingest.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Reconstruct threads from message ids and references, strip quoted history (or a ten-message thread
+indexes the first message ten times), extract and separately ingest attachments, and normalise the
+header metadata that makes email searchable: participants, dates, subject, direction. Signature blocks
+should be stripped for the same reason as boilerplate.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parsers/email_parser.py</code><span class="note">parsing, threading, quote stripping</span></li>
+<li><code>app/ingestion/connectors/email_imap_connector.py</code><span class="note">IMAP acquisition</span></li>
+<li><code>app/integrations/email/imap_listener.py</code><span class="note">live inbound mail</span></li>
+<li><code>app/gateway/channels/email.py</code><span class="note">email as an interaction channel (chapter 27)</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>thread "Re: Re: Re: Contract renewal" — 11 messages
+ naive   11 documents, message 1 quoted 10 times → 10× duplicate content
+ threaded 1 document with 11 turns, quotes stripped, participants normalised
+ attachments  renewal-v3.pdf → ingested separately, linked to the thread
+ PII      6 personal emails, 2 phone numbers → redacted at stage 6
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production schedule</h4>
+<p>Email is where ingestion meets privacy law hardest. Default to excluding personal mailboxes, ingest
+shared or role mailboxes only, apply the shortest defensible retention, and expect data-subject requests
+to hit this source first. The technical work is easy; the policy work is not, and it should precede the
+integration.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Quote duplication.</strong> Retrieval dominated by the same quoted paragraph.</li>
+<li><strong>Broken threading.</strong> Non-compliant clients that drop references.</li>
+<li><strong>Attachments ignored.</strong> The contract was the point, not the covering note.</li>
+<li><strong>Over-collection.</strong> Ingesting mailboxes you have no basis to process.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Shared mailboxes hold operational knowledge.</li>
+<li class="no">Avoid personal mailboxes without an explicit legal basis.</li>
+</ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="saas">
+  <h2>SaaS sources with real quirks</h2>
+
+<article class="concept" id="github-ingestion" data-impl="8" data-crit="7" data-tag="Connector">
+<h3><span class="idx">16</span>GitHub ingestion<a class="anchor" href="#github-ingestion" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Connector</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Four different content types behind one API — code, pull requests, issues, and CI
+results — each wanting a different chunking and freshness policy.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Code is AST-chunked and indexed by revision. Pull requests are threaded discussions plus a diff — the
+review conversation is often more valuable than the code. Issues are threads. Releases and CI runs are
+events. Sync incrementally by <code>updated_at</code>, exclude vendored paths and generated files, and
+respect the API's rate limits, which are the practical constraint on large organisations.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/connectors/github_connector.py</code><span class="note">the connector</span></li>
+<li><code>app/knowledge/ingestors/github_ingestor.py</code><span class="note">repository-level ingestion</span></li>
+<li><code>app/ingestion/repository_security.py</code><span class="note">secret scanning</span></li>
+<li><code>app/mcp/servers/</code><span class="note">GitHub also appears as an MCP tool surface for live actions</span></li>
+</ul>
+<p>Note the distinction: ingestion makes the repository <em>searchable</em>; the MCP connector makes it
+<em>actionable</em>. Agents usually need both.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>repo acme/api
+ code       1,840 files → 12,400 AST chunks @ rev a91f2
+            excluded: node_modules, dist, *.lock, generated/
+ PRs        620 → discussion threads + diff summaries
+ issues     1,100 → threads
+ releases   48 → changelog documents
+"why was retry logic added to the payment client?"
+ → PR #3312 discussion, not the code comment
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The PR discussion corpus is the most under-appreciated knowledge source in engineering
+organisations: it records <em>why</em>, which neither the code nor the docs contain. Ingest it.</p>
+<p>Rate limits force prioritisation: sync default branches frequently, other branches rarely, and
+archived repositories once.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Vendored code flood.</strong> Dependencies outnumbering your source ten to one.</li>
+<li><strong>Secrets in history.</strong> Scan, and remember that history is searchable too.</li>
+<li><strong>Rate-limit exhaustion.</strong> One large org sync starving every other source.</li>
+<li><strong>Private-repo leakage.</strong> A connector with broad scope indexing repositories the
+collection's readers should not see.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Engineering agents, code questions, or change-history questions.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="jira-ingestion" data-impl="8" data-crit="7" data-tag="Connector">
+<h3><span class="idx">17</span>Jira ingestion<a class="anchor" href="#jira-ingestion" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Connector</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Issues are threads with custom fields, and the custom fields are where each
+organisation's real process lives — so a generic mapping loses the point.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Each issue becomes a document: summary and description as content, comments as thread turns, and
+fields — status, assignee, sprint, epic, labels, and the tenant's custom fields — as metadata. Links
+between issues (blocks, relates-to, duplicates) are relationship data, which is exactly what the
+knowledge graph wants. Sync incrementally with JQL on <code>updated</code>.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/connectors/jira_connector.py</code><span class="note">the connector</span></li>
+<li><code>app/knowledge/ingestors/jira_ingestor.py</code><span class="note">issue ingestion</span></li>
+<li><code>app/knowledge_graph/ingestion_hook.py</code><span class="note">issue links become graph edges</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>PROJ-1180
+ content   summary + description + 14 comments (chronological)
+ metadata  {status:Done, epic:PROJ-900, sprint:"S-42",
+            components:[payments], custom.risk_tier:"high"}
+ links     blocks PROJ-1191 · caused_by INC-4471
+graph      PROJ-1180 —blocks→ PROJ-1191, —caused_by→ INC-4471
+query "what work came out of the duplicate-charge incident?" → graph hop
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Map custom fields explicitly per tenant. Jira instances are heavily customised, and the fields a team
+cares about ("risk tier", "customer impact") are precisely the ones a generic connector drops. Make the
+mapping part of source configuration.</p>
+<p>Ticket corpora are large and mostly low-signal. Filter by project and recency rather than ingesting a
+decade of closed tickets.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Custom fields dropped.</strong> Metadata that would have made filtering work.</li>
+<li><strong>Comment order lost.</strong> A thread that reads as contradictory.</li>
+<li><strong>Permission mismatch.</strong> Restricted projects indexed into an open collection.</li>
+<li><strong>Volume without filtering.</strong> Ten years of tickets diluting retrieval.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Agents answer "what is the status of", "who is working on", or "why did we do this".</li></ul>
+</section>
+</article>
+
+<article class="concept" id="confluence-ingestion" data-impl="8" data-crit="7" data-tag="Connector">
+<h3><span class="idx">18</span>Confluence ingestion<a class="anchor" href="#confluence-ingestion" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Connector</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">A page tree with macros, restrictions and heavy staleness — the richest internal corpus
+most organisations have, and the one that most needs a freshness signal.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Pages become documents; the space and ancestor path become metadata (and natural filter fields);
+storage-format XML is converted to text with headings preserved. Macros need decisions: an included
+page should not be duplicated, a Jira macro should become a reference rather than text, a code macro
+should be preserved verbatim. Page restrictions must be read and honoured — Confluence permissions are
+per-page and do not follow the space.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/connectors/confluence_connector.py</code><span class="note">the connector</span></li>
+<li><code>app/knowledge/ingestors/confluence_ingestor.py</code><span class="note">page ingestion</span></li>
+<li><code>app/ingestion/chunkers/heading.py</code><span class="note">heading-based chunking over the page tree</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>space POL, page 118 "Refund policy"
+ ancestors  ["Policies","Customer","Refunds"]  → metadata + filter
+ macros     include(POL-92) → reference, not duplicated text
+            jira(PROJ-1180) → link metadata
+            code block      → preserved verbatim
+ restrictions  page restricted to group "policy-owners"
+               → indexed with an access tag, or excluded per config
+ freshness  last_updated 2023-11-02 → 2.8 years stale → down-ranked
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Wikis rot, and stale wiki content is the most common cause of confidently wrong agent answers.
+Ingest <code>last_updated</code> and use it: down-rank or flag content older than a threshold, and
+surface "this page was last updated 3 years ago" in the citation. That single feature does more for
+trust than a better reranker.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Ignored page restrictions.</strong> A genuine access-control breach.</li>
+<li><strong>Macro duplication.</strong> Included pages indexed many times.</li>
+<li><strong>Stale content unmarked.</strong> Confident answers from an abandoned page.</li>
+<li><strong>Draft pages.</strong> Unpublished drafts treated as policy.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>The organisation documents itself in a wiki — with a freshness policy from day one.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="slack-ingestion" data-impl="7" data-crit="6" data-tag="Connector">
+<h3><span class="idx">19</span>Slack ingestion<a class="anchor" href="#slack-ingestion" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Connector</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">High volume, low signal per message, and organised as threads inside channels — plus the
+strongest privacy expectations of any source, because people speak informally.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Threads, not messages, are the unit: a thread is a conversation with an outcome, a single message is
+usually noise. Channel selection is the main quality lever — support and incident channels are
+valuable, social channels are not. Resolve user and channel mentions to names, keep reactions as weak
+signal (a checkmark often marks the resolution), and exclude DMs and private channels by default.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/connectors/slack_connector.py</code>, <code>discord_connector.py</code>, <code>teams_connector.py</code><span class="note">chat sources</span></li>
+<li><code>app/knowledge/ingestors/slack_ingestor.py</code><span class="note">thread ingestion</span></li>
+<li><code>app/gateway/channels/slack.py</code><span class="note">Slack as an interaction channel, not a corpus</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>#incidents thread, 34 messages, 2026-03-14
+ document  "Duplicate charge spike"
+   turns    34, mentions resolved to names
+   outcome  message with ✅ reaction, marked as resolution
+   metadata {channel:incidents, participants:6, resolved:true}
+excluded  #random, #social, all DMs, all private channels
+value     the only written record of how the incident was actually resolved
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Slack is the highest-volume and lowest-density source in most organisations — millions of messages,
+thousands of useful threads. Be aggressive: allowlist channels rather than excluding them, require a
+thread length threshold, and prefer resolved threads. And be explicit with employees about what is
+indexed; the privacy expectation in chat is materially different from a wiki.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Message-level chunks.</strong> "yes" and "👍" as retrievable documents.</li>
+<li><strong>Unresolved mentions.</strong> <code>&lt;@U04H2&gt;</code> instead of a name.</li>
+<li><strong>Private content.</strong> DMs ingested — the incident nobody recovers from.</li>
+<li><strong>Volume swamping.</strong> Chat drowning authoritative documents in the same collection.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Incident and support channels hold undocumented knowledge.</li>
+<li class="no">Never DMs or private channels by default.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="rpa-extraction" data-impl="7" data-crit="6" data-tag="Connector">
+<h3><span class="idx">20</span>Browser and RPA extraction<a class="anchor" href="#rpa-extraction" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Connector</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">The last resort that is sometimes the only resort: drive a real browser, log in, and read
+the screen — for systems with no API and no export.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A browser session authenticates with vault-held credentials, navigates to the target, and extracts
+either the DOM (preferred — structured and cheap) or a screenshot for vision analysis (fallback).
+Selectors that worked are remembered so subsequent runs replay rather than re-analyse. Everything about
+it is brittle, so it needs artifact capture on every step to be debuggable at all.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rpa/executor.py</code>, <code>runner.py</code>, <code>session.py</code><span class="note">the automation engine</span></li>
+<li><code>app/rpa/credential_injector.py</code><span class="note">credentials injected without exposure to the model</span></li>
+<li><code>app/rpa/artifacts.py</code><span class="note">screenshots and traces</span></li>
+<li><code>app/perception/page_analyzer.py</code><span class="note">DOM and visual analysis</span></li>
+<li><code>app/ingestion/connectors/agent_generated_connector.py</code><span class="note">a connector an agent produced for a source with no integration</span></li>
+</ul>
+<p><code>agent_generated_connector.py</code> is the interesting one: it is the seam where an agent can
+turn a manual extraction into a repeatable source.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>government tax portal — no API, no bulk export
+ session   login via injected credentials (model never sees them)
+ navigate  Returns → Filed → FY24
+ extract   DOM table → 14 filings with dates, amounts, ack numbers
+ artifacts screenshot per step, retained 7 days for debugging
+ ingest    14 documents into acme/tax-filings
+next run   remembered selectors → 0.4s instead of 3.2s of page analysis
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Treat RPA as a bridge, not a strategy: it breaks whenever the target's UI changes, and it will. Where
+it is unavoidable — government portals, legacy internal systems — invest in change detection and alert
+on extraction shape changes rather than waiting for a wrong answer. Credentials must be injected at the
+browser layer and never enter a prompt.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>UI change.</strong> Silent extraction of the wrong field is worse than a hard failure —
+validate the shape of what you extracted.</li>
+<li><strong>Credential exposure.</strong> A screenshot containing a session token in the URL bar.</li>
+<li><strong>Bot detection.</strong> Rate-limit and behave like a human client, and respect the target's
+terms.</li>
+<li><strong>PII in screenshots.</strong> Classify and expire them.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>No API exists and the data matters.</li>
+<li class="no">Never when an API exists.</li>
+</ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="quality">
+  <h2>Quality, safety, and failure</h2>
+
+<article class="concept" id="pii-redaction" data-impl="8" data-crit="10" data-tag="Safety">
+<h3><span class="idx">21</span>PII detection and redaction<a class="anchor" href="#pii-redaction" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Safety</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">Stage 6, before the embedder, by design: raw personal data must never leave the boundary
+in an API call to a third-party embedding provider.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Detect with deterministic patterns first — emails, phone numbers, IBANs, card numbers with a Luhn
+check, national identifiers, API keys — then optionally a model pass for names and addresses that
+patterns cannot catch. Redact, tokenise, or drop depending on policy, and record what was found as
+metadata so the document's sensitivity is known even after redaction.</p>
+<p>The stage ordering is the control. Detection after embedding is theatre: the data has already been
+transmitted, and a vector derived from personal data is itself personal data.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/pipeline.py</code><span class="note">stage 6, before stage 10</span></li>
+<li><code>app/data_classification/classifier.py</code><span class="note">detection and classification</span></li>
+<li><code>app/data_classification/redaction.py</code><span class="note">redaction</span></li>
+<li><code>app/governance/compliance_bundles.py</code><span class="note">per-regime configuration (GDPR, DPDP, HIPAA, PCI)</span></li>
+<li><code>app/api/dpdp.py</code><span class="note">data-subject request surface</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>parsed text
+  "Contact Priya Sharma (priya@northwind.example, +91 98765 43210)
+   regarding invoice INV-2024-8891. Card ending 4242, IBAN DE89 3704…"
+
+detected  email · phone · IBAN · PAN-shaped (Luhn ok) · person name
+redacted  "Contact [PERSON] ([EMAIL], [PHONE]) regarding invoice
+           INV-2024-8891. Card [CARD_REDACTED], IBAN [IBAN_REDACTED]."
+kept      the invoice number — a business identifier, not personal data
+metadata  {pii_types:[email,phone,iban,card,name], classification:confidential}
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Over-redaction destroys utility: redacting invoice numbers, order ids and product codes makes the
+corpus unsearchable for the queries users actually have. Tune the detectors on your own data, keep
+business identifiers, and treat the classification metadata as the primary output — it is what lets
+retrieval enforce sensitivity later.</p>
+<p>Regime configuration belongs in one place. A healthcare tenant and an e-commerce tenant need
+different rules, and hardcoding either is how you end up non-compliant for the other.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Redaction after embedding.</strong> The incident this stage exists to prevent.</li>
+<li><strong>Over-redaction.</strong> A corpus of placeholders.</li>
+<li><strong>PII in metadata.</strong> Redacted from the body, retained in the author field.</li>
+<li><strong>PII in the vector.</strong> Re-embed after redaction, never before.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always, and before your first external embedding call.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="quality-gate" data-impl="8" data-crit="8" data-tag="Quality">
+<h3><span class="idx">22</span>The quality gate<a class="anchor" href="#quality-gate" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Quality</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Score the extracted document and drop what is not worth indexing — because a corpus of
+navigation menus and empty templates degrades every query.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A composite score over cheap signals: extracted character count, ratio of alphabetic to symbol
+characters (catches OCR garbage), duplicate-line ratio (catches boilerplate), language detection
+confidence, and information density. Below a threshold the document is skipped with a recorded reason
+rather than indexed.</p>
+<p>Skipping must be visible. A silently dropped document is indistinguishable from a missing integration
+when a user complains the agent does not know something.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/quality_checks.py</code><span class="note">QualityChecker (stage 7)</span></li>
+<li><code>app/ingestion/pipeline.py</code><span class="note">skip with reason and metric</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>doc A  template.docx      42 chars after extraction     score 0.08  DROP
+doc B  scan-blurry.pdf     OCR: "ffi1 lIlI 0O"          score 0.11  DROP → OCR review
+doc C  nav-page.html       92% duplicate lines           score 0.19  DROP
+doc D  policy.pdf          dense prose, 41k chars        score 0.86  PASS
+metrics: quality_drop_total{reason="low_density"} etc., per source
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Watch the drop rate per source as a regression detector. A parser change or an upstream template
+update shows up here first, as a sudden cliff in pass rate — long before anyone notices worse answers.
+Set the threshold empirically on a sample and revisit it; too strict and you lose short but valid
+documents like FAQ entries.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Threshold too strict.</strong> Legitimate short documents dropped.</li>
+<li><strong>Invisible drops.</strong> No metric, no reason, no way to explain a gap.</li>
+<li><strong>Wrong signal for the format.</strong> Code and tables score badly on prose density metrics —
+gate per content type.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any corpus you do not fully control — which is any real corpus.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="dedup-hashing" data-impl="9" data-crit="9" data-tag="Quality">
+<h3><span class="idx">23</span>Deduplication and hashing<a class="anchor" href="#dedup-hashing" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Quality</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Two dedup layers: document-level content hashing at stage 3 to avoid paying for
+unchanged work, and chunk-level dedup at stage 11 to stop boilerplate dominating retrieval.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p><em>Document hash</em>: SHA-256 over normalised extracted content. Unchanged means skip everything
+downstream, including the paid embedding call. <em>Chunk dedup</em>: hash each chunk and drop exact
+repeats within and across documents, so the standard legal footer is indexed once rather than nine
+thousand times. Near-duplicate detection (embedding similarity above a high threshold) catches the
+cases hashing misses, at higher cost.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/pipeline.py</code><span class="note">stage 3 content hash, stage 11 chunk dedup</span></li>
+<li><code>app/services/dedup.py</code>, <code>app/reliability/dedup.py</code><span class="note">the platform's dedup primitives</span></li>
+<li><code>app/rag/store.py</code><span class="note">index-level uniqueness</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>nightly re-sync, 14,200 documents
+ stage 3   13,980 unchanged → skipped   (0 parse, 0 embed, 0 index)
+            220 changed → full pipeline
+ saving    ~98% of the nightly embedding bill
+
+stage 11 on 220 documents → 9,400 chunks
+ dropped  1,180 exact-duplicate chunks (footers, disclaimers, headers)
+ indexed  8,220
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Hash the normalised content, not the raw bytes: a PDF regenerated with a new creation timestamp is
+byte-different and content-identical, and hashing bytes makes your entire corpus look changed every
+night. Getting this wrong is the most expensive ingestion mistake there is.</p>
+<p>Keep the hash on the document row so re-sync is a single indexed lookup rather than a re-parse.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Hashing volatile bytes.</strong> Timestamps, generation ids, rotating asset urls.</li>
+<li><strong>No chunk dedup.</strong> Boilerplate wins every generic query.</li>
+<li><strong>Over-aggressive near-dedup.</strong> Two genuinely different contract versions collapsed
+into one.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always, at both levels.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="enrichment" data-impl="7" data-crit="6" data-tag="Quality">
+<h3><span class="idx">24</span>Contextual enrichment<a class="anchor" href="#enrichment" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Quality</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">Stage 9 adds what the chunk cannot know about itself — its document's subject, its
+position in the structure, a one-line summary — so a retrieved fragment carries its own context.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A chunk that reads "the limit is 30 days" is nearly useless in isolation. Enrichment prepends or
+attaches context: the document title, the heading path, and optionally a generated sentence situating
+the chunk in the document. Cheap enrichment is deterministic (titles, paths, dates); expensive
+enrichment is a model call per chunk and should be reserved for corpora where it measurably helps.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/contextual_enricher.py</code><span class="note">the enricher</span></li>
+<li><code>app/ingestion/pipeline.py</code><span class="note">_enrich() at stage 9</span></li>
+<li><code>app/rag/late_chunker.py</code><span class="note">late chunking — embed with full context, then split</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>raw chunk     "The limit is 30 days from delivery."
+enriched      "[Refund policy › Standard refunds] The limit is 30 days from
+               delivery."  (document: Acme Customer Policy, updated 2026-08)
+effect        retrieval for "refund window" now matches strongly;
+              the model answering from this chunk cannot mistake which limit
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Deterministic enrichment — titles and heading paths — is nearly free and reliably improves both
+retrieval and answer quality. Model-generated per-chunk context costs one call per chunk, which on a
+million-chunk corpus is a serious line item; measure the gain on your own eval set before enabling it
+broadly. Late chunking is the middle path: embed with surrounding context, then split, so context
+influences the vector without a per-chunk model call.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Enrichment dominating the chunk.</strong> A 40-token chunk with 120 tokens of preamble
+retrieves on the preamble.</li>
+<li><strong>Wrong context.</strong> An incorrect heading path is worse than none.</li>
+<li><strong>Cost blowout.</strong> Per-chunk model calls at corpus scale.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Chunks are small or the corpus is deeply structured.</li>
+<li class="no">Skip model-based enrichment until you have measured it.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="ingestion-failure" data-impl="8" data-crit="9" data-tag="Operations">
+<h3><span class="idx">25</span>Failure handling and reprocessing<a class="anchor" href="#ingestion-failure" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Operations</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Every document that does not make it must be classified, queued, retryable, and visible —
+otherwise your knowledge base has holes nobody can see.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Classify the failure — transient (network, throttle), format (unsupported, corrupt), policy (too
+large, quota, restricted), or systemic (embedder down) — and respond accordingly: transient retries with
+backoff, format goes to the DLQ for review, policy is recorded and skipped, systemic pauses the whole
+source rather than burning through documents. Reprocessing must be possible after a parser fix, which
+means the raw document (or a reference to it) has to be retrievable.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/job_tracker.py</code><span class="note">DLQ</span></li>
+<li><code>app/ingestion/scheduler.py</code><span class="note">backoff and _retry_dlq_async()</span></li>
+<li><code>app/recovery/failure_classifier.py</code><span class="note">classification (shared with the agent loop)</span></li>
+<li><code>app/api/ingestion.py</code><span class="note">operator view and manual reprocess</span></li>
+<li><code>app/observability/metrics.py</code><span class="note">per-stage, per-reason counters</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>sync of 14,200 documents
+ 13,900 indexed
+    180 skipped (unchanged hash)
+     84 skipped (quality gate) — reason recorded
+     28 DLQ: 19 corrupt PDFs, 6 password-protected, 3 unsupported CAD files
+      8 transient failures → succeeded on retry
+
+two weeks later: PDF parser fix ships
+ → reprocess DLQ subset reason=corrupt_pdf → 14 of 19 now index
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The DLQ is a product surface, not a log. Tenants should be able to see "6 documents from your S3
+source could not be processed, and why", because they are the only people who can fix a
+password-protected file. Systems that hide this create the worst support conversations in the
+category — a user certain the document exists, and an agent certain it does not.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Silent drops.</strong> The defining failure of bad ingestion.</li>
+<li><strong>Infinite retries.</strong> A corrupt document retried forever, blocking the source.</li>
+<li><strong>No reprocess path.</strong> A parser fix that cannot be applied retroactively.</li>
+<li><strong>Systemic failure treated as per-document.</strong> Burning the whole corpus through a dead
+embedder.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always. This is the difference between a knowledge base and a hope.</li></ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="ch5-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Ingestion-time contradiction detection.</strong> Nothing notices that a new document
+      contradicts an indexed one, which is the root of most "the AI gave two different answers".</li>
+      <li><strong>Corpus coverage measurement.</strong> There is no metric for "what fraction of the
+      questions users ask is this corpus able to answer" — the gap that drives every knowledge roadmap.</li>
+      <li><strong>Incremental re-chunking.</strong> Changing a chunking strategy means re-ingesting the
+      collection; there is no way to re-chunk from stored parsed text without re-fetching.</li>
+      <li><strong>Permission mirroring.</strong> Source-side ACLs (Confluence page restrictions, Jira
+      project roles, SharePoint permissions) are honoured at ingest time but not continuously
+      reconciled — a document that becomes restricted upstream stays indexed.</li>
+      <li><strong>Agent-generated connectors as a first-class flow.</strong> The seam exists; the
+      review, testing and promotion path for a connector an agent wrote does not.</li>
+    </ul>
+  </div>
+</section>
+
+<div class="pagenav"><a class="prev" href="knowledge-and-graphs.html"><div class="d">Previous · CH 04</div><div class="t">Knowledge &amp; knowledge graph</div></a><a class="next" href="retrieval-strategies.html"><div class="d">Next · CH 06</div><div class="t">Retrieval strategies</div></a></div>
+<p class="footnote">AgentVerse Field Manual · ratings are this author's judgement of the code as it stands, not a vendor claim. File paths are navigation anchors; line numbers drift.</p>
+</div></main>
+</div>
+<script>
+(function () {
+  var r = document.documentElement;
+  try { var t = localStorage.getItem('avfm-theme'); if (t) r.setAttribute('data-theme', t); } catch (e) {}
+  function cur() {
+    var a = r.getAttribute('data-theme');
+    if (a) return a;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  document.addEventListener('click', function (ev) {
+    var b = ev.target.closest('[data-theme-toggle]');
+    if (!b) return;
+    var n = cur() === 'dark' ? 'light' : 'dark';
+    r.setAttribute('data-theme', n);
+    try { localStorage.setItem('avfm-theme', n); } catch (e) {}
+  });
+  var f = document.querySelector('[data-filter]');
+  if (f) {
+    f.addEventListener('input', function () {
+      var q = f.value.trim().toLowerCase();
+      document.querySelectorAll('[data-filter-row]').forEach(function (el) {
+        el.hidden = q.length > 0 && el.getAttribute('data-filter-row').indexOf(q) === -1;
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>

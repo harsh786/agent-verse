@@ -1,0 +1,314 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>"Jervis" — the JARVIS-style console — is the operator's cockpit: the React frontend through which a
+    human submits goals, watches them execute live, approves gated actions, inspects memory and traces, and
+    steers the fleet. It is named for the Iron Man AI because the design language is deliberately that — a
+    dark, instrument-panel aesthetic with a boot sequence, live telemetry, and spring-based motion — but the
+    substance is a serious piece of information design over a complex backend.</p>
+
+    <p>The reason it earns a chapter: <strong>an agent platform is only as governable as its console makes
+    it</strong>. Every control in the safety and governance chapters (HITL approval, emergency stop, policy,
+    budgets, audit) is only real if a human can see it and act on it in time. The console is where the
+    abstract controls become operable, and its design decisions — a shared design-token system, live SSE
+    streams, human-in-the-loop surfaces — are architecture, not decoration.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 860 260" role="img" aria-label="The console architecture: a design-token system and JARVIS page shell underlie feature pages for goals, governance, memory, and observability; these consume the backend over HTTP, SSE for live goal streams, and WebSocket for collaboration.">
+      <defs><marker id="j1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker>
+      <marker id="j2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#00A8CC"></path></marker></defs>
+      <rect x="0" y="14" width="860" height="34" rx="3" fill="none" stroke="currentColor" stroke-width="1.15"></rect>
+      <text x="430" y="35" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="currentColor" text-anchor="middle">design tokens + JARVISPageShell — one visual system, spring motion, reduced-motion + a11y on every page</text>
+      <g fill="none" stroke="currentColor" stroke-width="1.15">
+        <rect x="0" y="70" width="200" height="44" rx="3"></rect>
+        <rect x="220" y="70" width="200" height="44" rx="3"></rect>
+        <rect x="440" y="70" width="200" height="44" rx="3"></rect>
+        <rect x="660" y="70" width="200" height="44" rx="3"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor" text-anchor="middle">
+        <text x="100" y="91">Goals · live view</text><text x="100" y="106" font-size="9.5" opacity="0.6">step-by-step, HITL</text>
+        <text x="320" y="91">Governance</text><text x="320" y="106" font-size="9.5" opacity="0.6">policy, e-stop, audit</text>
+        <text x="540" y="91">Memory · Agents</text><text x="540" y="106" font-size="9.5" opacity="0.6">browse, autonomy</text>
+        <text x="760" y="91">Observability</text><text x="760" y="106" font-size="9.5" opacity="0.6">traces, cost, evals</text>
+      </g>
+      <g fill="none" stroke="currentColor" stroke-width="1.15">
+        <rect x="120" y="170" width="180" height="34" rx="3"></rect>
+        <rect x="560" y="170" width="180" height="34" rx="3"></rect>
+      </g>
+      <rect x="340" y="170" width="180" height="34" rx="3" fill="none" stroke="#00A8CC" stroke-width="1.6"></rect>
+      <g font-family="Archivo, sans-serif" font-size="11" fill="currentColor" text-anchor="middle">
+        <text x="210" y="191">HTTP (TanStack Query)</text><text x="650" y="191">WebSocket (collab)</text>
+      </g>
+      <text x="430" y="191" font-family="Archivo, sans-serif" font-size="11" fill="#00A8CC" text-anchor="middle">SSE (live goals)</text>
+      <g stroke="currentColor" stroke-width="1.1" marker-end="url(#j1)">
+        <line x1="100" y1="114" x2="200" y2="168"></line>
+        <line x1="760" y1="114" x2="650" y2="168"></line>
+      </g>
+      <line x1="320" y1="114" x2="420" y2="168" stroke="#00A8CC" stroke-width="1.1" marker-end="url(#j2)"></line>
+      <rect x="330" y="224" width="200" height="30" rx="3" fill="none" stroke="currentColor" stroke-width="1.2"></rect>
+      <text x="430" y="244" font-family="Archivo, sans-serif" font-size="11" fill="currentColor" text-anchor="middle">backend (one OpenAPI contract)</text>
+      <g stroke="currentColor" stroke-width="1.1" marker-end="url(#j1)">
+        <line x1="210" y1="204" x2="400" y2="222"></line>
+        <line x1="430" y1="204" x2="430" y2="222"></line>
+        <line x1="650" y1="204" x2="460" y2="222"></line>
+      </g>
+    </svg>
+    <figcaption>The console over the backend. The shared token system across the top is what keeps 60+
+    feature pages coherent; the three transports below are how the cockpit stays live.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="jarvis">
+  <h2>The console</h2>
+
+<article class="concept" id="jv-design-system" data-impl="8" data-crit="6" data-tag="Design system">
+<h3>The design-token system</h3>
+<p class="tldr">One source of truth for colour, motion, and spacing — the electric-cyan-on-slate JARVIS
+palette expressed as tokens, so 60+ feature pages look like one product rather than sixty.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Design tokens define the palette (electric <code>#00D4FF</code>, semantic emerald/amber/rose/violet, a
+five-level surface hierarchy, text tiers), spring-motion presets (never duration/ease), and glow tiers,
+synced with CSS variables. Every page imports the tokens rather than hardcoding values, so a palette change
+is one edit. The <code>JARVISPageShell</code> wraps each page with consistent entrance motion, spacing,
+and accessibility (aria-live, focus management, reduced-motion).</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>agent-verse-frontend/src/lib/design/tokens.ts</code><span class="note">colours, shadows, tw helpers, spec-aligned token map</span></li>
+<li><code>agent-verse-frontend/src/lib/design/motion.ts</code><span class="note">spring presets</span></li>
+<li><code>agent-verse-frontend/src/components/ui/JARVISPageShell.tsx</code><span class="note">the page wrapper</span></li>
+<li><code>agent-verse-frontend/src/components/ui/JARVISBootScreen.tsx</code><span class="note">the startup sequence</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>tokens   electric #00D4FF · surfaces #020408→#2D3748 · text #F1F5F9/#94A3B8
+motion   SPRING_PAGE {stiffness 280, damping 26} — springs, never durations
+shell    every page: blur-in entrance, staggered children, aria-live region,
+         useReducedMotion fallback
+change the accent once in tokens.ts → the whole console updates
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>A token system is what keeps a large, fast-moving frontend coherent — the alternative is sixty pages that
+drift apart as different people build them. The accessibility built into the shell (reduced-motion, focus,
+aria-live) is not optional for a console operators use all day, and baking it into the wrapper means every
+new page inherits it rather than re-implementing it. (This manual's own design borrows the same electric
+accent, honouring the project's existing system.)</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Hardcoded colours.</strong> Pages that drift from the system.</li>
+<li><strong>Duration-based motion.</strong> The inconsistent feel springs avoid.</li>
+<li><strong>Accessibility per-page.</strong> Inconsistent, often forgotten.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any frontend beyond a handful of pages.</li></ul></section>
+</article>
+
+<article class="concept" id="jv-live-goals" data-impl="9" data-crit="9" data-tag="Live view">
+<h3>Live goal execution view</h3>
+<p class="tldr">The heart of the console: watch a goal plan, call tools, and verify in real time over SSE —
+so an operator sees what the agent is doing, not just its final answer.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The goal detail page subscribes to the goal's SSE stream (chapter 11) and renders each event as it
+arrives: the plan appearing, steps executing, tool calls, verifier verdicts, replans, and completion. Because
+events flow through Redis pub/sub, the view is continuous even across worker restarts, and a reconnecting
+client can resume. This is the surface that makes agent execution legible rather than a black box that
+returns a result minutes later.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>agent-verse-frontend/src/features/goals/GoalDetailPage.tsx</code><span class="note">the live view</span></li>
+<li><code>agent-verse-frontend/src/lib/sse/useGoalStream.ts</code><span class="note">the SSE hook</span></li>
+<li><code>agent-verse-frontend/src/features/goals/adaptiveResult.ts</code><span class="note">adaptive result rendering per connector</span></li>
+<li><code>app/services/goal_service.py</code><span class="note">the backend event source</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>operator opens goal g-8891
+ live: "planned (5 steps)" → "executing step 1" → "tool: gst.fetch_filed"
+       → "waiting for your approval: file amendment" → [operator approves]
+       → "executing step 4" → "verified" → "completed"
+the operator watched the agent work and approved the one action that
+needed a human — the whole point of the console
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>The live view is what turns "the AI did something" into "I watched the AI do it and approved the risky
+step". It is the difference between a system operators trust and one they fear. The SSE-over-Redis design
+(chapter 11) is what makes it robust: the operator is connected to the API, not to the worker, so the view
+survives the fleet churn that is constant in production.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Result-only view.</strong> No visibility into execution.</li>
+<li><strong>SSE without reconnect.</strong> A dropped stream losing the live view.</li>
+<li><strong>No adaptive rendering.</strong> Raw JSON where a rendered result belongs.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any goal a human should be able to watch or steer.</li></ul></section>
+</article>
+
+<article class="concept" id="jv-hitl-surface" data-impl="9" data-crit="10" data-tag="Control">
+<h3>Human-in-the-loop surfaces</h3>
+<p class="tldr">Where the abstract HITL gate becomes a button: a queue of pending approvals, each showing the
+proposed action, its arguments, and the evidence — enough to decide without reading the transcript.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The approval surface renders the HITL queue (chapter 1): each pending request shows the action, its exact
+arguments, why it was flagged, and the supporting evidence. Approving or denying resumes or fails the goal;
+the decision is recorded and the argument hash is compared at execution. A badge surfaces pending approvals
+across the console so nothing waits unseen. The same surface handles clarification requests — the agent
+asking a question rather than proposing an action.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>agent-verse-frontend/src/features/approvals/</code><span class="note">the approval surface</span></li>
+<li><code>agent-verse-frontend/src/components/ui/PendingApprovalsBadge.tsx</code><span class="note">the always-visible badge</span></li>
+<li><code>agent-verse-frontend/src/features/chat/</code><span class="note">chat + HITL surface</span></li>
+<li><code>app/governance/hitl.py</code><span class="note">the backend gateway</span></li>
+<li><code>app/collaboration_runtime/clarification.py</code><span class="note">clarification requests</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>approval card
+  action    file GSTR-1 amendment
+  arguments period 2026-03, total ₹418,200, GSTIN 27AAAPZ…
+  reason    write_high + regulated domain
+  evidence  [the recomputed total, the filed return, the diff]
+  [Approve]  [Deny]  [Ask a question]
+badge shows "3 pending" across every page so none is missed
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>The approval UX is where governance succeeds or fails operationally. Design it for the phone, because
+approval latency dominates gated-goal time (chapter 1); show enough to decide without opening the run; and
+make the pending badge impossible to ignore, because an unserviced approval queue is a silent outage
+(chapter 11). This surface is the concrete form of the platform's most important safety control.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Too little context.</strong> Forcing the approver to open the whole run.</li>
+<li><strong>Hidden queue.</strong> Approvals waiting unseen.</li>
+<li><strong>Desktop-only design.</strong> Approvers who are never at a desk.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any platform with gated actions.</li></ul></section>
+</article>
+
+<article class="concept" id="jv-governance-controls" data-impl="8" data-crit="10" data-tag="Control">
+<h3>Governance and emergency controls</h3>
+<p class="tldr">The operator's steering wheel and brake: policy management, budget dashboards, the audit
+trail, and an emergency stop that can halt a tenant's agents at once.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The governance page exposes the controls from chapter 13 as an interface: view and edit policies (with
+changes propagating fleet-wide via Redis, chapter 20), watch budgets and spend, read the hash-chained audit
+trail, and — critically — an emergency stop that halts execution for a tenant or the fleet when something is
+going wrong. The emergency stop is the control you hope never to use and must be able to reach instantly.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>agent-verse-frontend/src/features/governance/</code><span class="note">policy, e-stop, budgets</span></li>
+<li><code>agent-verse-frontend/src/features/audit/</code><span class="note">the audit trail view</span></li>
+<li><code>agent-verse-frontend/src/features/security/</code>, <code>rbac/</code>, <code>compliance/</code><span class="note">security surfaces</span></li>
+<li><code>agent-verse-frontend/src/lib/api/client.ts</code><span class="note">governanceApi</span></li>
+<li><code>app/governance/*</code>, <code>app/policy_runtime/*</code><span class="note">the backend controls</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>incident: a connector is returning bad data and agents are acting on it
+ operator → governance page → emergency stop for tenant acme
+ → all running goals pause, no new goals start
+ → operator disables the connector (policy change propagates in seconds)
+ → resumes
+the audit trail records the stop, who, when, and why
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>An emergency stop is the control that makes autonomous agents deployable at all — the ability to halt
+everything instantly is what lets you grant autonomy in the first place. Policy changes propagating in
+seconds (not on next deploy) is what makes the console a real steering wheel rather than a status display.
+These surfaces are the operational face of chapters 12–14.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>No emergency stop.</strong> Nothing to pull when it goes wrong.</li>
+<li><strong>Policy changes needing a deploy.</strong> Too slow to matter in an incident.</li>
+<li><strong>Audit not surfaced.</strong> No operator view of what happened.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any platform with autonomous or high-risk agents.</li></ul></section>
+</article>
+
+<article class="concept" id="jv-inspection" data-impl="7" data-crit="7" data-tag="Inspection">
+<h3>Memory, agent, and observability inspection</h3>
+<p class="tldr">The console makes the invisible visible: browse an agent's memory, watch its autonomy and
+reputation, and inspect the decision, RAG, and cost traces that explain its behaviour.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Inspection surfaces render the internal state the earlier chapters describe: a memory browser shows what
+an agent remembers and lets an operator review or quarantine (chapter 3); an autonomy control sets the tier
+(chapter 22); observability pages render the decision, RAG, and cost traces (chapter 11) so "why did it do
+that / cost that" is answerable in the UI, not just in logs. This is where the platform's observability
+becomes an operator tool rather than an engineer's query.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>agent-verse-frontend/src/components/agent/MemoryBrowser.tsx</code>, <code>AutonomyControl.tsx</code>, <code>DiscoveryPanel.tsx</code><span class="note">agent inspection</span></li>
+<li><code>agent-verse-frontend/src/features/observability/</code>, <code>eval/</code>, <code>eval-suites/</code><span class="note">traces and evals</span></li>
+<li><code>agent-verse-frontend/src/features/memory/</code>, <code>knowledge/</code>, <code>knowledge-graph/</code><span class="note">memory and knowledge</span></li>
+<li><code>agent-verse-frontend/src/components/org/OrgChart.tsx</code>, <code>KanbanBoard.tsx</code><span class="note">org visualisation</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>an agent behaves oddly
+ operator → memory browser → finds a suspicious lesson → quarantines it
+ → observability → decision trace shows the classifier scored it expert,
+   so six reasoning patterns ran → explains the cost
+ → autonomy control → drops the agent to supervised until reviewed
+all in the console, no log queries
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Inspection surfaces are what let operators — not just engineers — run the platform. A memory browser that
+lets an operator quarantine a poisoned lesson, an autonomy control that lets them dial back a misbehaving
+agent, and trace views that explain cost and behaviour turn the rich internal state of the backend into
+something a human can actually steer. This is the payoff of building observability and memory as
+first-class, inspectable subsystems.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>State only in logs.</strong> Operators dependent on engineers.</li>
+<li><strong>Read-only inspection.</strong> Seeing a problem but unable to act on it.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Operators, not just engineers, need to run the platform.</li></ul></section>
+</article>
+
+<article class="concept" id="jv-builder" data-impl="7" data-crit="6" data-tag="Authoring">
+<h3>The builder, lab, and playground</h3>
+<p class="tldr">Where humans create and test agents: a natural-language builder, a workflow canvas, and a
+playground to trial an agent before it touches production.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The builder turns a description into an agent configuration via the meta-agent (chapter 9), validated
+against real capabilities. The workflow builder is a visual canvas for composing deterministic workflows
+(chapter 20 templates). The lab and playground let an operator run an agent against test inputs, see the
+full trace, and iterate before promoting it — the authoring counterpart to the certification gate (chapter
+10).</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>agent-verse-frontend/src/features/builder/</code>, <code>lab/</code>, <code>playground/</code><span class="note">authoring and testing</span></li>
+<li><code>agent-verse-frontend/src/features/workflow-builder/</code>, <code>workflow-engine/</code><span class="note">visual workflow canvas</span></li>
+<li><code>agent-verse-frontend/src/features/templates/</code>, <code>marketplace/</code><span class="note">starting from templates</span></li>
+<li><code>app/api/builder.py</code>, <code>lab.py</code><span class="note">the backend surfaces</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>builder: "an agent that reconciles vendor invoices monthly"
+ → meta-agent proposes config → validated against acme's tools/collections
+ → operator opens it in the lab → runs against last month's data
+ → inspects the full trace → adjusts the threshold → certifies → promotes
+create, test, and gate before a single real invoice is touched
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>The builder and playground are what let non-engineers create agents safely — the meta-agent proposes, the
+human reviews, the lab tests, and certification gates. The workflow canvas serves the deterministic end of
+the spectrum where a fixed process is preferable to an autonomous agent. Together they make the platform
+authorable without making it dangerous, provided the certification gate is real.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Promote without testing.</strong> An agent reaching production untested.</li>
+<li><strong>Generated config auto-activated.</strong> No human review (chapter 9).</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Non-engineers create agents, or workflows need visual authoring.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch23-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Mobile-first approval.</strong> The approval surface exists, but a genuinely mobile
+      approval experience (the phone is where approvers are) is thinner than the desktop console.</li>
+      <li><strong>Operator-facing cost attribution.</strong> Traces are rich; a tenant-facing "where your
+      spend goes" breakdown per goal class is less developed (chapter 11).</li>
+      <li><strong>In-console trajectory diffing.</strong> No UI to compare a working and a failing run of the
+      same goal side by side.</li>
+      <li><strong>Collaborative steering.</strong> The WebSocket collaboration layer exists; multi-operator
+      steering of the same goal with presence and conflict handling is early.</li>
+    </ul>
+  </div>
+</section>

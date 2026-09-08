@@ -1,0 +1,300 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>The patterns in chapter 1 coordinate agents for the duration of one goal. This chapter is about
+    something more persistent: standing <strong>teams</strong> of agents organised like a company —
+    departments, roles, reporting lines, autonomy levels, and shared organisational memory — that exist
+    across goals and learn as an organisation, not just as individuals.</p>
+
+    <p>The distinction matters because a team is a governance object, not just an execution pattern. A
+    department has a budget, a memory scope, an autonomy tier, and an accountability structure; forming one
+    is closer to hiring than to spawning. AgentVerse implements this in two related layers: the
+    <strong>org</strong> layer (departments, roles, team formation) and the more experimental
+    <strong>civilization</strong> layer (long-lived agent societies with reputation and a constitution).</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 860 300" role="img" aria-label="An agent organisation: a meta-orchestrator sits above departments, each with roles and agents, drawing on a capability registry to form teams; departments share organisational memory and are bounded by autonomy tiers and quality gates.">
+      <defs><marker id="at1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker></defs>
+      <rect x="330" y="14" width="200" height="40" rx="4" fill="none" stroke="#00A8CC" stroke-width="1.6"></rect>
+      <text x="430" y="32" font-family="Archivo, sans-serif" font-size="12.5" fill="#00A8CC" text-anchor="middle">meta-orchestrator</text>
+      <text x="430" y="47" font-family="IBM Plex Mono, monospace" font-size="9" fill="#00A8CC" text-anchor="middle">routes goals across departments</text>
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="20" y="100" width="220" height="80" rx="4"></rect>
+        <rect x="320" y="100" width="220" height="80" rx="4"></rect>
+        <rect x="620" y="100" width="220" height="80" rx="4"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="12" fill="currentColor" text-anchor="middle">
+        <text x="130" y="120">Finance dept</text><text x="430" y="120">Engineering dept</text><text x="730" y="120">Support dept</text>
+      </g>
+      <g font-family="IBM Plex Mono, monospace" font-size="9" fill="currentColor" opacity="0.65" text-anchor="middle">
+        <text x="130" y="140">roles: analyst · approver</text><text x="130" y="154">agents: invoice, reconcile</text><text x="130" y="170">autonomy: supervised</text>
+        <text x="430" y="140">roles: dev · reviewer</text><text x="430" y="154">agents: triage, deploy</text><text x="430" y="170">autonomy: bounded</text>
+        <text x="730" y="140">roles: agent · lead</text><text x="730" y="154">agents: triage, respond</text><text x="730" y="170">autonomy: autonomous</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.15" marker-end="url(#at1)">
+        <line x1="380" y1="54" x2="150" y2="98"></line>
+        <line x1="430" y1="54" x2="430" y2="98"></line>
+        <line x1="480" y1="54" x2="710" y2="98"></line>
+      </g>
+      <rect x="120" y="220" width="620" height="34" rx="3" fill="none" stroke="currentColor" stroke-width="1.15" stroke-dasharray="4 3"></rect>
+      <text x="430" y="241" font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor" text-anchor="middle">organisational memory · capability registry · quality gates (shared across departments)</text>
+      <g stroke="currentColor" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#at1)">
+        <line x1="130" y1="180" x2="200" y2="218"></line><line x1="430" y1="180" x2="430" y2="218"></line><line x1="730" y1="180" x2="660" y2="218"></line>
+      </g>
+      <text x="0" y="286" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">a team is a governance object: budget, memory scope, autonomy tier, accountability — forming one is closer to hiring than to spawning</text>
+    </svg>
+    <figcaption>An org chart of agents. The dashed layer — shared memory, capabilities, and gates — is what
+    makes it a team rather than a pile of agents that happen to run near each other.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="agent-teams">
+  <h2>The org layer</h2>
+
+<article class="concept" id="at-departments" data-impl="7" data-crit="6" data-tag="Structure">
+<h3>Departments and roles</h3>
+<p class="tldr">Agents are organised into departments with roles, mirroring a company — so a goal routes to
+the department that owns its domain, and access follows the org structure.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A department groups agents by business function (finance, engineering, support) with a role taxonomy
+(analyst, approver, lead) that maps to permissions and to what each agent may do. Department scope bounds
+memory (chapter 3) and knowledge access, so finance agents share finance context and do not see
+engineering's. The structure is data, so an organisation can be reshaped without code.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/org/roles.py</code>, <code>role_taxonomy.py</code>, <code>rbac.py</code><span class="note">roles and permissions</span></li>
+<li><code>app/org/service.py</code>, <code>models.py</code>, <code>schemas.py</code><span class="note">the org model</span></li>
+<li><code>app/memory/dept_memory.py</code><span class="note">department-scoped memory</span></li>
+<li><code>app/org/knowledge_access.py</code><span class="note">org-structured knowledge access</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>Finance department
+ roles     analyst (submit/read), approver (act on approvals), lead (admin)
+ agents    invoice-agent, reconcile-agent, forecast-agent
+ memory    acme/finance/* — shared across the three, invisible to support
+ access    the tax-policy collection, the ERP connector
+a "reconcile payouts" goal routes here; a "triage this bug" goal routes to Eng
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Department structure is what most enterprises actually want and what most agent frameworks lack — a
+middle scope between "one global agent" and "isolated per-agent". It makes a new agent useful immediately
+(it inherits the department's memory and access) and it makes access reviewable along familiar org lines.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Scope creep.</strong> Department memory promoted to global "because it's useful".</li>
+<li><strong>Orphaned departments.</strong> A reorg leaving memory with no owner.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Multiple agents serve distinct business functions.</li></ul></section>
+</article>
+
+<article class="concept" id="at-team-formation" data-impl="7" data-crit="6" data-tag="Formation">
+<h3>Team formation</h3>
+<p class="tldr">For a goal too big for one agent or one department, a formation engine assembles a team from
+the capability registry — picking agents whose skills cover the goal and defining how they coordinate.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The formation engine reads the goal's requirements, queries the capability registry for agents that can
+cover them, and produces a team manifest: which agents, what each is responsible for, and the coordination
+pattern (supervisor, debate, group chat). It is the meta-agent idea (chapter 9) applied to teams — natural
+language in, a governed team configuration out, reviewed before it runs.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/org/team_formation.py</code><span class="note">TeamFormationEngine, TeamManifest</span></li>
+<li><code>app/org/capability_registry.py</code><span class="note">what each agent can do</span></li>
+<li><code>app/capabilities/registry.py</code>, <code>resolver.py</code><span class="note">capability resolution</span></li>
+<li><code>app/org/meta_orchestrator.py</code><span class="note">orchestrates the formed team</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>goal "investigate and remediate the checkout latency regression"
+ formation engine → capability registry query
+ team manifest
+   obs-agent    (metrics, traces)      lead
+   code-agent   (diff deploys)
+   db-agent     (slow-query analysis)
+   coordination: supervisor (obs-agent leads, synthesises)
+reviewed → runs as a coordinated team, not three unrelated goals
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Team formation is powerful and needs the same guardrails as spawning: a cap on team size, a budget split
+across members, and review before a formed team acts on real systems. Its value is matching capability to
+need automatically; its risk is a formed team that is larger and more expensive than the goal warranted.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Oversized teams.</strong> More agents than the goal needs.</li>
+<li><strong>Capability mismatch.</strong> An agent on the team lacking the tool the manifest assumed.</li>
+<li><strong>Unreviewed formation.</strong> A team acting without approval.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Goals span capabilities no single agent has.</li></ul></section>
+</article>
+
+<article class="concept" id="at-meta-orchestrator" data-impl="7" data-crit="7" data-tag="Coordination">
+<h3>Meta-orchestration</h3>
+<p class="tldr">The layer above departments: routes goals to the right department or team, coordinates
+cross-department work, and manages the org-scale equivalent of the agent loop.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The meta-orchestrator handles goals that need more than one department — "prepare the board pack" touches
+finance, product, and risk. It decomposes across departments, routes each part to the owning team, monitors
+progress, and synthesises. It is the supervisor pattern (chapter 1) lifted to the organisational level,
+with departments as the units instead of individual agents.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/org/meta_orchestrator.py</code><span class="note">cross-department orchestration</span></li>
+<li><code>app/org/decision_intelligence.py</code><span class="note">org-level decisions</span></li>
+<li><code>app/org/goal_refinement.py</code><span class="note">shaping a goal before decomposition</span></li>
+<li><code>app/org/workflow_steps.py</code><span class="note">org workflow steps</span></li>
+<li><code>app/org/failure_manager.py</code>, <code>loop_detector.py</code><span class="note">org-level failure and loop control</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>goal "prepare the Q3 board pack"
+ meta-orchestrator decomposes across departments
+   Finance   → financial results
+   Product   → metrics
+   Risk      → risk assessment
+ each department runs its part with its own agents and memory
+ meta-orchestrator synthesises into one pack, with cross-links
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Meta-orchestration is where the org model earns its complexity: cross-functional work that no single
+department owns. It also inherits every risk of multi-agent coordination amplified — loop detection and
+failure management at the org level exist because an org of agents can deadlock or spiral just as a team
+can. Keep the same caps and budgets that bound spawning (chapter 1).</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Cross-department deadlock.</strong> Two departments waiting on each other.</li>
+<li><strong>Synthesis loss.</strong> Rich department output flattened.</li>
+<li><strong>Unbounded org-level fan-out.</strong> Cost blowout across departments.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Goals genuinely span multiple business functions.</li></ul></section>
+</article>
+
+<article class="concept" id="at-autonomy" data-impl="7" data-crit="8" data-tag="Governance">
+<h3>Autonomy tiers</h3>
+<p class="tldr">How much an agent or department may do without a human — from supervised (every action
+gated) to bounded-autonomous (act within limits) to autonomous (act freely within scope) — set per
+department and enforced by the runtime.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>An autonomy tier determines the default gating: supervised agents route every consequential action to a
+human; bounded-autonomous agents act within budget and risk limits, escalating only above them; autonomous
+agents act freely within their scope. The tier is a governance setting, not an agent choice, and it
+interacts with tool risk — even an autonomous agent's destructive actions are gated (chapter 13).</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/org/autonomy.py</code><span class="note">autonomy tiers</span></li>
+<li><code>app/agent/pattern_config.py</code><span class="note">autonomy_mode on the goal config</span></li>
+<li><code>app/org/quality_gates.py</code><span class="note">gates that scale with autonomy</span></li>
+<li><code>app/org/approval_chain.py</code><span class="note">the approval path for supervised work</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>tier             behaviour
+supervised       every write gated → finance dept during quarter close
+bounded          act ≤ $50 and ≤ risk medium, escalate above → support triage
+autonomous       act freely within scope, destructive still gated → internal
+                 docs maintenance
+a new department starts supervised and earns autonomy as it proves reliable
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Autonomy tiers are how you deploy agents at all: start supervised, measure reliability, and raise the tier
+as trust is earned — the same way you would with a new employee. The invariant that survives every tier is
+that irreversible and destructive actions are gated regardless; autonomy governs the reversible middle, not
+the dangerous extremes.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Autonomy without earned trust.</strong> A new agent acting freely before it is proven.</li>
+<li><strong>Tier overriding tool risk.</strong> An autonomous agent's destructive action ungated.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Deploying agents that take real actions — set the tier deliberately.</li></ul></section>
+</article>
+
+<article class="concept" id="at-org-learning" data-impl="7" data-crit="6" data-tag="Improvement">
+<h3>Organisational learning</h3>
+<p class="tldr">A team learns as an organisation: lessons, preferences, and procedures accumulate at the
+department and org level, so the whole team benefits from any member's experience.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Org learning aggregates individual agents' lessons (chapter 3) into department- and org-scoped memory,
+with the same corroboration and decay discipline. A procedure discovered by one finance agent becomes
+available to all finance agents; a preference learned about a stakeholder is shared across the department.
+It is memory-assisted improvement (chapter 9) lifted from the individual to the organisation.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/org/org_learning.py</code>, <code>self_improvement.py</code><span class="note">org-level learning</span></li>
+<li><code>app/org/context_engine.py</code><span class="note">org durable context</span></li>
+<li><code>app/org/analytics.py</code>, <code>metrics.py</code><span class="note">org-level measurement</span></li>
+<li><code>app/org/digital_twin.py</code><span class="note">a model of the org for simulation</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>invoice-agent learns "the CFO wants variance explanations over 5%"
+ → promoted to finance department memory (corroborated across runs)
+ → reconcile-agent and forecast-agent now apply it too
+one agent's lesson becomes the department's standard, without a deploy
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Org learning is how a team of agents compounds experience rather than each agent relearning in isolation.
+It carries the same risks as individual memory amplified — a bad lesson now affects a whole department — so
+the corroboration bar and the scope boundaries matter more, not less. The digital twin is the interesting
+frontier: simulating org decisions before making them.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Premature promotion.</strong> One agent's mistake becoming department doctrine.</li>
+<li><strong>Cross-department leakage.</strong> Finance lessons surfacing in engineering.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>A team of agents shares a domain and should compound experience.</li></ul></section>
+</article>
+
+<article class="concept" id="at-civilization" data-impl="6" data-crit="4" data-tag="Frontier">
+<h3>Agent societies and civilization</h3>
+<p class="tldr">The experimental frontier: long-lived agent societies with membership, reputation, a shared
+constitution, and a blackboard — agents that persist and interact over time rather than assembling per goal.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The civilization layer models a persistent society: agents are members with reputation earned through
+outcomes; a constitution encodes inviolable principles; a governor enforces them; a blackboard and a bus
+enable communication; goals route by reputation and capability. It is a research-grade exploration of what
+happens when agents are durable citizens rather than ephemeral workers — closer to a multi-agent
+simulation than to the production loop.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/civilization/society.py</code><span class="note">Society — membership, reputation, routing</span></li>
+<li><code>app/civilization/constitution.py</code>, <code>governor.py</code><span class="note">Constitution and Governor</span></li>
+<li><code>app/civilization/orchestrator.py</code>, <code>spawn_tool.py</code><span class="note">orchestration and spawning</span></li>
+<li><code>app/civilization/blackboard.py</code>, <code>bus.py</code>, <code>a2a_dispatch.py</code><span class="note">communication</span></li>
+<li><code>app/civilization/learning.py</code>, <code>metrics.py</code><span class="note">society-level learning and metrics</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>a persistent society of agents
+ members earn reputation from successful goals
+ a new goal routes to high-reputation members with matching capability
+ the constitution forbids certain actions; the governor enforces
+ agents communicate via the blackboard, not point-to-point
+this is exploratory: durable agent citizens, not per-goal workers
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Rated low on both axes deliberately: the civilization layer is a genuine research direction, not a
+production workhorse. Its ideas — reputation-based routing, a machine-enforced constitution, persistent
+societies — are where multi-agent systems may go, but for production work the bounded team and department
+model above is what earns its keep. It is included because it is real code and a real part of the platform,
+and because it names the frontier honestly.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Emergent misbehaviour.</strong> Persistent agents developing unintended dynamics.</li>
+<li><strong>Reputation gaming.</strong> Agents optimising reputation over outcomes.</li>
+<li><strong>Unbounded society growth.</strong> Cost with no clear owner.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Research into persistent multi-agent systems.</li>
+<li class="no">Not for production workloads — use bounded teams.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch22-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Team eval and certification.</strong> Individual agents are evaluated; a formed team's
+      effectiveness as a unit is harder to measure and not systematically gated.</li>
+      <li><strong>Cross-department budgets.</strong> Budgets are per-goal and per-tenant; a department-level
+      budget with its own accounting is thin.</li>
+      <li><strong>Reputation grounded in evals.</strong> The civilization reputation signal is not yet tied
+      to the eval scores that would make it trustworthy.</li>
+      <li><strong>Org-structure change management.</strong> Reshaping departments is possible but there is
+      no migration flow for the memory and access that move with them.</li>
+    </ul>
+  </div>
+</section>

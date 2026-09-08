@@ -1,0 +1,232 @@
+<header class="chead">
+  <div class="kicker">
+    <span class="cnum">FIELD MANUAL</span>
+    <span class="eyebrow">Production agentic AI · grounded in one real system</span>
+  </div>
+  <h1>How an agent platform actually works</h1>
+  <p class="lede">Three hundred–odd concepts that make up a production agentic AI system — each one
+  explained from first principles, rated for how completely it is built here and how much it matters
+  in production, and traced to the code that implements it in AgentVerse: 1,900 modules, 45 subsystems,
+  325 MCP servers, 21,585 graph nodes.</p>
+</header>
+
+<section class="block" id="premise">
+  <h2>The premise</h2>
+  <div class="prose">
+    <p>Most agentic AI writing is either a framework tutorial (here is a <code>while</code> loop that
+    calls a model) or a research survey (here are forty papers). Neither tells you what to build on
+    Monday, because neither has to survive a tenant with 40,000 documents, a regulator asking who
+    approved a wire transfer, or a 3 a.m. page when the planner starts hallucinating a tool that was
+    deprecated last week.</p>
+
+    <p>This manual takes the other route. Every concept is grounded in a system that has to do all
+    three: <strong>AgentVerse</strong>, a multi-tenant operating system for autonomous agents. An agent
+    receives a natural-language goal, plans its own execution, calls real tools over MCP, verifies the
+    result, and replans on failure — with no hardcoded workflows. That constraint is what makes it a
+    useful teaching system: nothing can be faked with an <code>if</code> statement, so every hard
+    problem in agentic AI shows up somewhere in the tree.</p>
+
+    <p>Read it front to back and you will have the architecture of a production agent platform in your
+    head. Read one chapter and you will know one subsystem better than most of the people building it.</p>
+  </div>
+
+  <div class="callout">
+    <span class="lbl">Scope</span>
+    <p>The client SDKs are deliberately excluded. Everything else — backend, agent kernel, retrieval,
+    ingestion, governance, observability, the operator console — is in scope, including the parts that
+    are half-built. Where something is thin, the rating says so.</p>
+  </div>
+</section>
+
+<section class="block" id="mental-model">
+  <h2>The mental model: an operating system for agents</h2>
+  <div class="prose">
+    <p>The single most useful frame: an agent platform is an operating system, and every abstraction
+    you will meet has a classical OS counterpart. Hold this table in your head and the rest of the
+    manual has somewhere to attach.</p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>OS concept</th><th>Agent-platform equivalent</th><th>Where it lives</th></tr></thead>
+      <tbody>
+        <tr><td>User / security principal</td><td>Tenant</td><td><code>app/tenancy/context.py</code> — frozen <code>TenantContext</code></td></tr>
+        <tr><td>Process</td><td>Goal</td><td><code>app/agent/state.py</code> — <code>AgentState</code></td></tr>
+        <tr><td>Program counter + stack</td><td>Plan + step index + iteration</td><td><code>app/agent/structured_plan.py</code></td></tr>
+        <tr><td>Scheduler</td><td>Celery, one queue per plan tier</td><td><code>app/scaling/celery_app.py</code></td></tr>
+        <tr><td>Syscall</td><td>MCP tool call</td><td><code>app/mcp/client.py</code> — <code>call_tool()</code></td></tr>
+        <tr><td>Device driver</td><td>MCP connector</td><td><code>app/mcp/registry.py</code> + 325 server modules</td></tr>
+        <tr><td>Virtual memory</td><td>Retrieved context window</td><td><code>app/rag/gateway.py</code>, <code>app/context/context_budget.py</code></td></tr>
+        <tr><td>Filesystem</td><td>Postgres + pgvector</td><td><code>app/db/</code></td></tr>
+        <tr><td>Process isolation</td><td>Row-level security</td><td><code>app/db/rls.py</code> — <code>SET LOCAL app.tenant_id</code></td></tr>
+        <tr><td>Signals / IPC</td><td>Redis pub/sub → SSE</td><td><code>app/services/goal_service.py</code></td></tr>
+        <tr><td>Quotas / cgroups</td><td>Budgets, rate limits, bulkheads</td><td><code>app/governance/cost.py</code>, <code>app/reliability/bulkhead.py</code></td></tr>
+        <tr><td>Kernel</td><td>FastAPI lifespan + LangGraph</td><td><code>app/main.py</code>, <code>app/agent/graph.py</code></td></tr>
+        <tr><td>Audit log</td><td>Hash-chained append-only trail</td><td><code>app/governance/audit_v3.py</code></td></tr>
+        <tr><td>Core dump / undo</td><td>Compensating actions</td><td><code>app/reliability/rollback.py</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 940 330" role="img" aria-label="A goal enters over HTTP, is authenticated and queued per plan tier, executes in a worker as a plan-execute-verify loop that calls MCP tools and can pause for human approval, and streams events back to the browser over Redis pub/sub and SSE.">
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path>
+        </marker>
+        <marker id="ahx" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#00A8CC"></path>
+        </marker>
+      </defs>
+
+      <text x="0" y="14" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.65" letter-spacing="1.4">CONTROL PLANE</text>
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="0" y="28" width="132" height="42" rx="3"></rect>
+        <rect x="168" y="28" width="132" height="42" rx="3"></rect>
+        <rect x="336" y="28" width="132" height="42" rx="3"></rect>
+        <rect x="504" y="28" width="132" height="42" rx="3"></rect>
+        <rect x="672" y="28" width="132" height="42" rx="3"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="12.5" fill="currentColor" text-anchor="middle">
+        <text x="66" y="45">POST /goals</text><text x="66" y="61" font-size="10.5" opacity="0.6">api/goals.py</text>
+        <text x="234" y="45">Tenant auth</text><text x="234" y="61" font-size="10.5" opacity="0.6">API key · RLS ctx</text>
+        <text x="402" y="45">GoalService</text><text x="402" y="61" font-size="10.5" opacity="0.6">record + budget</text>
+        <text x="570" y="45">Queue by plan</text><text x="570" y="61" font-size="10.5" opacity="0.6">free…enterprise</text>
+        <text x="738" y="45">Worker</text><text x="738" y="61" font-size="10.5" opacity="0.6">celery · lock</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)">
+        <line x1="132" y1="49" x2="164" y2="49"></line>
+        <line x1="300" y1="49" x2="332" y2="49"></line>
+        <line x1="468" y1="49" x2="500" y2="49"></line>
+        <line x1="636" y1="49" x2="668" y2="49"></line>
+        <line x1="738" y1="70" x2="738" y2="112"></line>
+      </g>
+
+      <text x="0" y="112" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.65" letter-spacing="1.4">AGENT LOOP (LangGraph, checkpointed)</text>
+      <rect x="0" y="124" width="804" height="96" rx="4" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3" opacity="0.5"></rect>
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="20" y="150" width="110" height="42" rx="3"></rect>
+        <rect x="170" y="150" width="110" height="42" rx="3"></rect>
+        <rect x="320" y="150" width="110" height="42" rx="3"></rect>
+        <rect x="470" y="150" width="110" height="42" rx="3"></rect>
+      </g>
+      <rect x="620" y="150" width="110" height="42" rx="3" fill="none" stroke="#00A8CC" stroke-width="1.6"></rect>
+      <g font-family="Archivo, sans-serif" font-size="12.5" fill="currentColor" text-anchor="middle">
+        <text x="75" y="176">initialize</text>
+        <text x="225" y="176">retrieve</text>
+        <text x="375" y="176">plan</text>
+        <text x="525" y="176">execute</text>
+      </g>
+      <text x="675" y="176" font-family="Archivo, sans-serif" font-size="12.5" fill="#00A8CC" text-anchor="middle">verify</text>
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)">
+        <line x1="130" y1="171" x2="166" y2="171"></line>
+        <line x1="280" y1="171" x2="316" y2="171"></line>
+        <line x1="430" y1="171" x2="466" y2="171"></line>
+        <line x1="580" y1="171" x2="616" y2="171"></line>
+      </g>
+
+      <path d="M675,192 L675,232 L375,232 L375,196" fill="none" stroke="#00A8CC" stroke-width="1.4" marker-end="url(#ahx)"></path>
+      <text x="525" y="246" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#00A8CC" text-anchor="middle">replan (bounded by max_iterations)</text>
+
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)">
+        <line x1="525" y1="192" x2="525" y2="278"></line>
+      </g>
+      <rect x="440" y="278" width="170" height="38" rx="3" fill="none" stroke="currentColor" stroke-width="1.2"></rect>
+      <text x="525" y="302" font-family="Archivo, sans-serif" font-size="12" fill="currentColor" text-anchor="middle">MCP tools · HITL gate</text>
+      <text x="618" y="238" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.7">tool call</text>
+
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#ah)">
+        <line x1="804" y1="171" x2="856" y2="171"></line>
+      </g>
+      <rect x="856" y="124" width="84" height="96" rx="3" fill="none" stroke="currentColor" stroke-width="1.2"></rect>
+      <g font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor" text-anchor="middle">
+        <text x="898" y="152">Redis</text><text x="898" y="168">pub/sub</text>
+        <text x="898" y="192">→ SSE</text><text x="898" y="208">→ browser</text>
+      </g>
+    </svg>
+    <figcaption>The path every goal takes. The control plane is ordinary distributed-systems work; the
+    interesting part is the loop, where <span class="fig-em">verify</span> is the only node with the
+    authority to end the run — it either completes, sends the plan back for another pass, or hands the
+    goal to a human.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="how-to-read">
+  <h2>How to read a concept</h2>
+  <div class="prose">
+    <p>Every concept in this manual uses the same seven-part card, so you can skim one part across
+    thirty concepts or read one concept in full.</p>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Part</th><th>Answers</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Definition</strong></td><td>One sentence. If you remember nothing else, remember this.</td></tr>
+        <tr><td><strong>Mechanism</strong></td><td>How it actually works — state, control flow, algorithm, prompt shape.</td></tr>
+        <tr><td><strong>In AgentVerse</strong></td><td>The modules that implement it, and how they are wired.</td></tr>
+        <tr><td><strong>Worked example</strong></td><td>A concrete run with real values, not a schema.</td></tr>
+        <tr><td><strong>At production scale</strong></td><td>What changes at 10k+ goals/day: cost, latency, topology, the war story.</td></tr>
+        <tr><td><strong>Failure modes</strong></td><td>How it breaks, how you detect it, what you do about it.</td></tr>
+        <tr><td><strong>Choose it when</strong></td><td>The decision rule, including when <em>not</em> to.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="block" id="rubric">
+  <h2>The two ratings</h2>
+  <div class="prose">
+    <p>Each concept carries two independent scores. Keeping them separate is the point: a concept can
+    be beautifully implemented and barely matter (Graph-of-Thoughts), or crudely implemented and
+    absolutely load-bearing (retry budgets).</p>
+  </div>
+
+  <div class="cols" style="margin-top:18px">
+    <section>
+      <h4>Impl — implementation depth in AgentVerse</h4>
+      <div class="tablewrap"><table>
+        <tbody>
+          <tr><td class="num">9–10</td><td>Wired into the live path, governed, persisted, tested, exposed through the API.</td></tr>
+          <tr><td class="num">7–8</td><td>Real implementation on the live path; some dimension missing — persistence, tuning, or full API surface.</td></tr>
+          <tr><td class="num">5–6</td><td>Working module, but opt-in, narrowly wired, or not reachable from a normal goal run.</td></tr>
+          <tr><td class="num">3–4</td><td>Adapter, contract, or scaffold — the shape is right, the substance is thin.</td></tr>
+          <tr><td class="num">1–2</td><td>Named but effectively absent.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+    <section>
+      <h4>Criticality — does a production platform need it?</h4>
+      <div class="tablewrap"><table>
+        <tbody>
+          <tr><td class="num">9–10</td><td>Ship without it and you will have an incident, a breach, or a bill you cannot explain.</td></tr>
+          <tr><td class="num">7–8</td><td>Needed by the time you have real tenants; painful to retrofit.</td></tr>
+          <tr><td class="num">5–6</td><td>Materially improves quality or cost; add when the workload justifies it.</td></tr>
+          <tr><td class="num">3–4</td><td>Situational. Right answer for a narrow class of goals.</td></tr>
+          <tr><td class="num">1–2</td><td>Research interest; rarely earns its complexity in production.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+  </div>
+
+  <div class="callout warn">
+    <span class="lbl">On honesty</span>
+    <p>These are one engineer's readings of the code as it stands, not a vendor scorecard. Where a
+    subsystem is a scaffold, it is rated as a scaffold — those low scores are the most useful entries
+    in the book, because they are the work that is left.</p>
+  </div>
+</section>
+
+<section class="block" id="paths">
+  <h2>Three reading paths</h2>
+  <div class="chapgrid">
+    <a href="agent-patterns.html"><span class="n">Path A</span><span class="t">Builder</span>
+      <span class="d">You are writing the loop this quarter. 01 → 06 → 08 → 03 → 12 → 18 → 19.</span>
+      <span class="m">~7 chapters</span></a>
+    <a href="platform-workflows.html"><span class="n">Path B</span><span class="t">Architect</span>
+      <span class="d">You own the design review. 19 → 20 → 13 → 14 → 16 → 29 → 32 → 33.</span>
+      <span class="m">~8 chapters</span></a>
+    <a href="observability.html"><span class="n">Path C</span><span class="t">Operator / SRE</span>
+      <span class="d">You get paged. 11 → 28 → 12 → 27 → 31 → 32.</span>
+      <span class="m">~6 chapters</span></a>
+  </div>
+</section>

@@ -1,0 +1,252 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>OCR in an agent platform is not "turn an image into text" — it is document understanding that has to
+    be <em>right</em>, because the output feeds a filing, a payment, or a compliance decision. The
+    difference from generic image captioning is that OCR here is <strong>structured extraction with
+    validation</strong>: classify the document, extract typed fields with their locations, and validate
+    each field against rules before anything downstream trusts it.</p>
+
+    <p>The three-stage shape — classify, extract, validate — is what separates document AI from a demo. A
+    caption that is 90% right is useful; an invoice total that is 90% right is a liability, so the third
+    stage exists to catch the 10%.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 840 210" role="img" aria-label="OCR pipeline: a document is classified by kind, routed to a kind-specific extractor that produces typed fields with locations, which are validated against rules; a low-confidence field escalates to LLM vision OCR or to a human.">
+      <defs><marker id="oc1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker>
+      <marker id="oc2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#A2650A"></path></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="0" y="50" width="120" height="44" rx="3"></rect>
+        <rect x="160" y="50" width="140" height="44" rx="3"></rect>
+        <rect x="340" y="50" width="150" height="44" rx="3"></rect>
+        <rect x="530" y="50" width="140" height="44" rx="3"></rect>
+      </g>
+      <rect x="710" y="50" width="120" height="44" rx="3" fill="none" stroke="#0E7C55" stroke-width="1.5"></rect>
+      <g font-family="Archivo, sans-serif" font-size="12" fill="currentColor" text-anchor="middle">
+        <text x="60" y="68">classify</text><text x="60" y="83" font-size="10" opacity="0.6">invoice? ID? stmt?</text>
+        <text x="230" y="68">extractor</text><text x="230" y="83" font-size="10" opacity="0.6">kind-specific</text>
+        <text x="415" y="68">typed fields</text><text x="415" y="83" font-size="10" opacity="0.6">value + location</text>
+        <text x="600" y="68">validate</text><text x="600" y="83" font-size="10" opacity="0.6">rules + checksums</text>
+      </g>
+      <text x="770" y="68" font-family="Archivo, sans-serif" font-size="12" fill="#0E7C55" text-anchor="middle">trusted</text>
+      <text x="770" y="83" font-family="Archivo, sans-serif" font-size="10" fill="#0E7C55" opacity="0.85" text-anchor="middle">downstream use</text>
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#oc1)">
+        <line x1="120" y1="72" x2="156" y2="72"></line>
+        <line x1="300" y1="72" x2="336" y2="72"></line>
+        <line x1="490" y1="72" x2="526" y2="72"></line>
+        <line x1="670" y1="72" x2="706" y2="72"></line>
+      </g>
+      <path d="M600,94 L600,140 L230,140 L230,96" fill="none" stroke="#A2650A" stroke-width="1.3" marker-end="url(#oc2)"></path>
+      <text x="415" y="158" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#A2650A" text-anchor="middle">low confidence → LLM vision OCR, then human review — never guess a field silently</text>
+      <text x="0" y="192" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">every field keeps its bounding box, so a human verifies against the original at the exact location — verifiability is the point</text>
+    </svg>
+    <figcaption>Classify, extract, validate — and escalate rather than guess. The
+    <span class="fig-em">validation stage</span> is what makes OCR usable for actions that must be correct.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="ocr">
+  <h2>The OCR subsystem</h2>
+
+<article class="concept" id="ocr-engine" data-impl="8" data-crit="8" data-tag="Engine">
+<h3>The OCR engine</h3>
+<p class="tldr">Orchestrates the pipeline: OCR each page, classify the document, dispatch to the right
+extractor, and fall back to LLM vision OCR where classic OCR is weak.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The engine runs page-level OCR to get raw text and layout, classifies the document kind, and selects a
+kind-specific extractor via a factory. For low-quality scans or complex layouts where character-level OCR
+struggles, it escalates to LLM vision OCR — a vision model reading the image directly — which is more robust
+but more expensive, so it is a fallback rather than the default. The result is a typed <code>OcrResult</code>
+with fields and confidences.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ocr/engine.py</code><span class="note">OcrEngine: extract(), _ocr_page(), _llm_vision_ocr(), the get_extractor factory + DocumentClassifier</span></li>
+<li><code>app/ocr/models.py</code><span class="note">OcrResult and field models</span></li>
+<li><code>app/tools/ocr_tool.py</code><span class="note">OCR exposed to agents as a tool</span></li>
+<li><code>app/api/ocr.py</code><span class="note">the API surface</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>scan-invoice.pdf
+ _ocr_page   raw text + word boxes, mean confidence 0.94
+ classify    → invoice
+ extractor   financial extractor → {vendor, invoice_no, total, tax, due}
+ low-conf    "total" box confidence 0.61 → _llm_vision_ocr on that region
+             → resolved to ₹41,200 at 0.97
+ result      OcrResult with typed fields, each with a box and a confidence
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Reserve LLM vision OCR for the fields and pages classic OCR flags as low-confidence — running it on
+everything is expensive and usually unnecessary. The per-field confidence is what makes selective
+escalation possible: extract cheaply, escalate the uncertain 10%, and only then involve a human.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Vision OCR on everything.</strong> Cost with little marginal accuracy.</li>
+<li><strong>No per-field confidence.</strong> Cannot escalate selectively.</li>
+<li><strong>Silent low-confidence acceptance.</strong> A guessed total in a filing.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any scanned or image-based document that feeds a decision.</li></ul></section>
+</article>
+
+<article class="concept" id="ocr-classify" data-impl="8" data-crit="7" data-tag="Stage">
+<h3>Document classification</h3>
+<p class="tldr">Decide what <em>kind</em> of document this is — invoice, ID, bank statement, contract — so
+the right extractor and the right validation rules apply.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Distinct from the content-type classifier of chapter 5 (which decides file format), this classifier
+decides business kind from the OCR'd content and layout. The kind determines everything downstream: which
+fields to extract, which rules to validate against, which retention and residency policy applies. A misread
+kind sends the document to the wrong extractor and produces confidently wrong fields.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ocr/classifier.py</code><span class="note">DocumentClassifier — business kind</span></li>
+<li><code>app/ocr/engine.py</code><span class="note">uses it to select the extractor</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>uploaded document
+ layout + keywords → "invoice" (0.91) vs "purchase order" (0.06)
+ → financial extractor, invoice validation rules, 7-year retention
+misread as a receipt → wrong fields, wrong rules → wrong total downstream
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Kind classification errors are silent and expensive because everything downstream trusts the kind. Where
+confidence is low, route to a generic extractor plus human confirmation rather than committing to a wrong
+kind. Track the kind distribution — a shift signals a new document type nobody built an extractor for.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Confident misclassification.</strong> Wrong extractor, wrong fields.</li>
+<li><strong>No fallback for unknown kinds.</strong> New document types failing silently.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>You process more than one kind of document.</li></ul></section>
+</article>
+
+<article class="concept" id="ocr-extractors" data-impl="8" data-crit="8" data-tag="Stage">
+<h3>Kind-specific extractors</h3>
+<p class="tldr">Each document kind has an extractor that knows its fields: a financial extractor knows
+totals and tax, an ID extractor knows names and numbers, a general extractor handles the rest.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Extractors share an interface but encode kind-specific knowledge: the fields to look for, where they
+typically appear, and their expected types. A factory resolves the extractor from the classified kind. This
+specialisation is what makes extraction reliable — a general extractor guesses, a financial extractor knows
+an invoice has a total, a tax amount, and a due date, and where to find them.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ocr/extractors/base.py</code><span class="note">the interface + get_extractor factory</span></li>
+<li><code>app/ocr/extractors/financial.py</code><span class="note">invoices, statements, receipts</span></li>
+<li><code>app/ocr/extractors/id_docs.py</code><span class="note">identity documents</span></li>
+<li><code>app/ocr/extractors/general.py</code><span class="note">the fallback extractor</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>financial extractor on an invoice
+ knows to find: vendor, invoice_no, line_items[], subtotal, tax, total, due
+ locates each by layout + keyword + type → typed fields with boxes
+ cross-field: subtotal + tax should equal total (a validation hook)
+
+id_docs extractor on a passport
+ knows: name, number, DOB, expiry, MRZ → and can checksum the MRZ
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Kind-specific extractors are where accuracy comes from, and they are worth building for the document
+kinds you process in volume. The general extractor is the honest fallback for the long tail — it extracts
+what it can and flags low confidence rather than pretending to understand a form it has no template for.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>General extractor for everything.</strong> Guessed fields.</li>
+<li><strong>No cross-field checks.</strong> A total that does not match its line items, accepted.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>You process specific document kinds in volume.</li></ul></section>
+</article>
+
+<article class="concept" id="ocr-validators" data-impl="8" data-crit="10" data-tag="Stage">
+<h3>Validation</h3>
+<p class="tldr">The stage that makes OCR trustworthy: check each field against format rules, checksums, and
+cross-field consistency, and escalate anything that fails rather than passing it downstream.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Validators apply deterministic rules: format (a date looks like a date, a GSTIN has 15 characters),
+checksums (Luhn for cards, MRZ check digits, GSTIN checksum), and cross-field consistency (subtotal + tax =
+total). A field that fails validation is not silently corrected — it is flagged for LLM vision re-read or
+human review. This is the difference between "we extracted a total" and "we extracted a total that is
+internally consistent and correctly formatted".</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ocr/validators.py</code><span class="note">format, checksum, cross-field validation</span></li>
+<li><code>app/ocr/engine.py</code><span class="note">escalation on validation failure</span></li>
+<li><code>app/governance/hitl.py</code><span class="note">human review for unresolvable fields</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>extracted invoice
+ subtotal 38,200 · tax 3,000 · total 41,200 → 38,200+3,000=41,200 ✓
+ GSTIN "27AAAPZ1234C1Z5" → checksum valid ✓
+ due_date "31/13/2026" → invalid month → FLAG → re-read → "31/12/2026"
+ total confidence 0.61 → below threshold → human confirms against the box
+nothing with a failed check reaches the filing step
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Validation is the stage that lets you automate document workflows that touch money and compliance. The
+checksum and cross-field checks catch the errors that matter most — a transposed digit in a total passes an
+eyeball and fails arithmetic. Set confidence thresholds by field consequence: a total needs a higher bar
+than a memo line.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Silent correction.</strong> "Fixing" a field to what the validator expected, hiding an error.</li>
+<li><strong>No cross-field checks.</strong> Individually-plausible fields that do not add up.</li>
+<li><strong>Uniform confidence threshold.</strong> A memo line gated as strictly as a total.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any OCR output that feeds an action that must be correct.</li></ul></section>
+</article>
+
+<article class="concept" id="ocr-integration" data-impl="7" data-crit="7" data-tag="Integration">
+<h3>OCR in the platform: ingestion, agents, and privacy</h3>
+<p class="tldr">OCR is both an ingestion stage (scanned documents become searchable) and an agent tool
+(extract fields on demand) — and its output is among the most sensitive data the platform handles.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>In ingestion, scanned pages route to OCR at the parse stage and the extracted text joins the index
+(chapter 5). As a tool, an agent calls OCR to extract fields from a document mid-goal — "read this invoice
+and file it". Either way, the output is classified as sensitive by default: OCR'd documents are exactly the
+kind that contain personal and financial data, so redaction, retention, and residency all apply.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/tools/ocr_tool.py</code><span class="note">OCR as an agent tool</span></li>
+<li><code>app/ingestion/parsers/pdf_parser.py</code><span class="note">the ingestion path to OCR</span></li>
+<li><code>app/data_classification/classifier.py</code><span class="note">classifying OCR output as sensitive</span></li>
+<li><code>app/lifecycle/retention_policy.py</code><span class="note">retention for extracted documents</span></li>
+<li><code>agent-verse-frontend/src/features/ocr</code><span class="note">the operator surface (a JARVIS page)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>agent goal "file the attached invoice"
+ ocr_tool.extract(invoice.pdf) → validated fields
+ → data classified confidential (contains vendor bank details)
+ → PII redacted before any external tool call
+ → original + extraction retained per the tenant's retention policy
+ → filing step gated (write_high) with the extracted total hashed
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>OCR sits at the intersection of the platform's most valuable and most sensitive workflows — automating
+invoice, ID, and statement processing — which is exactly why its output needs the full governance
+treatment. Classify originals as sensitive, apply short retention to raw scans, and keep the located spans
+so every extracted value can be audited against the source.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>OCR output not classified.</strong> Financial data flowing without redaction.</li>
+<li><strong>Raw scans retained indefinitely.</strong> A compliance liability.</li>
+<li><strong>Extraction without verifiable spans.</strong> No audit path to the original.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any document-processing workflow, especially financial or identity documents.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch21-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Handwriting and low-resource scripts.</strong> The extractors target printed documents in
+      common scripts; handwriting and rare scripts are weaker.</li>
+      <li><strong>Table extraction within documents.</strong> Field extraction is strong; complex nested
+      tables inside scanned documents lean on the general path.</li>
+      <li><strong>Confidence calibration per field type.</strong> Thresholds are set but not continuously
+      calibrated against human-corrected outcomes.</li>
+      <li><strong>Active-learning from corrections.</strong> Human corrections are not systematically fed
+      back to improve extractor accuracy over time.</li>
+    </ul>
+  </div>
+</section>

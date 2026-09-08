@@ -1,0 +1,767 @@
+<title>AgentVerse World-Class Plan</title>
+<style>/* ==========================================================================
+   AgentVerse Field Manual — instrument chrome + engineering-manual body.
+   Tokens: complete light palette on :root; dark redefined for the two
+   dark states (un-stamped OS-dark, and explicit data-theme="dark").
+   ========================================================================== */
+
+:root {
+  /* ground + surfaces (cool slate neutrals, biased toward the cyan accent) */
+  --bg:        #EFF2F5;
+  --paper:     #FFFFFF;
+  --raised:    #F6F8FA;
+  --sunken:    #E7ECF1;
+  --rail:      #FBFCFD;
+
+  /* ink */
+  --ink:       #0B1220;
+  --ink-2:     #3C4A5A;
+  --ink-3:     #6B7A8B;
+  --ink-4:     #93A1B0;
+
+  /* lines */
+  --line:      #D5DDE5;
+  --line-soft: #E4EAF0;
+  --line-hard: #B9C5D0;
+
+  /* accent — JARVIS electric, darkened for contrast on paper */
+  --accent:      #007D9C;
+  --accent-2:    #00A8CC;
+  --accent-wash: rgba(0,168,204,0.10);
+  --accent-line: rgba(0,125,156,0.35);
+
+  /* semantic (ratings, status, diagram emphasis) */
+  --good:      #0E7C55;
+  --good-wash: rgba(14,124,85,0.10);
+  --warn:      #A2650A;
+  --warn-wash: rgba(162,101,10,0.10);
+  --bad:       #B3303B;
+  --bad-wash:  rgba(179,48,59,0.10);
+  --note:      #6D46C4;
+  --note-wash: rgba(109,70,196,0.10);
+
+  --shadow-1: 0 1px 2px rgba(11,18,32,0.05);
+  --shadow-2: 0 8px 28px rgba(11,18,32,0.10);
+
+  --measure: 68ch;
+  --rail-w: 274px;
+  --topbar-h: 52px;
+
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #070A10;
+    --paper:     #0C1017;
+    --raised:    #12171F;
+    --sunken:    #090D13;
+    --rail:      #0A0E15;
+
+    --ink:       #E9EFF5;
+    --ink-2:     #B3C0CD;
+    --ink-3:     #8593A2;
+    --ink-4:     #5D6C7B;
+
+    --line:      rgba(255,255,255,0.09);
+    --line-soft: rgba(255,255,255,0.055);
+    --line-hard: rgba(255,255,255,0.16);
+
+    --accent:      #35D8F5;
+    --accent-2:    #00D4FF;
+    --accent-wash: rgba(0,212,255,0.10);
+    --accent-line: rgba(0,212,255,0.35);
+
+    --good:      #2ED08C;
+    --good-wash: rgba(46,208,140,0.12);
+    --warn:      #F0B429;
+    --warn-wash: rgba(240,180,41,0.12);
+    --bad:       #FF6B78;
+    --bad-wash:  rgba(255,107,120,0.12);
+    --note:      #B08CFF;
+    --note-wash: rgba(176,140,255,0.12);
+
+    --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+    --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #070A10;
+  --paper:     #0C1017;
+  --raised:    #12171F;
+  --sunken:    #090D13;
+  --rail:      #0A0E15;
+
+  --ink:       #E9EFF5;
+  --ink-2:     #B3C0CD;
+  --ink-3:     #8593A2;
+  --ink-4:     #5D6C7B;
+
+  --line:      rgba(255,255,255,0.09);
+  --line-soft: rgba(255,255,255,0.055);
+  --line-hard: rgba(255,255,255,0.16);
+
+  --accent:      #35D8F5;
+  --accent-2:    #00D4FF;
+  --accent-wash: rgba(0,212,255,0.10);
+  --accent-line: rgba(0,212,255,0.35);
+
+  --good:      #2ED08C;
+  --good-wash: rgba(46,208,140,0.12);
+  --warn:      #F0B429;
+  --warn-wash: rgba(240,180,41,0.12);
+  --bad:       #FF6B78;
+  --bad-wash:  rgba(255,107,120,0.12);
+  --note:      #B08CFF;
+  --note-wash: rgba(176,140,255,0.12);
+
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+  color-scheme: dark;
+}
+
+/* -------------------------------------------------- base */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 17.5px;
+  line-height: 1.62;
+  font-synthesis-weight: none;
+}
+
+a { color: var(--accent); text-decoration-color: var(--accent-line); text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
+
+h1, h2, h3, h4, h5 { font-family: var(--f-display); font-weight: 650; letter-spacing: -0.015em; text-wrap: balance; margin: 0; }
+p { margin: 0 0 0.85em; }
+p:last-child { margin-bottom: 0; }
+ul, ol { margin: 0 0 0.9em; padding-left: 1.25em; }
+li { margin: 0.25em 0; }
+li > ul, li > ol { margin-bottom: 0.2em; }
+strong { font-weight: 650; }
+code, kbd, samp { font-family: var(--f-mono); font-size: 0.855em; }
+:not(pre) > code {
+  background: var(--sunken); border: 1px solid var(--line-soft);
+  padding: 0.08em 0.34em; border-radius: 3px; color: var(--ink-2);
+  word-break: break-word;
+}
+hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+
+.mono { font-family: var(--f-mono); }
+.eyebrow {
+  font-family: var(--f-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3);
+}
+
+/* -------------------------------------------------- top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  height: var(--topbar-h);
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .brand {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink);
+  text-decoration: none; white-space: nowrap;
+}
+.topbar .brand b { color: var(--accent); font-weight: 600; }
+.topbar .crumb {
+  font-family: var(--f-mono); font-size: 11px; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar .spacer { flex: 1 1 auto; }
+.tb-btn {
+  font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  background: transparent; color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 5px 9px; cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.tb-btn:hover { border-color: var(--accent-line); color: var(--accent); }
+
+/* -------------------------------------------------- shell */
+.shell { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); align-items: start; }
+
+.rail {
+  position: sticky; top: var(--topbar-h);
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--rail);
+  border-right: 1px solid var(--line);
+  padding: 18px 0 40px;
+}
+.rail h4 { font-size: 10.5px; font-family: var(--f-mono); font-weight: 500; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-4); padding: 0 18px; margin: 16px 0 8px; }
+.rail .part-label { padding: 0 18px; margin: 20px 0 6px; }
+.rail nav a {
+  display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: baseline;
+  padding: 5px 18px; text-decoration: none; color: var(--ink-2);
+  font-family: var(--f-display); font-size: 13.5px; line-height: 1.35; letter-spacing: -0.005em;
+  border-left: 2px solid transparent;
+}
+.rail nav a .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.rail nav a:hover { background: var(--accent-wash); color: var(--ink); }
+.rail nav a[aria-current="page"] { color: var(--accent); border-left-color: var(--accent); background: var(--accent-wash); }
+.rail nav a[aria-current="page"] .n { color: var(--accent); }
+.rail .inpage { border-top: 1px solid var(--line-soft); margin-top: 14px; padding-top: 4px; }
+.rail .inpage a { grid-template-columns: 26px 1fr; font-size: 12.5px; color: var(--ink-3); }
+.rail .filter { padding: 0 14px 6px; }
+.rail .filter input {
+  width: 100%; font-family: var(--f-mono); font-size: 11.5px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
+}
+.rail .filter input::placeholder { color: var(--ink-4); }
+
+main { min-width: 0; padding: 0 0 96px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 clamp(18px, 4vw, 52px); }
+.prose { max-width: var(--measure); }
+
+/* -------------------------------------------------- chapter head */
+.chead { padding: 46px 0 26px; border-bottom: 1px solid var(--line); }
+.chead .kicker { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.chead .cnum {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
+  color: var(--accent); border: 1px solid var(--accent-line); border-radius: 3px; padding: 3px 7px;
+}
+.chead h1 { font-size: clamp(30px, 4.4vw, 46px); line-height: 1.06; font-weight: 700; letter-spacing: -0.028em; }
+.chead .lede { font-size: 20px; line-height: 1.5; color: var(--ink-2); margin-top: 16px; max-width: 62ch; }
+
+.statstrip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 0; margin-top: 26px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--paper); overflow: hidden;
+}
+.statstrip div { padding: 11px 16px; border-right: 1px solid var(--line-soft); }
+.statstrip div:last-child { border-right: 0; }
+.statstrip .k { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.statstrip .v { font-family: var(--f-display); font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------- sections */
+section.block { padding: 38px 0 8px; }
+section.block > h2 {
+  font-size: 25px; font-weight: 700; letter-spacing: -0.022em; padding-bottom: 8px;
+  border-bottom: 2px solid var(--ink); display: inline-block; margin-bottom: 20px;
+}
+section.block > .prose { margin-bottom: 8px; }
+
+.callout {
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  background: var(--paper); padding: 14px 16px; margin: 18px 0; border-radius: 0 4px 4px 0;
+  font-size: 16.5px;
+}
+.callout.warn { border-left-color: var(--warn); }
+.callout.bad  { border-left-color: var(--bad); }
+.callout.good { border-left-color: var(--good); }
+.callout .lbl { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); display: block; margin-bottom: 5px; }
+
+/* -------------------------------------------------- concept card */
+.concept {
+  border-top: 1px solid var(--line);
+  padding: 30px 0 34px;
+  scroll-margin-top: calc(var(--topbar-h) + 12px);
+}
+.concept:first-of-type { border-top-width: 2px; border-top-color: var(--ink); }
+.concept > h3 {
+  font-size: 23px; font-weight: 700; letter-spacing: -0.022em; line-height: 1.18;
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.concept > h3 .idx {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 500; color: var(--ink-4);
+  letter-spacing: 0.06em; font-variant-numeric: tabular-nums;
+}
+.concept > h3 a.anchor { color: var(--ink-4); text-decoration: none; font-family: var(--f-mono); font-size: 13px; opacity: 0; }
+.concept:hover > h3 a.anchor { opacity: 1; }
+
+.dials { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 12px 0 16px; }
+.dial { display: flex; align-items: center; gap: 8px; }
+.dial .dl { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-4); }
+.meter { display: inline-flex; gap: 2px; }
+.meter i { display: block; width: 7px; height: 12px; background: var(--line); border-radius: 1px; }
+.meter i.on { background: var(--accent); }
+.dial.crit .meter i.on { background: var(--note); }
+.dial .dv { font-family: var(--f-mono); font-size: 12px; font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.dial .dv small { font-weight: 400; color: var(--ink-4); }
+.pill {
+  font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap;
+}
+.pill.shipped { color: var(--good); background: var(--good-wash); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.pill.partial { color: var(--warn); background: var(--warn-wash); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.pill.thin    { color: var(--bad);  background: var(--bad-wash);  border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.pill.tag     { color: var(--ink-3); background: var(--sunken); border-color: var(--line-soft); }
+
+.tldr { font-size: 18.5px; line-height: 1.5; color: var(--ink); max-width: 66ch; }
+.tldr b, .tldr strong { color: var(--ink); }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 20px 0 0; }
+.cols > section { min-width: 0; }
+.cols h4, .band h4 {
+  font-family: var(--f-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px;
+  padding-bottom: 5px; border-bottom: 1px solid var(--line-soft);
+}
+.cols section p, .band p, .cols section li, .band li { font-size: 16.5px; }
+
+.band { margin-top: 18px; padding: 15px 17px; border-radius: 4px; border: 1px solid var(--line-soft); background: var(--raised); }
+.band.example { background: var(--sunken); }
+.band.prod  { border-color: color-mix(in srgb, var(--accent) 22%, var(--line-soft)); background: var(--accent-wash); }
+.band.fail  { border-color: color-mix(in srgb, var(--bad) 22%, var(--line-soft)); background: var(--bad-wash); }
+.band.when  { background: var(--paper); }
+.band.example h4 { color: var(--ink-2); }
+.band.prod h4 { color: var(--accent); border-bottom-color: var(--accent-line); }
+.band.fail h4 { color: var(--bad); border-bottom-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+
+.band.when ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.band.when li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; }
+.band.when li::before { content: "+"; font-family: var(--f-mono); color: var(--good); font-weight: 600; }
+.band.when li.no::before { content: "\2212"; color: var(--bad); }
+
+/* -------------------------------------------------- code + pre */
+pre {
+  margin: 12px 0; padding: 13px 15px; overflow-x: auto;
+  background: var(--sunken); border: 1px solid var(--line-soft); border-radius: 4px;
+  font-family: var(--f-mono); font-size: 12.5px; line-height: 1.62; color: var(--ink-2);
+  tab-size: 2;
+}
+:root[data-theme="dark"] pre, :root:not([data-theme="light"]) pre { color: var(--ink-2); }
+pre .c { color: var(--ink-4); }
+pre .k { color: var(--accent); }
+pre .s { color: var(--good); }
+
+.filelist { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.filelist li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; font-size: 15px; }
+.filelist code { font-size: 12.3px; background: none; border: 0; padding: 0; color: var(--accent); word-break: break-all; }
+.filelist .note { color: var(--ink-3); font-size: 15px; }
+
+/* -------------------------------------------------- tables */
+.tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+table { border-collapse: collapse; width: 100%; font-family: var(--f-display); font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+th {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-3); background: var(--raised); border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+td code { font-size: 12px; }
+
+/* -------------------------------------------------- figures */
+figure { margin: 22px 0; }
+figure svg { display: block; max-width: 100%; height: auto; color: var(--ink-2); }
+figcaption { font-size: 14.5px; color: var(--ink-3); margin-top: 9px; font-family: var(--f-display); max-width: 70ch; }
+.fig-em { color: var(--accent); }
+
+/* -------------------------------------------------- index page bits */
+.chapgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 4px; overflow: hidden; margin: 22px 0; }
+.chapgrid a {
+  background: var(--paper); padding: 16px 17px; text-decoration: none; color: var(--ink);
+  display: flex; flex-direction: column; gap: 7px; min-height: 128px;
+}
+.chapgrid a:hover { background: var(--accent-wash); }
+.chapgrid .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--accent); letter-spacing: 0.1em; }
+.chapgrid .t { font-family: var(--f-display); font-size: 16.5px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.25; }
+.chapgrid .d { font-size: 14.5px; color: var(--ink-3); line-height: 1.45; }
+.chapgrid .m { margin-top: auto; font-family: var(--f-mono); font-size: 10px; color: var(--ink-4); letter-spacing: 0.06em; }
+
+.matrix td.c1 { font-family: var(--f-display); font-weight: 600; }
+.matrix .bar { display: inline-flex; gap: 2px; vertical-align: middle; }
+.matrix .bar i { width: 5px; height: 10px; background: var(--line); border-radius: 1px; display: block; }
+.matrix .bar i.on { background: var(--accent); }
+.matrix .bar.crit i.on { background: var(--note); }
+
+/* -------------------------------------------------- footer nav */
+.pagenav { display: flex; gap: 12px; justify-content: space-between; margin-top: 54px; padding-top: 20px; border-top: 1px solid var(--line); }
+.pagenav a { flex: 1 1 0; text-decoration: none; border: 1px solid var(--line); border-radius: 4px; padding: 13px 15px; background: var(--paper); color: var(--ink); }
+.pagenav a:hover { border-color: var(--accent-line); }
+.pagenav .d { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.pagenav .t { font-family: var(--f-display); font-weight: 650; font-size: 15.5px; letter-spacing: -0.015em; }
+.pagenav a.next { text-align: right; }
+
+.footnote { margin-top: 30px; font-size: 14.5px; color: var(--ink-3); font-family: var(--f-display); }
+
+/* -------------------------------------------------- responsive */
+@media (max-width: 1080px) {
+  .cols { grid-template-columns: 1fr; gap: 14px; }
+}
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail {
+    position: static; height: auto; max-height: 340px;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  body { font-size: 17px; }
+  .chead { padding-top: 30px; }
+}
+@media print {
+  .rail, .topbar, .pagenav { display: none; }
+  body { background: #fff; color: #000; font-size: 10.5pt; }
+  .shell { grid-template-columns: 1fr; }
+}
+
+.idxhead { background: var(--raised); font-family: var(--f-mono); font-size: 11px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+
+    .plan-hero{padding:52px 0 30px;border-bottom:2px solid var(--ink)}
+    .plan-hero .cnum{background:var(--note-wash);color:var(--note);border-color:color-mix(in srgb,var(--note) 40%,transparent)}
+    .pbar{display:inline-flex;gap:2px;vertical-align:middle;margin-left:8px}
+    .pbar i{width:5px;height:10px;background:var(--line);border-radius:1px;display:block}
+    .pbar i.on{background:var(--accent)}.pbar.crit i.on{background:var(--note)}
+    .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:4px;overflow:hidden;margin:24px 0}
+    .metrics div{background:var(--paper);padding:16px 18px}
+    .metrics .k{font-family:var(--f-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-4)}
+    .metrics .v{font-family:var(--f-display);font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;margin-top:4px}
+    .metrics .v small{font-size:14px;color:var(--ink-3);font-weight:400}
+    .flag{border:1px solid var(--accent-line);border-radius:5px;background:var(--accent-wash);padding:2px 20px 20px;margin:26px 0}
+    .flag>h3{font-size:24px;font-weight:700;letter-spacing:-.02em;margin:20px 0 4px;display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+    .flag>h3 .tenten{font-family:var(--f-mono);font-size:12px;color:var(--accent);border:1px solid var(--accent-line);border-radius:3px;padding:3px 8px;letter-spacing:.05em}
+    .ladder{display:grid;gap:0;margin:16px 0;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+    .ladder .rung{display:grid;grid-template-columns:56px 1fr;gap:0;border-top:1px solid var(--line-soft);background:var(--paper)}
+    .ladder .rung:first-child{border-top:0}
+    .ladder .lv{font-family:var(--f-mono);font-size:13px;font-weight:600;padding:12px 10px;text-align:center;color:var(--ink-3);background:var(--raised);display:flex;align-items:center;justify-content:center}
+    .ladder .rung.now .lv{color:var(--warn);background:var(--warn-wash)}
+    .ladder .rung.target .lv{color:var(--good);background:var(--good-wash)}
+    .ladder .body{padding:11px 14px;font-size:15.5px}
+    .ladder .body b{font-weight:650}
+    .ladder .rung.now .body::after{content:" ← where it is today";font-family:var(--f-mono);font-size:11px;color:var(--warn);letter-spacing:.03em}
+    .ladder .rung.target .body::after{content:" ← 10/10";font-family:var(--f-mono);font-size:11px;color:var(--good);letter-spacing:.03em}
+    .phase{border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:0 5px 5px 0;padding:4px 20px 18px;margin:20px 0;background:var(--paper)}
+    .phase.p2{border-left-color:var(--note)}.phase.p3{border-left-color:var(--good)}
+    .phase>h3{font-size:20px;font-weight:700;margin:18px 0 4px}
+    .phase .goal{font-family:var(--f-mono);font-size:11px;letter-spacing:.06em;color:var(--ink-3);text-transform:uppercase}
+    .ws{border-top:1px solid var(--line);padding:22px 0 6px}
+    .ws:first-of-type{border-top:2px solid var(--ink)}
+    .ws>h3{font-size:20px;font-weight:700;letter-spacing:-.018em;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+    .ws>h3 .wsid{font-family:var(--f-mono);font-size:12px;color:var(--accent);border:1px solid var(--accent-line);border-radius:3px;padding:2px 7px}
+    .dod{font-family:var(--f-mono);font-size:13px;background:var(--good-wash);border:1px solid color-mix(in srgb,var(--good) 30%,transparent);border-radius:4px;padding:10px 13px;margin:12px 0}
+    .dod .lbl{color:var(--good);font-weight:600;letter-spacing:.08em;font-size:10px;text-transform:uppercase;display:block;margin-bottom:5px}
+    </style>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<header class="topbar">
+  <a class="brand" href="#top">AgentVerse <b>World-Class Plan</b></a>
+  <span class="crumb">Roadmap to 10/10 · companion to the Field Manual</span>
+  <span class="spacer"></span>
+  <button class="tb-btn" data-theme-toggle type="button">Theme</button>
+</header>
+<main><div class="wrap" id="top">
+
+<header class="plan-hero">
+  <div class="kicker"><span class="cnum">UPGRADE PLAN</span><span class="eyebrow">From a complete platform to a world-class one</span></div>
+  <h1 style="font-size:clamp(30px,4.4vw,46px);line-height:1.06;font-weight:700;letter-spacing:-.028em">Make every dimension 10/10</h1>
+  <p class="lede">AgentVerse already implements the hard 80% of a production agent platform — 347 rated capabilities, mean implementation 7.7/10, 224 of them shipped. This plan is the remaining 20%: the specific, sequenced work to raise every dimension to 10/10, with <b>Harness Engineering</b> and <b>Context Engineering</b> — the two disciplines that decide whether agents are merely functional or genuinely world-class — taken to 10/10 first.</p>
+  <div class="metrics">
+    <div><div class="k">Rated capabilities</div><div class="v">347</div></div>
+    <div><div class="k">Mean impl today</div><div class="v">7.70<small>/10</small></div></div>
+    <div><div class="k">Mean criticality</div><div class="v">7.89<small>/10</small></div></div>
+    <div><div class="k">Shipped (≥8)</div><div class="v">224<small>/347</small></div></div>
+    <div><div class="k">At 9–10</div><div class="v">61</div></div>
+    <div><div class="k">Target</div><div class="v" style="color:var(--good)">10.0</div></div>
+  </div>
+</header>
+
+<section class="block" id="method">
+  <h2>The method</h2>
+  <div class="prose">
+    <p>"World-class" is not a vibe; it is a set of acceptance criteria. This plan defines, for every dimension,
+    what 10/10 concretely means — a capability that is <b>shipped on the live path, governed, measured, learned,
+    and provable</b> — and sequences the work to get there. Three principles shape it:</p>
+    <ul>
+      <li><b>Grounded in the real scorecard.</b> The priority backlog below is computed from the manual's own
+      ratings: criticality × the gap to 10. Nothing here is aspirational hand-waving — it is the platform's
+      actual code, ranked by where the distance to world-class is largest and matters most.</li>
+      <li><b>Two flagships first.</b> Harness Engineering and Context Engineering are the load-bearing
+      disciplines: every other capability runs on the harness and is fed by the context pipeline. Taking these
+      two to 10/10 lifts the ceiling for everything else, so they lead.</li>
+      <li><b>Quality-neutral before speculative.</b> The largest mass of work is nudging critical
+      safety/reliability capabilities from 8 to 10 — hardening, calibration, coverage — which is low-risk and
+      high-value. The speculative frontier (learned decisions, cross-tenant learning, formal guarantees) comes
+      after the foundation is at 10.</li>
+    </ul>
+  </div>
+  <div class="callout">
+    <span class="lbl">What 10/10 means, precisely</span>
+    <p>A capability is 10/10 when it is (1) on the live path for every relevant goal, (2) governed by policy and
+    scope, (3) continuously measured by an eval with a threshold, (4) improved by a closed feedback loop rather
+    than hand-tuning, and (5) explainable — its decisions reconstructable from the trace. Most of the platform
+    meets 1–3 today; the jump to 10 is criteria 4 and 5.</p>
+  </div>
+</section>
+
+<div class="flag">
+<h3><span class="tenten">FLAGSHIP · target 10/10</span>Harness Engineering</h3>
+<div class="prose">
+<p>The <b>harness</b> is everything around the model call: the loop, the state machine, tool-call extraction and
+validation, checkpointing, error taxonomy, cancellation, stall detection — the scaffolding that turns a
+stochastic text generator into a reliable autonomous system. It is the platform's spine (chapters 1, 19, 28),
+and it is strong today. World-class means removing the last sources of non-determinism, waste, and
+hand-tuning.</p>
+</div>
+<h4 style="font-family:var(--f-mono);font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3);margin:18px 0 8px">The capability ladder</h4>
+<div class="ladder">
+  <div class="rung"><div class="lv">6</div><div class="body">A <b>while-loop</b> around a model with basic tool calling and a retry.</div></div>
+  <div class="rung now"><div class="lv">8</div><div class="body">A <b>checkpointed state machine</b> — bounded loops, stall detection on result digests, typed error taxonomy, cooperative cancellation, tool-call extract/repair/validate, durable resume across worker restarts. <i>AgentVerse today</i>: <code>graph.py</code>, <code>structured_executor.py</code>, <code>tool_calls.py</code>, <code>loop_engineering.py</code>.</div></div>
+  <div class="rung target"><div class="lv">10</div><div class="body">All of 8, plus: <b>learned pattern selection</b> (a bandit over pattern sets, not a hand-written rule table); <b>speculative execution</b> of the high-confidence first step during planning; <b>plan caching</b> keyed by goal fingerprint so recurring goals skip re-planning; <b>a formal termination argument</b> for the highest-risk autonomous flows; and <b>self-tuning loop bounds</b> (iteration caps learned per goal class from measured outcomes).</div></div>
+</div>
+<h4 style="font-family:var(--f-mono);font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3);margin:20px 0 8px">The four upgrades to 10</h4>
+<div class="prose"><ol>
+<li><b>Learned pattern assembly.</b> Replace the ordered rule table in <code>pattern_assembler.py</code> with a
+contextual bandit trained on the eval/experiment signal (chapters 9–10), optimising measured success-per-dollar
+per goal class — keeping the rule table as an auditable fallback and the append-only safety invariant intact.
+<span class="dod"><span class="lbl">Done when</span> the assembler's choices beat the rule table on a held-out
+goal set at equal-or-lower cost, every choice is recorded with its reason, and safety patterns remain
+non-removable.</span></li>
+<li><b>Speculative + cached execution.</b> Start executing the classifier's high-confidence first step while the
+planner runs; cache validated plans by goal fingerprint so recurring goals (chapter 1) replan only on change.
+<span class="dod"><span class="lbl">Done when</span> p50 time-to-first-action drops measurably on recurring
+goal classes with no increase in wasted work, and a stale-plan guard re-validates preconditions on cache hit.</span></li>
+<li><b>Deterministic resume, proven.</b> Close the remaining non-determinism in checkpoint/resume (pin clock and
+randomness into state at first write) so a resumed run is byte-identical to the original, and add a replay test
+(chapter 31) that asserts it.
+<span class="dod"><span class="lbl">Done when</span> any goal can be replayed byte-identically from its
+checkpoint, verified in CI.</span></li>
+<li><b>Self-tuning bounds + termination argument.</b> Learn iteration caps per goal class from the measured
+distribution; for money/data-mutating autonomous flows, add a checkable argument that the loop must terminate
+(chapter 33).
+<span class="dod"><span class="lbl">Done when</span> caps are data-derived per class and the highest-risk flows
+carry a termination proof, not just a counter.</span></li>
+</ol></div>
+</div>
+
+<div class="flag">
+<h3><span class="tenten">FLAGSHIP · target 10/10</span>Context Engineering</h3>
+<div class="prose">
+<p><b>Context engineering</b> is the discipline of assembling exactly the right tokens into the prompt: retrieval
++ memory + tools + graph, reranked, capped per source, budgeted, cited, compressed, and rendered per role
+(chapter 8). It is the single largest lever on both quality and cost — a model is only as good as what you put
+in front of it. AgentVerse's context pipeline is genuinely strong (rated 8.1 mean); world-class means it packs
+optimally, selects by learned value, and never regresses silently.</p>
+</div>
+<h4 style="font-family:var(--f-mono);font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3);margin:18px 0 8px">The capability ladder</h4>
+<div class="ladder">
+  <div class="rung"><div class="lv">6</div><div class="body">Stuff retrieved chunks into a template until the window is full.</div></div>
+  <div class="rung now"><div class="lv">8</div><div class="body">A <b>7-step budgeted pipeline</b> — rerank, per-source caps, token budget with floors, unified citation ids, one bundle rendered into per-role prompts, trust-layered (system/task/evidence/untrusted), with compression as a safety net. <i>AgentVerse today</i>: <code>context_pipeline.py</code>, <code>context_budget.py</code>, <code>rerank_policy.py</code>, <code>citation_manager.py</code>, <code>prompt_builder.py</code>.</div></div>
+  <div class="rung target"><div class="lv">10</div><div class="body">All of 8, plus: <b>value-based packing</b> (an explicit value estimate per candidate item, solving the knapsack against the budget rather than filling greedily); <b>learned source-mix</b> (how much of the window each source earns, learned per goal class from answer quality); <b>prompt regression gates</b> (a context change cannot ship if it regresses a golden set); <b>per-section cost attribution</b> surfaced to tenants; and <b>cross-role consistency checks</b> (planner and verifier cannot drift into different definitions of success).</div></div>
+</div>
+<h4 style="font-family:var(--f-mono);font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-3);margin:20px 0 8px">The five upgrades to 10</h4>
+<div class="prose"><ol>
+<li><b>Value-based context packing.</b> Attach a predicted value to each candidate (retrieval score × source
+trust × recency × historical usefulness) and pack the budget to maximise total value, replacing greedy fill in
+<code>context_budget.py</code>.
+<span class="dod"><span class="lbl">Done when</span> answer quality at a fixed token budget beats the greedy
+baseline on the eval set.</span></li>
+<li><b>Learned source-mix.</b> Learn the per-source caps in <code>rerank_policy.py</code> per goal class from
+measured outcomes instead of fixed percentages.
+<span class="dod"><span class="lbl">Done when</span> the caps are data-derived and memory/tool/graph shares
+adapt to what actually helps each goal class.</span></li>
+<li><b>Prompt regression gates.</b> Wire the context pipeline into the regression gate (chapter 10): any change
+to assembly, budget, or a prompt variant must pass a golden set before shipping.
+<span class="dod"><span class="lbl">Done when</span> a context change that regresses grounding or success is
+blocked in CI, with safety/grounding at zero tolerance.</span></li>
+<li><b>Per-section cost attribution.</b> Surface the composition log (chapter 8) as a tenant-facing breakdown —
+"tool schemas are 38% of your spend" — and drive the tool-schema-narrowing lever from it (chapter 29).
+<span class="dod"><span class="lbl">Done when</span> every prompt's per-source token/cost split is queryable
+and the biggest lever is visible per goal class.</span></li>
+<li><b>Cross-role consistency.</b> Add a check that the planner's success criteria and the verifier's rubric
+agree, so the two roles cannot silently diverge (chapter 8 gap).
+<span class="dod"><span class="lbl">Done when</span> a drift between planner and verifier definitions of success
+is detected and flagged automatically.</span></li>
+</ol></div>
+</div>
+
+<section class="block" id="scorecard">
+  <h2>The scorecard: where the platform stands</h2>
+  <div class="prose"><p>Every chapter's mean implementation and criticality, from the manual's ratings. The
+  pattern is the story: the core execution path and the safety/governance spine are already at 8+ (the platform
+  is real), while the learned-intelligence frontier and a few specialised subsystems are where the climb to 10
+  is longest. Read this top-down as the work queue.</p></div>
+  <div class="tablewrap"><table class="matrix">
+    <thead><tr><th>Chapter</th><th class="num">Mean impl</th><th class="num">Mean crit</th><th class="num">Concepts</th></tr></thead>
+    <tbody><tr><td class="c1">33 · Frontier</td><td class="num">4.0<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i></span></td><td class="num">7.0<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></td><td class="num">5</td></tr><tr><td class="c1">24 · Coordination</td><td class="num">6.8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></td><td class="num">5.2<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i></span></td><td class="num">8</td></tr><tr><td class="c1">22 · Agent teams</td><td class="num">6.8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></td><td class="num">6.2<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span></td><td class="num">6</td></tr><tr><td class="c1">26 · Voice</td><td class="num">7.0<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></td><td class="num">6.0<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span></td><td class="num">4</td></tr><tr><td class="c1">15 · Multimodal</td><td class="num">7.2<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></td><td class="num">7.1<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></td><td class="num">9</td></tr><tr><td class="c1">31 · Testing / cert</td><td class="num">7.2<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></td><td class="num">8.5<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">4</td></tr><tr><td class="c1">32 · Scale</td><td class="num">7.5<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">8.0<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">4</td></tr><tr><td class="c1">07 · Embeddings</td><td class="num">7.5<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">7.6<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">14</td></tr><tr><td class="c1">02 · RAG</td><td class="num">7.5<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">7.0<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></td><td class="num">23</td></tr><tr><td class="c1">09 · Improvement</td><td class="num">7.5<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">7.8<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">11</td></tr><tr><td class="c1">17 · Chunking</td><td class="num">7.6<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">6.9<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></td><td class="num">16</td></tr><tr><td class="c1">01 · Agent patterns</td><td class="num">7.6<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">7.1<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></td><td class="num">29</td></tr><tr><td class="c1">28 · Reliability / QoS</td><td class="num">7.6<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">9.2<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span></td><td class="num">5</td></tr><tr><td class="c1">18 · Hallucination</td><td class="num">7.6<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">9.0<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span></td><td class="num">11</td></tr><tr><td class="c1">16 · Model router</td><td class="num">7.7<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">8.2<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">6</td></tr><tr><td class="c1">10 · Evals</td><td class="num">7.7<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">8.7<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span></td><td class="num">12</td></tr><tr><td class="c1">03 · Memory</td><td class="num">7.7<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">7.7<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">19</td></tr><tr><td class="c1">25 · Code execution</td><td class="num">7.8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">9.0<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span></td><td class="num">4</td></tr><tr><td class="c1">29 · Cost / capacity</td><td class="num">7.8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">8.8<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span></td><td class="num">4</td></tr><tr><td class="c1">27 · Triggers</td><td class="num">7.8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">7.5<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">4</td></tr><tr><td class="c1">34 · Workflow engine</td><td class="num">7.8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">7.4<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></td><td class="num">5</td></tr><tr><td class="c1">21 · OCR</td><td class="num">7.8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">8.0<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">5</td></tr><tr><td class="c1">05 · Ingestion</td><td class="num">7.9<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">7.4<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></td><td class="num">25</td></tr><tr><td class="c1">06 · Retrieval</td><td class="num">7.9<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">8.3<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">15</td></tr><tr><td class="c1">30 · Data lifecycle</td><td class="num">8.0<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">9.2<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span></td><td class="num">4</td></tr><tr><td class="c1">12 · Guardrails</td><td class="num">8.0<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">9.7<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span></td><td class="num">9</td></tr><tr><td class="c1">23 · Jervis console</td><td class="num">8.0<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">8.0<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">6</td></tr><tr><td class="c1">11 · Observability</td><td class="num">8.0<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">8.6<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span></td><td class="num">9</td></tr><tr><td class="c1">08 · Prompt / context</td><td class="num">8.1<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">8.6<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span></td><td class="num">18</td></tr><tr><td class="c1">04 · Knowledge &amp; graph</td><td class="num">8.1<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">8.3<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">15</td></tr><tr><td class="c1">13 · Governance</td><td class="num">8.2<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">9.1<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span></td><td class="num">10</td></tr><tr><td class="c1">20 · Platform concepts</td><td class="num">8.3<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">8.5<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span></td><td class="num">11</td></tr><tr><td class="c1">14 · Scopes</td><td class="num">8.3<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">9.0<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span></td><td class="num">10</td></tr><tr><td class="c1">19 · Core workflows</td><td class="num">8.9<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span></td><td class="num">9.1<span class="pbar crit"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span></td><td class="num">7</td></tr></tbody></table></div>
+</section>
+
+<section class="block" id="backlog">
+  <h2>The priority backlog</h2>
+  <div class="prose"><p>The 34 highest-value upgrades, computed as <b>criticality × gap-to-10</b> — the
+  capabilities where the distance to world-class is both largest and most consequential. Every one is already
+  implemented (nothing here is below 6); the work is the last one-to-two points: calibration, coverage,
+  learning, and proof. This is the definition of done for "everything at 10/10", ranked.</p></div>
+  <div class="tablewrap"><table class="matrix">
+    <thead><tr><th>Capability</th><th>Chapter</th><th class="num">Now</th><th class="num">Target</th><th class="num">Lift</th></tr></thead>
+    <tbody><tr><td class="c1">Learned decisions replacing hand-tuned rules</td><td><span class="pill tag">33 · Frontier</span></td><td class="num">4<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+4</td></tr><tr><td class="c1">Retrieval grounding and the confidence floor</td><td><span class="pill tag">18 · Hallucination</span></td><td class="num">7<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+3</td></tr><tr><td class="c1">Retrieval confidence and fallback paths</td><td><span class="pill tag">06 · Retrieval</span></td><td class="num">7<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+3</td></tr><tr><td class="c1">Privacy-preserving cross-tenant learning</td><td><span class="pill tag">33 · Frontier</span></td><td class="num">3<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+4</td></tr><tr><td class="c1">The state of the art, honestly</td><td><span class="pill tag">33 · Frontier</span></td><td class="num">6<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+3</td></tr><tr><td class="c1">Recovery, retry, replan, and rollback</td><td><span class="pill tag">01 · Agent patterns</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Bulkheads, breakers, deduplication, idempotency</td><td><span class="pill tag">20 · Platform concepts</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Memory safety: poisoning, quarantine, redaction</td><td><span class="pill tag">03 · Memory</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Data classification</td><td><span class="pill tag">30 · Data lifecycle</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Deletion, cascade, and legal hold</td><td><span class="pill tag">30 · Data lifecycle</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Prompt safety and injection resistance</td><td><span class="pill tag">08 · Prompt / context</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">The enforcer: where guardrails meet the loop</td><td><span class="pill tag">12 · Guardrails</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Prompt injection detection</td><td><span class="pill tag">12 · Guardrails</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Dangerous command detection</td><td><span class="pill tag">12 · Guardrails</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">PII detection and leakage prevention</td><td><span class="pill tag">12 · Guardrails</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Fail-closed behaviour</td><td><span class="pill tag">12 · Guardrails</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Static code validation</td><td><span class="pill tag">25 · Code execution</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Isolated execution runners</td><td><span class="pill tag">25 · Code execution</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">The unit economics of a goal</td><td><span class="pill tag">29 · Cost / capacity</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Regression detection and gates</td><td><span class="pill tag">09 · Improvement</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Failure classification and recovery policy</td><td><span class="pill tag">28 · Reliability / QoS</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Idempotency and deduplication</td><td><span class="pill tag">28 · Reliability / QoS</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">PII detection and redaction</td><td><span class="pill tag">05 · Ingestion</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Red teaming</td><td><span class="pill tag">31 · Testing / cert</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Provider fallback and circuit breakers</td><td><span class="pill tag">16 · Model router</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Governance and emergency controls</td><td><span class="pill tag">23 · Jervis console</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Runtime decision traces</td><td><span class="pill tag">11 · Observability</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Safety evals</td><td><span class="pill tag">10 · Evals</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Accuracy and grounding evals</td><td><span class="pill tag">10 · Evals</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Deterministic grounding</td><td><span class="pill tag">18 · Hallucination</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Escalation under uncertainty</td><td><span class="pill tag">18 · Hallucination</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Citations</td><td><span class="pill tag">04 · Knowledge &amp; graph</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">How scopes compose to prevent leakage</td><td><span class="pill tag">14 · Scopes</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr><tr><td class="c1">Validation</td><td><span class="pill tag">21 · OCR</span></td><td class="num">8<span class="pbar "><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span></td><td class="num">→ 10</td><td class="num" style="color:var(--bad);font-weight:600">+2</td></tr></tbody></table></div>
+</section>
+
+<section class="block" id="workstreams">
+  <h2>The nine workstreams</h2>
+  <div class="prose"><p>Beyond the two flagships, the backlog groups into nine workstreams. Each names the
+  capabilities it raises, what 10/10 looks like, and its definition of done.</p></div>
+
+  <article class="ws"><h3><span class="wsid">W1</span>Learned intelligence replaces hand-tuned rules</h3>
+  <div class="prose"><p>The single highest-leverage theme. Today the platform decides with ordered rule tables —
+  pattern assembly (ch 1), RAG strategy selection (ch 2), model routing (ch 16), context caps (ch 8), retention
+  (ch 30). Each is auditable and static. Replace each with a policy learned from the eval/experiment signal that
+  already exists (ch 9–10), keeping rule-table fallbacks for auditability.</p>
+  <div class="dod"><span class="lbl">Done when</span> pattern, RAG-strategy, model, and context-mix selection are
+  each learned, beat their rule tables on held-out sets at equal-or-lower cost, and every decision is recorded
+  with its reason and reversible to the rule-table fallback.</div></div></article>
+
+  <article class="ws"><h3><span class="wsid">W2</span>Grounding &amp; anti-hallucination to 10</h3>
+  <div class="prose"><p>Raises the highest-criticality cluster: retrieval confidence floors (ch 6, 18),
+  deterministic + entailment grounding (ch 18), citation verification (ch 4). The last two points are
+  <b>continuous per-collection threshold calibration</b> (not configured constants), <b>cross-source
+  contradiction detection</b> (flag when two retrieved documents disagree), and <b>grounding as a hard output
+  gate on every factual answer</b>.</p>
+  <div class="dod"><span class="lbl">Done when</span> confidence floors are calibrated per collection from
+  labelled feedback, contradictions are detected before synthesis, and no factual answer ships with an
+  unsupported claim.</div></div></article>
+
+  <article class="ws"><h3><span class="wsid">W3</span>Guardrails &amp; safety 8 → 10</h3>
+  <div class="prose"><p>The guardrail spine (ch 12) is the platform's densest 8-rated, 10-critical cluster. To 10:
+  <b>adaptive thresholds</b> tuned from the false-positive/negative signal simulate-mode already produces,
+  <b>semantic injection detection</b> (payloads phrased as ordinary prose, not just patterns), <b>cross-tenant
+  attack intelligence</b> (an attack seen once hardens everyone — see W8), and <b>guardrail latency budgeting</b>
+  so output guards don't read as "the agent is slow".</p>
+  <div class="dod"><span class="lbl">Done when</span> guardrail thresholds self-tune, semantic injection is
+  caught, and the red-team corpus (ch 31) shows zero regressions with adaptive coverage.</div></div></article>
+
+  <article class="ws"><h3><span class="wsid">W4</span>Reliability, QoS &amp; scale hardening</h3>
+  <div class="prose"><p>Raises recovery/rollback (ch 1, 20, 28), idempotency, bulkheads, degraded mode, and the
+  10M/day regime (ch 32). To 10: <b>adaptive concurrency limits</b> (learned from latency/error, not
+  configured), <b>chaos/fault injection</b> to prove the primitives compose under failure, and the <b>scale last
+  mile</b> — tenant sharding, cross-region active-active, and systematic p99 engineering.</p>
+  <div class="dod"><span class="lbl">Done when</span> fault injection passes for every reliability primitive,
+  bulkheads self-tune, and the 10M/day topology (sharding + multi-region + p99 targets) is built and
+  load-tested.</div></div></article>
+
+  <article class="ws"><h3><span class="wsid">W5</span>Data, provenance &amp; compliance completeness</h3>
+  <div class="prose"><p>Raises classification, retention, deletion cascade, provenance (ch 30). To 10:
+  <b>deletion verification</b> (an independent pass proving nothing survived the cascade), <b>classification
+  accuracy monitoring</b> against human-corrected samples, <b>consent lineage</b> (each datum linked to the
+  consent permitting its processing), and <b>continuous residency audit</b> (proof no datum crossed a region).</p>
+  <div class="dod"><span class="lbl">Done when</span> a deletion produces a verifiable proof of completeness,
+  classification accuracy is tracked, and residency is continuously audited.</div></div></article>
+
+  <article class="ws"><h3><span class="wsid">W6</span>Multimodal &amp; voice deepening</h3>
+  <div class="prose"><p>Raises multimodal (ch 15, mean 7.2) and voice (ch 26). To 10 where it earns it: <b>native
+  joint embeddings</b> for visual search (ch 7), <b>cross-modal grounding</b> (verify a claim against a chart),
+  <b>image-region chunking</b>, and <b>speech-to-speech</b> for the lowest-latency voice — each adopted only
+  where extract-to-text demonstrably loses information, keeping extraction the governable default.</p>
+  <div class="dod"><span class="lbl">Done when</span> visual search, cross-modal grounding, and low-latency voice
+  are available where they beat extraction, without losing citability.</div></div></article>
+
+  <article class="ws"><h3><span class="wsid">W7</span>Coordination &amp; teams maturity</h3>
+  <div class="prose"><p>Raises coordination protocols (ch 24, mean 6.8) and agent teams (ch 22, 6.8) — the
+  lowest-implemented non-frontier chapters. To 10: <b>protocol selection guidance</b> in the assembler (choosing
+  among magentic/swarm/auction/etc. as deliberately as single-agent patterns), <b>team eval and certification</b>
+  (measuring a formed team as a unit), <b>reputation grounded in eval scores</b> (ch 22), and <b>cross-protocol
+  composition</b> as a first-class operation.</p>
+  <div class="dod"><span class="lbl">Done when</span> coordination protocols are selected by measured fit, teams
+  are certified as units, and reputation reflects eval outcomes.</div></div></article>
+
+  <article class="ws"><h3><span class="wsid">W8</span>Privacy-preserving cross-tenant learning</h3>
+  <div class="prose"><p>The largest unrealised value (ch 33, impl 3). Today every tenant learns alone — lessons,
+  failure modes, and attack patterns are rediscovered per tenant. To 10: federated or differentially-private
+  aggregation so an attack seen once hardens the whole fleet and a common failure mode is fixed once — with a
+  <b>provable</b> privacy guarantee, starting with the safest signal (attack patterns, which are not tenant
+  data).</p>
+  <div class="dod"><span class="lbl">Done when</span> attack patterns and failure modes are shared fleet-wide with
+  a demonstrated privacy guarantee and zero cross-tenant data exposure.</div></div></article>
+
+  <article class="ws"><h3><span class="wsid">W9</span>Formal guarantees &amp; verifiable safety</h3>
+  <div class="prose"><p>The longest-horizon frontier (ch 33, impl 3). For the highest-risk autonomous flows,
+  move from empirical safety (controls + evals) to <b>checkable guarantees</b>: a proof that the loop must
+  terminate (W-Harness), that the scope intersection cannot leak (ch 14), that a fail-closed control cannot
+  degrade to fail-open. Start with the deterministic parts where proofs are tractable.</p>
+  <div class="dod"><span class="lbl">Done when</span> loop termination and scope non-leakage carry checkable
+  arguments for money/data-mutating flows, not just tests.</div></div></article>
+</section>
+
+<section class="block" id="roadmap">
+  <h2>The phased roadmap</h2>
+  <div class="prose"><p>Sequenced so the low-risk, high-value foundation is at 10 before the speculative frontier
+  begins. Each phase is gated: a phase ships only when its definition of done passes the regression and safety
+  gates (ch 10, 31).</p></div>
+
+  <div class="phase p1">
+    <span class="goal">Phase 1 · foundation to 10 · quality-neutral hardening</span>
+    <h3>Take the critical 8s to 10</h3>
+    <div class="prose"><p>The largest mass of work and the lowest risk: the two flagships (Harness + Context
+    Engineering) and workstreams <b>W2, W3, W4-hardening, W5</b>. This is calibration, coverage, and
+    regression-gating of capabilities that already work — grounding floors calibrated, guardrails adaptive,
+    reliability fault-tested, deletion verified, context packed by value and regression-gated. Little of it
+    risks quality; all of it raises the floor.</p>
+    <p><b>Exit criteria:</b> every criticality-9+ capability at impl 9+, prompt/context changes regression-gated,
+    red-team corpus green with adaptive coverage, deletion cascade provable.</p></div>
+  </div>
+
+  <div class="phase p2">
+    <span class="goal">Phase 2 · learned intelligence · 9 → 10</span>
+    <h3>Replace hand-tuned rules with learned decisions</h3>
+    <div class="prose"><p>Workstreams <b>W1</b> (learned pattern/RAG/model/context selection) and <b>W7</b>
+    (coordination/team maturity), plus the harness's learned bounds and speculative execution. This is where the
+    platform stops being hand-tuned and starts optimising itself — wired to the eval/experiment machinery that
+    already exists, with rule-table fallbacks kept for audit. Higher risk, higher reward; gated hard on the
+    regression suite.</p>
+    <p><b>Exit criteria:</b> learned selection beats rule tables on held-out sets at equal-or-lower cost, every
+    decision explainable and reversible, coordination protocols selected by measured fit.</p></div>
+  </div>
+
+  <div class="phase p3">
+    <span class="goal">Phase 3 · frontier · the 10/10 ceiling</span>
+    <h3>Cross-tenant learning, scale last-mile, formal guarantees</h3>
+    <div class="prose"><p>Workstreams <b>W8</b> (privacy-preserving cross-tenant learning), <b>W4-scale</b>
+    (tenant sharding, multi-region, p99), <b>W6</b> (native multimodal where it wins), and <b>W9</b> (formal
+    guarantees). These define the ceiling of trustworthy autonomy — the work that differentiates a world-class
+    platform from a merely excellent one, gated on the maturity of the underlying techniques.</p>
+    <p><b>Exit criteria:</b> fleet-wide learning with a proven privacy guarantee, 10M/day topology load-tested,
+    and checkable safety arguments for the highest-risk flows.</p></div>
+  </div>
+</section>
+
+<section class="block" id="close">
+  <h2>Definition of world-class</h2>
+  <div class="prose">
+    <p>When this plan is complete, every one of the 347 capabilities meets all five criteria — live, governed,
+    measured, learned, explainable — and the two flagship disciplines that decide agent quality are at 10/10:
+    the <b>harness</b> that runs the agent is deterministic, self-tuning, and provably bounded; the <b>context
+    engineering</b> that feeds it packs optimally, selects by learned value, and cannot silently regress.</p>
+    <p>The honest sequence matters: the platform is already at 7.7/10 mean, so this is not a rebuild — it is
+    the disciplined climb of the last two points, hardest and most valuable at the top. Phase 1 alone (the
+    quality-neutral foundation) moves most of the mass; Phases 2 and 3 buy the self-improving intelligence and
+    provable safety that separate world-class from complete.</p>
+  </div>
+  <p class="footnote">Companion to the AgentVerse Field Manual (36 chapters, 347 rated concepts). The backlog and
+  scorecard are computed from the manual's ratings; the workstreams operationalise every chapter's "what is
+  missing" section and the frontier chapter. Ratings are an informed reading of the code, not a benchmark —
+  re-derive them as the code changes.</p>
+</section>
+
+</div></main>
+<script>
+(function(){var r=document.documentElement;try{var t=localStorage.getItem('avfm-theme');if(t)r.setAttribute('data-theme',t);}catch(e){}
+function cur(){var a=r.getAttribute('data-theme');return a?a:(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');}
+document.addEventListener('click',function(ev){var b=ev.target.closest('[data-theme-toggle]');if(!b)return;var n=cur()==='dark'?'light':'dark';r.setAttribute('data-theme',n);try{localStorage.setItem('avfm-theme',n);}catch(e){}});})();
+</script>

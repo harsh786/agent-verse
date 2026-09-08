@@ -30,6 +30,9 @@ class Workflow(Base):
     definition: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'")
     )
+    labels: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'")
+    )
     status: Mapped[str] = mapped_column(
         String(50), nullable=False, default="draft", server_default="draft"
     )

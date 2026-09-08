@@ -1,0 +1,1526 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Retrieval strategies · AgentVerse Field Manual</title>
+<meta name="description" content="CH 06 · Retrieval strategies">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>/* ==========================================================================
+   AgentVerse Field Manual — instrument chrome + engineering-manual body.
+   Tokens: complete light palette on :root; dark redefined for the two
+   dark states (un-stamped OS-dark, and explicit data-theme="dark").
+   ========================================================================== */
+
+:root {
+  /* ground + surfaces (cool slate neutrals, biased toward the cyan accent) */
+  --bg:        #EFF2F5;
+  --paper:     #FFFFFF;
+  --raised:    #F6F8FA;
+  --sunken:    #E7ECF1;
+  --rail:      #FBFCFD;
+
+  /* ink */
+  --ink:       #0B1220;
+  --ink-2:     #3C4A5A;
+  --ink-3:     #6B7A8B;
+  --ink-4:     #93A1B0;
+
+  /* lines */
+  --line:      #D5DDE5;
+  --line-soft: #E4EAF0;
+  --line-hard: #B9C5D0;
+
+  /* accent — JARVIS electric, darkened for contrast on paper */
+  --accent:      #007D9C;
+  --accent-2:    #00A8CC;
+  --accent-wash: rgba(0,168,204,0.10);
+  --accent-line: rgba(0,125,156,0.35);
+
+  /* semantic (ratings, status, diagram emphasis) */
+  --good:      #0E7C55;
+  --good-wash: rgba(14,124,85,0.10);
+  --warn:      #A2650A;
+  --warn-wash: rgba(162,101,10,0.10);
+  --bad:       #B3303B;
+  --bad-wash:  rgba(179,48,59,0.10);
+  --note:      #6D46C4;
+  --note-wash: rgba(109,70,196,0.10);
+
+  --shadow-1: 0 1px 2px rgba(11,18,32,0.05);
+  --shadow-2: 0 8px 28px rgba(11,18,32,0.10);
+
+  --measure: 68ch;
+  --rail-w: 274px;
+  --topbar-h: 52px;
+
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #070A10;
+    --paper:     #0C1017;
+    --raised:    #12171F;
+    --sunken:    #090D13;
+    --rail:      #0A0E15;
+
+    --ink:       #E9EFF5;
+    --ink-2:     #B3C0CD;
+    --ink-3:     #8593A2;
+    --ink-4:     #5D6C7B;
+
+    --line:      rgba(255,255,255,0.09);
+    --line-soft: rgba(255,255,255,0.055);
+    --line-hard: rgba(255,255,255,0.16);
+
+    --accent:      #35D8F5;
+    --accent-2:    #00D4FF;
+    --accent-wash: rgba(0,212,255,0.10);
+    --accent-line: rgba(0,212,255,0.35);
+
+    --good:      #2ED08C;
+    --good-wash: rgba(46,208,140,0.12);
+    --warn:      #F0B429;
+    --warn-wash: rgba(240,180,41,0.12);
+    --bad:       #FF6B78;
+    --bad-wash:  rgba(255,107,120,0.12);
+    --note:      #B08CFF;
+    --note-wash: rgba(176,140,255,0.12);
+
+    --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+    --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #070A10;
+  --paper:     #0C1017;
+  --raised:    #12171F;
+  --sunken:    #090D13;
+  --rail:      #0A0E15;
+
+  --ink:       #E9EFF5;
+  --ink-2:     #B3C0CD;
+  --ink-3:     #8593A2;
+  --ink-4:     #5D6C7B;
+
+  --line:      rgba(255,255,255,0.09);
+  --line-soft: rgba(255,255,255,0.055);
+  --line-hard: rgba(255,255,255,0.16);
+
+  --accent:      #35D8F5;
+  --accent-2:    #00D4FF;
+  --accent-wash: rgba(0,212,255,0.10);
+  --accent-line: rgba(0,212,255,0.35);
+
+  --good:      #2ED08C;
+  --good-wash: rgba(46,208,140,0.12);
+  --warn:      #F0B429;
+  --warn-wash: rgba(240,180,41,0.12);
+  --bad:       #FF6B78;
+  --bad-wash:  rgba(255,107,120,0.12);
+  --note:      #B08CFF;
+  --note-wash: rgba(176,140,255,0.12);
+
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+  color-scheme: dark;
+}
+
+/* -------------------------------------------------- base */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 17.5px;
+  line-height: 1.62;
+  font-synthesis-weight: none;
+}
+
+a { color: var(--accent); text-decoration-color: var(--accent-line); text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
+
+h1, h2, h3, h4, h5 { font-family: var(--f-display); font-weight: 650; letter-spacing: -0.015em; text-wrap: balance; margin: 0; }
+p { margin: 0 0 0.85em; }
+p:last-child { margin-bottom: 0; }
+ul, ol { margin: 0 0 0.9em; padding-left: 1.25em; }
+li { margin: 0.25em 0; }
+li > ul, li > ol { margin-bottom: 0.2em; }
+strong { font-weight: 650; }
+code, kbd, samp { font-family: var(--f-mono); font-size: 0.855em; }
+:not(pre) > code {
+  background: var(--sunken); border: 1px solid var(--line-soft);
+  padding: 0.08em 0.34em; border-radius: 3px; color: var(--ink-2);
+  word-break: break-word;
+}
+hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+
+.mono { font-family: var(--f-mono); }
+.eyebrow {
+  font-family: var(--f-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3);
+}
+
+/* -------------------------------------------------- top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  height: var(--topbar-h);
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .brand {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink);
+  text-decoration: none; white-space: nowrap;
+}
+.topbar .brand b { color: var(--accent); font-weight: 600; }
+.topbar .crumb {
+  font-family: var(--f-mono); font-size: 11px; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar .spacer { flex: 1 1 auto; }
+.tb-btn {
+  font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  background: transparent; color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 5px 9px; cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.tb-btn:hover { border-color: var(--accent-line); color: var(--accent); }
+
+/* -------------------------------------------------- shell */
+.shell { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); align-items: start; }
+
+.rail {
+  position: sticky; top: var(--topbar-h);
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--rail);
+  border-right: 1px solid var(--line);
+  padding: 18px 0 40px;
+}
+.rail h4 { font-size: 10.5px; font-family: var(--f-mono); font-weight: 500; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-4); padding: 0 18px; margin: 16px 0 8px; }
+.rail .part-label { padding: 0 18px; margin: 20px 0 6px; }
+.rail nav a {
+  display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: baseline;
+  padding: 5px 18px; text-decoration: none; color: var(--ink-2);
+  font-family: var(--f-display); font-size: 13.5px; line-height: 1.35; letter-spacing: -0.005em;
+  border-left: 2px solid transparent;
+}
+.rail nav a .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.rail nav a:hover { background: var(--accent-wash); color: var(--ink); }
+.rail nav a[aria-current="page"] { color: var(--accent); border-left-color: var(--accent); background: var(--accent-wash); }
+.rail nav a[aria-current="page"] .n { color: var(--accent); }
+.rail .inpage { border-top: 1px solid var(--line-soft); margin-top: 14px; padding-top: 4px; }
+.rail .inpage a { grid-template-columns: 26px 1fr; font-size: 12.5px; color: var(--ink-3); }
+.rail .filter { padding: 0 14px 6px; }
+.rail .filter input {
+  width: 100%; font-family: var(--f-mono); font-size: 11.5px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
+}
+.rail .filter input::placeholder { color: var(--ink-4); }
+
+main { min-width: 0; padding: 0 0 96px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 clamp(18px, 4vw, 52px); }
+.prose { max-width: var(--measure); }
+
+/* -------------------------------------------------- chapter head */
+.chead { padding: 46px 0 26px; border-bottom: 1px solid var(--line); }
+.chead .kicker { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.chead .cnum {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
+  color: var(--accent); border: 1px solid var(--accent-line); border-radius: 3px; padding: 3px 7px;
+}
+.chead h1 { font-size: clamp(30px, 4.4vw, 46px); line-height: 1.06; font-weight: 700; letter-spacing: -0.028em; }
+.chead .lede { font-size: 20px; line-height: 1.5; color: var(--ink-2); margin-top: 16px; max-width: 62ch; }
+
+.statstrip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 0; margin-top: 26px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--paper); overflow: hidden;
+}
+.statstrip div { padding: 11px 16px; border-right: 1px solid var(--line-soft); }
+.statstrip div:last-child { border-right: 0; }
+.statstrip .k { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.statstrip .v { font-family: var(--f-display); font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------- sections */
+section.block { padding: 38px 0 8px; }
+section.block > h2 {
+  font-size: 25px; font-weight: 700; letter-spacing: -0.022em; padding-bottom: 8px;
+  border-bottom: 2px solid var(--ink); display: inline-block; margin-bottom: 20px;
+}
+section.block > .prose { margin-bottom: 8px; }
+
+.callout {
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  background: var(--paper); padding: 14px 16px; margin: 18px 0; border-radius: 0 4px 4px 0;
+  font-size: 16.5px;
+}
+.callout.warn { border-left-color: var(--warn); }
+.callout.bad  { border-left-color: var(--bad); }
+.callout.good { border-left-color: var(--good); }
+.callout .lbl { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); display: block; margin-bottom: 5px; }
+
+/* -------------------------------------------------- concept card */
+.concept {
+  border-top: 1px solid var(--line);
+  padding: 30px 0 34px;
+  scroll-margin-top: calc(var(--topbar-h) + 12px);
+}
+.concept:first-of-type { border-top-width: 2px; border-top-color: var(--ink); }
+.concept > h3 {
+  font-size: 23px; font-weight: 700; letter-spacing: -0.022em; line-height: 1.18;
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.concept > h3 .idx {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 500; color: var(--ink-4);
+  letter-spacing: 0.06em; font-variant-numeric: tabular-nums;
+}
+.concept > h3 a.anchor { color: var(--ink-4); text-decoration: none; font-family: var(--f-mono); font-size: 13px; opacity: 0; }
+.concept:hover > h3 a.anchor { opacity: 1; }
+
+.dials { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 12px 0 16px; }
+.dial { display: flex; align-items: center; gap: 8px; }
+.dial .dl { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-4); }
+.meter { display: inline-flex; gap: 2px; }
+.meter i { display: block; width: 7px; height: 12px; background: var(--line); border-radius: 1px; }
+.meter i.on { background: var(--accent); }
+.dial.crit .meter i.on { background: var(--note); }
+.dial .dv { font-family: var(--f-mono); font-size: 12px; font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.dial .dv small { font-weight: 400; color: var(--ink-4); }
+.pill {
+  font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap;
+}
+.pill.shipped { color: var(--good); background: var(--good-wash); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.pill.partial { color: var(--warn); background: var(--warn-wash); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.pill.thin    { color: var(--bad);  background: var(--bad-wash);  border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.pill.tag     { color: var(--ink-3); background: var(--sunken); border-color: var(--line-soft); }
+
+.tldr { font-size: 18.5px; line-height: 1.5; color: var(--ink); max-width: 66ch; }
+.tldr b, .tldr strong { color: var(--ink); }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 20px 0 0; }
+.cols > section { min-width: 0; }
+.cols h4, .band h4 {
+  font-family: var(--f-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px;
+  padding-bottom: 5px; border-bottom: 1px solid var(--line-soft);
+}
+.cols section p, .band p, .cols section li, .band li { font-size: 16.5px; }
+
+.band { margin-top: 18px; padding: 15px 17px; border-radius: 4px; border: 1px solid var(--line-soft); background: var(--raised); }
+.band.example { background: var(--sunken); }
+.band.prod  { border-color: color-mix(in srgb, var(--accent) 22%, var(--line-soft)); background: var(--accent-wash); }
+.band.fail  { border-color: color-mix(in srgb, var(--bad) 22%, var(--line-soft)); background: var(--bad-wash); }
+.band.when  { background: var(--paper); }
+.band.example h4 { color: var(--ink-2); }
+.band.prod h4 { color: var(--accent); border-bottom-color: var(--accent-line); }
+.band.fail h4 { color: var(--bad); border-bottom-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+
+.band.when ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.band.when li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; }
+.band.when li::before { content: "+"; font-family: var(--f-mono); color: var(--good); font-weight: 600; }
+.band.when li.no::before { content: "\2212"; color: var(--bad); }
+
+/* -------------------------------------------------- code + pre */
+pre {
+  margin: 12px 0; padding: 13px 15px; overflow-x: auto;
+  background: var(--sunken); border: 1px solid var(--line-soft); border-radius: 4px;
+  font-family: var(--f-mono); font-size: 12.5px; line-height: 1.62; color: var(--ink-2);
+  tab-size: 2;
+}
+:root[data-theme="dark"] pre, :root:not([data-theme="light"]) pre { color: var(--ink-2); }
+pre .c { color: var(--ink-4); }
+pre .k { color: var(--accent); }
+pre .s { color: var(--good); }
+
+.filelist { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.filelist li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; font-size: 15px; }
+.filelist code { font-size: 12.3px; background: none; border: 0; padding: 0; color: var(--accent); word-break: break-all; }
+.filelist .note { color: var(--ink-3); font-size: 15px; }
+
+/* -------------------------------------------------- tables */
+.tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+table { border-collapse: collapse; width: 100%; font-family: var(--f-display); font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+th {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-3); background: var(--raised); border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+td code { font-size: 12px; }
+
+/* -------------------------------------------------- figures */
+figure { margin: 22px 0; }
+figure svg { display: block; max-width: 100%; height: auto; color: var(--ink-2); }
+figcaption { font-size: 14.5px; color: var(--ink-3); margin-top: 9px; font-family: var(--f-display); max-width: 70ch; }
+.fig-em { color: var(--accent); }
+
+/* -------------------------------------------------- index page bits */
+.chapgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 4px; overflow: hidden; margin: 22px 0; }
+.chapgrid a {
+  background: var(--paper); padding: 16px 17px; text-decoration: none; color: var(--ink);
+  display: flex; flex-direction: column; gap: 7px; min-height: 128px;
+}
+.chapgrid a:hover { background: var(--accent-wash); }
+.chapgrid .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--accent); letter-spacing: 0.1em; }
+.chapgrid .t { font-family: var(--f-display); font-size: 16.5px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.25; }
+.chapgrid .d { font-size: 14.5px; color: var(--ink-3); line-height: 1.45; }
+.chapgrid .m { margin-top: auto; font-family: var(--f-mono); font-size: 10px; color: var(--ink-4); letter-spacing: 0.06em; }
+
+.matrix td.c1 { font-family: var(--f-display); font-weight: 600; }
+.matrix .bar { display: inline-flex; gap: 2px; vertical-align: middle; }
+.matrix .bar i { width: 5px; height: 10px; background: var(--line); border-radius: 1px; display: block; }
+.matrix .bar i.on { background: var(--accent); }
+.matrix .bar.crit i.on { background: var(--note); }
+
+/* -------------------------------------------------- footer nav */
+.pagenav { display: flex; gap: 12px; justify-content: space-between; margin-top: 54px; padding-top: 20px; border-top: 1px solid var(--line); }
+.pagenav a { flex: 1 1 0; text-decoration: none; border: 1px solid var(--line); border-radius: 4px; padding: 13px 15px; background: var(--paper); color: var(--ink); }
+.pagenav a:hover { border-color: var(--accent-line); }
+.pagenav .d { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.pagenav .t { font-family: var(--f-display); font-weight: 650; font-size: 15.5px; letter-spacing: -0.015em; }
+.pagenav a.next { text-align: right; }
+
+.footnote { margin-top: 30px; font-size: 14.5px; color: var(--ink-3); font-family: var(--f-display); }
+
+/* -------------------------------------------------- responsive */
+@media (max-width: 1080px) {
+  .cols { grid-template-columns: 1fr; gap: 14px; }
+}
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail {
+    position: static; height: auto; max-height: 340px;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  body { font-size: 17px; }
+  .chead { padding-top: 30px; }
+}
+@media print {
+  .rail, .topbar, .pagenav { display: none; }
+  body { background: #fff; color: #000; font-size: 10.5pt; }
+  .shell { grid-template-columns: 1fr; }
+}
+
+.idxhead { background: var(--raised); font-family: var(--f-mono); font-size: 11px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">AgentVerse <b>Field Manual</b></a>
+  <span class="crumb">CH 06 · Retrieval strategies</span>
+  <span class="spacer"></span>
+  <button class="tb-btn" data-theme-toggle type="button">Theme</button>
+</header>
+<div class="shell">
+<aside class="rail"><h4>Field manual</h4><nav><a href="index.html"><span class="n">00</span><span>Hub &amp; how to read</span></a></nav></nav><div class="part-label eyebrow">I · The agent</div><nav><a href="agent-patterns.html"><span class="n">01</span><span>Agent patterns</span></a><a href="rag-patterns.html"><span class="n">02</span><span>RAG patterns</span></a><a href="agent-memory.html"><span class="n">03</span><span>Agent memories</span></a></nav><div class="part-label eyebrow">II · Knowledge</div><nav><a href="knowledge-and-graphs.html"><span class="n">04</span><span>Knowledge &amp; knowledge graph</span></a><a href="ingestion.html"><span class="n">05</span><span>Ingestion</span></a><a href="retrieval-strategies.html" aria-current="page"><span class="n">06</span><span>Retrieval strategies</span></a><a href="embeddings.html"><span class="n">07</span><span>Embeddings</span></a><a href="chunking.html"><span class="n">17</span><span>Chunking strategies</span></a></nav><div class="part-label eyebrow">III · Context &amp; quality</div><nav><a href="prompt-builder.html"><span class="n">08</span><span>Prompt builder</span></a><a href="agent-improvement.html"><span class="n">09</span><span>Agent improvement</span></a><a href="evals.html"><span class="n">10</span><span>Evals</span></a><a href="hallucination.html"><span class="n">18</span><span>Hallucination handling</span></a></nav><div class="part-label eyebrow">IV · Safety &amp; control</div><nav><a href="guardrails.html"><span class="n">12</span><span>Guardrails</span></a><a href="governance.html"><span class="n">13</span><span>Governance</span></a><a href="scopes.html"><span class="n">14</span><span>Scopes</span></a><a href="observability.html"><span class="n">11</span><span>Observability</span></a></nav><div class="part-label eyebrow">V · Modality &amp; models</div><nav><a href="multimodal.html"><span class="n">15</span><span>Multimodal</span></a><a href="ocr.html"><span class="n">21</span><span>OCR</span></a><a href="model-router.html"><span class="n">16</span><span>Multi-model router</span></a></nav><div class="part-label eyebrow">VI · The platform</div><nav><a href="platform-workflows.html"><span class="n">19</span><span>Core platform workflows</span></a><a href="platform-concepts.html"><span class="n">20</span><span>Other core platform concepts</span></a><a href="agent-teams.html"><span class="n">22</span><span>AI agent teams</span></a><a href="jarvis.html"><span class="n">23</span><span>Jervis (JARVIS) console</span></a></nav><div class="part-label eyebrow">VII · Not on the list</div><nav><a href="coordination-protocols.html"><span class="n">24</span><span>Coordination protocols</span></a><a href="code-execution.html"><span class="n">25</span><span>Code execution &amp; sandboxing</span></a><a href="voice.html"><span class="n">26</span><span>Voice &amp; realtime agents</span></a><a href="triggers.html"><span class="n">27</span><span>Triggers &amp; event-driven agents</span></a><a href="reliability-qos.html"><span class="n">28</span><span>Reliability &amp; QoS</span></a><a href="cost-capacity.html"><span class="n">29</span><span>Cost &amp; capacity engineering</span></a><a href="data-lifecycle.html"><span class="n">30</span><span>Data lifecycle &amp; provenance</span></a><a href="testing-certification.html"><span class="n">31</span><span>Testing &amp; certification</span></a><a href="scale-playbook.html"><span class="n">32</span><span>Scale playbook</span></a><a href="workflow-engine.html"><span class="n">34</span><span>Workflow engine</span></a><a href="frontier.html"><span class="n">33</span><span>Frontier &amp; gaps</span></a></nav><div class="part-label eyebrow">Appendix</div><nav><a href="appendix-ratings.html"><span class="n">A</span><span>Ratings matrix</span></a><a href="appendix-glossary.html"><span class="n">B</span><span>Glossary</span></a></nav><div class="inpage"><h4>In this chapter</h4><nav><a href="#vector-similarity"><span class="n">01</span><span>Vector similarity</span></a><a href="#fts"><span class="n">02</span><span>PostgreSQL full-text search</span></a><a href="#trigram"><span class="n">03</span><span>Trigram fuzzy search</span></a><a href="#bm25"><span class="n">04</span><span>BM25</span></a><a href="#metadata-prefilter"><span class="n">05</span><span>Metadata pre-filtering</span></a><a href="#hybrid-scoring"><span class="n">06</span><span>Hybrid scoring and normalisation</span></a><a href="#rrf"><span class="n">07</span><span>Reciprocal rank fusion</span></a><a href="#cross-encoder"><span class="n">08</span><span>Cross-encoder reranking</span></a><a href="#score-calibration"><span class="n">09</span><span>Score calibration and thresholds</span></a><a href="#parent-child"><span class="n">10</span><span>Parent-child retrieval</span></a><a href="#sentence-window"><span class="n">11</span><span>Sentence-window retrieval</span></a><a href="#query-expansion"><span class="n">12</span><span>Query expansion</span></a><a href="#multi-query"><span class="n">13</span><span>Multi-query retrieval</span></a><a href="#retrieval-confidence"><span class="n">14</span><span>Retrieval confidence and fallback paths</span></a><a href="#retrieval-tracing"><span class="n">15</span><span>Retrieval tracing</span></a></nav></div></aside>
+<main><div class="wrap">
+<header class="chead"><div class="kicker"><span class="cnum">CH 06</span><span class="eyebrow">II · Knowledge</span></div><h1>Retrieval strategies</h1><p class="lede">Vector, lexical, fusion, rerank — and how scores are made comparable.</p><div class="statstrip"><div><div class="k">Concepts</div><div class="v">15</div></div><div><div class="k">Mean impl</div><div class="v">7.9</div></div><div><div class="k">Mean criticality</div><div class="v">8.3</div></div><div><div class="k">Shipped</div><div class="v">13</div></div><div><div class="k">Thin / missing</div><div class="v">0</div></div></div></header><section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>Chapter 2 was about retrieval <em>architectures</em>. This chapter is about the machinery
+    underneath them: the four ways to find candidates, the three ways to combine incomparable scores,
+    the one way to re-rank properly, and the question everybody skips — what do you do when retrieval
+    returns nothing good?</p>
+
+    <p>The mental model that makes this tractable is a <strong>funnel with widening then narrowing
+    stages</strong>. Cheap recall-oriented retrieval produces many candidates; expensive
+    precision-oriented reranking cuts them down; a budget cuts them again. Getting the funnel widths
+    right matters more than which algorithm sits in each stage.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 880 280" role="img" aria-label="Retrieval funnel: metadata pre-filter narrows the corpus, four parallel retrievers each produce candidates, rank fusion merges them, a cross-encoder reranks the top candidates, a score threshold and token budget cut the final set, and a confidence check can trigger a fallback path.">
+      <defs><marker id="f1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker>
+      <marker id="f2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#B3303B"></path></marker></defs>
+
+      <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.65">
+        <text x="0" y="14">CORPUS 1.2M</text><text x="196" y="14">FILTERED 40k</text>
+        <text x="392" y="14">CANDIDATES 200</text><text x="588" y="14">RERANKED 20</text><text x="768" y="14">IN PROMPT 6</text>
+      </g>
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="0" y="28" width="150" height="150" rx="3"></rect>
+        <rect x="196" y="52" width="150" height="102" rx="3"></rect>
+        <rect x="392" y="68" width="150" height="70" rx="3"></rect>
+        <rect x="588" y="84" width="140" height="38" rx="3"></rect>
+        <rect x="768" y="90" width="104" height="26" rx="3"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor" text-anchor="middle">
+        <text x="75" y="98">all chunks</text>
+        <text x="271" y="90">metadata</text><text x="271" y="106">pre-filter</text><text x="271" y="124" font-size="10" opacity="0.6">tenant · collection · jurisdiction</text>
+        <text x="467" y="90">4 retrievers</text><text x="467" y="106" font-size="10" opacity="0.6">vector · FTS</text><text x="467" y="120" font-size="10" opacity="0.6">trigram · BM25</text>
+        <text x="658" y="99">RRF merge</text><text x="658" y="113" font-size="10" opacity="0.6">+ cross-encoder</text>
+        <text x="820" y="107">budget cut</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#f1)">
+        <line x1="150" y1="103" x2="192" y2="103"></line>
+        <line x1="346" y1="103" x2="388" y2="103"></line>
+        <line x1="542" y1="103" x2="584" y2="103"></line>
+        <line x1="728" y1="103" x2="764" y2="103"></line>
+      </g>
+      <g stroke="#B3303B" stroke-width="1.2" marker-end="url(#f2)">
+        <path d="M658,122 L658,196 L200,196" fill="none"></path>
+      </g>
+      <text x="208" y="192" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#B3303B">top score below floor → fallback: widen filter · expand query · another collection · say "not found"</text>
+      <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.65">
+        <text x="0" y="232">the two numbers that decide quality: candidate width (recall ceiling) and rerank depth (precision achievable)</text>
+        <text x="0" y="250">a reranker cannot recover a document the retrievers never returned — recall failures are invisible in precision metrics</text>
+        <text x="0" y="268">pre-filtering is the only stage that improves precision AND latency at zero model cost</text>
+      </g>
+    </svg>
+    <figcaption>The funnel. Each stage is cheaper per candidate than the next, which is why widths
+    shrink left to right — and why the <span class="fig-em">fallback edge</span> matters: without it, a
+    recall failure becomes a confident answer from bad context.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="candidates">
+  <h2>Finding candidates</h2>
+
+<article class="concept" id="vector-similarity" data-impl="9" data-crit="10" data-tag="Retriever">
+<h3><span class="idx">01</span>Vector similarity<a class="anchor" href="#vector-similarity" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Retriever</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">Rank by distance between the query embedding and chunk embeddings — the retriever that
+understands paraphrase and is blind to exact tokens.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Embed the query with the same model that embedded the corpus, then find nearest neighbours under the
+metric the model was trained for (usually cosine). Exact search is O(n); production uses an approximate
+index, which introduces a recall/latency dial — <code>ef_search</code> for HNSW, probe count for
+IVFFlat.</p>
+<p>The parameter that actually decides your quality is not the metric but the <em>candidate width</em>:
+retrieving 20 and reranking to 6 caps your quality at whatever those 20 contain.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/store.py</code><span class="note">_cosine_similarity() in the memory path; pgvector operators in the DB path</span></li>
+<li><code>app/embedding/vector_index_policy.py</code><span class="note">index and search parameters</span></li>
+<li><code>app/rag/engine.py</code><span class="note">RetrievalResult</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query "can I get my money back"
+ 0.81  "Refunds are accepted within 30 days of delivery"     ← paraphrase
+ 0.74  "Reimbursement requests must be filed via the portal"
+ 0.71  "Store credit is issued for opened items"
+ 0.31  "Invoice INV-2024-8891"                                ← exact-token
+                                                                 query would
+                                                                 have wanted this
+recall at ef_search=40: 0.91 · at ef_search=200: 0.98 · latency 12ms → 34ms
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Measure recall against exact search on a sample. Most teams run default ANN parameters and never learn
+they are losing 8–15% of relevant documents — which then shows up as "the answer was in the corpus"
+complaints that get blamed on the model.</p>
+<p>Retrieve wider than you need. Fetching 100–200 candidates and reranking is nearly always better than
+fetching 10 and trusting them, because reranking is cheap relative to being wrong.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Model mismatch.</strong> Query and corpus embedded with different models — results are noise
+that looks like results.</li>
+<li><strong>Exact-token blindness.</strong> Identifiers, codes, error strings. This is why hybrid exists.</li>
+<li><strong>Low ANN recall.</strong> Silent, systematic, and invisible without an exact-search baseline.</li>
+<li><strong>Filter interaction.</strong> A restrictive filter applied after the ANN limit returns almost
+nothing.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always as one leg — never as the only leg.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="fts" data-impl="9" data-crit="8" data-tag="Retriever">
+<h3><span class="idx">02</span>PostgreSQL full-text search<a class="anchor" href="#fts" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Retriever</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Stemmed, stop-worded, language-aware lexeme matching in the database — exact enough for
+terminology, cheap enough to run on every query.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Text is normalised to a <code>tsvector</code> of lexemes at index time using a language
+configuration; queries become <code>tsquery</code> expressions. Matching is on stems, so "refunding"
+finds "refund". <code>ts_rank</code> provides a relevance score weighted by lexeme position and
+frequency. A GIN index makes it fast.</p>
+<p>Its virtue in this stack is proximity: it runs inside the same query as the vector search and the
+metadata filter, so a hybrid retrieval is one round trip.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/store.py</code><span class="note">hybrid_search_db() — FTS leg</span></li>
+<li><code>app/db/migrations/</code><span class="note">tsvector columns and GIN indexes</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query   "refunding damaged items"
+tsquery 'refund' & 'damag' & 'item'
+match   "Damaged items are refunded in full"  → stems align
+miss    "Broken goods are reimbursed"          → different stems entirely
+                                                  (vector search catches it)
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Language configuration per document, not per deployment. A multi-tenant platform will hold English,
+German and Hindi content, and one global <code>english</code> configuration silently degrades everything
+else. Store the detected language at ingest and choose the configuration per row.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Wrong language config.</strong> Poor stemming, silent quality loss.</li>
+<li><strong>No GIN index.</strong> Sequential scans on a large table.</li>
+<li><strong>Stop-word loss.</strong> Queries that are all stop words return nothing.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any hybrid retrieval where the corpus is natural language.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="trigram" data-impl="8" data-crit="8" data-tag="Retriever">
+<h3><span class="idx">03</span>Trigram fuzzy search<a class="anchor" href="#trigram" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Retriever</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Character-level similarity that survives typos and partial identifiers — the retriever
+that saves you when a user types <code>INV-2024</code> or misspells a product name.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Break strings into overlapping three-character sequences and score by the overlap of the two sets.
+"invoice" and "invocie" share most of their trigrams; so do <code>INV-2024</code> and
+<code>INV-2024-8891</code>. It is oblivious to meaning and excellent at surface form, which is precisely
+the gap the other two retrievers leave.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/store.py</code><span class="note">_trigram_score() in memory; pg_trgm similarity in the DB path</span></li>
+<li><code>app/db/migrations/</code><span class="note">pg_trgm extension and GIN/GiST indexes</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query "Norhtwind" (typo)
+ vector   0.42 — embedding of a misspelling is not close to the real name
+ FTS      no match — 'norhtwind' is not a lexeme of 'northwind'
+ trigram  0.71 — 6 of 9 trigrams shared → hit
+
+query "INV-2024"
+ trigram  0.83 against INV-2024-8891 → the invoice the user meant
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Enable trigram indexes on the fields where surface form matters — titles, identifiers, names — rather
+than on all content, because the indexes are large and slow writes. Bound the query too: trigram search
+over a million rows without an index is a table scan.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>False positives.</strong> Short strings share trigrams accidentally; use a similarity floor.</li>
+<li><strong>Index bloat.</strong> Trigram indexes on long text columns are expensive.</li>
+<li><strong>Dominating the merge.</strong> High trigram scores on boilerplate crowding out semantic hits;
+cap its contribution.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Users type identifiers, names, or codes — which in enterprise search is most of the time.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="bm25" data-impl="8" data-crit="8" data-tag="Ranking">
+<h3><span class="idx">04</span>BM25<a class="anchor" href="#bm25" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Ranking</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">The ranking function that has outlived every generation of search technology: term
+frequency with saturation, inverse document frequency, and length normalisation.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Three ideas. <em>Saturation</em>: the tenth occurrence of a term adds less than the second, controlled
+by <code>k1</code>. <em>IDF</em>: rare terms discriminate, common terms do not. <em>Length
+normalisation</em>: a match in a 200-word document means more than one in a 20,000-word document,
+controlled by <code>b</code>. Together they explain why BM25 still beats naive embedding search on
+keyword-heavy queries.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/bm25.py</code><span class="note">BM25Retriever</span></li>
+<li><code>app/rag/store.py</code><span class="note">called as a leg of hybrid_search()</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query "pgbouncer pool exhaustion"
+
+doc A  runbook, 180 words, "pgbouncer" ×3, "exhaustion" ×2
+doc B  handbook, 24,000 words, "pgbouncer" ×3, "exhaustion" ×1
+BM25   A ≫ B — same term counts, but B's length normalises them away
+IDF    "pgbouncer" is rare in this corpus → high weight
+       "pool" is common → low weight
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Compute IDF over the collection being searched, not globally. A term that is rare across the whole
+tenant may be ubiquitous in one collection, and using global statistics makes ranking within that
+collection wrong.</p>
+<p>Default parameters (<code>k1≈1.2</code>, <code>b≈0.75</code>) are good. Tuning them is rarely the
+highest-value work available.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Wrong corpus statistics.</strong> Global IDF on a per-collection search.</li>
+<li><strong>Stale statistics.</strong> IDF computed once and never updated as the corpus grows.</li>
+<li><strong>Keyword stuffing.</strong> Documents that repeat terms; saturation limits but does not
+eliminate this.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any lexical leg. It is the correct default ranking function for keyword matching.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="metadata-prefilter" data-impl="8" data-crit="9" data-tag="Precision">
+<h3><span class="idx">05</span>Metadata pre-filtering<a class="anchor" href="#metadata-prefilter" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Precision</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">The only stage that improves precision, latency and safety simultaneously — and it costs
+nothing but a well-designed metadata schema.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Apply hard constraints before scoring: tenant, collection set, jurisdiction, classification level,
+date range, document type, language. This shrinks the candidate space, which raises the effective
+recall of the ANN search (fewer irrelevant neighbours competing), reduces query latency, and enforces
+access rules at the index rather than in a post-filter.</p>
+<p>The ordering rule from chapter 3 applies here too: filter, then score. Post-filtering means the
+restricted rows were read.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/store.py</code><span class="note">filters in the DB query</span></li>
+<li><code>app/rag/gateway.py</code><span class="note">SQLCollectionAuthorizer — collection scope resolved before retrieval</span></li>
+<li><code>app/db/rls.py</code><span class="note">tenant filter enforced by the database independently</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>unfiltered   1.2M chunks → ANN top 200 → 14 relevant
+filtered     tenant + collection[policies] + jurisdiction=DE + class≤internal
+             → 6,400 chunks → ANN top 200 → 61 relevant
+same model, same k, 4× better precision, 40% lower latency
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Index every field you filter on, and beware the ANN-plus-filter interaction: with a very selective
+filter, some index implementations return fewer than <code>k</code> rows or fall back to a scan. Test
+your selective-filter cases explicitly — they are the ones that behave differently in production than in
+staging.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Post-filtering.</strong> A leak and a performance bug in one.</li>
+<li><strong>Unindexed filter fields.</strong> Correct and unusably slow.</li>
+<li><strong>Over-filtering.</strong> Empty results; the agent then replans against nothing.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always. It is the cheapest precision available.</li></ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="combining">
+  <h2>Combining and re-ranking</h2>
+
+<article class="concept" id="hybrid-scoring" data-impl="8" data-crit="9" data-tag="Fusion">
+<h3><span class="idx">06</span>Hybrid scoring and normalisation<a class="anchor" href="#hybrid-scoring" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Fusion</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Four retrievers produce four incomparable numbers. You must either normalise them onto a
+common scale or discard the magnitudes and use ranks — but you cannot simply add them.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Cosine similarity lives in roughly [0,1] with a compressed useful range; BM25 is unbounded and
+corpus-dependent; trigram similarity is [0,1] with different semantics; <code>ts_rank</code> has its own
+scale. Three approaches:</p>
+<ul>
+<li><strong>Min-max normalisation</strong> per retriever per query — simple, but one outlier distorts
+the whole scale.</li>
+<li><strong>Z-score normalisation</strong> — more robust, needs enough candidates to estimate the
+distribution.</li>
+<li><strong>Rank fusion</strong> — ignore magnitudes entirely; this is why RRF is the usual answer.</li>
+</ul>
+<p>Weighted sums of normalised scores are workable when you have an eval set to tune the weights on. Made
+up weights are worse than rank fusion.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/store.py</code><span class="note">HybridSearchResult — the merged shape</span></li>
+<li><code>app/rag/engine.py</code><span class="note">hybrid_search / rerank_results</span></li>
+<li><code>app/context/rerank_policy.py</code><span class="note">per-source caps applied after merging</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>raw scores for the same chunk set
+ chunk  cosine  bm25   trigram
+ c1     0.62    12.4   0.10
+ c2     0.71     0.0   0.05
+ c3     0.55     8.1   0.83
+
+naive sum   c1 13.12 · c3 9.48 · c2 0.76   ← bm25 magnitude dominates entirely
+min-max     c1 1.55  · c3 1.72 · c2 1.05   ← plausible
+RRF         c3 ranked 1st by trigram and 2nd by bm25 → wins on consistency
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Start with RRF, because it requires no calibration and cannot be broken by a scale change in one
+retriever. Move to weighted normalised scores only when you have a labelled eval set and a measured
+reason. Whatever you choose, log the per-retriever scores — when a result looks wrong, the merge is the
+first place to look.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Adding raw scores.</strong> One retriever silently decides everything.</li>
+<li><strong>Normalising over too few candidates.</strong> Unstable scales query to query.</li>
+<li><strong>Double counting.</strong> The same chunk from two retrievers, counted twice.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any time you run more than one retriever — so, always.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="rrf" data-impl="8" data-crit="8" data-tag="Fusion">
+<h3><span class="idx">07</span>Reciprocal rank fusion<a class="anchor" href="#rrf" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Fusion</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Score each document by <code>Σ 1/(k + rank)</code> across result lists. No calibration,
+no tuning, robust to any number of heterogeneous retrievers — the default merge for a reason.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>For each result list, a document at rank <em>r</em> contributes <code>1/(k + r)</code> with
+<code>k≈60</code>. The constant flattens the top of the curve, so being 1st versus 3rd matters less than
+appearing in several lists at all. Documents found by multiple independent retrievers rise; documents
+found by one retriever with a suspiciously high score do not automatically win.</p>
+<p>It works for merging retrievers, merging query variants (fusion RAG), and merging federated sources —
+anywhere scores are not comparable.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/patterns/fusion.py</code><span class="note">multi-query fusion</span></li>
+<li><code>app/knowledge/federated_search.py</code><span class="note">cross-source merge</span></li>
+<li><code>app/rag/engine.py</code><span class="note">merge in the retrieval path</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>k = 60
+doc   vector  bm25  trigram   RRF
+c3      2      2      1       1/62 + 1/62 + 1/61 = 0.0486   ← consensus
+c1      1      -      -       1/61                = 0.0164
+c7      -      1      3       1/61 + 1/63         = 0.0323
+ordering: c3, c7, c1 — not what any single retriever said
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>RRF's weakness is the flip side of its strength: it discards magnitude, so a single retriever that is
+genuinely confident and correct can be outvoted. Where one retriever is known to be authoritative for a
+query class (exact identifier matches, for example), give it a rank bonus or short-circuit to it rather
+than fusing.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Correlated lists.</strong> Three retrievers that agree because they are similar, not because
+the document is right.</li>
+<li><strong>Losing a confident singleton.</strong> The exact-match document outvoted by three vague ones.</li>
+<li><strong>Wrong k.</strong> Very small k over-weights first place; very large k flattens everything.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Merging anything heterogeneous. Start here.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="cross-encoder" data-impl="8" data-crit="9" data-tag="Precision">
+<h3><span class="idx">08</span>Cross-encoder reranking<a class="anchor" href="#cross-encoder" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Precision</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Score each (query, chunk) pair with a model that reads them <em>together</em> — far more
+accurate than comparing two independently-computed vectors, and affordable only on a small candidate
+set.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A bi-encoder embeds query and document separately, so it can never model their interaction. A
+cross-encoder takes the concatenation and outputs a relevance score, letting attention connect query
+terms to document terms directly. The cost is that it cannot be precomputed: every pair needs an
+inference. Hence the funnel — retrieve 200 cheaply, rerank those 200, keep the top 10.</p>
+<p>Two engineering requirements make this production-safe: run inference off the event loop through a
+bounded executor (a synchronous model call in an async server stalls everything), and distinguish
+load failures from inference failures so a missing model degrades rather than erroring every query.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/cross_encoder.py</code><span class="note">CrossEncoderReranker, _score_blocking(), cross_encode(), build_reranker()</span></li>
+<li><code>app/rag_platform/reranker_contract.py</code><span class="note">RerankerProtocol, BoundedAsyncExecutor, RerankerLoadError, RerankerInferenceError</span></li>
+<li><code>app/rag_platform/reranker.py</code><span class="note">CrossEncoderDocumentReranker</span></li>
+<li><code>app/context/rerank_policy.py</code><span class="note">policy: what to rerank and how deep</span></li>
+</ul>
+<p>The protocol-plus-bounded-executor design is the part worth copying: reranking is CPU-bound inference
+inside an IO-bound service, and that mismatch is the usual cause of mysterious latency spikes.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query "does the warranty cover water damage?"
+
+bi-encoder top 5 (by cosine)
+ 1  0.72  "Warranty terms and conditions"          generic
+ 2  0.70  "Water damage is excluded from coverage"  ← the answer
+ 3  0.69  "Warranty registration process"
+cross-encoder rerank
+ 1  0.94  "Water damage is excluded from coverage"
+ 2  0.31  "Warranty terms and conditions"
+ 3  0.12  "Warranty registration process"
+the answer moves from position 2 to 1, and the noise is clearly separated
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Rerank depth is a direct latency/quality dial: 200 candidates on a small cross-encoder is roughly
+30–80ms on CPU, and grows linearly. Pick the depth from your latency budget, and cache rerank scores by
+(query hash, chunk id) — agents re-issue similar queries constantly within a goal.</p>
+<p>If reranking is your latency bottleneck and quality still matters, that is the point at which
+late-interaction retrieval (ColBERT, chapter 2) starts to earn its index cost.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Blocking the event loop.</strong> Synchronous inference in an async handler — the bounded
+executor exists for this.</li>
+<li><strong>Reranking too shallow.</strong> Reranking 10 candidates cannot fix a recall problem.</li>
+<li><strong>Model not loaded.</strong> Treat as a readiness fact and delegate, not as a 500.</li>
+<li><strong>Domain mismatch.</strong> A general reranker on specialised jargon can be worse than the
+bi-encoder; measure.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Precision matters and you can afford tens of milliseconds.</li>
+<li class="no">Skip when candidates are already few and clearly correct.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="score-calibration" data-impl="6" data-crit="8" data-tag="Precision">
+<h3><span class="idx">09</span>Score calibration and thresholds<a class="anchor" href="#score-calibration" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Precision</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">A relevance score is only useful if you know what "good" means. Calibration turns model
+outputs into a threshold you can act on — including the decision to return nothing.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Raw scores are not probabilities and are not comparable across models, corpora or query types. To act
+on them you need a mapping from score to expected relevance, built from labelled pairs: sample queries,
+have humans or a strong judge label the top results, then fit the threshold at your chosen
+precision/recall trade-off. Recalibrate whenever the embedding model, the reranker, or the corpus
+changes materially.</p>
+<p>The payoff is the ability to say "nothing here is relevant" — which is the single most valuable
+behaviour a retrieval system can have and the one that requires a calibrated floor.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/evaluation.py</code><span class="note">retrieval evaluation</span></li>
+<li><code>app/evals/rag_score.py</code><span class="note">retrieval scoring (chapter 10)</span></li>
+<li><code>app/intelligence/verifier_calibration.py</code><span class="note">the same discipline applied to verifier thresholds</span></li>
+<li><code>app/rag/agentic/patterns/corrective.py</code><span class="note">the consumer: a graded threshold decides the branch</span></li>
+</ul>
+<p>Rated 6: evaluation and calibration machinery exist, but there is no continuous per-collection
+threshold calibration feeding the live retrieval path.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>labelled sample, 300 queries, cross-encoder scores
+ score ≥ 0.80  precision 0.96  recall 0.41
+ score ≥ 0.50  precision 0.87  recall 0.78
+ score ≥ 0.30  precision 0.61  recall 0.93
+choose 0.50 for general search, 0.80 for regulated answers
+and "top score < 0.30" → return "not found", do not answer
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Per-collection thresholds beat one global threshold, because corpora differ in density and vocabulary.
+Store the threshold with the collection and revisit it when the collection changes shape.</p>
+<p>The behaviour to protect above all: an honest "I could not find this in your documents". Every
+hallucination-mitigation technique downstream is more expensive than a calibrated floor upstream.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Uncalibrated thresholds.</strong> A number someone picked; either drops good results or
+admits junk.</li>
+<li><strong>Global threshold.</strong> Wrong for most collections.</li>
+<li><strong>Stale calibration.</strong> Model changed, threshold did not.</li>
+<li><strong>No floor at all.</strong> The system always answers, whatever it found.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any system that must be able to say "not found" — which is any system used for real decisions.</li></ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="shaping">
+  <h2>Shaping what comes back</h2>
+
+<article class="concept" id="parent-child" data-impl="8" data-crit="8" data-tag="Window">
+<h3><span class="idx">10</span>Parent-child retrieval<a class="anchor" href="#parent-child" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Window</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Search small, return large: match on precise child chunks, then hand the model the parent
+section so it has enough context to answer.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Index fine-grained children (200–400 tokens) for precision, but store a parent reference on each.
+After ranking, replace or augment the matched children with their parents, deduplicating where several
+children of one parent matched. Citations should point at the child (precise) while the prompt carries
+the parent (complete).</p>
+<p>This resolves the oldest tension in chunking: small chunks retrieve better, large chunks answer
+better.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/parent_child_chunker.py</code><span class="note">the chunker</span></li>
+<li><code>app/rag/store.py</code><span class="note">_expand_agentic_parent_citations()</span></li>
+<li><code>app/context/context_budget.py</code><span class="note">parents are bigger — the budget has to know</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>matched children
+  c#3 "The limit is 30 days from delivery."          0.88
+  c#4 "Damaged goods are exempt."                     0.81
+  c#9 (different parent) "Enterprise terms override." 0.74
+
+expanded → parent §Refunds (1,100 tokens, contains c#1..c#6)
+         + parent §Enterprise (600 tokens)
+two coherent sections instead of three fragments; citations still name
+c#3, c#4, c#9 so the user lands on the exact sentence
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Watch the budget: three matched children can expand into three 1,500-token parents and consume the
+whole context window. Cap parent expansion, deduplicate parents, and prefer expanding only the top few
+matches.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Budget explosion.</strong> Expansion without a cap.</li>
+<li><strong>Duplicate parents.</strong> The same section included three times.</li>
+<li><strong>Oversized parents.</strong> A parent that is the whole document defeats the purpose.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Documents have real sections and answers need surrounding context.</li>
+<li class="no">Skip for short, self-contained records (tickets, FAQ entries).</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="sentence-window" data-impl="8" data-crit="7" data-tag="Window">
+<h3><span class="idx">11</span>Sentence-window retrieval<a class="anchor" href="#sentence-window" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Window</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Index individual sentences for maximum precision, then return the n sentences either side
+— a sliding window instead of a fixed hierarchy.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Each sentence is a separately embedded unit, so matching is extremely precise. At return time, expand
+to a window of surrounding sentences to restore readability and pronoun resolution. Unlike parent-child,
+the window is symmetric and boundary-free, which suits flowing prose that has no clean section
+structure.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/sentence_window.py</code><span class="note">the implementation</span></li>
+<li><code>app/rag/chunker.py</code><span class="note">sentence splitting</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>matched sentence  "It must be filed within 14 days."
+window ±2
+  "Amendments are permitted for the current quarter only.
+   The form is available in the portal.
+ → It must be filed within 14 days.
+   Late filings incur a 2% penalty.
+   The penalty is waived for first offences."
+without the window, "it" and "within 14 days of what" are unanswerable
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Sentence-level indexing multiplies chunk count — a 40-chunk document becomes 400 sentences — which
+raises index size and embedding cost proportionally. It is worth it for dense reference material where
+precision is paramount, and wasteful for corpora where paragraph-level matching already works.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Index inflation.</strong> Ten times the vectors for a modest precision gain.</li>
+<li><strong>Bad sentence splitting.</strong> Abbreviations and decimals split mid-sentence.</li>
+<li><strong>Window crossing boundaries.</strong> A window that spans two unrelated sections.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Precision is critical and documents are flowing prose (legal, regulatory, contracts).</li>
+<li class="no">Avoid when index cost matters more than the last few points of precision.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="query-expansion" data-impl="8" data-crit="7" data-tag="Query">
+<h3><span class="idx">12</span>Query expansion<a class="anchor" href="#query-expansion" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Query</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Add terms the user did not type — synonyms, abbreviation expansions, domain vocabulary —
+so lexical retrieval stops missing documents that say the same thing differently.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Three sources of expansion terms, in increasing cost: a curated synonym and abbreviation table
+(cheap, precise, tenant-specific), corpus co-occurrence statistics (free, noisy), and an LLM (flexible,
+metered). The best results come from the table for the terms you know and the model for the rest.</p>
+<p>Expansion helps lexical retrieval most; vector search already handles paraphrase, so expanding a
+query before an embedding-only search often changes little.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/query_expander.py</code><span class="note">expansion</span></li>
+<li><code>app/rag/agentic/query_reformulator.py</code><span class="note">reformulation</span></li>
+<li><code>app/rag/agentic/llm_query_transformer.py</code><span class="note">model-based transforms</span></li>
+<li><code>app/rag/agentic/search_directive_parser.py</code><span class="note">structured directives inside a query</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query "PTO policy"
+table  PTO → "paid time off", "annual leave", "vacation"
+expanded tsquery: ('pto' | 'paid time off' | 'annual leave' | 'vacation')
+                  & 'policy'
+effect  the German entity's "annual leave" handbook now matches, which the
+        unexpanded lexical query missed entirely
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The tenant-specific abbreviation table is high-value manual data — every organisation has fifty
+acronyms that appear in no dictionary. Make it editable by support, seed it from frequent
+zero-result queries, and treat it as part of the knowledge base rather than as configuration.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Over-expansion.</strong> Precision collapses as the query matches everything.</li>
+<li><strong>Wrong-sense synonyms.</strong> "Charge" expanded to "fee" in a battery context.</li>
+<li><strong>Cost per query.</strong> An LLM expansion on every search, most of which did not need it.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Domain jargon and abbreviations are common, and lexical retrieval is a real leg.</li>
+<li class="no">Less useful for pure vector search.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="multi-query" data-impl="8" data-crit="7" data-tag="Query">
+<h3><span class="idx">13</span>Multi-query retrieval<a class="anchor" href="#multi-query" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Query</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Issue several genuinely different queries instead of one — decomposition for compound
+questions, perspectives for ambiguous ones — then fuse.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Distinct from expansion (which adds terms to one query) and from fusion RAG (which rephrases the same
+intent): multi-query <em>decomposes</em>. "Compare our refund policy with our warranty policy" is two
+retrievals whose results should not be pooled by similarity but kept separate and then compared.</p>
+<p>The implementation detail that matters: run the sub-queries concurrently, and keep their result sets
+labelled so the model can tell which evidence answers which part.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/query_reformulator.py</code><span class="note">decomposition</span></li>
+<li><code>app/rag_platform/query_planner.py</code><span class="note">plans a multi-part retrieval</span></li>
+<li><code>app/rag/agentic/patterns/fusion.py</code><span class="note">the pooled-merge variant</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>"how do our refund and warranty terms differ for enterprise customers?"
+ q1  refund terms, enterprise      → 4 chunks  [A]
+ q2  warranty terms, enterprise    → 3 chunks  [B]
+ q3  enterprise contract overrides → 2 chunks  [C]
+kept separate and labelled; the model compares A against B under C
+pooling them by score would have returned 6 refund chunks and no warranty
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Compound questions are common and single-query retrieval handles them badly — usually returning
+everything about the dominant term. Detecting "this is two questions" is worth a cheap classifier, and
+the concurrency makes it nearly free in latency.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Bad decomposition.</strong> Sub-queries that do not cover the original.</li>
+<li><strong>Pooling when you should not.</strong> Comparison questions need separated evidence.</li>
+<li><strong>Budget multiplication.</strong> Three sub-queries × parent expansion overflows the window.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Questions contain conjunctions, comparisons, or several entities.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="retrieval-confidence" data-impl="7" data-crit="10" data-tag="Safety">
+<h3><span class="idx">14</span>Retrieval confidence and fallback paths<a class="anchor" href="#retrieval-confidence" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Safety</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">The most important behaviour in retrieval is knowing when it failed — and having an
+ordered set of alternatives that ends in an honest "not found" rather than an answer.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Compute a confidence signal from the result set: top score against the calibrated floor, score gap
+between first and fifth (a flat distribution means nothing stood out), candidate count after filtering,
+and coverage of the query's key terms. Below threshold, walk a fallback chain rather than answering:</p>
+<ol>
+<li>Relax the metadata filter (drop the date range, widen the collection set).</li>
+<li>Expand or reformulate the query.</li>
+<li>Try another strategy (hybrid → fusion → agentic).</li>
+<li>Try another source (a different collection, the graph, the web if permitted).</li>
+<li>Return "not found" with what was searched.</li>
+</ol>
+<p>Each step must be recorded, so the trace explains why the answer took nine seconds or why it is empty.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/fallback_chain.py</code><span class="note">FallbackChain</span></li>
+<li><code>app/rag/agentic/context_gap_detector.py</code><span class="note">GapReport — what is missing</span></li>
+<li><code>app/rag/agentic/patterns/corrective.py</code><span class="note">grading that drives the branch</span></li>
+<li><code>app/agent/graph.py</code><span class="note">rag_remediate — the agent-level fallback node</span></li>
+<li><code>app/rag/gateway.py</code><span class="note">delegation when a strategy is unavailable</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query "APAC revenue recognition policy"
+attempt 1  hybrid, collection=policies, jurisdiction=APAC
+           → 0 candidates after filter        (no APAC docs exist)
+attempt 2  relax jurisdiction                  → 3 candidates, top score 0.28
+                                                  → below floor 0.50
+attempt 3  fusion with expansion               → top score 0.34, still below
+attempt 4  graph: is there an owning team?     → yes, finance-apac
+result     "No APAC revenue-recognition policy is indexed. The global policy
+            (POL-204) may apply; the owning team is finance-apac. Searched:
+            policies, finance, legal collections."
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>This is the single highest-leverage feature for trust. Users forgive "I could not find it"; they do
+not forgive a confident wrong answer assembled from three irrelevant documents. Track the
+"not found" rate per collection — it is your knowledge-gap backlog, and it is more actionable than any
+satisfaction survey.</p>
+<p>Bound the chain. Four attempts with reranking each can turn a 300ms query into four seconds; set a
+total retrieval deadline and return the honest answer when it expires.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>No confidence signal.</strong> The system always answers.</li>
+<li><strong>Unbounded chains.</strong> Latency blowout on the queries that were never going to succeed.</li>
+<li><strong>Silent fallbacks.</strong> Nobody can explain the latency or the substitution.</li>
+<li><strong>Fallback to the web from a regulated collection.</strong> Policy must gate the chain, not
+just quality.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always. This is the difference between a search feature and a trustworthy one.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="retrieval-tracing" data-impl="8" data-crit="8" data-tag="Operations">
+<h3><span class="idx">15</span>Retrieval tracing<a class="anchor" href="#retrieval-tracing" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Operations</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Every retrieval emits a structured trace: which strategy, which filters, how many
+candidates per retriever, what the scores were, what was cut and why.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A trace per retrieval with one leg per retrieval operation, capturing query text (or hash), strategy,
+filters applied, candidate counts, top scores, rerank deltas, and the final selection with reasons for
+exclusion. Attached to the goal and the request so a user complaint maps to an exact retrieval.</p>
+<p>Without this, retrieval quality is unfalsifiable: you cannot tell a recall failure from a ranking
+failure from a budget cut, and all three feel identical to the user.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/rag_trace.py</code><span class="note">the trace</span></li>
+<li><code>app/observability/rag_trace.py</code><span class="note">the observability-side view</span></li>
+<li><code>app/rag/contracts.py</code><span class="note">RAGRetrievalLeg, RAGStrategyTrace — traces are part of the public contract</span></li>
+<li><code>app/api/observability.py</code><span class="note">exposure</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>trace for goal g-8891 step 2
+ strategy   hybrid → rerank
+ filters    tenant=acme, collections=[policies,legal], class≤internal
+ legs       vector  200 candidates, top 0.71, 34ms
+            bm25    140 candidates, top 11.2, 12ms
+            trigram  60 candidates, top 0.44,  8ms
+ merged     312 unique → RRF → top 50
+ reranked   50 → top 8, cross-encoder 0.94…0.41, 62ms
+ budget     8 → 6 (2 dropped: over 9k token cap)
+ excluded   c#118 (0.39 below floor), c#204 (duplicate of c#201)
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Sample rather than store everything: full traces on 1–5% of traffic plus all failures gives you
+debuggability without a storage problem. Hash query text by default and store it in clear only where
+the tenant has consented — queries are user content and often contain personal data.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>No trace.</strong> Quality complaints become unanswerable.</li>
+<li><strong>Traces without scores.</strong> You can see what was returned, not why.</li>
+<li><strong>PII in traces.</strong> Query text stored indefinitely in a log nobody classified.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Before you need it. Retrofitting traces during an incident is not fun.</li></ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="ch6-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Continuous threshold calibration.</strong> Thresholds are configured, not learned from
+      ongoing labelled feedback per collection.</li>
+      <li><strong>Learned fusion weights.</strong> RRF is untuned by design; a per-query-class weighting
+      learned from click or acceptance signal would beat it.</li>
+      <li><strong>Reranker distillation.</strong> Nothing feeds cross-encoder judgements back into the
+      bi-encoder, which is the standard way to make cheap retrieval better over time.</li>
+      <li><strong>Recall monitoring in production.</strong> ANN recall is measurable offline but not
+      tracked continuously against an exact-search sample.</li>
+      <li><strong>Query understanding as a first-class stage.</strong> Expansion, decomposition and
+      filter inference are separate components rather than one query-understanding step with its own
+      eval.</li>
+    </ul>
+  </div>
+</section>
+
+<div class="pagenav"><a class="prev" href="ingestion.html"><div class="d">Previous · CH 05</div><div class="t">Ingestion</div></a><a class="next" href="embeddings.html"><div class="d">Next · CH 07</div><div class="t">Embeddings</div></a></div>
+<p class="footnote">AgentVerse Field Manual · ratings are this author's judgement of the code as it stands, not a vendor claim. File paths are navigation anchors; line numbers drift.</p>
+</div></main>
+</div>
+<script>
+(function () {
+  var r = document.documentElement;
+  try { var t = localStorage.getItem('avfm-theme'); if (t) r.setAttribute('data-theme', t); } catch (e) {}
+  function cur() {
+    var a = r.getAttribute('data-theme');
+    if (a) return a;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  document.addEventListener('click', function (ev) {
+    var b = ev.target.closest('[data-theme-toggle]');
+    if (!b) return;
+    var n = cur() === 'dark' ? 'light' : 'dark';
+    r.setAttribute('data-theme', n);
+    try { localStorage.setItem('avfm-theme', n); } catch (e) {}
+  });
+  var f = document.querySelector('[data-filter]');
+  if (f) {
+    f.addEventListener('input', function () {
+      var q = f.value.trim().toLowerCase();
+      document.querySelectorAll('[data-filter-row]').forEach(function (el) {
+        el.hidden = q.length > 0 && el.getAttribute('data-filter-row').indexOf(q) === -1;
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>

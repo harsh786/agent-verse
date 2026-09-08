@@ -1,0 +1,914 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Observability · AgentVerse Field Manual</title>
+<meta name="description" content="CH 11 · Observability">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>/* ==========================================================================
+   AgentVerse Field Manual — instrument chrome + engineering-manual body.
+   Tokens: complete light palette on :root; dark redefined for the two
+   dark states (un-stamped OS-dark, and explicit data-theme="dark").
+   ========================================================================== */
+
+:root {
+  /* ground + surfaces (cool slate neutrals, biased toward the cyan accent) */
+  --bg:        #EFF2F5;
+  --paper:     #FFFFFF;
+  --raised:    #F6F8FA;
+  --sunken:    #E7ECF1;
+  --rail:      #FBFCFD;
+
+  /* ink */
+  --ink:       #0B1220;
+  --ink-2:     #3C4A5A;
+  --ink-3:     #6B7A8B;
+  --ink-4:     #93A1B0;
+
+  /* lines */
+  --line:      #D5DDE5;
+  --line-soft: #E4EAF0;
+  --line-hard: #B9C5D0;
+
+  /* accent — JARVIS electric, darkened for contrast on paper */
+  --accent:      #007D9C;
+  --accent-2:    #00A8CC;
+  --accent-wash: rgba(0,168,204,0.10);
+  --accent-line: rgba(0,125,156,0.35);
+
+  /* semantic (ratings, status, diagram emphasis) */
+  --good:      #0E7C55;
+  --good-wash: rgba(14,124,85,0.10);
+  --warn:      #A2650A;
+  --warn-wash: rgba(162,101,10,0.10);
+  --bad:       #B3303B;
+  --bad-wash:  rgba(179,48,59,0.10);
+  --note:      #6D46C4;
+  --note-wash: rgba(109,70,196,0.10);
+
+  --shadow-1: 0 1px 2px rgba(11,18,32,0.05);
+  --shadow-2: 0 8px 28px rgba(11,18,32,0.10);
+
+  --measure: 68ch;
+  --rail-w: 274px;
+  --topbar-h: 52px;
+
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #070A10;
+    --paper:     #0C1017;
+    --raised:    #12171F;
+    --sunken:    #090D13;
+    --rail:      #0A0E15;
+
+    --ink:       #E9EFF5;
+    --ink-2:     #B3C0CD;
+    --ink-3:     #8593A2;
+    --ink-4:     #5D6C7B;
+
+    --line:      rgba(255,255,255,0.09);
+    --line-soft: rgba(255,255,255,0.055);
+    --line-hard: rgba(255,255,255,0.16);
+
+    --accent:      #35D8F5;
+    --accent-2:    #00D4FF;
+    --accent-wash: rgba(0,212,255,0.10);
+    --accent-line: rgba(0,212,255,0.35);
+
+    --good:      #2ED08C;
+    --good-wash: rgba(46,208,140,0.12);
+    --warn:      #F0B429;
+    --warn-wash: rgba(240,180,41,0.12);
+    --bad:       #FF6B78;
+    --bad-wash:  rgba(255,107,120,0.12);
+    --note:      #B08CFF;
+    --note-wash: rgba(176,140,255,0.12);
+
+    --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+    --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #070A10;
+  --paper:     #0C1017;
+  --raised:    #12171F;
+  --sunken:    #090D13;
+  --rail:      #0A0E15;
+
+  --ink:       #E9EFF5;
+  --ink-2:     #B3C0CD;
+  --ink-3:     #8593A2;
+  --ink-4:     #5D6C7B;
+
+  --line:      rgba(255,255,255,0.09);
+  --line-soft: rgba(255,255,255,0.055);
+  --line-hard: rgba(255,255,255,0.16);
+
+  --accent:      #35D8F5;
+  --accent-2:    #00D4FF;
+  --accent-wash: rgba(0,212,255,0.10);
+  --accent-line: rgba(0,212,255,0.35);
+
+  --good:      #2ED08C;
+  --good-wash: rgba(46,208,140,0.12);
+  --warn:      #F0B429;
+  --warn-wash: rgba(240,180,41,0.12);
+  --bad:       #FF6B78;
+  --bad-wash:  rgba(255,107,120,0.12);
+  --note:      #B08CFF;
+  --note-wash: rgba(176,140,255,0.12);
+
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+  color-scheme: dark;
+}
+
+/* -------------------------------------------------- base */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 17.5px;
+  line-height: 1.62;
+  font-synthesis-weight: none;
+}
+
+a { color: var(--accent); text-decoration-color: var(--accent-line); text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
+
+h1, h2, h3, h4, h5 { font-family: var(--f-display); font-weight: 650; letter-spacing: -0.015em; text-wrap: balance; margin: 0; }
+p { margin: 0 0 0.85em; }
+p:last-child { margin-bottom: 0; }
+ul, ol { margin: 0 0 0.9em; padding-left: 1.25em; }
+li { margin: 0.25em 0; }
+li > ul, li > ol { margin-bottom: 0.2em; }
+strong { font-weight: 650; }
+code, kbd, samp { font-family: var(--f-mono); font-size: 0.855em; }
+:not(pre) > code {
+  background: var(--sunken); border: 1px solid var(--line-soft);
+  padding: 0.08em 0.34em; border-radius: 3px; color: var(--ink-2);
+  word-break: break-word;
+}
+hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+
+.mono { font-family: var(--f-mono); }
+.eyebrow {
+  font-family: var(--f-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3);
+}
+
+/* -------------------------------------------------- top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  height: var(--topbar-h);
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .brand {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink);
+  text-decoration: none; white-space: nowrap;
+}
+.topbar .brand b { color: var(--accent); font-weight: 600; }
+.topbar .crumb {
+  font-family: var(--f-mono); font-size: 11px; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar .spacer { flex: 1 1 auto; }
+.tb-btn {
+  font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  background: transparent; color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 5px 9px; cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.tb-btn:hover { border-color: var(--accent-line); color: var(--accent); }
+
+/* -------------------------------------------------- shell */
+.shell { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); align-items: start; }
+
+.rail {
+  position: sticky; top: var(--topbar-h);
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--rail);
+  border-right: 1px solid var(--line);
+  padding: 18px 0 40px;
+}
+.rail h4 { font-size: 10.5px; font-family: var(--f-mono); font-weight: 500; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-4); padding: 0 18px; margin: 16px 0 8px; }
+.rail .part-label { padding: 0 18px; margin: 20px 0 6px; }
+.rail nav a {
+  display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: baseline;
+  padding: 5px 18px; text-decoration: none; color: var(--ink-2);
+  font-family: var(--f-display); font-size: 13.5px; line-height: 1.35; letter-spacing: -0.005em;
+  border-left: 2px solid transparent;
+}
+.rail nav a .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.rail nav a:hover { background: var(--accent-wash); color: var(--ink); }
+.rail nav a[aria-current="page"] { color: var(--accent); border-left-color: var(--accent); background: var(--accent-wash); }
+.rail nav a[aria-current="page"] .n { color: var(--accent); }
+.rail .inpage { border-top: 1px solid var(--line-soft); margin-top: 14px; padding-top: 4px; }
+.rail .inpage a { grid-template-columns: 26px 1fr; font-size: 12.5px; color: var(--ink-3); }
+.rail .filter { padding: 0 14px 6px; }
+.rail .filter input {
+  width: 100%; font-family: var(--f-mono); font-size: 11.5px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
+}
+.rail .filter input::placeholder { color: var(--ink-4); }
+
+main { min-width: 0; padding: 0 0 96px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 clamp(18px, 4vw, 52px); }
+.prose { max-width: var(--measure); }
+
+/* -------------------------------------------------- chapter head */
+.chead { padding: 46px 0 26px; border-bottom: 1px solid var(--line); }
+.chead .kicker { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.chead .cnum {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
+  color: var(--accent); border: 1px solid var(--accent-line); border-radius: 3px; padding: 3px 7px;
+}
+.chead h1 { font-size: clamp(30px, 4.4vw, 46px); line-height: 1.06; font-weight: 700; letter-spacing: -0.028em; }
+.chead .lede { font-size: 20px; line-height: 1.5; color: var(--ink-2); margin-top: 16px; max-width: 62ch; }
+
+.statstrip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 0; margin-top: 26px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--paper); overflow: hidden;
+}
+.statstrip div { padding: 11px 16px; border-right: 1px solid var(--line-soft); }
+.statstrip div:last-child { border-right: 0; }
+.statstrip .k { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.statstrip .v { font-family: var(--f-display); font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------- sections */
+section.block { padding: 38px 0 8px; }
+section.block > h2 {
+  font-size: 25px; font-weight: 700; letter-spacing: -0.022em; padding-bottom: 8px;
+  border-bottom: 2px solid var(--ink); display: inline-block; margin-bottom: 20px;
+}
+section.block > .prose { margin-bottom: 8px; }
+
+.callout {
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  background: var(--paper); padding: 14px 16px; margin: 18px 0; border-radius: 0 4px 4px 0;
+  font-size: 16.5px;
+}
+.callout.warn { border-left-color: var(--warn); }
+.callout.bad  { border-left-color: var(--bad); }
+.callout.good { border-left-color: var(--good); }
+.callout .lbl { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); display: block; margin-bottom: 5px; }
+
+/* -------------------------------------------------- concept card */
+.concept {
+  border-top: 1px solid var(--line);
+  padding: 30px 0 34px;
+  scroll-margin-top: calc(var(--topbar-h) + 12px);
+}
+.concept:first-of-type { border-top-width: 2px; border-top-color: var(--ink); }
+.concept > h3 {
+  font-size: 23px; font-weight: 700; letter-spacing: -0.022em; line-height: 1.18;
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.concept > h3 .idx {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 500; color: var(--ink-4);
+  letter-spacing: 0.06em; font-variant-numeric: tabular-nums;
+}
+.concept > h3 a.anchor { color: var(--ink-4); text-decoration: none; font-family: var(--f-mono); font-size: 13px; opacity: 0; }
+.concept:hover > h3 a.anchor { opacity: 1; }
+
+.dials { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 12px 0 16px; }
+.dial { display: flex; align-items: center; gap: 8px; }
+.dial .dl { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-4); }
+.meter { display: inline-flex; gap: 2px; }
+.meter i { display: block; width: 7px; height: 12px; background: var(--line); border-radius: 1px; }
+.meter i.on { background: var(--accent); }
+.dial.crit .meter i.on { background: var(--note); }
+.dial .dv { font-family: var(--f-mono); font-size: 12px; font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.dial .dv small { font-weight: 400; color: var(--ink-4); }
+.pill {
+  font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap;
+}
+.pill.shipped { color: var(--good); background: var(--good-wash); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.pill.partial { color: var(--warn); background: var(--warn-wash); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.pill.thin    { color: var(--bad);  background: var(--bad-wash);  border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.pill.tag     { color: var(--ink-3); background: var(--sunken); border-color: var(--line-soft); }
+
+.tldr { font-size: 18.5px; line-height: 1.5; color: var(--ink); max-width: 66ch; }
+.tldr b, .tldr strong { color: var(--ink); }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 20px 0 0; }
+.cols > section { min-width: 0; }
+.cols h4, .band h4 {
+  font-family: var(--f-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px;
+  padding-bottom: 5px; border-bottom: 1px solid var(--line-soft);
+}
+.cols section p, .band p, .cols section li, .band li { font-size: 16.5px; }
+
+.band { margin-top: 18px; padding: 15px 17px; border-radius: 4px; border: 1px solid var(--line-soft); background: var(--raised); }
+.band.example { background: var(--sunken); }
+.band.prod  { border-color: color-mix(in srgb, var(--accent) 22%, var(--line-soft)); background: var(--accent-wash); }
+.band.fail  { border-color: color-mix(in srgb, var(--bad) 22%, var(--line-soft)); background: var(--bad-wash); }
+.band.when  { background: var(--paper); }
+.band.example h4 { color: var(--ink-2); }
+.band.prod h4 { color: var(--accent); border-bottom-color: var(--accent-line); }
+.band.fail h4 { color: var(--bad); border-bottom-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+
+.band.when ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.band.when li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; }
+.band.when li::before { content: "+"; font-family: var(--f-mono); color: var(--good); font-weight: 600; }
+.band.when li.no::before { content: "\2212"; color: var(--bad); }
+
+/* -------------------------------------------------- code + pre */
+pre {
+  margin: 12px 0; padding: 13px 15px; overflow-x: auto;
+  background: var(--sunken); border: 1px solid var(--line-soft); border-radius: 4px;
+  font-family: var(--f-mono); font-size: 12.5px; line-height: 1.62; color: var(--ink-2);
+  tab-size: 2;
+}
+:root[data-theme="dark"] pre, :root:not([data-theme="light"]) pre { color: var(--ink-2); }
+pre .c { color: var(--ink-4); }
+pre .k { color: var(--accent); }
+pre .s { color: var(--good); }
+
+.filelist { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.filelist li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; font-size: 15px; }
+.filelist code { font-size: 12.3px; background: none; border: 0; padding: 0; color: var(--accent); word-break: break-all; }
+.filelist .note { color: var(--ink-3); font-size: 15px; }
+
+/* -------------------------------------------------- tables */
+.tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+table { border-collapse: collapse; width: 100%; font-family: var(--f-display); font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+th {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-3); background: var(--raised); border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+td code { font-size: 12px; }
+
+/* -------------------------------------------------- figures */
+figure { margin: 22px 0; }
+figure svg { display: block; max-width: 100%; height: auto; color: var(--ink-2); }
+figcaption { font-size: 14.5px; color: var(--ink-3); margin-top: 9px; font-family: var(--f-display); max-width: 70ch; }
+.fig-em { color: var(--accent); }
+
+/* -------------------------------------------------- index page bits */
+.chapgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 4px; overflow: hidden; margin: 22px 0; }
+.chapgrid a {
+  background: var(--paper); padding: 16px 17px; text-decoration: none; color: var(--ink);
+  display: flex; flex-direction: column; gap: 7px; min-height: 128px;
+}
+.chapgrid a:hover { background: var(--accent-wash); }
+.chapgrid .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--accent); letter-spacing: 0.1em; }
+.chapgrid .t { font-family: var(--f-display); font-size: 16.5px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.25; }
+.chapgrid .d { font-size: 14.5px; color: var(--ink-3); line-height: 1.45; }
+.chapgrid .m { margin-top: auto; font-family: var(--f-mono); font-size: 10px; color: var(--ink-4); letter-spacing: 0.06em; }
+
+.matrix td.c1 { font-family: var(--f-display); font-weight: 600; }
+.matrix .bar { display: inline-flex; gap: 2px; vertical-align: middle; }
+.matrix .bar i { width: 5px; height: 10px; background: var(--line); border-radius: 1px; display: block; }
+.matrix .bar i.on { background: var(--accent); }
+.matrix .bar.crit i.on { background: var(--note); }
+
+/* -------------------------------------------------- footer nav */
+.pagenav { display: flex; gap: 12px; justify-content: space-between; margin-top: 54px; padding-top: 20px; border-top: 1px solid var(--line); }
+.pagenav a { flex: 1 1 0; text-decoration: none; border: 1px solid var(--line); border-radius: 4px; padding: 13px 15px; background: var(--paper); color: var(--ink); }
+.pagenav a:hover { border-color: var(--accent-line); }
+.pagenav .d { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.pagenav .t { font-family: var(--f-display); font-weight: 650; font-size: 15.5px; letter-spacing: -0.015em; }
+.pagenav a.next { text-align: right; }
+
+.footnote { margin-top: 30px; font-size: 14.5px; color: var(--ink-3); font-family: var(--f-display); }
+
+/* -------------------------------------------------- responsive */
+@media (max-width: 1080px) {
+  .cols { grid-template-columns: 1fr; gap: 14px; }
+}
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail {
+    position: static; height: auto; max-height: 340px;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  body { font-size: 17px; }
+  .chead { padding-top: 30px; }
+}
+@media print {
+  .rail, .topbar, .pagenav { display: none; }
+  body { background: #fff; color: #000; font-size: 10.5pt; }
+  .shell { grid-template-columns: 1fr; }
+}
+
+.idxhead { background: var(--raised); font-family: var(--f-mono); font-size: 11px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">AgentVerse <b>Field Manual</b></a>
+  <span class="crumb">CH 11 · Observability</span>
+  <span class="spacer"></span>
+  <button class="tb-btn" data-theme-toggle type="button">Theme</button>
+</header>
+<div class="shell">
+<aside class="rail"><h4>Field manual</h4><nav><a href="index.html"><span class="n">00</span><span>Hub &amp; how to read</span></a></nav></nav><div class="part-label eyebrow">I · The agent</div><nav><a href="agent-patterns.html"><span class="n">01</span><span>Agent patterns</span></a><a href="rag-patterns.html"><span class="n">02</span><span>RAG patterns</span></a><a href="agent-memory.html"><span class="n">03</span><span>Agent memories</span></a></nav><div class="part-label eyebrow">II · Knowledge</div><nav><a href="knowledge-and-graphs.html"><span class="n">04</span><span>Knowledge &amp; knowledge graph</span></a><a href="ingestion.html"><span class="n">05</span><span>Ingestion</span></a><a href="retrieval-strategies.html"><span class="n">06</span><span>Retrieval strategies</span></a><a href="embeddings.html"><span class="n">07</span><span>Embeddings</span></a><a href="chunking.html"><span class="n">17</span><span>Chunking strategies</span></a></nav><div class="part-label eyebrow">III · Context &amp; quality</div><nav><a href="prompt-builder.html"><span class="n">08</span><span>Prompt builder</span></a><a href="agent-improvement.html"><span class="n">09</span><span>Agent improvement</span></a><a href="evals.html"><span class="n">10</span><span>Evals</span></a><a href="hallucination.html"><span class="n">18</span><span>Hallucination handling</span></a></nav><div class="part-label eyebrow">IV · Safety &amp; control</div><nav><a href="guardrails.html"><span class="n">12</span><span>Guardrails</span></a><a href="governance.html"><span class="n">13</span><span>Governance</span></a><a href="scopes.html"><span class="n">14</span><span>Scopes</span></a><a href="observability.html" aria-current="page"><span class="n">11</span><span>Observability</span></a></nav><div class="part-label eyebrow">V · Modality &amp; models</div><nav><a href="multimodal.html"><span class="n">15</span><span>Multimodal</span></a><a href="ocr.html"><span class="n">21</span><span>OCR</span></a><a href="model-router.html"><span class="n">16</span><span>Multi-model router</span></a></nav><div class="part-label eyebrow">VI · The platform</div><nav><a href="platform-workflows.html"><span class="n">19</span><span>Core platform workflows</span></a><a href="platform-concepts.html"><span class="n">20</span><span>Other core platform concepts</span></a><a href="agent-teams.html"><span class="n">22</span><span>AI agent teams</span></a><a href="jarvis.html"><span class="n">23</span><span>Jervis (JARVIS) console</span></a></nav><div class="part-label eyebrow">VII · Not on the list</div><nav><a href="coordination-protocols.html"><span class="n">24</span><span>Coordination protocols</span></a><a href="code-execution.html"><span class="n">25</span><span>Code execution &amp; sandboxing</span></a><a href="voice.html"><span class="n">26</span><span>Voice &amp; realtime agents</span></a><a href="triggers.html"><span class="n">27</span><span>Triggers &amp; event-driven agents</span></a><a href="reliability-qos.html"><span class="n">28</span><span>Reliability &amp; QoS</span></a><a href="cost-capacity.html"><span class="n">29</span><span>Cost &amp; capacity engineering</span></a><a href="data-lifecycle.html"><span class="n">30</span><span>Data lifecycle &amp; provenance</span></a><a href="testing-certification.html"><span class="n">31</span><span>Testing &amp; certification</span></a><a href="scale-playbook.html"><span class="n">32</span><span>Scale playbook</span></a><a href="workflow-engine.html"><span class="n">34</span><span>Workflow engine</span></a><a href="frontier.html"><span class="n">33</span><span>Frontier &amp; gaps</span></a></nav><div class="part-label eyebrow">Appendix</div><nav><a href="appendix-ratings.html"><span class="n">A</span><span>Ratings matrix</span></a><a href="appendix-glossary.html"><span class="n">B</span><span>Glossary</span></a></nav><div class="inpage"><h4>In this chapter</h4><nav><a href="#structured-logging"><span class="n">01</span><span>Structured logging</span></a><a href="#metrics"><span class="n">02</span><span>Metrics</span></a><a href="#tracing"><span class="n">03</span><span>Distributed tracing</span></a><a href="#decision-traces"><span class="n">04</span><span>Runtime decision traces</span></a><a href="#rag-cost-traces"><span class="n">05</span><span>RAG traces and cost breakdown</span></a><a href="#goal-sse-events"><span class="n">06</span><span>Goal events, SSE, and worker events</span></a><a href="#slo-alerts"><span class="n">07</span><span>SLOs and alerting</span></a><a href="#audit-correlation"><span class="n">08</span><span>Audit correlation and replay</span></a><a href="#incident-workflows"><span class="n">09</span><span>Debugging and incident workflows</span></a></nav></div></aside>
+<main><div class="wrap">
+<header class="chead"><div class="kicker"><span class="cnum">CH 11</span><span class="eyebrow">IV · Safety &amp; control</span></div><h1>Observability</h1><p class="lede">Logs, metrics, traces, decision traces, and the incident playbook.</p><div class="statstrip"><div><div class="k">Concepts</div><div class="v">9</div></div><div><div class="k">Mean impl</div><div class="v">8.0</div></div><div><div class="k">Mean criticality</div><div class="v">8.6</div></div><div><div class="k">Shipped</div><div class="v">7</div></div><div><div class="k">Thin / missing</div><div class="v">0</div></div></div></header><section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>An agent is a distributed system that also makes non-deterministic decisions, which means it needs
+    everything ordinary observability provides — logs, metrics, traces — plus a layer ordinary systems
+    lack: a record of <em>why the agent decided what it decided</em>. When a goal costs $14 or takes an
+    unexpected action, the question is never "which service was slow" but "why did the planner choose that,
+    what did it retrieve, what did the verifier see". That is a decision trace, and it is the difference
+    between debugging an agent and guessing about one.</p>
+
+    <p>The organising principle is <strong>one correlation id, many linked traces</strong>: a goal id ties
+    together its logs, its metrics, its decision trace, its RAG traces, its cost breakdown, and its audit
+    entries, so any one question is one query rather than a cross-reference across six systems.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 880 250" role="img" aria-label="Observability signals for one goal, all tied by a correlation id: structured logs, metrics, distributed traces, decision traces, RAG traces, cost breakdown, and audit entries, feeding dashboards, alerts, and incident debugging.">
+      <defs><marker id="o1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker></defs>
+      <rect x="0" y="16" width="150" height="34" rx="3" fill="none" stroke="#00A8CC" stroke-width="1.6"></rect>
+      <text x="75" y="37" font-family="IBM Plex Mono, monospace" font-size="11" fill="#00A8CC" text-anchor="middle">goal id = corr id</text>
+      <g fill="none" stroke="currentColor" stroke-width="1.15">
+        <rect x="0" y="86" width="120" height="34" rx="3"></rect>
+        <rect x="135" y="86" width="120" height="34" rx="3"></rect>
+        <rect x="270" y="86" width="120" height="34" rx="3"></rect>
+        <rect x="405" y="86" width="140" height="34" rx="3"></rect>
+        <rect x="560" y="86" width="120" height="34" rx="3"></rect>
+        <rect x="695" y="86" width="120" height="34" rx="3"></rect>
+        <rect x="830" y="86" width="50" height="34" rx="3"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="11" fill="currentColor" text-anchor="middle">
+        <text x="60" y="107">logs</text><text x="195" y="107">metrics</text><text x="330" y="107">traces</text>
+        <text x="475" y="107">decision trace</text><text x="620" y="107">RAG trace</text><text x="755" y="107">cost</text>
+        <text x="855" y="107">audit</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1" marker-end="url(#o1)">
+        <line x1="75" y1="50" x2="60" y2="84"></line><line x1="75" y1="50" x2="195" y2="84"></line>
+        <line x1="75" y1="50" x2="330" y2="84"></line><line x1="75" y1="50" x2="475" y2="84"></line>
+        <line x1="75" y1="50" x2="620" y2="84"></line><line x1="75" y1="50" x2="755" y2="84"></line>
+        <line x1="75" y1="50" x2="855" y2="84"></line>
+      </g>
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="120" y="170" width="180" height="40" rx="3"></rect>
+        <rect x="350" y="170" width="180" height="40" rx="3"></rect>
+        <rect x="580" y="170" width="180" height="40" rx="3"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor" text-anchor="middle">
+        <text x="210" y="194">dashboards</text><text x="440" y="194">alerts / SLO</text><text x="670" y="194">incident debugging</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1" marker-end="url(#o1)">
+        <line x1="210" y1="122" x2="210" y2="168"></line>
+        <line x1="440" y1="122" x2="440" y2="168"></line>
+        <line x1="670" y1="122" x2="670" y2="168"></line>
+      </g>
+      <text x="0" y="240" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">the decision trace is the agent-specific signal ordinary systems lack: what was chosen, what was seen, and why</text>
+    </svg>
+    <figcaption>Seven signals, one id. Ordinary observability gives you the left five; the
+    <span class="fig-em">decision and RAG traces</span> are what make an agent debuggable rather than
+    merely monitored.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="observability">
+  <h2>The signals</h2>
+
+<article class="concept" id="structured-logging" data-impl="9" data-crit="9" data-tag="Signal">
+<h3><span class="idx">01</span>Structured logging<a class="anchor" href="#structured-logging" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Signal</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Every log line is a queryable event with the goal id, tenant, and step — never a
+free-text string — so "show me everything that happened in goal g-8891" is one filter.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A logger produces structured records with consistent fields: correlation id, tenant, agent, goal, step,
+level, and event-specific data. Sensitive values are redacted at the logging boundary, not hoped to be
+absent. The logger is one of the most-connected nodes in the whole system precisely because everything
+logs through it.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/observability/logging.py</code><span class="note">get_logger() — the structured logger (a top hub node, 575 edges)</span></li>
+<li><code>app/tenancy/context.py</code><span class="note">context fields injected into every line</span></li>
+<li><code>app/data_classification/redaction.py</code><span class="note">redaction at the log boundary</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>{"ts":"...", "level":"info", "corr":"g-8891", "tenant":"acme",
+ "agent":"fin-ops", "step":3, "event":"tool_call",
+ "tool":"gst.fetch_filed", "risk":"read", "ms":180}
+query: corr="g-8891" → the whole goal's timeline, ordered, in one view
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Structured-first is not optional at scale: grepping free text across a fleet does not work, and the
+redaction-at-the-boundary discipline is what keeps customer data out of a log that a hundred engineers can
+read. Sample verbose events; keep errors and decisions at full fidelity.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Free-text logs.</strong> Ungreppable at scale.</li>
+<li><strong>PII in logs.</strong> Redact at the boundary, not by convention.</li>
+<li><strong>Missing correlation id.</strong> Events that cannot be joined.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always.</li></ul></section>
+</article>
+
+<article class="concept" id="metrics" data-impl="8" data-crit="9" data-tag="Signal">
+<h3><span class="idx">02</span>Metrics<a class="anchor" href="#metrics" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Signal</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">The numbers that go on a dashboard and drive alerts: goals per minute, success rate,
+iterations, cost, latency percentiles, tool success — labelled by tenant, agent, and goal class.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Counters, gauges and histograms emitted at every meaningful event, with labels that let you slice by the
+dimensions that matter. The agent-specific metrics — iterations per goal, stall-detection rate, pattern
+set used, delegation rate — are as important as the infrastructure ones, because they are the leading
+indicators of cost and quality regressions.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/observability/metrics.py</code><span class="note">metric definitions and emission</span></li>
+<li><code>app/observability/health.py</code><span class="note">health metrics</span></li>
+<li><code>app/scaling/tasks.py</code><span class="note">per-stage counters</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>agent_goals_total{tenant,agent,status}
+agent_iterations{quantile="0.99"}          → cost regression detector
+rag_strategy_delegations_total{from,to}    → a capability broke
+ingestion_quality_drops_total{reason}      → a parser regressed
+approval_queue_depth{tenant}               → an unserviced backlog
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>The three agent metrics that belong on the main dashboard: p99 iterations (cost), stall-detection rate
+(broken retrieval or tools), and approval queue depth (an outage that pages nobody). Slice everything by
+goal class — aggregates hide the regression in one slice that moved thirty points.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Aggregate-only.</strong> Regressions hidden in slices.</li>
+<li><strong>Missing agent metrics.</strong> Infra green, agents misbehaving.</li>
+<li><strong>Label explosion.</strong> Per-goal-id labels blowing up cardinality.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always.</li></ul></section>
+</article>
+
+<article class="concept" id="tracing" data-impl="8" data-crit="8" data-tag="Signal">
+<h3><span class="idx">03</span>Distributed tracing<a class="anchor" href="#tracing" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Signal</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Spans across the whole request — API, queue, worker, model calls, tool calls, database —
+so latency is attributable to a stage rather than guessed.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>OpenTelemetry spans propagate the trace context from the API through the queue into the worker and down
+each model and tool call. The trace shows where wall-clock actually went — usually a tool round-trip or a
+serial chain of model calls, rarely the place people assume — and exports to a backend like Jaeger.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/observability/tracing.py</code><span class="note">OTel setup and propagation</span></li>
+<li><code>app/workflow/otel.py</code><span class="note">workflow-step spans</span></li>
+<li><code>app/observability/model_trace.py</code><span class="note">per-model-call spans</span></li>
+<li><code>app/ingestion/pipeline.py</code><span class="note">a span per ingestion stage</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>trace for goal g-8891 (total 41s)
+ api.submit            12ms
+ queue wait            1.2s   ← queue depth on the enterprise queue
+ worker.plan           2.9s
+ worker.execute
+   tool gst.fetch      8.1s   ← the real cost, one slow connector
+   tool invoices.query 0.3s
+ worker.verify         1.8s
+attributes the 41s precisely; the fix is the connector, not the model
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Trace context must survive the queue hop, or the worker's spans float detached from the request — the
+single most common tracing gap in agent systems, because the Celery boundary is where propagation is
+easy to drop. Sample traces (1–5%) plus all errors keeps the backend affordable.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Context lost at the queue.</strong> Detached worker spans.</li>
+<li><strong>Model/tool calls not spanned.</strong> The interesting part invisible.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any multi-service or async execution — so all of them.</li></ul></section>
+</article>
+
+<article class="concept" id="decision-traces" data-impl="8" data-crit="10" data-tag="Signal">
+<h3><span class="idx">04</span>Runtime decision traces<a class="anchor" href="#decision-traces" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Signal</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">The agent-specific signal: a record of every decision the runtime made — which pattern,
+which model, which tools, which policy constraints — with the reason for each.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Each decision point records its inputs, its choice, and its reason: the classifier's output, the assembled
+pattern set and why, the model selected per role, the policy constraints applied, the routing decision. This
+is what turns "the agent did something weird" into "the classifier scored this expert, so the assembler
+added ToT and self-consistency, which is why it cost $4". Without it, agent behaviour is a black box that
+invites the useless conclusion "use a bigger model".</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/observability/runtime_decision_trace.py</code><span class="note">the decision trace</span></li>
+<li><code>app/orchestration/decision_trace.py</code><span class="note">SelectionDecision — orchestration choices</span></li>
+<li><code>app/observability/pattern_trace.py</code><span class="note">which patterns ran</span></li>
+<li><code>app/policy_runtime/policy_trace.py</code><span class="note">PolicyTrace — policy decisions</span></li>
+<li><code>app/explainability_runtime/decision_explainer.py</code><span class="note">human-readable explanation</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>decision trace g-8891
+ classify   complexity=expert domain=analytical risk=high conf=0.88
+ assemble   +CoT +reflection +self_refine +self_consistency +ToT +hitl
+            reason: expert(HIGH) + analytical(HIGH) + risk=high(CRITICAL)
+ models     planner=large executor=large verifier=mid
+ policy     denied admin.*, gated write_high, cost ceiling $8
+ route      agent fin-ops (connector match + 96% history)
+"why did this cost $4?" → the six reasoning patterns, and here is the rule
+for each
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>The decision trace is the highest-value observability investment specific to agents. It converts cost and
+behaviour investigations from speculation into lookups, and it is what the explainability surface reads to
+answer an operator's or a regulator's "why". Make every decision record its reason — an unexplained choice
+is a debugging dead end.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Choices without reasons.</strong> You see what, not why.</li>
+<li><strong>Decisions not recorded.</strong> The black box returns.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any agent whose behaviour or cost you will ever need to explain.</li></ul></section>
+</article>
+
+<article class="concept" id="rag-cost-traces" data-impl="8" data-crit="8" data-tag="Signal">
+<h3><span class="idx">05</span>RAG traces and cost breakdown<a class="anchor" href="#rag-cost-traces" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Signal</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Two specialised traces: retrieval (strategy, filters, candidates, scores, delegation) and
+cost (tokens and spend per model, tool, and phase) — the two questions asked most after "why is it wrong"
+and "why is it expensive".</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The RAG trace records each retrieval leg with its scores and any delegation, so a retrieval failure is
+diagnosable as recall, precision, or coverage (chapter 6). The cost breakdown attributes every token and
+every metered call to a component, so a cost spike points at a section — usually tool schemas or an
+expensive reasoning pattern — rather than at a vague "the model".</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/observability/rag_trace.py</code><span class="note">retrieval trace</span></li>
+<li><code>app/rag/agentic/rag_trace.py</code><span class="note">agentic retrieval trace</span></li>
+<li><code>app/observability/cost_breakdown.py</code>, <code>cost_breakdown_api.py</code><span class="note">cost attribution</span></li>
+<li><code>app/observability/model_trace.py</code><span class="note">per-call model usage</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>RAG trace  strategy=hybrid→rerank · filters{policies} · 312→50→8 · scores
+           0.94..0.41 · no delegation
+cost break planner $0.06 · executor $0.21 (schemas 38%) · verifier $0.05
+           embeddings $0.002 · tools $0.06 · total $0.38
+two lookups answer "why wrong" (recall/precision/coverage) and "why
+expensive" (which component)
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>These two traces close most agent investigations. The cost breakdown in particular ends the recurring
+argument about model choice by showing that tool schemas, not the model, are 38% of the executor spend —
+a fixable, non-model problem. Surface both to tenants for their own goals; cost transparency changes
+behaviour.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Traces without scores.</strong> What was retrieved, not why.</li>
+<li><strong>Cost without attribution.</strong> A total nobody can act on.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any retrieval-augmented or cost-sensitive agent.</li></ul></section>
+</article>
+
+<article class="concept" id="goal-sse-events" data-impl="9" data-crit="8" data-tag="Delivery">
+<h3><span class="idx">06</span>Goal events, SSE, and worker events<a class="anchor" href="#goal-sse-events" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Delivery</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">The live view: every step of a goal streams to the frontend as it happens, over Redis
+pub/sub and Server-Sent Events, so an operator watches execution rather than polling for a result.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The agent emits events at every transition — planned, executing, tool called, verified, waiting on
+approval, completed. These publish to a per-goal Redis channel; a subscriber bridges Celery workers to
+the API process, and the API streams them to the browser over SSE. The same events feed observability, so
+the live view and the historical record are the same data.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/services/goal_service.py</code><span class="note">submit_goal, subscribe_events, the Celery→pub/sub bridge</span></li>
+<li><code>app/services/goal_events.py</code>, <code>event_store.py</code><span class="note">event definitions and store</span></li>
+<li><code>app/scaling/tasks.py</code><span class="note">append_submitted_goal_event, run_goal</span></li>
+<li><code>agent-verse-frontend/src/lib/sse/useGoalStream.ts</code><span class="note">the browser subscriber</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>browser subscribes to goal g-8891
+ ← {type:"planned", steps:5}
+ ← {type:"executing", step:1}
+ ← {type:"tool_call", tool:"gst.fetch_filed"}
+ ← {type:"waiting_human", step:4, reason:"filing approval"}
+ [hours later, after approval]
+ ← {type:"completed", result:...}
+the worker died and resumed between step 1 and step 4; the stream is
+continuous because events flow through Redis, not the worker's memory
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Routing events through Redis pub/sub rather than a direct worker-to-browser connection is what makes the
+live view survive worker restarts and work across replicas — the browser is connected to the API, not to
+the worker that happens to be running the goal. This is the same mechanism that makes durable HITL possible.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Events tied to worker lifetime.</strong> The stream dies when the worker does.</li>
+<li><strong>No replay from the store.</strong> A reconnecting client missing what it did not see live.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any goal a human wants to watch.</li></ul></section>
+</article>
+
+<article class="concept" id="slo-alerts" data-impl="7" data-crit="8" data-tag="Operations">
+<h3><span class="idx">07</span>SLOs and alerting<a class="anchor" href="#slo-alerts" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Operations</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Define what "healthy" means per goal class and alert on the deviations that matter —
+including the agent-specific ones that infrastructure monitoring will never catch.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>An SLO tracker measures against targets — success rate, latency percentile, grounding rate, cost per
+goal — and an alert router sends deviations to the right channel with the right severity. The alerts that
+matter most are agent-specific: a grounding-rate drop (a corpus regression), a stall-rate spike (broken
+retrieval or tools), an approval backlog (a silent outage), a delegation-rate jump (a broken capability).</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/observability/slo_tracker.py</code><span class="note">SLO tracking</span></li>
+<li><code>app/observability/alert_router.py</code><span class="note">routing and severity</span></li>
+<li><code>app/api/sla.py</code>, <code>public_status.py</code><span class="note">SLA and status surfaces</span></li>
+<li><code>app/voice/alerts.py</code><span class="note">voice alerting</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>SLOs (goal class "chat answer")
+ success ≥ 0.95 · grounding ≥ 0.85 · p95 ≤ 4s · cost ≤ $0.05
+alert  grounding 0.85 → 0.71 over 3 days
+       → severity high → #agent-oncall
+       → decision trace shows the "vendor-contracts" collection re-chunked
+         with fixed@v1 → root cause in minutes
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Grounding rate is the best early-warning signal an agent platform has: it is cheap to compute on every
+answer (chapter 18) and it drops hours before users complain when a corpus or retrieval path regresses.
+Alert on it. And watch the approval queue — a backlog there is an outage that no infrastructure alert will
+ever fire on.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Infra-only SLOs.</strong> Green dashboards, unhappy users.</li>
+<li><strong>Alert fatigue.</strong> Thresholds so tight nobody reads them.</li>
+<li><strong>No grounding alert.</strong> The fastest signal, unused.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any production deployment with users who notice.</li></ul></section>
+</article>
+
+<article class="concept" id="audit-correlation" data-impl="8" data-crit="8" data-tag="Operations">
+<h3><span class="idx">08</span>Audit correlation and replay<a class="anchor" href="#audit-correlation" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Operations</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Tie the observability signals to the audit trail by the same id, and be able to replay a
+goal from its recorded events — so an incident investigation is reconstruction, not archaeology.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The goal id links the decision trace, the RAG traces, the cost breakdown, and the audit entries, so an
+investigation moves seamlessly from "what was approved" (audit) to "why was it proposed" (decision trace)
+to "what did it retrieve" (RAG trace). Replay reconstructs a goal from its event stream and prompt recipes,
+letting you re-run it against a fix or step through exactly what happened.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/api/replay.py</code><span class="note">goal replay</span></li>
+<li><code>app/coordination/replay.py</code><span class="note">coordination replay</span></li>
+<li><code>app/governance/audit_v3.py</code><span class="note">the audit entries keyed by goal</span></li>
+<li><code>app/provenance/claim_trace.py</code><span class="note">claim-level provenance</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>investigation: "why was a ₹418k filing submitted?"
+ audit       approved by j.iyer at 16:41, argument hash matches execution
+ decision    plan proposed the filing; verifier passed against the filed
+             return; consensus required (risk=critical) and reached
+ RAG trace   the recomputed total came from chunk [2], filed record
+ replay      re-run the goal with the same fixtures to confirm
+one id, four signals, a complete answer
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>The correlation is what makes incident response fast. Without it, an investigation is a manual join
+across systems that takes hours and often ends inconclusively. Store prompt recipes rather than full
+prompts (chapter 8) so replay is possible without a storage or privacy problem.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Different ids per system.</strong> No join.</li>
+<li><strong>Mutable sources.</strong> A re-chunked collection making replay impossible.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Before your first incident.</li></ul></section>
+</article>
+
+<article class="concept" id="incident-workflows" data-impl="7" data-crit="9" data-tag="Operations">
+<h3><span class="idx">09</span>Debugging and incident workflows<a class="anchor" href="#incident-workflows" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Operations</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">A repeatable playbook: from symptom to signal to root cause to fix, using the traces rather
+than reasoning about the model — because "use a bigger model" is the answer you reach when you cannot see.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The workflow follows the signals. A quality complaint → RAG trace (recall/precision/coverage) → the
+right fix (chunking, reranking, or ingestion). A cost spike → cost breakdown → the component (tool schemas,
+a reasoning pattern, iterations). A wrong action → decision trace + audit → the rule or the missed gate. A
+latency regression → distributed trace → the slow stage. Each symptom has a signal that localises it, and
+the discipline is to look before theorising.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/observability/*</code><span class="note">the signals the playbook uses</span></li>
+<li><code>app/api/observability.py</code>, <code>insights.py</code><span class="note">the operator surfaces</span></li>
+<li><code>app/explainability_runtime/*</code><span class="note">decision, profile, and source explainers</span></li>
+<li><code>RUNBOOK.md</code><span class="note">the operational runbook</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Incident playbook</h4>
+<div class="tablewrap"><table>
+<thead><tr><th>Symptom</th><th>First signal</th><th>Likely root cause</th></tr></thead>
+<tbody>
+<tr><td>Wrong answers rising</td><td>RAG trace + grounding</td><td>Corpus/chunking regression, or a broken sync</td></tr>
+<tr><td>Cost spike</td><td>Cost breakdown</td><td>Tool schemas, a pattern, or iteration blowout</td></tr>
+<tr><td>Latency regression</td><td>Distributed trace</td><td>A slow connector or serial model chain</td></tr>
+<tr><td>Unexpected action</td><td>Decision trace + audit</td><td>Misclassification or a missed gate</td></tr>
+<tr><td>Goals stuck</td><td>Approval queue depth</td><td>Unserviced HITL backlog</td></tr>
+<tr><td>Stall-rate spike</td><td>Metrics + RAG trace</td><td>Retrieval returning nothing, or a dead tool</td></tr>
+</tbody>
+</table></div>
+</section>
+<section class="band prod"><h4>At production scale</h4>
+<p>The playbook exists to prevent the two worst incident outcomes: a fix aimed at the wrong layer (changing
+the prompt for a retrieval failure) and the reflexive "use a bigger model" that costs more and fixes
+nothing. Every symptom in the table has a signal that localises it in minutes — the investment is having
+built the signals before you needed them.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Theorising before looking.</strong> Fixes aimed at the wrong layer.</li>
+<li><strong>No playbook.</strong> Every incident debugged from scratch.</li>
+<li><strong>Signals that do not exist yet.</strong> Building observability during the incident.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any production system that gets paged.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch11-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Automated root-cause suggestion.</strong> The signals exist; nothing correlates a symptom
+      to a likely cause automatically the way the playbook does manually.</li>
+      <li><strong>Trajectory diffing.</strong> No tool to show what changed between a working and a failing
+      run of the same goal beyond the final result.</li>
+      <li><strong>Tenant-facing observability.</strong> Rich internal signals; a thinner story for letting
+      a tenant debug their own agents' behaviour and cost.</li>
+      <li><strong>Cost-anomaly detection.</strong> Cost is attributed but a per-tenant spend anomaly
+      detector is not wired to alerting.</li>
+    </ul>
+  </div>
+</section>
+
+<div class="pagenav"><a class="prev" href="scopes.html"><div class="d">Previous · CH 14</div><div class="t">Scopes</div></a><a class="next" href="multimodal.html"><div class="d">Next · CH 15</div><div class="t">Multimodal</div></a></div>
+<p class="footnote">AgentVerse Field Manual · ratings are this author's judgement of the code as it stands, not a vendor claim. File paths are navigation anchors; line numbers drift.</p>
+</div></main>
+</div>
+<script>
+(function () {
+  var r = document.documentElement;
+  try { var t = localStorage.getItem('avfm-theme'); if (t) r.setAttribute('data-theme', t); } catch (e) {}
+  function cur() {
+    var a = r.getAttribute('data-theme');
+    if (a) return a;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  document.addEventListener('click', function (ev) {
+    var b = ev.target.closest('[data-theme-toggle]');
+    if (!b) return;
+    var n = cur() === 'dark' ? 'light' : 'dark';
+    r.setAttribute('data-theme', n);
+    try { localStorage.setItem('avfm-theme', n); } catch (e) {}
+  });
+  var f = document.querySelector('[data-filter]');
+  if (f) {
+    f.addEventListener('input', function () {
+      var q = f.value.trim().toLowerCase();
+      document.querySelectorAll('[data-filter-row]').forEach(function (el) {
+        el.hidden = q.length > 0 && el.getAttribute('data-filter-row').indexOf(q) === -1;
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>

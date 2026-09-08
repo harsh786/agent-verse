@@ -1,0 +1,37 @@
+<section class="block" id="ratings-method">
+  <h2>How to read the ratings</h2>
+  <div class="prose">
+    <p>Every concept in this manual carries two independent scores. Keeping them separate is the whole point: a
+    concept can be beautifully implemented and barely matter, or crudely implemented and absolutely
+    load-bearing. Reading them together is how you decide where to spend effort.</p>
+  </div>
+  <div class="cols" style="margin-top:16px">
+    <section>
+      <h4>Impl — implementation depth</h4>
+      <div class="prose"><p><strong>9–10</strong> wired into the live path, governed, tested, exposed.
+      <strong>7–8</strong> real and on the live path, one dimension short. <strong>5–6</strong> works but
+      opt-in or narrowly wired. <strong>3–4</strong> adapter or scaffold. <strong>1–2</strong> named but
+      effectively absent.</p></div>
+    </section>
+    <section>
+      <h4>Criticality — does production need it?</h4>
+      <div class="prose"><p><strong>9–10</strong> ship without it and you get an incident, a breach, or an
+      unexplained bill. <strong>7–8</strong> needed once you have real tenants. <strong>5–6</strong> materially
+      improves quality or cost. <strong>3–4</strong> situational. <strong>1–2</strong> research interest.</p></div>
+    </section>
+  </div>
+  <div class="callout warn">
+    <span class="lbl">On honesty</span>
+    <p>These are one engineer's readings of the code as it stands, not a vendor scorecard or a benchmark. The
+    low scores are the most useful entries in the book — they are the work that is left. Read the frontier
+    chapter (33) for the pattern the low scores form.</p>
+  </div>
+
+  <div class="prose" style="margin-top:20px">
+    <p><strong>How to use the matrix below.</strong> Sort mentally by the two columns: high-impl/high-crit is
+    the platform's solid core (trust it); low-impl/high-crit is the priority backlog (build it next);
+    high-impl/low-crit is where effort may have outrun need (research-grade luxuries); low-impl/low-crit is
+    the honest frontier (interesting, not urgent). Filter by name, chapter, kind, or status to find any
+    concept fast.</p>
+  </div>
+</section>

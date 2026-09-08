@@ -1,0 +1,376 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>This chapter is the spine that the rest of the book hangs on: the twenty-two steps a goal actually
+    takes, from an HTTP request to a streamed result. Every subsystem you have met — retrieval, memory,
+    guardrails, routing, audit — appears here as a station on one line. If you understand this flow, you
+    understand how the pieces compose; if you are debugging, this is the map that tells you where to look.</p>
+
+    <p>The one structural idea to hold onto is the <strong>two-phase service wiring</strong>: the app is
+    built once with in-memory services, then a lifespan upgrades them to DB- and Redis-backed versions.
+    Most "works in tests but not in prod" bugs live in the gap between those two phases.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 900 340" role="img" aria-label="The goal lifecycle: submit over HTTP, authenticate, create record and check budget, enqueue by plan tier, worker acquires a lock and builds the agent graph, which runs initialize, retrieve, plan, execute (with MCP tools, vault credentials, and HITL), verify, and loops to replan or completes, writing memory and eval scores and streaming events to the browser.">
+      <defs><marker id="pw1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker>
+      <marker id="pw2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#00A8CC"></path></marker></defs>
+      <text x="0" y="14" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.65" letter-spacing="1.2">CONTROL PLANE (API process)</text>
+      <g fill="none" stroke="currentColor" stroke-width="1.15">
+        <rect x="0" y="24" width="128" height="40" rx="3"></rect>
+        <rect x="150" y="24" width="128" height="40" rx="3"></rect>
+        <rect x="300" y="24" width="128" height="40" rx="3"></rect>
+        <rect x="450" y="24" width="128" height="40" rx="3"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor" text-anchor="middle">
+        <text x="64" y="41">POST /goals</text><text x="64" y="56" font-size="9.5" opacity="0.6">1 submit</text>
+        <text x="214" y="41">tenant auth</text><text x="214" y="56" font-size="9.5" opacity="0.6">2 middleware · RLS</text>
+        <text x="364" y="41">GoalService</text><text x="364" y="56" font-size="9.5" opacity="0.6">3 record + budget</text>
+        <text x="514" y="41">enqueue</text><text x="514" y="56" font-size="9.5" opacity="0.6">4 by plan tier</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.15" marker-end="url(#pw1)">
+        <line x1="128" y1="44" x2="146" y2="44"></line>
+        <line x1="278" y1="44" x2="296" y2="44"></line>
+        <line x1="428" y1="44" x2="446" y2="44"></line>
+        <line x1="578" y1="44" x2="620" y2="44"></line>
+      </g>
+      <rect x="622" y="24" width="128" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1.15"></rect>
+      <text x="686" y="41" font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor" text-anchor="middle">Celery queue</text>
+      <text x="686" y="56" font-family="Archivo, sans-serif" font-size="9.5" fill="currentColor" opacity="0.6" text-anchor="middle">free…enterprise</text>
+
+      <path d="M686,64 L686,92" fill="none" stroke="currentColor" stroke-width="1.15" marker-end="url(#pw1)"></path>
+      <text x="0" y="108" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.65" letter-spacing="1.2">DATA PLANE (worker)</text>
+      <g fill="none" stroke="currentColor" stroke-width="1.15">
+        <rect x="600" y="94" width="170" height="34" rx="3"></rect>
+      </g>
+      <text x="685" y="115" font-family="Archivo, sans-serif" font-size="11" fill="currentColor" text-anchor="middle">5 lock + build AgentGraph</text>
+
+      <g fill="none" stroke="currentColor" stroke-width="1.15">
+        <rect x="0" y="150" width="96" height="36" rx="3"></rect>
+        <rect x="120" y="150" width="96" height="36" rx="3"></rect>
+        <rect x="240" y="150" width="96" height="36" rx="3"></rect>
+        <rect x="360" y="150" width="96" height="36" rx="3"></rect>
+      </g>
+      <rect x="480" y="150" width="96" height="36" rx="3" fill="none" stroke="#00A8CC" stroke-width="1.6"></rect>
+      <g font-family="Archivo, sans-serif" font-size="11" fill="currentColor" text-anchor="middle">
+        <text x="48" y="172">6 initialize</text><text x="168" y="172">7 retrieve</text><text x="288" y="172">8 plan</text><text x="408" y="172">9 execute</text>
+      </g>
+      <text x="528" y="172" font-family="Archivo, sans-serif" font-size="11" fill="#00A8CC" text-anchor="middle">10 verify</text>
+      <g stroke="currentColor" stroke-width="1.15" marker-end="url(#pw1)">
+        <line x1="96" y1="168" x2="116" y2="168"></line>
+        <line x1="216" y1="168" x2="236" y2="168"></line>
+        <line x1="336" y1="168" x2="356" y2="168"></line>
+        <line x1="456" y1="168" x2="476" y2="168"></line>
+      </g>
+      <path d="M770,111 L790,111 L790,168 L580,168" fill="none" stroke="currentColor" stroke-width="1.15" marker-end="url(#pw1)"></path>
+
+      <rect x="300" y="212" width="200" height="34" rx="3" fill="none" stroke="currentColor" stroke-width="1.15"></rect>
+      <text x="400" y="233" font-family="Archivo, sans-serif" font-size="11" fill="currentColor" text-anchor="middle">MCP tools · vault · HITL</text>
+      <line x1="408" y1="186" x2="400" y2="210" stroke="currentColor" stroke-width="1.15" marker-end="url(#pw1)"></line>
+      <path d="M480,168 L480,229 L502,229" fill="none" stroke="#00A8CC" stroke-width="1.3" marker-end="url(#pw2)"></path>
+
+      <path d="M528,186 L528,270 L288,270 L288,188" fill="none" stroke="#00A8CC" stroke-width="1.4" marker-end="url(#pw2)"></path>
+      <text x="400" y="286" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#00A8CC" text-anchor="middle">11 replan (bounded) · or complete → 12 memory write · 13 eval · 14 events → SSE → browser</text>
+      <text x="0" y="318" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">events flow through Redis pub/sub at every step, so the browser watches the goal even as the worker that runs it is replaced</text>
+    </svg>
+    <figcaption>The whole line. The concepts below walk it station by station; the numbers here are a
+    sketch, the sections give the full twenty-two.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="platform-workflows">
+  <h2>The twenty-two steps</h2>
+
+<article class="concept" id="pw-startup" data-impl="9" data-crit="10" data-tag="Lifecycle">
+<h3>App startup and two-phase service wiring</h3>
+<p class="tldr">The app is assembled once with in-memory services, then a lifespan swaps them for DB- and
+Redis-backed versions and re-hydrates state — the single most important thing to understand about the
+platform's behaviour.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p><code>create_app()</code> constructs every service (tenant, goal, knowledge, MCP, cost, rate limiter…)
+in an in-memory form and binds them to <code>app.state</code>, then includes ~25 routers. When
+<code>manage_pools=True</code>, the FastAPI lifespan starts connection pools, swaps the in-memory services
+for DB/Redis-backed ones, re-hydrates state from Postgres, and re-wires auth, SSE, cost control, and the
+MCP client. Dependency resolution reads from <code>app.state</code> dynamically, so the swap takes effect
+without breaking already-registered middleware.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/main.py</code><span class="note">create_app() (a hub node, 183 edges) and the lifespan</span></li>
+<li><code>app/bootstrap/services.py</code>, <code>routers.py</code><span class="note">service and router assembly</span></li>
+<li><code>app/core/pools.py</code><span class="note">ConnectionPools</span></li>
+<li><code>app/db/session.py</code><span class="note">get_session_factory()</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>tests            create_app(manage_pools=False)
+                 → in-memory services, no DB, deterministic FakeProvider
+production       create_app() + lifespan(manage_pools=True)
+                 → in-memory services built first
+                 → pools start → services swapped to DB/Redis-backed
+                 → sync_from_db() re-hydrates tenants, agents, schedules
+                 → real providers resolved from env keys
+the swap is why a bug can be invisible in tests and appear only in prod
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>When something works in tests but not in production (or vice versa), this swap is the first suspect: the
+in-memory path and the DB-backed path are different implementations of the same interface, and behaviour
+that depends on persistence, cross-replica state, or real providers only exists on one side. Knowing the
+two phases exist turns a baffling bug into a targeted one.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>State not re-hydrated.</strong> A service swapped but its data not loaded.</li>
+<li><strong>Middleware bound to the old service.</strong> The swap not taking effect.</li>
+<li><strong>Test-only behaviour.</strong> Relying on the in-memory path's quirks.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Understanding, debugging, or extending the platform — always start here.</li></ul></section>
+</article>
+
+<article class="concept" id="pw-auth" data-impl="9" data-crit="10" data-tag="Step">
+<h3>Steps 1–2: submission and tenant authentication</h3>
+<p class="tldr">A goal arrives over HTTP; middleware authenticates it, establishes the immutable tenant
+context, and sets the RLS boundary before any business logic runs.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The request hits <code>POST /goals</code>. Tenant middleware authenticates (API key or JWT), resolves
+the tenant, checks the key's scope and IP allowlist, and constructs the <code>TenantContext</code>. The
+database session sets <code>app.tenant_id</code> so RLS applies to everything that follows. Only then does
+the request reach the goal endpoint.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/api/goals.py</code><span class="note">the submit endpoint</span></li>
+<li><code>app/tenancy/middleware.py</code><span class="note">TenantMiddleware</span></li>
+<li><code>app/tenancy/context.py</code><span class="note">TenantContext</span></li>
+<li><code>app/auth/scope_enforcement.py</code>, <code>ip_allowlist.py</code><span class="note">key checks</span></li>
+<li><code>app/db/rls.py</code><span class="note">the boundary set per request</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>POST /goals {goal:"reconcile March payouts"}  Authorization: Bearer ak_...
+ middleware  key valid, scope goals:submit ok, IP in allowlist
+             → TenantContext(acme, plan=enterprise)
+ session     SET LOCAL app.tenant_id = 'acme'
+ endpoint    now runs, everything it touches is tenant-scoped
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Authentication and scope establish the outermost two scopes (chapter 14) before the goal exists as a
+record — so an unauthorised or out-of-scope request never creates state. The RLS boundary being set here,
+at the session level, is what makes every downstream query safe by default. Full treatment in chapters 13–14.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Context not propagated to the worker.</strong> The goal runs without its tenant.</li>
+<li><strong>Scope checked after record creation.</strong> State for a request that should have been rejected.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always — this is the front door.</li></ul></section>
+</article>
+
+<article class="concept" id="pw-queue" data-impl="9" data-crit="9" data-tag="Step">
+<h3>Steps 3–5: record, budget, queue, worker</h3>
+<p class="tldr">GoalService creates the record and checks the budget, enqueues the goal on the tenant's plan
+queue, and a Celery worker acquires a lock and builds the agent graph.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>GoalService writes a <code>GoalRecord</code>, checks the tenant and goal budget, and enqueues onto a
+per-plan queue (<code>goals.free</code> … <code>goals.enterprise</code>) so an enterprise tenant is not
+stuck behind a free tenant's backlog. A worker picks it up, acquires a distributed lock (one worker per
+goal), and constructs the <code>AgentGraph</code> with the goal's runtime profile and model clients.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/services/goal_service.py</code><span class="note">submit_goal, GoalRecord</span></li>
+<li><code>app/services/goal_queue.py</code><span class="note">enqueue_goal</span></li>
+<li><code>app/scaling/celery_app.py</code><span class="note">PLAN_QUEUE_MAP — per-plan routing</span></li>
+<li><code>app/scaling/tasks.py</code><span class="note">run_goal, append_submitted_goal_event</span></li>
+<li><code>app/reliability/distributed_lock.py</code><span class="note">one worker per goal</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>GoalService  record g-8891 · tenant budget ok · goal budget $8
+enqueue      → goals.enterprise queue
+worker-4     acquires lock lock:goal:g-8891 (worker-7 would skip)
+             builds AgentGraph(runtime_profile, model clients, checkpointer)
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Per-plan queues are how the platform avoids noisy-neighbour effects — the single most important scaling
+decision for a multi-tenant agent system, because one tenant's batch of 10,000 goals must not delay
+another's interactive one. The lock prevents the duplicate-execution bug that otherwise appears under
+retries and rebalancing. Full treatment in chapters 20 and 32.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Shared queue.</strong> Noisy-neighbour delays.</li>
+<li><strong>No lock.</strong> A goal running twice on two workers.</li>
+<li><strong>Budget checked after enqueue.</strong> Work scheduled that cannot be paid for.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any multi-tenant async execution.</li></ul></section>
+</article>
+
+<article class="concept" id="pw-loop" data-impl="9" data-crit="10" data-tag="Step">
+<h3>Steps 6–11: the agent loop</h3>
+<p class="tldr">Initialize, retrieve, plan, execute, verify — the LangGraph state machine from chapter 1,
+running with real tools, real credentials, and real approval gates, looping to replan or completing.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The graph runs the loop: <em>initialize</em> loads context and checks budget; <em>retrieve</em> runs RAG
+before planning; <em>plan</em> produces a validated plan; <em>execute</em> calls tools through MCP with
+vault credentials, guardrails, and HITL gates; <em>verify</em> checks against evidence and routes to
+complete, replan, max-iter, waiting-human, or rag-remediate. State is checkpointed after each node, so the
+goal survives a worker restart mid-loop.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/agent/graph.py</code><span class="note">AgentGraph — the state machine</span></li>
+<li><code>app/agent/nodes/*.py</code><span class="note">one mixin per node</span></li>
+<li><code>app/mcp/client.py</code><span class="note">MCPClient.call_tool — tool dispatch</span></li>
+<li><code>app/providers/vault.py</code><span class="note">credential resolution at call time</span></li>
+<li><code>app/governance/hitl.py</code><span class="note">approval gates</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>6 initialize  tenant ctx, agent config, budget check
+7 retrieve    4 chunks from the runbook collection (chapters 2, 6)
+8 plan        [fetch filed, recompute, diff, file*, notify]  (*gated)
+9 execute     step 1 → MCP call, vault resolves the GST credential
+              step 4 → write_high → HITL → waiting_human (checkpointed)
+              [resume after approval]
+10 verify     totals match the filed return → complete
+11 (or replan on failure, bounded by max_iterations)
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>This is the product. Every earlier chapter — patterns, retrieval, memory, prompts, guardrails, routing —
+converges here into the running loop. The checkpointing is what makes it operable: workers are cattle, a
+deploy mid-goal is not an outage, and a HITL pause costs nothing because the worker is released. Full
+treatment in chapter 1.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Non-serializable state.</strong> Checkpointing fails, resume impossible.</li>
+<li><strong>Credentials in state.</strong> A secret in the checkpoint.</li>
+<li><strong>Unbounded loop.</strong> No iteration cap (chapter 1).</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always. This is the core.</li></ul></section>
+</article>
+
+<article class="concept" id="pw-tools" data-impl="9" data-crit="9" data-tag="Step">
+<h3>Tool discovery and execution through MCP</h3>
+<p class="tldr">Tools live behind the Model Context Protocol: the registry lists what a tenant has, the
+client executes calls with circuit breaking and stale-cache fallback, and credentials are resolved from
+the vault so the model never sees them.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The MCP registry holds per-tenant connectors; <code>tools/list</code> discovers available tools;
+<code>call_tool</code> executes one, delegating to an inner implementation wrapped in a circuit breaker. On
+an open circuit it can serve a stale cached result before raising. Credentials are resolved from the vault
+at call time and injected into the request, never placed in the prompt. Results are sanitized and wrapped
+as untrusted before returning to the loop.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/mcp/registry.py</code><span class="note">per-tenant connector registry</span></li>
+<li><code>app/mcp/client.py</code><span class="note">call_tool, _call_tool_impl, CircuitBreakerOpenError, stale-cache fallback</span></li>
+<li><code>app/mcp/tool_cache.py</code><span class="note">ToolResultCache</span></li>
+<li><code>app/mcp/oauth.py</code><span class="note">PKCE OAuth for connectors</span></li>
+<li><code>app/providers/vault.py</code><span class="note">credential resolution</span></li>
+<li><code>app/mcp/servers/</code><span class="note">325 built-in server modules</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>execute step "fetch filed GSTR-1"
+ registry     gst connector present for acme
+ vault        resolves the GST API token (model never sees it)
+ call_tool    gst.fetch_filed(period, gstin)
+              breaker closed → _call_tool_impl → result
+              [if breaker open] → serve stale cached result or raise
+ result       sanitized, wrapped untrusted, returned to the loop
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>MCP is the architecture decision that makes tools safe and per-tenant: each connector is its own process,
+so a misbehaving integration cannot take the agent down, and the tool surface is configuration rather than
+compiled in. The stale-cache fallback is a thoughtful touch — a read tool whose provider is down can still
+answer from cache rather than failing the goal. Full treatment in chapter 20.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Credentials in the prompt.</strong> Exfiltration surface.</li>
+<li><strong>No breaker on the connector.</strong> A dead tool taking down goals.</li>
+<li><strong>Unsanitized tool output.</strong> Injection vector.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any agent that calls external tools.</li></ul></section>
+</article>
+
+<article class="concept" id="pw-completion" data-impl="9" data-crit="9" data-tag="Step">
+<h3>Steps 12–14: memory, eval, and event emission</h3>
+<p class="tldr">On completion (or failure), the platform writes memory, scores the goal, and emits the final
+events — the closing stations that turn a finished run into learning, measurement, and a delivered result.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Goal completion fans out into memory writes — episodic, procedural, execution, long-term, and on failure
+reflexion (chapter 3). The eval layer scores the run across dimensions (chapter 10). Throughout and at the
+end, events publish to the goal's Redis channel, bridged to the API and streamed to the browser over SSE
+(chapter 11). The outcome persists to Postgres and the LangGraph checkpoint.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/memory/*</code><span class="note">the tier writes on completion</span></li>
+<li><code>app/agent/reflexion_wirer.py</code><span class="note">lesson extraction on failure</span></li>
+<li><code>app/evals/runtime_scorecard.py</code>, <code>goal_score.py</code><span class="note">scoring</span></li>
+<li><code>app/services/goal_service.py</code><span class="note">event emission, Celery→pub/sub bridge</span></li>
+<li><code>agent-verse-frontend/src/lib/sse/useGoalStream.ts</code><span class="note">the browser receiver</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>goal g-8891 completes
+ memory   execution (all steps), episodic (this run), procedural (if a
+          stable method emerged), long-term (durable facts learned)
+ eval     goal 0.91 · grounding 0.88 · cost $0.42 · latency 41s
+ events   {type:"completed", result, citations} → Redis → SSE → browser
+ persist  outcome to Postgres, final checkpoint retained
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>The closing steps are what make the platform improve rather than merely run: memory turns this goal into
+context for the next, eval turns it into a measurement, and events turn it into a live experience. Skipping
+any of them leaves a platform that works today and does not get better — or one whose users cannot see what
+it is doing.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Memory write failure swallowed.</strong> Learning silently lost.</li>
+<li><strong>Events tied to worker lifetime.</strong> The stream dying with the worker.</li>
+<li><strong>Eval skipped on failure.</strong> The most informative runs unmeasured.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any goal you want to learn from, measure, or show.</li></ul></section>
+</article>
+
+<article class="concept" id="pw-frontend" data-impl="8" data-crit="7" data-tag="Boundary">
+<h3>The frontend SSE/WebSocket path and the SDK/Action boundary</h3>
+<p class="tldr">The same events reach a browser over SSE, a collaboration client over WebSocket, and CI over
+the SDK and GitHub Action — one backend, several front doors, one event model.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The React frontend subscribes to a goal's SSE stream for live execution and to a WebSocket for
+collaboration. The Python and TypeScript SDKs submit a goal and poll or stream its result. The GitHub Action
+wraps the SDK to submit a goal from CI and await it. All of them speak the same OpenAPI contract published by
+the backend, so the backend is the single source of truth and the clients are thin.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>agent-verse-frontend/src/lib/sse/useGoalStream.ts</code><span class="note">SSE</span></li>
+<li><code>agent-verse-frontend/src/lib/ws/useCollabSocket.ts</code><span class="note">collaboration WebSocket</span></li>
+<li><code>agent-verse-frontend/src/lib/api/client.ts</code><span class="note">HTTP client</span></li>
+<li><code>app/api/goals.py</code><span class="note">the endpoints all clients consume</span></li>
+<li><code>scripts/export_openapi.py</code><span class="note">the contract the clients are generated against</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>same goal, three front doors
+ browser   POST /goals → SSE stream → live step-by-step view
+ CI        GitHub Action → SDK → submit → await → pass/fail the build
+ script    SDK client → submit → poll → result
+all consume the same OpenAPI contract; the backend does not know or care
+which client called
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>A single backend contract with thin clients is what keeps five deployable projects in sync: the backend
+publishes OpenAPI, the SDKs are generated or checked against it, and a backend change that breaks a client
+is caught at contract level. The Action is just the SDK in a Docker entrypoint — the smallest possible
+front door, which is the right size for CI. (The SDKs themselves are out of scope for this manual, per the
+brief; here they matter only as consumers of the same event model.)</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Contract drift.</strong> Clients and backend disagreeing after a change.</li>
+<li><strong>SSE without reconnect.</strong> A dropped stream losing the live view.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any platform with more than one kind of client.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch19-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>A single end-to-end trace view.</strong> The signals exist per station; a one-screen
+      "here is the whole goal from submit to SSE" view would speed onboarding and debugging.</li>
+      <li><strong>Warm-start for the two-phase swap.</strong> The in-memory-then-DB swap re-hydrates on
+      every start; a faster warm path would cut cold-start latency.</li>
+      <li><strong>Backpressure from loop to queue.</strong> The queue routes by plan but does not yet shed
+      load based on downstream worker saturation (chapter 28).</li>
+    </ul>
+  </div>
+</section>

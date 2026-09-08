@@ -1,0 +1,1510 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chunking strategies · AgentVerse Field Manual</title>
+<meta name="description" content="CH 17 · Chunking strategies">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>/* ==========================================================================
+   AgentVerse Field Manual — instrument chrome + engineering-manual body.
+   Tokens: complete light palette on :root; dark redefined for the two
+   dark states (un-stamped OS-dark, and explicit data-theme="dark").
+   ========================================================================== */
+
+:root {
+  /* ground + surfaces (cool slate neutrals, biased toward the cyan accent) */
+  --bg:        #EFF2F5;
+  --paper:     #FFFFFF;
+  --raised:    #F6F8FA;
+  --sunken:    #E7ECF1;
+  --rail:      #FBFCFD;
+
+  /* ink */
+  --ink:       #0B1220;
+  --ink-2:     #3C4A5A;
+  --ink-3:     #6B7A8B;
+  --ink-4:     #93A1B0;
+
+  /* lines */
+  --line:      #D5DDE5;
+  --line-soft: #E4EAF0;
+  --line-hard: #B9C5D0;
+
+  /* accent — JARVIS electric, darkened for contrast on paper */
+  --accent:      #007D9C;
+  --accent-2:    #00A8CC;
+  --accent-wash: rgba(0,168,204,0.10);
+  --accent-line: rgba(0,125,156,0.35);
+
+  /* semantic (ratings, status, diagram emphasis) */
+  --good:      #0E7C55;
+  --good-wash: rgba(14,124,85,0.10);
+  --warn:      #A2650A;
+  --warn-wash: rgba(162,101,10,0.10);
+  --bad:       #B3303B;
+  --bad-wash:  rgba(179,48,59,0.10);
+  --note:      #6D46C4;
+  --note-wash: rgba(109,70,196,0.10);
+
+  --shadow-1: 0 1px 2px rgba(11,18,32,0.05);
+  --shadow-2: 0 8px 28px rgba(11,18,32,0.10);
+
+  --measure: 68ch;
+  --rail-w: 274px;
+  --topbar-h: 52px;
+
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #070A10;
+    --paper:     #0C1017;
+    --raised:    #12171F;
+    --sunken:    #090D13;
+    --rail:      #0A0E15;
+
+    --ink:       #E9EFF5;
+    --ink-2:     #B3C0CD;
+    --ink-3:     #8593A2;
+    --ink-4:     #5D6C7B;
+
+    --line:      rgba(255,255,255,0.09);
+    --line-soft: rgba(255,255,255,0.055);
+    --line-hard: rgba(255,255,255,0.16);
+
+    --accent:      #35D8F5;
+    --accent-2:    #00D4FF;
+    --accent-wash: rgba(0,212,255,0.10);
+    --accent-line: rgba(0,212,255,0.35);
+
+    --good:      #2ED08C;
+    --good-wash: rgba(46,208,140,0.12);
+    --warn:      #F0B429;
+    --warn-wash: rgba(240,180,41,0.12);
+    --bad:       #FF6B78;
+    --bad-wash:  rgba(255,107,120,0.12);
+    --note:      #B08CFF;
+    --note-wash: rgba(176,140,255,0.12);
+
+    --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+    --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #070A10;
+  --paper:     #0C1017;
+  --raised:    #12171F;
+  --sunken:    #090D13;
+  --rail:      #0A0E15;
+
+  --ink:       #E9EFF5;
+  --ink-2:     #B3C0CD;
+  --ink-3:     #8593A2;
+  --ink-4:     #5D6C7B;
+
+  --line:      rgba(255,255,255,0.09);
+  --line-soft: rgba(255,255,255,0.055);
+  --line-hard: rgba(255,255,255,0.16);
+
+  --accent:      #35D8F5;
+  --accent-2:    #00D4FF;
+  --accent-wash: rgba(0,212,255,0.10);
+  --accent-line: rgba(0,212,255,0.35);
+
+  --good:      #2ED08C;
+  --good-wash: rgba(46,208,140,0.12);
+  --warn:      #F0B429;
+  --warn-wash: rgba(240,180,41,0.12);
+  --bad:       #FF6B78;
+  --bad-wash:  rgba(255,107,120,0.12);
+  --note:      #B08CFF;
+  --note-wash: rgba(176,140,255,0.12);
+
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+  color-scheme: dark;
+}
+
+/* -------------------------------------------------- base */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 17.5px;
+  line-height: 1.62;
+  font-synthesis-weight: none;
+}
+
+a { color: var(--accent); text-decoration-color: var(--accent-line); text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
+
+h1, h2, h3, h4, h5 { font-family: var(--f-display); font-weight: 650; letter-spacing: -0.015em; text-wrap: balance; margin: 0; }
+p { margin: 0 0 0.85em; }
+p:last-child { margin-bottom: 0; }
+ul, ol { margin: 0 0 0.9em; padding-left: 1.25em; }
+li { margin: 0.25em 0; }
+li > ul, li > ol { margin-bottom: 0.2em; }
+strong { font-weight: 650; }
+code, kbd, samp { font-family: var(--f-mono); font-size: 0.855em; }
+:not(pre) > code {
+  background: var(--sunken); border: 1px solid var(--line-soft);
+  padding: 0.08em 0.34em; border-radius: 3px; color: var(--ink-2);
+  word-break: break-word;
+}
+hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+
+.mono { font-family: var(--f-mono); }
+.eyebrow {
+  font-family: var(--f-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3);
+}
+
+/* -------------------------------------------------- top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  height: var(--topbar-h);
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .brand {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink);
+  text-decoration: none; white-space: nowrap;
+}
+.topbar .brand b { color: var(--accent); font-weight: 600; }
+.topbar .crumb {
+  font-family: var(--f-mono); font-size: 11px; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar .spacer { flex: 1 1 auto; }
+.tb-btn {
+  font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  background: transparent; color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 5px 9px; cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.tb-btn:hover { border-color: var(--accent-line); color: var(--accent); }
+
+/* -------------------------------------------------- shell */
+.shell { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); align-items: start; }
+
+.rail {
+  position: sticky; top: var(--topbar-h);
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--rail);
+  border-right: 1px solid var(--line);
+  padding: 18px 0 40px;
+}
+.rail h4 { font-size: 10.5px; font-family: var(--f-mono); font-weight: 500; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-4); padding: 0 18px; margin: 16px 0 8px; }
+.rail .part-label { padding: 0 18px; margin: 20px 0 6px; }
+.rail nav a {
+  display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: baseline;
+  padding: 5px 18px; text-decoration: none; color: var(--ink-2);
+  font-family: var(--f-display); font-size: 13.5px; line-height: 1.35; letter-spacing: -0.005em;
+  border-left: 2px solid transparent;
+}
+.rail nav a .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.rail nav a:hover { background: var(--accent-wash); color: var(--ink); }
+.rail nav a[aria-current="page"] { color: var(--accent); border-left-color: var(--accent); background: var(--accent-wash); }
+.rail nav a[aria-current="page"] .n { color: var(--accent); }
+.rail .inpage { border-top: 1px solid var(--line-soft); margin-top: 14px; padding-top: 4px; }
+.rail .inpage a { grid-template-columns: 26px 1fr; font-size: 12.5px; color: var(--ink-3); }
+.rail .filter { padding: 0 14px 6px; }
+.rail .filter input {
+  width: 100%; font-family: var(--f-mono); font-size: 11.5px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
+}
+.rail .filter input::placeholder { color: var(--ink-4); }
+
+main { min-width: 0; padding: 0 0 96px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 clamp(18px, 4vw, 52px); }
+.prose { max-width: var(--measure); }
+
+/* -------------------------------------------------- chapter head */
+.chead { padding: 46px 0 26px; border-bottom: 1px solid var(--line); }
+.chead .kicker { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.chead .cnum {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
+  color: var(--accent); border: 1px solid var(--accent-line); border-radius: 3px; padding: 3px 7px;
+}
+.chead h1 { font-size: clamp(30px, 4.4vw, 46px); line-height: 1.06; font-weight: 700; letter-spacing: -0.028em; }
+.chead .lede { font-size: 20px; line-height: 1.5; color: var(--ink-2); margin-top: 16px; max-width: 62ch; }
+
+.statstrip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 0; margin-top: 26px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--paper); overflow: hidden;
+}
+.statstrip div { padding: 11px 16px; border-right: 1px solid var(--line-soft); }
+.statstrip div:last-child { border-right: 0; }
+.statstrip .k { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.statstrip .v { font-family: var(--f-display); font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------- sections */
+section.block { padding: 38px 0 8px; }
+section.block > h2 {
+  font-size: 25px; font-weight: 700; letter-spacing: -0.022em; padding-bottom: 8px;
+  border-bottom: 2px solid var(--ink); display: inline-block; margin-bottom: 20px;
+}
+section.block > .prose { margin-bottom: 8px; }
+
+.callout {
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  background: var(--paper); padding: 14px 16px; margin: 18px 0; border-radius: 0 4px 4px 0;
+  font-size: 16.5px;
+}
+.callout.warn { border-left-color: var(--warn); }
+.callout.bad  { border-left-color: var(--bad); }
+.callout.good { border-left-color: var(--good); }
+.callout .lbl { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); display: block; margin-bottom: 5px; }
+
+/* -------------------------------------------------- concept card */
+.concept {
+  border-top: 1px solid var(--line);
+  padding: 30px 0 34px;
+  scroll-margin-top: calc(var(--topbar-h) + 12px);
+}
+.concept:first-of-type { border-top-width: 2px; border-top-color: var(--ink); }
+.concept > h3 {
+  font-size: 23px; font-weight: 700; letter-spacing: -0.022em; line-height: 1.18;
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.concept > h3 .idx {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 500; color: var(--ink-4);
+  letter-spacing: 0.06em; font-variant-numeric: tabular-nums;
+}
+.concept > h3 a.anchor { color: var(--ink-4); text-decoration: none; font-family: var(--f-mono); font-size: 13px; opacity: 0; }
+.concept:hover > h3 a.anchor { opacity: 1; }
+
+.dials { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 12px 0 16px; }
+.dial { display: flex; align-items: center; gap: 8px; }
+.dial .dl { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-4); }
+.meter { display: inline-flex; gap: 2px; }
+.meter i { display: block; width: 7px; height: 12px; background: var(--line); border-radius: 1px; }
+.meter i.on { background: var(--accent); }
+.dial.crit .meter i.on { background: var(--note); }
+.dial .dv { font-family: var(--f-mono); font-size: 12px; font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.dial .dv small { font-weight: 400; color: var(--ink-4); }
+.pill {
+  font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap;
+}
+.pill.shipped { color: var(--good); background: var(--good-wash); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.pill.partial { color: var(--warn); background: var(--warn-wash); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.pill.thin    { color: var(--bad);  background: var(--bad-wash);  border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.pill.tag     { color: var(--ink-3); background: var(--sunken); border-color: var(--line-soft); }
+
+.tldr { font-size: 18.5px; line-height: 1.5; color: var(--ink); max-width: 66ch; }
+.tldr b, .tldr strong { color: var(--ink); }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 20px 0 0; }
+.cols > section { min-width: 0; }
+.cols h4, .band h4 {
+  font-family: var(--f-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px;
+  padding-bottom: 5px; border-bottom: 1px solid var(--line-soft);
+}
+.cols section p, .band p, .cols section li, .band li { font-size: 16.5px; }
+
+.band { margin-top: 18px; padding: 15px 17px; border-radius: 4px; border: 1px solid var(--line-soft); background: var(--raised); }
+.band.example { background: var(--sunken); }
+.band.prod  { border-color: color-mix(in srgb, var(--accent) 22%, var(--line-soft)); background: var(--accent-wash); }
+.band.fail  { border-color: color-mix(in srgb, var(--bad) 22%, var(--line-soft)); background: var(--bad-wash); }
+.band.when  { background: var(--paper); }
+.band.example h4 { color: var(--ink-2); }
+.band.prod h4 { color: var(--accent); border-bottom-color: var(--accent-line); }
+.band.fail h4 { color: var(--bad); border-bottom-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+
+.band.when ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.band.when li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; }
+.band.when li::before { content: "+"; font-family: var(--f-mono); color: var(--good); font-weight: 600; }
+.band.when li.no::before { content: "\2212"; color: var(--bad); }
+
+/* -------------------------------------------------- code + pre */
+pre {
+  margin: 12px 0; padding: 13px 15px; overflow-x: auto;
+  background: var(--sunken); border: 1px solid var(--line-soft); border-radius: 4px;
+  font-family: var(--f-mono); font-size: 12.5px; line-height: 1.62; color: var(--ink-2);
+  tab-size: 2;
+}
+:root[data-theme="dark"] pre, :root:not([data-theme="light"]) pre { color: var(--ink-2); }
+pre .c { color: var(--ink-4); }
+pre .k { color: var(--accent); }
+pre .s { color: var(--good); }
+
+.filelist { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.filelist li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; font-size: 15px; }
+.filelist code { font-size: 12.3px; background: none; border: 0; padding: 0; color: var(--accent); word-break: break-all; }
+.filelist .note { color: var(--ink-3); font-size: 15px; }
+
+/* -------------------------------------------------- tables */
+.tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+table { border-collapse: collapse; width: 100%; font-family: var(--f-display); font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+th {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-3); background: var(--raised); border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+td code { font-size: 12px; }
+
+/* -------------------------------------------------- figures */
+figure { margin: 22px 0; }
+figure svg { display: block; max-width: 100%; height: auto; color: var(--ink-2); }
+figcaption { font-size: 14.5px; color: var(--ink-3); margin-top: 9px; font-family: var(--f-display); max-width: 70ch; }
+.fig-em { color: var(--accent); }
+
+/* -------------------------------------------------- index page bits */
+.chapgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 4px; overflow: hidden; margin: 22px 0; }
+.chapgrid a {
+  background: var(--paper); padding: 16px 17px; text-decoration: none; color: var(--ink);
+  display: flex; flex-direction: column; gap: 7px; min-height: 128px;
+}
+.chapgrid a:hover { background: var(--accent-wash); }
+.chapgrid .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--accent); letter-spacing: 0.1em; }
+.chapgrid .t { font-family: var(--f-display); font-size: 16.5px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.25; }
+.chapgrid .d { font-size: 14.5px; color: var(--ink-3); line-height: 1.45; }
+.chapgrid .m { margin-top: auto; font-family: var(--f-mono); font-size: 10px; color: var(--ink-4); letter-spacing: 0.06em; }
+
+.matrix td.c1 { font-family: var(--f-display); font-weight: 600; }
+.matrix .bar { display: inline-flex; gap: 2px; vertical-align: middle; }
+.matrix .bar i { width: 5px; height: 10px; background: var(--line); border-radius: 1px; display: block; }
+.matrix .bar i.on { background: var(--accent); }
+.matrix .bar.crit i.on { background: var(--note); }
+
+/* -------------------------------------------------- footer nav */
+.pagenav { display: flex; gap: 12px; justify-content: space-between; margin-top: 54px; padding-top: 20px; border-top: 1px solid var(--line); }
+.pagenav a { flex: 1 1 0; text-decoration: none; border: 1px solid var(--line); border-radius: 4px; padding: 13px 15px; background: var(--paper); color: var(--ink); }
+.pagenav a:hover { border-color: var(--accent-line); }
+.pagenav .d { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.pagenav .t { font-family: var(--f-display); font-weight: 650; font-size: 15.5px; letter-spacing: -0.015em; }
+.pagenav a.next { text-align: right; }
+
+.footnote { margin-top: 30px; font-size: 14.5px; color: var(--ink-3); font-family: var(--f-display); }
+
+/* -------------------------------------------------- responsive */
+@media (max-width: 1080px) {
+  .cols { grid-template-columns: 1fr; gap: 14px; }
+}
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail {
+    position: static; height: auto; max-height: 340px;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  body { font-size: 17px; }
+  .chead { padding-top: 30px; }
+}
+@media print {
+  .rail, .topbar, .pagenav { display: none; }
+  body { background: #fff; color: #000; font-size: 10.5pt; }
+  .shell { grid-template-columns: 1fr; }
+}
+
+.idxhead { background: var(--raised); font-family: var(--f-mono); font-size: 11px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">AgentVerse <b>Field Manual</b></a>
+  <span class="crumb">CH 17 · Chunking strategies</span>
+  <span class="spacer"></span>
+  <button class="tb-btn" data-theme-toggle type="button">Theme</button>
+</header>
+<div class="shell">
+<aside class="rail"><h4>Field manual</h4><nav><a href="index.html"><span class="n">00</span><span>Hub &amp; how to read</span></a></nav></nav><div class="part-label eyebrow">I · The agent</div><nav><a href="agent-patterns.html"><span class="n">01</span><span>Agent patterns</span></a><a href="rag-patterns.html"><span class="n">02</span><span>RAG patterns</span></a><a href="agent-memory.html"><span class="n">03</span><span>Agent memories</span></a></nav><div class="part-label eyebrow">II · Knowledge</div><nav><a href="knowledge-and-graphs.html"><span class="n">04</span><span>Knowledge &amp; knowledge graph</span></a><a href="ingestion.html"><span class="n">05</span><span>Ingestion</span></a><a href="retrieval-strategies.html"><span class="n">06</span><span>Retrieval strategies</span></a><a href="embeddings.html"><span class="n">07</span><span>Embeddings</span></a><a href="chunking.html" aria-current="page"><span class="n">17</span><span>Chunking strategies</span></a></nav><div class="part-label eyebrow">III · Context &amp; quality</div><nav><a href="prompt-builder.html"><span class="n">08</span><span>Prompt builder</span></a><a href="agent-improvement.html"><span class="n">09</span><span>Agent improvement</span></a><a href="evals.html"><span class="n">10</span><span>Evals</span></a><a href="hallucination.html"><span class="n">18</span><span>Hallucination handling</span></a></nav><div class="part-label eyebrow">IV · Safety &amp; control</div><nav><a href="guardrails.html"><span class="n">12</span><span>Guardrails</span></a><a href="governance.html"><span class="n">13</span><span>Governance</span></a><a href="scopes.html"><span class="n">14</span><span>Scopes</span></a><a href="observability.html"><span class="n">11</span><span>Observability</span></a></nav><div class="part-label eyebrow">V · Modality &amp; models</div><nav><a href="multimodal.html"><span class="n">15</span><span>Multimodal</span></a><a href="ocr.html"><span class="n">21</span><span>OCR</span></a><a href="model-router.html"><span class="n">16</span><span>Multi-model router</span></a></nav><div class="part-label eyebrow">VI · The platform</div><nav><a href="platform-workflows.html"><span class="n">19</span><span>Core platform workflows</span></a><a href="platform-concepts.html"><span class="n">20</span><span>Other core platform concepts</span></a><a href="agent-teams.html"><span class="n">22</span><span>AI agent teams</span></a><a href="jarvis.html"><span class="n">23</span><span>Jervis (JARVIS) console</span></a></nav><div class="part-label eyebrow">VII · Not on the list</div><nav><a href="coordination-protocols.html"><span class="n">24</span><span>Coordination protocols</span></a><a href="code-execution.html"><span class="n">25</span><span>Code execution &amp; sandboxing</span></a><a href="voice.html"><span class="n">26</span><span>Voice &amp; realtime agents</span></a><a href="triggers.html"><span class="n">27</span><span>Triggers &amp; event-driven agents</span></a><a href="reliability-qos.html"><span class="n">28</span><span>Reliability &amp; QoS</span></a><a href="cost-capacity.html"><span class="n">29</span><span>Cost &amp; capacity engineering</span></a><a href="data-lifecycle.html"><span class="n">30</span><span>Data lifecycle &amp; provenance</span></a><a href="testing-certification.html"><span class="n">31</span><span>Testing &amp; certification</span></a><a href="scale-playbook.html"><span class="n">32</span><span>Scale playbook</span></a><a href="workflow-engine.html"><span class="n">34</span><span>Workflow engine</span></a><a href="frontier.html"><span class="n">33</span><span>Frontier &amp; gaps</span></a></nav><div class="part-label eyebrow">Appendix</div><nav><a href="appendix-ratings.html"><span class="n">A</span><span>Ratings matrix</span></a><a href="appendix-glossary.html"><span class="n">B</span><span>Glossary</span></a></nav><div class="inpage"><h4>In this chapter</h4><nav><a href="#fixed-chunking"><span class="n">01</span><span>Fixed-size chunking</span></a><a href="#token-aware"><span class="n">02</span><span>Token-aware chunking</span></a><a href="#semantic-chunking"><span class="n">03</span><span>Semantic chunking</span></a><a href="#heading-chunking"><span class="n">04</span><span>Markdown and heading chunking</span></a><a href="#ast-chunking"><span class="n">05</span><span>Code-aware (AST) chunking</span></a><a href="#pdf-layout-chunking"><span class="n">06</span><span>PDF layout chunking</span></a><a href="#table-chunking"><span class="n">07</span><span>Table chunking</span></a><a href="#structured-chunking"><span class="n">08</span><span>JSON and CSV chunking</span></a><a href="#timestamp-chunking"><span class="n">09</span><span>Timestamp chunking</span></a><a href="#scene-chunking"><span class="n">10</span><span>Scene chunking</span></a><a href="#agentic-chunking"><span class="n">11</span><span>Agentic chunking</span></a><a href="#late-chunking"><span class="n">12</span><span>Late chunking</span></a><a href="#chunk-overlap"><span class="n">13</span><span>Chunk overlap</span></a><a href="#chunk-metadata"><span class="n">14</span><span>Chunk metadata</span></a><a href="#chunk-selector"><span class="n">15</span><span>The strategy selector</span></a><a href="#chunk-eval"><span class="n">16</span><span>Measuring chunking quality</span></a></nav></div></aside>
+<main><div class="wrap">
+<header class="chead"><div class="kicker"><span class="cnum">CH 17</span><span class="eyebrow">II · Knowledge</span></div><h1>Chunking strategies</h1><p class="lede">Twelve chunkers, the selector that dispatches them, and overlap math.</p><div class="statstrip"><div><div class="k">Concepts</div><div class="v">16</div></div><div><div class="k">Mean impl</div><div class="v">7.6</div></div><div><div class="k">Mean criticality</div><div class="v">6.9</div></div><div><div class="k">Shipped</div><div class="v">9</div></div><div><div class="k">Thin / missing</div><div class="v">0</div></div></div></header><section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>Chunking is the highest-leverage, least-glamorous decision in a knowledge system. The chunk is
+    the unit of retrieval, so the boundaries you cut determine what can ever be found: a chunk that
+    splits a table from its header can never answer a question about that table, and no reranker,
+    bigger model or cleverer pattern will fix it.</p>
+
+    <p>Two forces pull in opposite directions. <strong>Precision</strong> wants small chunks — a
+    200-token chunk about refunds matches a refund query cleanly. <strong>Sufficiency</strong> wants
+    large chunks — the model needs enough context to answer. Every strategy below is a different
+    resolution of that tension, and the good ones (parent-child, late chunking) refuse the trade
+    entirely by decoupling what you index from what you return.</p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Content</th><th>Strategy</th><th>Boundary</th><th>Typical size</th></tr></thead>
+      <tbody>
+        <tr><td>Markdown, wikis, docs</td><td>Heading</td><td>Section headings</td><td>400–1,200 tok</td></tr>
+        <tr><td>Source code</td><td>AST</td><td>Function / class</td><td>Natural</td></tr>
+        <tr><td>PDF reports</td><td>PDF layout</td><td>Column + block</td><td>300–800 tok</td></tr>
+        <tr><td>Spreadsheets, tables</td><td>Table</td><td>Row groups + header</td><td>Rows</td></tr>
+        <tr><td>JSON / CSV</td><td>Structured</td><td>Records or paths</td><td>Variable</td></tr>
+        <tr><td>Transcripts</td><td>Timestamp</td><td>Time window</td><td>60–120 s</td></tr>
+        <tr><td>Video</td><td>Scene</td><td>Scene change</td><td>Per scene</td></tr>
+        <tr><td>Flowing prose, no structure</td><td>Semantic</td><td>Topic shift</td><td>200–600 tok</td></tr>
+        <tr><td>Legal / regulatory</td><td>Sentence window</td><td>Sentence + window</td><td>1 + n</td></tr>
+        <tr><td>Anything, high stakes</td><td>Parent-child</td><td>Two levels</td><td>300 / 1,200</td></tr>
+        <tr><td>Unknown / mixed</td><td>Token-aware</td><td>Token count + separators</td><td>512–1,024</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="block" id="strategies">
+  <h2>The strategies</h2>
+
+<article class="concept" id="fixed-chunking" data-impl="9" data-crit="6" data-tag="Baseline">
+<h3><span class="idx">01</span>Fixed-size chunking<a class="anchor" href="#fixed-chunking" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Baseline</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">Cut every n characters. Fast, predictable, structure-blind — and the right answer only as
+a fallback when you know nothing about the content.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Split the text at fixed character intervals with a fixed overlap. No parsing, no model, no
+assumptions. Its single virtue is that it always terminates with predictable chunk counts, which makes
+it a safe default for unknown content and a useful control in evaluations.</p>
+<p>Its defect is that character counts have no relationship to meaning or to tokens: a cut lands
+mid-sentence, mid-word, mid-number.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunking_strategy_selector.py</code><span class="note">_fixed_chunk() — the fallback path</span></li>
+<li><code>app/rag/chunker.py</code><span class="note">basic chunking</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>size 500, overlap 50
+ …"the refund window is 30 da"   | "ys from delivery. Damaged"…
+                                  ↑ cut mid-word, mid-fact
+retrieval for "refund window" matches chunk 1, which does not contain
+the answer's second half
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Keep it as the fallback and as the eval baseline, never as the default for content you understand.
+When a new format arrives and the classifier cannot place it, fixed chunking is what stops the pipeline
+failing — that is its job.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Mid-sentence cuts.</strong> Both chunks are weaker than either would have been.</li>
+<li><strong>Split entities.</strong> An account number or date cut in half.</li>
+<li><strong>Character/token mismatch.</strong> 500 characters is 90 tokens of English and 400 tokens of
+code or CJK text.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Fallback for unknown content; baseline for evaluation.</li>
+<li class="no">Never as the production default for a known format.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="token-aware" data-impl="8" data-crit="8" data-tag="Baseline">
+<h3><span class="idx">02</span>Token-aware chunking<a class="anchor" href="#token-aware" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Baseline</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Cut on token counts using the actual tokeniser, and prefer natural separators — the
+sane default when structure is unavailable.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Count with the tokeniser the embedding model uses, and walk a separator hierarchy: paragraph break,
+then sentence end, then clause, then word, then character. Take the largest separator that keeps the
+chunk within budget. This yields chunks that fit the model exactly and rarely cut mid-thought.</p>
+<p>Token accuracy matters because embedding models truncate silently. A "1,000 character" chunk of dense
+technical text can exceed an 8,192-token limit in a way nobody notices until retrieval quality drops for
+long documents only.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/agent/tokenizer.py</code><span class="note">tokenisation used for budgeting</span></li>
+<li><code>app/ingestion/chunkers/base.py</code><span class="note">chunker interface and separator handling</span></li>
+<li><code>app/rag/chunker.py</code><span class="note">token-aware splitting</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>target 512 tokens, overlap 64
+paragraph boundary at 480 tokens → cut there (not at 512)
+next chunk starts 64 tokens back, at a sentence boundary
+result: chunks of 380–512 tokens, none cut mid-sentence
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Use the real tokeniser, not a characters-divided-by-four estimate. The estimate is wrong by 3–5× on
+code, JSON and non-Latin scripts, and every downstream budget (context, cost, truncation) inherits the
+error.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Estimated tokens.</strong> Silent truncation at the embedder.</li>
+<li><strong>Wrong tokeniser.</strong> Counting with one model's tokeniser and embedding with another.</li>
+<li><strong>Separator starvation.</strong> Text with no paragraph or sentence breaks falls through to
+character splitting.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Structure is unknown or unreliable — the honest default.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="semantic-chunking" data-impl="7" data-crit="6" data-tag="Content-aware">
+<h3><span class="idx">03</span>Semantic chunking<a class="anchor" href="#semantic-chunking" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Content-aware</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">Cut where the topic changes: embed sentences, measure similarity between neighbours, and
+split at the dips.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Embed each sentence, compute similarity between consecutive sentences, and place a boundary where
+similarity drops below a threshold (or below a percentile of the document's distribution). Enforce
+minimum and maximum sizes so a boundary-free passage still gets split and a rapid topic oscillation does
+not produce fifty tiny chunks.</p>
+<p>Cost is one embedding per sentence at index time — significant on a large corpus, and the main reason
+this is not the universal default.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/semantic.py</code><span class="note">SemanticChunker</span></li>
+<li><code>app/ingestion/chunking_strategy_selector.py</code><span class="note">selected for unstructured prose</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>sentence-to-sentence similarity
+ s1→s2  0.81   s2→s3  0.78   s3→s4  0.34  ← topic shift: boundary
+ s4→s5  0.85   s5→s6  0.80   s6→s7  0.29  ← boundary
+chunks [s1-s3] refund mechanics · [s4-s6] warranty terms · [s7-…] returns
+a token-based chunker would have cut in the middle of the warranty section
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Worth it for unstructured prose that matters — transcripts of meetings, long-form reports, articles.
+Not worth it for content that already has headings (use them) or for corpora where paragraph-level
+chunking already evaluates well. Measure on your own data: the gain over token-aware chunking is real
+but often modest, and the index-time cost is not.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Threshold sensitivity.</strong> Slightly wrong and you get either one giant chunk or
+hundreds of fragments — always enforce min/max.</li>
+<li><strong>Embedding cost.</strong> Per-sentence embedding on a million documents.</li>
+<li><strong>Bad sentence splitting.</strong> Garbage in, garbage boundaries out.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Prose with no structural markers, and quality justifies the index cost.</li>
+<li class="no">Skip when headings exist.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="heading-chunking" data-impl="9" data-crit="8" data-tag="Content-aware">
+<h3><span class="idx">04</span>Markdown and heading chunking<a class="anchor" href="#heading-chunking" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Content-aware</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Use the outline the author already wrote. Split at headings, carry the heading path into
+metadata, never split a code fence or a table.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Parse the heading hierarchy, then cut at a chosen level (usually H2), recursively splitting any
+section that exceeds the size budget at the next level down and finally by tokens. The heading path
+travels with the chunk — both as retrieval-time context and as a filter field.</p>
+<p>Atomic elements are protected: code fences, tables and list blocks are never split, even if that makes
+a chunk oversized.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/heading.py</code><span class="note">HeadingChunker</span></li>
+<li><code>app/ingestion/parsers/markdown_parser.py</code><span class="note">the parsed hierarchy</span></li>
+<li><code>app/ingestion/parsers/docx_parser.py</code><span class="note">same treatment for Word heading styles</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre># Payments runbook
+## Payout failures                     → chunk 1  (path: [Runbook, Payout failures])
+### Diagnosis            (2,400 tok)   → too big, split at H3
+  → chunk 2  (path: [… , Diagnosis])       880 tok
+  → chunk 3  (path: [… , Diagnosis])       760 tok  (token split, sentence bdry)
+  ```bash …```                            kept whole inside chunk 2
+## Escalation                          → chunk 4
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Heading chunking is the best quality-per-effort strategy for internal documentation, which is usually
+your highest-signal corpus. The heading path in metadata pays twice: it gives the model context and
+gives users a navigable citation.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Documents with one heading.</strong> Falls back to token splitting — that is correct, but
+size the fallback deliberately.</li>
+<li><strong>Split code fences.</strong> Always a bug.</li>
+<li><strong>Lost path.</strong> A chunk saying "run the second command" with no context.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any authored document with real headings — start here.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="ast-chunking" data-impl="8" data-crit="8" data-tag="Content-aware">
+<h3><span class="idx">05</span>Code-aware (AST) chunking<a class="anchor" href="#ast-chunking" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Content-aware</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">One chunk per function, method or class, with the enclosing signature and imports
+attached — because a syntactic unit is the only meaningful unit of code.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Parse to a syntax tree and emit chunks at declaration boundaries. Attach the context a reader needs:
+module imports, the enclosing class signature for a method, decorators, and the docstring. Oversized
+functions split at statement boundaries rather than mid-expression. Metadata carries language, path,
+symbol name and revision.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/ast_chunker.py</code><span class="note">ASTChunker</span></li>
+<li><code>app/ingestion/chunking_strategy_selector.py</code><span class="note">selected for code content types</span></li>
+<li><code>app/embedding/router.py</code><span class="note">code chunks routed to a code embedding model</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>chunk
+  # from app.security import verify_hmac        ← imports carried
+  class WebhookHandler:                          ← enclosing signature
+      def handle(self, event: Event) -> None:
+          """Dispatch a verified webhook."""
+          …
+  metadata {lang:python, symbol:WebhookHandler.handle, path:…, rev:a91f2}
+
+without imports and class context, the chunk is unrunnable knowledge:
+you cannot tell what verify_hmac is or what self refers to
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Exclude generated and vendored code aggressively — dependencies can outnumber first-party code ten to
+one and will dominate retrieval. Re-chunk on merge so symbol metadata matches the revision an agent is
+reasoning about.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Unparseable files.</strong> Syntax errors, unsupported languages — fall back to token
+chunking rather than dropping the file.</li>
+<li><strong>Missing context.</strong> A method without its class.</li>
+<li><strong>Giant functions.</strong> A 2,000-line function still needs internal splitting.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any code corpus. Never use a prose chunker on code.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="pdf-layout-chunking" data-impl="7" data-crit="8" data-tag="Content-aware">
+<h3><span class="idx">06</span>PDF layout chunking<a class="anchor" href="#pdf-layout-chunking" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Content-aware</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Reconstruct reading order from geometry before splitting — columns, blocks, headers and
+footers are the difference between usable text and noise.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Group characters into lines, lines into blocks, blocks into columns using coordinates; determine
+reading order; identify and drop repeated headers and footers; keep figure captions with their figures
+and table cells with their headers. Then chunk within the reconstructed flow, carrying the page number
+so citations can point at a page.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/pdf_layout.py</code><span class="note">layout-aware chunking</span></li>
+<li><code>app/ingestion/parsers/pdf_parser.py</code><span class="note">geometry and text extraction</span></li>
+<li><code>app/ingestion/chunkers/table.py</code><span class="note">tables handled separately</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>two-column page
+naive order  L1 R1 L2 R2 L3 R3 …   ← lines interleaved across columns
+layout order L1 L2 L3 … then R1 R2 R3 …
+dropped      "ACME Confidential — page 14 of 84" (repeated on every page)
+kept         "Figure 3: settlement flow" with its figure reference
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>PDF layout handling has the highest ratio of quality gained to engineering spent of anything in
+ingestion, because interleaved-column text is both common and completely unusable. Measure it directly:
+sample extracted text and read it. If a human cannot follow it, no model will.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Column interleaving.</strong> The defining PDF failure.</li>
+<li><strong>Header pollution.</strong> The same company name in every chunk.</li>
+<li><strong>Table flattening.</strong> Numbers separated from their labels.</li>
+<li><strong>Lost page numbers.</strong> Citations that cannot be followed.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any PDF corpus with multi-column or complex layout — that is, most reports.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="table-chunking" data-impl="7" data-crit="8" data-tag="Content-aware">
+<h3><span class="idx">07</span>Table chunking<a class="anchor" href="#table-chunking" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Content-aware</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Every chunk of a table must carry the header row, or the numbers in it are meaningless —
+and a large table should be summarised rather than split into a hundred fragments.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Small tables become one chunk, serialised as markdown or key-value rows. Large tables split into row
+groups with the header repeated in each group, plus a leading summary chunk describing the table's
+columns, ranges and purpose. Very large tables should not be chunked at all: index the schema and
+summary, and answer questions with code execution against the data.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/table.py</code><span class="note">TableChunker</span></li>
+<li><code>app/ingestion/parsers/excel_parser.py</code>, <code>csv_parser.py</code><span class="note">table extraction</span></li>
+<li><code>app/tools/code_interpreter.py</code><span class="note">the alternative for large tables</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>table: quarterly revenue by region, 4 columns × 60 rows
+
+split without headers
+  chunk 2: "APAC | 4,120 | 3,890 | 5,010"    ← 4,120 of what? which quarter?
+split with headers repeated
+  chunk 2: "Region | Q1 | Q2 | Q3
+            APAC   | 4,120 | 3,890 | 5,010"  ← answerable
+plus summary chunk: "Quarterly revenue by region, FY24, INR lakhs,
+                     12 regions, Q1–Q4 columns"
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Financial and operational tables are where confidently wrong answers come from, and the cause is
+almost always a header separated from its values. Treat header preservation as an invariant and test it.
+For anything above a few hundred rows, the schema-plus-code-execution route is both cheaper and more
+accurate.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Headers dropped.</strong> Numbers without labels.</li>
+<li><strong>Merged cells.</strong> Misaligned columns.</li>
+<li><strong>Row-per-chunk.</strong> Thousands of near-identical vectors.</li>
+<li><strong>Units lost.</strong> "4,120" without knowing it is lakhs.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Documents contain tables that matter — reports, statements, specifications.</li>
+<li class="no">Do not chunk large datasets; query them.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="structured-chunking" data-impl="8" data-crit="6" data-tag="Content-aware">
+<h3><span class="idx">08</span>JSON and CSV chunking<a class="anchor" href="#structured-chunking" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Content-aware</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">Either one chunk per meaningful record, or a flattened <code>path: value</code>
+representation — the shape of the data decides which.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>For record-shaped data (an array of objects), one chunk per record, serialised as labelled fields, is
+usually right — each record is a retrievable entity. For configuration-shaped data (deep nested
+objects), flattening to <code>a.b.c: value</code> lines preserves the structure in a form embeddings can
+use. For very large arrays, do neither: index the schema and a sample.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parsers/json_parser.py</code><span class="note">flattening and record detection</span></li>
+<li><code>app/ingestion/parsers/csv_parser.py</code>, <code>yaml_parser.py</code><span class="note">tabular and config formats</span></li>
+<li><code>app/ingestion/parsers/parquet_parser.py</code>, <code>avro_parser.py</code><span class="note">columnar formats</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>record-shaped  [{id, customer, amount, status}, …]
+  chunk per record: "id: INV-8891 · customer: Northwind ·
+                     amount: 41,200 INR · status: disputed"
+
+config-shaped  {"services":{"payments":{"retries":3,"timeout":30}}}
+  flattened:  services.payments.retries: 3
+              services.payments.timeout: 30
+query "what is the payments timeout?" → matches the flattened path
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Configuration corpora (Kubernetes manifests, service configs, feature flags) are an underrated
+knowledge source and flatten beautifully. Data exports are the opposite: they belong in a queryable
+store, not an embedding index.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Embedding raw JSON.</strong> Braces and quotes dominate the tokens.</li>
+<li><strong>Flattening huge arrays.</strong> Path explosion.</li>
+<li><strong>Type loss.</strong> Everything becomes a string; no comparisons possible.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Config and record data are part of the corpus; not for bulk data.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="timestamp-chunking" data-impl="8" data-crit="6" data-tag="Content-aware">
+<h3><span class="idx">09</span>Timestamp chunking<a class="anchor" href="#timestamp-chunking" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Content-aware</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">For transcripts, cut on time windows with overlap and keep the time range in metadata —
+so a citation can point at a moment, not a document.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Split the transcript into windows (60–120 seconds is a good default) with 10–20% overlap so a sentence
+spanning a boundary is not lost. Keep start and end times, speaker labels where available, and the
+recording identifier. Prefer speaker turns as boundaries when diarisation is reliable — a turn is a
+better semantic unit than a clock interval.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/timestamp.py</code><span class="note">TimestampChunker</span></li>
+<li><code>app/ingestion/parsers/audio_parser.py</code><span class="note">transcript with timings</span></li>
+<li><code>app/voice/stt_engine.py</code><span class="note">the transcription source</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>48-minute call → 90s windows, 15s overlap → 34 chunks
+chunk 15  t 21:00–22:30  speaker=customer
+  "…we'd need the renewal moved to April because our budget cycle…"
+citation  "sales-call-2026-09-02, 21:00" → playable link
+query "when does their budget cycle start?" → this chunk, this moment
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The timestamp is the feature. A citation into a two-hour recording that says "somewhere in this file"
+is worthless; one that opens at 21:00 is immediately verifiable, and verifiability is what makes people
+trust agent output from recordings.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>No overlap.</strong> Sentences cut at window boundaries.</li>
+<li><strong>Fixed windows through speaker changes.</strong> Two speakers in one chunk, attribution lost.</li>
+<li><strong>Missing timings.</strong> The chunk is just text again.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any audio or video transcript.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="scene-chunking" data-impl="6" data-crit="4" data-tag="Content-aware">
+<h3><span class="idx">10</span>Scene chunking<a class="anchor" href="#scene-chunking" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Content-aware</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="dv">4<small>/10</small></span></span></div>
+<p class="tldr">For video, cut on scene changes rather than the clock, so each chunk holds one coherent
+visual context plus the words spoken over it.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Detect scene boundaries from frame differences, then build a chunk per scene containing the transcript
+for that interval, a keyframe description, and any on-screen text from OCR. The result is a chunk where
+audio and visual content agree, which is what makes video retrieval answer questions rather than return
+timestamps.</p>
+<p>Image-region chunking — splitting a single image into semantically distinct regions and indexing each
+— is the natural extension and is not implemented here; the OCR extractors work at the whole-document
+level (chapter 21).</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/scene.py</code><span class="note">SceneChunker</span></li>
+<li><code>app/ingestion/parsers/video_parser.py</code><span class="note">scene detection and frame extraction</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>12-minute demo → 9 scenes
+scene 4  3:40–5:10
+  speech  "and here you configure the retry policy"
+  frame   OCR "Retry attempts: 3 · Backoff: exponential"
+  chunk   both, with t_start=3:40
+"what's the default retry count?" → answered from the frame text
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>One keyframe per scene, not one per second. The frame budget is the whole cost story for video, and
+scenes are the natural sampling unit — a slide that stays on screen for four minutes needs one caption,
+not two hundred.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Over-detection.</strong> A camera pan producing forty "scenes".</li>
+<li><strong>Under-detection.</strong> A 20-minute screencast as one scene.</li>
+<li><strong>Audio/visual drift.</strong> Transcript and frames misaligned.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Video where the screen carries information.</li>
+<li class="no">For talking-head video, timestamp chunking on the transcript is enough.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="agentic-chunking" data-impl="6" data-crit="5" data-tag="Model-driven">
+<h3><span class="idx">11</span>Agentic chunking<a class="anchor" href="#agentic-chunking" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Model-driven</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i></span><span class="dv">5<small>/10</small></span></span></div>
+<p class="tldr">Let a model decide the boundaries — reading the document and cutting where a human
+would. Best quality, highest cost, hardest to make deterministic.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A model reads the document (or a window of it) and returns proposed boundaries with reasons, optionally
+plus a title and summary per chunk. Because the same document should chunk identically every time, the
+output must be cached and versioned by document hash and prompt version — otherwise re-ingestion
+reshuffles every chunk id and invalidates every citation.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/patterns/agentic_chunking.py</code><span class="note">the strategy (also exposed as RAGStrategy.AGENTIC_CHUNKING)</span></li>
+<li><code>app/rag/contracts.py</code><span class="note">part of the public strategy vocabulary</span></li>
+</ul>
+<p>Rated 6: implemented as a strategy, but the determinism and caching discipline needed to run it over a
+large corpus is not fully in place.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>a court judgment with no headings
+model boundaries
+  1 procedural history      "distinct narrative, ends at 'the appellant then'"
+  2 facts as found
+  3 legal reasoning
+  4 order and costs
+a token chunker cuts arbitrarily through the reasoning section, which is
+the part every query is about
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Reserve it for small, high-value, structurally-hostile corpora: judgments, contracts, medical notes.
+On a million documents it is prohibitively expensive, and its quality edge over heading or semantic
+chunking on well-structured content is small. Cache by document hash so you pay once.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Non-determinism.</strong> New boundaries on every ingest; citations rot. Cache and version.</li>
+<li><strong>Cost at scale.</strong> One call per document minimum, often more.</li>
+<li><strong>Boundary drift with prompt changes.</strong> Version the prompt as part of the cache key.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Small corpus, high value, no usable structure.</li>
+<li class="no">Never as a default.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="late-chunking" data-impl="7" data-crit="6" data-tag="Model-driven">
+<h3><span class="idx">12</span>Late chunking<a class="anchor" href="#late-chunking" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Model-driven</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">Embed the whole document first, then pool the token embeddings into chunks — so every
+chunk's vector already knows the document's context, without a per-chunk model call.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Conventional chunking embeds each chunk in isolation, so a chunk saying "the limit is 30 days" has no
+idea it is about refunds. Late chunking runs the long-context embedding model over the full document,
+keeps the token-level output, then averages token vectors within each chunk boundary. Each chunk vector
+is contextualised by everything around it — the benefit of contextual enrichment without the per-chunk
+generation cost.</p>
+<p>The constraint is model support: you need an embedding model that exposes token-level output and
+handles long inputs.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/late_chunker.py</code><span class="note">the implementation</span></li>
+<li><code>app/rag/contextual_enricher.py</code><span class="note">the generation-based alternative</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>chunk text  "The limit is 30 days from delivery."
+isolated embedding    → close to any document about limits or delivery
+late-chunked embedding → close to refund questions, because the document
+                          context (a refund policy) is baked into the vector
+no extra model calls: one long-context pass over the document
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The best cost/quality point available for context-poor chunks, when your embedding model supports it.
+It also composes with everything else: you can late-chunk heading-based boundaries, which gives you
+authored structure and contextual vectors together.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Model does not support it.</strong> Needs token-level embeddings; not all providers expose
+them.</li>
+<li><strong>Document exceeds the context window.</strong> Must be windowed, which partially defeats it.</li>
+<li><strong>Pooling choice.</strong> Naive mean pooling over a long span dilutes the signal.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Chunks are small and context-dependent, and the model supports token output.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="chunk-overlap" data-impl="9" data-crit="7" data-tag="Parameter">
+<h3><span class="idx">13</span>Chunk overlap<a class="anchor" href="#chunk-overlap" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Parameter</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Repeat the last n tokens of each chunk at the start of the next, so a fact spanning a
+boundary appears whole in at least one chunk. Typically 10–20%.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Overlap is insurance against boundary placement. Too little and cross-boundary facts are lost; too
+much and you inflate index size, duplicate retrieval hits, and waste context showing the model the same
+sentences twice. The right amount depends on how well your boundaries respect meaning: heading
+chunking needs little overlap, fixed chunking needs a lot.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/base.py</code><span class="note">overlap handling</span></li>
+<li><code>app/ingestion/pipeline.py</code><span class="note">stage 11 dedup limits the duplicate-retrieval side effect</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>overlap 0
+  c1 "…refunds are accepted within"
+  c2 "30 days of delivery…"          neither chunk answers the question
+overlap 15%
+  c1 "…refunds are accepted within 30 days of delivery."   ← complete
+  c2 "…within 30 days of delivery. Damaged goods…"
+cost: index size +15%, and both chunks may be retrieved (dedup handles it)
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Overlap is a straight multiplier on index size and embedding cost, so it deserves an explicit choice
+rather than a copied default. With structure-respecting boundaries, 10% is plenty. With fixed-size
+chunking, 20% is a patch over a worse decision.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Zero overlap on naive boundaries.</strong> Facts lost at every cut.</li>
+<li><strong>Excessive overlap.</strong> 50% overlap doubles the index for marginal gain.</li>
+<li><strong>Duplicate context.</strong> Two overlapping chunks in one prompt; deduplicate at assembly.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always some, sized to how much you trust your boundaries.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="chunk-metadata" data-impl="8" data-crit="9" data-tag="Parameter">
+<h3><span class="idx">14</span>Chunk metadata<a class="anchor" href="#chunk-metadata" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Parameter</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">A chunk without metadata is a floating string. Position, provenance, structure and
+governance fields are what make it filterable, citable and deletable.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Every chunk inherits document metadata and adds its own: order index, heading path or page or symbol,
+token count, parent reference, and the chunking strategy and version that produced it. That last field is
+what lets you find and re-chunk everything produced by a strategy you have since improved.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/pipeline.py</code><span class="note">metadata carried through chunk and enrich</span></li>
+<li><code>app/rag/indexing.py</code><span class="note">RAGIndexRecord — what is persisted</span></li>
+<li><code>app/rag/contextual_enricher.py</code><span class="note">derived metadata</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>{ chunk_id: "acme:conf:POL-118#refunds#2",
+  doc_id: "acme:conf:POL-118", order: 2, parent: "…#refunds",
+  heading_path: ["Policies","Refunds"], page: null,
+  tokens: 412, strategy: "heading@v3", lang: "en",
+  classification: "internal", jurisdiction: "DE",
+  source_ref: "confluence://space/POL/page/118?version=7" }
+
+"re-chunk everything produced by heading@v2" is now a single query
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Record the strategy and its version on every chunk. Without it, improving a chunker means re-ingesting
+entire collections blindly; with it, you can migrate incrementally and compare old against new on the
+same corpus.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Metadata lost at chunk time.</strong> Document fields not copied down.</li>
+<li><strong>No strategy version.</strong> No migration path.</li>
+<li><strong>No parent reference.</strong> Parent-child retrieval becomes impossible after the fact.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always. It costs bytes and saves quarters.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="chunk-selector" data-impl="8" data-crit="8" data-tag="Decision framework">
+<h3><span class="idx">15</span>The strategy selector<a class="anchor" href="#chunk-selector" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Decision framework</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">One component maps content type plus collection configuration to a chunker, so the
+pipeline never grows a chain of format conditionals.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>The selector takes the classified content type and the collection's configured preference and returns
+a chunker instance, falling back through progressively more general strategies to fixed chunking. It
+exposes both <code>select()</code> (get the chunker) and <code>select_and_chunk()</code> (do it), which
+keeps the pipeline stage a one-liner and makes the mapping independently testable.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunking_strategy_selector.py</code><span class="note">ChunkingStrategySelector.select() / select_and_chunk(), dispatching to SemanticChunker, ASTChunker, HeadingChunker, TableChunker, TimestampChunker, SceneChunker, PDF layout, or _fixed_chunk()</span></li>
+<li><code>app/ingestion/pipeline.py</code><span class="note">stage 8 calls it</span></li>
+<li><code>app/ingestion/orchestrator.py</code><span class="note">the orchestrated path</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>content type            → chunker
+text/markdown           → HeadingChunker
+text/x-python           → ASTChunker
+application/pdf (text)  → pdf_layout
+application/pdf (scan)  → OCR path, then heading/semantic on the result
+text/csv                → TableChunker
+audio/*                 → TimestampChunker
+video/*                 → SceneChunker
+text/plain              → SemanticChunker (or token-aware if configured)
+unknown                 → _fixed_chunk()
+collection override always wins over the content-type default
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Make the mapping data, not code, so a tenant with unusual content can be reconfigured without a
+deploy. And make the fallback loud: a rising share of documents landing on fixed chunking means your
+classifier or your parser coverage has a gap.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Silent fallback.</strong> Everything quietly fixed-chunked.</li>
+<li><strong>Format conditionals in the pipeline.</strong> The thing the selector exists to prevent.</li>
+<li><strong>Mixed strategies in one collection.</strong> Inconsistent chunk sizes make ranking harder to
+reason about.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>More than one content type — immediately.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="chunk-eval" data-impl="6" data-crit="8" data-tag="Measurement">
+<h3><span class="idx">16</span>Measuring chunking quality<a class="anchor" href="#chunk-eval" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Measurement</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Chunking is the one parameter you should tune empirically, because the right answer is
+corpus-specific and the wrong answer is invisible.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Build a small labelled set — questions with the passage that answers each — then measure, per
+strategy and per size: <em>answer containment</em> (does a retrieved chunk actually contain the answer),
+<em>recall@k</em>, and <em>context efficiency</em> (answer tokens as a share of retrieved tokens). Sweep
+size and overlap, and pick the point where containment plateaus.</p>
+<p>The cheap proxy when you have no labels: sample chunks and read them. If a chunk is not
+self-explanatory to a human, it will not be to a model.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/evaluation.py</code><span class="note">retrieval evaluation</span></li>
+<li><code>app/evals/rag_score.py</code><span class="note">retrieval scoring</span></li>
+<li><code>app/evals/dataset_builder.py</code><span class="note">building the labelled set</span></li>
+<li><code>app/api/golden_datasets.py</code><span class="note">managing golden data</span></li>
+</ul>
+<p>Rated 6: the evaluation components exist, but there is no built-in chunking sweep that reports
+containment by strategy and size for a collection.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>corpus: 400 policy documents · 120 labelled questions
+
+strategy        size  overlap  containment  recall@5  ctx efficiency
+fixed            500     50       0.61        0.72       0.09
+token-aware      512     64       0.74        0.81       0.11
+heading         auto     10%      0.88        0.93       0.14
+heading+parent  300/1200 10%      0.91        0.95       0.08
+semantic        auto     10%      0.86        0.91       0.13
+
+decision: heading (best quality per token); parent-child for the
+regulated subset where completeness beats efficiency
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Run this once per corpus type and you will save more quality than a model upgrade would buy. Re-run
+when the corpus changes character — a collection that started as wiki pages and became PDF reports
+needs a different answer.</p>
+<p>Keep the labelled set small and real: 100–200 questions from actual user queries beats a thousand
+synthetic ones.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Copying someone else's parameters.</strong> 512/64 is a starting point, not a conclusion.</li>
+<li><strong>Optimising recall only.</strong> High recall with terrible context efficiency blows your
+budget.</li>
+<li><strong>Never re-measuring.</strong> Chunking tuned for the corpus you had two years ago.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Before you ingest a million documents with parameters nobody validated.</li></ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="ch17-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Re-chunking without re-fetching.</strong> Parsed text is not retained, so changing a
+      strategy means going back to the source. Storing parsed output would make chunking migrations
+      cheap.</li>
+      <li><strong>Image-region chunking.</strong> Images are handled whole; splitting a diagram into
+      labelled regions and indexing each is not implemented.</li>
+      <li><strong>A built-in chunking sweep.</strong> The evaluation parts exist; the "try five
+      strategies on this collection and show me containment" workflow does not.</li>
+      <li><strong>Deterministic agentic chunking.</strong> Needs hash-and-prompt-versioned caching before
+      it is safe on a large corpus.</li>
+      <li><strong>Cross-document chunk linking.</strong> No representation for "this chunk supersedes
+      that one", which is what a policy corpus with versions actually needs.</li>
+    </ul>
+  </div>
+</section>
+
+<div class="pagenav"><a class="prev" href="embeddings.html"><div class="d">Previous · CH 07</div><div class="t">Embeddings</div></a><a class="next" href="prompt-builder.html"><div class="d">Next · CH 08</div><div class="t">Prompt builder</div></a></div>
+<p class="footnote">AgentVerse Field Manual · ratings are this author's judgement of the code as it stands, not a vendor claim. File paths are navigation anchors; line numbers drift.</p>
+</div></main>
+</div>
+<script>
+(function () {
+  var r = document.documentElement;
+  try { var t = localStorage.getItem('avfm-theme'); if (t) r.setAttribute('data-theme', t); } catch (e) {}
+  function cur() {
+    var a = r.getAttribute('data-theme');
+    if (a) return a;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  document.addEventListener('click', function (ev) {
+    var b = ev.target.closest('[data-theme-toggle]');
+    if (!b) return;
+    var n = cur() === 'dark' ? 'light' : 'dark';
+    r.setAttribute('data-theme', n);
+    try { localStorage.setItem('avfm-theme', n); } catch (e) {}
+  });
+  var f = document.querySelector('[data-filter]');
+  if (f) {
+    f.addEventListener('input', function () {
+      var q = f.value.trim().toLowerCase();
+      document.querySelectorAll('[data-filter-row]').forEach(function (el) {
+        el.hidden = q.length > 0 && el.getAttribute('data-filter-row').indexOf(q) === -1;
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>

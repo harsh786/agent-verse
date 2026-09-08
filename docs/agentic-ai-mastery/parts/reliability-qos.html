@@ -1,0 +1,224 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>Reliability primitives appeared throughout the book as they were needed; this chapter assembles them as
+    a system and adds the quality-of-service layer on top. The distinction: <strong>reliability</strong> keeps
+    the platform correct under failure (idempotency, rollback, breakers); <strong>QoS</strong> keeps it fair
+    and responsive under load (priority, backpressure, bulkheads, degraded mode).</p>
+
+    <p>The unifying idea is <strong>graceful degradation under both failure and load</strong>. A production
+    agent platform never has the luxury of a clean environment — providers flap, tenants stampede, connectors
+    die — so every primitive here answers "how do we stay correct and fair when something is wrong", and the
+    answer is never "fall over" and never "silently do less without saying so".</p>
+  </div>
+</section>
+
+<section class="block" id="reliability-qos">
+  <h2>Reliability and QoS</h2>
+
+<article class="concept" id="rq-failure-recovery" data-impl="8" data-crit="10" data-tag="Reliability">
+<h3>Failure classification and recovery policy</h3>
+<p class="tldr">Not all failures are equal: classify each — transient, rate-limited, auth, missing-input,
+invalid-plan, permanent — and map the class to a response, because retrying an auth failure is as wrong as
+escalating a timeout.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A failure classifier maps an error to a class; a recovery policy maps the class to an action; a retry
+strategy selector picks the backoff shape; an escalation policy decides when a human is involved. This is the
+recovery subsystem introduced in chapter 1, presented here as the platform's central failure-handling brain —
+every subsystem's failures flow through the same classification so responses are consistent.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/recovery/failure_classifier.py</code>, <code>recovery_policy.py</code><span class="note">classify → respond</span></li>
+<li><code>app/recovery/retry_strategy_selector.py</code>, <code>escalation_policy.py</code><span class="note">backoff and escalation</span></li>
+<li><code>app/recovery/recovery_trace.py</code><span class="note">what was tried and why</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>failure                    class          response
+timeout / 5xx              transient      retry, exp backoff + jitter
+429                        rate-limited   retry after window; shed if repeated
+403 / 401                  auth           no retry → escalate
+"missing account id"       missing-input  clarification to a human
+"step precondition false"  invalid-plan   replan with the failure as context
+"unsupported operation"    permanent      fail; roll back side effects
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Consistent classification is what keeps failure handling sane across dozens of subsystems — the same
+timeout means the same thing whether it came from a tool, an embedder, or a database. The recovery trace is
+the audit of what was attempted, which is essential when a goal took nine iterations to fail: you can see it
+retried a permanent error four times because it was misclassified. Full treatment in chapter 1.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Misclassification.</strong> Retrying the permanent, escalating the transient.</li>
+<li><strong>Uniform retry.</strong> The same backoff for every failure class.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always. Failure is the normal case in distributed systems.</li></ul></section>
+</article>
+
+<article class="concept" id="rq-idempotency-dedup" data-impl="8" data-crit="10" data-tag="Reliability">
+<h3>Idempotency and deduplication</h3>
+<p class="tldr">In a system that retries constantly, safety means a repeated operation has the same effect as a
+single one — an idempotency key per write, dedup of repeated requests, so a retry never double-charges.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Every write carries an idempotency key derived from goal + step + argument hash, so the target (or the
+platform) recognises a retried call as the same call and does not repeat the side effect. Deduplication
+catches repeated requests earlier — the same goal submitted twice, the same webhook delivered twice — and
+returns the prior result. Together they make at-least-once delivery safe, which is the only delivery guarantee
+a distributed system can cheaply offer.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/reliability/idempotency.py</code><span class="note">idempotency keys</span></li>
+<li><code>app/reliability/dedup.py</code>, <code>app/services/dedup.py</code>, <code>app/gateway/dedup_scheduler.py</code><span class="note">deduplication</span></li>
+<li><code>app/reliability/goal_lifecycle.py</code><span class="note">lifecycle state that dedup keys off</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>goal retried after a worker crash mid-step-4 (create invoice)
+ step 4's idempotency key = hash(goal, step 4, invoice args)
+ the ERP recognises the key → returns the already-created invoice
+ → the customer is billed once, not twice
+without idempotency, the retry creates a second invoice
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Idempotency is non-negotiable for any agent that writes, because retries are constant — a worker crash, a
+timeout, a rebalance all trigger them. The key must be derived deterministically from the operation, not
+generated fresh, or the retry looks like a new operation. This is the primitive that lets you use at-least-once
+delivery (cheap and reliable) instead of exactly-once (expensive and often impossible).</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Retry without idempotency.</strong> Duplicate side effects.</li>
+<li><strong>Non-deterministic keys.</strong> Retries not recognised as repeats.</li>
+<li><strong>Dedup window too short.</strong> A late retry treated as new.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any write-capable agent — so any production agent.</li></ul></section>
+</article>
+
+<article class="concept" id="rq-bulkhead-breaker" data-impl="8" data-crit="9" data-tag="Isolation">
+<h3>Bulkheads and circuit breakers</h3>
+<p class="tldr">Two isolation primitives: bulkheads cap per-tenant concurrency so one cannot starve the fleet,
+and breakers stop calling a failing dependency so its outage does not become yours.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A bulkhead is a concurrency ceiling per tenant (and per resource pool) — a fan-out that would exhaust the
+workers or connections queues instead. A circuit breaker fronts each flaky dependency: after repeated
+failures it opens and fails fast (or serves stale) until a probe confirms recovery. Breaker state is shared
+across replicas via Redis, so the whole fleet learns a dependency is down rather than each node discovering it
+independently.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/reliability/bulkhead.py</code><span class="note">per-tenant concurrency</span></li>
+<li><code>app/reliability/circuit_breaker.py</code>, <code>redis_circuit_breaker.py</code><span class="note">breakers, cross-replica state</span></li>
+<li><code>app/providers/circuit_breaker.py</code><span class="note">provider breakers (chapter 16)</span></li>
+<li><code>app/mcp/client.py</code><span class="note">breaker + stale-cache on tool calls (chapter 19)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>bulkhead   acme capped at 50 concurrent tool calls → a 200-way fan-out
+           queues; other tenants keep their capacity
+breaker    the CRM connector fails 5× → open (shared via Redis, whole fleet
+           stops calling it) → 60s later a probe → recovered → close
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>The bulkhead is the ceiling that no amount of agent spawning (chapter 1) or trigger firing (chapter 27) can
+breach — it is what makes multi-tenancy survivable under load. Cross-replica breaker state is the detail that
+matters: without it, a hundred replicas each hammer a dead provider a hundred times before giving up. Together
+they turn "one thing is broken" into "one thing is isolated".</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>No bulkhead.</strong> One tenant's fan-out starving all.</li>
+<li><strong>Per-replica breakers.</strong> The fleet not learning collectively.</li>
+<li><strong>No stale fallback.</strong> A read failing when a cached answer would do.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any multi-tenant system with external dependencies.</li></ul></section>
+</article>
+
+<article class="concept" id="rq-qos" data-impl="7" data-crit="8" data-tag="QoS">
+<h3>Priority, backpressure, and queue policy</h3>
+<p class="tldr">Under load, decide what runs now, what waits, and what is shed — priority for what matters,
+backpressure to slow intake before the system tips over, and a queue policy that is fair by design.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A QoS layer over the queue: priority policy ranks work (an interactive goal over a batch one, a paying
+tenant's over a free one); backpressure signals upstream to slow down when the system is saturated, rather
+than accepting work it cannot serve; a queue policy governs fairness so no class is starved. A scheduler
+applies these. The goal is to degrade predictably under load — the right work still runs, the rest waits or is
+shed with a clear signal.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/qos/priority_policy.py</code>, <code>queue_policy.py</code>, <code>scheduler.py</code><span class="note">priority, fairness, scheduling</span></li>
+<li><code>app/qos/backpressure.py</code>, <code>qos_trace.py</code><span class="note">backpressure and its trace</span></li>
+<li><code>app/scaling/priority_queue.py</code>, <code>celery_app.py</code><span class="note">the queues it governs (chapter 20)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>load spike: 10,000 goals arrive in a minute
+ priority: interactive + enterprise goals run first
+ backpressure: intake slows, upstream told to retry later (not silently dropped)
+ fairness: free tier still gets its guaranteed share, not zero
+ result: predictable degradation — the important work is unaffected
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Backpressure is the primitive that separates a system that degrades gracefully from one that collapses:
+accepting work faster than you can serve it just moves the failure downstream and makes it worse. Priority is
+how you honour SLAs under contention — the enterprise tenant you promised 4-second latency should not queue
+behind a free tenant's backfill (chapter 20). QoS is where fairness stops being an aspiration and becomes a
+policy.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>No backpressure.</strong> Accepting more than you can serve, then collapsing.</li>
+<li><strong>Priority without fairness.</strong> Low-priority work starved entirely.</li>
+<li><strong>Silent shedding.</strong> Dropping work without telling the caller.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any system that experiences load spikes — so any real one.</li></ul></section>
+</article>
+
+<article class="concept" id="rq-degraded" data-impl="7" data-crit="9" data-tag="Resilience">
+<h3>Degraded mode and readiness gates</h3>
+<p class="tldr">When a dependency is down, run with less rather than failing entirely — lexical search without
+the embedder, deterministic guardrails without the toxicity model — and refuse to serve only what genuinely
+cannot run safely.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A degraded-mode policy defines what the platform does when a dependency is unavailable: fall back to the
+lexical retrieval path if the embedder is down (chapter 7), run deterministic guardrails if the toxicity model
+is down (chapter 12), delegate to a ready RAG strategy if one is unavailable (chapter 2). A readiness gate
+refuses to serve only what cannot run <em>safely</em> in degraded mode — a fail-closed control (chapter 12)
+must not degrade to fail-open. Dependency health drives both.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/runtime_readiness/degraded_mode_policy.py</code>, <code>readiness_gate.py</code>, <code>dependency_health.py</code><span class="note">degraded mode and readiness</span></li>
+<li><code>app/rag/gateway.py</code><span class="note">strategy delegation (chapter 2)</span></li>
+<li><code>app/observability/health.py</code>, <code>app/api/public_status.py</code><span class="note">health and status</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>embedder provider down
+ degraded mode: retrieval falls back to BM25 + trigram, flagged degraded
+ guardrails: deterministic checks still run; toxicity model unavailable →
+   for high-risk channels, BLOCK (never fail-open)
+ status page: "semantic search degraded" — announced, not silent
+ readiness gate: refuses only the operations that cannot run safely
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Degraded mode is the difference between a partial outage and a total one — most of the platform keeps
+working when one dependency fails, and the reduction is announced rather than silent. The one inviolable rule:
+fail-closed controls never degrade to fail-open. A toxicity model being down is a reason to run stricter
+deterministic checks, never a reason to skip safety. Announce degradation on the status page so users know why
+quality changed.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>All-or-nothing.</strong> One dependency down taking everything down.</li>
+<li><strong>Fail-closed degrading to fail-open.</strong> Skipping safety when a model is down.</li>
+<li><strong>Silent degradation.</strong> Users blaming the product.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any platform with external dependencies that can fail independently.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch28-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Adaptive concurrency limits.</strong> Bulkheads are configured, not learned from observed
+      latency and error rates under load.</li>
+      <li><strong>Chaos testing.</strong> The primitives exist; systematic fault injection to verify they work
+      together under failure is thin (chapter 31).</li>
+      <li><strong>Cross-region failover.</strong> Degraded mode handles dependency failure; regional failover
+      for the datastores themselves is future work (chapter 32).</li>
+      <li><strong>Predictive backpressure.</strong> Backpressure reacts to saturation; anticipating a spike
+      from leading indicators would smooth degradation.</li>
+    </ul>
+  </div>
+</section>

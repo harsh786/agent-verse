@@ -1,0 +1,216 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>An agent has unit economics, and if you do not understand them you will discover them on an invoice. The
+    cost of a goal is not a mystery — it decomposes cleanly — and the levers to reduce it are known and ordered.
+    This chapter is the economics of running agents at scale: what a goal costs, why, and how to make those
+    numbers survive growth.</p>
+
+    <p>The core formula is worth memorising: <strong>cost per goal ≈ iterations × (tokens per iteration ×
+    price) + tool cost + compute cost</strong>. Every optimisation targets one factor, and they must be attacked
+    in the right order, because the tempting lever (a cheaper model) is usually not the biggest one (fewer
+    iterations, fewer tokens).</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 840 210" role="img" aria-label="Cost per goal decomposed: iterations times tokens-per-iteration times price, plus tool cost and compute cost, with the optimisation levers for each factor ordered by impact.">
+      <g font-family="IBM Plex Mono, monospace" font-size="12" fill="currentColor">
+        <text x="0" y="30">cost/goal  =  iterations  ×  (tokens/iter  ×  price)  +  tool cost  +  compute</text>
+      </g>
+      <g fill="none" stroke="currentColor" stroke-width="1.1">
+        <rect x="0" y="60" width="200" height="60" rx="3"></rect>
+        <rect x="220" y="60" width="200" height="60" rx="3"></rect>
+        <rect x="440" y="60" width="180" height="60" rx="3"></rect>
+        <rect x="640" y="60" width="200" height="60" rx="3"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="11" fill="currentColor" text-anchor="middle">
+        <text x="100" y="80">fewer iterations</text><text x="320" y="80">fewer tokens</text>
+        <text x="530" y="80">cheaper price</text><text x="740" y="80">less tool/compute</text>
+      </g>
+      <g font-family="IBM Plex Mono, monospace" font-size="9" fill="currentColor" opacity="0.65" text-anchor="middle">
+        <text x="100" y="98">better planning</text><text x="100" y="110">lessons · stall detect</text>
+        <text x="320" y="98">narrow tool schemas</text><text x="320" y="110">tighter retrieval · cache</text>
+        <text x="530" y="98">per-role routing</text><text x="530" y="110">shadow-tested downgrade</text>
+        <text x="740" y="98">semantic + tool cache</text><text x="740" y="110">code over tool loops</text>
+      </g>
+      <text x="0" y="150" font-family="IBM Plex Mono, monospace" font-size="10" fill="#00A8CC">attack in this order: iterations → tokens → price. the tempting lever (price) is usually the smallest.</text>
+      <text x="0" y="172" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">levers interact: narrowing tool schemas cuts tokens AND improves selection AND reduces iterations — start there</text>
+      <text x="0" y="192" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">always report cost WITH quality: a cost win that lowers success is a loss disguised as a saving</text>
+    </svg>
+    <figcaption>The unit economics of a goal. The levers are ordered by impact, and the first one —
+    <span class="fig-em">narrowing tool schemas</span> — improves three factors at once.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="cost-capacity">
+  <h2>Cost and capacity</h2>
+
+<article class="concept" id="cc-unit-economics" data-impl="8" data-crit="10" data-tag="Economics">
+<h3>The unit economics of a goal</h3>
+<p class="tldr">Cost per goal decomposes into iterations, tokens per iteration, price, tool cost, and compute —
+measure each, attribute it (including sub-agents), and you can explain and control the bill.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The cost tracker accumulates real spend per run across every component and attributes it to the goal,
+including descendants of spawned agents. The breakdown by component (planner, executor, verifier, embeddings,
+reranker, tools, code execution) is what makes cost actionable — "this goal cost $0.42" is not useful; "51%
+of it was executor tokens, 38% of which were tool schemas" points at the fix.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/intelligence/cost_tracker.py</code>, <code>cost_optimizer.py</code><span class="note">per-run accumulation and analysis</span></li>
+<li><code>app/observability/cost_breakdown.py</code>, <code>cost_breakdown_api.py</code><span class="note">the breakdown</span></li>
+<li><code>app/governance/cost.py</code>, <code>pricing.py</code><span class="note">the controller and price table (chapter 13)</span></li>
+<li><code>app/tenancy/billing.py</code><span class="note">tenant accounting</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>goal class "invoice reconciliation", cost breakdown
+ executor 51% (tool schemas 38% of that) · tools 15% · planner 15%
+ verifier 11% · code exec 6% · embeddings+rerank 2%
+ total $0.42/goal
+the breakdown says: narrow the tool schemas first — biggest, easiest win
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Attribute descendant spend to the parent, or multi-agent goals look cheap and your per-goal costs do not
+reconcile with the provider invoice — the moment finance stops trusting the numbers. Publish cost per goal
+class to the teams that own those goals; visibility changes behaviour faster than any optimiser. The breakdown
+is what turns the recurring "just use a bigger model" argument into a specific, non-model fix.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Unattributed sub-agent spend.</strong> Costs that do not reconcile.</li>
+<li><strong>Total without breakdown.</strong> A number nobody can act on.</li>
+<li><strong>Model tokens only.</strong> Missing tool and compute cost.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>From the first production goal.</li></ul></section>
+</article>
+
+<article class="concept" id="cc-levers" data-impl="8" data-crit="9" data-tag="Optimisation">
+<h3>The cost levers, in order</h3>
+<p class="tldr">Attack cost in the order that pays: iterations first (better planning, lessons, stall
+detection), then tokens (narrow schemas, tighter retrieval, caching), then price (per-role routing) — never
+price first.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The levers, ordered by impact and by how quality-neutral they are. <em>Iterations</em>: better planning,
+recalled lessons, stall detection, and cheap replans cut the multiplier that dominates cost. <em>Tokens per
+iteration</em>: narrowing tool schemas (often 30–40% of the prompt), tighter retrieval, prompt compression,
+and caching. <em>Price</em>: per-role model routing, shadow-tested downgrades. Starting with price risks
+quality for the smallest gain; starting with iterations and tokens is usually quality-neutral or positive.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/optimization/token_optimizer.py</code>, <code>cache_optimizer.py</code>, <code>cost_optimizer.py</code>, <code>model_optimizer.py</code>, <code>latency_optimizer.py</code><span class="note">the optimisers</span></li>
+<li><code>app/agent/tool_selector.py</code><span class="note">schema narrowing (the biggest lever)</span></li>
+<li><code>app/rag/semantic_cache.py</code>, <code>app/mcp/tool_cache.py</code><span class="note">the two caches that matter most</span></li>
+<li><code>app/agent/prompt_compressor.py</code><span class="note">token reduction</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>baseline $0.42/goal, quality 0.87
+1 narrow tool schemas 34→9      −$0.11  (also improves selection → fewer iters)
+2 semantic cache (31% hit)      −$0.06
+3 stall detection tuning        −$0.07  (−0.6 iterations)
+4 verifier model large→mid      −$0.09  (shadow-tested, quality held)
+result $0.09/goal, quality 0.88 — 79% cheaper, quality unchanged
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>The order matters because the levers interact: narrowing tool schemas cuts tokens <em>and</em> improves
+selection accuracy <em>and</em> thereby reduces iterations — one change, three factors. Model downgrades, the
+most tempting lever, come last and only after shadow testing (chapter 16) confirms quality holds. Report every
+optimisation with its quality delta; a cost win that lowers success is a loss.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Price first.</strong> Quality risk for the smallest gain.</li>
+<li><strong>Cost without quality.</strong> Optimising a proxy.</li>
+<li><strong>Caching personalised answers.</strong> A correctness bug sold as a saving.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>As soon as volume is real.</li></ul></section>
+</article>
+
+<article class="concept" id="cc-capacity" data-impl="7" data-crit="8" data-tag="Capacity">
+<h3>Capacity planning under variance</h3>
+<p class="tldr">Agent workloads have enormous variance — a 200ms lookup and a four-hour audit run on the same
+platform — so capacity is planned against a distribution of goal shapes, not a single mean.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Because per-goal graph assembly (chapter 1) makes cost and duration vary by orders of magnitude, capacity
+planning uses the distribution: p50, p95, p99 of iterations, tokens, and duration per goal class, plus the mix
+of classes. Provision workers per plan queue (chapter 20) to meet each tier's SLA at its p95, and use
+autoscaling metrics that reflect agent work (queue depth, in-flight goals) rather than CPU alone.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/scaling/celery_app.py</code>, <code>parallel_executor.py</code>, <code>priority_queue.py</code><span class="note">worker pools and parallelism</span></li>
+<li><code>app/observability/metrics.py</code>, <code>slo_tracker.py</code><span class="note">the distribution metrics</span></li>
+<li><code>agent-verse-frontend/src/features/observability</code><span class="note">autoscale metrics surface (the "Scaling & Autoscale" community)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>goal class distribution (per day)
+ simple lookups   70% · p95 0.8s · $0.01
+ standard goals   25% · p95 40s  · $0.40
+ expert audits     5% · p95 25min · $6.00
+capacity: provision enterprise-queue workers for the audit p95, not the mean
+autoscale on queue depth + in-flight goals, not CPU
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Planning against the mean is the classic capacity mistake for agents — the mean is meaningless when the
+distribution spans four orders of magnitude. Provision for the p95 of each class on its own queue, and scale
+on queue depth: an agent worker waiting on a slow tool shows low CPU while being fully occupied, so CPU-based
+autoscaling under-provisions exactly when you need capacity.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Planning against the mean.</strong> Under-provisioned for the tail.</li>
+<li><strong>CPU-based autoscaling.</strong> Blind to IO-bound agent work.</li>
+<li><strong>One pool for all classes.</strong> The audit starving the lookups.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any workload with variance — which agent workloads always have.</li></ul></section>
+</article>
+
+<article class="concept" id="cc-caching-economics" data-impl="8" data-crit="8" data-tag="Optimisation">
+<h3>The economics of caching</h3>
+<p class="tldr">Caching is the highest-return cost lever on repetitive workloads — semantic cache on retrieval,
+tool-result cache, embedding cache — but each has a correctness boundary that, crossed, turns a saving into a
+bug.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Three caches with three risk profiles. The <em>semantic cache</em> (chapter 2) serves a repeated question's
+answer by embedding match — highest return on FAQ/support, but a loose threshold serves the wrong answer. The
+<em>tool-result cache</em> serves a repeated read — safe for idempotent reads, wrong for anything time-sensitive.
+The <em>embedding cache</em> (chapter 7) serves a repeated text's vector — safe as long as the model is in the
+key. Each must be tenant-scoped and invalidated on the underlying change.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/semantic_cache.py</code>, <code>llm_response_cache.py</code>, <code>vector_cache_backend.py</code><span class="note">semantic and response caches</span></li>
+<li><code>app/mcp/tool_cache.py</code><span class="note">ToolResultCache</span></li>
+<li><code>app/optimization/cache_optimizer.py</code><span class="note">hit-rate vs risk tuning</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>support workload
+ semantic cache: 31% hit → 31% of pipelines skipped → largest single saving
+ tool cache: repeated reads within a goal served from cache
+ embedding cache: repeated queries' vectors reused
+boundaries: tenant in every key · invalidate on ingest · never cache
+ personalised or time-sensitive answers
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>On repetitive workloads (support, FAQ) semantic caching commonly removes 25–40% of pipeline executions —
+the single largest cost reduction available. But the correctness boundaries are unforgiving: a cross-tenant
+cache hit is a data leak, a stale cache after ingest is a wrong answer, and a cached personalised answer is a
+privacy bug. Tune hit-rate against these risks deliberately (chapter 2's semantic cache concept).</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Cross-tenant hit.</strong> A data leak.</li>
+<li><strong>Stale after ingest.</strong> A wrong answer served fast.</li>
+<li><strong>Cached personalised content.</strong> A privacy bug.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Repetitive query distributions — the common case in support and FAQ.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch29-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Predictive cost estimation.</strong> Cost is measured after the fact and plans are estimated
+      (chapter 1), but a learned per-goal-class cost predictor for admission control is thin.</li>
+      <li><strong>Cost-anomaly detection.</strong> Spend is attributed but a per-tenant anomaly alarm is not
+      wired (chapter 11).</li>
+      <li><strong>Autoscaling on agent-native signals.</strong> Queue-depth scaling exists; a richer model
+      using goal-class mix and predicted duration is future work.</li>
+      <li><strong>Spot/preemptible execution.</strong> No use of cheaper preemptible capacity for
+      interruptible batch goals, which the checkpointing (chapter 1) would make safe.</li>
+    </ul>
+  </div>
+</section>

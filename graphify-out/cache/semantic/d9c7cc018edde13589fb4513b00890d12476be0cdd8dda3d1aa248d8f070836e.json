@@ -1,0 +1,1 @@
+{"nodes": [{"id": "triggers_rbac", "label": "triggers.rbac", "file_type": "code", "source_file": "agent-verse-backend/app/triggers/rbac.py", "source_location": null, "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

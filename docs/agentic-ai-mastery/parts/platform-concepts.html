@@ -1,0 +1,465 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>This chapter collects the cross-cutting infrastructure that the goal lifecycle depends on but that
+    does not belong to any single step: the provider abstraction, the reliability primitives (bulkheads,
+    breakers, dedup, rollback), the persistence and messaging layers, the schedulers, and the external
+    integration boundaries. None of it is glamorous; all of it is the difference between a system that
+    demos and one that stays up.</p>
+
+    <p>The recurring theme is <strong>isolation and idempotency</strong>: every shared resource is bounded
+    per tenant so one cannot starve another, and every side-effecting operation is made safe to repeat so
+    that retries — which are constant in a distributed agent system — do not double-charge, double-send, or
+    double-file.</p>
+  </div>
+</section>
+
+<section class="block" id="platform-concepts">
+  <h2>The primitives</h2>
+
+<article class="concept" id="pc-mcp" data-impl="9" data-crit="9" data-tag="Integration">
+<h3>MCP registry and clients</h3>
+<p class="tldr">The Model Context Protocol is the platform's device-driver layer: tools live in their own
+processes behind a uniform protocol, registered per tenant, so the tool surface is configuration and a bad
+connector cannot take the agent down.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A per-tenant registry holds connector definitions; the client discovers tools (<code>tools/list</code>)
+and executes them (<code>call_tool</code>) over HTTP or WebSocket, wrapped in circuit breakers, caches, and
+credential resolution. Connectors are certified before use, can be imported from OpenAPI specs, and support
+agent-to-agent (A2A) calls. The 325 built-in server modules cover common integrations; tenants add their
+own.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/mcp/registry.py</code>, <code>client.py</code>, <code>ws_client.py</code><span class="note">registry and clients</span></li>
+<li><code>app/mcp/catalog.py</code>, <code>capability_search.py</code><span class="note">discovery</span></li>
+<li><code>app/mcp/certification.py</code>, <code>certification_manifest.py</code><span class="note">connector certification</span></li>
+<li><code>app/mcp/openapi_importer.py</code><span class="note">import tools from an OpenAPI spec</span></li>
+<li><code>app/mcp/a2a.py</code>, <code>app/agent/tools/a2a_call.py</code><span class="note">agent-to-agent calls</span></li>
+<li><code>app/mcp/servers/</code><span class="note">325 built-in server modules</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>tenant adds a connector from an OpenAPI spec
+ openapi_importer → tool definitions → certification (mocked probes)
+ registered per tenant → discoverable by that tenant's agents only
+ call_tool wraps each invocation in a breaker + cache + vault credential
+one connector crashing affects only its own calls, not the agent process
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Process isolation per connector is the property that makes a large tool ecosystem safe: a connector with
+a memory leak, a hang, or a crash degrades only its own tool, and the breaker routes around it. Certification
+before use catches the connector that returns malformed results before an agent trusts it. Full treatment of
+the call path in chapter 19.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Uncertified connectors.</strong> Malformed results trusted by agents.</li>
+<li><strong>Cross-tenant tool visibility.</strong> One tenant's connector reachable by another.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any agent that integrates with external systems.</li></ul></section>
+</article>
+
+<article class="concept" id="pc-providers" data-impl="9" data-crit="9" data-tag="Abstraction">
+<h3>Provider abstraction</h3>
+<p class="tldr">One interface for every LLM and embedding backend, resolved from env keys at startup, with a
+deterministic fake for tests — the abstraction that makes the platform genuinely vendor-neutral.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A common protocol (<code>CompletionRequest</code>, <code>Message</code>, <code>EmbedRequest</code>)
+covers completion and embedding; concrete providers implement it and are auto-detected from configured API
+keys. The registry resolves the right provider per request; the fake provider gives deterministic output
+with no keys. This is what lets cross-provider verification, provider fallback, and per-role routing exist
+at all — they all depend on the backends being interchangeable.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/providers/base.py</code><span class="note">CompletionRequest, Message (hub nodes), EmbedRequest, the protocol</span></li>
+<li><code>app/providers/registry.py</code><span class="note">resolve_provider() — auto-detection</span></li>
+<li><code>app/providers/anthropic_provider.py</code>, <code>openai_compatible.py</code>, <code>gemini_provider.py</code>, <code>voyage_provider.py</code>, <code>ollama_provider.py</code>, <code>nvidia_nim_provider.py</code>, <code>openrouter_provider.py</code><span class="note">backends</span></li>
+<li><code>app/providers/fake.py</code><span class="note">FakeProvider</span></li>
+<li><code>app/providers/vault.py</code><span class="note">encrypted credential store</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>startup  ANTHROPIC_API_KEY and OPENAI_API_KEY set
+ registry auto-detects both → available for routing
+ no keys → FakeProvider only → the whole stack runs in CI deterministically
+one CompletionRequest shape → any backend answers it → the router chooses
+which, the loop does not know or care
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Vendor neutrality is not idealism here — it is the precondition for the reliability and cost features
+elsewhere in the book. Cross-provider consensus needs two real providers; fallback needs a second backend;
+per-role routing needs a choice. The deterministic fake is what makes the whole platform testable without
+keys or network. Full treatment in chapters 7 and 16.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Leaky abstraction.</strong> Vendor specifics reaching calling code.</li>
+<li><strong>No fake.</strong> Tests that need keys and network.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always. Single-vendor deployments still need it for testing and fallback.</li></ul></section>
+</article>
+
+<article class="concept" id="pc-reliability" data-impl="8" data-crit="10" data-tag="Reliability">
+<h3>Bulkheads, breakers, deduplication, idempotency</h3>
+<p class="tldr">The four primitives that keep a distributed agent system from taking itself down: bounded
+per-tenant concurrency, breakers on flaky dependencies, dedup of repeated work, and idempotency so retries
+are safe.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p><em>Bulkhead</em>: a per-tenant concurrency ceiling, so one tenant's fan-out cannot exhaust the shared
+worker pool or connection pool. <em>Circuit breaker</em>: after repeated failures on a dependency, stop
+calling it and fail fast (or serve stale) until it recovers. <em>Deduplication</em>: recognise a repeated
+request and return the prior result rather than re-doing it. <em>Idempotency</em>: derive a key from
+goal+step+arguments so a retried write is recognised as the same write, not a new one.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/reliability/bulkhead.py</code><span class="note">per-tenant concurrency</span></li>
+<li><code>app/reliability/circuit_breaker.py</code>, <code>redis_circuit_breaker.py</code><span class="note">breakers (in-process and cross-replica)</span></li>
+<li><code>app/reliability/dedup.py</code>, <code>app/services/dedup.py</code><span class="note">deduplication</span></li>
+<li><code>app/reliability/idempotency.py</code><span class="note">idempotency keys</span></li>
+<li><code>app/reliability/result_processor.py</code><span class="note">sanitize/redact/truncate tool output</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>bulkhead     acme capped at 50 concurrent tool calls → a 200-way fan-out
+             queues rather than exhausting the pool → other tenants unaffected
+breaker      the CRM connector fails 5× → open → fail fast for 60s → half-open
+             probe → recovered → close
+dedup        the same read issued twice in one goal → second served from cache
+idempotency  a retried "create invoice" carries the same key → recognised,
+             not duplicated → the customer is billed once
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>These four are what separate a system that survives failure from one that amplifies it. Idempotency in
+particular is non-negotiable for an agent that writes — retries are constant, and without idempotency keys a
+retried "send invoice" sends three. The bulkhead is the ceiling that no amount of enthusiastic spawning
+(chapter 1) can breach. Full treatment in chapter 28.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Retry without idempotency.</strong> Duplicate side effects.</li>
+<li><strong>No bulkhead.</strong> One tenant's fan-out starving the fleet.</li>
+<li><strong>Per-replica breaker only.</strong> The fleet not learning a dependency is down.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always. This is production reliability, not an add-on.</li></ul></section>
+</article>
+
+<article class="concept" id="pc-rollback" data-impl="8" data-crit="9" data-tag="Reliability">
+<h3>Rollback and compensating actions</h3>
+<p class="tldr">When a multi-step goal fails partway, the rollback engine applies registered inverses in
+LIFO order to undo the side effects — so a failed goal leaves no half-built state for a human to untangle.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>For each executed tool that has a registered inverse (create→delete, grant→revoke, post→retract), the
+executed action and its inverse are recorded. On terminal failure, the rollback engine walks the executed
+actions in reverse order and applies each inverse. Actions with no inverse — you cannot un-send an email —
+are classified as irreversible and gated behind approval before they run (chapter 1).</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/reliability/rollback.py</code><span class="note">RollbackEngine — LIFO compensation</span></li>
+<li><code>app/reliability/tool_inverses.py</code><span class="note">the inverse registry</span></li>
+<li><code>app/memory/execution.py</code><span class="note">the record of what was executed</span></li>
+<li><code>app/recovery/*</code><span class="note">failure classification that triggers rollback</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>goal fails at step 4
+ executed  1 create epic  2 create sub-tasks  3 post to slack
+ rollback (LIFO)  3 delete slack msg → 2 delete sub-tasks → 1 delete epic
+ result   the goal failed cleanly; no orphaned records
+step 3 had been "send external email" → no inverse → it would have been
+gated behind approval before running
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Rollback is the feature most agent frameworks lack and the one that makes write-capable agents trustworthy.
+The pairing that matters: classify tools by compensability as well as risk, and put the irreversible ones
+behind HITL. A failed rollback (the inverse itself fails) is a human ticket, never a silent swallow. Full
+treatment in chapter 1.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Missing inverses.</strong> Nothing to compensate with.</li>
+<li><strong>Rollback failure swallowed.</strong> Half-undone state, unreported.</li>
+<li><strong>Irreversible actions ungated.</strong> Damage that cannot be undone.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any agent that writes to systems of record.</li></ul></section>
+</article>
+
+<article class="concept" id="pc-persistence" data-impl="9" data-crit="10" data-tag="Persistence">
+<h3>Postgres, pgvector, and RLS</h3>
+<p class="tldr">One database is the filesystem, the vector store, and the tenant boundary at once — Postgres
+with pgvector holds documents, chunks, memory, goals, and audit, and row-level security enforces isolation
+underneath all of it.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>SQLAlchemy 2 async over asyncpg, models per domain, migrations via Alembic (~44 revisions). Vectors live
+in pgvector columns alongside their metadata, so filtered vector search is one query. RLS policies filter
+every row by <code>app.tenant_id</code>. Keeping vectors, metadata, and relational data in one transactional
+store is what makes filtered retrieval, joins, and tenant isolation simple — the alternative (a separate
+vector database) turns every filtered query into a cross-system join.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/db/models/</code><span class="note">one file per domain (24 model modules)</span></li>
+<li><code>app/db/migrations/</code><span class="note">Alembic revisions</span></li>
+<li><code>app/db/rls.py</code><span class="note">the isolation enforcement</span></li>
+<li><code>app/db/session.py</code><span class="note">async session factory</span></li>
+<li><code>app/core/pools.py</code><span class="note">connection pooling (pgbouncer in the full stack)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>one query does isolation + scope + filter + ANN (chapter 6)
+ SELECT ... WHERE tenant_id = current_setting('app.tenant_id')
+   AND collection_id = ANY($1) AND metadata->>'jurisdiction' = 'DE'
+   ORDER BY embedding <=> $2 LIMIT 50
+no cross-system join, one transaction, RLS as the backstop
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>The decision to keep everything in Postgres rather than adding a dedicated vector store is a deliberate
+simplification: transactions, joins, and RLS come for free, and pgvector is good enough for the scale most
+tenants reach. The migration discipline — never edit a deployed migration, always add a new one — is what
+keeps a 44-revision history deployable. Full treatment of the vector index in chapter 4.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Editing deployed migrations.</strong> Divergent schemas across environments.</li>
+<li><strong>Connection exhaustion.</strong> No pooling under fan-out load.</li>
+<li><strong>RLS bypassed by raw connections.</strong> A leak path (chapter 13).</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>The default persistence choice; revisit only at very large vector scale.</li></ul></section>
+</article>
+
+<article class="concept" id="pc-redis" data-impl="9" data-crit="9" data-tag="Messaging">
+<h3>Redis: pub/sub, cache, locks, checkpoints</h3>
+<p class="tldr">Redis is the platform's nervous system: it carries goal events across replicas, holds the
+cost counters and breaker state that must be shared, provides distributed locks, and backs the agent
+checkpointer.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Five distinct uses. <em>Pub/sub</em> delivers goal events from workers to the API for SSE. <em>Cache</em>
+holds semantic-cache and tool-result entries. <em>Atomic counters</em> hold cost budgets so accounting is
+accurate across replicas. <em>Locks</em> ensure one worker per goal. <em>Checkpoints</em> store agent state
+so goals survive worker restarts. Each is a case where the state must be shared across processes, which is
+exactly what Redis is for.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/net/redis_factory.py</code><span class="note">connection management</span></li>
+<li><code>app/services/goal_service.py</code><span class="note">pub/sub bridge</span></li>
+<li><code>app/governance/cost.py</code><span class="note">atomic cost counters</span></li>
+<li><code>app/reliability/distributed_lock.py</code>, <code>redis_circuit_breaker.py</code><span class="note">locks and shared breaker state</span></li>
+<li><code>app/agent/graph.py</code><span class="note">AsyncRedisSaver checkpointer</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>one goal touches Redis five ways
+ pub/sub    goal_events:acme:g-8891 → API → browser SSE
+ cache      retrieval result served from semantic cache
+ counter    INCRBY on cost:goal:g-8891 (atomic across workers)
+ lock       lock:goal:g-8891 held by worker-4
+ checkpoint agent state after each node → resume on restart
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Redis is what makes the platform horizontally scalable: workers are stateless because state lives in
+Redis and Postgres, so you add workers to add capacity. It is also a single point of failure to plan around
+— the checkpointer falls back to sync Redis then to in-memory, and the cost counters and locks need Redis to
+be highly available. Full treatment in chapters 11 (events) and 32 (scaling).</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Redis as SPOF.</strong> Its outage stalling budgets, locks, and events.</li>
+<li><strong>Unbounded cache growth.</strong> No TTL or eviction.</li>
+<li><strong>Lock without expiry.</strong> A dead worker holding a goal forever.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any multi-replica deployment.</li></ul></section>
+</article>
+
+<article class="concept" id="pc-celery" data-impl="9" data-crit="9" data-tag="Scaling">
+<h3>Celery and per-plan queues</h3>
+<p class="tldr">The scheduler: goals, scheduled runs, and maintenance tasks run as Celery jobs, routed to
+per-plan queues so tenant tiers are isolated and enterprise tenants avoid noisy neighbours.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Celery workers pull from queues named by plan tier; a routing map sends each goal to its tenant's queue.
+Beat schedules periodic work — firing due triggers, ingestion syncs, memory consolidation, maintenance. A
+beat guard prevents duplicate beat schedulers. Task types cover goal execution, scheduled goals, and
+maintenance, each with its own concurrency and retry policy.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/scaling/celery_app.py</code><span class="note">PLAN_QUEUE_MAP, queue routing</span></li>
+<li><code>app/scaling/tasks.py</code><span class="note">run_goal, run_scheduled_goal, fire_due_schedules, maintenance</span></li>
+<li><code>app/scaling/beat_guard.py</code><span class="note">one beat scheduler</span></li>
+<li><code>app/scaling/priority_queue.py</code>, <code>parallel_executor.py</code><span class="note">priority and parallelism</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>PLAN_QUEUE_MAP  free→goals.free · starter→goals.starter · … · enterprise→…
+ a free tenant submits 10,000 goals → they queue on goals.free
+ an enterprise tenant's goal → goals.enterprise, drained by dedicated workers
+ → the enterprise goal is not stuck behind the free backlog
+beat fires due schedules, ingestion syncs, memory consolidation on cron
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Per-plan queue routing is the single most important multi-tenant scaling decision. Without it, tier
+differentiation is a lie — a premium tenant's latency is at the mercy of whoever submitted the biggest
+batch. With it, you scale workers per queue to match the SLA you sold. Full treatment in chapter 32.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Single queue.</strong> Noisy-neighbour latency.</li>
+<li><strong>Duplicate beat.</strong> Schedules firing twice.</li>
+<li><strong>No per-queue scaling.</strong> Workers idle on one tier, saturated on another.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any multi-tenant async platform with tiers.</li></ul></section>
+</article>
+
+<article class="concept" id="pc-triggers" data-impl="8" data-crit="8" data-tag="Scheduling">
+<h3>Triggers and schedules</h3>
+<p class="tldr">Agents that nobody typed a prompt into: cron schedules, webhooks, data-change events, and IoT
+signals that submit goals automatically, with natural-language scheduling on top.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A trigger is a source (cron, webhook, data change, IoT sensor, message queue) bound to a goal template.
+When it fires, it submits a goal on the tenant's behalf, subject to the same auth, budget, and governance as
+any other goal. Natural-language scheduling parses "every weekday at 9am, summarise overnight incidents"
+into a trigger spec. Webhooks are verified and rotated; triggers are rate-limited, deduplicated, and
+bulkheaded like any other work.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/triggers/nl_scheduler.py</code><span class="note">NL → TriggerSpec</span></li>
+<li><code>app/triggers/store.py</code>, <code>models.py</code><span class="note">ScheduleStore, TriggerSpec, TriggerType</span></li>
+<li><code>app/triggers/dispatcher.py</code>, <code>consumers/*</code><span class="note">dispatch and consumption</span></li>
+<li><code>app/triggers/webhooks/verifier.py</code>, <code>rotation.py</code><span class="note">webhook security</span></li>
+<li><code>app/triggers/iot/*</code>, <code>data/consumers.py</code><span class="note">IoT and data-change triggers</span></li>
+<li><code>app/scaling/tasks.py</code><span class="note">fire_due_schedules</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>"every weekday at 9am, summarise overnight incidents and post to #ops"
+ nl_scheduler → TriggerSpec(cron="0 9 * * 1-5", goal_template=..., channel=...)
+ beat fires it → submits a goal as the tenant → runs the normal lifecycle
+webhook trigger: a payment.failed webhook (verified) → submits a triage goal
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Triggers turn a request/response agent platform into an autonomous one, and they carry the same risks
+amplified: an unbounded trigger is a self-inflicted load spike, and a trigger that fires with stale
+authorisation acts on behalf of someone who may no longer be authorised. Rate-limit, deduplicate, and
+re-check authorisation at fire time. Full treatment in chapter 27.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Unbounded triggers.</strong> A load spike nobody scheduled.</li>
+<li><strong>Unverified webhooks.</strong> Attacker-submitted goals.</li>
+<li><strong>Stale authorisation.</strong> Firing on behalf of a departed user.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any event-driven or scheduled autonomous work.</li></ul></section>
+</article>
+
+<article class="concept" id="pc-marketplace" data-impl="7" data-crit="6" data-tag="Platform">
+<h3>Marketplace and templates</h3>
+<p class="tldr">A gallery of goal templates, agent configurations, and workflows — so a tenant starts from a
+proven pattern (GST filing, AML screening, invoice processing) rather than a blank page.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Templates package a goal or workflow with its recommended patterns, tools, collections, and guardrails.
+The marketplace catalogs them by domain; a tenant instantiates one and customises it. This is how domain
+expertise is distributed — a template for GST return filing encodes the steps, the validation, and the HITL
+gates that a finance team would otherwise have to discover. Monetisation lets template authors be
+compensated.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/enterprise/marketplace.py</code>, <code>marketplace_v2.py</code><span class="note">the gallery</span></li>
+<li><code>app/api/marketplace_monetization.py</code><span class="note">monetisation</span></li>
+<li><code>app/content/marketplace/</code><span class="note">the template content (insurance, banking, GST, government, cybersecurity…)</span></li>
+<li><code>app/content/goal_templates/</code><span class="note">goal templates (HR, software, devops, sales, legal…)</span></li>
+<li><code>app/workflow/templates/</code><span class="note">workflow templates (AML screening, KYC, invoice processing)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>tenant wants GST return filing
+ instantiate the GST-filing template → comes with:
+   plan pattern, gst.* tools, tax-policy collection, HSN validation,
+   filing HITL gate, consensus for the filing action
+ customise thresholds → run
+weeks of setup replaced by a proven, governed starting point
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Templates are how a horizontal platform serves vertical needs: the 40+ marketplace domains and goal
+templates encode the workflows that make the platform immediately useful to a finance, HR, or security team.
+The governance is baked in — a template ships with the right gates — which is both a selling point and a
+safety property. Templates must be versioned and certified like any other configuration (chapter 10).</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Uncertified templates.</strong> A shared config that has not passed evals.</li>
+<li><strong>Stale templates.</strong> Encoding a workflow the domain has since changed.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Serving common vertical workflows to non-expert tenants.</li></ul></section>
+</article>
+
+<article class="concept" id="pc-rpa" data-impl="7" data-crit="6" data-tag="Automation">
+<h3>RPA and browser automation</h3>
+<p class="tldr">When a system has no API, drive its UI: an agent authenticates, navigates, and extracts using
+a real browser, with credentials injected out of the model's sight and every step captured for debugging.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A browser session (Playwright) authenticates with vault credentials injected at the browser layer,
+navigates via DOM analysis (falling back to vision), and acts. Sessions are managed and reused; successful
+selectors are remembered (visual memory, chapter 3); artifacts (screenshots, traces) are captured for
+debugging. It is brittle by nature, so it is instrumented heavily and reserved for systems with no API.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rpa/executor.py</code>, <code>runner.py</code>, <code>session.py</code>, <code>session_manager.py</code><span class="note">the automation engine</span></li>
+<li><code>app/rpa/credential_injector.py</code><span class="note">credentials injected without model exposure</span></li>
+<li><code>app/rpa/artifacts.py</code><span class="note">screenshots and traces</span></li>
+<li><code>app/perception/browser_agent.py</code>, <code>page_analyzer.py</code><span class="note">page analysis</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>government tax portal, no API
+ session authenticates (credentials injected at the browser, not the prompt)
+ DOM analysis finds the filing form → fills → submits
+ screenshots per step retained 7 days for debugging
+ remembered selectors make the next run fast
+UI change → extraction shape changes → alert, not a silent wrong result
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>RPA is a bridge, not a strategy — it breaks whenever the target UI changes, so it is reserved for legacy
+and government systems with no other access. The credential-injection-at-the-browser-layer design is the
+security-critical part: the model drives the browser but never sees the password. Full treatment in
+chapter 5 (RPA extraction) and chapter 15 (screenshots).</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>UI change → silent wrong extraction.</strong> Validate the shape.</li>
+<li><strong>Credentials in the prompt or a screenshot.</strong> Inject at the browser, redact captures.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>No API exists and the data matters. Never when an API does.</li></ul></section>
+</article>
+
+<article class="concept" id="pc-integration-boundaries" data-impl="8" data-crit="9" data-tag="Boundary">
+<h3>External integration boundaries</h3>
+<p class="tldr">Every point where the platform touches the outside world — connectors, webhooks, channels,
+egress — is a boundary that must authenticate, validate, rate-limit, and treat what comes back as untrusted.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The boundaries: outbound tool calls (MCP), inbound webhooks (verified and rate-limited), interaction
+channels (Slack, Teams, email, WhatsApp, Discord, Telegram, voice), and any HTTP egress (SSRF-guarded).
+Each applies the same discipline: authenticate the counterparty, validate the payload, rate-limit, and treat
+inbound content as untrusted data subject to injection scanning. The channels layer turns the platform into
+something reachable where users already are, not just an API.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/gateway/channels/*</code><span class="note">slack, teams, email, whatsapp, discord, telegram, voice, webhook</span></li>
+<li><code>app/gateway/webhook_delivery.py</code>, <code>router.py</code><span class="note">delivery and routing</span></li>
+<li><code>app/net/ssrf_guard.py</code><span class="note">egress protection</span></li>
+<li><code>app/integrations/slack/</code>, <code>zapier/</code>, <code>email/</code><span class="note">integration handlers</span></li>
+<li><code>app/agent/exfil_guard.py</code><span class="note">inbound content treated as untrusted</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>inbound: a Slack message "reconcile March payouts"
+ channel verifies the Slack signature → resolves the tenant + user
+ → submits a goal (same auth, budget, governance as an API submission)
+ → streams progress back to the thread
+outbound: a web fetch → SSRF guard blocks internal addresses → content
+ scanned for injection before it influences the agent
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>The channels are how the platform meets users where they are — Slack and email are where work actually
+happens — and each is a new authentication and injection surface. The discipline is uniform: an inbound
+message is a goal submission subject to every control, and inbound content is untrusted. SSRF protection on
+every egress is the boundary that stops an agent being turned into a proxy into your own network.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Unverified inbound channels.</strong> Anyone submitting goals as anyone.</li>
+<li><strong>Egress without SSRF guard.</strong> The agent as an internal-network proxy.</li>
+<li><strong>Channel content trusted.</strong> Injection through a Slack message.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any integration inbound or outbound — so all of them.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch20-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Connector health SLAs.</strong> Breakers protect against failure, but there is no
+      per-connector SLA tracking that would let a tenant know a connector is chronically unreliable.</li>
+      <li><strong>A vector-store abstraction.</strong> pgvector is assumed; very large deployments would
+      benefit from a pluggable vector backend behind the same interface.</li>
+      <li><strong>Template certification pipeline.</strong> Templates exist; a required "certified against
+      evals before listing" gate is thinner than it should be (chapter 10).</li>
+      <li><strong>Cross-region active-active.</strong> Redis and Postgres are assumed regional; a
+      multi-region story for residency-split tenants is future work (chapter 32).</li>
+    </ul>
+  </div>
+</section>

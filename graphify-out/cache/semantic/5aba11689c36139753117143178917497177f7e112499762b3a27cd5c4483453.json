@@ -1,0 +1,1 @@
+{"nodes": [{"id": "fake_fakeprovider", "label": "FakeProvider", "file_type": "code", "source_file": "agent-verse-backend/app/providers/fake.py", "source_location": "20", "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

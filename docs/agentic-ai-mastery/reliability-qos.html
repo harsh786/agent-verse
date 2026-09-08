@@ -1,0 +1,709 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reliability &amp; QoS · AgentVerse Field Manual</title>
+<meta name="description" content="CH 28 · Reliability &amp; QoS">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>/* ==========================================================================
+   AgentVerse Field Manual — instrument chrome + engineering-manual body.
+   Tokens: complete light palette on :root; dark redefined for the two
+   dark states (un-stamped OS-dark, and explicit data-theme="dark").
+   ========================================================================== */
+
+:root {
+  /* ground + surfaces (cool slate neutrals, biased toward the cyan accent) */
+  --bg:        #EFF2F5;
+  --paper:     #FFFFFF;
+  --raised:    #F6F8FA;
+  --sunken:    #E7ECF1;
+  --rail:      #FBFCFD;
+
+  /* ink */
+  --ink:       #0B1220;
+  --ink-2:     #3C4A5A;
+  --ink-3:     #6B7A8B;
+  --ink-4:     #93A1B0;
+
+  /* lines */
+  --line:      #D5DDE5;
+  --line-soft: #E4EAF0;
+  --line-hard: #B9C5D0;
+
+  /* accent — JARVIS electric, darkened for contrast on paper */
+  --accent:      #007D9C;
+  --accent-2:    #00A8CC;
+  --accent-wash: rgba(0,168,204,0.10);
+  --accent-line: rgba(0,125,156,0.35);
+
+  /* semantic (ratings, status, diagram emphasis) */
+  --good:      #0E7C55;
+  --good-wash: rgba(14,124,85,0.10);
+  --warn:      #A2650A;
+  --warn-wash: rgba(162,101,10,0.10);
+  --bad:       #B3303B;
+  --bad-wash:  rgba(179,48,59,0.10);
+  --note:      #6D46C4;
+  --note-wash: rgba(109,70,196,0.10);
+
+  --shadow-1: 0 1px 2px rgba(11,18,32,0.05);
+  --shadow-2: 0 8px 28px rgba(11,18,32,0.10);
+
+  --measure: 68ch;
+  --rail-w: 274px;
+  --topbar-h: 52px;
+
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #070A10;
+    --paper:     #0C1017;
+    --raised:    #12171F;
+    --sunken:    #090D13;
+    --rail:      #0A0E15;
+
+    --ink:       #E9EFF5;
+    --ink-2:     #B3C0CD;
+    --ink-3:     #8593A2;
+    --ink-4:     #5D6C7B;
+
+    --line:      rgba(255,255,255,0.09);
+    --line-soft: rgba(255,255,255,0.055);
+    --line-hard: rgba(255,255,255,0.16);
+
+    --accent:      #35D8F5;
+    --accent-2:    #00D4FF;
+    --accent-wash: rgba(0,212,255,0.10);
+    --accent-line: rgba(0,212,255,0.35);
+
+    --good:      #2ED08C;
+    --good-wash: rgba(46,208,140,0.12);
+    --warn:      #F0B429;
+    --warn-wash: rgba(240,180,41,0.12);
+    --bad:       #FF6B78;
+    --bad-wash:  rgba(255,107,120,0.12);
+    --note:      #B08CFF;
+    --note-wash: rgba(176,140,255,0.12);
+
+    --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+    --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #070A10;
+  --paper:     #0C1017;
+  --raised:    #12171F;
+  --sunken:    #090D13;
+  --rail:      #0A0E15;
+
+  --ink:       #E9EFF5;
+  --ink-2:     #B3C0CD;
+  --ink-3:     #8593A2;
+  --ink-4:     #5D6C7B;
+
+  --line:      rgba(255,255,255,0.09);
+  --line-soft: rgba(255,255,255,0.055);
+  --line-hard: rgba(255,255,255,0.16);
+
+  --accent:      #35D8F5;
+  --accent-2:    #00D4FF;
+  --accent-wash: rgba(0,212,255,0.10);
+  --accent-line: rgba(0,212,255,0.35);
+
+  --good:      #2ED08C;
+  --good-wash: rgba(46,208,140,0.12);
+  --warn:      #F0B429;
+  --warn-wash: rgba(240,180,41,0.12);
+  --bad:       #FF6B78;
+  --bad-wash:  rgba(255,107,120,0.12);
+  --note:      #B08CFF;
+  --note-wash: rgba(176,140,255,0.12);
+
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+  color-scheme: dark;
+}
+
+/* -------------------------------------------------- base */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 17.5px;
+  line-height: 1.62;
+  font-synthesis-weight: none;
+}
+
+a { color: var(--accent); text-decoration-color: var(--accent-line); text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
+
+h1, h2, h3, h4, h5 { font-family: var(--f-display); font-weight: 650; letter-spacing: -0.015em; text-wrap: balance; margin: 0; }
+p { margin: 0 0 0.85em; }
+p:last-child { margin-bottom: 0; }
+ul, ol { margin: 0 0 0.9em; padding-left: 1.25em; }
+li { margin: 0.25em 0; }
+li > ul, li > ol { margin-bottom: 0.2em; }
+strong { font-weight: 650; }
+code, kbd, samp { font-family: var(--f-mono); font-size: 0.855em; }
+:not(pre) > code {
+  background: var(--sunken); border: 1px solid var(--line-soft);
+  padding: 0.08em 0.34em; border-radius: 3px; color: var(--ink-2);
+  word-break: break-word;
+}
+hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+
+.mono { font-family: var(--f-mono); }
+.eyebrow {
+  font-family: var(--f-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3);
+}
+
+/* -------------------------------------------------- top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  height: var(--topbar-h);
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .brand {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink);
+  text-decoration: none; white-space: nowrap;
+}
+.topbar .brand b { color: var(--accent); font-weight: 600; }
+.topbar .crumb {
+  font-family: var(--f-mono); font-size: 11px; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar .spacer { flex: 1 1 auto; }
+.tb-btn {
+  font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  background: transparent; color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 5px 9px; cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.tb-btn:hover { border-color: var(--accent-line); color: var(--accent); }
+
+/* -------------------------------------------------- shell */
+.shell { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); align-items: start; }
+
+.rail {
+  position: sticky; top: var(--topbar-h);
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--rail);
+  border-right: 1px solid var(--line);
+  padding: 18px 0 40px;
+}
+.rail h4 { font-size: 10.5px; font-family: var(--f-mono); font-weight: 500; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-4); padding: 0 18px; margin: 16px 0 8px; }
+.rail .part-label { padding: 0 18px; margin: 20px 0 6px; }
+.rail nav a {
+  display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: baseline;
+  padding: 5px 18px; text-decoration: none; color: var(--ink-2);
+  font-family: var(--f-display); font-size: 13.5px; line-height: 1.35; letter-spacing: -0.005em;
+  border-left: 2px solid transparent;
+}
+.rail nav a .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.rail nav a:hover { background: var(--accent-wash); color: var(--ink); }
+.rail nav a[aria-current="page"] { color: var(--accent); border-left-color: var(--accent); background: var(--accent-wash); }
+.rail nav a[aria-current="page"] .n { color: var(--accent); }
+.rail .inpage { border-top: 1px solid var(--line-soft); margin-top: 14px; padding-top: 4px; }
+.rail .inpage a { grid-template-columns: 26px 1fr; font-size: 12.5px; color: var(--ink-3); }
+.rail .filter { padding: 0 14px 6px; }
+.rail .filter input {
+  width: 100%; font-family: var(--f-mono); font-size: 11.5px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
+}
+.rail .filter input::placeholder { color: var(--ink-4); }
+
+main { min-width: 0; padding: 0 0 96px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 clamp(18px, 4vw, 52px); }
+.prose { max-width: var(--measure); }
+
+/* -------------------------------------------------- chapter head */
+.chead { padding: 46px 0 26px; border-bottom: 1px solid var(--line); }
+.chead .kicker { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.chead .cnum {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
+  color: var(--accent); border: 1px solid var(--accent-line); border-radius: 3px; padding: 3px 7px;
+}
+.chead h1 { font-size: clamp(30px, 4.4vw, 46px); line-height: 1.06; font-weight: 700; letter-spacing: -0.028em; }
+.chead .lede { font-size: 20px; line-height: 1.5; color: var(--ink-2); margin-top: 16px; max-width: 62ch; }
+
+.statstrip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 0; margin-top: 26px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--paper); overflow: hidden;
+}
+.statstrip div { padding: 11px 16px; border-right: 1px solid var(--line-soft); }
+.statstrip div:last-child { border-right: 0; }
+.statstrip .k { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.statstrip .v { font-family: var(--f-display); font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------- sections */
+section.block { padding: 38px 0 8px; }
+section.block > h2 {
+  font-size: 25px; font-weight: 700; letter-spacing: -0.022em; padding-bottom: 8px;
+  border-bottom: 2px solid var(--ink); display: inline-block; margin-bottom: 20px;
+}
+section.block > .prose { margin-bottom: 8px; }
+
+.callout {
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  background: var(--paper); padding: 14px 16px; margin: 18px 0; border-radius: 0 4px 4px 0;
+  font-size: 16.5px;
+}
+.callout.warn { border-left-color: var(--warn); }
+.callout.bad  { border-left-color: var(--bad); }
+.callout.good { border-left-color: var(--good); }
+.callout .lbl { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); display: block; margin-bottom: 5px; }
+
+/* -------------------------------------------------- concept card */
+.concept {
+  border-top: 1px solid var(--line);
+  padding: 30px 0 34px;
+  scroll-margin-top: calc(var(--topbar-h) + 12px);
+}
+.concept:first-of-type { border-top-width: 2px; border-top-color: var(--ink); }
+.concept > h3 {
+  font-size: 23px; font-weight: 700; letter-spacing: -0.022em; line-height: 1.18;
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.concept > h3 .idx {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 500; color: var(--ink-4);
+  letter-spacing: 0.06em; font-variant-numeric: tabular-nums;
+}
+.concept > h3 a.anchor { color: var(--ink-4); text-decoration: none; font-family: var(--f-mono); font-size: 13px; opacity: 0; }
+.concept:hover > h3 a.anchor { opacity: 1; }
+
+.dials { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 12px 0 16px; }
+.dial { display: flex; align-items: center; gap: 8px; }
+.dial .dl { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-4); }
+.meter { display: inline-flex; gap: 2px; }
+.meter i { display: block; width: 7px; height: 12px; background: var(--line); border-radius: 1px; }
+.meter i.on { background: var(--accent); }
+.dial.crit .meter i.on { background: var(--note); }
+.dial .dv { font-family: var(--f-mono); font-size: 12px; font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.dial .dv small { font-weight: 400; color: var(--ink-4); }
+.pill {
+  font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap;
+}
+.pill.shipped { color: var(--good); background: var(--good-wash); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.pill.partial { color: var(--warn); background: var(--warn-wash); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.pill.thin    { color: var(--bad);  background: var(--bad-wash);  border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.pill.tag     { color: var(--ink-3); background: var(--sunken); border-color: var(--line-soft); }
+
+.tldr { font-size: 18.5px; line-height: 1.5; color: var(--ink); max-width: 66ch; }
+.tldr b, .tldr strong { color: var(--ink); }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 20px 0 0; }
+.cols > section { min-width: 0; }
+.cols h4, .band h4 {
+  font-family: var(--f-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px;
+  padding-bottom: 5px; border-bottom: 1px solid var(--line-soft);
+}
+.cols section p, .band p, .cols section li, .band li { font-size: 16.5px; }
+
+.band { margin-top: 18px; padding: 15px 17px; border-radius: 4px; border: 1px solid var(--line-soft); background: var(--raised); }
+.band.example { background: var(--sunken); }
+.band.prod  { border-color: color-mix(in srgb, var(--accent) 22%, var(--line-soft)); background: var(--accent-wash); }
+.band.fail  { border-color: color-mix(in srgb, var(--bad) 22%, var(--line-soft)); background: var(--bad-wash); }
+.band.when  { background: var(--paper); }
+.band.example h4 { color: var(--ink-2); }
+.band.prod h4 { color: var(--accent); border-bottom-color: var(--accent-line); }
+.band.fail h4 { color: var(--bad); border-bottom-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+
+.band.when ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.band.when li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; }
+.band.when li::before { content: "+"; font-family: var(--f-mono); color: var(--good); font-weight: 600; }
+.band.when li.no::before { content: "\2212"; color: var(--bad); }
+
+/* -------------------------------------------------- code + pre */
+pre {
+  margin: 12px 0; padding: 13px 15px; overflow-x: auto;
+  background: var(--sunken); border: 1px solid var(--line-soft); border-radius: 4px;
+  font-family: var(--f-mono); font-size: 12.5px; line-height: 1.62; color: var(--ink-2);
+  tab-size: 2;
+}
+:root[data-theme="dark"] pre, :root:not([data-theme="light"]) pre { color: var(--ink-2); }
+pre .c { color: var(--ink-4); }
+pre .k { color: var(--accent); }
+pre .s { color: var(--good); }
+
+.filelist { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.filelist li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; font-size: 15px; }
+.filelist code { font-size: 12.3px; background: none; border: 0; padding: 0; color: var(--accent); word-break: break-all; }
+.filelist .note { color: var(--ink-3); font-size: 15px; }
+
+/* -------------------------------------------------- tables */
+.tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+table { border-collapse: collapse; width: 100%; font-family: var(--f-display); font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+th {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-3); background: var(--raised); border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+td code { font-size: 12px; }
+
+/* -------------------------------------------------- figures */
+figure { margin: 22px 0; }
+figure svg { display: block; max-width: 100%; height: auto; color: var(--ink-2); }
+figcaption { font-size: 14.5px; color: var(--ink-3); margin-top: 9px; font-family: var(--f-display); max-width: 70ch; }
+.fig-em { color: var(--accent); }
+
+/* -------------------------------------------------- index page bits */
+.chapgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 4px; overflow: hidden; margin: 22px 0; }
+.chapgrid a {
+  background: var(--paper); padding: 16px 17px; text-decoration: none; color: var(--ink);
+  display: flex; flex-direction: column; gap: 7px; min-height: 128px;
+}
+.chapgrid a:hover { background: var(--accent-wash); }
+.chapgrid .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--accent); letter-spacing: 0.1em; }
+.chapgrid .t { font-family: var(--f-display); font-size: 16.5px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.25; }
+.chapgrid .d { font-size: 14.5px; color: var(--ink-3); line-height: 1.45; }
+.chapgrid .m { margin-top: auto; font-family: var(--f-mono); font-size: 10px; color: var(--ink-4); letter-spacing: 0.06em; }
+
+.matrix td.c1 { font-family: var(--f-display); font-weight: 600; }
+.matrix .bar { display: inline-flex; gap: 2px; vertical-align: middle; }
+.matrix .bar i { width: 5px; height: 10px; background: var(--line); border-radius: 1px; display: block; }
+.matrix .bar i.on { background: var(--accent); }
+.matrix .bar.crit i.on { background: var(--note); }
+
+/* -------------------------------------------------- footer nav */
+.pagenav { display: flex; gap: 12px; justify-content: space-between; margin-top: 54px; padding-top: 20px; border-top: 1px solid var(--line); }
+.pagenav a { flex: 1 1 0; text-decoration: none; border: 1px solid var(--line); border-radius: 4px; padding: 13px 15px; background: var(--paper); color: var(--ink); }
+.pagenav a:hover { border-color: var(--accent-line); }
+.pagenav .d { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.pagenav .t { font-family: var(--f-display); font-weight: 650; font-size: 15.5px; letter-spacing: -0.015em; }
+.pagenav a.next { text-align: right; }
+
+.footnote { margin-top: 30px; font-size: 14.5px; color: var(--ink-3); font-family: var(--f-display); }
+
+/* -------------------------------------------------- responsive */
+@media (max-width: 1080px) {
+  .cols { grid-template-columns: 1fr; gap: 14px; }
+}
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail {
+    position: static; height: auto; max-height: 340px;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  body { font-size: 17px; }
+  .chead { padding-top: 30px; }
+}
+@media print {
+  .rail, .topbar, .pagenav { display: none; }
+  body { background: #fff; color: #000; font-size: 10.5pt; }
+  .shell { grid-template-columns: 1fr; }
+}
+
+.idxhead { background: var(--raised); font-family: var(--f-mono); font-size: 11px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">AgentVerse <b>Field Manual</b></a>
+  <span class="crumb">CH 28 · Reliability &amp; QoS</span>
+  <span class="spacer"></span>
+  <button class="tb-btn" data-theme-toggle type="button">Theme</button>
+</header>
+<div class="shell">
+<aside class="rail"><h4>Field manual</h4><nav><a href="index.html"><span class="n">00</span><span>Hub &amp; how to read</span></a></nav></nav><div class="part-label eyebrow">I · The agent</div><nav><a href="agent-patterns.html"><span class="n">01</span><span>Agent patterns</span></a><a href="rag-patterns.html"><span class="n">02</span><span>RAG patterns</span></a><a href="agent-memory.html"><span class="n">03</span><span>Agent memories</span></a></nav><div class="part-label eyebrow">II · Knowledge</div><nav><a href="knowledge-and-graphs.html"><span class="n">04</span><span>Knowledge &amp; knowledge graph</span></a><a href="ingestion.html"><span class="n">05</span><span>Ingestion</span></a><a href="retrieval-strategies.html"><span class="n">06</span><span>Retrieval strategies</span></a><a href="embeddings.html"><span class="n">07</span><span>Embeddings</span></a><a href="chunking.html"><span class="n">17</span><span>Chunking strategies</span></a></nav><div class="part-label eyebrow">III · Context &amp; quality</div><nav><a href="prompt-builder.html"><span class="n">08</span><span>Prompt builder</span></a><a href="agent-improvement.html"><span class="n">09</span><span>Agent improvement</span></a><a href="evals.html"><span class="n">10</span><span>Evals</span></a><a href="hallucination.html"><span class="n">18</span><span>Hallucination handling</span></a></nav><div class="part-label eyebrow">IV · Safety &amp; control</div><nav><a href="guardrails.html"><span class="n">12</span><span>Guardrails</span></a><a href="governance.html"><span class="n">13</span><span>Governance</span></a><a href="scopes.html"><span class="n">14</span><span>Scopes</span></a><a href="observability.html"><span class="n">11</span><span>Observability</span></a></nav><div class="part-label eyebrow">V · Modality &amp; models</div><nav><a href="multimodal.html"><span class="n">15</span><span>Multimodal</span></a><a href="ocr.html"><span class="n">21</span><span>OCR</span></a><a href="model-router.html"><span class="n">16</span><span>Multi-model router</span></a></nav><div class="part-label eyebrow">VI · The platform</div><nav><a href="platform-workflows.html"><span class="n">19</span><span>Core platform workflows</span></a><a href="platform-concepts.html"><span class="n">20</span><span>Other core platform concepts</span></a><a href="agent-teams.html"><span class="n">22</span><span>AI agent teams</span></a><a href="jarvis.html"><span class="n">23</span><span>Jervis (JARVIS) console</span></a></nav><div class="part-label eyebrow">VII · Not on the list</div><nav><a href="coordination-protocols.html"><span class="n">24</span><span>Coordination protocols</span></a><a href="code-execution.html"><span class="n">25</span><span>Code execution &amp; sandboxing</span></a><a href="voice.html"><span class="n">26</span><span>Voice &amp; realtime agents</span></a><a href="triggers.html"><span class="n">27</span><span>Triggers &amp; event-driven agents</span></a><a href="reliability-qos.html" aria-current="page"><span class="n">28</span><span>Reliability &amp; QoS</span></a><a href="cost-capacity.html"><span class="n">29</span><span>Cost &amp; capacity engineering</span></a><a href="data-lifecycle.html"><span class="n">30</span><span>Data lifecycle &amp; provenance</span></a><a href="testing-certification.html"><span class="n">31</span><span>Testing &amp; certification</span></a><a href="scale-playbook.html"><span class="n">32</span><span>Scale playbook</span></a><a href="workflow-engine.html"><span class="n">34</span><span>Workflow engine</span></a><a href="frontier.html"><span class="n">33</span><span>Frontier &amp; gaps</span></a></nav><div class="part-label eyebrow">Appendix</div><nav><a href="appendix-ratings.html"><span class="n">A</span><span>Ratings matrix</span></a><a href="appendix-glossary.html"><span class="n">B</span><span>Glossary</span></a></nav><div class="inpage"><h4>In this chapter</h4><nav><a href="#rq-failure-recovery"><span class="n">01</span><span>Failure classification and recovery policy</span></a><a href="#rq-idempotency-dedup"><span class="n">02</span><span>Idempotency and deduplication</span></a><a href="#rq-bulkhead-breaker"><span class="n">03</span><span>Bulkheads and circuit breakers</span></a><a href="#rq-qos"><span class="n">04</span><span>Priority, backpressure, and queue policy</span></a><a href="#rq-degraded"><span class="n">05</span><span>Degraded mode and readiness gates</span></a></nav></div></aside>
+<main><div class="wrap">
+<header class="chead"><div class="kicker"><span class="cnum">CH 28</span><span class="eyebrow">VII · Not on the list</span></div><h1>Reliability &amp; QoS</h1><p class="lede">Bulkheads, breakers, idempotency, backpressure, degraded mode.</p><div class="statstrip"><div><div class="k">Concepts</div><div class="v">5</div></div><div><div class="k">Mean impl</div><div class="v">7.6</div></div><div><div class="k">Mean criticality</div><div class="v">9.2</div></div><div><div class="k">Shipped</div><div class="v">3</div></div><div><div class="k">Thin / missing</div><div class="v">0</div></div></div></header><section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>Reliability primitives appeared throughout the book as they were needed; this chapter assembles them as
+    a system and adds the quality-of-service layer on top. The distinction: <strong>reliability</strong> keeps
+    the platform correct under failure (idempotency, rollback, breakers); <strong>QoS</strong> keeps it fair
+    and responsive under load (priority, backpressure, bulkheads, degraded mode).</p>
+
+    <p>The unifying idea is <strong>graceful degradation under both failure and load</strong>. A production
+    agent platform never has the luxury of a clean environment — providers flap, tenants stampede, connectors
+    die — so every primitive here answers "how do we stay correct and fair when something is wrong", and the
+    answer is never "fall over" and never "silently do less without saying so".</p>
+  </div>
+</section>
+
+<section class="block" id="reliability-qos">
+  <h2>Reliability and QoS</h2>
+
+<article class="concept" id="rq-failure-recovery" data-impl="8" data-crit="10" data-tag="Reliability">
+<h3><span class="idx">01</span>Failure classification and recovery policy<a class="anchor" href="#rq-failure-recovery" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Reliability</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">Not all failures are equal: classify each — transient, rate-limited, auth, missing-input,
+invalid-plan, permanent — and map the class to a response, because retrying an auth failure is as wrong as
+escalating a timeout.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A failure classifier maps an error to a class; a recovery policy maps the class to an action; a retry
+strategy selector picks the backoff shape; an escalation policy decides when a human is involved. This is the
+recovery subsystem introduced in chapter 1, presented here as the platform's central failure-handling brain —
+every subsystem's failures flow through the same classification so responses are consistent.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/recovery/failure_classifier.py</code>, <code>recovery_policy.py</code><span class="note">classify → respond</span></li>
+<li><code>app/recovery/retry_strategy_selector.py</code>, <code>escalation_policy.py</code><span class="note">backoff and escalation</span></li>
+<li><code>app/recovery/recovery_trace.py</code><span class="note">what was tried and why</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>failure                    class          response
+timeout / 5xx              transient      retry, exp backoff + jitter
+429                        rate-limited   retry after window; shed if repeated
+403 / 401                  auth           no retry → escalate
+"missing account id"       missing-input  clarification to a human
+"step precondition false"  invalid-plan   replan with the failure as context
+"unsupported operation"    permanent      fail; roll back side effects
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Consistent classification is what keeps failure handling sane across dozens of subsystems — the same
+timeout means the same thing whether it came from a tool, an embedder, or a database. The recovery trace is
+the audit of what was attempted, which is essential when a goal took nine iterations to fail: you can see it
+retried a permanent error four times because it was misclassified. Full treatment in chapter 1.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Misclassification.</strong> Retrying the permanent, escalating the transient.</li>
+<li><strong>Uniform retry.</strong> The same backoff for every failure class.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always. Failure is the normal case in distributed systems.</li></ul></section>
+</article>
+
+<article class="concept" id="rq-idempotency-dedup" data-impl="8" data-crit="10" data-tag="Reliability">
+<h3><span class="idx">02</span>Idempotency and deduplication<a class="anchor" href="#rq-idempotency-dedup" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Reliability</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">In a system that retries constantly, safety means a repeated operation has the same effect as a
+single one — an idempotency key per write, dedup of repeated requests, so a retry never double-charges.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Every write carries an idempotency key derived from goal + step + argument hash, so the target (or the
+platform) recognises a retried call as the same call and does not repeat the side effect. Deduplication
+catches repeated requests earlier — the same goal submitted twice, the same webhook delivered twice — and
+returns the prior result. Together they make at-least-once delivery safe, which is the only delivery guarantee
+a distributed system can cheaply offer.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/reliability/idempotency.py</code><span class="note">idempotency keys</span></li>
+<li><code>app/reliability/dedup.py</code>, <code>app/services/dedup.py</code>, <code>app/gateway/dedup_scheduler.py</code><span class="note">deduplication</span></li>
+<li><code>app/reliability/goal_lifecycle.py</code><span class="note">lifecycle state that dedup keys off</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>goal retried after a worker crash mid-step-4 (create invoice)
+ step 4's idempotency key = hash(goal, step 4, invoice args)
+ the ERP recognises the key → returns the already-created invoice
+ → the customer is billed once, not twice
+without idempotency, the retry creates a second invoice
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Idempotency is non-negotiable for any agent that writes, because retries are constant — a worker crash, a
+timeout, a rebalance all trigger them. The key must be derived deterministically from the operation, not
+generated fresh, or the retry looks like a new operation. This is the primitive that lets you use at-least-once
+delivery (cheap and reliable) instead of exactly-once (expensive and often impossible).</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Retry without idempotency.</strong> Duplicate side effects.</li>
+<li><strong>Non-deterministic keys.</strong> Retries not recognised as repeats.</li>
+<li><strong>Dedup window too short.</strong> A late retry treated as new.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any write-capable agent — so any production agent.</li></ul></section>
+</article>
+
+<article class="concept" id="rq-bulkhead-breaker" data-impl="8" data-crit="9" data-tag="Isolation">
+<h3><span class="idx">03</span>Bulkheads and circuit breakers<a class="anchor" href="#rq-bulkhead-breaker" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Isolation</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Two isolation primitives: bulkheads cap per-tenant concurrency so one cannot starve the fleet,
+and breakers stop calling a failing dependency so its outage does not become yours.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A bulkhead is a concurrency ceiling per tenant (and per resource pool) — a fan-out that would exhaust the
+workers or connections queues instead. A circuit breaker fronts each flaky dependency: after repeated
+failures it opens and fails fast (or serves stale) until a probe confirms recovery. Breaker state is shared
+across replicas via Redis, so the whole fleet learns a dependency is down rather than each node discovering it
+independently.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/reliability/bulkhead.py</code><span class="note">per-tenant concurrency</span></li>
+<li><code>app/reliability/circuit_breaker.py</code>, <code>redis_circuit_breaker.py</code><span class="note">breakers, cross-replica state</span></li>
+<li><code>app/providers/circuit_breaker.py</code><span class="note">provider breakers (chapter 16)</span></li>
+<li><code>app/mcp/client.py</code><span class="note">breaker + stale-cache on tool calls (chapter 19)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>bulkhead   acme capped at 50 concurrent tool calls → a 200-way fan-out
+           queues; other tenants keep their capacity
+breaker    the CRM connector fails 5× → open (shared via Redis, whole fleet
+           stops calling it) → 60s later a probe → recovered → close
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>The bulkhead is the ceiling that no amount of agent spawning (chapter 1) or trigger firing (chapter 27) can
+breach — it is what makes multi-tenancy survivable under load. Cross-replica breaker state is the detail that
+matters: without it, a hundred replicas each hammer a dead provider a hundred times before giving up. Together
+they turn "one thing is broken" into "one thing is isolated".</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>No bulkhead.</strong> One tenant's fan-out starving all.</li>
+<li><strong>Per-replica breakers.</strong> The fleet not learning collectively.</li>
+<li><strong>No stale fallback.</strong> A read failing when a cached answer would do.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any multi-tenant system with external dependencies.</li></ul></section>
+</article>
+
+<article class="concept" id="rq-qos" data-impl="7" data-crit="8" data-tag="QoS">
+<h3><span class="idx">04</span>Priority, backpressure, and queue policy<a class="anchor" href="#rq-qos" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">QoS</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Under load, decide what runs now, what waits, and what is shed — priority for what matters,
+backpressure to slow intake before the system tips over, and a queue policy that is fair by design.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A QoS layer over the queue: priority policy ranks work (an interactive goal over a batch one, a paying
+tenant's over a free one); backpressure signals upstream to slow down when the system is saturated, rather
+than accepting work it cannot serve; a queue policy governs fairness so no class is starved. A scheduler
+applies these. The goal is to degrade predictably under load — the right work still runs, the rest waits or is
+shed with a clear signal.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/qos/priority_policy.py</code>, <code>queue_policy.py</code>, <code>scheduler.py</code><span class="note">priority, fairness, scheduling</span></li>
+<li><code>app/qos/backpressure.py</code>, <code>qos_trace.py</code><span class="note">backpressure and its trace</span></li>
+<li><code>app/scaling/priority_queue.py</code>, <code>celery_app.py</code><span class="note">the queues it governs (chapter 20)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>load spike: 10,000 goals arrive in a minute
+ priority: interactive + enterprise goals run first
+ backpressure: intake slows, upstream told to retry later (not silently dropped)
+ fairness: free tier still gets its guaranteed share, not zero
+ result: predictable degradation — the important work is unaffected
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Backpressure is the primitive that separates a system that degrades gracefully from one that collapses:
+accepting work faster than you can serve it just moves the failure downstream and makes it worse. Priority is
+how you honour SLAs under contention — the enterprise tenant you promised 4-second latency should not queue
+behind a free tenant's backfill (chapter 20). QoS is where fairness stops being an aspiration and becomes a
+policy.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>No backpressure.</strong> Accepting more than you can serve, then collapsing.</li>
+<li><strong>Priority without fairness.</strong> Low-priority work starved entirely.</li>
+<li><strong>Silent shedding.</strong> Dropping work without telling the caller.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any system that experiences load spikes — so any real one.</li></ul></section>
+</article>
+
+<article class="concept" id="rq-degraded" data-impl="7" data-crit="9" data-tag="Resilience">
+<h3><span class="idx">05</span>Degraded mode and readiness gates<a class="anchor" href="#rq-degraded" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Resilience</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">When a dependency is down, run with less rather than failing entirely — lexical search without
+the embedder, deterministic guardrails without the toxicity model — and refuse to serve only what genuinely
+cannot run safely.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A degraded-mode policy defines what the platform does when a dependency is unavailable: fall back to the
+lexical retrieval path if the embedder is down (chapter 7), run deterministic guardrails if the toxicity model
+is down (chapter 12), delegate to a ready RAG strategy if one is unavailable (chapter 2). A readiness gate
+refuses to serve only what cannot run <em>safely</em> in degraded mode — a fail-closed control (chapter 12)
+must not degrade to fail-open. Dependency health drives both.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/runtime_readiness/degraded_mode_policy.py</code>, <code>readiness_gate.py</code>, <code>dependency_health.py</code><span class="note">degraded mode and readiness</span></li>
+<li><code>app/rag/gateway.py</code><span class="note">strategy delegation (chapter 2)</span></li>
+<li><code>app/observability/health.py</code>, <code>app/api/public_status.py</code><span class="note">health and status</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>embedder provider down
+ degraded mode: retrieval falls back to BM25 + trigram, flagged degraded
+ guardrails: deterministic checks still run; toxicity model unavailable →
+   for high-risk channels, BLOCK (never fail-open)
+ status page: "semantic search degraded" — announced, not silent
+ readiness gate: refuses only the operations that cannot run safely
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Degraded mode is the difference between a partial outage and a total one — most of the platform keeps
+working when one dependency fails, and the reduction is announced rather than silent. The one inviolable rule:
+fail-closed controls never degrade to fail-open. A toxicity model being down is a reason to run stricter
+deterministic checks, never a reason to skip safety. Announce degradation on the status page so users know why
+quality changed.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>All-or-nothing.</strong> One dependency down taking everything down.</li>
+<li><strong>Fail-closed degrading to fail-open.</strong> Skipping safety when a model is down.</li>
+<li><strong>Silent degradation.</strong> Users blaming the product.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any platform with external dependencies that can fail independently.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch28-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Adaptive concurrency limits.</strong> Bulkheads are configured, not learned from observed
+      latency and error rates under load.</li>
+      <li><strong>Chaos testing.</strong> The primitives exist; systematic fault injection to verify they work
+      together under failure is thin (chapter 31).</li>
+      <li><strong>Cross-region failover.</strong> Degraded mode handles dependency failure; regional failover
+      for the datastores themselves is future work (chapter 32).</li>
+      <li><strong>Predictive backpressure.</strong> Backpressure reacts to saturation; anticipating a spike
+      from leading indicators would smooth degradation.</li>
+    </ul>
+  </div>
+</section>
+
+<div class="pagenav"><a class="prev" href="triggers.html"><div class="d">Previous · CH 27</div><div class="t">Triggers &amp; event-driven agents</div></a><a class="next" href="cost-capacity.html"><div class="d">Next · CH 29</div><div class="t">Cost &amp; capacity engineering</div></a></div>
+<p class="footnote">AgentVerse Field Manual · ratings are this author's judgement of the code as it stands, not a vendor claim. File paths are navigation anchors; line numbers drift.</p>
+</div></main>
+</div>
+<script>
+(function () {
+  var r = document.documentElement;
+  try { var t = localStorage.getItem('avfm-theme'); if (t) r.setAttribute('data-theme', t); } catch (e) {}
+  function cur() {
+    var a = r.getAttribute('data-theme');
+    if (a) return a;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  document.addEventListener('click', function (ev) {
+    var b = ev.target.closest('[data-theme-toggle]');
+    if (!b) return;
+    var n = cur() === 'dark' ? 'light' : 'dark';
+    r.setAttribute('data-theme', n);
+    try { localStorage.setItem('avfm-theme', n); } catch (e) {}
+  });
+  var f = document.querySelector('[data-filter]');
+  if (f) {
+    f.addEventListener('input', function () {
+      var q = f.value.trim().toLowerCase();
+      document.querySelectorAll('[data-filter-row]').forEach(function (el) {
+        el.hidden = q.length > 0 && el.getAttribute('data-filter-row').indexOf(q) === -1;
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>

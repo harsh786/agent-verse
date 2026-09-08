@@ -112,6 +112,7 @@ def _orm_to_dict(wf: Any) -> dict[str, Any]:
         "name": wf.name,
         "description": wf.description or "",
         "definition": wf.definition or {},
+        "labels": getattr(wf, "labels", None) or {},
         "status": wf.status,
         "version": wf.version,
         "created_at": wf.created_at,
@@ -158,9 +159,11 @@ class _WorkflowStore:
         name: str,
         description: str,
         definition: dict[str, Any],
+        labels: dict[str, str] | None = None,
     ) -> dict[str, Any]:
+        labels = labels or {}
         if self._db is not None:
-            return await self._create_db(tenant_id, name, description, definition)
+            return await self._create_db(tenant_id, name, description, definition, labels)
         now = datetime.now(UTC)
         wf: dict[str, Any] = {
             "id": str(uuid.uuid4()),
@@ -168,6 +171,7 @@ class _WorkflowStore:
             "name": name,
             "description": description,
             "definition": definition,
+            "labels": labels,
             "status": "draft",
             "version": 1,
             "created_at": now,
@@ -251,6 +255,7 @@ class _WorkflowStore:
         name: str,
         description: str,
         definition: dict[str, Any],
+        labels: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         from sqlalchemy import text as sa_text
 
@@ -267,6 +272,7 @@ class _WorkflowStore:
                 name=name,
                 description=description,
                 definition=definition,
+                labels=labels or {},
                 status="draft",
                 version=1,
                 created_at=now,

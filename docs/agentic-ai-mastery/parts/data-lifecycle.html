@@ -1,0 +1,220 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>An agent platform accumulates data everywhere — documents, chunks, embeddings, memory, traces,
+    screenshots, transcripts, audit — and most of it describes real people. The data lifecycle is the discipline
+    of knowing what you hold, why, where, for how long, and being able to prove you deleted it. It is where the
+    platform meets the law, and where "we'll add compliance later" becomes a re-architecture.</p>
+
+    <p>The organising idea is <strong>classification drives everything downstream</strong>. Once a piece of data
+    is classified — public, internal, confidential, restricted — its handling, retention, residency, and
+    deletion follow automatically. Classify at ingestion and the rest of the lifecycle is enforcement; skip it
+    and every later obligation becomes a manual hunt.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 840 210" role="img" aria-label="Data lifecycle: classify at creation, then residency and retention policies govern the data, provenance tracks its origin, legal hold can suspend deletion, and a deletion orchestrator cascades removal across every store with a proof of deletion.">
+      <defs><marker id="dl1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker></defs>
+      <rect x="0" y="50" width="130" height="44" rx="3" fill="none" stroke="#00A8CC" stroke-width="1.6"></rect>
+      <text x="65" y="70" font-family="Archivo, sans-serif" font-size="12" fill="#00A8CC" text-anchor="middle">classify</text>
+      <text x="65" y="85" font-family="IBM Plex Mono, monospace" font-size="8.5" fill="#00A8CC" text-anchor="middle">at creation</text>
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="170" y="50" width="130" height="44" rx="3"></rect>
+        <rect x="340" y="50" width="130" height="44" rx="3"></rect>
+        <rect x="510" y="50" width="130" height="44" rx="3"></rect>
+        <rect x="680" y="50" width="150" height="44" rx="3"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="11" fill="currentColor" text-anchor="middle">
+        <text x="235" y="70">residency</text><text x="235" y="85" font-size="9" opacity="0.6">where it may live</text>
+        <text x="405" y="70">retention</text><text x="405" y="85" font-size="9" opacity="0.6">how long</text>
+        <text x="575" y="70">legal hold</text><text x="575" y="85" font-size="9" opacity="0.6">suspends deletion</text>
+        <text x="755" y="70">deletion cascade</text><text x="755" y="85" font-size="9" opacity="0.6">+ proof</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#dl1)">
+        <line x1="130" y1="72" x2="166" y2="72"></line><line x1="300" y1="72" x2="336" y2="72"></line>
+        <line x1="470" y1="72" x2="506" y2="72"></line><line x1="640" y1="72" x2="676" y2="72"></line>
+      </g>
+      <text x="0" y="140" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">classification at creation drives residency, retention, and deletion automatically — skip it and every obligation becomes a manual hunt</text>
+      <text x="0" y="162" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">a datum is copied into embeddings, caches, traces, screenshots — deletion must cascade across ALL of them, provably</text>
+      <text x="0" y="184" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">legal hold is the exception that must SUSPEND deletion — destroying data under hold is worse than keeping it</text>
+    </svg>
+    <figcaption>Classification at creation drives the rest. The hard part is the last box: a single datum has
+    been copied into embeddings, caches, traces and screenshots, and deletion must reach
+    <span class="fig-em">all of them</span>.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="data-lifecycle">
+  <h2>The lifecycle</h2>
+
+<article class="concept" id="dl-classification" data-impl="8" data-crit="10" data-tag="Foundation">
+<h3>Data classification</h3>
+<p class="tldr">Every datum is tagged — public, internal, confidential, restricted — at creation, and that tag
+drives handling, retention, residency, and deletion for the rest of its life.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A classifier assigns a data class from content and context: PII detectors, source, and domain rules. The
+class is stored as metadata on the datum (chunk, memory row, document) and consulted at every boundary —
+retrieval filters by allowed classes (chapter 14), redaction acts on sensitive classes (chapter 12), retention
+and residency policies key off the class. Classifying at creation is what makes the rest automatic.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/data_classification/classifier.py</code>, <code>schema.py</code><span class="note">classification and the taxonomy</span></li>
+<li><code>app/data_classification/redaction.py</code><span class="note">acting on the class</span></li>
+<li><code>app/memory/contracts.py</code><span class="note">Classification on every memory row (chapter 3)</span></li>
+<li><code>app/ingestion/pipeline.py</code><span class="note">classification at stage 4 (chapter 5)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>an ingested invoice
+ classifier → confidential (contains vendor bank details, PII)
+ stored as metadata on every chunk
+ → retrieval excludes it for principals below confidential
+ → redaction applies before external tool calls
+ → retention: 7 years (regulatory) · residency: tenant region
+one classification, five downstream behaviours
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Classification at creation is the difference between compliance-by-design and a permanent manual burden. Get
+it right at ingestion and a data-subject request or an audit is a query; skip it and both become a hunt across
+every store. The four-level taxonomy is deliberately simple — enough to drive behaviour, few enough that
+classification is reliable.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Unclassified data.</strong> Every downstream obligation becomes manual.</li>
+<li><strong>Classification only in one store.</strong> Copies losing their class.</li>
+<li><strong>Over-classification.</strong> Everything restricted, nothing usable.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always, at creation, before the data spreads.</li></ul></section>
+</article>
+
+<article class="concept" id="dl-provenance" data-impl="8" data-crit="8" data-tag="Provenance">
+<h3>Provenance</h3>
+<p class="tldr">Every datum knows where it came from — which source, which document, which revision, which
+extraction — so a claim can be traced to evidence and a data-subject request can find every derived copy.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Provenance records the origin chain: a chunk cites its document and source revision (chapter 4), a memory
+cites its evidence (chapter 3), a claim cites the chunk that supports it (chapter 18). A source reference is the
+canonical pointer; a claim trace links an assertion back through the chain to its origin. This is both a
+grounding mechanism (verify a claim) and a compliance mechanism (find everything derived from a subject's data).</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/provenance/source_ref.py</code>, <code>claim_trace.py</code>, <code>ledger.py</code><span class="note">source references and claim traces</span></li>
+<li><code>app/provenance/provenance_verifier.py</code>, <code>export.py</code><span class="note">verification and WORM export</span></li>
+<li><code>app/ingestion/provenance_builder.py</code><span class="note">building provenance at ingestion</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>a data-subject request for "j.patel"
+ provenance finds: 3 documents mentioning them → 41 derived chunks →
+ their embeddings → 4 memory rows citing those chunks → 2 cache entries
+without provenance, finding the derived copies is a manual search that
+misses things — and missing a copy is a compliance failure
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Provenance is what makes both grounding and deletion tractable. For grounding, it is the chain from a claim
+to its evidence (chapter 18); for compliance, it is the map that a deletion cascade follows. The two uses share
+the same records, which is why building provenance at ingestion pays twice. WORM export preserves the chain
+even against tampering.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Broken chains.</strong> Derived data that cannot be traced to its origin.</li>
+<li><strong>Provenance not built at ingestion.</strong> Retrofitting it is nearly impossible.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any data that must be verifiable or deletable.</li></ul></section>
+</article>
+
+<article class="concept" id="dl-retention-residency" data-impl="8" data-crit="9" data-tag="Policy">
+<h3>Retention and residency</h3>
+<p class="tldr">Data has a lifespan and a location: retention policies expire it when its purpose ends, residency
+policies keep it in the region the tenant requires — both driven by classification and compliance regime.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A retention policy sets an expiry per data class and regime (a HIPAA record 6 years, a raw screenshot 7
+days); an archive policy moves cold data to cheaper storage before expiry; an export policy governs what may
+leave. Residency pins where data may live — enforced at storage and at the connector, so an EU tenant's data
+neither rests nor transits outside its region. Both key off the classification and the compliance bundle
+(chapter 13).</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/lifecycle/retention_policy.py</code>, <code>archive_policy.py</code>, <code>export_policy.py</code><span class="note">retention, archival, export</span></li>
+<li><code>app/governance/compliance_bundles.py</code><span class="note">regime-driven retention (chapter 13)</span></li>
+<li><code>app/scaling/memory_tasks.py</code><span class="note">the jobs that expire and archive</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>data class          retention        residency
+raw screenshot      7 days           tenant region
+invoice (financial) 7 years          tenant region
+chat transcript     90 days          tenant region
+audit entry         7 years, WORM    tenant region
+an EU tenant: connectors and storage refuse to place data outside the EU
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Retention is both a compliance requirement and a cost control — data that lives forever is a growing
+liability and a growing bill. Residency is a hard requirement for regulated tenants and must be enforced at
+every layer, including the connectors that could egress data out of region and the model providers whose
+regions matter. Default retention to a policy, never to infinite; the row nobody set a policy on is the one an
+auditor finds.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Infinite retention by default.</strong> A growing liability.</li>
+<li><strong>Residency only in storage.</strong> A connector egressing out of region.</li>
+<li><strong>Retention without archival.</strong> Hot storage for cold data.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any data about people, or any regulated tenant.</li></ul></section>
+</article>
+
+<article class="concept" id="dl-deletion" data-impl="8" data-crit="10" data-tag="Deletion">
+<h3>Deletion, cascade, and legal hold</h3>
+<p class="tldr">Real deletion is a cascade across every store a datum was copied into — rows, embeddings, caches,
+traces, screenshots — provable, and suspended by legal hold where the law requires the data kept.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A deletion orchestrator, given a subject or a datum, uses provenance to find every derived copy and removes
+each: the source row, its chunks and embeddings, cache entries, memory rows, artifacts, and (per policy) trace
+data — producing a deletion receipt that is itself audited. Legal hold is the exception: it <em>suspends</em>
+deletion for named subjects or matters, because destroying data under hold is a worse offence than retaining
+it. The hold's application is audited too.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/lifecycle/deletion_orchestrator.py</code><span class="note">the cascade</span></li>
+<li><code>app/lifecycle/legal_hold_policy.py</code>, <code>app/governance/legal_holds.py</code><span class="note">legal hold</span></li>
+<li><code>app/api/dpdp.py</code><span class="note">data-subject request surface</span></li>
+<li><code>app/memory/postgres_repository.py</code><span class="note">memory deletion (chapter 3)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>deletion request: subject "j.patel@example"
+ legal hold check → none active for this subject
+ provenance → 3 docs, 41 chunks, 41 embeddings, 4 memories, 2 cache entries,
+   2 screenshots
+ orchestrator deletes all → deletion receipt (counts, timestamps) → audited
+if a hold were active: deletion SUSPENDED, the requester informed, the hold
+ recorded
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Deletion is much harder than it looks because a datum has been copied into six or seven stores, and missing
+one is a compliance failure that surfaces at the worst time. Design the cascade on day one — retrofitting a
+deletion path across every store is a quarter of work, and provenance is what makes it possible at all. Legal
+hold is the correct exception mechanism: it must be able to override deletion, and its own application must be
+audited. Full memory-deletion treatment in chapter 3.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Orphaned embeddings.</strong> The row deleted, the vector still retrievable.</li>
+<li><strong>Cached content.</strong> A deleted datum served from cache.</li>
+<li><strong>Deletion during hold.</strong> Destroying evidence under legal hold.</li>
+<li><strong>No proof.</strong> Deletion you cannot demonstrate.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always. Any system holding data about people needs this before the first row.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch30-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Automated classification accuracy monitoring.</strong> Classification drives everything, but
+      its accuracy is not continuously measured against human-corrected samples.</li>
+      <li><strong>Deletion verification.</strong> The cascade produces a receipt; an independent verification
+      pass that confirms nothing survived is thin.</li>
+      <li><strong>Cross-region data movement audit.</strong> Residency is enforced; a continuous audit that no
+      datum crossed a region boundary is future work.</li>
+      <li><strong>Consent lineage.</strong> Provenance tracks data origin; linking each datum to the consent
+      that permits its processing is not first-class.</li>
+    </ul>
+  </div>
+</section>

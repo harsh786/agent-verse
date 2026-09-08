@@ -46,14 +46,14 @@ class WorkflowService:
         name: str,
         description: str = "",
         definition: dict | None = None,
-        labels: list[str] | None = None,
+        labels: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         return await self._store.create(
             tenant_id=tenant_id,
             name=name,
             description=description,
             definition=definition or {},
-            labels=labels or [],
+            labels=labels or {},
         )
 
     async def list(

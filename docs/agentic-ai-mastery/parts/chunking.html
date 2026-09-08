@@ -1,0 +1,1014 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>Chunking is the highest-leverage, least-glamorous decision in a knowledge system. The chunk is
+    the unit of retrieval, so the boundaries you cut determine what can ever be found: a chunk that
+    splits a table from its header can never answer a question about that table, and no reranker,
+    bigger model or cleverer pattern will fix it.</p>
+
+    <p>Two forces pull in opposite directions. <strong>Precision</strong> wants small chunks — a
+    200-token chunk about refunds matches a refund query cleanly. <strong>Sufficiency</strong> wants
+    large chunks — the model needs enough context to answer. Every strategy below is a different
+    resolution of that tension, and the good ones (parent-child, late chunking) refuse the trade
+    entirely by decoupling what you index from what you return.</p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Content</th><th>Strategy</th><th>Boundary</th><th>Typical size</th></tr></thead>
+      <tbody>
+        <tr><td>Markdown, wikis, docs</td><td>Heading</td><td>Section headings</td><td>400–1,200 tok</td></tr>
+        <tr><td>Source code</td><td>AST</td><td>Function / class</td><td>Natural</td></tr>
+        <tr><td>PDF reports</td><td>PDF layout</td><td>Column + block</td><td>300–800 tok</td></tr>
+        <tr><td>Spreadsheets, tables</td><td>Table</td><td>Row groups + header</td><td>Rows</td></tr>
+        <tr><td>JSON / CSV</td><td>Structured</td><td>Records or paths</td><td>Variable</td></tr>
+        <tr><td>Transcripts</td><td>Timestamp</td><td>Time window</td><td>60–120 s</td></tr>
+        <tr><td>Video</td><td>Scene</td><td>Scene change</td><td>Per scene</td></tr>
+        <tr><td>Flowing prose, no structure</td><td>Semantic</td><td>Topic shift</td><td>200–600 tok</td></tr>
+        <tr><td>Legal / regulatory</td><td>Sentence window</td><td>Sentence + window</td><td>1 + n</td></tr>
+        <tr><td>Anything, high stakes</td><td>Parent-child</td><td>Two levels</td><td>300 / 1,200</td></tr>
+        <tr><td>Unknown / mixed</td><td>Token-aware</td><td>Token count + separators</td><td>512–1,024</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="block" id="strategies">
+  <h2>The strategies</h2>
+
+<article class="concept" id="fixed-chunking" data-impl="9" data-crit="6" data-tag="Baseline">
+<h3>Fixed-size chunking</h3>
+<p class="tldr">Cut every n characters. Fast, predictable, structure-blind — and the right answer only as
+a fallback when you know nothing about the content.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Split the text at fixed character intervals with a fixed overlap. No parsing, no model, no
+assumptions. Its single virtue is that it always terminates with predictable chunk counts, which makes
+it a safe default for unknown content and a useful control in evaluations.</p>
+<p>Its defect is that character counts have no relationship to meaning or to tokens: a cut lands
+mid-sentence, mid-word, mid-number.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunking_strategy_selector.py</code><span class="note">_fixed_chunk() — the fallback path</span></li>
+<li><code>app/rag/chunker.py</code><span class="note">basic chunking</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>size 500, overlap 50
+ …"the refund window is 30 da"   | "ys from delivery. Damaged"…
+                                  ↑ cut mid-word, mid-fact
+retrieval for "refund window" matches chunk 1, which does not contain
+the answer's second half
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Keep it as the fallback and as the eval baseline, never as the default for content you understand.
+When a new format arrives and the classifier cannot place it, fixed chunking is what stops the pipeline
+failing — that is its job.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Mid-sentence cuts.</strong> Both chunks are weaker than either would have been.</li>
+<li><strong>Split entities.</strong> An account number or date cut in half.</li>
+<li><strong>Character/token mismatch.</strong> 500 characters is 90 tokens of English and 400 tokens of
+code or CJK text.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Fallback for unknown content; baseline for evaluation.</li>
+<li class="no">Never as the production default for a known format.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="token-aware" data-impl="8" data-crit="8" data-tag="Baseline">
+<h3>Token-aware chunking</h3>
+<p class="tldr">Cut on token counts using the actual tokeniser, and prefer natural separators — the
+sane default when structure is unavailable.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Count with the tokeniser the embedding model uses, and walk a separator hierarchy: paragraph break,
+then sentence end, then clause, then word, then character. Take the largest separator that keeps the
+chunk within budget. This yields chunks that fit the model exactly and rarely cut mid-thought.</p>
+<p>Token accuracy matters because embedding models truncate silently. A "1,000 character" chunk of dense
+technical text can exceed an 8,192-token limit in a way nobody notices until retrieval quality drops for
+long documents only.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/agent/tokenizer.py</code><span class="note">tokenisation used for budgeting</span></li>
+<li><code>app/ingestion/chunkers/base.py</code><span class="note">chunker interface and separator handling</span></li>
+<li><code>app/rag/chunker.py</code><span class="note">token-aware splitting</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>target 512 tokens, overlap 64
+paragraph boundary at 480 tokens → cut there (not at 512)
+next chunk starts 64 tokens back, at a sentence boundary
+result: chunks of 380–512 tokens, none cut mid-sentence
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Use the real tokeniser, not a characters-divided-by-four estimate. The estimate is wrong by 3–5× on
+code, JSON and non-Latin scripts, and every downstream budget (context, cost, truncation) inherits the
+error.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Estimated tokens.</strong> Silent truncation at the embedder.</li>
+<li><strong>Wrong tokeniser.</strong> Counting with one model's tokeniser and embedding with another.</li>
+<li><strong>Separator starvation.</strong> Text with no paragraph or sentence breaks falls through to
+character splitting.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Structure is unknown or unreliable — the honest default.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="semantic-chunking" data-impl="7" data-crit="6" data-tag="Content-aware">
+<h3>Semantic chunking</h3>
+<p class="tldr">Cut where the topic changes: embed sentences, measure similarity between neighbours, and
+split at the dips.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Embed each sentence, compute similarity between consecutive sentences, and place a boundary where
+similarity drops below a threshold (or below a percentile of the document's distribution). Enforce
+minimum and maximum sizes so a boundary-free passage still gets split and a rapid topic oscillation does
+not produce fifty tiny chunks.</p>
+<p>Cost is one embedding per sentence at index time — significant on a large corpus, and the main reason
+this is not the universal default.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/semantic.py</code><span class="note">SemanticChunker</span></li>
+<li><code>app/ingestion/chunking_strategy_selector.py</code><span class="note">selected for unstructured prose</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>sentence-to-sentence similarity
+ s1→s2  0.81   s2→s3  0.78   s3→s4  0.34  ← topic shift: boundary
+ s4→s5  0.85   s5→s6  0.80   s6→s7  0.29  ← boundary
+chunks [s1-s3] refund mechanics · [s4-s6] warranty terms · [s7-…] returns
+a token-based chunker would have cut in the middle of the warranty section
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Worth it for unstructured prose that matters — transcripts of meetings, long-form reports, articles.
+Not worth it for content that already has headings (use them) or for corpora where paragraph-level
+chunking already evaluates well. Measure on your own data: the gain over token-aware chunking is real
+but often modest, and the index-time cost is not.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Threshold sensitivity.</strong> Slightly wrong and you get either one giant chunk or
+hundreds of fragments — always enforce min/max.</li>
+<li><strong>Embedding cost.</strong> Per-sentence embedding on a million documents.</li>
+<li><strong>Bad sentence splitting.</strong> Garbage in, garbage boundaries out.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Prose with no structural markers, and quality justifies the index cost.</li>
+<li class="no">Skip when headings exist.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="heading-chunking" data-impl="9" data-crit="8" data-tag="Content-aware">
+<h3>Markdown and heading chunking</h3>
+<p class="tldr">Use the outline the author already wrote. Split at headings, carry the heading path into
+metadata, never split a code fence or a table.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Parse the heading hierarchy, then cut at a chosen level (usually H2), recursively splitting any
+section that exceeds the size budget at the next level down and finally by tokens. The heading path
+travels with the chunk — both as retrieval-time context and as a filter field.</p>
+<p>Atomic elements are protected: code fences, tables and list blocks are never split, even if that makes
+a chunk oversized.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/heading.py</code><span class="note">HeadingChunker</span></li>
+<li><code>app/ingestion/parsers/markdown_parser.py</code><span class="note">the parsed hierarchy</span></li>
+<li><code>app/ingestion/parsers/docx_parser.py</code><span class="note">same treatment for Word heading styles</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre># Payments runbook
+## Payout failures                     → chunk 1  (path: [Runbook, Payout failures])
+### Diagnosis            (2,400 tok)   → too big, split at H3
+  → chunk 2  (path: [… , Diagnosis])       880 tok
+  → chunk 3  (path: [… , Diagnosis])       760 tok  (token split, sentence bdry)
+  ```bash …```                            kept whole inside chunk 2
+## Escalation                          → chunk 4
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Heading chunking is the best quality-per-effort strategy for internal documentation, which is usually
+your highest-signal corpus. The heading path in metadata pays twice: it gives the model context and
+gives users a navigable citation.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Documents with one heading.</strong> Falls back to token splitting — that is correct, but
+size the fallback deliberately.</li>
+<li><strong>Split code fences.</strong> Always a bug.</li>
+<li><strong>Lost path.</strong> A chunk saying "run the second command" with no context.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any authored document with real headings — start here.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="ast-chunking" data-impl="8" data-crit="8" data-tag="Content-aware">
+<h3>Code-aware (AST) chunking</h3>
+<p class="tldr">One chunk per function, method or class, with the enclosing signature and imports
+attached — because a syntactic unit is the only meaningful unit of code.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Parse to a syntax tree and emit chunks at declaration boundaries. Attach the context a reader needs:
+module imports, the enclosing class signature for a method, decorators, and the docstring. Oversized
+functions split at statement boundaries rather than mid-expression. Metadata carries language, path,
+symbol name and revision.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/ast_chunker.py</code><span class="note">ASTChunker</span></li>
+<li><code>app/ingestion/chunking_strategy_selector.py</code><span class="note">selected for code content types</span></li>
+<li><code>app/embedding/router.py</code><span class="note">code chunks routed to a code embedding model</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>chunk
+  # from app.security import verify_hmac        ← imports carried
+  class WebhookHandler:                          ← enclosing signature
+      def handle(self, event: Event) -> None:
+          """Dispatch a verified webhook."""
+          …
+  metadata {lang:python, symbol:WebhookHandler.handle, path:…, rev:a91f2}
+
+without imports and class context, the chunk is unrunnable knowledge:
+you cannot tell what verify_hmac is or what self refers to
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Exclude generated and vendored code aggressively — dependencies can outnumber first-party code ten to
+one and will dominate retrieval. Re-chunk on merge so symbol metadata matches the revision an agent is
+reasoning about.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Unparseable files.</strong> Syntax errors, unsupported languages — fall back to token
+chunking rather than dropping the file.</li>
+<li><strong>Missing context.</strong> A method without its class.</li>
+<li><strong>Giant functions.</strong> A 2,000-line function still needs internal splitting.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any code corpus. Never use a prose chunker on code.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="pdf-layout-chunking" data-impl="7" data-crit="8" data-tag="Content-aware">
+<h3>PDF layout chunking</h3>
+<p class="tldr">Reconstruct reading order from geometry before splitting — columns, blocks, headers and
+footers are the difference between usable text and noise.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Group characters into lines, lines into blocks, blocks into columns using coordinates; determine
+reading order; identify and drop repeated headers and footers; keep figure captions with their figures
+and table cells with their headers. Then chunk within the reconstructed flow, carrying the page number
+so citations can point at a page.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/pdf_layout.py</code><span class="note">layout-aware chunking</span></li>
+<li><code>app/ingestion/parsers/pdf_parser.py</code><span class="note">geometry and text extraction</span></li>
+<li><code>app/ingestion/chunkers/table.py</code><span class="note">tables handled separately</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>two-column page
+naive order  L1 R1 L2 R2 L3 R3 …   ← lines interleaved across columns
+layout order L1 L2 L3 … then R1 R2 R3 …
+dropped      "ACME Confidential — page 14 of 84" (repeated on every page)
+kept         "Figure 3: settlement flow" with its figure reference
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>PDF layout handling has the highest ratio of quality gained to engineering spent of anything in
+ingestion, because interleaved-column text is both common and completely unusable. Measure it directly:
+sample extracted text and read it. If a human cannot follow it, no model will.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Column interleaving.</strong> The defining PDF failure.</li>
+<li><strong>Header pollution.</strong> The same company name in every chunk.</li>
+<li><strong>Table flattening.</strong> Numbers separated from their labels.</li>
+<li><strong>Lost page numbers.</strong> Citations that cannot be followed.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any PDF corpus with multi-column or complex layout — that is, most reports.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="table-chunking" data-impl="7" data-crit="8" data-tag="Content-aware">
+<h3>Table chunking</h3>
+<p class="tldr">Every chunk of a table must carry the header row, or the numbers in it are meaningless —
+and a large table should be summarised rather than split into a hundred fragments.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Small tables become one chunk, serialised as markdown or key-value rows. Large tables split into row
+groups with the header repeated in each group, plus a leading summary chunk describing the table's
+columns, ranges and purpose. Very large tables should not be chunked at all: index the schema and
+summary, and answer questions with code execution against the data.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/table.py</code><span class="note">TableChunker</span></li>
+<li><code>app/ingestion/parsers/excel_parser.py</code>, <code>csv_parser.py</code><span class="note">table extraction</span></li>
+<li><code>app/tools/code_interpreter.py</code><span class="note">the alternative for large tables</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>table: quarterly revenue by region, 4 columns × 60 rows
+
+split without headers
+  chunk 2: "APAC | 4,120 | 3,890 | 5,010"    ← 4,120 of what? which quarter?
+split with headers repeated
+  chunk 2: "Region | Q1 | Q2 | Q3
+            APAC   | 4,120 | 3,890 | 5,010"  ← answerable
+plus summary chunk: "Quarterly revenue by region, FY24, INR lakhs,
+                     12 regions, Q1–Q4 columns"
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Financial and operational tables are where confidently wrong answers come from, and the cause is
+almost always a header separated from its values. Treat header preservation as an invariant and test it.
+For anything above a few hundred rows, the schema-plus-code-execution route is both cheaper and more
+accurate.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Headers dropped.</strong> Numbers without labels.</li>
+<li><strong>Merged cells.</strong> Misaligned columns.</li>
+<li><strong>Row-per-chunk.</strong> Thousands of near-identical vectors.</li>
+<li><strong>Units lost.</strong> "4,120" without knowing it is lakhs.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Documents contain tables that matter — reports, statements, specifications.</li>
+<li class="no">Do not chunk large datasets; query them.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="structured-chunking" data-impl="8" data-crit="6" data-tag="Content-aware">
+<h3>JSON and CSV chunking</h3>
+<p class="tldr">Either one chunk per meaningful record, or a flattened <code>path: value</code>
+representation — the shape of the data decides which.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>For record-shaped data (an array of objects), one chunk per record, serialised as labelled fields, is
+usually right — each record is a retrievable entity. For configuration-shaped data (deep nested
+objects), flattening to <code>a.b.c: value</code> lines preserves the structure in a form embeddings can
+use. For very large arrays, do neither: index the schema and a sample.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parsers/json_parser.py</code><span class="note">flattening and record detection</span></li>
+<li><code>app/ingestion/parsers/csv_parser.py</code>, <code>yaml_parser.py</code><span class="note">tabular and config formats</span></li>
+<li><code>app/ingestion/parsers/parquet_parser.py</code>, <code>avro_parser.py</code><span class="note">columnar formats</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>record-shaped  [{id, customer, amount, status}, …]
+  chunk per record: "id: INV-8891 · customer: Northwind ·
+                     amount: 41,200 INR · status: disputed"
+
+config-shaped  {"services":{"payments":{"retries":3,"timeout":30}}}
+  flattened:  services.payments.retries: 3
+              services.payments.timeout: 30
+query "what is the payments timeout?" → matches the flattened path
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Configuration corpora (Kubernetes manifests, service configs, feature flags) are an underrated
+knowledge source and flatten beautifully. Data exports are the opposite: they belong in a queryable
+store, not an embedding index.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Embedding raw JSON.</strong> Braces and quotes dominate the tokens.</li>
+<li><strong>Flattening huge arrays.</strong> Path explosion.</li>
+<li><strong>Type loss.</strong> Everything becomes a string; no comparisons possible.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Config and record data are part of the corpus; not for bulk data.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="timestamp-chunking" data-impl="8" data-crit="6" data-tag="Content-aware">
+<h3>Timestamp chunking</h3>
+<p class="tldr">For transcripts, cut on time windows with overlap and keep the time range in metadata —
+so a citation can point at a moment, not a document.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Split the transcript into windows (60–120 seconds is a good default) with 10–20% overlap so a sentence
+spanning a boundary is not lost. Keep start and end times, speaker labels where available, and the
+recording identifier. Prefer speaker turns as boundaries when diarisation is reliable — a turn is a
+better semantic unit than a clock interval.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/timestamp.py</code><span class="note">TimestampChunker</span></li>
+<li><code>app/ingestion/parsers/audio_parser.py</code><span class="note">transcript with timings</span></li>
+<li><code>app/voice/stt_engine.py</code><span class="note">the transcription source</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>48-minute call → 90s windows, 15s overlap → 34 chunks
+chunk 15  t 21:00–22:30  speaker=customer
+  "…we'd need the renewal moved to April because our budget cycle…"
+citation  "sales-call-2026-09-02, 21:00" → playable link
+query "when does their budget cycle start?" → this chunk, this moment
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The timestamp is the feature. A citation into a two-hour recording that says "somewhere in this file"
+is worthless; one that opens at 21:00 is immediately verifiable, and verifiability is what makes people
+trust agent output from recordings.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>No overlap.</strong> Sentences cut at window boundaries.</li>
+<li><strong>Fixed windows through speaker changes.</strong> Two speakers in one chunk, attribution lost.</li>
+<li><strong>Missing timings.</strong> The chunk is just text again.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any audio or video transcript.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="scene-chunking" data-impl="6" data-crit="4" data-tag="Content-aware">
+<h3>Scene chunking</h3>
+<p class="tldr">For video, cut on scene changes rather than the clock, so each chunk holds one coherent
+visual context plus the words spoken over it.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Detect scene boundaries from frame differences, then build a chunk per scene containing the transcript
+for that interval, a keyframe description, and any on-screen text from OCR. The result is a chunk where
+audio and visual content agree, which is what makes video retrieval answer questions rather than return
+timestamps.</p>
+<p>Image-region chunking — splitting a single image into semantically distinct regions and indexing each
+— is the natural extension and is not implemented here; the OCR extractors work at the whole-document
+level (chapter 21).</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/scene.py</code><span class="note">SceneChunker</span></li>
+<li><code>app/ingestion/parsers/video_parser.py</code><span class="note">scene detection and frame extraction</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>12-minute demo → 9 scenes
+scene 4  3:40–5:10
+  speech  "and here you configure the retry policy"
+  frame   OCR "Retry attempts: 3 · Backoff: exponential"
+  chunk   both, with t_start=3:40
+"what's the default retry count?" → answered from the frame text
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>One keyframe per scene, not one per second. The frame budget is the whole cost story for video, and
+scenes are the natural sampling unit — a slide that stays on screen for four minutes needs one caption,
+not two hundred.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Over-detection.</strong> A camera pan producing forty "scenes".</li>
+<li><strong>Under-detection.</strong> A 20-minute screencast as one scene.</li>
+<li><strong>Audio/visual drift.</strong> Transcript and frames misaligned.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Video where the screen carries information.</li>
+<li class="no">For talking-head video, timestamp chunking on the transcript is enough.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="agentic-chunking" data-impl="6" data-crit="5" data-tag="Model-driven">
+<h3>Agentic chunking</h3>
+<p class="tldr">Let a model decide the boundaries — reading the document and cutting where a human
+would. Best quality, highest cost, hardest to make deterministic.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A model reads the document (or a window of it) and returns proposed boundaries with reasons, optionally
+plus a title and summary per chunk. Because the same document should chunk identically every time, the
+output must be cached and versioned by document hash and prompt version — otherwise re-ingestion
+reshuffles every chunk id and invalidates every citation.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/patterns/agentic_chunking.py</code><span class="note">the strategy (also exposed as RAGStrategy.AGENTIC_CHUNKING)</span></li>
+<li><code>app/rag/contracts.py</code><span class="note">part of the public strategy vocabulary</span></li>
+</ul>
+<p>Rated 6: implemented as a strategy, but the determinism and caching discipline needed to run it over a
+large corpus is not fully in place.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>a court judgment with no headings
+model boundaries
+  1 procedural history      "distinct narrative, ends at 'the appellant then'"
+  2 facts as found
+  3 legal reasoning
+  4 order and costs
+a token chunker cuts arbitrarily through the reasoning section, which is
+the part every query is about
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Reserve it for small, high-value, structurally-hostile corpora: judgments, contracts, medical notes.
+On a million documents it is prohibitively expensive, and its quality edge over heading or semantic
+chunking on well-structured content is small. Cache by document hash so you pay once.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Non-determinism.</strong> New boundaries on every ingest; citations rot. Cache and version.</li>
+<li><strong>Cost at scale.</strong> One call per document minimum, often more.</li>
+<li><strong>Boundary drift with prompt changes.</strong> Version the prompt as part of the cache key.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Small corpus, high value, no usable structure.</li>
+<li class="no">Never as a default.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="late-chunking" data-impl="7" data-crit="6" data-tag="Model-driven">
+<h3>Late chunking</h3>
+<p class="tldr">Embed the whole document first, then pool the token embeddings into chunks — so every
+chunk's vector already knows the document's context, without a per-chunk model call.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Conventional chunking embeds each chunk in isolation, so a chunk saying "the limit is 30 days" has no
+idea it is about refunds. Late chunking runs the long-context embedding model over the full document,
+keeps the token-level output, then averages token vectors within each chunk boundary. Each chunk vector
+is contextualised by everything around it — the benefit of contextual enrichment without the per-chunk
+generation cost.</p>
+<p>The constraint is model support: you need an embedding model that exposes token-level output and
+handles long inputs.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/late_chunker.py</code><span class="note">the implementation</span></li>
+<li><code>app/rag/contextual_enricher.py</code><span class="note">the generation-based alternative</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>chunk text  "The limit is 30 days from delivery."
+isolated embedding    → close to any document about limits or delivery
+late-chunked embedding → close to refund questions, because the document
+                          context (a refund policy) is baked into the vector
+no extra model calls: one long-context pass over the document
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The best cost/quality point available for context-poor chunks, when your embedding model supports it.
+It also composes with everything else: you can late-chunk heading-based boundaries, which gives you
+authored structure and contextual vectors together.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Model does not support it.</strong> Needs token-level embeddings; not all providers expose
+them.</li>
+<li><strong>Document exceeds the context window.</strong> Must be windowed, which partially defeats it.</li>
+<li><strong>Pooling choice.</strong> Naive mean pooling over a long span dilutes the signal.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Chunks are small and context-dependent, and the model supports token output.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="chunk-overlap" data-impl="9" data-crit="7" data-tag="Parameter">
+<h3>Chunk overlap</h3>
+<p class="tldr">Repeat the last n tokens of each chunk at the start of the next, so a fact spanning a
+boundary appears whole in at least one chunk. Typically 10–20%.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Overlap is insurance against boundary placement. Too little and cross-boundary facts are lost; too
+much and you inflate index size, duplicate retrieval hits, and waste context showing the model the same
+sentences twice. The right amount depends on how well your boundaries respect meaning: heading
+chunking needs little overlap, fixed chunking needs a lot.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/base.py</code><span class="note">overlap handling</span></li>
+<li><code>app/ingestion/pipeline.py</code><span class="note">stage 11 dedup limits the duplicate-retrieval side effect</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>overlap 0
+  c1 "…refunds are accepted within"
+  c2 "30 days of delivery…"          neither chunk answers the question
+overlap 15%
+  c1 "…refunds are accepted within 30 days of delivery."   ← complete
+  c2 "…within 30 days of delivery. Damaged goods…"
+cost: index size +15%, and both chunks may be retrieved (dedup handles it)
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Overlap is a straight multiplier on index size and embedding cost, so it deserves an explicit choice
+rather than a copied default. With structure-respecting boundaries, 10% is plenty. With fixed-size
+chunking, 20% is a patch over a worse decision.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Zero overlap on naive boundaries.</strong> Facts lost at every cut.</li>
+<li><strong>Excessive overlap.</strong> 50% overlap doubles the index for marginal gain.</li>
+<li><strong>Duplicate context.</strong> Two overlapping chunks in one prompt; deduplicate at assembly.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always some, sized to how much you trust your boundaries.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="chunk-metadata" data-impl="8" data-crit="9" data-tag="Parameter">
+<h3>Chunk metadata</h3>
+<p class="tldr">A chunk without metadata is a floating string. Position, provenance, structure and
+governance fields are what make it filterable, citable and deletable.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Every chunk inherits document metadata and adds its own: order index, heading path or page or symbol,
+token count, parent reference, and the chunking strategy and version that produced it. That last field is
+what lets you find and re-chunk everything produced by a strategy you have since improved.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/pipeline.py</code><span class="note">metadata carried through chunk and enrich</span></li>
+<li><code>app/rag/indexing.py</code><span class="note">RAGIndexRecord — what is persisted</span></li>
+<li><code>app/rag/contextual_enricher.py</code><span class="note">derived metadata</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>{ chunk_id: "acme:conf:POL-118#refunds#2",
+  doc_id: "acme:conf:POL-118", order: 2, parent: "…#refunds",
+  heading_path: ["Policies","Refunds"], page: null,
+  tokens: 412, strategy: "heading@v3", lang: "en",
+  classification: "internal", jurisdiction: "DE",
+  source_ref: "confluence://space/POL/page/118?version=7" }
+
+"re-chunk everything produced by heading@v2" is now a single query
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Record the strategy and its version on every chunk. Without it, improving a chunker means re-ingesting
+entire collections blindly; with it, you can migrate incrementally and compare old against new on the
+same corpus.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Metadata lost at chunk time.</strong> Document fields not copied down.</li>
+<li><strong>No strategy version.</strong> No migration path.</li>
+<li><strong>No parent reference.</strong> Parent-child retrieval becomes impossible after the fact.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always. It costs bytes and saves quarters.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="chunk-selector" data-impl="8" data-crit="8" data-tag="Decision framework">
+<h3>The strategy selector</h3>
+<p class="tldr">One component maps content type plus collection configuration to a chunker, so the
+pipeline never grows a chain of format conditionals.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>The selector takes the classified content type and the collection's configured preference and returns
+a chunker instance, falling back through progressively more general strategies to fixed chunking. It
+exposes both <code>select()</code> (get the chunker) and <code>select_and_chunk()</code> (do it), which
+keeps the pipeline stage a one-liner and makes the mapping independently testable.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunking_strategy_selector.py</code><span class="note">ChunkingStrategySelector.select() / select_and_chunk(), dispatching to SemanticChunker, ASTChunker, HeadingChunker, TableChunker, TimestampChunker, SceneChunker, PDF layout, or _fixed_chunk()</span></li>
+<li><code>app/ingestion/pipeline.py</code><span class="note">stage 8 calls it</span></li>
+<li><code>app/ingestion/orchestrator.py</code><span class="note">the orchestrated path</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>content type            → chunker
+text/markdown           → HeadingChunker
+text/x-python           → ASTChunker
+application/pdf (text)  → pdf_layout
+application/pdf (scan)  → OCR path, then heading/semantic on the result
+text/csv                → TableChunker
+audio/*                 → TimestampChunker
+video/*                 → SceneChunker
+text/plain              → SemanticChunker (or token-aware if configured)
+unknown                 → _fixed_chunk()
+collection override always wins over the content-type default
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Make the mapping data, not code, so a tenant with unusual content can be reconfigured without a
+deploy. And make the fallback loud: a rising share of documents landing on fixed chunking means your
+classifier or your parser coverage has a gap.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Silent fallback.</strong> Everything quietly fixed-chunked.</li>
+<li><strong>Format conditionals in the pipeline.</strong> The thing the selector exists to prevent.</li>
+<li><strong>Mixed strategies in one collection.</strong> Inconsistent chunk sizes make ranking harder to
+reason about.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>More than one content type — immediately.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="chunk-eval" data-impl="6" data-crit="8" data-tag="Measurement">
+<h3>Measuring chunking quality</h3>
+<p class="tldr">Chunking is the one parameter you should tune empirically, because the right answer is
+corpus-specific and the wrong answer is invisible.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Build a small labelled set — questions with the passage that answers each — then measure, per
+strategy and per size: <em>answer containment</em> (does a retrieved chunk actually contain the answer),
+<em>recall@k</em>, and <em>context efficiency</em> (answer tokens as a share of retrieved tokens). Sweep
+size and overlap, and pick the point where containment plateaus.</p>
+<p>The cheap proxy when you have no labels: sample chunks and read them. If a chunk is not
+self-explanatory to a human, it will not be to a model.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/evaluation.py</code><span class="note">retrieval evaluation</span></li>
+<li><code>app/evals/rag_score.py</code><span class="note">retrieval scoring</span></li>
+<li><code>app/evals/dataset_builder.py</code><span class="note">building the labelled set</span></li>
+<li><code>app/api/golden_datasets.py</code><span class="note">managing golden data</span></li>
+</ul>
+<p>Rated 6: the evaluation components exist, but there is no built-in chunking sweep that reports
+containment by strategy and size for a collection.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>corpus: 400 policy documents · 120 labelled questions
+
+strategy        size  overlap  containment  recall@5  ctx efficiency
+fixed            500     50       0.61        0.72       0.09
+token-aware      512     64       0.74        0.81       0.11
+heading         auto     10%      0.88        0.93       0.14
+heading+parent  300/1200 10%      0.91        0.95       0.08
+semantic        auto     10%      0.86        0.91       0.13
+
+decision: heading (best quality per token); parent-child for the
+regulated subset where completeness beats efficiency
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Run this once per corpus type and you will save more quality than a model upgrade would buy. Re-run
+when the corpus changes character — a collection that started as wiki pages and became PDF reports
+needs a different answer.</p>
+<p>Keep the labelled set small and real: 100–200 questions from actual user queries beats a thousand
+synthetic ones.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Copying someone else's parameters.</strong> 512/64 is a starting point, not a conclusion.</li>
+<li><strong>Optimising recall only.</strong> High recall with terrible context efficiency blows your
+budget.</li>
+<li><strong>Never re-measuring.</strong> Chunking tuned for the corpus you had two years ago.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Before you ingest a million documents with parameters nobody validated.</li></ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="ch17-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Re-chunking without re-fetching.</strong> Parsed text is not retained, so changing a
+      strategy means going back to the source. Storing parsed output would make chunking migrations
+      cheap.</li>
+      <li><strong>Image-region chunking.</strong> Images are handled whole; splitting a diagram into
+      labelled regions and indexing each is not implemented.</li>
+      <li><strong>A built-in chunking sweep.</strong> The evaluation parts exist; the "try five
+      strategies on this collection and show me containment" workflow does not.</li>
+      <li><strong>Deterministic agentic chunking.</strong> Needs hash-and-prompt-versioned caching before
+      it is safe on a large corpus.</li>
+      <li><strong>Cross-document chunk linking.</strong> No representation for "this chunk supersedes
+      that one", which is what a policy corpus with versions actually needs.</li>
+    </ul>
+  </div>
+</section>

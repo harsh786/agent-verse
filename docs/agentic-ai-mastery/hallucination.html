@@ -1,0 +1,1265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hallucination handling · AgentVerse Field Manual</title>
+<meta name="description" content="CH 18 · Hallucination handling">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>/* ==========================================================================
+   AgentVerse Field Manual — instrument chrome + engineering-manual body.
+   Tokens: complete light palette on :root; dark redefined for the two
+   dark states (un-stamped OS-dark, and explicit data-theme="dark").
+   ========================================================================== */
+
+:root {
+  /* ground + surfaces (cool slate neutrals, biased toward the cyan accent) */
+  --bg:        #EFF2F5;
+  --paper:     #FFFFFF;
+  --raised:    #F6F8FA;
+  --sunken:    #E7ECF1;
+  --rail:      #FBFCFD;
+
+  /* ink */
+  --ink:       #0B1220;
+  --ink-2:     #3C4A5A;
+  --ink-3:     #6B7A8B;
+  --ink-4:     #93A1B0;
+
+  /* lines */
+  --line:      #D5DDE5;
+  --line-soft: #E4EAF0;
+  --line-hard: #B9C5D0;
+
+  /* accent — JARVIS electric, darkened for contrast on paper */
+  --accent:      #007D9C;
+  --accent-2:    #00A8CC;
+  --accent-wash: rgba(0,168,204,0.10);
+  --accent-line: rgba(0,125,156,0.35);
+
+  /* semantic (ratings, status, diagram emphasis) */
+  --good:      #0E7C55;
+  --good-wash: rgba(14,124,85,0.10);
+  --warn:      #A2650A;
+  --warn-wash: rgba(162,101,10,0.10);
+  --bad:       #B3303B;
+  --bad-wash:  rgba(179,48,59,0.10);
+  --note:      #6D46C4;
+  --note-wash: rgba(109,70,196,0.10);
+
+  --shadow-1: 0 1px 2px rgba(11,18,32,0.05);
+  --shadow-2: 0 8px 28px rgba(11,18,32,0.10);
+
+  --measure: 68ch;
+  --rail-w: 274px;
+  --topbar-h: 52px;
+
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #070A10;
+    --paper:     #0C1017;
+    --raised:    #12171F;
+    --sunken:    #090D13;
+    --rail:      #0A0E15;
+
+    --ink:       #E9EFF5;
+    --ink-2:     #B3C0CD;
+    --ink-3:     #8593A2;
+    --ink-4:     #5D6C7B;
+
+    --line:      rgba(255,255,255,0.09);
+    --line-soft: rgba(255,255,255,0.055);
+    --line-hard: rgba(255,255,255,0.16);
+
+    --accent:      #35D8F5;
+    --accent-2:    #00D4FF;
+    --accent-wash: rgba(0,212,255,0.10);
+    --accent-line: rgba(0,212,255,0.35);
+
+    --good:      #2ED08C;
+    --good-wash: rgba(46,208,140,0.12);
+    --warn:      #F0B429;
+    --warn-wash: rgba(240,180,41,0.12);
+    --bad:       #FF6B78;
+    --bad-wash:  rgba(255,107,120,0.12);
+    --note:      #B08CFF;
+    --note-wash: rgba(176,140,255,0.12);
+
+    --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+    --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #070A10;
+  --paper:     #0C1017;
+  --raised:    #12171F;
+  --sunken:    #090D13;
+  --rail:      #0A0E15;
+
+  --ink:       #E9EFF5;
+  --ink-2:     #B3C0CD;
+  --ink-3:     #8593A2;
+  --ink-4:     #5D6C7B;
+
+  --line:      rgba(255,255,255,0.09);
+  --line-soft: rgba(255,255,255,0.055);
+  --line-hard: rgba(255,255,255,0.16);
+
+  --accent:      #35D8F5;
+  --accent-2:    #00D4FF;
+  --accent-wash: rgba(0,212,255,0.10);
+  --accent-line: rgba(0,212,255,0.35);
+
+  --good:      #2ED08C;
+  --good-wash: rgba(46,208,140,0.12);
+  --warn:      #F0B429;
+  --warn-wash: rgba(240,180,41,0.12);
+  --bad:       #FF6B78;
+  --bad-wash:  rgba(255,107,120,0.12);
+  --note:      #B08CFF;
+  --note-wash: rgba(176,140,255,0.12);
+
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+  color-scheme: dark;
+}
+
+/* -------------------------------------------------- base */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 17.5px;
+  line-height: 1.62;
+  font-synthesis-weight: none;
+}
+
+a { color: var(--accent); text-decoration-color: var(--accent-line); text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
+
+h1, h2, h3, h4, h5 { font-family: var(--f-display); font-weight: 650; letter-spacing: -0.015em; text-wrap: balance; margin: 0; }
+p { margin: 0 0 0.85em; }
+p:last-child { margin-bottom: 0; }
+ul, ol { margin: 0 0 0.9em; padding-left: 1.25em; }
+li { margin: 0.25em 0; }
+li > ul, li > ol { margin-bottom: 0.2em; }
+strong { font-weight: 650; }
+code, kbd, samp { font-family: var(--f-mono); font-size: 0.855em; }
+:not(pre) > code {
+  background: var(--sunken); border: 1px solid var(--line-soft);
+  padding: 0.08em 0.34em; border-radius: 3px; color: var(--ink-2);
+  word-break: break-word;
+}
+hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+
+.mono { font-family: var(--f-mono); }
+.eyebrow {
+  font-family: var(--f-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3);
+}
+
+/* -------------------------------------------------- top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  height: var(--topbar-h);
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .brand {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink);
+  text-decoration: none; white-space: nowrap;
+}
+.topbar .brand b { color: var(--accent); font-weight: 600; }
+.topbar .crumb {
+  font-family: var(--f-mono); font-size: 11px; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar .spacer { flex: 1 1 auto; }
+.tb-btn {
+  font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  background: transparent; color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 5px 9px; cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.tb-btn:hover { border-color: var(--accent-line); color: var(--accent); }
+
+/* -------------------------------------------------- shell */
+.shell { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); align-items: start; }
+
+.rail {
+  position: sticky; top: var(--topbar-h);
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--rail);
+  border-right: 1px solid var(--line);
+  padding: 18px 0 40px;
+}
+.rail h4 { font-size: 10.5px; font-family: var(--f-mono); font-weight: 500; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-4); padding: 0 18px; margin: 16px 0 8px; }
+.rail .part-label { padding: 0 18px; margin: 20px 0 6px; }
+.rail nav a {
+  display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: baseline;
+  padding: 5px 18px; text-decoration: none; color: var(--ink-2);
+  font-family: var(--f-display); font-size: 13.5px; line-height: 1.35; letter-spacing: -0.005em;
+  border-left: 2px solid transparent;
+}
+.rail nav a .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.rail nav a:hover { background: var(--accent-wash); color: var(--ink); }
+.rail nav a[aria-current="page"] { color: var(--accent); border-left-color: var(--accent); background: var(--accent-wash); }
+.rail nav a[aria-current="page"] .n { color: var(--accent); }
+.rail .inpage { border-top: 1px solid var(--line-soft); margin-top: 14px; padding-top: 4px; }
+.rail .inpage a { grid-template-columns: 26px 1fr; font-size: 12.5px; color: var(--ink-3); }
+.rail .filter { padding: 0 14px 6px; }
+.rail .filter input {
+  width: 100%; font-family: var(--f-mono); font-size: 11.5px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
+}
+.rail .filter input::placeholder { color: var(--ink-4); }
+
+main { min-width: 0; padding: 0 0 96px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 clamp(18px, 4vw, 52px); }
+.prose { max-width: var(--measure); }
+
+/* -------------------------------------------------- chapter head */
+.chead { padding: 46px 0 26px; border-bottom: 1px solid var(--line); }
+.chead .kicker { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.chead .cnum {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
+  color: var(--accent); border: 1px solid var(--accent-line); border-radius: 3px; padding: 3px 7px;
+}
+.chead h1 { font-size: clamp(30px, 4.4vw, 46px); line-height: 1.06; font-weight: 700; letter-spacing: -0.028em; }
+.chead .lede { font-size: 20px; line-height: 1.5; color: var(--ink-2); margin-top: 16px; max-width: 62ch; }
+
+.statstrip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 0; margin-top: 26px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--paper); overflow: hidden;
+}
+.statstrip div { padding: 11px 16px; border-right: 1px solid var(--line-soft); }
+.statstrip div:last-child { border-right: 0; }
+.statstrip .k { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.statstrip .v { font-family: var(--f-display); font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------- sections */
+section.block { padding: 38px 0 8px; }
+section.block > h2 {
+  font-size: 25px; font-weight: 700; letter-spacing: -0.022em; padding-bottom: 8px;
+  border-bottom: 2px solid var(--ink); display: inline-block; margin-bottom: 20px;
+}
+section.block > .prose { margin-bottom: 8px; }
+
+.callout {
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  background: var(--paper); padding: 14px 16px; margin: 18px 0; border-radius: 0 4px 4px 0;
+  font-size: 16.5px;
+}
+.callout.warn { border-left-color: var(--warn); }
+.callout.bad  { border-left-color: var(--bad); }
+.callout.good { border-left-color: var(--good); }
+.callout .lbl { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); display: block; margin-bottom: 5px; }
+
+/* -------------------------------------------------- concept card */
+.concept {
+  border-top: 1px solid var(--line);
+  padding: 30px 0 34px;
+  scroll-margin-top: calc(var(--topbar-h) + 12px);
+}
+.concept:first-of-type { border-top-width: 2px; border-top-color: var(--ink); }
+.concept > h3 {
+  font-size: 23px; font-weight: 700; letter-spacing: -0.022em; line-height: 1.18;
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.concept > h3 .idx {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 500; color: var(--ink-4);
+  letter-spacing: 0.06em; font-variant-numeric: tabular-nums;
+}
+.concept > h3 a.anchor { color: var(--ink-4); text-decoration: none; font-family: var(--f-mono); font-size: 13px; opacity: 0; }
+.concept:hover > h3 a.anchor { opacity: 1; }
+
+.dials { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 12px 0 16px; }
+.dial { display: flex; align-items: center; gap: 8px; }
+.dial .dl { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-4); }
+.meter { display: inline-flex; gap: 2px; }
+.meter i { display: block; width: 7px; height: 12px; background: var(--line); border-radius: 1px; }
+.meter i.on { background: var(--accent); }
+.dial.crit .meter i.on { background: var(--note); }
+.dial .dv { font-family: var(--f-mono); font-size: 12px; font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.dial .dv small { font-weight: 400; color: var(--ink-4); }
+.pill {
+  font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap;
+}
+.pill.shipped { color: var(--good); background: var(--good-wash); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.pill.partial { color: var(--warn); background: var(--warn-wash); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.pill.thin    { color: var(--bad);  background: var(--bad-wash);  border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.pill.tag     { color: var(--ink-3); background: var(--sunken); border-color: var(--line-soft); }
+
+.tldr { font-size: 18.5px; line-height: 1.5; color: var(--ink); max-width: 66ch; }
+.tldr b, .tldr strong { color: var(--ink); }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 20px 0 0; }
+.cols > section { min-width: 0; }
+.cols h4, .band h4 {
+  font-family: var(--f-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px;
+  padding-bottom: 5px; border-bottom: 1px solid var(--line-soft);
+}
+.cols section p, .band p, .cols section li, .band li { font-size: 16.5px; }
+
+.band { margin-top: 18px; padding: 15px 17px; border-radius: 4px; border: 1px solid var(--line-soft); background: var(--raised); }
+.band.example { background: var(--sunken); }
+.band.prod  { border-color: color-mix(in srgb, var(--accent) 22%, var(--line-soft)); background: var(--accent-wash); }
+.band.fail  { border-color: color-mix(in srgb, var(--bad) 22%, var(--line-soft)); background: var(--bad-wash); }
+.band.when  { background: var(--paper); }
+.band.example h4 { color: var(--ink-2); }
+.band.prod h4 { color: var(--accent); border-bottom-color: var(--accent-line); }
+.band.fail h4 { color: var(--bad); border-bottom-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+
+.band.when ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.band.when li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; }
+.band.when li::before { content: "+"; font-family: var(--f-mono); color: var(--good); font-weight: 600; }
+.band.when li.no::before { content: "\2212"; color: var(--bad); }
+
+/* -------------------------------------------------- code + pre */
+pre {
+  margin: 12px 0; padding: 13px 15px; overflow-x: auto;
+  background: var(--sunken); border: 1px solid var(--line-soft); border-radius: 4px;
+  font-family: var(--f-mono); font-size: 12.5px; line-height: 1.62; color: var(--ink-2);
+  tab-size: 2;
+}
+:root[data-theme="dark"] pre, :root:not([data-theme="light"]) pre { color: var(--ink-2); }
+pre .c { color: var(--ink-4); }
+pre .k { color: var(--accent); }
+pre .s { color: var(--good); }
+
+.filelist { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.filelist li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; font-size: 15px; }
+.filelist code { font-size: 12.3px; background: none; border: 0; padding: 0; color: var(--accent); word-break: break-all; }
+.filelist .note { color: var(--ink-3); font-size: 15px; }
+
+/* -------------------------------------------------- tables */
+.tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+table { border-collapse: collapse; width: 100%; font-family: var(--f-display); font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+th {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-3); background: var(--raised); border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+td code { font-size: 12px; }
+
+/* -------------------------------------------------- figures */
+figure { margin: 22px 0; }
+figure svg { display: block; max-width: 100%; height: auto; color: var(--ink-2); }
+figcaption { font-size: 14.5px; color: var(--ink-3); margin-top: 9px; font-family: var(--f-display); max-width: 70ch; }
+.fig-em { color: var(--accent); }
+
+/* -------------------------------------------------- index page bits */
+.chapgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 4px; overflow: hidden; margin: 22px 0; }
+.chapgrid a {
+  background: var(--paper); padding: 16px 17px; text-decoration: none; color: var(--ink);
+  display: flex; flex-direction: column; gap: 7px; min-height: 128px;
+}
+.chapgrid a:hover { background: var(--accent-wash); }
+.chapgrid .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--accent); letter-spacing: 0.1em; }
+.chapgrid .t { font-family: var(--f-display); font-size: 16.5px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.25; }
+.chapgrid .d { font-size: 14.5px; color: var(--ink-3); line-height: 1.45; }
+.chapgrid .m { margin-top: auto; font-family: var(--f-mono); font-size: 10px; color: var(--ink-4); letter-spacing: 0.06em; }
+
+.matrix td.c1 { font-family: var(--f-display); font-weight: 600; }
+.matrix .bar { display: inline-flex; gap: 2px; vertical-align: middle; }
+.matrix .bar i { width: 5px; height: 10px; background: var(--line); border-radius: 1px; display: block; }
+.matrix .bar i.on { background: var(--accent); }
+.matrix .bar.crit i.on { background: var(--note); }
+
+/* -------------------------------------------------- footer nav */
+.pagenav { display: flex; gap: 12px; justify-content: space-between; margin-top: 54px; padding-top: 20px; border-top: 1px solid var(--line); }
+.pagenav a { flex: 1 1 0; text-decoration: none; border: 1px solid var(--line); border-radius: 4px; padding: 13px 15px; background: var(--paper); color: var(--ink); }
+.pagenav a:hover { border-color: var(--accent-line); }
+.pagenav .d { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.pagenav .t { font-family: var(--f-display); font-weight: 650; font-size: 15.5px; letter-spacing: -0.015em; }
+.pagenav a.next { text-align: right; }
+
+.footnote { margin-top: 30px; font-size: 14.5px; color: var(--ink-3); font-family: var(--f-display); }
+
+/* -------------------------------------------------- responsive */
+@media (max-width: 1080px) {
+  .cols { grid-template-columns: 1fr; gap: 14px; }
+}
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail {
+    position: static; height: auto; max-height: 340px;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  body { font-size: 17px; }
+  .chead { padding-top: 30px; }
+}
+@media print {
+  .rail, .topbar, .pagenav { display: none; }
+  body { background: #fff; color: #000; font-size: 10.5pt; }
+  .shell { grid-template-columns: 1fr; }
+}
+
+.idxhead { background: var(--raised); font-family: var(--f-mono); font-size: 11px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">AgentVerse <b>Field Manual</b></a>
+  <span class="crumb">CH 18 · Hallucination handling</span>
+  <span class="spacer"></span>
+  <button class="tb-btn" data-theme-toggle type="button">Theme</button>
+</header>
+<div class="shell">
+<aside class="rail"><h4>Field manual</h4><nav><a href="index.html"><span class="n">00</span><span>Hub &amp; how to read</span></a></nav></nav><div class="part-label eyebrow">I · The agent</div><nav><a href="agent-patterns.html"><span class="n">01</span><span>Agent patterns</span></a><a href="rag-patterns.html"><span class="n">02</span><span>RAG patterns</span></a><a href="agent-memory.html"><span class="n">03</span><span>Agent memories</span></a></nav><div class="part-label eyebrow">II · Knowledge</div><nav><a href="knowledge-and-graphs.html"><span class="n">04</span><span>Knowledge &amp; knowledge graph</span></a><a href="ingestion.html"><span class="n">05</span><span>Ingestion</span></a><a href="retrieval-strategies.html"><span class="n">06</span><span>Retrieval strategies</span></a><a href="embeddings.html"><span class="n">07</span><span>Embeddings</span></a><a href="chunking.html"><span class="n">17</span><span>Chunking strategies</span></a></nav><div class="part-label eyebrow">III · Context &amp; quality</div><nav><a href="prompt-builder.html"><span class="n">08</span><span>Prompt builder</span></a><a href="agent-improvement.html"><span class="n">09</span><span>Agent improvement</span></a><a href="evals.html"><span class="n">10</span><span>Evals</span></a><a href="hallucination.html" aria-current="page"><span class="n">18</span><span>Hallucination handling</span></a></nav><div class="part-label eyebrow">IV · Safety &amp; control</div><nav><a href="guardrails.html"><span class="n">12</span><span>Guardrails</span></a><a href="governance.html"><span class="n">13</span><span>Governance</span></a><a href="scopes.html"><span class="n">14</span><span>Scopes</span></a><a href="observability.html"><span class="n">11</span><span>Observability</span></a></nav><div class="part-label eyebrow">V · Modality &amp; models</div><nav><a href="multimodal.html"><span class="n">15</span><span>Multimodal</span></a><a href="ocr.html"><span class="n">21</span><span>OCR</span></a><a href="model-router.html"><span class="n">16</span><span>Multi-model router</span></a></nav><div class="part-label eyebrow">VI · The platform</div><nav><a href="platform-workflows.html"><span class="n">19</span><span>Core platform workflows</span></a><a href="platform-concepts.html"><span class="n">20</span><span>Other core platform concepts</span></a><a href="agent-teams.html"><span class="n">22</span><span>AI agent teams</span></a><a href="jarvis.html"><span class="n">23</span><span>Jervis (JARVIS) console</span></a></nav><div class="part-label eyebrow">VII · Not on the list</div><nav><a href="coordination-protocols.html"><span class="n">24</span><span>Coordination protocols</span></a><a href="code-execution.html"><span class="n">25</span><span>Code execution &amp; sandboxing</span></a><a href="voice.html"><span class="n">26</span><span>Voice &amp; realtime agents</span></a><a href="triggers.html"><span class="n">27</span><span>Triggers &amp; event-driven agents</span></a><a href="reliability-qos.html"><span class="n">28</span><span>Reliability &amp; QoS</span></a><a href="cost-capacity.html"><span class="n">29</span><span>Cost &amp; capacity engineering</span></a><a href="data-lifecycle.html"><span class="n">30</span><span>Data lifecycle &amp; provenance</span></a><a href="testing-certification.html"><span class="n">31</span><span>Testing &amp; certification</span></a><a href="scale-playbook.html"><span class="n">32</span><span>Scale playbook</span></a><a href="workflow-engine.html"><span class="n">34</span><span>Workflow engine</span></a><a href="frontier.html"><span class="n">33</span><span>Frontier &amp; gaps</span></a></nav><div class="part-label eyebrow">Appendix</div><nav><a href="appendix-ratings.html"><span class="n">A</span><span>Ratings matrix</span></a><a href="appendix-glossary.html"><span class="n">B</span><span>Glossary</span></a></nav><div class="inpage"><h4>In this chapter</h4><nav><a href="#grounding-floor"><span class="n">01</span><span>Retrieval grounding and the confidence floor</span></a><a href="#deterministic-grounding"><span class="n">02</span><span>Deterministic grounding</span></a><a href="#claim-decomposition"><span class="n">03</span><span>Claim decomposition</span></a><a href="#nli-checking"><span class="n">04</span><span>Entailment (NLI) checking</span></a><a href="#citation-verification"><span class="n">05</span><span>Citation verification</span></a><a href="#tool-validation"><span class="n">06</span><span>Tool name and argument validation</span></a><a href="#verifier-checks"><span class="n">07</span><span>Verifier checks against evidence</span></a><a href="#confidence-estimation"><span class="n">08</span><span>Confidence estimation</span></a><a href="#output-anomaly"><span class="n">09</span><span>Output anomaly detection</span></a><a href="#uncertainty-escalation"><span class="n">10</span><span>Escalation under uncertainty</span></a><a href="#hallucination-observability"><span class="n">11</span><span>Observability for hallucination debugging</span></a></nav></div></aside>
+<main><div class="wrap">
+<header class="chead"><div class="kicker"><span class="cnum">CH 18</span><span class="eyebrow">III · Context &amp; quality</span></div><h1>Hallucination handling</h1><p class="lede">Grounding, claim decomposition, NLI, calibration, fail-closed.</p><div class="statstrip"><div><div class="k">Concepts</div><div class="v">11</div></div><div><div class="k">Mean impl</div><div class="v">7.6</div></div><div><div class="k">Mean criticality</div><div class="v">9.0</div></div><div><div class="k">Shipped</div><div class="v">6</div></div><div><div class="k">Thin / missing</div><div class="v">0</div></div></div></header><section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>In a chatbot, hallucination means a wrong sentence. In an agent, it means a wrong <em>action</em> —
+    and the four kinds are structurally different problems with different defences:</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Kind</th><th>Looks like</th><th>Defence that actually works</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Fabricated fact</strong></td><td>A number or clause that is in no document</td><td>Grounding check per claim</td></tr>
+          <tr><td><strong>Fabricated citation</strong></td><td>A plausible reference to a chunk that does not exist</td><td>Only emit pipeline-assigned ids; verify</td></tr>
+          <tr><td><strong>Fabricated tool</strong></td><td>A call to a tool or argument that does not exist</td><td>Registry validation before dispatch</td></tr>
+          <tr><td><strong>Fabricated success</strong></td><td>"Done" when nothing happened</td><td>Verify against tool results, not narration</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The fourth is the dangerous one and the one prompt engineering cannot touch. An agent that reports
+    success it did not achieve corrupts downstream state, satisfies its own verifier if the verifier reads
+    its narration, and is only caught by checking evidence.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 880 280" role="img" aria-label="Defence in depth against hallucination: retrieval confidence floor, then deterministic grounding of claims, then entailment checking for the remainder, then citation verification, then tool name and argument validation, then the verifier, and finally human escalation — each layer catching what the previous one missed.">
+      <defs><marker id="h1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker>
+      <marker id="h2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#B3303B"></path></marker></defs>
+      <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.65">
+        <text x="0" y="14">LAYER</text><text x="300" y="14">CATCHES</text><text x="620" y="14">COST PER CHECK</text>
+      </g>
+      <g fill="none" stroke="currentColor" stroke-width="1.15">
+        <rect x="0" y="24" width="880" height="30" rx="2"></rect>
+        <rect x="0" y="60" width="880" height="30" rx="2"></rect>
+        <rect x="0" y="96" width="880" height="30" rx="2"></rect>
+        <rect x="0" y="132" width="880" height="30" rx="2"></rect>
+        <rect x="0" y="168" width="880" height="30" rx="2"></rect>
+        <rect x="0" y="204" width="880" height="30" rx="2"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="12" fill="currentColor">
+        <text x="10" y="44">1 retrieval confidence floor</text><text x="300" y="44">answering from nothing</text><text x="620" y="44">free (a comparison)</text>
+        <text x="10" y="80">2 deterministic grounding</text><text x="300" y="80">invented numbers, ids, quotes</text><text x="620" y="80">free (substring match)</text>
+        <text x="10" y="116">3 entailment on the remainder</text><text x="300" y="116">unsupported paraphrase</text><text x="620" y="116">one small model call</text>
+        <text x="10" y="152">4 citation verification</text><text x="300" y="152">fabricated references</text><text x="620" y="152">free (id lookup)</text>
+        <text x="10" y="188">5 tool name + argument validation</text><text x="300" y="188">fabricated tools and arguments</text><text x="620" y="188">free (schema check)</text>
+      </g>
+      <text x="10" y="224" font-family="Archivo, sans-serif" font-size="12" fill="#B3303B">6 verifier · consensus · human</text>
+      <text x="300" y="224" font-family="Archivo, sans-serif" font-size="12" fill="#B3303B">fabricated success</text>
+      <text x="620" y="224" font-family="Archivo, sans-serif" font-size="12" fill="#B3303B">model calls, or a person</text>
+      <g stroke="#B3303B" stroke-width="1.2" marker-end="url(#h2)"><line x1="440" y1="234" x2="440" y2="252"></line></g>
+      <text x="440" y="272" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#B3303B" text-anchor="middle">fail closed: unresolved uncertainty escalates, it does not proceed</text>
+    </svg>
+    <figcaption>Order the layers by cost. Four of the six are free, and they catch most of the volume —
+    which is why "use a bigger model" is usually the most expensive available answer to
+    hallucination.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="defences">
+  <h2>The defences</h2>
+
+<article class="concept" id="grounding-floor" data-impl="7" data-crit="10" data-tag="Prevention">
+<h3><span class="idx">01</span>Retrieval grounding and the confidence floor<a class="anchor" href="#grounding-floor" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Prevention</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">The cheapest anti-hallucination control is refusing to answer from context that scored
+below a calibrated threshold.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Before generation, check the retrieval result: is the top score above the floor, is there a meaningful
+gap between the best and the fifth candidate, did the query's key terms appear at all? Below threshold,
+the honest paths are to widen the search, try another source, or say the corpus does not contain the
+answer — not to hand the model three weak chunks and an instruction to be helpful.</p>
+<p>Then instruct explicitly: answer only from the provided evidence; if it is insufficient, say so. That
+instruction only works if the pipeline actually gives the model the option to fail.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/patterns/corrective.py</code><span class="note">grade and branch</span></li>
+<li><code>app/rag/agentic/fallback_chain.py</code><span class="note">ordered alternatives ending in "not found"</span></li>
+<li><code>app/rag/agentic/context_gap_detector.py</code><span class="note">GapReport</span></li>
+<li><code>app/agent/graph.py</code><span class="note">rag_remediate — the agent-level branch</span></li>
+</ul>
+<p>Rated 7 because thresholds are configured rather than continuously calibrated per collection
+(chapter 6).</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query "what is the APAC revenue recognition policy?"
+retrieval  top score 0.28 · floor 0.50 · gap 0.03 (flat distribution)
+without a floor
+  three weak chunks about global policy → confident answer about APAC
+  that is a synthesis of documents which never mention APAC
+with a floor
+  "No APAC-specific policy is indexed. The global policy POL-204 may
+   apply. Searched: policies, finance, legal."
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Most measured hallucinations in retrieval-augmented systems trace back to weak retrieval that nobody
+gated. Fixing the floor typically removes more hallucination than any change to the generation step, and
+it costs nothing at inference time.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>No floor.</strong> The system always answers.</li>
+<li><strong>Uncalibrated floor.</strong> Either refuses too much or admits junk.</li>
+<li><strong>No "not found" affordance.</strong> The instruction says one thing, the pipeline forces
+another.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always, and first.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="deterministic-grounding" data-impl="8" data-crit="10" data-tag="Detection">
+<h3><span class="idx">02</span>Deterministic grounding<a class="anchor" href="#deterministic-grounding" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Detection</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">Extract the concrete things — numbers, ids, dates, quoted strings, URLs — and check each
+against the evidence by substring. Free, fast, and catches the majority of fabrications.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A regex pass pulls entity-shaped tokens out of the output, then each is checked for presence in the
+tool outputs and retrieved chunks. An invoice number, a total, an account id or a quoted clause either
+appears in the evidence or it was invented — no model judgement required. Only the claims that survive
+this pass (paraphrases and inferences) need an entailment model.</p>
+<p>Two-pass ordering is the whole design: the cheap pass resolves most claims, so the expensive pass runs
+on a fraction of them.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/agent/grounding.py</code><span class="note">extract_claims(), check_grounding(), deterministic_ground(), GroundingChecker, annotate_ungrounded()</span></li>
+<li><code>app/agent/graph.py</code><span class="note">runs after each executor step</span></li>
+<li><code>app/intelligence/claim_decomposer.py</code><span class="note">structured claim extraction</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>output  "Invoice INV-2024-8891 for ₹41,200 was settled on 12 March by
+         Razorpay under contract C-2291."
+
+extracted   INV-2024-8891 · 41200 · 2026-03-12 · Razorpay · C-2291
+checked     INV-2024-8891  ✓ tool output step 2
+            41200          ✓ tool output step 2
+            2026-03-12     ✓ tool output step 2
+            Razorpay       ✓ chunk [3]
+            C-2291         ✗ NOT PRESENT anywhere    ← fabricated
+action  annotate as ungrounded; step fails verification; replan or escalate
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Run this on every step and every final answer — it is a regex pass over a few kilobytes and it is the
+highest-yield check in the system. It is also the ideal online metric: cheap enough for 100% coverage,
+which makes it the fastest detector of a corpus or retrieval regression (chapter 10).</p>
+<p>Escalate to the model-based check only for high-risk steps and unresolved claims. Checking everything
+with a model costs more than the generation did.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Formatting mismatch.</strong> "₹41,200" versus "41200.00" — normalise numbers and dates before
+comparing.</li>
+<li><strong>Paraphrase blindness.</strong> It cannot judge "roughly a third" against "31%"; that is what
+entailment is for.</li>
+<li><strong>Checking against the wrong evidence.</strong> Compare only against evidence actually in the
+prompt.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always. This is the best value in the chapter.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="claim-decomposition" data-impl="7" data-crit="8" data-tag="Detection">
+<h3><span class="idx">03</span>Claim decomposition<a class="anchor" href="#claim-decomposition" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Detection</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Split the answer into atomic, independently checkable claims — because "the answer is
+83% grounded" is not actionable and "claim 7 of 9 is unsupported" is.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Decompose into single-predicate statements, each carrying its span in the original text so a failure can
+be localised and, if necessary, the span removed or flagged. Claims are then classified: factual (must be
+grounded), inferential (must be marked as inference), and rhetorical (no grounding required). Only the
+first class gates the answer.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/intelligence/claim_decomposer.py</code><span class="note">ClaimDecomposer</span></li>
+<li><code>app/agent/grounding.py</code><span class="note">extract_claims_structured(), Claim</span></li>
+<li><code>app/provenance/claim_trace.py</code><span class="note">per-claim provenance</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>"Refunds are accepted within 30 days, though damaged goods are exempt,
+ so you should be fine claiming next week."
+
+c1 factual     refunds accepted within 30 days        → [1] ✓
+c2 factual     damaged goods exempt from the window   → [2] ✓
+c3 inferential the user's claim next week qualifies   → depends on c1 and
+                                                          a date the evidence
+                                                          does not contain ✗
+action  c3 is an inference presented as advice — flagged, rewritten as
+        "if your delivery was within the last 30 days, this would qualify"
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The claim class that causes real trouble is the inferential one delivered as fact — "so you should be
+fine". Distinguishing it and forcing it to be marked as conditional is a small change with a
+disproportionate effect on how much a user can rely on the output.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Over-decomposition.</strong> Twenty trivial claims per paragraph; check cost explodes.</li>
+<li><strong>Lost spans.</strong> A failed claim you cannot locate in the text.</li>
+<li><strong>Mis-classification.</strong> Advice treated as rhetoric and left unchecked.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Answers are multi-sentence and consequential.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="nli-checking" data-impl="7" data-crit="8" data-tag="Detection">
+<h3><span class="idx">04</span>Entailment (NLI) checking<a class="anchor" href="#nli-checking" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Detection</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">For claims that survive the deterministic pass, ask a model a narrow question: does this
+evidence entail this claim, contradict it, or neither?</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Pair each unresolved claim with its candidate evidence and classify the relation as entailment,
+contradiction, or neutral. The narrowness is what makes it reliable — it is a three-way classification on
+a short pair, not an open-ended judgement, so a small model does it well and cheaply. Contradiction is a
+stronger signal than neutral and should be treated more severely: neutral means unsupported,
+contradiction means the evidence says otherwise.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/intelligence/nli_checker.py</code><span class="note">NLIChecker</span></li>
+<li><code>app/evals/attribution_verifier.py</code><span class="note">AttributionVerifier — citation support</span></li>
+<li><code>app/agent/grounding.py</code><span class="note">check_async() — the escalation path</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>claim     "most disputes are resolved within a week"
+evidence  "of 412 disputes, ۲۸۹ closed within 5 business days"
+           (289/412 = 70%)
+verdict   ENTAILED (0.86) — "most" is supported
+
+claim     "disputes are usually resolved same-day"
+evidence  same
+verdict   CONTRADICTED (0.91) — treated as a hard failure, not merely
+           unsupported
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Use a small dedicated model, not the generation model. This is a classification task where a compact
+model matches a large one and costs a fraction, and using the generator introduces self-preference.
+Batch the pairs — a dozen claim/evidence pairs in one call is normal.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Wrong evidence paired.</strong> A claim checked against an irrelevant chunk reads as neutral.</li>
+<li><strong>Neutral treated as fine.</strong> Unsupported is not supported.</li>
+<li><strong>Cost creep.</strong> Checking every claim rather than the unresolved ones.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Answers contain paraphrase and inference — which is most prose answers.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="citation-verification" data-impl="8" data-crit="9" data-tag="Detection">
+<h3><span class="idx">05</span>Citation verification<a class="anchor" href="#citation-verification" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Detection</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Check two things about every citation: that the id exists, and that the cited evidence
+supports the claim attached to it. Both fail in practice.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Existence is a lookup against the citation map the pipeline built — an id the model invented is
+rejected immediately. Support is the entailment check applied per citation. A citation that exists but
+does not support its claim is the subtler failure: it looks rigorous and is wrong, and it is common when
+a model attaches the nearest available id to a sentence it generated independently.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/context/citation_manager.py</code><span class="note">the authoritative id map</span></li>
+<li><code>app/evals/attribution_verifier.py</code><span class="note">support verification</span></li>
+<li><code>app/agent/synthesis.py</code><span class="note">Citation, CitedAnswer</span></li>
+<li><code>app/provenance/provenance_verifier.py</code><span class="note">provenance verification</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>answer citations
+ [1] exists ✓ · supports its claim ✓
+ [2] exists ✓ · does NOT support (chunk is about shipping, claim about
+      refunds)                                        ← attached, not derived
+ [4] DOES NOT EXIST — only [1]-[3] were provided      ← fabricated
+action  strip [4] and its claim; re-attach or flag [2]; if the answer
+        cannot stand without them, fail the step
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Track citation precision — the share of citations that both exist and support their claim — as a
+product metric. It is the number that determines whether users learn to trust the citations or learn to
+ignore them, and once they ignore them the whole grounding apparatus stops delivering value.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Existence-only checking.</strong> Misses the attached-not-derived case.</li>
+<li><strong>Shipping unverified citations.</strong> Manufactured trust.</li>
+<li><strong>Stripping silently.</strong> The user sees a claim with no source and no warning.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any output that cites.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="tool-validation" data-impl="9" data-crit="10" data-tag="Prevention">
+<h3><span class="idx">06</span>Tool name and argument validation<a class="anchor" href="#tool-validation" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Prevention</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">The structural backstop: a call to a tool that is not in this tenant's registry never
+dispatches, and arguments are schema-validated before anything executes.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Four steps between the model's output and a real side effect. <em>Extract</em> the intended call from
+possibly-malformed output. <em>Repair</em> obvious argument problems — type coercion, defaults, dropping
+hallucinated fields. <em>Validate</em> the name against the live registry and the arguments against the
+tool's schema, including enums and formats. <em>Classify risk</em> and route accordingly.</p>
+<p>This is the layer that makes prompt injection survivable: a model persuaded to call
+<code>admin.delete_tenant</code> still has to get past a registry that has no such tool for this tenant.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/agent/tool_calls.py</code><span class="note">extract_tool_call(), repair_tool_call_arguments(), validate_tool_name()</span></li>
+<li><code>app/agent/tool_risk.py</code><span class="note">classify_tool_risk()</span></li>
+<li><code>app/agent/tool_context.py</code><span class="note">the permitted tool view</span></li>
+<li><code>app/mcp/registry.py</code>, <code>client.py</code><span class="note">the registry and dispatch</span></li>
+<li><code>app/agent/exfil_guard.py</code><span class="note">check_tool_args_for_exfil() before write tools</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>model output  {"tool":"github.merge_and_deploy",
+               "args":{"repo":"acme/api","confirm":"yes","force":true}}
+
+extract   ok
+validate  github.merge_and_deploy NOT IN REGISTRY
+          → corrective turn listing the real names:
+            github.create_pr, github.merge_pr, deploy.trigger
+retry     {"tool":"github.merge_pr","args":{"repo":"acme/api","pr":3312}}
+validate  name ✓ · args ✓ (force/confirm dropped as unknown fields)
+risk      write_high → approval gate
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Never resolve a tool name from text the model read — only from the registry. That single rule closes the
+path from "a document told the agent to call X" to an actual call. And keep the offered tool list exactly
+equal to the permitted list: a tool visible in the prompt will eventually be called.</p>
+<p>Track hallucinated-tool rate per model. It is a useful model-quality signal and it rises sharply when a
+prompt change makes the tool list confusing.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Dispatch before validation.</strong> The whole point.</li>
+<li><strong>Accepting unknown arguments.</strong> A pass-through that reaches the API.</li>
+<li><strong>Offering unauthorised tools.</strong> A prompt-level permission bypass.</li>
+<li><strong>Repair that changes intent.</strong> Coercion is fine; guessing a missing required argument is
+not.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always. This is not optional in any tool-calling system.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="verifier-checks" data-impl="9" data-crit="10" data-tag="Detection">
+<h3><span class="idx">07</span>Verifier checks against evidence<a class="anchor" href="#verifier-checks" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Detection</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">The only defence against fabricated success: judge the step by the tool results, never by
+the agent's account of what it did.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>The verifier receives the success criterion and the raw evidence, and deliberately not the executor's
+reasoning. It answers a specific question — does this evidence satisfy this criterion — and returns a
+verdict with a diagnosis. Where the criterion is checkable deterministically (a record exists, a total
+matches), that check runs first and the model is only needed for the judgement calls.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/agent/nodes/verifier_mixin.py</code><span class="note">the node</span></li>
+<li><code>app/agent/schemas.py</code><span class="note">parse_verifier_verdict()</span></li>
+<li><code>app/agent/grounding.py</code><span class="note">the deterministic pre-check</span></li>
+<li><code>app/intelligence/verifier_calibration.py</code><span class="note">calibration against labelled outcomes</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>executor narration  "I have filed the amendment successfully."
+tool result         {"error":"period locked","ack_no":null}
+
+verifier shown narration only   → PASS   ← fabricated success accepted
+verifier shown evidence only    → FAIL   "no acknowledgement number;
+                                          error indicates the period is
+                                          locked"  → replan or escalate
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>This single design choice — evidence, not narration — prevents the most damaging agent failure there is,
+because fabricated success propagates: downstream steps assume the filing happened, the goal completes,
+and a human discovers it weeks later.</p>
+<p>Calibrate the verifier. A verifier that passes almost everything has stopped being a control, and the
+only way to know is to measure it against labelled outcomes.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Narration in the verifier prompt.</strong> The verifier agrees with the actor.</li>
+<li><strong>No explicit criterion.</strong> Nothing to verify against.</li>
+<li><strong>Uncalibrated leniency.</strong> Verification theatre.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always, and never let the actor's reasoning in.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="confidence-estimation" data-impl="6" data-crit="8" data-tag="Signal">
+<h3><span class="idx">08</span>Confidence estimation<a class="anchor" href="#confidence-estimation" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Signal</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">A useful confidence number comes from measurable signals — agreement, grounding, retrieval
+strength — not from asking the model how sure it is.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Self-reported confidence is poorly calibrated and cheaply gamed. Better signals, combined: retrieval
+strength (top score and gap), grounding rate (share of claims supported), agreement across samples or
+verifiers, and historical success for this goal class and tool set. Combine into a score, then calibrate
+it against outcomes so that "0.8" actually means roughly 80% correct.</p>
+<p>The output is only useful if something acts on it: below a threshold, escalate to consensus, to a
+stronger model, or to a human.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/intelligence/verifier_calibration.py</code><span class="note">calibration</span></li>
+<li><code>app/agent/consensus.py</code><span class="note">agreement as a confidence signal</span></li>
+<li><code>app/agent/patterns/self_consistency.py</code><span class="note">sample agreement</span></li>
+<li><code>app/memory/tool_reliability.py</code><span class="note">historical success rates</span></li>
+<li><code>app/observability/runtime_decision_trace.py</code><span class="note">where the score is recorded</span></li>
+</ul>
+<p>Rated 6: the component signals all exist and are recorded, but there is no single calibrated
+confidence score driving escalation across the platform.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>signal                       value  weight
+retrieval top score           0.88    0.3
+retrieval gap (1st vs 5th)    0.31    0.1
+grounding rate (claims)       1.00    0.4
+self-consistency agreement    0.80    0.1
+tool historical success        0.96    0.1
+combined                      0.91  → proceed
+
+same goal, weak variant: grounding 0.67, agreement 0.60 → 0.68
+→ below the 0.75 escalation threshold → consensus verification
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Calibration is what makes this worth building: an uncalibrated confidence score encourages exactly the
+wrong behaviour, because people trust the high numbers. Measure predicted confidence against observed
+correctness on a sample, and publish the curve rather than the number.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Model self-report.</strong> Uniformly high and uninformative.</li>
+<li><strong>Uncalibrated combination.</strong> Arbitrary weights producing arbitrary confidence.</li>
+<li><strong>Confidence with no consequence.</strong> A number nobody routes on.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>You need selective escalation rather than gating everything.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="output-anomaly" data-impl="7" data-crit="7" data-tag="Detection">
+<h3><span class="idx">09</span>Output anomaly detection<a class="anchor" href="#output-anomaly" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Detection</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Catch outputs that are structurally unlike what this agent normally produces — sudden
+length changes, unexpected languages, secret-shaped strings, refusal spikes.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Statistical rather than semantic: track distributions of output length, language, format compliance,
+refusal rate, and the presence of credential-shaped or PII-shaped strings. Flag deviations. It catches
+what claim-checking misses — a compromised prompt, a model change, a template that started leaking
+internal content — because those show up as shape changes before they show up as wrong facts.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/intelligence/output_anomaly.py</code><span class="note">anomaly detection</span></li>
+<li><code>app/guardrails_v2/streaming_guard.py</code><span class="note">checks on streamed output</span></li>
+<li><code>app/data_classification/classifier.py</code><span class="note">sensitive-content detection in output</span></li>
+<li><code>app/observability/alert_router.py</code><span class="note">where the alert goes</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>agent support-bot, normal distribution
+ length 180–620 tokens · language en · refusal rate 2% · format compliance 99%
+
+anomalies detected
+ length 4,100 tokens          ← the agent dumped a whole document
+ language de                  ← plausible, but new for this agent
+ secret-shaped string         ← "sk-…" in the output: BLOCK immediately
+ refusal rate 2% → 31%        ← a prompt change over-triggered a guardrail
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Anomaly detection is the layer that catches problems you did not anticipate, which is why it belongs
+alongside the specific checks rather than instead of them. The refusal-rate signal in particular is a
+fast detector of prompt regressions that no eval covered.</p>
+<p>Secret-shaped strings in output should be a hard block, not an alert. There is no benign reason for a
+credential pattern in an agent's answer.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Baselines too tight.</strong> Alert fatigue, then ignored alerts.</li>
+<li><strong>Global baselines.</strong> Per-agent distributions differ enormously.</li>
+<li><strong>Alerting instead of blocking.</strong> For credentials and PII, block.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any production agent with external output.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="uncertainty-escalation" data-impl="8" data-crit="10" data-tag="Escalation">
+<h3><span class="idx">10</span>Escalation under uncertainty<a class="anchor" href="#uncertainty-escalation" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Escalation</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">When the checks disagree or confidence is low, the answer is not "try harder" — it is
+consensus, then a human, and never silent completion.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>An ordered ladder with a fail-closed end. Low confidence on a low-risk goal: retry with corrective
+retrieval. Low confidence on a high-risk goal: consensus verification across independent models.
+Disagreement in consensus: human approval. Human unavailable within the deadline: the goal ends as
+requiring attention, not as complete.</p>
+<p>The last step is the one that matters. Any ladder whose final rung is "proceed anyway" is not a
+control.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/agent/consensus.py</code><span class="note">requires_consensus(), ConsensusVerifier — majority or HITL</span></li>
+<li><code>app/governance/hitl.py</code><span class="note">the approval queue</span></li>
+<li><code>app/recovery/escalation_policy.py</code><span class="note">the ladder</span></li>
+<li><code>app/collaboration_runtime/clarification.py</code><span class="note">asking a question instead of guessing</span></li>
+<li><code>app/agent/debate.py</code><span class="note">debate as a triage device for contested judgement</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>goal  "file the amendment"  risk=critical  confidence 0.68
+
+1 corrective retrieval → confidence 0.74, still below 0.85 for critical
+2 consensus            → primary PASS · cross-model FAIL · judge FAIL
+3 majority FAIL        → waiting_human with all three rationales
+4 no approval in 24h   → goal ends as needs_attention, not complete
+                          and definitely not filed
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Escalation rate is a tuning signal, not a failure: too low and you are letting uncertain actions
+through; too high and the approval queue becomes a backlog nobody services. Watch both the rate and the
+queue depth, and remember that an unserviced approval queue is an outage that pages nobody.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Escalation to nowhere.</strong> A queue with no owner.</li>
+<li><strong>Proceed-on-timeout.</strong> Fail closed instead.</li>
+<li><strong>Escalating everything.</strong> Approvers stop reading.</li>
+<li><strong>Losing the rationales.</strong> The human needs the disagreement, not just the verdict.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any irreversible or regulated action.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="hallucination-observability" data-impl="8" data-crit="9" data-tag="Operations">
+<h3><span class="idx">11</span>Observability for hallucination debugging<a class="anchor" href="#hallucination-observability" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Operations</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">To debug a hallucination you need four things: what was retrieved, what was in the prompt,
+what the model returned, and which check fired. Anything less is speculation.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Correlate by goal and step: the retrieval trace (strategy, filters, candidates, scores), the prompt
+recipe (variant, context item ids, budget decisions), the model trace (model, parameters, tokens), and
+the check results (grounding per claim, citation verification, validation failures). One correlation id
+ties them together so a single query answers "why did it say that".</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/observability/rag_trace.py</code><span class="note">retrieval trace</span></li>
+<li><code>app/observability/model_trace.py</code><span class="note">model calls</span></li>
+<li><code>app/observability/runtime_decision_trace.py</code><span class="note">decisions and their reasons</span></li>
+<li><code>app/context/context_pipeline.py</code><span class="note">prompt composition</span></li>
+<li><code>app/provenance/claim_trace.py</code><span class="note">per-claim provenance</span></li>
+<li><code>app/api/replay.py</code><span class="note">replay a run</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>complaint  "the agent invented a 60-day enterprise refund window"
+
+trace, goal g-9310 step 2
+ retrieval  strategy=hybrid · filters {collection:policies}
+            top 5 scores 0.71 0.68 0.51 0.44 0.41
+            → note: no chunk mentions "enterprise"
+ prompt     recipe executor@v7 · items [c#41 c#12 c#88 M4]
+            → M4 is a memory: "enterprise contracts often extend windows"
+ model      claude-… temp 0.2
+ checks     grounding: 2 of 3 claims supported;
+            claim 3 ("60 days") UNGROUNDED — flagged, but the flag was
+            recorded as a warning rather than blocking
+root cause  an inferential memory presented alongside evidence, plus a
+            grounding flag that did not gate. Two fixes, both specific.
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The value of this is measured in minutes-to-root-cause. With traces, the above takes one query and
+produces two concrete fixes. Without them, it becomes a debate about model quality that ends in
+"let's use a bigger model", which costs more and fixes nothing.</p>
+<p>Sample full prompts and retain them only for failures; keep recipes for everything. That keeps the
+storage and privacy cost proportionate while preserving the debugging path.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>No correlation id.</strong> Four separate logs that cannot be joined.</li>
+<li><strong>Warnings that do not gate.</strong> The check fired and nothing happened — exactly the case
+above.</li>
+<li><strong>Traces without scores.</strong> You see what was retrieved, not why.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Before your first hallucination complaint.</li></ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="ch18-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>A single calibrated confidence score.</strong> The signals exist separately; nothing
+      combines and calibrates them into one number that drives escalation platform-wide.</li>
+      <li><strong>Contradiction detection across sources.</strong> Nothing flags that two retrieved
+      documents disagree, which is a common cause of confidently wrong synthesis.</li>
+      <li><strong>Grounding for non-text output.</strong> Claims derived from a chart or a screenshot have
+      no equivalent of the deterministic check.</li>
+      <li><strong>User-facing uncertainty.</strong> Confidence is recorded internally but rarely surfaced
+      in the answer, which is where it would do the most good.</li>
+      <li><strong>Hallucination rate as a published SLO.</strong> Measured internally, not offered as a
+      tenant-visible service level.</li>
+    </ul>
+  </div>
+</section>
+
+<div class="pagenav"><a class="prev" href="evals.html"><div class="d">Previous · CH 10</div><div class="t">Evals</div></a><a class="next" href="guardrails.html"><div class="d">Next · CH 12</div><div class="t">Guardrails</div></a></div>
+<p class="footnote">AgentVerse Field Manual · ratings are this author's judgement of the code as it stands, not a vendor claim. File paths are navigation anchors; line numbers drift.</p>
+</div></main>
+</div>
+<script>
+(function () {
+  var r = document.documentElement;
+  try { var t = localStorage.getItem('avfm-theme'); if (t) r.setAttribute('data-theme', t); } catch (e) {}
+  function cur() {
+    var a = r.getAttribute('data-theme');
+    if (a) return a;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  document.addEventListener('click', function (ev) {
+    var b = ev.target.closest('[data-theme-toggle]');
+    if (!b) return;
+    var n = cur() === 'dark' ? 'light' : 'dark';
+    r.setAttribute('data-theme', n);
+    try { localStorage.setItem('avfm-theme', n); } catch (e) {}
+  });
+  var f = document.querySelector('[data-filter]');
+  if (f) {
+    f.addEventListener('input', function () {
+      var q = f.value.trim().toLowerCase();
+      document.querySelectorAll('[data-filter-row]').forEach(function (el) {
+        el.hidden = q.length > 0 && el.getAttribute('data-filter-row').indexOf(q) === -1;
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>

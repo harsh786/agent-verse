@@ -1,0 +1,863 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Core platform workflows · AgentVerse Field Manual</title>
+<meta name="description" content="CH 19 · Core platform workflows">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>/* ==========================================================================
+   AgentVerse Field Manual — instrument chrome + engineering-manual body.
+   Tokens: complete light palette on :root; dark redefined for the two
+   dark states (un-stamped OS-dark, and explicit data-theme="dark").
+   ========================================================================== */
+
+:root {
+  /* ground + surfaces (cool slate neutrals, biased toward the cyan accent) */
+  --bg:        #EFF2F5;
+  --paper:     #FFFFFF;
+  --raised:    #F6F8FA;
+  --sunken:    #E7ECF1;
+  --rail:      #FBFCFD;
+
+  /* ink */
+  --ink:       #0B1220;
+  --ink-2:     #3C4A5A;
+  --ink-3:     #6B7A8B;
+  --ink-4:     #93A1B0;
+
+  /* lines */
+  --line:      #D5DDE5;
+  --line-soft: #E4EAF0;
+  --line-hard: #B9C5D0;
+
+  /* accent — JARVIS electric, darkened for contrast on paper */
+  --accent:      #007D9C;
+  --accent-2:    #00A8CC;
+  --accent-wash: rgba(0,168,204,0.10);
+  --accent-line: rgba(0,125,156,0.35);
+
+  /* semantic (ratings, status, diagram emphasis) */
+  --good:      #0E7C55;
+  --good-wash: rgba(14,124,85,0.10);
+  --warn:      #A2650A;
+  --warn-wash: rgba(162,101,10,0.10);
+  --bad:       #B3303B;
+  --bad-wash:  rgba(179,48,59,0.10);
+  --note:      #6D46C4;
+  --note-wash: rgba(109,70,196,0.10);
+
+  --shadow-1: 0 1px 2px rgba(11,18,32,0.05);
+  --shadow-2: 0 8px 28px rgba(11,18,32,0.10);
+
+  --measure: 68ch;
+  --rail-w: 274px;
+  --topbar-h: 52px;
+
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #070A10;
+    --paper:     #0C1017;
+    --raised:    #12171F;
+    --sunken:    #090D13;
+    --rail:      #0A0E15;
+
+    --ink:       #E9EFF5;
+    --ink-2:     #B3C0CD;
+    --ink-3:     #8593A2;
+    --ink-4:     #5D6C7B;
+
+    --line:      rgba(255,255,255,0.09);
+    --line-soft: rgba(255,255,255,0.055);
+    --line-hard: rgba(255,255,255,0.16);
+
+    --accent:      #35D8F5;
+    --accent-2:    #00D4FF;
+    --accent-wash: rgba(0,212,255,0.10);
+    --accent-line: rgba(0,212,255,0.35);
+
+    --good:      #2ED08C;
+    --good-wash: rgba(46,208,140,0.12);
+    --warn:      #F0B429;
+    --warn-wash: rgba(240,180,41,0.12);
+    --bad:       #FF6B78;
+    --bad-wash:  rgba(255,107,120,0.12);
+    --note:      #B08CFF;
+    --note-wash: rgba(176,140,255,0.12);
+
+    --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+    --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #070A10;
+  --paper:     #0C1017;
+  --raised:    #12171F;
+  --sunken:    #090D13;
+  --rail:      #0A0E15;
+
+  --ink:       #E9EFF5;
+  --ink-2:     #B3C0CD;
+  --ink-3:     #8593A2;
+  --ink-4:     #5D6C7B;
+
+  --line:      rgba(255,255,255,0.09);
+  --line-soft: rgba(255,255,255,0.055);
+  --line-hard: rgba(255,255,255,0.16);
+
+  --accent:      #35D8F5;
+  --accent-2:    #00D4FF;
+  --accent-wash: rgba(0,212,255,0.10);
+  --accent-line: rgba(0,212,255,0.35);
+
+  --good:      #2ED08C;
+  --good-wash: rgba(46,208,140,0.12);
+  --warn:      #F0B429;
+  --warn-wash: rgba(240,180,41,0.12);
+  --bad:       #FF6B78;
+  --bad-wash:  rgba(255,107,120,0.12);
+  --note:      #B08CFF;
+  --note-wash: rgba(176,140,255,0.12);
+
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+  color-scheme: dark;
+}
+
+/* -------------------------------------------------- base */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 17.5px;
+  line-height: 1.62;
+  font-synthesis-weight: none;
+}
+
+a { color: var(--accent); text-decoration-color: var(--accent-line); text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
+
+h1, h2, h3, h4, h5 { font-family: var(--f-display); font-weight: 650; letter-spacing: -0.015em; text-wrap: balance; margin: 0; }
+p { margin: 0 0 0.85em; }
+p:last-child { margin-bottom: 0; }
+ul, ol { margin: 0 0 0.9em; padding-left: 1.25em; }
+li { margin: 0.25em 0; }
+li > ul, li > ol { margin-bottom: 0.2em; }
+strong { font-weight: 650; }
+code, kbd, samp { font-family: var(--f-mono); font-size: 0.855em; }
+:not(pre) > code {
+  background: var(--sunken); border: 1px solid var(--line-soft);
+  padding: 0.08em 0.34em; border-radius: 3px; color: var(--ink-2);
+  word-break: break-word;
+}
+hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+
+.mono { font-family: var(--f-mono); }
+.eyebrow {
+  font-family: var(--f-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3);
+}
+
+/* -------------------------------------------------- top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  height: var(--topbar-h);
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .brand {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink);
+  text-decoration: none; white-space: nowrap;
+}
+.topbar .brand b { color: var(--accent); font-weight: 600; }
+.topbar .crumb {
+  font-family: var(--f-mono); font-size: 11px; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar .spacer { flex: 1 1 auto; }
+.tb-btn {
+  font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  background: transparent; color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 5px 9px; cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.tb-btn:hover { border-color: var(--accent-line); color: var(--accent); }
+
+/* -------------------------------------------------- shell */
+.shell { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); align-items: start; }
+
+.rail {
+  position: sticky; top: var(--topbar-h);
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--rail);
+  border-right: 1px solid var(--line);
+  padding: 18px 0 40px;
+}
+.rail h4 { font-size: 10.5px; font-family: var(--f-mono); font-weight: 500; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-4); padding: 0 18px; margin: 16px 0 8px; }
+.rail .part-label { padding: 0 18px; margin: 20px 0 6px; }
+.rail nav a {
+  display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: baseline;
+  padding: 5px 18px; text-decoration: none; color: var(--ink-2);
+  font-family: var(--f-display); font-size: 13.5px; line-height: 1.35; letter-spacing: -0.005em;
+  border-left: 2px solid transparent;
+}
+.rail nav a .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.rail nav a:hover { background: var(--accent-wash); color: var(--ink); }
+.rail nav a[aria-current="page"] { color: var(--accent); border-left-color: var(--accent); background: var(--accent-wash); }
+.rail nav a[aria-current="page"] .n { color: var(--accent); }
+.rail .inpage { border-top: 1px solid var(--line-soft); margin-top: 14px; padding-top: 4px; }
+.rail .inpage a { grid-template-columns: 26px 1fr; font-size: 12.5px; color: var(--ink-3); }
+.rail .filter { padding: 0 14px 6px; }
+.rail .filter input {
+  width: 100%; font-family: var(--f-mono); font-size: 11.5px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
+}
+.rail .filter input::placeholder { color: var(--ink-4); }
+
+main { min-width: 0; padding: 0 0 96px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 clamp(18px, 4vw, 52px); }
+.prose { max-width: var(--measure); }
+
+/* -------------------------------------------------- chapter head */
+.chead { padding: 46px 0 26px; border-bottom: 1px solid var(--line); }
+.chead .kicker { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.chead .cnum {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
+  color: var(--accent); border: 1px solid var(--accent-line); border-radius: 3px; padding: 3px 7px;
+}
+.chead h1 { font-size: clamp(30px, 4.4vw, 46px); line-height: 1.06; font-weight: 700; letter-spacing: -0.028em; }
+.chead .lede { font-size: 20px; line-height: 1.5; color: var(--ink-2); margin-top: 16px; max-width: 62ch; }
+
+.statstrip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 0; margin-top: 26px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--paper); overflow: hidden;
+}
+.statstrip div { padding: 11px 16px; border-right: 1px solid var(--line-soft); }
+.statstrip div:last-child { border-right: 0; }
+.statstrip .k { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.statstrip .v { font-family: var(--f-display); font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------- sections */
+section.block { padding: 38px 0 8px; }
+section.block > h2 {
+  font-size: 25px; font-weight: 700; letter-spacing: -0.022em; padding-bottom: 8px;
+  border-bottom: 2px solid var(--ink); display: inline-block; margin-bottom: 20px;
+}
+section.block > .prose { margin-bottom: 8px; }
+
+.callout {
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  background: var(--paper); padding: 14px 16px; margin: 18px 0; border-radius: 0 4px 4px 0;
+  font-size: 16.5px;
+}
+.callout.warn { border-left-color: var(--warn); }
+.callout.bad  { border-left-color: var(--bad); }
+.callout.good { border-left-color: var(--good); }
+.callout .lbl { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); display: block; margin-bottom: 5px; }
+
+/* -------------------------------------------------- concept card */
+.concept {
+  border-top: 1px solid var(--line);
+  padding: 30px 0 34px;
+  scroll-margin-top: calc(var(--topbar-h) + 12px);
+}
+.concept:first-of-type { border-top-width: 2px; border-top-color: var(--ink); }
+.concept > h3 {
+  font-size: 23px; font-weight: 700; letter-spacing: -0.022em; line-height: 1.18;
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.concept > h3 .idx {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 500; color: var(--ink-4);
+  letter-spacing: 0.06em; font-variant-numeric: tabular-nums;
+}
+.concept > h3 a.anchor { color: var(--ink-4); text-decoration: none; font-family: var(--f-mono); font-size: 13px; opacity: 0; }
+.concept:hover > h3 a.anchor { opacity: 1; }
+
+.dials { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 12px 0 16px; }
+.dial { display: flex; align-items: center; gap: 8px; }
+.dial .dl { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-4); }
+.meter { display: inline-flex; gap: 2px; }
+.meter i { display: block; width: 7px; height: 12px; background: var(--line); border-radius: 1px; }
+.meter i.on { background: var(--accent); }
+.dial.crit .meter i.on { background: var(--note); }
+.dial .dv { font-family: var(--f-mono); font-size: 12px; font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.dial .dv small { font-weight: 400; color: var(--ink-4); }
+.pill {
+  font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap;
+}
+.pill.shipped { color: var(--good); background: var(--good-wash); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.pill.partial { color: var(--warn); background: var(--warn-wash); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.pill.thin    { color: var(--bad);  background: var(--bad-wash);  border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.pill.tag     { color: var(--ink-3); background: var(--sunken); border-color: var(--line-soft); }
+
+.tldr { font-size: 18.5px; line-height: 1.5; color: var(--ink); max-width: 66ch; }
+.tldr b, .tldr strong { color: var(--ink); }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 20px 0 0; }
+.cols > section { min-width: 0; }
+.cols h4, .band h4 {
+  font-family: var(--f-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px;
+  padding-bottom: 5px; border-bottom: 1px solid var(--line-soft);
+}
+.cols section p, .band p, .cols section li, .band li { font-size: 16.5px; }
+
+.band { margin-top: 18px; padding: 15px 17px; border-radius: 4px; border: 1px solid var(--line-soft); background: var(--raised); }
+.band.example { background: var(--sunken); }
+.band.prod  { border-color: color-mix(in srgb, var(--accent) 22%, var(--line-soft)); background: var(--accent-wash); }
+.band.fail  { border-color: color-mix(in srgb, var(--bad) 22%, var(--line-soft)); background: var(--bad-wash); }
+.band.when  { background: var(--paper); }
+.band.example h4 { color: var(--ink-2); }
+.band.prod h4 { color: var(--accent); border-bottom-color: var(--accent-line); }
+.band.fail h4 { color: var(--bad); border-bottom-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+
+.band.when ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.band.when li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; }
+.band.when li::before { content: "+"; font-family: var(--f-mono); color: var(--good); font-weight: 600; }
+.band.when li.no::before { content: "\2212"; color: var(--bad); }
+
+/* -------------------------------------------------- code + pre */
+pre {
+  margin: 12px 0; padding: 13px 15px; overflow-x: auto;
+  background: var(--sunken); border: 1px solid var(--line-soft); border-radius: 4px;
+  font-family: var(--f-mono); font-size: 12.5px; line-height: 1.62; color: var(--ink-2);
+  tab-size: 2;
+}
+:root[data-theme="dark"] pre, :root:not([data-theme="light"]) pre { color: var(--ink-2); }
+pre .c { color: var(--ink-4); }
+pre .k { color: var(--accent); }
+pre .s { color: var(--good); }
+
+.filelist { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.filelist li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; font-size: 15px; }
+.filelist code { font-size: 12.3px; background: none; border: 0; padding: 0; color: var(--accent); word-break: break-all; }
+.filelist .note { color: var(--ink-3); font-size: 15px; }
+
+/* -------------------------------------------------- tables */
+.tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+table { border-collapse: collapse; width: 100%; font-family: var(--f-display); font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+th {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-3); background: var(--raised); border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+td code { font-size: 12px; }
+
+/* -------------------------------------------------- figures */
+figure { margin: 22px 0; }
+figure svg { display: block; max-width: 100%; height: auto; color: var(--ink-2); }
+figcaption { font-size: 14.5px; color: var(--ink-3); margin-top: 9px; font-family: var(--f-display); max-width: 70ch; }
+.fig-em { color: var(--accent); }
+
+/* -------------------------------------------------- index page bits */
+.chapgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 4px; overflow: hidden; margin: 22px 0; }
+.chapgrid a {
+  background: var(--paper); padding: 16px 17px; text-decoration: none; color: var(--ink);
+  display: flex; flex-direction: column; gap: 7px; min-height: 128px;
+}
+.chapgrid a:hover { background: var(--accent-wash); }
+.chapgrid .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--accent); letter-spacing: 0.1em; }
+.chapgrid .t { font-family: var(--f-display); font-size: 16.5px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.25; }
+.chapgrid .d { font-size: 14.5px; color: var(--ink-3); line-height: 1.45; }
+.chapgrid .m { margin-top: auto; font-family: var(--f-mono); font-size: 10px; color: var(--ink-4); letter-spacing: 0.06em; }
+
+.matrix td.c1 { font-family: var(--f-display); font-weight: 600; }
+.matrix .bar { display: inline-flex; gap: 2px; vertical-align: middle; }
+.matrix .bar i { width: 5px; height: 10px; background: var(--line); border-radius: 1px; display: block; }
+.matrix .bar i.on { background: var(--accent); }
+.matrix .bar.crit i.on { background: var(--note); }
+
+/* -------------------------------------------------- footer nav */
+.pagenav { display: flex; gap: 12px; justify-content: space-between; margin-top: 54px; padding-top: 20px; border-top: 1px solid var(--line); }
+.pagenav a { flex: 1 1 0; text-decoration: none; border: 1px solid var(--line); border-radius: 4px; padding: 13px 15px; background: var(--paper); color: var(--ink); }
+.pagenav a:hover { border-color: var(--accent-line); }
+.pagenav .d { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.pagenav .t { font-family: var(--f-display); font-weight: 650; font-size: 15.5px; letter-spacing: -0.015em; }
+.pagenav a.next { text-align: right; }
+
+.footnote { margin-top: 30px; font-size: 14.5px; color: var(--ink-3); font-family: var(--f-display); }
+
+/* -------------------------------------------------- responsive */
+@media (max-width: 1080px) {
+  .cols { grid-template-columns: 1fr; gap: 14px; }
+}
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail {
+    position: static; height: auto; max-height: 340px;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  body { font-size: 17px; }
+  .chead { padding-top: 30px; }
+}
+@media print {
+  .rail, .topbar, .pagenav { display: none; }
+  body { background: #fff; color: #000; font-size: 10.5pt; }
+  .shell { grid-template-columns: 1fr; }
+}
+
+.idxhead { background: var(--raised); font-family: var(--f-mono); font-size: 11px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">AgentVerse <b>Field Manual</b></a>
+  <span class="crumb">CH 19 · Core platform workflows</span>
+  <span class="spacer"></span>
+  <button class="tb-btn" data-theme-toggle type="button">Theme</button>
+</header>
+<div class="shell">
+<aside class="rail"><h4>Field manual</h4><nav><a href="index.html"><span class="n">00</span><span>Hub &amp; how to read</span></a></nav></nav><div class="part-label eyebrow">I · The agent</div><nav><a href="agent-patterns.html"><span class="n">01</span><span>Agent patterns</span></a><a href="rag-patterns.html"><span class="n">02</span><span>RAG patterns</span></a><a href="agent-memory.html"><span class="n">03</span><span>Agent memories</span></a></nav><div class="part-label eyebrow">II · Knowledge</div><nav><a href="knowledge-and-graphs.html"><span class="n">04</span><span>Knowledge &amp; knowledge graph</span></a><a href="ingestion.html"><span class="n">05</span><span>Ingestion</span></a><a href="retrieval-strategies.html"><span class="n">06</span><span>Retrieval strategies</span></a><a href="embeddings.html"><span class="n">07</span><span>Embeddings</span></a><a href="chunking.html"><span class="n">17</span><span>Chunking strategies</span></a></nav><div class="part-label eyebrow">III · Context &amp; quality</div><nav><a href="prompt-builder.html"><span class="n">08</span><span>Prompt builder</span></a><a href="agent-improvement.html"><span class="n">09</span><span>Agent improvement</span></a><a href="evals.html"><span class="n">10</span><span>Evals</span></a><a href="hallucination.html"><span class="n">18</span><span>Hallucination handling</span></a></nav><div class="part-label eyebrow">IV · Safety &amp; control</div><nav><a href="guardrails.html"><span class="n">12</span><span>Guardrails</span></a><a href="governance.html"><span class="n">13</span><span>Governance</span></a><a href="scopes.html"><span class="n">14</span><span>Scopes</span></a><a href="observability.html"><span class="n">11</span><span>Observability</span></a></nav><div class="part-label eyebrow">V · Modality &amp; models</div><nav><a href="multimodal.html"><span class="n">15</span><span>Multimodal</span></a><a href="ocr.html"><span class="n">21</span><span>OCR</span></a><a href="model-router.html"><span class="n">16</span><span>Multi-model router</span></a></nav><div class="part-label eyebrow">VI · The platform</div><nav><a href="platform-workflows.html" aria-current="page"><span class="n">19</span><span>Core platform workflows</span></a><a href="platform-concepts.html"><span class="n">20</span><span>Other core platform concepts</span></a><a href="agent-teams.html"><span class="n">22</span><span>AI agent teams</span></a><a href="jarvis.html"><span class="n">23</span><span>Jervis (JARVIS) console</span></a></nav><div class="part-label eyebrow">VII · Not on the list</div><nav><a href="coordination-protocols.html"><span class="n">24</span><span>Coordination protocols</span></a><a href="code-execution.html"><span class="n">25</span><span>Code execution &amp; sandboxing</span></a><a href="voice.html"><span class="n">26</span><span>Voice &amp; realtime agents</span></a><a href="triggers.html"><span class="n">27</span><span>Triggers &amp; event-driven agents</span></a><a href="reliability-qos.html"><span class="n">28</span><span>Reliability &amp; QoS</span></a><a href="cost-capacity.html"><span class="n">29</span><span>Cost &amp; capacity engineering</span></a><a href="data-lifecycle.html"><span class="n">30</span><span>Data lifecycle &amp; provenance</span></a><a href="testing-certification.html"><span class="n">31</span><span>Testing &amp; certification</span></a><a href="scale-playbook.html"><span class="n">32</span><span>Scale playbook</span></a><a href="workflow-engine.html"><span class="n">34</span><span>Workflow engine</span></a><a href="frontier.html"><span class="n">33</span><span>Frontier &amp; gaps</span></a></nav><div class="part-label eyebrow">Appendix</div><nav><a href="appendix-ratings.html"><span class="n">A</span><span>Ratings matrix</span></a><a href="appendix-glossary.html"><span class="n">B</span><span>Glossary</span></a></nav><div class="inpage"><h4>In this chapter</h4><nav><a href="#pw-startup"><span class="n">01</span><span>App startup and two-phase service wiring</span></a><a href="#pw-auth"><span class="n">02</span><span>Steps 1–2: submission and tenant authentication</span></a><a href="#pw-queue"><span class="n">03</span><span>Steps 3–5: record, budget, queue, worker</span></a><a href="#pw-loop"><span class="n">04</span><span>Steps 6–11: the agent loop</span></a><a href="#pw-tools"><span class="n">05</span><span>Tool discovery and execution through MCP</span></a><a href="#pw-completion"><span class="n">06</span><span>Steps 12–14: memory, eval, and event emission</span></a><a href="#pw-frontend"><span class="n">07</span><span>The frontend SSE/WebSocket path and the SDK/Action boundary</span></a></nav></div></aside>
+<main><div class="wrap">
+<header class="chead"><div class="kicker"><span class="cnum">CH 19</span><span class="eyebrow">VI · The platform</span></div><h1>Core platform workflows</h1><p class="lede">Startup to SSE: the twenty-two steps a goal actually takes.</p><div class="statstrip"><div><div class="k">Concepts</div><div class="v">7</div></div><div><div class="k">Mean impl</div><div class="v">8.9</div></div><div><div class="k">Mean criticality</div><div class="v">9.1</div></div><div><div class="k">Shipped</div><div class="v">7</div></div><div><div class="k">Thin / missing</div><div class="v">0</div></div></div></header><section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>This chapter is the spine that the rest of the book hangs on: the twenty-two steps a goal actually
+    takes, from an HTTP request to a streamed result. Every subsystem you have met — retrieval, memory,
+    guardrails, routing, audit — appears here as a station on one line. If you understand this flow, you
+    understand how the pieces compose; if you are debugging, this is the map that tells you where to look.</p>
+
+    <p>The one structural idea to hold onto is the <strong>two-phase service wiring</strong>: the app is
+    built once with in-memory services, then a lifespan upgrades them to DB- and Redis-backed versions.
+    Most "works in tests but not in prod" bugs live in the gap between those two phases.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 900 340" role="img" aria-label="The goal lifecycle: submit over HTTP, authenticate, create record and check budget, enqueue by plan tier, worker acquires a lock and builds the agent graph, which runs initialize, retrieve, plan, execute (with MCP tools, vault credentials, and HITL), verify, and loops to replan or completes, writing memory and eval scores and streaming events to the browser.">
+      <defs><marker id="pw1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker>
+      <marker id="pw2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#00A8CC"></path></marker></defs>
+      <text x="0" y="14" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.65" letter-spacing="1.2">CONTROL PLANE (API process)</text>
+      <g fill="none" stroke="currentColor" stroke-width="1.15">
+        <rect x="0" y="24" width="128" height="40" rx="3"></rect>
+        <rect x="150" y="24" width="128" height="40" rx="3"></rect>
+        <rect x="300" y="24" width="128" height="40" rx="3"></rect>
+        <rect x="450" y="24" width="128" height="40" rx="3"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor" text-anchor="middle">
+        <text x="64" y="41">POST /goals</text><text x="64" y="56" font-size="9.5" opacity="0.6">1 submit</text>
+        <text x="214" y="41">tenant auth</text><text x="214" y="56" font-size="9.5" opacity="0.6">2 middleware · RLS</text>
+        <text x="364" y="41">GoalService</text><text x="364" y="56" font-size="9.5" opacity="0.6">3 record + budget</text>
+        <text x="514" y="41">enqueue</text><text x="514" y="56" font-size="9.5" opacity="0.6">4 by plan tier</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.15" marker-end="url(#pw1)">
+        <line x1="128" y1="44" x2="146" y2="44"></line>
+        <line x1="278" y1="44" x2="296" y2="44"></line>
+        <line x1="428" y1="44" x2="446" y2="44"></line>
+        <line x1="578" y1="44" x2="620" y2="44"></line>
+      </g>
+      <rect x="622" y="24" width="128" height="40" rx="3" fill="none" stroke="currentColor" stroke-width="1.15"></rect>
+      <text x="686" y="41" font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor" text-anchor="middle">Celery queue</text>
+      <text x="686" y="56" font-family="Archivo, sans-serif" font-size="9.5" fill="currentColor" opacity="0.6" text-anchor="middle">free…enterprise</text>
+
+      <path d="M686,64 L686,92" fill="none" stroke="currentColor" stroke-width="1.15" marker-end="url(#pw1)"></path>
+      <text x="0" y="108" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.65" letter-spacing="1.2">DATA PLANE (worker)</text>
+      <g fill="none" stroke="currentColor" stroke-width="1.15">
+        <rect x="600" y="94" width="170" height="34" rx="3"></rect>
+      </g>
+      <text x="685" y="115" font-family="Archivo, sans-serif" font-size="11" fill="currentColor" text-anchor="middle">5 lock + build AgentGraph</text>
+
+      <g fill="none" stroke="currentColor" stroke-width="1.15">
+        <rect x="0" y="150" width="96" height="36" rx="3"></rect>
+        <rect x="120" y="150" width="96" height="36" rx="3"></rect>
+        <rect x="240" y="150" width="96" height="36" rx="3"></rect>
+        <rect x="360" y="150" width="96" height="36" rx="3"></rect>
+      </g>
+      <rect x="480" y="150" width="96" height="36" rx="3" fill="none" stroke="#00A8CC" stroke-width="1.6"></rect>
+      <g font-family="Archivo, sans-serif" font-size="11" fill="currentColor" text-anchor="middle">
+        <text x="48" y="172">6 initialize</text><text x="168" y="172">7 retrieve</text><text x="288" y="172">8 plan</text><text x="408" y="172">9 execute</text>
+      </g>
+      <text x="528" y="172" font-family="Archivo, sans-serif" font-size="11" fill="#00A8CC" text-anchor="middle">10 verify</text>
+      <g stroke="currentColor" stroke-width="1.15" marker-end="url(#pw1)">
+        <line x1="96" y1="168" x2="116" y2="168"></line>
+        <line x1="216" y1="168" x2="236" y2="168"></line>
+        <line x1="336" y1="168" x2="356" y2="168"></line>
+        <line x1="456" y1="168" x2="476" y2="168"></line>
+      </g>
+      <path d="M770,111 L790,111 L790,168 L580,168" fill="none" stroke="currentColor" stroke-width="1.15" marker-end="url(#pw1)"></path>
+
+      <rect x="300" y="212" width="200" height="34" rx="3" fill="none" stroke="currentColor" stroke-width="1.15"></rect>
+      <text x="400" y="233" font-family="Archivo, sans-serif" font-size="11" fill="currentColor" text-anchor="middle">MCP tools · vault · HITL</text>
+      <line x1="408" y1="186" x2="400" y2="210" stroke="currentColor" stroke-width="1.15" marker-end="url(#pw1)"></line>
+      <path d="M480,168 L480,229 L502,229" fill="none" stroke="#00A8CC" stroke-width="1.3" marker-end="url(#pw2)"></path>
+
+      <path d="M528,186 L528,270 L288,270 L288,188" fill="none" stroke="#00A8CC" stroke-width="1.4" marker-end="url(#pw2)"></path>
+      <text x="400" y="286" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#00A8CC" text-anchor="middle">11 replan (bounded) · or complete → 12 memory write · 13 eval · 14 events → SSE → browser</text>
+      <text x="0" y="318" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">events flow through Redis pub/sub at every step, so the browser watches the goal even as the worker that runs it is replaced</text>
+    </svg>
+    <figcaption>The whole line. The concepts below walk it station by station; the numbers here are a
+    sketch, the sections give the full twenty-two.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="platform-workflows">
+  <h2>The twenty-two steps</h2>
+
+<article class="concept" id="pw-startup" data-impl="9" data-crit="10" data-tag="Lifecycle">
+<h3><span class="idx">01</span>App startup and two-phase service wiring<a class="anchor" href="#pw-startup" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Lifecycle</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">The app is assembled once with in-memory services, then a lifespan swaps them for DB- and
+Redis-backed versions and re-hydrates state — the single most important thing to understand about the
+platform's behaviour.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p><code>create_app()</code> constructs every service (tenant, goal, knowledge, MCP, cost, rate limiter…)
+in an in-memory form and binds them to <code>app.state</code>, then includes ~25 routers. When
+<code>manage_pools=True</code>, the FastAPI lifespan starts connection pools, swaps the in-memory services
+for DB/Redis-backed ones, re-hydrates state from Postgres, and re-wires auth, SSE, cost control, and the
+MCP client. Dependency resolution reads from <code>app.state</code> dynamically, so the swap takes effect
+without breaking already-registered middleware.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/main.py</code><span class="note">create_app() (a hub node, 183 edges) and the lifespan</span></li>
+<li><code>app/bootstrap/services.py</code>, <code>routers.py</code><span class="note">service and router assembly</span></li>
+<li><code>app/core/pools.py</code><span class="note">ConnectionPools</span></li>
+<li><code>app/db/session.py</code><span class="note">get_session_factory()</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>tests            create_app(manage_pools=False)
+                 → in-memory services, no DB, deterministic FakeProvider
+production       create_app() + lifespan(manage_pools=True)
+                 → in-memory services built first
+                 → pools start → services swapped to DB/Redis-backed
+                 → sync_from_db() re-hydrates tenants, agents, schedules
+                 → real providers resolved from env keys
+the swap is why a bug can be invisible in tests and appear only in prod
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>When something works in tests but not in production (or vice versa), this swap is the first suspect: the
+in-memory path and the DB-backed path are different implementations of the same interface, and behaviour
+that depends on persistence, cross-replica state, or real providers only exists on one side. Knowing the
+two phases exist turns a baffling bug into a targeted one.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>State not re-hydrated.</strong> A service swapped but its data not loaded.</li>
+<li><strong>Middleware bound to the old service.</strong> The swap not taking effect.</li>
+<li><strong>Test-only behaviour.</strong> Relying on the in-memory path's quirks.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Understanding, debugging, or extending the platform — always start here.</li></ul></section>
+</article>
+
+<article class="concept" id="pw-auth" data-impl="9" data-crit="10" data-tag="Step">
+<h3><span class="idx">02</span>Steps 1–2: submission and tenant authentication<a class="anchor" href="#pw-auth" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Step</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">A goal arrives over HTTP; middleware authenticates it, establishes the immutable tenant
+context, and sets the RLS boundary before any business logic runs.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The request hits <code>POST /goals</code>. Tenant middleware authenticates (API key or JWT), resolves
+the tenant, checks the key's scope and IP allowlist, and constructs the <code>TenantContext</code>. The
+database session sets <code>app.tenant_id</code> so RLS applies to everything that follows. Only then does
+the request reach the goal endpoint.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/api/goals.py</code><span class="note">the submit endpoint</span></li>
+<li><code>app/tenancy/middleware.py</code><span class="note">TenantMiddleware</span></li>
+<li><code>app/tenancy/context.py</code><span class="note">TenantContext</span></li>
+<li><code>app/auth/scope_enforcement.py</code>, <code>ip_allowlist.py</code><span class="note">key checks</span></li>
+<li><code>app/db/rls.py</code><span class="note">the boundary set per request</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>POST /goals {goal:"reconcile March payouts"}  Authorization: Bearer ak_...
+ middleware  key valid, scope goals:submit ok, IP in allowlist
+             → TenantContext(acme, plan=enterprise)
+ session     SET LOCAL app.tenant_id = 'acme'
+ endpoint    now runs, everything it touches is tenant-scoped
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Authentication and scope establish the outermost two scopes (chapter 14) before the goal exists as a
+record — so an unauthorised or out-of-scope request never creates state. The RLS boundary being set here,
+at the session level, is what makes every downstream query safe by default. Full treatment in chapters 13–14.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Context not propagated to the worker.</strong> The goal runs without its tenant.</li>
+<li><strong>Scope checked after record creation.</strong> State for a request that should have been rejected.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always — this is the front door.</li></ul></section>
+</article>
+
+<article class="concept" id="pw-queue" data-impl="9" data-crit="9" data-tag="Step">
+<h3><span class="idx">03</span>Steps 3–5: record, budget, queue, worker<a class="anchor" href="#pw-queue" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Step</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">GoalService creates the record and checks the budget, enqueues the goal on the tenant's plan
+queue, and a Celery worker acquires a lock and builds the agent graph.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>GoalService writes a <code>GoalRecord</code>, checks the tenant and goal budget, and enqueues onto a
+per-plan queue (<code>goals.free</code> … <code>goals.enterprise</code>) so an enterprise tenant is not
+stuck behind a free tenant's backlog. A worker picks it up, acquires a distributed lock (one worker per
+goal), and constructs the <code>AgentGraph</code> with the goal's runtime profile and model clients.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/services/goal_service.py</code><span class="note">submit_goal, GoalRecord</span></li>
+<li><code>app/services/goal_queue.py</code><span class="note">enqueue_goal</span></li>
+<li><code>app/scaling/celery_app.py</code><span class="note">PLAN_QUEUE_MAP — per-plan routing</span></li>
+<li><code>app/scaling/tasks.py</code><span class="note">run_goal, append_submitted_goal_event</span></li>
+<li><code>app/reliability/distributed_lock.py</code><span class="note">one worker per goal</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>GoalService  record g-8891 · tenant budget ok · goal budget $8
+enqueue      → goals.enterprise queue
+worker-4     acquires lock lock:goal:g-8891 (worker-7 would skip)
+             builds AgentGraph(runtime_profile, model clients, checkpointer)
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Per-plan queues are how the platform avoids noisy-neighbour effects — the single most important scaling
+decision for a multi-tenant agent system, because one tenant's batch of 10,000 goals must not delay
+another's interactive one. The lock prevents the duplicate-execution bug that otherwise appears under
+retries and rebalancing. Full treatment in chapters 20 and 32.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Shared queue.</strong> Noisy-neighbour delays.</li>
+<li><strong>No lock.</strong> A goal running twice on two workers.</li>
+<li><strong>Budget checked after enqueue.</strong> Work scheduled that cannot be paid for.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any multi-tenant async execution.</li></ul></section>
+</article>
+
+<article class="concept" id="pw-loop" data-impl="9" data-crit="10" data-tag="Step">
+<h3><span class="idx">04</span>Steps 6–11: the agent loop<a class="anchor" href="#pw-loop" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Step</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">Initialize, retrieve, plan, execute, verify — the LangGraph state machine from chapter 1,
+running with real tools, real credentials, and real approval gates, looping to replan or completing.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The graph runs the loop: <em>initialize</em> loads context and checks budget; <em>retrieve</em> runs RAG
+before planning; <em>plan</em> produces a validated plan; <em>execute</em> calls tools through MCP with
+vault credentials, guardrails, and HITL gates; <em>verify</em> checks against evidence and routes to
+complete, replan, max-iter, waiting-human, or rag-remediate. State is checkpointed after each node, so the
+goal survives a worker restart mid-loop.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/agent/graph.py</code><span class="note">AgentGraph — the state machine</span></li>
+<li><code>app/agent/nodes/*.py</code><span class="note">one mixin per node</span></li>
+<li><code>app/mcp/client.py</code><span class="note">MCPClient.call_tool — tool dispatch</span></li>
+<li><code>app/providers/vault.py</code><span class="note">credential resolution at call time</span></li>
+<li><code>app/governance/hitl.py</code><span class="note">approval gates</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>6 initialize  tenant ctx, agent config, budget check
+7 retrieve    4 chunks from the runbook collection (chapters 2, 6)
+8 plan        [fetch filed, recompute, diff, file*, notify]  (*gated)
+9 execute     step 1 → MCP call, vault resolves the GST credential
+              step 4 → write_high → HITL → waiting_human (checkpointed)
+              [resume after approval]
+10 verify     totals match the filed return → complete
+11 (or replan on failure, bounded by max_iterations)
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>This is the product. Every earlier chapter — patterns, retrieval, memory, prompts, guardrails, routing —
+converges here into the running loop. The checkpointing is what makes it operable: workers are cattle, a
+deploy mid-goal is not an outage, and a HITL pause costs nothing because the worker is released. Full
+treatment in chapter 1.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Non-serializable state.</strong> Checkpointing fails, resume impossible.</li>
+<li><strong>Credentials in state.</strong> A secret in the checkpoint.</li>
+<li><strong>Unbounded loop.</strong> No iteration cap (chapter 1).</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always. This is the core.</li></ul></section>
+</article>
+
+<article class="concept" id="pw-tools" data-impl="9" data-crit="9" data-tag="Step">
+<h3><span class="idx">05</span>Tool discovery and execution through MCP<a class="anchor" href="#pw-tools" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Step</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Tools live behind the Model Context Protocol: the registry lists what a tenant has, the
+client executes calls with circuit breaking and stale-cache fallback, and credentials are resolved from
+the vault so the model never sees them.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The MCP registry holds per-tenant connectors; <code>tools/list</code> discovers available tools;
+<code>call_tool</code> executes one, delegating to an inner implementation wrapped in a circuit breaker. On
+an open circuit it can serve a stale cached result before raising. Credentials are resolved from the vault
+at call time and injected into the request, never placed in the prompt. Results are sanitized and wrapped
+as untrusted before returning to the loop.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/mcp/registry.py</code><span class="note">per-tenant connector registry</span></li>
+<li><code>app/mcp/client.py</code><span class="note">call_tool, _call_tool_impl, CircuitBreakerOpenError, stale-cache fallback</span></li>
+<li><code>app/mcp/tool_cache.py</code><span class="note">ToolResultCache</span></li>
+<li><code>app/mcp/oauth.py</code><span class="note">PKCE OAuth for connectors</span></li>
+<li><code>app/providers/vault.py</code><span class="note">credential resolution</span></li>
+<li><code>app/mcp/servers/</code><span class="note">325 built-in server modules</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>execute step "fetch filed GSTR-1"
+ registry     gst connector present for acme
+ vault        resolves the GST API token (model never sees it)
+ call_tool    gst.fetch_filed(period, gstin)
+              breaker closed → _call_tool_impl → result
+              [if breaker open] → serve stale cached result or raise
+ result       sanitized, wrapped untrusted, returned to the loop
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>MCP is the architecture decision that makes tools safe and per-tenant: each connector is its own process,
+so a misbehaving integration cannot take the agent down, and the tool surface is configuration rather than
+compiled in. The stale-cache fallback is a thoughtful touch — a read tool whose provider is down can still
+answer from cache rather than failing the goal. Full treatment in chapter 20.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Credentials in the prompt.</strong> Exfiltration surface.</li>
+<li><strong>No breaker on the connector.</strong> A dead tool taking down goals.</li>
+<li><strong>Unsanitized tool output.</strong> Injection vector.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any agent that calls external tools.</li></ul></section>
+</article>
+
+<article class="concept" id="pw-completion" data-impl="9" data-crit="9" data-tag="Step">
+<h3><span class="idx">06</span>Steps 12–14: memory, eval, and event emission<a class="anchor" href="#pw-completion" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Step</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">On completion (or failure), the platform writes memory, scores the goal, and emits the final
+events — the closing stations that turn a finished run into learning, measurement, and a delivered result.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Goal completion fans out into memory writes — episodic, procedural, execution, long-term, and on failure
+reflexion (chapter 3). The eval layer scores the run across dimensions (chapter 10). Throughout and at the
+end, events publish to the goal's Redis channel, bridged to the API and streamed to the browser over SSE
+(chapter 11). The outcome persists to Postgres and the LangGraph checkpoint.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/memory/*</code><span class="note">the tier writes on completion</span></li>
+<li><code>app/agent/reflexion_wirer.py</code><span class="note">lesson extraction on failure</span></li>
+<li><code>app/evals/runtime_scorecard.py</code>, <code>goal_score.py</code><span class="note">scoring</span></li>
+<li><code>app/services/goal_service.py</code><span class="note">event emission, Celery→pub/sub bridge</span></li>
+<li><code>agent-verse-frontend/src/lib/sse/useGoalStream.ts</code><span class="note">the browser receiver</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>goal g-8891 completes
+ memory   execution (all steps), episodic (this run), procedural (if a
+          stable method emerged), long-term (durable facts learned)
+ eval     goal 0.91 · grounding 0.88 · cost $0.42 · latency 41s
+ events   {type:"completed", result, citations} → Redis → SSE → browser
+ persist  outcome to Postgres, final checkpoint retained
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>The closing steps are what make the platform improve rather than merely run: memory turns this goal into
+context for the next, eval turns it into a measurement, and events turn it into a live experience. Skipping
+any of them leaves a platform that works today and does not get better — or one whose users cannot see what
+it is doing.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Memory write failure swallowed.</strong> Learning silently lost.</li>
+<li><strong>Events tied to worker lifetime.</strong> The stream dying with the worker.</li>
+<li><strong>Eval skipped on failure.</strong> The most informative runs unmeasured.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any goal you want to learn from, measure, or show.</li></ul></section>
+</article>
+
+<article class="concept" id="pw-frontend" data-impl="8" data-crit="7" data-tag="Boundary">
+<h3><span class="idx">07</span>The frontend SSE/WebSocket path and the SDK/Action boundary<a class="anchor" href="#pw-frontend" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Boundary</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">The same events reach a browser over SSE, a collaboration client over WebSocket, and CI over
+the SDK and GitHub Action — one backend, several front doors, one event model.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The React frontend subscribes to a goal's SSE stream for live execution and to a WebSocket for
+collaboration. The Python and TypeScript SDKs submit a goal and poll or stream its result. The GitHub Action
+wraps the SDK to submit a goal from CI and await it. All of them speak the same OpenAPI contract published by
+the backend, so the backend is the single source of truth and the clients are thin.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>agent-verse-frontend/src/lib/sse/useGoalStream.ts</code><span class="note">SSE</span></li>
+<li><code>agent-verse-frontend/src/lib/ws/useCollabSocket.ts</code><span class="note">collaboration WebSocket</span></li>
+<li><code>agent-verse-frontend/src/lib/api/client.ts</code><span class="note">HTTP client</span></li>
+<li><code>app/api/goals.py</code><span class="note">the endpoints all clients consume</span></li>
+<li><code>scripts/export_openapi.py</code><span class="note">the contract the clients are generated against</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>same goal, three front doors
+ browser   POST /goals → SSE stream → live step-by-step view
+ CI        GitHub Action → SDK → submit → await → pass/fail the build
+ script    SDK client → submit → poll → result
+all consume the same OpenAPI contract; the backend does not know or care
+which client called
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>A single backend contract with thin clients is what keeps five deployable projects in sync: the backend
+publishes OpenAPI, the SDKs are generated or checked against it, and a backend change that breaks a client
+is caught at contract level. The Action is just the SDK in a Docker entrypoint — the smallest possible
+front door, which is the right size for CI. (The SDKs themselves are out of scope for this manual, per the
+brief; here they matter only as consumers of the same event model.)</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Contract drift.</strong> Clients and backend disagreeing after a change.</li>
+<li><strong>SSE without reconnect.</strong> A dropped stream losing the live view.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any platform with more than one kind of client.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch19-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>A single end-to-end trace view.</strong> The signals exist per station; a one-screen
+      "here is the whole goal from submit to SSE" view would speed onboarding and debugging.</li>
+      <li><strong>Warm-start for the two-phase swap.</strong> The in-memory-then-DB swap re-hydrates on
+      every start; a faster warm path would cut cold-start latency.</li>
+      <li><strong>Backpressure from loop to queue.</strong> The queue routes by plan but does not yet shed
+      load based on downstream worker saturation (chapter 28).</li>
+    </ul>
+  </div>
+</section>
+
+<div class="pagenav"><a class="prev" href="model-router.html"><div class="d">Previous · CH 16</div><div class="t">Multi-model router</div></a><a class="next" href="platform-concepts.html"><div class="d">Next · CH 20</div><div class="t">Other core platform concepts</div></a></div>
+<p class="footnote">AgentVerse Field Manual · ratings are this author's judgement of the code as it stands, not a vendor claim. File paths are navigation anchors; line numbers drift.</p>
+</div></main>
+</div>
+<script>
+(function () {
+  var r = document.documentElement;
+  try { var t = localStorage.getItem('avfm-theme'); if (t) r.setAttribute('data-theme', t); } catch (e) {}
+  function cur() {
+    var a = r.getAttribute('data-theme');
+    if (a) return a;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  document.addEventListener('click', function (ev) {
+    var b = ev.target.closest('[data-theme-toggle]');
+    if (!b) return;
+    var n = cur() === 'dark' ? 'light' : 'dark';
+    r.setAttribute('data-theme', n);
+    try { localStorage.setItem('avfm-theme', n); } catch (e) {}
+  });
+  var f = document.querySelector('[data-filter]');
+  if (f) {
+    f.addEventListener('input', function () {
+      var q = f.value.trim().toLowerCase();
+      document.querySelectorAll('[data-filter-row]').forEach(function (el) {
+        el.hidden = q.length > 0 && el.getAttribute('data-filter-row').indexOf(q) === -1;
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>

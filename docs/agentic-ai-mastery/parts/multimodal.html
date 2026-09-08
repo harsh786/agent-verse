@@ -1,0 +1,368 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>Multimodal is not one capability — it is the discipline of turning every non-text modality into
+    something the rest of the platform can retrieve, reason over, and cite. The recurring move is
+    <strong>extract to text plus keep the original by reference</strong>: a screenshot becomes a
+    description plus OCR plus a stored image; audio becomes a timestamped transcript; a table becomes a
+    structure plus a summary. Text is the lingua franca, and the original is the evidence.</p>
+
+    <p>The chapter is organised by modality because each has a different extraction path, a different cost
+    profile, and a different privacy risk — images and screenshots being the most likely to carry personal
+    data, video the most expensive per minute, tables the most likely to produce confidently wrong numbers.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 880 220" role="img" aria-label="Each modality is routed to an extractor that produces text plus structured spans, which flow into the same chunking, embedding and retrieval pipeline as native text, while the original asset is stored by reference and linked for citation.">
+      <defs><marker id="mm1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker></defs>
+      <g font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" text-anchor="middle">
+        <text x="55" y="30">text · PDF</text><text x="55" y="46">image · screenshot</text><text x="55" y="62">audio · video</text>
+        <text x="55" y="78">tables · code · DOM</text>
+      </g>
+      <rect x="0" y="14" width="110" height="74" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"></rect>
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="160" y="26" width="130" height="50" rx="3"></rect>
+        <rect x="340" y="26" width="150" height="50" rx="3"></rect>
+        <rect x="540" y="26" width="150" height="50" rx="3"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="12" fill="currentColor" text-anchor="middle">
+        <text x="225" y="47">extractor</text><text x="225" y="63" font-size="10" opacity="0.6">OCR · vision · STT</text>
+        <text x="415" y="47">text + spans</text><text x="415" y="63" font-size="10" opacity="0.6">extracted spans</text>
+        <text x="615" y="47">pipeline</text><text x="615" y="63" font-size="10" opacity="0.6">chunk · embed · index</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#mm1)">
+        <line x1="110" y1="51" x2="156" y2="51"></line>
+        <line x1="290" y1="51" x2="336" y2="51"></line>
+        <line x1="490" y1="51" x2="536" y2="51"></line>
+      </g>
+      <rect x="720" y="26" width="150" height="50" rx="3" fill="none" stroke="#00A8CC" stroke-width="1.5"></rect>
+      <text x="795" y="47" font-family="Archivo, sans-serif" font-size="12" fill="#00A8CC" text-anchor="middle">asset store</text>
+      <text x="795" y="63" font-family="Archivo, sans-serif" font-size="10" fill="#00A8CC" opacity="0.85" text-anchor="middle">original by reference</text>
+      <path d="M225,76 L225,120 L795,120 L795,80" fill="none" stroke="#00A8CC" stroke-width="1.2" marker-end="url(#mm1)"></path>
+      <text x="500" y="138" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#00A8CC" text-anchor="middle">the original is kept, linked to its extracted text, for citation and verification</text>
+      <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">
+        <text x="0" y="176">extraction is metered per asset — gate it by value, cache by content hash, classify originals as sensitive by default</text>
+        <text x="0" y="194">the extracted text joins native text in one index; multimodal is an ingestion problem, not a retrieval one</text>
+      </g>
+    </svg>
+    <figcaption>Every modality funnels into the same text pipeline, with the original kept by reference.
+    The interesting engineering is all in the <span class="fig-em">extractor</span> and in gating its cost.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="multimodal">
+  <h2>The modalities</h2>
+
+<article class="concept" id="mm-text" data-impl="9" data-crit="9" data-tag="Modality">
+<h3>Text — the baseline</h3>
+<p class="tldr">Everything reduces to text, so the text path is the one every other modality is measured
+against: chunk, embed, retrieve, cite.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The native path (chapters 4–8): parse to structured text, chunk by strategy, embed, index in vector and
+lexical form, retrieve, and cite by stable chunk id. Other modalities succeed to the extent they produce
+text of comparable quality — a good caption or transcript is one that retrieves and cites as well as
+authored prose.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/pipeline.py</code><span class="note">the shared pipeline</span></li>
+<li><code>app/rag/store.py</code><span class="note">the shared index</span></li>
+<li><code>app/multimodal/pipeline.py</code><span class="note">routing modalities into it</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>a PDF report yields native text (body) + OCR text (scanned appendix) +
+captions (diagrams) + table structures — all four become chunks in the
+same collection, retrievable together
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Keeping every modality's output in one text index is what lets a single query span a diagram, a table,
+and a paragraph. The alternative — a separate store per modality — makes cross-modal retrieval a join
+nobody wants to maintain.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Modality silos.</strong> Separate indexes that cannot be searched together.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always. It is the target every extractor aims at.</li></ul></section>
+</article>
+
+<article class="concept" id="mm-pdf" data-impl="8" data-crit="9" data-tag="Modality">
+<h3>PDF and document layout</h3>
+<p class="tldr">The multimodal workhorse: digital text, scanned images, and hybrids in one format, each
+needing a different path, with layout reconstruction deciding whether the output is usable.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Detect the sub-case per page (chapter 5), reconstruct reading order from geometry, route scanned pages to
+OCR, extract tables as structures, and keep page numbers for citation. A single report often exercises all
+three sub-cases at once, which is why per-page handling matters.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parsers/pdf_parser.py</code>, <code>chunkers/pdf_layout.py</code><span class="note">extraction and layout chunking</span></li>
+<li><code>app/ocr/engine.py</code><span class="note">the scanned-page path</span></li>
+<li><code>app/multimodal/pipeline.py</code><span class="note">per-page routing</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>84-page report: prose (columns reordered) + financial tables (structured)
++ a scanned appendix (OCR) → one document, correct reading order, tables
+intact, citations to page numbers
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>PDFs are the majority of enterprise multimodal volume and the majority of the bugs. Measure
+extracted-characters-per-page as a health signal; a drop means a parser or upstream change. Full treatment
+in chapter 5.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Column interleaving.</strong> Unusable text.</li>
+<li><strong>Missed scanned pages.</strong> Silent content loss.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any enterprise corpus.</li></ul></section>
+</article>
+
+<article class="concept" id="mm-image" data-impl="7" data-crit="6" data-tag="Modality">
+<h3>Images</h3>
+<p class="tldr">Three extractions — OCR for embedded text, a vision caption for what it depicts, and the
+surrounding context — with the original stored and classified as sensitive by default.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Route by content: photos and diagrams get a vision caption, screenshots and scans get OCR, charts
+benefit from both. The text (caption plus OCR) is embedded; the image is stored by reference and linked to
+the chunk. Cache by image hash — the same logo appears in thousands of documents.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parsers/vision_parser.py</code><span class="note">vision captioning</span></li>
+<li><code>app/perception/multimodal.py</code><span class="note">perception-side analysis</span></li>
+<li><code>app/multimodal/models.py</code><span class="note">multimodal asset model</span></li>
+<li><code>app/ocr/engine.py</code><span class="note">the OCR path</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>architecture diagram → OCR labels [API GW, auth, payments, pgbouncer]
+                     + caption "request flow: gateway → auth/payments → DB"
+                     + surrounding section text
+"what sits between payments and the DB?" → answerable from the caption+OCR
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Vision captioning is metered per image, so gate it: caption images users query, skip decorative assets,
+cache by hash. Images hide personal data — classify originals as sensitive and never put a raw screenshot
+in a prompt without redaction. Full treatment in chapter 5.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Captioning everything.</strong> 4,000 copies of the letterhead.</li>
+<li><strong>OCR on photos.</strong> Garbage text.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Documents carry meaning in images.</li></ul></section>
+</article>
+
+<article class="concept" id="mm-screenshot" data-impl="7" data-crit="6" data-tag="Modality">
+<h3>Screenshots and browser DOM</h3>
+<p class="tldr">For agents that operate a UI, prefer the DOM (structured, cheap) and fall back to
+screenshots (vision, expensive) — and never carry either forward across steps unnecessarily.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The page analyzer extracts an accessibility/DOM summary first; only when that is opaque (a canvas app, an
+image-based UI) does it escalate to a vision description or the raw screenshot. Successful selectors are
+remembered (visual memory, chapter 3), so subsequent runs replay cheaply. Screenshots are redacted before
+any prompt use and stored with short retention.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/perception/page_analyzer.py</code><span class="note">DOM + visual analysis</span></li>
+<li><code>app/perception/browser_agent.py</code><span class="note">the browsing agent</span></li>
+<li><code>app/rpa/artifacts.py</code><span class="note">screenshots by reference</span></li>
+<li><code>app/rpa/session.py</code><span class="note">remembered selectors</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>step "submit the form"
+ DOM summary → form#filing with named inputs → act on structure (420 tok)
+ only if opaque → vision description (900 tok) → screenshot (1,400 tok)
+escalate on failure, not by default
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>DOM-first is the cost story for RPA: it turns most steps into cheap deterministic actions and reserves
+vision for genuinely visual pages. Carrying screenshots across steps is the most common way RPA cost per
+goal triples. Full treatment in chapters 8 (visual injection) and the RPA sections of chapter 5.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Pixels first.</strong> Expensive and less reliable than the DOM.</li>
+<li><strong>Screenshot accumulation.</strong> Cost blowout.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>UI automation where the DOM is insufficient.</li></ul></section>
+</article>
+
+<article class="concept" id="mm-audio-video" data-impl="7" data-crit="6" data-tag="Modality">
+<h3>Audio and video</h3>
+<p class="tldr">Transcribe to timestamped text; for video, add sampled keyframes and scene boundaries — the
+timestamps are the feature, because they let a citation point at a moment.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Audio: STT produces text plus word/segment timing and speaker labels; chunk on time windows with overlap.
+Video: transcribe the audio, detect scenes, sample a keyframe per scene, caption or OCR those frames, and
+chunk by scene so each chunk has words and visual context aligned on one timeline.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parsers/audio_parser.py</code>, <code>video_parser.py</code><span class="note">extraction</span></li>
+<li><code>app/ingestion/chunkers/timestamp.py</code>, <code>scene.py</code><span class="note">chunking</span></li>
+<li><code>app/voice/stt_engine.py</code><span class="note">transcription</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>demo video → scene 4 (3:40–5:10): speech "configure the retry policy" +
+frame OCR "Retry: 3, Backoff: exponential" → chunk answers "default backoff?"
+from the frame the audio never stated
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Transcription is priced per minute and video per frame; gate both by value and sample frames sparsely
+(one per scene). Recordings are among the most regulated data you hold — consent, retention, residency all
+apply. Full treatment in chapters 5 and 26.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>No timestamps.</strong> A wall of text, uncitable.</li>
+<li><strong>Frame flood.</strong> One per second is 1,800 vision calls per 30 min.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Calls, meetings, and recordings hold knowledge.</li></ul></section>
+</article>
+
+<article class="concept" id="mm-tables" data-impl="7" data-crit="8" data-tag="Modality">
+<h3>Tables</h3>
+<p class="tldr">Structure, not prose: every chunk of a table carries its header, and large tables are
+summarised and queried rather than embedded row by row.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Small tables serialise to one chunk with the header; large tables split into row groups with the header
+repeated, plus a summary chunk; very large tables are indexed as schema plus sample and answered with code
+execution (chapter 25). A header separated from its values is the cause of most confidently wrong numeric
+answers.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/table.py</code><span class="note">table chunking</span></li>
+<li><code>app/ingestion/parsers/excel_parser.py</code>, <code>csv_parser.py</code><span class="note">extraction</span></li>
+<li><code>app/tools/code_interpreter.py</code><span class="note">the query path for large tables</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>revenue table → each row group keeps "Region | Q1 | Q2 | Q3" header
++ summary "FY24 revenue by region, INR lakhs, 12 regions"
+large transactions.csv → schema + sample, then code execution for
+"failed over ₹10k in March"
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Header preservation is an invariant to test. For anything above a few hundred rows, schema-plus-execution
+is cheaper and more accurate than embedding rows. Full treatment in chapters 5 and 17.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Headers dropped.</strong> Numbers without labels.</li>
+<li><strong>Row-per-vector.</strong> Expensive and useless.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Documents or data with tables that matter.</li></ul></section>
+</article>
+
+<article class="concept" id="mm-extracted-spans" data-impl="7" data-crit="7" data-tag="Structure">
+<h3>Extracted spans and visual context in planning</h3>
+<p class="tldr">Extraction produces not just text but located spans — a field on an invoice, a label in a
+diagram, a moment in a call — which the agent can reason over and, when planning, see visually.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>An extracted span carries its value, its type, and its location (bounding box, page, timestamp, DOM path),
+so a downstream step can act on a specific field rather than searching prose. In planning, a vision-capable
+model can be given the visual context directly — a screenshot of the page it is about to operate, or the
+diagram it is reasoning about — turning "describe then act" into "see then act" where the DOM is
+insufficient.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/multimodal/models.py</code><span class="note">extracted span model</span></li>
+<li><code>app/ocr/models.py</code><span class="note">OCR spans with locations</span></li>
+<li><code>app/perception/multimodal.py</code><span class="note">visual context for the agent</span></li>
+<li><code>app/perception/page_analyzer.py</code><span class="note">located page elements</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>invoice OCR → spans {invoice_no@(x,y,p1), total@(x,y,p1), due_date@(x,y,p1)}
+the agent acts on span.total directly, and the location lets a human
+verify by opening the original at that box
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Located spans are what make multimodal output verifiable: a human can jump from the extracted value to
+its exact position in the original, which is essential for document AI that has to be right (chapter 21).
+Visual context in planning is powerful but expensive — reserve it for the cases the DOM cannot cover.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Spans without locations.</strong> Values you cannot verify against the original.</li>
+<li><strong>Vision in planning by default.</strong> Cost without need.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Field-level extraction or UI operation where verification matters.</li></ul></section>
+</article>
+
+<article class="concept" id="mm-asset-jobs" data-impl="7" data-crit="7" data-tag="Infrastructure">
+<h3>Asset ingestion jobs</h3>
+<p class="tldr">Multimodal extraction is heavy, bursty, and separately scaled — large files, GPU-ish
+workloads, per-asset metering — so it runs as its own job class, not inline with the agent loop.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Asset processing (OCR, transcription, captioning, frame sampling) is dispatched as background jobs with
+their own queue, concurrency limits, and retry/DLQ handling. Originals are stored in object storage by
+reference; extracted text and spans flow into the standard pipeline. The separation matters because asset
+work is CPU/GPU-bound and bursty while the agent loop is IO-bound — mixing them makes both scale badly.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/multimodal/pipeline.py</code><span class="note">asset processing pipeline</span></li>
+<li><code>app/ingestion/modality_pipeline.py</code><span class="note">modality routing</span></li>
+<li><code>app/rpa/artifacts.py</code>, <code>app/services/result_artifacts.py</code><span class="note">artifact storage</span></li>
+<li><code>app/scaling/tasks.py</code><span class="note">the job runners</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>tenant uploads 400 scanned PDFs
+ → asset queue (separate from goal queue)
+ → OCR jobs, bounded concurrency, per-asset metering, DLQ on failure
+ → extracted text → standard ingestion pipeline → searchable
+the agent workload is unaffected by the backfill
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Give asset processing its own queue and its own scaling. A batch of video transcriptions must not starve
+interactive goals of workers, and asset work's cost profile (per-minute, per-frame, per-page) is different
+enough that it needs its own budget and its own alarms.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Inline extraction.</strong> A large upload stalling the agent loop.</li>
+<li><strong>Shared queue.</strong> Backfill starving interactive work.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any real volume of non-text assets.</li></ul></section>
+</article>
+
+<article class="concept" id="mm-limits" data-impl="6" data-crit="6" data-tag="Reality">
+<h3>Multimodal limitations and future work</h3>
+<p class="tldr">The honest boundary: extraction loses information, cross-modal reasoning is shallow, and
+some modalities (native audio understanding, video reasoning) are still caption-and-transcribe rather than
+true multimodal inference.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The extract-to-text approach is pragmatic and lossy. A caption cannot capture everything in an image; a
+transcript loses tone; a table summary loses the long tail. True multimodal models that reason over pixels
+and audio directly would close some of this gap, but they are more expensive, harder to cite, and harder to
+govern — so the platform's production path is text extraction, with native multimodal reserved for the
+narrow cases where it clearly wins.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/perception/multimodal.py</code><span class="note">where native vision is used when available</span></li>
+<li><code>app/multimodal/pipeline.py</code><span class="note">the extraction-based production path</span></li>
+<li><code>app/embedding/router.py</code><span class="note">the multimodal-embedding seam (rated thin, chapter 7)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>what works well   OCR, transcription, document layout, table structure
+what is shallow   cross-modal reasoning ("does this chart match this text?")
+what is future    native audio understanding, video reasoning, joint
+                  multimodal embeddings (caption-then-embed today)
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>The extraction approach is the right default because it is cheap, citable, and governable. Native
+multimodal is worth adopting only where the extraction loses something the use case depends on — visual
+search, document-understanding tasks where layout <em>is</em> the meaning. Name the limitation to users
+rather than implying capability the system does not have.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Overclaiming.</strong> Implying visual reasoning the system does by captioning.</li>
+<li><strong>Extraction loss unmeasured.</strong> No sense of what the caption dropped.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Set expectations honestly; adopt native multimodal only where extraction demonstrably falls short.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch15-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Native joint multimodal embeddings.</strong> The production path is caption-then-embed;
+      true image/text joint retrieval is a thin seam (chapter 7).</li>
+      <li><strong>Image-region chunking.</strong> Images are handled whole rather than split into
+      semantically distinct regions.</li>
+      <li><strong>Cross-modal grounding.</strong> No equivalent of the deterministic grounding check for
+      claims derived from a chart or a screenshot (chapter 18).</li>
+      <li><strong>Extraction-loss measurement.</strong> Nothing quantifies what a caption or summary
+      dropped relative to the original.</li>
+    </ul>
+  </div>
+</section>

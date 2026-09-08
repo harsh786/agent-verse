@@ -1,0 +1,1444 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Embeddings · AgentVerse Field Manual</title>
+<meta name="description" content="CH 07 · Embeddings">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>/* ==========================================================================
+   AgentVerse Field Manual — instrument chrome + engineering-manual body.
+   Tokens: complete light palette on :root; dark redefined for the two
+   dark states (un-stamped OS-dark, and explicit data-theme="dark").
+   ========================================================================== */
+
+:root {
+  /* ground + surfaces (cool slate neutrals, biased toward the cyan accent) */
+  --bg:        #EFF2F5;
+  --paper:     #FFFFFF;
+  --raised:    #F6F8FA;
+  --sunken:    #E7ECF1;
+  --rail:      #FBFCFD;
+
+  /* ink */
+  --ink:       #0B1220;
+  --ink-2:     #3C4A5A;
+  --ink-3:     #6B7A8B;
+  --ink-4:     #93A1B0;
+
+  /* lines */
+  --line:      #D5DDE5;
+  --line-soft: #E4EAF0;
+  --line-hard: #B9C5D0;
+
+  /* accent — JARVIS electric, darkened for contrast on paper */
+  --accent:      #007D9C;
+  --accent-2:    #00A8CC;
+  --accent-wash: rgba(0,168,204,0.10);
+  --accent-line: rgba(0,125,156,0.35);
+
+  /* semantic (ratings, status, diagram emphasis) */
+  --good:      #0E7C55;
+  --good-wash: rgba(14,124,85,0.10);
+  --warn:      #A2650A;
+  --warn-wash: rgba(162,101,10,0.10);
+  --bad:       #B3303B;
+  --bad-wash:  rgba(179,48,59,0.10);
+  --note:      #6D46C4;
+  --note-wash: rgba(109,70,196,0.10);
+
+  --shadow-1: 0 1px 2px rgba(11,18,32,0.05);
+  --shadow-2: 0 8px 28px rgba(11,18,32,0.10);
+
+  --measure: 68ch;
+  --rail-w: 274px;
+  --topbar-h: 52px;
+
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #070A10;
+    --paper:     #0C1017;
+    --raised:    #12171F;
+    --sunken:    #090D13;
+    --rail:      #0A0E15;
+
+    --ink:       #E9EFF5;
+    --ink-2:     #B3C0CD;
+    --ink-3:     #8593A2;
+    --ink-4:     #5D6C7B;
+
+    --line:      rgba(255,255,255,0.09);
+    --line-soft: rgba(255,255,255,0.055);
+    --line-hard: rgba(255,255,255,0.16);
+
+    --accent:      #35D8F5;
+    --accent-2:    #00D4FF;
+    --accent-wash: rgba(0,212,255,0.10);
+    --accent-line: rgba(0,212,255,0.35);
+
+    --good:      #2ED08C;
+    --good-wash: rgba(46,208,140,0.12);
+    --warn:      #F0B429;
+    --warn-wash: rgba(240,180,41,0.12);
+    --bad:       #FF6B78;
+    --bad-wash:  rgba(255,107,120,0.12);
+    --note:      #B08CFF;
+    --note-wash: rgba(176,140,255,0.12);
+
+    --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+    --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #070A10;
+  --paper:     #0C1017;
+  --raised:    #12171F;
+  --sunken:    #090D13;
+  --rail:      #0A0E15;
+
+  --ink:       #E9EFF5;
+  --ink-2:     #B3C0CD;
+  --ink-3:     #8593A2;
+  --ink-4:     #5D6C7B;
+
+  --line:      rgba(255,255,255,0.09);
+  --line-soft: rgba(255,255,255,0.055);
+  --line-hard: rgba(255,255,255,0.16);
+
+  --accent:      #35D8F5;
+  --accent-2:    #00D4FF;
+  --accent-wash: rgba(0,212,255,0.10);
+  --accent-line: rgba(0,212,255,0.35);
+
+  --good:      #2ED08C;
+  --good-wash: rgba(46,208,140,0.12);
+  --warn:      #F0B429;
+  --warn-wash: rgba(240,180,41,0.12);
+  --bad:       #FF6B78;
+  --bad-wash:  rgba(255,107,120,0.12);
+  --note:      #B08CFF;
+  --note-wash: rgba(176,140,255,0.12);
+
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+  color-scheme: dark;
+}
+
+/* -------------------------------------------------- base */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 17.5px;
+  line-height: 1.62;
+  font-synthesis-weight: none;
+}
+
+a { color: var(--accent); text-decoration-color: var(--accent-line); text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
+
+h1, h2, h3, h4, h5 { font-family: var(--f-display); font-weight: 650; letter-spacing: -0.015em; text-wrap: balance; margin: 0; }
+p { margin: 0 0 0.85em; }
+p:last-child { margin-bottom: 0; }
+ul, ol { margin: 0 0 0.9em; padding-left: 1.25em; }
+li { margin: 0.25em 0; }
+li > ul, li > ol { margin-bottom: 0.2em; }
+strong { font-weight: 650; }
+code, kbd, samp { font-family: var(--f-mono); font-size: 0.855em; }
+:not(pre) > code {
+  background: var(--sunken); border: 1px solid var(--line-soft);
+  padding: 0.08em 0.34em; border-radius: 3px; color: var(--ink-2);
+  word-break: break-word;
+}
+hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+
+.mono { font-family: var(--f-mono); }
+.eyebrow {
+  font-family: var(--f-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3);
+}
+
+/* -------------------------------------------------- top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  height: var(--topbar-h);
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .brand {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink);
+  text-decoration: none; white-space: nowrap;
+}
+.topbar .brand b { color: var(--accent); font-weight: 600; }
+.topbar .crumb {
+  font-family: var(--f-mono); font-size: 11px; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar .spacer { flex: 1 1 auto; }
+.tb-btn {
+  font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  background: transparent; color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 5px 9px; cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.tb-btn:hover { border-color: var(--accent-line); color: var(--accent); }
+
+/* -------------------------------------------------- shell */
+.shell { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); align-items: start; }
+
+.rail {
+  position: sticky; top: var(--topbar-h);
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--rail);
+  border-right: 1px solid var(--line);
+  padding: 18px 0 40px;
+}
+.rail h4 { font-size: 10.5px; font-family: var(--f-mono); font-weight: 500; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-4); padding: 0 18px; margin: 16px 0 8px; }
+.rail .part-label { padding: 0 18px; margin: 20px 0 6px; }
+.rail nav a {
+  display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: baseline;
+  padding: 5px 18px; text-decoration: none; color: var(--ink-2);
+  font-family: var(--f-display); font-size: 13.5px; line-height: 1.35; letter-spacing: -0.005em;
+  border-left: 2px solid transparent;
+}
+.rail nav a .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.rail nav a:hover { background: var(--accent-wash); color: var(--ink); }
+.rail nav a[aria-current="page"] { color: var(--accent); border-left-color: var(--accent); background: var(--accent-wash); }
+.rail nav a[aria-current="page"] .n { color: var(--accent); }
+.rail .inpage { border-top: 1px solid var(--line-soft); margin-top: 14px; padding-top: 4px; }
+.rail .inpage a { grid-template-columns: 26px 1fr; font-size: 12.5px; color: var(--ink-3); }
+.rail .filter { padding: 0 14px 6px; }
+.rail .filter input {
+  width: 100%; font-family: var(--f-mono); font-size: 11.5px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
+}
+.rail .filter input::placeholder { color: var(--ink-4); }
+
+main { min-width: 0; padding: 0 0 96px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 clamp(18px, 4vw, 52px); }
+.prose { max-width: var(--measure); }
+
+/* -------------------------------------------------- chapter head */
+.chead { padding: 46px 0 26px; border-bottom: 1px solid var(--line); }
+.chead .kicker { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.chead .cnum {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
+  color: var(--accent); border: 1px solid var(--accent-line); border-radius: 3px; padding: 3px 7px;
+}
+.chead h1 { font-size: clamp(30px, 4.4vw, 46px); line-height: 1.06; font-weight: 700; letter-spacing: -0.028em; }
+.chead .lede { font-size: 20px; line-height: 1.5; color: var(--ink-2); margin-top: 16px; max-width: 62ch; }
+
+.statstrip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 0; margin-top: 26px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--paper); overflow: hidden;
+}
+.statstrip div { padding: 11px 16px; border-right: 1px solid var(--line-soft); }
+.statstrip div:last-child { border-right: 0; }
+.statstrip .k { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.statstrip .v { font-family: var(--f-display); font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------- sections */
+section.block { padding: 38px 0 8px; }
+section.block > h2 {
+  font-size: 25px; font-weight: 700; letter-spacing: -0.022em; padding-bottom: 8px;
+  border-bottom: 2px solid var(--ink); display: inline-block; margin-bottom: 20px;
+}
+section.block > .prose { margin-bottom: 8px; }
+
+.callout {
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  background: var(--paper); padding: 14px 16px; margin: 18px 0; border-radius: 0 4px 4px 0;
+  font-size: 16.5px;
+}
+.callout.warn { border-left-color: var(--warn); }
+.callout.bad  { border-left-color: var(--bad); }
+.callout.good { border-left-color: var(--good); }
+.callout .lbl { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); display: block; margin-bottom: 5px; }
+
+/* -------------------------------------------------- concept card */
+.concept {
+  border-top: 1px solid var(--line);
+  padding: 30px 0 34px;
+  scroll-margin-top: calc(var(--topbar-h) + 12px);
+}
+.concept:first-of-type { border-top-width: 2px; border-top-color: var(--ink); }
+.concept > h3 {
+  font-size: 23px; font-weight: 700; letter-spacing: -0.022em; line-height: 1.18;
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.concept > h3 .idx {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 500; color: var(--ink-4);
+  letter-spacing: 0.06em; font-variant-numeric: tabular-nums;
+}
+.concept > h3 a.anchor { color: var(--ink-4); text-decoration: none; font-family: var(--f-mono); font-size: 13px; opacity: 0; }
+.concept:hover > h3 a.anchor { opacity: 1; }
+
+.dials { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 12px 0 16px; }
+.dial { display: flex; align-items: center; gap: 8px; }
+.dial .dl { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-4); }
+.meter { display: inline-flex; gap: 2px; }
+.meter i { display: block; width: 7px; height: 12px; background: var(--line); border-radius: 1px; }
+.meter i.on { background: var(--accent); }
+.dial.crit .meter i.on { background: var(--note); }
+.dial .dv { font-family: var(--f-mono); font-size: 12px; font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.dial .dv small { font-weight: 400; color: var(--ink-4); }
+.pill {
+  font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap;
+}
+.pill.shipped { color: var(--good); background: var(--good-wash); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.pill.partial { color: var(--warn); background: var(--warn-wash); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.pill.thin    { color: var(--bad);  background: var(--bad-wash);  border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.pill.tag     { color: var(--ink-3); background: var(--sunken); border-color: var(--line-soft); }
+
+.tldr { font-size: 18.5px; line-height: 1.5; color: var(--ink); max-width: 66ch; }
+.tldr b, .tldr strong { color: var(--ink); }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 20px 0 0; }
+.cols > section { min-width: 0; }
+.cols h4, .band h4 {
+  font-family: var(--f-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px;
+  padding-bottom: 5px; border-bottom: 1px solid var(--line-soft);
+}
+.cols section p, .band p, .cols section li, .band li { font-size: 16.5px; }
+
+.band { margin-top: 18px; padding: 15px 17px; border-radius: 4px; border: 1px solid var(--line-soft); background: var(--raised); }
+.band.example { background: var(--sunken); }
+.band.prod  { border-color: color-mix(in srgb, var(--accent) 22%, var(--line-soft)); background: var(--accent-wash); }
+.band.fail  { border-color: color-mix(in srgb, var(--bad) 22%, var(--line-soft)); background: var(--bad-wash); }
+.band.when  { background: var(--paper); }
+.band.example h4 { color: var(--ink-2); }
+.band.prod h4 { color: var(--accent); border-bottom-color: var(--accent-line); }
+.band.fail h4 { color: var(--bad); border-bottom-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+
+.band.when ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.band.when li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; }
+.band.when li::before { content: "+"; font-family: var(--f-mono); color: var(--good); font-weight: 600; }
+.band.when li.no::before { content: "\2212"; color: var(--bad); }
+
+/* -------------------------------------------------- code + pre */
+pre {
+  margin: 12px 0; padding: 13px 15px; overflow-x: auto;
+  background: var(--sunken); border: 1px solid var(--line-soft); border-radius: 4px;
+  font-family: var(--f-mono); font-size: 12.5px; line-height: 1.62; color: var(--ink-2);
+  tab-size: 2;
+}
+:root[data-theme="dark"] pre, :root:not([data-theme="light"]) pre { color: var(--ink-2); }
+pre .c { color: var(--ink-4); }
+pre .k { color: var(--accent); }
+pre .s { color: var(--good); }
+
+.filelist { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.filelist li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; font-size: 15px; }
+.filelist code { font-size: 12.3px; background: none; border: 0; padding: 0; color: var(--accent); word-break: break-all; }
+.filelist .note { color: var(--ink-3); font-size: 15px; }
+
+/* -------------------------------------------------- tables */
+.tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+table { border-collapse: collapse; width: 100%; font-family: var(--f-display); font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+th {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-3); background: var(--raised); border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+td code { font-size: 12px; }
+
+/* -------------------------------------------------- figures */
+figure { margin: 22px 0; }
+figure svg { display: block; max-width: 100%; height: auto; color: var(--ink-2); }
+figcaption { font-size: 14.5px; color: var(--ink-3); margin-top: 9px; font-family: var(--f-display); max-width: 70ch; }
+.fig-em { color: var(--accent); }
+
+/* -------------------------------------------------- index page bits */
+.chapgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 4px; overflow: hidden; margin: 22px 0; }
+.chapgrid a {
+  background: var(--paper); padding: 16px 17px; text-decoration: none; color: var(--ink);
+  display: flex; flex-direction: column; gap: 7px; min-height: 128px;
+}
+.chapgrid a:hover { background: var(--accent-wash); }
+.chapgrid .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--accent); letter-spacing: 0.1em; }
+.chapgrid .t { font-family: var(--f-display); font-size: 16.5px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.25; }
+.chapgrid .d { font-size: 14.5px; color: var(--ink-3); line-height: 1.45; }
+.chapgrid .m { margin-top: auto; font-family: var(--f-mono); font-size: 10px; color: var(--ink-4); letter-spacing: 0.06em; }
+
+.matrix td.c1 { font-family: var(--f-display); font-weight: 600; }
+.matrix .bar { display: inline-flex; gap: 2px; vertical-align: middle; }
+.matrix .bar i { width: 5px; height: 10px; background: var(--line); border-radius: 1px; display: block; }
+.matrix .bar i.on { background: var(--accent); }
+.matrix .bar.crit i.on { background: var(--note); }
+
+/* -------------------------------------------------- footer nav */
+.pagenav { display: flex; gap: 12px; justify-content: space-between; margin-top: 54px; padding-top: 20px; border-top: 1px solid var(--line); }
+.pagenav a { flex: 1 1 0; text-decoration: none; border: 1px solid var(--line); border-radius: 4px; padding: 13px 15px; background: var(--paper); color: var(--ink); }
+.pagenav a:hover { border-color: var(--accent-line); }
+.pagenav .d { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.pagenav .t { font-family: var(--f-display); font-weight: 650; font-size: 15.5px; letter-spacing: -0.015em; }
+.pagenav a.next { text-align: right; }
+
+.footnote { margin-top: 30px; font-size: 14.5px; color: var(--ink-3); font-family: var(--f-display); }
+
+/* -------------------------------------------------- responsive */
+@media (max-width: 1080px) {
+  .cols { grid-template-columns: 1fr; gap: 14px; }
+}
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail {
+    position: static; height: auto; max-height: 340px;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  body { font-size: 17px; }
+  .chead { padding-top: 30px; }
+}
+@media print {
+  .rail, .topbar, .pagenav { display: none; }
+  body { background: #fff; color: #000; font-size: 10.5pt; }
+  .shell { grid-template-columns: 1fr; }
+}
+
+.idxhead { background: var(--raised); font-family: var(--f-mono); font-size: 11px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">AgentVerse <b>Field Manual</b></a>
+  <span class="crumb">CH 07 · Embeddings</span>
+  <span class="spacer"></span>
+  <button class="tb-btn" data-theme-toggle type="button">Theme</button>
+</header>
+<div class="shell">
+<aside class="rail"><h4>Field manual</h4><nav><a href="index.html"><span class="n">00</span><span>Hub &amp; how to read</span></a></nav></nav><div class="part-label eyebrow">I · The agent</div><nav><a href="agent-patterns.html"><span class="n">01</span><span>Agent patterns</span></a><a href="rag-patterns.html"><span class="n">02</span><span>RAG patterns</span></a><a href="agent-memory.html"><span class="n">03</span><span>Agent memories</span></a></nav><div class="part-label eyebrow">II · Knowledge</div><nav><a href="knowledge-and-graphs.html"><span class="n">04</span><span>Knowledge &amp; knowledge graph</span></a><a href="ingestion.html"><span class="n">05</span><span>Ingestion</span></a><a href="retrieval-strategies.html"><span class="n">06</span><span>Retrieval strategies</span></a><a href="embeddings.html" aria-current="page"><span class="n">07</span><span>Embeddings</span></a><a href="chunking.html"><span class="n">17</span><span>Chunking strategies</span></a></nav><div class="part-label eyebrow">III · Context &amp; quality</div><nav><a href="prompt-builder.html"><span class="n">08</span><span>Prompt builder</span></a><a href="agent-improvement.html"><span class="n">09</span><span>Agent improvement</span></a><a href="evals.html"><span class="n">10</span><span>Evals</span></a><a href="hallucination.html"><span class="n">18</span><span>Hallucination handling</span></a></nav><div class="part-label eyebrow">IV · Safety &amp; control</div><nav><a href="guardrails.html"><span class="n">12</span><span>Guardrails</span></a><a href="governance.html"><span class="n">13</span><span>Governance</span></a><a href="scopes.html"><span class="n">14</span><span>Scopes</span></a><a href="observability.html"><span class="n">11</span><span>Observability</span></a></nav><div class="part-label eyebrow">V · Modality &amp; models</div><nav><a href="multimodal.html"><span class="n">15</span><span>Multimodal</span></a><a href="ocr.html"><span class="n">21</span><span>OCR</span></a><a href="model-router.html"><span class="n">16</span><span>Multi-model router</span></a></nav><div class="part-label eyebrow">VI · The platform</div><nav><a href="platform-workflows.html"><span class="n">19</span><span>Core platform workflows</span></a><a href="platform-concepts.html"><span class="n">20</span><span>Other core platform concepts</span></a><a href="agent-teams.html"><span class="n">22</span><span>AI agent teams</span></a><a href="jarvis.html"><span class="n">23</span><span>Jervis (JARVIS) console</span></a></nav><div class="part-label eyebrow">VII · Not on the list</div><nav><a href="coordination-protocols.html"><span class="n">24</span><span>Coordination protocols</span></a><a href="code-execution.html"><span class="n">25</span><span>Code execution &amp; sandboxing</span></a><a href="voice.html"><span class="n">26</span><span>Voice &amp; realtime agents</span></a><a href="triggers.html"><span class="n">27</span><span>Triggers &amp; event-driven agents</span></a><a href="reliability-qos.html"><span class="n">28</span><span>Reliability &amp; QoS</span></a><a href="cost-capacity.html"><span class="n">29</span><span>Cost &amp; capacity engineering</span></a><a href="data-lifecycle.html"><span class="n">30</span><span>Data lifecycle &amp; provenance</span></a><a href="testing-certification.html"><span class="n">31</span><span>Testing &amp; certification</span></a><a href="scale-playbook.html"><span class="n">32</span><span>Scale playbook</span></a><a href="workflow-engine.html"><span class="n">34</span><span>Workflow engine</span></a><a href="frontier.html"><span class="n">33</span><span>Frontier &amp; gaps</span></a></nav><div class="part-label eyebrow">Appendix</div><nav><a href="appendix-ratings.html"><span class="n">A</span><span>Ratings matrix</span></a><a href="appendix-glossary.html"><span class="n">B</span><span>Glossary</span></a></nav><div class="inpage"><h4>In this chapter</h4><nav><a href="#embed-provider-abstraction"><span class="n">01</span><span>Provider abstraction</span></a><a href="#embed-registry"><span class="n">02</span><span>Model registry</span></a><a href="#embed-router"><span class="n">03</span><span>Embedding router</span></a><a href="#embed-orchestrator"><span class="n">04</span><span>Embedding orchestrator</span></a><a href="#dimensions"><span class="n">05</span><span>Dimensions and index compatibility</span></a><a href="#text-embeddings"><span class="n">06</span><span>Text embeddings</span></a><a href="#code-embeddings"><span class="n">07</span><span>Code embeddings</span></a><a href="#multimodal-embeddings"><span class="n">08</span><span>Multimodal embeddings</span></a><a href="#embed-fallbacks"><span class="n">09</span><span>Embedding fallbacks</span></a><a href="#embed-cost"><span class="n">10</span><span>Tenant plan and cost constraints</span></a><a href="#embed-drift"><span class="n">11</span><span>Drift detection</span></a><a href="#reembedding"><span class="n">12</span><span>Re-embedding and migration</span></a><a href="#embed-caching"><span class="n">13</span><span>Embedding caches</span></a><a href="#embed-eval"><span class="n">14</span><span>Evaluating an embedding model</span></a></nav></div></aside>
+<main><div class="wrap">
+<header class="chead"><div class="kicker"><span class="cnum">CH 07</span><span class="eyebrow">II · Knowledge</span></div><h1>Embeddings</h1><p class="lede">Routing, dimensions, drift, and the re-embedding migration nobody plans.</p><div class="statstrip"><div><div class="k">Concepts</div><div class="v">14</div></div><div><div class="k">Mean impl</div><div class="v">7.5</div></div><div><div class="k">Mean criticality</div><div class="v">7.6</div></div><div><div class="k">Shipped</div><div class="v">8</div></div><div><div class="k">Thin / missing</div><div class="v">0</div></div></div></header><section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>Embeddings are the boring infrastructure that everything semantic rests on, and they have one
+    property that makes them operationally unlike anything else in the platform: <strong>they are only
+    comparable to embeddings from the same model.</strong> A vector is not data you can migrate — it is a
+    measurement in a coordinate system that exists only inside one model version.</p>
+
+    <p>Everything difficult about embeddings follows from that: dimension policy, index compatibility,
+    drift monitoring, and the re-embedding migration that nobody budgets for and everybody eventually
+    performs.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 880 250" role="img" aria-label="Embedding request flow: content type and tenant plan feed a router which selects a model from the registry; the dimension policy checks index compatibility; the orchestrator batches the request, and on provider failure falls back to an alternative model, recording the model and dimension on every stored vector.">
+      <defs><marker id="e1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker>
+      <marker id="e2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#A2650A"></path></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="0" y="44" width="122" height="44" rx="3"></rect>
+        <rect x="162" y="44" width="122" height="44" rx="3"></rect>
+        <rect x="324" y="44" width="122" height="44" rx="3"></rect>
+        <rect x="486" y="44" width="122" height="44" rx="3"></rect>
+        <rect x="648" y="44" width="132" height="44" rx="3"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="12" fill="currentColor" text-anchor="middle">
+        <text x="61" y="62">content + tenant</text><text x="61" y="78" font-size="10" opacity="0.6">type · plan · locale</text>
+        <text x="223" y="62">router</text><text x="223" y="78" font-size="10" opacity="0.6">text · code · image</text>
+        <text x="385" y="62">registry</text><text x="385" y="78" font-size="10" opacity="0.6">model + dimension</text>
+        <text x="547" y="62">dimension policy</text><text x="547" y="78" font-size="10" opacity="0.6">index compatible?</text>
+        <text x="714" y="62">orchestrator</text><text x="714" y="78" font-size="10" opacity="0.6">batch · fallback</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#e1)">
+        <line x1="122" y1="66" x2="158" y2="66"></line>
+        <line x1="284" y1="66" x2="320" y2="66"></line>
+        <line x1="446" y1="66" x2="482" y2="66"></line>
+        <line x1="608" y1="66" x2="644" y2="66"></line>
+      </g>
+      <path d="M714,88 L714,124 L440,124" fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#e1)"></path>
+      <rect x="300" y="106" width="140" height="36" rx="3" fill="none" stroke="currentColor" stroke-width="1.2"></rect>
+      <text x="370" y="128" font-family="Archivo, sans-serif" font-size="12" fill="currentColor" text-anchor="middle">vector + model tag</text>
+      <path d="M714,88 L790,88 L790,124 L744,124" fill="none" stroke="#A2650A" stroke-width="1.2" marker-end="url(#e2)"></path>
+      <text x="800" y="128" font-family="IBM Plex Mono, monospace" font-size="10" fill="#A2650A" text-anchor="end">fallback model</text>
+      <g font-family="IBM Plex Mono, monospace" font-size="10.5" fill="currentColor" opacity="0.7">
+        <text x="0" y="172">every stored vector records (model, dimension) — so a model change is detectable per row, not guessed per corpus</text>
+        <text x="0" y="192">a fallback model with a different dimension CANNOT write to the same index: the policy must refuse, not degrade</text>
+        <text x="0" y="212">drift monitor compares fresh embeddings of fixed probe texts against their stored vectors, and grades severity</text>
+        <text x="0" y="232">query and document embeddings must come from the same model — the most common silent failure in the whole stack</text>
+      </g>
+    </svg>
+    <figcaption>The embedding path. The interesting constraint is the one drawn in amber: a fallback that
+    changes dimension is not a fallback, it is a corrupted index.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="embeddings">
+  <h2>The embedding subsystem</h2>
+
+<article class="concept" id="embed-provider-abstraction" data-impl="9" data-crit="9" data-tag="Abstraction">
+<h3><span class="idx">01</span>Provider abstraction<a class="anchor" href="#embed-provider-abstraction" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Abstraction</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">One interface for every embedding backend, so the model is configuration and the calling
+code never knows which vendor answered.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A typed request carries texts, a model identifier, and an input type (query versus document, which
+several models distinguish); the response carries vectors, the model actually used, the dimension, and
+token usage for cost accounting. Providers are resolved from environment configuration at startup, with
+a deterministic fake for tests and key-less environments.</p>
+<p>Reporting the model and dimension <em>in the response</em> rather than assuming them from the request
+is what makes the rest of the subsystem honest — a provider that silently serves a different version is
+detectable.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/providers/base.py</code><span class="note">EmbedRequest and the provider protocol</span></li>
+<li><code>app/providers/voyage_provider.py</code>, <code>openai_compatible.py</code>, <code>gemini_provider.py</code>, <code>ollama_provider.py</code>, <code>nvidia_nim_provider.py</code><span class="note">backends</span></li>
+<li><code>app/providers/registry.py</code><span class="note">resolve_provider() — auto-detection from configured keys</span></li>
+<li><code>app/providers/fake.py</code><span class="note">FakeProvider — deterministic vectors for tests</span></li>
+<li><code>app/api/embeddings.py</code><span class="note">the API surface</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>EmbedRequest
+  texts        ["refund policy text", …142]
+  model        "text-embedding-3-large"
+  input_type   "document"          ← "query" for search-side embedding
+response
+  vectors      142 × 3072
+  model_used   "text-embedding-3-large"     ← recorded on every chunk row
+  dimension    3072
+  tokens       58,204                       ← charged to the tenant
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Vendor neutrality here is not idealism: embedding providers deprecate models, change pricing, and have
+outages, and your entire index is denominated in one of their models. The abstraction is what makes a
+migration a project rather than a rewrite.</p>
+<p>The deterministic fake earns its keep daily — it lets the whole retrieval stack run in CI with no keys
+and no network, which is why tests can cover retrieval at all.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Leaky abstraction.</strong> Vendor-specific parameters reaching calling code, so switching
+means editing twenty files.</li>
+<li><strong>Assumed dimension.</strong> Hardcoding 1536 and discovering a provider returns 1024.</li>
+<li><strong>Ignored input type.</strong> Embedding queries as documents on models that distinguish them
+costs measurable recall.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always. Even single-vendor deployments need it for testing.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="embed-registry" data-impl="8" data-crit="8" data-tag="Abstraction">
+<h3><span class="idx">02</span>Model registry<a class="anchor" href="#embed-registry" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Abstraction</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">A catalogue of every embedding model the platform knows: dimension, max input, cost per
+million tokens, modality, and whether it is available in this deployment.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>The registry answers questions the router and the policies need: how many dimensions does this model
+produce, what is its token limit, what does it cost, what content types does it handle, and is it
+currently reachable. Without a registry these facts get hardcoded at call sites and drift apart.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/embedding/model_registry.py</code><span class="note">EmbeddingModelRegistry</span></li>
+<li><code>app/api/model_registry.py</code><span class="note">exposure</span></li>
+<li><code>app/services/llm_config_store.py</code><span class="note">per-tenant model configuration</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>model                        dim   max_tok  $/M    modality  status
+text-embedding-3-large      3072    8191    0.13   text      ok
+text-embedding-3-small      1536    8191    0.02   text      ok
+voyage-code-3               1024   16000    0.18   code      ok
+voyage-multimodal-3         1024    8000    0.24   text+img  not configured
+bge-m3 (self-hosted)        1024    8192    0.00   text      ok
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Keep cost in the registry and you can answer "what would it cost to re-embed this collection with that
+model" before committing to it — which is exactly the question a migration decision needs. Keep
+availability there too, so the router can route around an unconfigured or unreachable model instead of
+failing.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Stale entries.</strong> A deprecated model still offered; requests fail at the provider.</li>
+<li><strong>Missing limits.</strong> Silent truncation at the max input length.</li>
+<li><strong>Hardcoded dimensions elsewhere.</strong> The registry becomes advisory rather than
+authoritative.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>More than one embedding model — which happens as soon as you index code.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="embed-router" data-impl="8" data-crit="7" data-tag="Routing">
+<h3><span class="idx">03</span>Embedding router<a class="anchor" href="#embed-router" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Routing</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Pick the model from the content and the context: code goes to a code model, prose to a
+text model, a free-tier tenant to the cheap model, an image to a multimodal one.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Inputs: content type, tenant plan, collection configuration, language, and the target index's existing
+dimension. Output: a model choice with a recorded reason. The hard constraint is the last input — if the
+collection's index is 1536-dimensional, the router cannot select a 3072-dimensional model regardless of
+what else it would prefer.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/embedding/router.py</code><span class="note">EmbeddingRouter</span></li>
+<li><code>app/routing_runtime/embedding_router.py</code><span class="note">runtime routing view</span></li>
+<li><code>app/ingestion/embedding_policy_selector.py</code><span class="note">ingestion-side policy (stage 10)</span></li>
+<li><code>app/embedding/orchestrator.py</code><span class="note">select() → EmbeddingSelectionResult</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>chunk from webhooks.py (python)  → voyage-code-3     reason: code content
+chunk from POL-118.md (prose)    → 3-large           reason: text, enterprise
+same prose, free-tier tenant     → 3-small           reason: plan constraint
+image caption + image            → multimodal        reason: mixed modality
+                                    (if configured; else caption text only)
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Routing by plan is a real cost lever — the small text model is roughly a sixth the price of the large
+one and adequate for many collections — but it is a per-collection decision, not a per-chunk one.
+Switching models mid-collection produces an index whose vectors cannot be compared with each other.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Mid-collection model switch.</strong> The worst outcome in this chapter: an index of mutually
+incomparable vectors.</li>
+<li><strong>Query routed differently from documents.</strong> Search silently returns noise.</li>
+<li><strong>Unrecorded reason.</strong> Nobody can explain why one collection performs worse.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>You index more than one content type or serve more than one plan tier.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="embed-orchestrator" data-impl="8" data-crit="8" data-tag="Runtime">
+<h3><span class="idx">04</span>Embedding orchestrator<a class="anchor" href="#embed-orchestrator" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Runtime</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">The component that actually gets vectors: selects a model, batches the texts, retries and
+falls back on failure, and returns a result that names the model used.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Three operations. <code>select()</code> resolves the model against registry and dimension policy.
+<code>embed_batch()</code> groups texts into provider-sized batches — the single biggest throughput
+lever, since per-call overhead dominates on small texts. <code>embed_with_fallback()</code> handles
+provider failure by retrying, then trying an alternative model, but only one whose dimension matches the
+target index.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/embedding/orchestrator.py</code><span class="note">EmbeddingOrchestrator: select(), embed_batch(), embed_with_fallback(), EmbeddingSelectionResult, BatchEmbeddingResult</span></li>
+<li><code>app/embedding/model_registry.py</code>, <code>dimension_policy.py</code><span class="note">its two collaborators</span></li>
+<li><code>app/ingestion/orchestrator.py</code><span class="note">the ingestion caller</span></li>
+<li><code>app/providers/circuit_breaker.py</code><span class="note">what stops it retrying a dead provider</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>142 chunks to embed, target index dim 3072
+
+select        3-large (3072)  ✓ compatible
+batch         142 → 2 calls of 96 and 46 (provider limit 96)
+call 1        ok, 1.2s
+call 2        429 rate limited → backoff 2s → ok
+result        BatchEmbeddingResult{vectors:142, model:"3-large",
+                                   dim:3072, tokens:58204, retries:1}
+
+alternate scenario: provider down entirely
+  fallback candidates: bge-m3 (1024) → REJECTED, dimension mismatch
+  → the batch fails and goes to the DLQ, rather than corrupting the index
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Batching is not an optimisation, it is the difference between a corpus that ingests in an hour and one
+that takes a day. Beyond that, the orchestrator is where per-tenant embedding rate limits belong: one
+tenant's backfill must not exhaust the shared provider quota and stall every other tenant's ingestion.</p>
+<p>The "fail rather than write incompatible vectors" rule is worth being strict about. A DLQ entry is
+recoverable; a mixed-dimension index is a re-ingestion.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Unbatched embedding.</strong> One call per chunk; 100× the wall-clock.</li>
+<li><strong>Fallback across dimensions.</strong> Index corruption dressed as resilience.</li>
+<li><strong>No per-tenant quota.</strong> A noisy backfill starves everyone.</li>
+<li><strong>Partial batch loss.</strong> Some vectors written, some not; make the write idempotent per
+chunk.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any real ingestion volume.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="dimensions" data-impl="8" data-crit="9" data-tag="Compatibility">
+<h3><span class="idx">05</span>Dimensions and index compatibility<a class="anchor" href="#dimensions" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Compatibility</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Dimension is a hard contract between a model and an index. Mismatches are not degradations
+— they are either errors or, far worse, silently meaningless results.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A vector column has a fixed width. Writing a differently-sized vector fails; comparing vectors from
+two models of the same width succeeds numerically and means nothing. A dimension policy therefore has to
+enforce three rules: a collection has one model, a query must use that model, and a model change requires
+a new index rather than a new write path.</p>
+<p>Some model families support dimension truncation (Matryoshka-style), where a 3072-dimensional model can
+emit 1024 usable dimensions. That is a legitimate way to trade quality for storage — but it must be
+recorded per row, because a truncated vector is a different measurement from a full one.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/embedding/dimension_policy.py</code><span class="note">DimensionPolicy.select()</span></li>
+<li><code>app/embedding/vector_index_policy.py</code><span class="note">index configuration per collection</span></li>
+<li><code>app/memory/contracts.py</code><span class="note">memory rows store embedding_model and embedding_dimension</span></li>
+<li><code>app/rag/store.py</code><span class="note">supported dimensions consulted by the RAFT repository and the store</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>collection acme/policies — index dim 3072, model 3-large
+
+request to embed with 3-small (1536)
+  → DimensionPolicy: INCOMPATIBLE. Options:
+     a) use 3-large for this collection
+     b) create a new collection with a 1536 index
+     c) truncate 3-large to 1536 and re-embed the whole collection
+  → never: write 1536 vectors into a 3072 index
+
+the silent-failure version, which the policy prevents:
+  two models that both emit 1024 dims, mixed in one index —
+  cosine similarity computes fine and ranks randomly
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Store the model and dimension on every row. It costs a few bytes and it is the only way to detect that
+part of a collection was embedded with something else — which does happen, usually via a well-meaning
+backfill script.</p>
+<p>Dimension choice is a storage decision too: 3072 floats per chunk is 12KB before indexing, so a
+million chunks is roughly 12GB of vectors plus index overhead. Truncation to 1024 is often the right
+call for large corpora with modest quality loss — but measure it rather than assuming.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Mixed models, same dimension.</strong> The silent killer.</li>
+<li><strong>Query/document model divergence.</strong> Retrieval returns plausible nonsense.</li>
+<li><strong>Untracked truncation.</strong> Half the collection at 1024, half at 3072-truncated-to-1024,
+with no record.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always, from the first vector you write.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="text-embeddings" data-impl="9" data-crit="9" data-tag="Modality">
+<h3><span class="idx">06</span>Text embeddings<a class="anchor" href="#text-embeddings" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Modality</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">The default case, with two details that matter more than model choice: query/document
+asymmetry, and normalisation.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Several model families are trained asymmetrically — documents and queries are embedded with different
+prefixes or input types, because a question and its answer are not the same kind of text. Using the
+document mode for queries measurably lowers recall, and it is invisible unless you test for it.</p>
+<p>Normalisation matters for the distance metric: if vectors are L2-normalised, cosine similarity and
+inner product are equivalent and cheaper; if they are not, mixing metrics produces wrong ranking. Pick
+one convention and enforce it at write time.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/providers/base.py</code><span class="note">EmbedRequest carries the input type</span></li>
+<li><code>app/rag/store.py</code><span class="note">_cosine_similarity(); pgvector operators in the DB path</span></li>
+<li><code>app/embedding/model_registry.py</code><span class="note">per-model conventions</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>asymmetric model, same corpus, 200 labelled queries
+  documents as "document", queries as "query"     recall@5  0.91
+  documents as "document", queries as "document"  recall@5  0.83
+same model, same index — an 8-point loss from one wrong parameter
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Write a test that asserts the query path and the document path use the same model and the correct input
+types. It is a five-line test that prevents the most expensive class of silent regression in the
+retrieval stack.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Wrong input type.</strong> Silent recall loss.</li>
+<li><strong>Mixed normalisation.</strong> Some vectors normalised, some not.</li>
+<li><strong>Truncation at the token limit.</strong> Long chunks silently cut; the tail is never
+searchable.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>The default for prose. Verify the asymmetry handling once and forget it.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="code-embeddings" data-impl="7" data-crit="7" data-tag="Modality">
+<h3><span class="idx">07</span>Code embeddings<a class="anchor" href="#code-embeddings" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Modality</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Code-trained models understand identifier structure, syntax and call relationships that a
+prose model reads as noise — and they need their own collection.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A prose model sees <code>getUserById</code> as an unusual word; a code model relates it to
+<code>fetch_user</code>, <code>findUser</code> and the concept of a lookup by identifier. Code models
+also tolerate the token density of source files better and often support longer inputs, which matters
+because a function is not divisible.</p>
+<p>Because the model differs, the collection must differ: one index cannot hold vectors from two models.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/embedding/router.py</code><span class="note">routes code content to a code model</span></li>
+<li><code>app/ingestion/chunkers/ast_chunker.py</code><span class="note">the chunks it embeds</span></li>
+<li><code>app/embedding/model_registry.py</code><span class="note">code models and their limits</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query "where do we look up a user by id?"
+
+prose model   matches a doc page about user management (0.61)
+code model    matches def get_user_by_id(...)         (0.88)
+              and def find_user(uid)                   (0.79)
+              and its test                             (0.72)
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Worth the extra collection whenever agents work on code. The measurable gain is on identifier-shaped
+queries, which is what developers actually ask. Keep the revision in metadata so retrieval can be pinned
+to a commit.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Code in the prose collection.</strong> Both corpora get worse.</li>
+<li><strong>Mixed languages in one index.</strong> Usually fine, but measure if one language dominates.</li>
+<li><strong>Long files truncated.</strong> Respect the model's input limit at chunk time.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any code corpus of consequence.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="multimodal-embeddings" data-impl="5" data-crit="5" data-tag="Modality">
+<h3><span class="idx">08</span>Multimodal embeddings<a class="anchor" href="#multimodal-embeddings" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Modality</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i></span><span class="dv">5<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i></span><span class="dv">5<small>/10</small></span></span></div>
+<p class="tldr">One vector space for text and images, so a text query can retrieve a picture — powerful
+where it applies, and often beaten by captioning plus text embedding.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A jointly-trained model maps images and text into a shared space, enabling cross-modal retrieval
+without an intermediate caption. The alternative — caption the image with a vision model, then embed the
+caption as text — is usually cheaper, more explainable and easier to debug, at the cost of losing detail
+the caption did not mention.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/parsers/vision_parser.py</code><span class="note">the captioning route, which is what runs today</span></li>
+<li><code>app/embedding/router.py</code><span class="note">where a multimodal model would be selected</span></li>
+<li><code>app/multimodal/pipeline.py</code><span class="note">asset handling (chapter 15)</span></li>
+<li><code>app/perception/multimodal.py</code><span class="note">perception-side use</span></li>
+</ul>
+<p>Rated 5: the routing seam and the model-registry entry exist, but the production path is
+caption-then-embed rather than native joint embedding.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query "the diagram with the queue between the API and the worker"
+
+caption route     matches the caption "Architecture diagram showing API
+                  gateway, Redis queue and worker pool"     — works if the
+                  caption happened to mention the queue
+joint embedding   matches the image directly, including details no caption
+                  enumerated — but needs the whole collection re-embedded
+                  in the joint space
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Start with captioning. It reuses the text index, produces human-readable metadata, and is trivially
+debuggable — you can read what the system thinks the image shows. Move to joint embedding only when
+you have a genuine visual-search product requirement and a corpus large enough to justify a separate
+index.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Separate index sprawl.</strong> Joint embeddings need their own collection and their own
+dimension.</li>
+<li><strong>Caption blind spots.</strong> Details omitted from the caption are unsearchable.</li>
+<li><strong>Cost per image.</strong> Both routes are metered per asset.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Visual search is the product.</li>
+<li class="no">Otherwise caption and embed as text.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="embed-fallbacks" data-impl="8" data-crit="8" data-tag="Reliability">
+<h3><span class="idx">09</span>Embedding fallbacks<a class="anchor" href="#embed-fallbacks" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Reliability</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Providers fail, and the correct response depends on which side you are on: a query can
+degrade to lexical search, but an index write cannot degrade to a different model.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Two asymmetric paths. On the <strong>query</strong> side, if the embedder is unavailable, fall back to
+lexical retrieval (BM25 plus trigram) and mark the result as degraded — worse than hybrid, far better
+than an error. On the <strong>index</strong> side, only a dimension-compatible model may substitute;
+otherwise queue the work and retry, because writing incompatible vectors is unrecoverable.</p>
+<p>A circuit breaker in front of the provider stops the retry storm and makes the degradation immediate
+rather than after thirty seconds of timeouts.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/embedding/orchestrator.py</code><span class="note">embed_with_fallback()</span></li>
+<li><code>app/providers/circuit_breaker.py</code><span class="note">call_with_circuit_breaker(), ProviderCircuitBreaker</span></li>
+<li><code>app/rag/store.py</code><span class="note">the lexical-only path that makes query degradation possible</span></li>
+<li><code>app/runtime_readiness/degraded_mode_policy.py</code><span class="note">platform-wide degraded mode</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>embedding provider returns 503 for 90 seconds
+
+query path    breaker opens after 5 failures
+              → BM25 + trigram only, response flagged degraded
+              → recall drops from 0.91 to ~0.68 — acceptable for 90s
+index path    batches queued, not written
+              → resume on breaker close, hash gate makes the retry cheap
+              → nothing incompatible enters the index
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Surface the degradation. A user who is told "semantic search is temporarily unavailable, showing
+keyword results" behaves completely differently from one who silently gets worse answers and concludes
+the product is bad.</p>
+<p>Self-hosted embedding models are a legitimate fallback tier for exactly this reason: they are slower
+and slightly worse, and they are yours.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Dimension-incompatible fallback.</strong> Index corruption.</li>
+<li><strong>Silent degradation.</strong> Users blame the product.</li>
+<li><strong>Retry storms.</strong> No breaker; the provider outage becomes your outage.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always — the embedder is an external dependency on the hot path.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="embed-cost" data-impl="8" data-crit="8" data-tag="Cost">
+<h3><span class="idx">10</span>Tenant plan and cost constraints<a class="anchor" href="#embed-cost" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Cost</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Embedding is metered per token, and ingestion is bursty — so the plan tier has to bound
+both the model choice and the throughput.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Three controls. Model choice by plan (small model for free tiers). Throughput limits per tenant, so one
+backfill cannot consume the shared provider quota. And a spend ceiling that pauses ingestion rather than
+producing a surprise invoice. All three need the token counts from the provider response, which is why
+usage is part of the contract.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/embedding/router.py</code><span class="note">plan-aware selection</span></li>
+<li><code>app/governance/cost.py</code><span class="note">budgets and the spend check</span></li>
+<li><code>app/tenancy/limits.py</code>, <code>limits_v2.py</code><span class="note">per-plan limits</span></li>
+<li><code>app/tenancy/entitlements.py</code><span class="note">what a plan includes</span></li>
+<li><code>app/ingestion/pipeline.py</code><span class="note">stage 1 quota check</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>tenant on starter plan uploads a 40,000-document corpus
+
+naive     3-large, unlimited: 180M tokens ≈ $23, ingestion in 20 min,
+          provider quota consumed, other tenants' syncs stall
+governed  3-small by plan            → $3.60
+          throughput cap 2M tok/min  → 90 min, no starvation
+          quota check at stage 1     → warns at 80% of the plan's allowance
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Embedding spend is dominated by backfills, not steady state — the hash gate makes ongoing sync nearly
+free, while onboarding a new tenant's corpus is a single large bill. Price onboarding explicitly and
+throttle it, or your unit economics will be decided by whoever uploads the most.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Unbounded backfill.</strong> Quota exhaustion and a surprise invoice.</li>
+<li><strong>No per-tenant limit.</strong> Noisy-neighbour ingestion.</li>
+<li><strong>Plan enforced only at the API.</strong> Background jobs bypassing the check.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any multi-tenant deployment.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="embed-drift" data-impl="7" data-crit="7" data-tag="Operations">
+<h3><span class="idx">11</span>Drift detection<a class="anchor" href="#embed-drift" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Operations</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Providers update models without changing the name. Drift monitoring catches it by
+re-embedding fixed probe texts and comparing against their stored vectors.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Keep a set of probe texts whose vectors were stored at a known time. Periodically re-embed them and
+compute cosine similarity against the stored versions. Identical models produce near-1.0 similarity;
+anything materially lower means the model behind the name changed, and your index is now partly
+denominated in a different measurement. Severity grades the response: log, alert, or halt writes and
+schedule a re-embed.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/embedding/drift_monitor.py</code><span class="note">EmbeddingDriftMonitor, DriftSeverity</span></li>
+<li><code>app/embedding/reembedding_policy.py</code><span class="note">what to do about it</span></li>
+<li><code>app/observability/metrics.py</code><span class="note">the metric to alarm on</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>probe set: 50 fixed sentences, vectors stored 2026-04-01
+
+weekly check
+ 2026-08-30   mean cosine vs stored 0.9998   → none
+ 2026-09-06   mean cosine vs stored 0.9421   → MODERATE
+               provider changed the model behind the same name
+ response     alert; freeze new writes to affected collections;
+              schedule shadow re-embed; compare retrieval quality
+              on the eval set before and after
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>This is one of those controls nobody builds until it bites them. The failure it prevents is
+particularly nasty: retrieval quality degrades gradually as newly-embedded documents become
+incomparable with older ones, and nothing errors. Fifty probe texts checked weekly is a negligible cost
+for catching it.</p>
+<p>Pin model versions explicitly wherever the provider allows it. Version pinning is the actual fix;
+drift monitoring is how you find out the pin was not honoured.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>No monitoring.</strong> Silent, gradual quality loss.</li>
+<li><strong>Probes too few or too similar.</strong> Weak signal; use varied text.</li>
+<li><strong>Alert with no policy.</strong> A drift alarm nobody knows how to respond to.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any hosted embedding provider — which is most deployments.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="reembedding" data-impl="7" data-crit="8" data-tag="Operations">
+<h3><span class="idx">12</span>Re-embedding and migration<a class="anchor" href="#reembedding" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Operations</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">The migration everyone eventually performs: build a shadow index with the new model,
+validate it against evals, then cut over — never edit in place.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Four triggers: model deprecation, a materially better model, a dimension change, or detected drift. The
+procedure is the same each time and it is a dual-write pattern, not an update:</p>
+<ol>
+<li>Create a new index (new column or new collection) with the target dimension.</li>
+<li>Backfill in batches, tracking progress, with the hash gate preventing redundant work.</li>
+<li>Dual-write new documents to both indexes during the transition.</li>
+<li>Compare retrieval quality on a labelled set — old versus new, same queries.</li>
+<li>Cut queries over; keep the old index until confidence is established; then drop it.</li>
+</ol>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/embedding/reembedding_policy.py</code><span class="note">ReembeddingPolicy</span></li>
+<li><code>app/embedding/vector_index_policy.py</code><span class="note">index lifecycle</span></li>
+<li><code>app/memory/backfill.py</code><span class="note">the idempotent backfill pattern</span></li>
+<li><code>app/rag/evaluation.py</code>, <code>app/evals/rag_score.py</code><span class="note">the comparison that authorises cutover</span></li>
+<li><code>app/scaling/tasks.py</code><span class="note">where a long backfill runs</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>migrate acme/policies: 3-small (1536) → 3-large (3072)
+ corpus     412k chunks · 168M tokens · ≈$22 · ≈6h at the throughput cap
+ shadow     new 3072 column, backfill in 2k batches, resumable
+ dual-write for 6 days while backfill runs
+ validate   200 labelled queries: recall@5 0.86 → 0.91, p95 latency +6ms
+ cutover    queries switch; old column retained 14 days; then dropped
+rollback    switch queries back — possible only because nothing was
+            overwritten in place
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Budget re-embedding as a recurring cost, not a one-off: over a few years you will do it more than once.
+The two things that make it survivable are per-row model tags (so you know what is migrated) and a
+labelled eval set (so cutover is a measurement, not a hope).</p>
+<p>Never migrate without the comparison. A newer, more expensive model is not automatically better on
+your corpus, and the only way to know is to run both.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>In-place re-embedding.</strong> No rollback, and a half-migrated index that ranks randomly.</li>
+<li><strong>No dual-write.</strong> Documents ingested during the migration are missing from one index.</li>
+<li><strong>Unvalidated cutover.</strong> A quality regression discovered by users.</li>
+<li><strong>Forgotten dependants.</strong> Semantic caches, memory embeddings and precomputed indexes
+that also need migrating.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Model deprecation, drift, or a measured quality opportunity. Plan it before you need it.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="embed-caching" data-impl="7" data-crit="6" data-tag="Cost">
+<h3><span class="idx">13</span>Embedding caches<a class="anchor" href="#embed-caching" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Cost</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">The same text gets embedded over and over — repeated queries, boilerplate chunks,
+re-ingested documents. Cache by content hash and model.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Key on (normalised text hash, model, input type) and store the vector. Query-side caching is the
+highest-hit case in a chat product, where the same questions recur constantly. Document-side caching
+catches boilerplate and re-ingestion. The cache key must include the model, or a model change serves
+stale vectors from the old space.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/vector_cache_backend.py</code><span class="note">the backing store</span></li>
+<li><code>app/rag/semantic_cache.py</code><span class="note">the related but distinct query-result cache</span></li>
+<li><code>app/optimization/cache_optimizer.py</code><span class="note">hit-rate tuning</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>key   sha256("what is our refund window?") + "3-large" + "query"
+hit   returns the stored vector in 0.4ms instead of a 60ms provider call
+document side: the standard legal footer appears in 9,400 documents
+              → embedded once, reused 9,399 times
+invalidation: model change → different key → no stale reads by construction
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Query-side embedding cache hit rates of 30–50% are normal on support workloads, and each hit removes a
+network round trip from the user's latency path as well as a metered call. Keep the cache per tenant or
+key it with the tenant — embeddings themselves are not secret, but a shared cache is a shared side
+channel and not worth the argument.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Model not in the key.</strong> Stale vectors from a previous model.</li>
+<li><strong>No normalisation.</strong> Whitespace differences causing misses.</li>
+<li><strong>Unbounded growth.</strong> Cache every chunk forever; use TTL and size limits.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Repetitive query distribution, or boilerplate-heavy corpora — both are common.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="embed-eval" data-impl="6" data-crit="7" data-tag="Measurement">
+<h3><span class="idx">14</span>Evaluating an embedding model<a class="anchor" href="#embed-eval" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Measurement</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Benchmark rankings do not predict performance on your corpus. Measure recall on your own
+labelled queries before you commit an index to a model.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Take 100–200 real queries with known correct passages. For each candidate model, embed the corpus (or a
+representative sample), run the queries, and record recall@k, MRR, and the cost and latency. Include the
+incumbent as the control and a lexical-only baseline as the floor — occasionally the floor wins on a
+particular corpus, which is worth knowing before spending on vectors.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/evaluation.py</code><span class="note">retrieval evaluation</span></li>
+<li><code>app/evals/rag_score.py</code><span class="note">scoring</span></li>
+<li><code>app/evals/dataset_builder.py</code><span class="note">labelled set construction</span></li>
+<li><code>app/intelligence/benchmarking.py</code><span class="note">model benchmarking</span></li>
+</ul>
+<p>Rated 6: the pieces exist; a one-command "evaluate these three embedding models on this collection"
+workflow does not.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>corpus: 40k internal policy chunks · 180 labelled queries
+
+model            recall@5  MRR   $/M   p95 ms   index GB
+lexical only        0.58   0.41  0.00      8       0.4
+3-small (1536)      0.84   0.71  0.02     22       2.5
+3-large (3072)      0.89   0.78  0.13     31       5.0
+bge-m3 self-host    0.86   0.74  0.00     54       1.7
+
+decision: bge-m3 — within 3 points of the best, no per-token cost,
+acceptable latency for background goals; 3-large for the interactive tier
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>This table is worth building once per corpus type, because the answer is genuinely corpus-dependent —
+domain jargon, document length and language mix all move it. And include the self-hosted option: on a
+large corpus, the difference between $0.13 per million tokens and zero is often larger than the quality
+difference.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Choosing by leaderboard.</strong> Public benchmarks are not your corpus.</li>
+<li><strong>Ignoring the lexical baseline.</strong> Sometimes you are paying for vectors you do not need.</li>
+<li><strong>Evaluating on synthetic queries.</strong> They are easier than real ones and flatter every
+model.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Before committing a corpus to a model, and before any migration.</li></ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="ch7-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>A one-command model bake-off.</strong> The evaluation components exist but not the
+      workflow that produces the comparison table above for a given collection.</li>
+      <li><strong>Automated migration orchestration.</strong> The re-embedding policy describes what to
+      do; a managed shadow-index-and-cutover job with progress and rollback is not there.</li>
+      <li><strong>Native multimodal embedding.</strong> Routing seam present, production path is
+      caption-then-embed.</li>
+      <li><strong>Quantisation and compression.</strong> No support for int8 or binary quantisation, which
+      is the standard way to cut vector storage 4–32× at modest recall cost.</li>
+      <li><strong>Fine-tuned domain embeddings.</strong> No path to adapt an embedding model on tenant
+      data, which is where the remaining recall usually lives.</li>
+    </ul>
+  </div>
+</section>
+
+<div class="pagenav"><a class="prev" href="retrieval-strategies.html"><div class="d">Previous · CH 06</div><div class="t">Retrieval strategies</div></a><a class="next" href="chunking.html"><div class="d">Next · CH 17</div><div class="t">Chunking strategies</div></a></div>
+<p class="footnote">AgentVerse Field Manual · ratings are this author's judgement of the code as it stands, not a vendor claim. File paths are navigation anchors; line numbers drift.</p>
+</div></main>
+</div>
+<script>
+(function () {
+  var r = document.documentElement;
+  try { var t = localStorage.getItem('avfm-theme'); if (t) r.setAttribute('data-theme', t); } catch (e) {}
+  function cur() {
+    var a = r.getAttribute('data-theme');
+    if (a) return a;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  document.addEventListener('click', function (ev) {
+    var b = ev.target.closest('[data-theme-toggle]');
+    if (!b) return;
+    var n = cur() === 'dark' ? 'light' : 'dark';
+    r.setAttribute('data-theme', n);
+    try { localStorage.setItem('avfm-theme', n); } catch (e) {}
+  });
+  var f = document.querySelector('[data-filter]');
+  if (f) {
+    f.addEventListener('input', function () {
+      var q = f.value.trim().toLowerCase();
+      document.querySelectorAll('[data-filter-row]').forEach(function (el) {
+        el.hidden = q.length > 0 && el.getAttribute('data-filter-row').indexOf(q) === -1;
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,187 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>You cannot test an agent the way you test a function, because its output is non-deterministic and its
+    actions touch real systems. This chapter is how you gain confidence anyway: simulate before you execute,
+    attack before an attacker does, measure against golden data, gate on readiness, and replay what happened.</p>
+
+    <p>The unifying principle is <strong>prove it in a sandbox before it touches production</strong>. Every
+    technique here is a way to exercise an agent's behaviour — under mock tools, adversarial inputs, or replayed
+    history — without the cost of a real mistake, so that when it does act for real, it has already been shown
+    to behave.</p>
+  </div>
+</section>
+
+<section class="block" id="testing-certification">
+  <h2>Testing and certification</h2>
+
+<article class="concept" id="tc-simulation" data-impl="7" data-crit="8" data-tag="Testing">
+<h3>Simulation and mock-tool sandboxes</h3>
+<p class="tldr">Run an agent against mock tools that return realistic results but have no real effects — so a
+goal that would file a return or send a payment can be exercised end-to-end, safely, thousands of times.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A simulation environment provides mock implementations of tools that return plausible results without side
+effects. An agent runs its full loop — plan, execute, verify — against these, so you observe its behaviour,
+its tool choices, and its failures without touching a real system. This is the substrate for evals (chapter 10),
+for certifying code-capable strategies (chapter 25), and for testing goals that are too dangerous to run for
+real during development.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/enterprise/simulation.py</code><span class="note">the mock-tool sandbox</span></li>
+<li><code>app/sandbox_runtime/simulation_runner.py</code>, <code>sandbox_trace.py</code><span class="note">running and tracing simulations</span></li>
+<li><code>app/testing/harness.py</code><span class="note">the test harness</span></li>
+<li><code>app/api/simulation</code> · frontend <code>features/simulation</code><span class="note">the surface</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>test a "file GST amendment" goal
+ mock tools: gst.fetch_filed returns a realistic filed return; gst.file_return
+   records the call but files nothing
+ the agent runs its full loop → observe: correct plan? right tools? gate hit?
+ run 500 variations → measure behaviour distribution
+no real filing, no real risk, full-loop confidence
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Simulation is what lets you develop and test dangerous goals at all — you cannot iterate on a
+payment-filing agent by filing real payments. It is also the engine under offline evals and strategy
+certification. The one risk is mock fidelity: mocks that diverge from real tool behaviour pass in simulation
+and fail in production, so mocks must be kept realistic and cross-checked against live behaviour periodically.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Unrealistic mocks.</strong> Passing simulation, failing live.</li>
+<li><strong>Simulation only for happy paths.</strong> Untested failure behaviour.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any dangerous goal, and as the substrate for evals and certification.</li></ul></section>
+</article>
+
+<article class="concept" id="tc-red-team" data-impl="8" data-crit="10" data-tag="Security">
+<h3>Red teaming</h3>
+<p class="tldr">Attack the agent before an attacker does: a growing corpus of injection, exfiltration, jailbreak,
+and abuse attempts, replayed on every change, with zero tolerance for a new pass.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A red-team corpus of adversarial cases — direct and indirect injection, encoded payloads, exfiltration
+attempts, dangerous-command generation, jailbreaks, cross-tenant probing — each asserting the control that
+should stop it. It runs as a safety eval (chapter 10) on every prompt, model, and guardrail change. The corpus
+only grows: every real incident and near-miss becomes a permanent case, so the platform can never regress on an
+attack it has seen.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/enterprise/red_team.py</code>, <code>red_team_corpus.py</code><span class="note">the red-team engine and corpus</span></li>
+<li><code>app/evals/safety_score.py</code><span class="note">safety scoring (chapter 10)</span></li>
+<li><code>app/intelligence/indirect_injection.py</code>, <code>encoding_attacks.py</code><span class="note">the detectors under test (chapter 12)</span></li>
+<li><code>app/api/red-team</code> · frontend <code>features/red-team</code><span class="note">the operator surface</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>red-team run on a prompt change
+ 190 cases across 8 attack categories
+ 189 blocked by the asserted control · 1 new pass (indirect injection)
+ → BLOCKED: zero tolerance → the change cannot ship until fixed
+the one that got through becomes a permanent regression case
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Red teaming is the safety net that makes fast iteration safe — prompt changes are the most common cause of
+safety regressions, and running the corpus on every change catches them before they ship. The ratchet is the
+point: the corpus never shrinks, so the platform's security monotonically improves. Asserting the specific
+control (not just the outcome) tells you not only that an attack was blocked but by what, so a regression is
+diagnosable. Full treatment in chapter 10.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Stale corpus.</strong> Yesterday's attacks only.</li>
+<li><strong>Tolerance for a new pass.</strong> One relaxed case becoming policy.</li>
+<li><strong>Testing only direct injection.</strong> Missing the harder indirect vector.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Always, before any external exposure.</li></ul></section>
+</article>
+
+<article class="concept" id="tc-golden-datasets" data-impl="7" data-crit="8" data-tag="Testing">
+<h3>Golden datasets and regression gates</h3>
+<p class="tldr">A curated set of cases with known-good outcomes, built from real production runs, against which
+every change is measured — and a gate that blocks a change that regresses a protected dimension.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Golden datasets are curated cases (inputs plus expected outcomes or rubrics) drawn from real production —
+especially failures, which become permanent regression cases (chapter 10). A regression baseline records the
+incumbent's scores; a regression gate compares a candidate and blocks on a regression beyond tolerance in a
+protected dimension (safety and grounding at zero tolerance). This is the mechanism that makes rapid iteration
+safe: nothing ships that regresses what mattered.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/api/golden_datasets.py</code>, <code>app/evals/dataset_builder.py</code><span class="note">curated sets, built from production</span></li>
+<li><code>app/evals/regression_baseline.py</code>, <code>regression_gate.py</code><span class="note">baseline and gate</span></li>
+<li><code>app/evals/certification_policy.py</code><span class="note">what must pass (chapter 10)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>golden set: 420 cases, half from real failures
+ candidate prompt change → run the set
+ goal 0.89 (was 0.87) · grounding 0.82 (was 0.82) · safety 0.98 (was 1.00)
+ → BLOCKED on safety (zero tolerance) → fix or named override
+the failures that built this set can never recur silently
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Golden datasets built from real failures are worth far more than synthetic ones — they encode the actual
+ways the system has been wrong, and the gate ensures it is never wrong that way again. The discipline is to
+feed every production failure back into the set (chapter 10's online-to-offline bridge), so the safety net
+tightens over time. Keep safety and grounding at zero tolerance; everything else can trade.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Synthetic-only sets.</strong> Easier than reality, flattering every change.</li>
+<li><strong>No gate.</strong> Regressions found by customers.</li>
+<li><strong>Auto-updating baseline.</strong> Drift with nothing to compare against.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Before the first automated change ships.</li></ul></section>
+</article>
+
+<article class="concept" id="tc-readiness-replay" data-impl="7" data-crit="8" data-tag="Operations">
+<h3>Readiness gates, certification, and replay</h3>
+<p class="tldr">Before anything serves production traffic it must pass a readiness gate and be certified against
+evidence; after it runs, replay lets you reconstruct exactly what happened for debugging or audit.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A readiness gate refuses to serve if a required control or dependency is unavailable (chapter 28).
+Certification binds a version to eval evidence — this agent, strategy, or connector passed these suites at
+these scores, approved by this person (chapter 10) — and uncertified configurations stay in the lab. Replay
+reconstructs a past goal from its recorded events and prompt recipes (chapter 11), so an incident is
+reconstruction, not archaeology, and a fix can be tested against the exact failing run.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/runtime_readiness/readiness_gate.py</code>, <code>dependency_health.py</code><span class="note">readiness</span></li>
+<li><code>app/orchestration/strategy_certification.py</code>, <code>app/rag/certification.py</code>, <code>app/mcp/certification.py</code><span class="note">certification (chapter 10)</span></li>
+<li><code>app/api/replay.py</code>, <code>app/coordination/replay.py</code><span class="note">replay</span></li>
+<li><code>app/observability/runtime_decision_trace.py</code><span class="note">the record replay reconstructs from (chapter 11)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>promote agent fin-ops@v13
+ readiness gate: all required controls available? → yes
+ certification: passed goal/retrieval/grounding/safety suites, approved → yes
+ → serves production
+incident on an earlier run: replay g-8891 from its events + prompt recipes
+ → reproduce exactly → test the fix against the real failing case
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Certification is how you safely offer a large catalogue of agents, strategies, and connectors — each proven
+against evidence before it serves real tenants, and certificates expiring on model changes (chapter 10).
+Replay is the incident-response superpower: with recorded events and prompt recipes (stored, not full prompts,
+for cost and privacy — chapter 8), you reconstruct any run exactly and test a fix against it, turning
+speculative debugging into deterministic reproduction.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Uncertified paths reachable.</strong> The gate bypassable.</li>
+<li><strong>Certificates without expiry.</strong> Outliving the models they were measured against.</li>
+<li><strong>Replay impossible.</strong> Mutable sources or missing recipes.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any multi-configuration platform, and before any incident.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch31-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Chaos and fault injection.</strong> Reliability primitives (chapter 28) exist; systematic
+      fault injection to verify they hold together under failure is thin.</li>
+      <li><strong>Mock-fidelity monitoring.</strong> Simulation mocks can drift from real tool behaviour with no
+      continuous cross-check.</li>
+      <li><strong>Automated red-team generation.</strong> The corpus grows from incidents; a generator that
+      produces novel attacks to probe for unknown weaknesses is future work.</li>
+      <li><strong>Property-based testing for agents.</strong> Cases are enumerated; testing invariants ("never
+      calls a forbidden tool") across generated inputs is not first-class.</li>
+    </ul>
+  </div>
+</section>

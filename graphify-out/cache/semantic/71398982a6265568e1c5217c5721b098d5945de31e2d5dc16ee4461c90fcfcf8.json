@@ -1,0 +1,1 @@
+{"nodes": [{"id": "classifier_documentclassifier", "label": "DocumentClassifier", "file_type": "code", "source_file": "agent-verse-backend/app/ocr/classifier.py", "source_location": "class DocumentClassifier", "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

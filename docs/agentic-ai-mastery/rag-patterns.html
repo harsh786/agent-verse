@@ -1,0 +1,2180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAG patterns · AgentVerse Field Manual</title>
+<meta name="description" content="CH 02 · RAG patterns">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>/* ==========================================================================
+   AgentVerse Field Manual — instrument chrome + engineering-manual body.
+   Tokens: complete light palette on :root; dark redefined for the two
+   dark states (un-stamped OS-dark, and explicit data-theme="dark").
+   ========================================================================== */
+
+:root {
+  /* ground + surfaces (cool slate neutrals, biased toward the cyan accent) */
+  --bg:        #EFF2F5;
+  --paper:     #FFFFFF;
+  --raised:    #F6F8FA;
+  --sunken:    #E7ECF1;
+  --rail:      #FBFCFD;
+
+  /* ink */
+  --ink:       #0B1220;
+  --ink-2:     #3C4A5A;
+  --ink-3:     #6B7A8B;
+  --ink-4:     #93A1B0;
+
+  /* lines */
+  --line:      #D5DDE5;
+  --line-soft: #E4EAF0;
+  --line-hard: #B9C5D0;
+
+  /* accent — JARVIS electric, darkened for contrast on paper */
+  --accent:      #007D9C;
+  --accent-2:    #00A8CC;
+  --accent-wash: rgba(0,168,204,0.10);
+  --accent-line: rgba(0,125,156,0.35);
+
+  /* semantic (ratings, status, diagram emphasis) */
+  --good:      #0E7C55;
+  --good-wash: rgba(14,124,85,0.10);
+  --warn:      #A2650A;
+  --warn-wash: rgba(162,101,10,0.10);
+  --bad:       #B3303B;
+  --bad-wash:  rgba(179,48,59,0.10);
+  --note:      #6D46C4;
+  --note-wash: rgba(109,70,196,0.10);
+
+  --shadow-1: 0 1px 2px rgba(11,18,32,0.05);
+  --shadow-2: 0 8px 28px rgba(11,18,32,0.10);
+
+  --measure: 68ch;
+  --rail-w: 274px;
+  --topbar-h: 52px;
+
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #070A10;
+    --paper:     #0C1017;
+    --raised:    #12171F;
+    --sunken:    #090D13;
+    --rail:      #0A0E15;
+
+    --ink:       #E9EFF5;
+    --ink-2:     #B3C0CD;
+    --ink-3:     #8593A2;
+    --ink-4:     #5D6C7B;
+
+    --line:      rgba(255,255,255,0.09);
+    --line-soft: rgba(255,255,255,0.055);
+    --line-hard: rgba(255,255,255,0.16);
+
+    --accent:      #35D8F5;
+    --accent-2:    #00D4FF;
+    --accent-wash: rgba(0,212,255,0.10);
+    --accent-line: rgba(0,212,255,0.35);
+
+    --good:      #2ED08C;
+    --good-wash: rgba(46,208,140,0.12);
+    --warn:      #F0B429;
+    --warn-wash: rgba(240,180,41,0.12);
+    --bad:       #FF6B78;
+    --bad-wash:  rgba(255,107,120,0.12);
+    --note:      #B08CFF;
+    --note-wash: rgba(176,140,255,0.12);
+
+    --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+    --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #070A10;
+  --paper:     #0C1017;
+  --raised:    #12171F;
+  --sunken:    #090D13;
+  --rail:      #0A0E15;
+
+  --ink:       #E9EFF5;
+  --ink-2:     #B3C0CD;
+  --ink-3:     #8593A2;
+  --ink-4:     #5D6C7B;
+
+  --line:      rgba(255,255,255,0.09);
+  --line-soft: rgba(255,255,255,0.055);
+  --line-hard: rgba(255,255,255,0.16);
+
+  --accent:      #35D8F5;
+  --accent-2:    #00D4FF;
+  --accent-wash: rgba(0,212,255,0.10);
+  --accent-line: rgba(0,212,255,0.35);
+
+  --good:      #2ED08C;
+  --good-wash: rgba(46,208,140,0.12);
+  --warn:      #F0B429;
+  --warn-wash: rgba(240,180,41,0.12);
+  --bad:       #FF6B78;
+  --bad-wash:  rgba(255,107,120,0.12);
+  --note:      #B08CFF;
+  --note-wash: rgba(176,140,255,0.12);
+
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+  color-scheme: dark;
+}
+
+/* -------------------------------------------------- base */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 17.5px;
+  line-height: 1.62;
+  font-synthesis-weight: none;
+}
+
+a { color: var(--accent); text-decoration-color: var(--accent-line); text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
+
+h1, h2, h3, h4, h5 { font-family: var(--f-display); font-weight: 650; letter-spacing: -0.015em; text-wrap: balance; margin: 0; }
+p { margin: 0 0 0.85em; }
+p:last-child { margin-bottom: 0; }
+ul, ol { margin: 0 0 0.9em; padding-left: 1.25em; }
+li { margin: 0.25em 0; }
+li > ul, li > ol { margin-bottom: 0.2em; }
+strong { font-weight: 650; }
+code, kbd, samp { font-family: var(--f-mono); font-size: 0.855em; }
+:not(pre) > code {
+  background: var(--sunken); border: 1px solid var(--line-soft);
+  padding: 0.08em 0.34em; border-radius: 3px; color: var(--ink-2);
+  word-break: break-word;
+}
+hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+
+.mono { font-family: var(--f-mono); }
+.eyebrow {
+  font-family: var(--f-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3);
+}
+
+/* -------------------------------------------------- top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  height: var(--topbar-h);
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .brand {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink);
+  text-decoration: none; white-space: nowrap;
+}
+.topbar .brand b { color: var(--accent); font-weight: 600; }
+.topbar .crumb {
+  font-family: var(--f-mono); font-size: 11px; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar .spacer { flex: 1 1 auto; }
+.tb-btn {
+  font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  background: transparent; color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 5px 9px; cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.tb-btn:hover { border-color: var(--accent-line); color: var(--accent); }
+
+/* -------------------------------------------------- shell */
+.shell { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); align-items: start; }
+
+.rail {
+  position: sticky; top: var(--topbar-h);
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--rail);
+  border-right: 1px solid var(--line);
+  padding: 18px 0 40px;
+}
+.rail h4 { font-size: 10.5px; font-family: var(--f-mono); font-weight: 500; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-4); padding: 0 18px; margin: 16px 0 8px; }
+.rail .part-label { padding: 0 18px; margin: 20px 0 6px; }
+.rail nav a {
+  display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: baseline;
+  padding: 5px 18px; text-decoration: none; color: var(--ink-2);
+  font-family: var(--f-display); font-size: 13.5px; line-height: 1.35; letter-spacing: -0.005em;
+  border-left: 2px solid transparent;
+}
+.rail nav a .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.rail nav a:hover { background: var(--accent-wash); color: var(--ink); }
+.rail nav a[aria-current="page"] { color: var(--accent); border-left-color: var(--accent); background: var(--accent-wash); }
+.rail nav a[aria-current="page"] .n { color: var(--accent); }
+.rail .inpage { border-top: 1px solid var(--line-soft); margin-top: 14px; padding-top: 4px; }
+.rail .inpage a { grid-template-columns: 26px 1fr; font-size: 12.5px; color: var(--ink-3); }
+.rail .filter { padding: 0 14px 6px; }
+.rail .filter input {
+  width: 100%; font-family: var(--f-mono); font-size: 11.5px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
+}
+.rail .filter input::placeholder { color: var(--ink-4); }
+
+main { min-width: 0; padding: 0 0 96px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 clamp(18px, 4vw, 52px); }
+.prose { max-width: var(--measure); }
+
+/* -------------------------------------------------- chapter head */
+.chead { padding: 46px 0 26px; border-bottom: 1px solid var(--line); }
+.chead .kicker { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.chead .cnum {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
+  color: var(--accent); border: 1px solid var(--accent-line); border-radius: 3px; padding: 3px 7px;
+}
+.chead h1 { font-size: clamp(30px, 4.4vw, 46px); line-height: 1.06; font-weight: 700; letter-spacing: -0.028em; }
+.chead .lede { font-size: 20px; line-height: 1.5; color: var(--ink-2); margin-top: 16px; max-width: 62ch; }
+
+.statstrip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 0; margin-top: 26px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--paper); overflow: hidden;
+}
+.statstrip div { padding: 11px 16px; border-right: 1px solid var(--line-soft); }
+.statstrip div:last-child { border-right: 0; }
+.statstrip .k { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.statstrip .v { font-family: var(--f-display); font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------- sections */
+section.block { padding: 38px 0 8px; }
+section.block > h2 {
+  font-size: 25px; font-weight: 700; letter-spacing: -0.022em; padding-bottom: 8px;
+  border-bottom: 2px solid var(--ink); display: inline-block; margin-bottom: 20px;
+}
+section.block > .prose { margin-bottom: 8px; }
+
+.callout {
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  background: var(--paper); padding: 14px 16px; margin: 18px 0; border-radius: 0 4px 4px 0;
+  font-size: 16.5px;
+}
+.callout.warn { border-left-color: var(--warn); }
+.callout.bad  { border-left-color: var(--bad); }
+.callout.good { border-left-color: var(--good); }
+.callout .lbl { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); display: block; margin-bottom: 5px; }
+
+/* -------------------------------------------------- concept card */
+.concept {
+  border-top: 1px solid var(--line);
+  padding: 30px 0 34px;
+  scroll-margin-top: calc(var(--topbar-h) + 12px);
+}
+.concept:first-of-type { border-top-width: 2px; border-top-color: var(--ink); }
+.concept > h3 {
+  font-size: 23px; font-weight: 700; letter-spacing: -0.022em; line-height: 1.18;
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.concept > h3 .idx {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 500; color: var(--ink-4);
+  letter-spacing: 0.06em; font-variant-numeric: tabular-nums;
+}
+.concept > h3 a.anchor { color: var(--ink-4); text-decoration: none; font-family: var(--f-mono); font-size: 13px; opacity: 0; }
+.concept:hover > h3 a.anchor { opacity: 1; }
+
+.dials { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 12px 0 16px; }
+.dial { display: flex; align-items: center; gap: 8px; }
+.dial .dl { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-4); }
+.meter { display: inline-flex; gap: 2px; }
+.meter i { display: block; width: 7px; height: 12px; background: var(--line); border-radius: 1px; }
+.meter i.on { background: var(--accent); }
+.dial.crit .meter i.on { background: var(--note); }
+.dial .dv { font-family: var(--f-mono); font-size: 12px; font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.dial .dv small { font-weight: 400; color: var(--ink-4); }
+.pill {
+  font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap;
+}
+.pill.shipped { color: var(--good); background: var(--good-wash); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.pill.partial { color: var(--warn); background: var(--warn-wash); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.pill.thin    { color: var(--bad);  background: var(--bad-wash);  border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.pill.tag     { color: var(--ink-3); background: var(--sunken); border-color: var(--line-soft); }
+
+.tldr { font-size: 18.5px; line-height: 1.5; color: var(--ink); max-width: 66ch; }
+.tldr b, .tldr strong { color: var(--ink); }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 20px 0 0; }
+.cols > section { min-width: 0; }
+.cols h4, .band h4 {
+  font-family: var(--f-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px;
+  padding-bottom: 5px; border-bottom: 1px solid var(--line-soft);
+}
+.cols section p, .band p, .cols section li, .band li { font-size: 16.5px; }
+
+.band { margin-top: 18px; padding: 15px 17px; border-radius: 4px; border: 1px solid var(--line-soft); background: var(--raised); }
+.band.example { background: var(--sunken); }
+.band.prod  { border-color: color-mix(in srgb, var(--accent) 22%, var(--line-soft)); background: var(--accent-wash); }
+.band.fail  { border-color: color-mix(in srgb, var(--bad) 22%, var(--line-soft)); background: var(--bad-wash); }
+.band.when  { background: var(--paper); }
+.band.example h4 { color: var(--ink-2); }
+.band.prod h4 { color: var(--accent); border-bottom-color: var(--accent-line); }
+.band.fail h4 { color: var(--bad); border-bottom-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+
+.band.when ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.band.when li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; }
+.band.when li::before { content: "+"; font-family: var(--f-mono); color: var(--good); font-weight: 600; }
+.band.when li.no::before { content: "\2212"; color: var(--bad); }
+
+/* -------------------------------------------------- code + pre */
+pre {
+  margin: 12px 0; padding: 13px 15px; overflow-x: auto;
+  background: var(--sunken); border: 1px solid var(--line-soft); border-radius: 4px;
+  font-family: var(--f-mono); font-size: 12.5px; line-height: 1.62; color: var(--ink-2);
+  tab-size: 2;
+}
+:root[data-theme="dark"] pre, :root:not([data-theme="light"]) pre { color: var(--ink-2); }
+pre .c { color: var(--ink-4); }
+pre .k { color: var(--accent); }
+pre .s { color: var(--good); }
+
+.filelist { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.filelist li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; font-size: 15px; }
+.filelist code { font-size: 12.3px; background: none; border: 0; padding: 0; color: var(--accent); word-break: break-all; }
+.filelist .note { color: var(--ink-3); font-size: 15px; }
+
+/* -------------------------------------------------- tables */
+.tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+table { border-collapse: collapse; width: 100%; font-family: var(--f-display); font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+th {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-3); background: var(--raised); border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+td code { font-size: 12px; }
+
+/* -------------------------------------------------- figures */
+figure { margin: 22px 0; }
+figure svg { display: block; max-width: 100%; height: auto; color: var(--ink-2); }
+figcaption { font-size: 14.5px; color: var(--ink-3); margin-top: 9px; font-family: var(--f-display); max-width: 70ch; }
+.fig-em { color: var(--accent); }
+
+/* -------------------------------------------------- index page bits */
+.chapgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 4px; overflow: hidden; margin: 22px 0; }
+.chapgrid a {
+  background: var(--paper); padding: 16px 17px; text-decoration: none; color: var(--ink);
+  display: flex; flex-direction: column; gap: 7px; min-height: 128px;
+}
+.chapgrid a:hover { background: var(--accent-wash); }
+.chapgrid .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--accent); letter-spacing: 0.1em; }
+.chapgrid .t { font-family: var(--f-display); font-size: 16.5px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.25; }
+.chapgrid .d { font-size: 14.5px; color: var(--ink-3); line-height: 1.45; }
+.chapgrid .m { margin-top: auto; font-family: var(--f-mono); font-size: 10px; color: var(--ink-4); letter-spacing: 0.06em; }
+
+.matrix td.c1 { font-family: var(--f-display); font-weight: 600; }
+.matrix .bar { display: inline-flex; gap: 2px; vertical-align: middle; }
+.matrix .bar i { width: 5px; height: 10px; background: var(--line); border-radius: 1px; display: block; }
+.matrix .bar i.on { background: var(--accent); }
+.matrix .bar.crit i.on { background: var(--note); }
+
+/* -------------------------------------------------- footer nav */
+.pagenav { display: flex; gap: 12px; justify-content: space-between; margin-top: 54px; padding-top: 20px; border-top: 1px solid var(--line); }
+.pagenav a { flex: 1 1 0; text-decoration: none; border: 1px solid var(--line); border-radius: 4px; padding: 13px 15px; background: var(--paper); color: var(--ink); }
+.pagenav a:hover { border-color: var(--accent-line); }
+.pagenav .d { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.pagenav .t { font-family: var(--f-display); font-weight: 650; font-size: 15.5px; letter-spacing: -0.015em; }
+.pagenav a.next { text-align: right; }
+
+.footnote { margin-top: 30px; font-size: 14.5px; color: var(--ink-3); font-family: var(--f-display); }
+
+/* -------------------------------------------------- responsive */
+@media (max-width: 1080px) {
+  .cols { grid-template-columns: 1fr; gap: 14px; }
+}
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail {
+    position: static; height: auto; max-height: 340px;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  body { font-size: 17px; }
+  .chead { padding-top: 30px; }
+}
+@media print {
+  .rail, .topbar, .pagenav { display: none; }
+  body { background: #fff; color: #000; font-size: 10.5pt; }
+  .shell { grid-template-columns: 1fr; }
+}
+
+.idxhead { background: var(--raised); font-family: var(--f-mono); font-size: 11px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">AgentVerse <b>Field Manual</b></a>
+  <span class="crumb">CH 02 · RAG patterns</span>
+  <span class="spacer"></span>
+  <button class="tb-btn" data-theme-toggle type="button">Theme</button>
+</header>
+<div class="shell">
+<aside class="rail"><h4>Field manual</h4><nav><a href="index.html"><span class="n">00</span><span>Hub &amp; how to read</span></a></nav></nav><div class="part-label eyebrow">I · The agent</div><nav><a href="agent-patterns.html"><span class="n">01</span><span>Agent patterns</span></a><a href="rag-patterns.html" aria-current="page"><span class="n">02</span><span>RAG patterns</span></a><a href="agent-memory.html"><span class="n">03</span><span>Agent memories</span></a></nav><div class="part-label eyebrow">II · Knowledge</div><nav><a href="knowledge-and-graphs.html"><span class="n">04</span><span>Knowledge &amp; knowledge graph</span></a><a href="ingestion.html"><span class="n">05</span><span>Ingestion</span></a><a href="retrieval-strategies.html"><span class="n">06</span><span>Retrieval strategies</span></a><a href="embeddings.html"><span class="n">07</span><span>Embeddings</span></a><a href="chunking.html"><span class="n">17</span><span>Chunking strategies</span></a></nav><div class="part-label eyebrow">III · Context &amp; quality</div><nav><a href="prompt-builder.html"><span class="n">08</span><span>Prompt builder</span></a><a href="agent-improvement.html"><span class="n">09</span><span>Agent improvement</span></a><a href="evals.html"><span class="n">10</span><span>Evals</span></a><a href="hallucination.html"><span class="n">18</span><span>Hallucination handling</span></a></nav><div class="part-label eyebrow">IV · Safety &amp; control</div><nav><a href="guardrails.html"><span class="n">12</span><span>Guardrails</span></a><a href="governance.html"><span class="n">13</span><span>Governance</span></a><a href="scopes.html"><span class="n">14</span><span>Scopes</span></a><a href="observability.html"><span class="n">11</span><span>Observability</span></a></nav><div class="part-label eyebrow">V · Modality &amp; models</div><nav><a href="multimodal.html"><span class="n">15</span><span>Multimodal</span></a><a href="ocr.html"><span class="n">21</span><span>OCR</span></a><a href="model-router.html"><span class="n">16</span><span>Multi-model router</span></a></nav><div class="part-label eyebrow">VI · The platform</div><nav><a href="platform-workflows.html"><span class="n">19</span><span>Core platform workflows</span></a><a href="platform-concepts.html"><span class="n">20</span><span>Other core platform concepts</span></a><a href="agent-teams.html"><span class="n">22</span><span>AI agent teams</span></a><a href="jarvis.html"><span class="n">23</span><span>Jervis (JARVIS) console</span></a></nav><div class="part-label eyebrow">VII · Not on the list</div><nav><a href="coordination-protocols.html"><span class="n">24</span><span>Coordination protocols</span></a><a href="code-execution.html"><span class="n">25</span><span>Code execution &amp; sandboxing</span></a><a href="voice.html"><span class="n">26</span><span>Voice &amp; realtime agents</span></a><a href="triggers.html"><span class="n">27</span><span>Triggers &amp; event-driven agents</span></a><a href="reliability-qos.html"><span class="n">28</span><span>Reliability &amp; QoS</span></a><a href="cost-capacity.html"><span class="n">29</span><span>Cost &amp; capacity engineering</span></a><a href="data-lifecycle.html"><span class="n">30</span><span>Data lifecycle &amp; provenance</span></a><a href="testing-certification.html"><span class="n">31</span><span>Testing &amp; certification</span></a><a href="scale-playbook.html"><span class="n">32</span><span>Scale playbook</span></a><a href="workflow-engine.html"><span class="n">34</span><span>Workflow engine</span></a><a href="frontier.html"><span class="n">33</span><span>Frontier &amp; gaps</span></a></nav><div class="part-label eyebrow">Appendix</div><nav><a href="appendix-ratings.html"><span class="n">A</span><span>Ratings matrix</span></a><a href="appendix-glossary.html"><span class="n">B</span><span>Glossary</span></a></nav><div class="inpage"><h4>In this chapter</h4><nav><a href="#rag-contract"><span class="n">01</span><span>The retrieval contract</span></a><a href="#naive-rag"><span class="n">02</span><span>Basic RAG</span></a><a href="#hybrid-rag"><span class="n">03</span><span>Hybrid RAG</span></a><a href="#fusion-rag"><span class="n">04</span><span>Fusion RAG</span></a><a href="#hyde"><span class="n">05</span><span>HyDE — hypothetical document embeddings</span></a><a href="#crag"><span class="n">06</span><span>Corrective RAG (CRAG)</span></a><a href="#self-rag"><span class="n">07</span><span>Self-RAG</span></a><a href="#speculative-rag"><span class="n">08</span><span>Speculative RAG</span></a><a href="#flare"><span class="n">09</span><span>FLARE — forward-looking active retrieval</span></a><a href="#raptor"><span class="n">10</span><span>RAPTOR — hierarchical summary retrieval</span></a><a href="#agentic-rag"><span class="n">11</span><span>Agentic RAG</span></a><a href="#multi-hop"><span class="n">12</span><span>Multi-hop retrieval</span></a><a href="#graph-rag"><span class="n">13</span><span>Graph-augmented RAG</span></a><a href="#federated-retrieval"><span class="n">14</span><span>Federated retrieval</span></a><a href="#web-rag"><span class="n">15</span><span>Web-augmented retrieval</span></a><a href="#memory-rag"><span class="n">16</span><span>Memory-augmented RAG</span></a><a href="#code-rag"><span class="n">17</span><span>Code RAG</span></a><a href="#colbert"><span class="n">18</span><span>ColBERT and late interaction</span></a><a href="#raft"><span class="n">19</span><span>RAFT — retrieval-aware fine-tuning</span></a><a href="#modular-rag"><span class="n">20</span><span>Modular RAG</span></a><a href="#adaptive-rag"><span class="n">21</span><span>Adaptive RAG &amp;amp; retrieval strategy selection</span></a><a href="#readiness-delegation"><span class="n">22</span><span>Strategy readiness &amp;amp; delegation</span></a><a href="#semantic-cache"><span class="n">23</span><span>Semantic caching</span></a></nav></div></aside>
+<main><div class="wrap">
+<header class="chead"><div class="kicker"><span class="cnum">CH 02</span><span class="eyebrow">I · The agent</span></div><h1>RAG patterns</h1><p class="lede">Fifteen retrieval architectures and the decision rule that picks one.</p><div class="statstrip"><div><div class="k">Concepts</div><div class="v">23</div></div><div><div class="k">Mean impl</div><div class="v">7.5</div></div><div><div class="k">Mean criticality</div><div class="v">7.0</div></div><div><div class="k">Shipped</div><div class="v">12</div></div><div><div class="k">Thin / missing</div><div class="v">0</div></div></div></header><section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>Retrieval-augmented generation is one idea — put the right text in the prompt — with fifteen
+    architectures built on top because "the right text" is hard. Each named pattern is an answer to a
+    specific way that naive retrieval fails: the query does not look like the answer (HyDE), one query
+    is not enough (fusion, multi-query), the retrieved chunks are wrong (corrective), the model does
+    not know it needs more (FLARE), the answer spans documents (multi-hop, graph), the corpus is too
+    big to embed usefully (RAPTOR), or the model should decide for itself (agentic).</p>
+
+    <p>AgentVerse treats this as a <strong>typed vocabulary</strong> rather than a pile of scripts.
+    Eighteen strategies live in one enum; every execution produces the same result shape with
+    per-leg traces and citations; and a gateway decides which strategies are actually
+    <em>runnable</em> right now given the tenant's configured capabilities, falling back rather than
+    failing.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 900 268" role="img" aria-label="A retrieval request passes through the gateway, which authorizes collections, checks strategy readiness against a capability catalogue, delegates to a ready fallback if needed, executes either a direct core strategy or an agentic pattern, normalizes results, and returns a canonical result with retrieval legs and citations.">
+      <defs><marker id="r1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker>
+      <marker id="r2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#00A8CC"></path></marker></defs>
+
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="0" y="52" width="118" height="44" rx="3"></rect>
+        <rect x="158" y="52" width="132" height="44" rx="3"></rect>
+        <rect x="330" y="10" width="150" height="38" rx="3"></rect>
+        <rect x="330" y="100" width="150" height="38" rx="3"></rect>
+        <rect x="520" y="52" width="128" height="44" rx="3"></rect>
+        <rect x="688" y="52" width="132" height="44" rx="3"></rect>
+      </g>
+      <g font-family="Archivo, sans-serif" font-size="12.5" fill="currentColor" text-anchor="middle">
+        <text x="59" y="70">request</text><text x="59" y="86" font-size="10.5" opacity="0.6">query + strategy</text>
+        <text x="224" y="70">gateway</text><text x="224" y="86" font-size="10.5" opacity="0.6">authz · readiness · cost</text>
+        <text x="405" y="26">direct core strategy</text><text x="405" y="40" font-size="10.5" opacity="0.6">naive hybrid hyde fusion …</text>
+        <text x="405" y="116">agentic pattern</text><text x="405" y="130" font-size="10.5" opacity="0.6">self-rag crag flare raptor …</text>
+        <text x="584" y="70">normalize</text><text x="584" y="86" font-size="10.5" opacity="0.6">one result shape</text>
+        <text x="754" y="70">legs + citations</text><text x="754" y="86" font-size="10.5" opacity="0.6">RAGStrategyTrace</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#r1)">
+        <line x1="118" y1="74" x2="154" y2="74"></line>
+        <path d="M290,66 L310,66 L310,29 L326,29" fill="none"></path>
+        <path d="M290,82 L310,82 L310,119 L326,119" fill="none"></path>
+        <path d="M480,29 L500,29 L500,66 L516,66" fill="none"></path>
+        <path d="M480,119 L500,119 L500,82 L516,82" fill="none"></path>
+        <line x1="648" y1="74" x2="684" y2="74"></line>
+      </g>
+      <path d="M224,96 L224,176 L405,176" fill="none" stroke="#00A8CC" stroke-width="1.4" marker-end="url(#r2)"></path>
+      <text x="232" y="196" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#00A8CC">not ready → delegate to a ready fallback (never a hard failure)</text>
+      <g font-family="IBM Plex Mono, monospace" font-size="10.5" fill="currentColor" opacity="0.7">
+        <text x="0" y="228">readiness facts: embedder present · colbert index built · web tool enabled · graph populated · reranker reachable</text>
+        <text x="0" y="248">every leg records: strategy · query · latency · candidate count · scores — so retrieval is debuggable after the fact</text>
+      </g>
+    </svg>
+    <figcaption>Retrieval as a governed capability, not a function call. The gateway's job is authorising
+    collections, pricing the call, checking that the requested strategy can actually run, and
+    <span class="fig-em">delegating to a ready fallback</span> when it cannot.</figcaption>
+  </figure>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Strategy</th><th>Fixes</th><th>Extra cost vs naive</th></tr></thead>
+      <tbody>
+        <tr><td><code>naive</code></td><td>—</td><td>1×</td></tr>
+        <tr><td><code>hybrid</code></td><td>Vocabulary mismatch, exact IDs</td><td>~1.1×</td></tr>
+        <tr><td><code>hyde</code></td><td>Query/answer asymmetry</td><td>+1 LLM call</td></tr>
+        <tr><td><code>fusion</code></td><td>Single-query blind spots</td><td>n queries + fusion</td></tr>
+        <tr><td><code>corrective</code></td><td>Retrieved the wrong thing</td><td>+grader, +fallback search</td></tr>
+        <tr><td><code>self_rag</code></td><td>Retrieving when unnecessary</td><td>+reflection tokens (often net saving)</td></tr>
+        <tr><td><code>speculative</code></td><td>Latency of large-model drafting</td><td>+draft model, −verify tokens</td></tr>
+        <tr><td><code>flare</code></td><td>Long generation drifting off-source</td><td>retrieval per low-confidence span</td></tr>
+        <tr><td><code>raptor</code></td><td>Corpus too large for flat chunks</td><td>index-time clustering + summaries</td></tr>
+        <tr><td><code>multi_hop</code></td><td>Answer spans documents</td><td>k× retrieval rounds</td></tr>
+        <tr><td><code>graph</code></td><td>Relationship questions</td><td>graph build + traversal</td></tr>
+        <tr><td><code>agentic</code></td><td>Unknown retrieval plan</td><td>agent loop over retrieval tools</td></tr>
+        <tr><td><code>web_augmented</code></td><td>Knowledge newer than the corpus</td><td>external calls + trust problem</td></tr>
+        <tr><td><code>colbert</code></td><td>Coarse single-vector matching</td><td>large index, late interaction</td></tr>
+        <tr><td><code>raft</code></td><td>Model ignores retrieved context</td><td>training-time, not query-time</td></tr>
+        <tr><td><code>modular</code></td><td>Needing a bespoke pipeline</td><td>whatever you compose</td></tr>
+        <tr><td><code>adaptive</code></td><td>One strategy for every query</td><td>+classifier</td></tr>
+        <tr><td><code>agentic_chunking</code></td><td>Chunk boundaries destroying meaning</td><td>index-time LLM cost</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="block" id="patterns">
+  <h2>The patterns</h2>
+
+<article class="concept" id="rag-contract" data-impl="9" data-crit="9" data-tag="Foundation">
+<h3><span class="idx">01</span>The retrieval contract<a class="anchor" href="#rag-contract" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Foundation</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Before any pattern, agree on a shape: a request names a strategy and collections, a
+result carries chunks, per-leg traces and citations, and unknown or unavailable strategies raise typed
+errors rather than silently degrading.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>One enum (<code>RAGStrategy</code>, 18 members) is the public vocabulary. Historical names are
+resolved through an alias map — <code>fusion_rag → fusion</code>, <code>graph_rag → graph</code> — so
+callers, stored agent configs and templates written a year ago keep working without the enum growing
+duplicates. Two error types separate two very different situations:
+<code>UnknownRAGStrategyError</code> (caller typo — a bug) and
+<code>UnavailableRAGStrategyError</code> (known strategy, missing capability — an operational state).</p>
+<p>Every execution returns the same canonical result: chunks, one <code>RAGRetrievalLeg</code> per
+retrieval operation, and <code>RAGCitation</code> records with chunk id, score and source.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/contracts.py</code><span class="note">RAGStrategy, RAG_STRATEGY_ALIASES, resolve_rag_strategy(), RAGExecutionRequest/Result, RAGStrategyTrace, RAGCitation, RAGRetrievalLeg</span></li>
+<li><code>app/rag/catalogue.py</code><span class="note">RAG_CAPABILITY_CATALOGUE — what each strategy needs</span></li>
+<li><code>app/rag/gateway.py</code><span class="note">RetrievalGateway.execute(), execute_core_strategy()</span></li>
+<li><code>app/rag_platform/retriever.py</code><span class="note">RAGRetriever — synthesis layer over the gateway</span></li>
+</ul>
+<p>Ten of the eighteen are <code>DIRECT_CORE_RAG_STRATEGIES</code>, executed by the gateway core; the
+rest are agentic patterns with their own runtimes.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>request  {query:"why did payouts fail on the 14th?",
+          strategy:"corrective_rag", collections:["runbooks","incidents"], k:8}
+resolve  alias corrective_rag → RAGStrategy.CORRECTIVE
+authz    both collections belong to tenant acme        → ok
+ready?   needs grader LLM + fallback search            → ok
+result   {chunks:[…8], legs:[{strategy:corrective, query:…, ms:180, n:24},
+                             {strategy:hybrid,     query:…, ms:95,  n:8}],
+          citations:[{chunk_id:…, score:0.81, source:"runbooks/payouts.md"}]}
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The contract is what makes retrieval improvable. Because every strategy emits the same legs, you can
+compare corrective against hybrid on the same queries, attribute cost per strategy, and alarm on
+"strategy X now returns zero candidates" without instrumenting each implementation separately.</p>
+<p>It is also what keeps an 18-strategy system maintainable at all. Without a shared result shape,
+each pattern grows its own half-compatible dictionary and the eval harness becomes untestable.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Alias sprawl.</strong> Every rename adds an alias forever. Keep the map small and deprecate
+loudly.</li>
+<li><strong>Leaky results.</strong> A pattern returning its own bespoke shape breaks tracing. Normalise
+at the gateway, as <code>_normalize_engine_results()</code> does.</li>
+<li><strong>Silent degradation.</strong> Falling back without recording it. The delegation must appear
+in the trace, or your eval numbers describe a strategy that never ran.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>You have more than two retrieval strategies, or intend to.</li>
+<li>Retrieval quality is something you plan to measure.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="naive-rag" data-impl="9" data-crit="9" data-tag="Core">
+<h3><span class="idx">02</span>Basic RAG<a class="anchor" href="#naive-rag" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Core</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span></div>
+<p class="tldr">Embed the query, take the top-k nearest chunks, put them in the prompt. Everything else
+in this chapter is a repair to a specific failure of this baseline — which is why you should always
+keep it as the control in your evals.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Index time: split documents into chunks, embed each, store the vector with metadata. Query time:
+embed the query with the <em>same</em> model, cosine-search for top-k, sort by score, format into the
+prompt with source labels.</p>
+<p>Three parameters do most of the work: chunk size, k, and whether you include neighbouring chunks.
+Tuning those beats switching strategies more often than anyone admits.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/store.py</code><span class="note">KnowledgeStore — the index and search</span></li>
+<li><code>app/rag/engine.py</code><span class="note">RetrievalResult, strategy execution errors</span></li>
+<li><code>app/rag/indexing.py</code><span class="note">RAGIndexingPipeline, RAGIndexRecord</span></li>
+<li><code>app/agent/nodes/rag_mixin.py</code><span class="note">the retrieval node in the agent graph</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query   "what is our refund window?"
+embed   1536-d vector
+search  top 5 by cosine over tenant acme's "policies" collection
+ 0.89  policies/returns.md#3   "Refunds accepted within 30 days…"
+ 0.71  policies/returns.md#4   "Exceptions for damaged goods…"
+ 0.55  policies/shipping.md#2  ← borderline, still included at k=5
+prompt  chunks + question, answer must cite chunk ids
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Naive RAG is right for a surprising share of production traffic — FAQ, policy lookup, "what does the
+doc say" — and it is the cheapest thing in the chapter. The engineering discipline is to <em>measure</em>
+before upgrading: run the fancy strategy and the baseline on the same 200 queries and look at the
+delta. In many corpora it is under two points, and the naive path is a tenth of the cost.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Vocabulary mismatch.</strong> User says "reimbursement", corpus says "refund" — hybrid
+fixes this.</li>
+<li><strong>Chunk boundary loss.</strong> The answer straddles two chunks; neither scores well.
+Parent-child or sentence-window retrieval fixes it.</li>
+<li><strong>Top-k tyranny.</strong> Fixed k returns junk on narrow corpora and truncates on broad ones.
+Use a score floor as well as a count.</li>
+<li><strong>Stale index.</strong> The document changed; the embedding did not.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Questions map to passages, the corpus is clean, and latency matters.</li>
+<li>Always as the eval baseline.</li>
+<li class="no">Not for relationship questions, aggregation, or anything spanning documents.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="hybrid-rag" data-impl="9" data-crit="10" data-tag="Core">
+<h3><span class="idx">03</span>Hybrid RAG<a class="anchor" href="#hybrid-rag" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Core</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="dv">9<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="dv">10<small>/10</small></span></span></div>
+<p class="tldr">Run semantic and lexical search together and merge — because embeddings are good at
+meaning and terrible at exact tokens like <code>INV-2024-8891</code>, while keyword search is the
+reverse.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Three retrievers, one merge. Vector similarity handles paraphrase; BM25 handles term importance and
+rare exact terms; trigram similarity handles typos and partial identifiers. Scores from different
+scales cannot simply be added, so the merge either normalises per-retriever or — better — uses rank
+fusion, which ignores absolute scores altogether.</p>
+<p>The store implements this twice on purpose: an in-memory fast path that is always available, and a
+Postgres path that pushes the work into the database where the data lives.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/store.py</code><span class="note">hybrid_search() (in-memory fast path) and hybrid_search_db() — cosine + trigram + BM25 → HybridSearchResult</span></li>
+<li><code>app/rag/bm25.py</code><span class="note">BM25Retriever</span></li>
+<li><code>app/rag/engine.py</code><span class="note">hybrid_search / rerank_results wiring</span></li>
+<li><code>app/rag/cross_encoder.py</code><span class="note">CrossEncoderReranker on top of the merge</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query "INV-2024-8891 disputed by Northwind"
+
+vector top3   0.62 invoices/policy.md      (semantic: disputes)
+              0.58 invoices/northwind.md
+              0.55 support/disputes.md
+bm25 top3     8.9  invoices/INV-2024-8891.pdf   ← exact ID, vector missed it
+              4.1  invoices/northwind.md
+trigram       0.91 invoices/INV-2024-8891.pdf
+
+fused         1 INV-2024-8891.pdf   2 northwind.md   3 policy.md
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Hybrid is the correct default for enterprise corpora, and the reason is identifiers: invoice
+numbers, ticket keys, SKUs, error codes, employee IDs. Pure vector search fails these consistently and
+the failure is invisible in aggregate metrics because it affects a minority of queries — the minority
+that matters most to the user typing an exact ID.</p>
+<p>Push the merge into Postgres when the corpus is large. Pulling 500 candidates per retriever into
+Python to merge them costs more in serialisation than the query did.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Score incomparability.</strong> Adding a cosine 0.6 to a BM25 8.9 is meaningless. Use rank
+fusion or per-retriever normalisation.</li>
+<li><strong>Lexical dominance.</strong> BM25 overwhelms on keyword-stuffed documents. Cap each
+retriever's contribution.</li>
+<li><strong>Double counting.</strong> The same chunk from two retrievers appearing twice. Deduplicate
+on chunk id before ranking.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Almost always. This should be your default rather than pure vector search.</li>
+<li class="no">Skip only when the corpus has no identifiers, codes, or proper nouns — which is rare.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="fusion-rag" data-impl="8" data-crit="7" data-tag="Multi-query">
+<h3><span class="idx">04</span>Fusion RAG<a class="anchor" href="#fusion-rag" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Multi-query</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Generate several rewrites of the question, retrieve for each, and combine the ranked
+lists with reciprocal rank fusion — coverage insurance against a single unlucky phrasing.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>An LLM produces n query variants (typically 3–5) emphasising different aspects. Each is retrieved
+independently. Results merge by RRF: each document scores <code>Σ 1/(k + rank_i)</code> with k≈60, so a
+document ranked 2nd in three lists beats one ranked 1st in a single list. RRF needs no score
+calibration, which is exactly why it is the standard merge for heterogeneous retrievers.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/patterns/fusion.py</code><span class="note">the pattern</span></li>
+<li><code>app/rag/agentic/query_expander.py</code><span class="note">variant generation</span></li>
+<li><code>app/rag/agentic/query_reformulator.py</code><span class="note">reformulation strategies</span></li>
+<li><code>app/rag/agentic/llm_query_transformer.py</code><span class="note">LLM-side transforms</span></li>
+</ul>
+<p>The pattern assembler adds <code>fusion_rag</code> for analytical goals above simple complexity —
+the class where missing one relevant document changes the conclusion.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>original  "why are payouts delayed?"
+variants  1 "payout settlement delay causes"
+          2 "bank transfer processing time SLA"
+          3 "failed payout retry behaviour"
+
+doc                     r1  r2  r3   RRF
+payouts-runbook.md       1   4   2   0.0480   ← wins on consistency
+bank-sla.md              -   1   -   0.0164
+retry-policy.md          5   -   1   0.0325
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Cost is one LLM call plus n retrievals — cheap if retrieval is cheap, expensive if each retrieval
+involves a reranker. Run the n retrievals concurrently; done serially, fusion turns a 200ms retrieval
+into a second.</p>
+<p>The measurable benefit is recall on ambiguous questions. If your eval shows the answer was in the
+corpus but not in the context, fusion is the first thing to try — before any exotic pattern.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Variant collapse.</strong> Three near-identical rewrites. Require lexical diversity or
+different aspects.</li>
+<li><strong>Drifted variants.</strong> A rewrite that answers a different question, poisoning the pool.
+Keep the original query as one of the legs, always.</li>
+<li><strong>Context overflow.</strong> More coverage means more chunks. Fusion must be followed by a
+rerank and a budget cut, not fed straight to the model.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Queries are ambiguous or use vocabulary the corpus does not.</li>
+<li>Recall matters more than latency.</li>
+<li class="no">Avoid for exact-lookup queries — you are paying to rephrase a question that was already precise.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="hyde" data-impl="8" data-crit="6" data-tag="Query transform">
+<h3><span class="idx">05</span>HyDE — hypothetical document embeddings<a class="anchor" href="#hyde" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Query transform</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">Ask the model to write the answer it <em>expects</em>, embed that, and search with it —
+because an answer-shaped vector matches answer-shaped chunks better than a question-shaped one does.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Questions and passages occupy different regions of embedding space: "what is our refund window?" is
+lexically and structurally unlike "Refunds are accepted within 30 days of delivery." HyDE closes the
+gap by generating a plausible passage first — factual accuracy of the hypothetical does not matter,
+only that it looks like the target text — then retrieving with its embedding.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>RAGStrategy.HYDE</code> in <code>app/rag/contracts.py</code><span class="note">a direct core strategy</span></li>
+<li><code>app/rag/gateway.py</code><span class="note">execute_core_strategy() dispatch</span></li>
+<li><code>app/rag/agentic/llm_query_transformer.py</code><span class="note">the generation step</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>question     "how do I rotate the signing key?"
+hypothetical "To rotate the signing key, generate a new keypair with
+              openssl, upload the public half to the JWKS endpoint, wait
+              for the cache TTL to expire, then retire the old key."
+embed        the hypothetical, not the question
+retrieved    runbooks/key-rotation.md#2  0.91   (question alone: 0.63)
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>HyDE adds one small-model call per query — a real latency cost on an interactive path, negligible
+on a background goal. Use a cheap fast model for the hypothetical; quality of that text barely matters.
+Cache hypotheticals by normalised query, since repeated questions are common.</p>
+<p>It helps most on corpora of declarative prose (docs, policies, wikis) and helps least on
+conversational or transactional corpora where passages already look like questions.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Confident fiction.</strong> The hypothetical invents terminology absent from the corpus and
+drags retrieval away. Retrieve with both the hypothetical and the original.</li>
+<li><strong>Latency on chat.</strong> An extra call in front of every message is felt.</li>
+<li><strong>Domain drift.</strong> On specialised corpora the model's guess is wrong-shaped; measure
+before adopting.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Questions are short and the corpus is long-form prose.</li>
+<li>You see high recall failure with low query/passage similarity.</li>
+<li class="no">Skip on latency-critical chat, or where hybrid already solves it.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="crag" data-impl="8" data-crit="8" data-tag="Self-correcting">
+<h3><span class="idx">06</span>Corrective RAG (CRAG)<a class="anchor" href="#crag" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Self-correcting</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Grade the retrieved chunks before generating: if they are good, proceed; if ambiguous,
+refine the query and retry; if bad, go somewhere else entirely — the pattern that stops the model
+answering from irrelevant context.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A lightweight grader scores each retrieved chunk for relevance to the question, producing one of
+three verdicts:</p>
+<ul>
+<li><strong>Correct</strong> — enough good chunks; generate.</li>
+<li><strong>Ambiguous</strong> — some signal; decompose or rewrite the query and retrieve again, then
+generate from the union.</li>
+<li><strong>Incorrect</strong> — nothing relevant; discard the context entirely and fall back to
+another source (web, a different collection) or answer "not found".</li>
+</ul>
+<p>The critical behaviour is the third branch. Most RAG failures are not retrieval failures — they are
+generation failures on top of bad retrieval that nobody checked.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/patterns/corrective.py</code><span class="note">the grader and branch logic</span></li>
+<li><code>app/rag/agentic/context_gap_detector.py</code><span class="note">GapReport — what is missing</span></li>
+<li><code>app/rag/agentic/fallback_chain.py</code><span class="note">FallbackChain — ordered alternatives</span></li>
+<li><code>app/agent/graph.py</code><span class="note">rag_remediate node — the agent-level version of the same idea</span></li>
+</ul>
+<p>The assembler adds <code>corrective_rag</code> for analytical goals at high or critical risk.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query    "what is the penalty for late GSTR-1 filing?"
+retrieve 5 chunks from "tax-policies"
+grade    0.2 0.1 0.3 0.1 0.2   → INCORRECT (all below 0.5)
+action   discard context, fall back to the statutory-text collection
+retry    3 chunks scoring 0.88 0.81 0.77 → CORRECT
+answer   grounded, cites the statute, not the internal summary
+without CRAG: a confident answer from an outdated internal summary
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>CRAG is the highest-value quality pattern in this chapter for regulated work, because "answered
+confidently from the wrong document" is the failure mode that produces incidents. The grader can be a
+small model or a cross-encoder — do not use the generation model, it is expensive and biased toward
+finding its own context useful.</p>
+<p>Track the three verdict rates as a metric. A rising INCORRECT rate is an ingestion problem, not a
+retrieval problem, and it is often the first sign that a connector stopped syncing.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Grader miscalibration.</strong> Too strict throws away good context; too lenient makes the
+pattern a no-op. Calibrate the threshold on labelled pairs.</li>
+<li><strong>Fallback loops.</strong> Every source graded incorrect, forever. Bound the chain and end at
+an honest "I could not find this".</li>
+<li><strong>Cost doubling.</strong> Grading every chunk on every query. Grade the top-k only.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Wrong answers are expensive and the corpus has gaps.</li>
+<li>You have multiple sources to fall back to.</li>
+<li class="no">Skip on a small curated corpus where retrieval is reliably good.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="self-rag" data-impl="7" data-crit="7" data-tag="Self-correcting">
+<h3><span class="idx">07</span>Self-RAG<a class="anchor" href="#self-rag" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Self-correcting</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Let the model decide whether to retrieve at all, then critique its own output for
+support and usefulness — retrieval on demand rather than retrieval by default.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Reflection tokens at three decision points: <em>retrieve?</em> (is external knowledge needed for
+this span), <em>relevant?</em> (is what came back useful), <em>supported?</em> (does the generated
+claim follow from the evidence). Unsupported spans trigger regeneration or citation removal.</p>
+<p>The under-appreciated win is the first decision. A large share of turns — greetings, arithmetic,
+formatting, reasoning over what is already in context — do not need retrieval, and skipping it saves
+both latency and the risk of dragging in irrelevant context.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/patterns/self_rag.py</code><span class="note">the pattern</span></li>
+<li><code>app/rag/agentic/retrieval_policy.py</code><span class="note">when retrieval is warranted</span></li>
+<li><code>app/agent/grounding.py</code><span class="note">the support check, deterministic then LLM</span></li>
+<li><code>app/intelligence/nli_checker.py</code><span class="note">entailment checking for supported/not-supported</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>turn 1  "hi, can you help with invoices?"      retrieve? NO   (0 tokens spent)
+turn 2  "what's our late fee policy?"          retrieve? YES  → 4 chunks
+        relevant? 3 of 4                       → drop one
+        draft: "Late fees are 1.5% monthly and waived for enterprise plans."
+        supported? clause 1 YES  clause 2 NO   → regenerate without clause 2
+final   "Late fees are 1.5% monthly. I found no policy on enterprise waivers."
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>In a chat product, retrieve-on-demand typically removes 30–50% of retrieval calls, which shows up
+directly in p50 latency and embedding spend. The support check is the more important half for safety:
+it is where "the model added a plausible clause nobody wrote" gets caught.</p>
+<p>Implement the support check deterministically first (does the entity, number, or quoted string
+appear in the evidence?) and only escalate to an NLI model for the spans that fail — an order of
+magnitude cheaper than checking everything with a model.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Overconfident skip.</strong> The model decides it knows, and it does not. Bias the policy
+toward retrieving on any factual claim about tenant data.</li>
+<li><strong>Self-assessment bias.</strong> The generator judging its own support is lenient. Use a
+separate checker.</li>
+<li><strong>Latency spikes.</strong> Reflection adds turns. Bound the number of regenerations.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Conversational workloads where many turns need no retrieval.</li>
+<li>Grounding must be enforced per claim, not per answer.</li>
+<li class="no">Skip in pipelines where every request is by definition a knowledge request.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="speculative-rag" data-impl="6" data-crit="5" data-tag="Latency">
+<h3><span class="idx">08</span>Speculative RAG<a class="anchor" href="#speculative-rag" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Latency</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i></span><span class="dv">5<small>/10</small></span></span></div>
+<p class="tldr">A small fast model drafts several answers from different chunk subsets; a large model
+only verifies and picks — moving most of the token volume to the cheap model.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Partition the retrieved set into diverse subsets. A small model drafts one answer per subset, in
+parallel, each with its own rationale. The large model then reads the drafts plus rationales — far
+fewer tokens than reading all chunks — and selects or merges. Borrowed from speculative decoding:
+generate cheaply, verify expensively, keep the verifier's quality.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/patterns/speculative.py</code><span class="note">the pattern</span></li>
+<li><code>app/ai_router/model_orchestrator.py</code><span class="note">drafter/verifier model pair selection</span></li>
+<li><code>app/providers/base.py</code><span class="note">provider-neutral completion so drafter and verifier can be different vendors</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>retrieved  12 chunks → 3 subsets of 4 (diverse by source)
+drafts     small model × 3, parallel, ~600 tokens each
+verify     large model reads 3 drafts + rationales (1.8k tokens)
+           vs reading all 12 chunks (9k tokens)
+cost       ~55% lower, quality within noise of the direct large-model answer
+latency    drafting is parallel → wall-clock roughly unchanged
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Worth it when context is large and the verifier is expensive — long-document QA over 20+ chunks.
+Not worth the complexity below ~8 chunks, where the large model can just read everything. Its real
+constraint is operational: you now depend on two models being healthy, which the router and circuit
+breaker must handle (chapter 16).</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Weak drafter.</strong> All drafts wrong; the verifier picks the least wrong. Floor the
+drafter quality.</li>
+<li><strong>Subset partitioning loses the answer.</strong> The critical chunk lands alone in a weak
+subset. Overlap subsets slightly.</li>
+<li><strong>Verifier laziness.</strong> Picks the longest draft. Force it to cite which chunks
+support its choice.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Long context, expensive verifier, cost matters more than architectural simplicity.</li>
+<li class="no">Avoid for short-context questions or when a single model is already fast enough.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="flare" data-impl="7" data-crit="6" data-tag="Generation-time">
+<h3><span class="idx">09</span>FLARE — forward-looking active retrieval<a class="anchor" href="#flare" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Generation-time</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">Retrieve <em>during</em> generation: when the next sentence the model is about to write
+has low token confidence, pause, retrieve for that specific claim, and continue.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Generate a provisional next sentence. Inspect confidence — token log-probs where available,
+otherwise a proxy such as hedging language or an explicit self-assessment. If confidence is below
+threshold, form a query from that sentence (masking the uncertain spans), retrieve, and regenerate the
+sentence with the new evidence. Repeat until the answer is complete.</p>
+<p>This is the only pattern here that couples retrieval to generation position rather than to the
+question, which is why it is the right tool for long documents where different paragraphs need
+different sources.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/patterns/flare.py</code><span class="note">the pattern</span></li>
+<li><code>app/rag/agentic/search_directive_parser.py</code><span class="note">turns an uncertain span into a search directive</span></li>
+<li><code>app/rag/agentic/citation_threader.py</code><span class="note">keeps citations attached to the spans they support</span></li>
+</ul>
+<p>The assembler adds <code>flare</code> when the goal requires web knowledge or is time-sensitive —
+the case where the model's parametric knowledge is most likely to be stale mid-answer.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>writing a vendor report…
+para 1  company background            confidence high  → no retrieval
+para 2  "Their Series C was led by…"  confidence LOW   → retrieve
+        query "Northwind Series C lead investor round size"
+        → regenerate: "Their $40M Series C (Mar 2024) was led by Acme Ventures."
+para 3  contract terms                confidence high  → no retrieval
+total   3 retrievals for a 9-paragraph report, each targeted
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>FLARE shines on long-form generation — reports, briefs, documentation — and is wasteful on short
+answers, where one upfront retrieval covers everything. The practical blocker is confidence signal
+quality: many hosted APIs do not expose log-probs, and the textual proxies are noticeably worse.
+Budget the number of mid-generation retrievals per document, or a hedging model will retrieve on every
+sentence.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>No confidence signal.</strong> Without log-probs the trigger is unreliable — measure before
+relying on it.</li>
+<li><strong>Retrieval thrash.</strong> Every sentence triggers. Cap retrievals per generation.</li>
+<li><strong>Incoherence.</strong> Regenerated sentences contradict earlier ones. Re-read the prefix
+when regenerating.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Long outputs whose paragraphs need different evidence.</li>
+<li>Confidence signal is available and calibrated.</li>
+<li class="no">Skip for short answers and interactive chat.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="raptor" data-impl="7" data-crit="6" data-tag="Index-time">
+<h3><span class="idx">10</span>RAPTOR — hierarchical summary retrieval<a class="anchor" href="#raptor" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Index-time</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">Cluster chunks, summarise each cluster, cluster the summaries, and repeat — then
+retrieve from every level, so a question can match a detail or a theme.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>At index time: embed leaf chunks, cluster them, generate a summary per cluster, embed the summaries
+as new nodes, repeat until one root remains. At query time, search across all levels at once. A
+specific question matches a leaf; "what are the main themes across these 400 documents" matches a
+mid-level summary that no single chunk could answer.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/patterns/raptor.py</code><span class="note">the pattern</span></li>
+<li><code>app/rag/indexing.py</code><span class="note">where hierarchical records are built and stored</span></li>
+<li><code>app/knowledge_graph/community_detection.py</code><span class="note">the graph analogue: communities as a summary layer</span></li>
+</ul>
+<p>The assembler adds <code>raptor</code> for analytical goals of complex or expert complexity.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>L0  1,240 chunks from 3 years of incident reports
+L1  86 clusters → "database connection exhaustion incidents (14)" …
+L2  9 clusters  → "infrastructure capacity failures" …
+L3  1 root      → "reliability history 2023-2026"
+
+"what recurring failure modes should the roadmap address?"
+  → matches L2 summaries, not any single incident
+  → answer cites the summaries and drills into 3 exemplar L0 chunks
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>All the cost is at index time — one LLM call per cluster, at every level. On a 100k-chunk corpus
+that is a real bill, and it must be re-run incrementally as documents change or the tree goes stale.
+Budget it as a batch job, and only build RAPTOR for collections that actually receive thematic
+questions; for lookup-style collections it is wasted money.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Summary drift.</strong> Summaries of summaries lose the specifics that make an answer
+useful. Always return leaf evidence alongside a summary hit.</li>
+<li><strong>Stale tree.</strong> New documents are not in the hierarchy. Rebuild affected branches on
+ingest.</li>
+<li><strong>Cluster garbage.</strong> Poor clustering yields incoherent summaries. Validate cluster
+cohesion before summarising.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Large corpora, thematic or comparative questions, stable content.</li>
+<li class="no">Avoid on fast-changing corpora or where every question is a lookup.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="agentic-rag" data-impl="8" data-crit="8" data-tag="Agent-driven">
+<h3><span class="idx">11</span>Agentic RAG<a class="anchor" href="#agentic-rag" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Agent-driven</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Give the agent retrieval as a <em>tool</em> rather than a pipeline stage: it decides
+what to search for, reads the results, and searches again until it can answer.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Retrieval becomes one or more tools the executor can call — search a collection, list collections,
+fetch a document by id, follow a citation. The agent's loop supplies the control flow, so
+decomposition, reformulation and stopping are decisions made with the evidence in hand rather than
+guessed in advance.</p>
+<p>This subsumes several patterns: multi-hop happens naturally, corrective happens when the agent
+judges results poor, fusion happens when it issues several queries. The trade is predictability —
+each goal's retrieval cost is now variable.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/patterns/agentic.py</code><span class="note">the pattern</span></li>
+<li><code>app/rag/agentic/retriever_tool.py</code><span class="note">retrieval exposed as a tool</span></li>
+<li><code>app/rag/agentic/source_inventory.py</code><span class="note">what the agent is allowed to know exists</span></li>
+<li><code>app/rag/agentic/context_gap_detector.py</code><span class="note">explicit "what am I missing" step</span></li>
+<li><code>app/rag/agentic/citation_threader.py</code><span class="note">carries citations through multiple hops</span></li>
+</ul>
+<p>Added by the assembler for complex and expert goals — where the retrieval plan genuinely cannot be
+known up front.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>goal "did we ever ship the fix for the duplicate-charge bug?"
+ search incidents "duplicate charge"          → INC-4471 (Mar)
+ search jira      "INC-4471"                  → PROJ-1180 "fix duplicate charge"
+ search github    "PROJ-1180"                 → PR #3312, merged, but reverted
+ search github    "revert 3312"               → revert PR #3340, no re-land
+ gap check        "no evidence of a re-landed fix"
+ answer  "No. PR #3312 was merged 12 Mar and reverted 14 Mar; no
+          subsequent fix references PROJ-1180." + 4 citations
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Agentic RAG is how you answer questions that span systems, and it is the pattern most likely to blow
+a latency budget: each hop is a retrieval plus a model call. Cap hops explicitly (3–5), run
+independent searches concurrently, and cache aggressively — agents re-issue similar queries constantly
+within one goal.</p>
+<p>Give the agent a <em>source inventory</em> rather than raw access. Knowing which collections exist,
+what they contain and how fresh they are turns blind flailing into targeted search, and it is the
+single biggest quality lever for this pattern.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Search spirals.</strong> Endless reformulation. Hop caps and stall detection.</li>
+<li><strong>Context accumulation.</strong> Every hop's results retained until the window overflows.
+Summarise between hops.</li>
+<li><strong>Lost citations.</strong> After four hops nobody can say where a fact came from. Thread
+citations through every hop.</li>
+<li><strong>Cost variance.</strong> One goal costs $0.05, another $4. Budget per goal, not per query.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Questions span sources and the path is unknown in advance.</li>
+<li>Thoroughness beats latency.</li>
+<li class="no">Avoid on interactive chat with a tight latency budget.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="multi-hop" data-impl="8" data-crit="7" data-tag="Composition">
+<h3><span class="idx">12</span>Multi-hop retrieval<a class="anchor" href="#multi-hop" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Composition</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Answer questions whose evidence is chained: retrieve, extract the bridge entity, use it
+to retrieve again — the query at hop two cannot be written before hop one returns.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Detect a multi-hop question (it references an entity by description rather than name), retrieve for
+the first hop, extract the bridging entity from the results, construct the second query, and repeat.
+Each hop's evidence is kept so the final answer can cite the whole chain.</p>
+<p>Two implementations: iterative retrieval in the RAG layer, and graph traversal when the entities and
+relations are already extracted into a knowledge graph — the second is far cheaper when it applies.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>RAGStrategy.MULTI_HOP</code> in <code>app/rag/contracts.py</code><span class="note">core strategy</span></li>
+<li><code>app/knowledge_graph/multi_hop.py</code><span class="note">graph-based multi-hop reasoner</span></li>
+<li><code>app/rag/agentic/query_reformulator.py</code><span class="note">building hop n+1's query</span></li>
+<li><code>app/rag/agentic/citation_threader.py</code><span class="note">chain-of-evidence citations</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>question "what SLA applies to the vendor who runs our payment gateway?"
+hop 1  retrieve "payment gateway vendor"  → "Razorpay (contract C-2291)"
+hop 2  retrieve "C-2291 SLA"              → "99.95% uptime, 4h P1 response"
+answer with both citations; a single-hop search for "payment gateway SLA"
+returns the internal SLA of the wrong system
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Latency is the constraint — hops are inherently serial. Two hops is usually the sweet spot; beyond
+three, error compounds and users have given up waiting. If your workload is dominated by multi-hop
+questions, build the knowledge graph and traverse it instead: a two-hop graph query is milliseconds
+against a second or more of iterative retrieval.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Wrong bridge entity.</strong> Hop 1 extracts the wrong name; everything after is confidently
+wrong. Verify the entity before hopping.</li>
+<li><strong>Hop explosion.</strong> Ambiguous entities fan out. Cap the branching factor.</li>
+<li><strong>Lost provenance.</strong> The final answer cites only hop 2. Cite the chain.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Questions reference entities indirectly.</li>
+<li>Evidence genuinely lives in different documents.</li>
+<li class="no">Avoid when a graph already encodes the relationship — traverse it.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="graph-rag" data-impl="8" data-crit="7" data-tag="Structure">
+<h3><span class="idx">13</span>Graph-augmented RAG<a class="anchor" href="#graph-rag" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Structure</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">When the question is about relationships rather than passages, retrieve a subgraph
+instead of chunks — vectors are good at similarity and structurally blind to "who reports to whom".</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>At ingest, extract entities and relations into a tenant-scoped graph. At query time, resolve the
+question's entities to nodes, traverse to a bounded depth, and serialise the resulting subgraph — plus
+the source chunks that produced each edge — into the prompt. Community detection over the graph gives
+the same thematic layer RAPTOR builds over text.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/knowledge_graph/extractor.py</code><span class="note">EntityExtractor — entities and relations from chunks</span></li>
+<li><code>app/knowledge_graph/models.py</code><span class="note">GraphNode, GraphEdge</span></li>
+<li><code>app/knowledge_graph/store.py</code><span class="note">KnowledgeGraphStore (tenant-scoped)</span></li>
+<li><code>app/knowledge_graph/community_detection.py</code><span class="note">clusters as summary nodes</span></li>
+<li><code>app/knowledge_graph/access_control.py</code><span class="note">GraphAccessControl — role-gated traversal</span></li>
+<li><code>app/knowledge_graph/ingestion_hook.py</code><span class="note">KGIngestionHook — graph built as a side effect of ingestion</span></li>
+<li><code>app/state_runtime/kg_query_engine.py</code><span class="note">query engine used at runtime</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>question "which customers are affected if the Frankfurt region goes down?"
+
+vector search  returns the DR runbook. Useless — it does not list customers.
+graph traversal
+  (region:Frankfurt) ←hosted_in— (cluster:eu-1) ←runs— (service:checkout)
+                                        ↑used_by
+                          (tenant:Northwind), (tenant:Contoso), … 23 more
+answer  the 23 tenants, with the edge that connects each, each edge citing
+        the config document it was extracted from
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Graph RAG has a real cost: extraction is an LLM call per chunk at ingest, and graph quality is
+entirely determined by entity resolution — "Acme Corp", "ACME", and "Acme Corporation" must become one
+node or the graph is decoration. Budget for a resolution pass and expect to maintain an alias table.</p>
+<p>Access control is not optional. A graph is a very efficient way to leak an org chart, so traversal
+must be filtered by role and tenant at the store, not after the results come back.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Entity fragmentation.</strong> Five nodes for one company. Resolution and aliasing.</li>
+<li><strong>Hallucinated relations.</strong> The extractor invents an edge. Require every edge to cite
+its source chunk, and score edge confidence.</li>
+<li><strong>Traversal explosion.</strong> Depth 4 from a hub node returns half the graph. Bound depth
+and degree.</li>
+<li><strong>Staleness.</strong> Relations that ended. Version edges with validity intervals where the
+domain needs it.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Questions are about connections, impact, lineage, or org structure.</li>
+<li>Entities are well defined and resolvable.</li>
+<li class="no">Avoid for prose-comprehension questions — the graph loses the nuance the text carries.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="federated-retrieval" data-impl="7" data-crit="7" data-tag="Scale">
+<h3><span class="idx">14</span>Federated retrieval<a class="anchor" href="#federated-retrieval" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Scale</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Search across many collections — or many stores — at once, then merge, with per-source
+authorisation applied before anything is combined.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Fan out the query to every authorised source concurrently, apply per-source limits, then merge with
+rank fusion because the sources' scores are not comparable. Two properties matter more than the merge
+algorithm: authorisation is evaluated <em>per source before dispatch</em>, and a slow or failing source
+degrades the result rather than failing the query.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/knowledge/federated_search.py</code><span class="note">the fan-out and merge</span></li>
+<li><code>app/api/knowledge.py</code><span class="note">federated_search_endpoint()</span></li>
+<li><code>app/rag/gateway.py</code><span class="note">SQLCollectionAuthorizer — collection-level authorisation</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query across 6 collections for user u-77 (role: analyst)
+  policies      authorised   142ms   8 hits
+  incidents     authorised    98ms   5 hits
+  hr-records    DENIED (role) —      excluded before dispatch
+  contracts     authorised   2.1s    TIMEOUT → degraded, flagged in response
+  wiki          authorised   115ms   6 hits
+  code          authorised   210ms   3 hits
+merged by RRF; response says which sources were skipped and why
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Federation is where a partial result is better than an error, but only if the user is told. Return
+the source list with per-source status; an answer silently missing the contracts collection is worse
+than no answer, because nobody knows to check.</p>
+<p>Per-source timeouts must be shorter than the overall budget, and repeated timeouts should trip a
+breaker so a sick source stops being queried at all.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Authorisation after merge.</strong> Filtering results the user should never have seen is a
+leak waiting for a bug. Filter before dispatch.</li>
+<li><strong>Slowest-source latency.</strong> One slow store sets the response time. Timeout and degrade.</li>
+<li><strong>Silent gaps.</strong> Report source status in the payload.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Knowledge is genuinely spread across collections or stores with different permissions.</li>
+<li class="no">Unnecessary when one collection holds the answer — you are paying fan-out cost for nothing.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="web-rag" data-impl="7" data-crit="7" data-tag="External">
+<h3><span class="idx">15</span>Web-augmented retrieval<a class="anchor" href="#web-rag" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">External</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Reach outside the corpus for knowledge that is newer than it — and treat everything
+that comes back as hostile input.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A search tool queries the open web (or a self-hosted meta-search), pages are fetched, stripped to
+text, and injected as clearly-labelled untrusted context. Three controls are mandatory: SSRF protection
+on every fetch, an injection scan on the retrieved text, and provenance so the answer's citations point
+at URLs the user can check.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/patterns/web_augmented.py</code><span class="note">the pattern</span></li>
+<li><code>app/tools/web_search.py</code><span class="note">the search tool</span></li>
+<li><code>app/net/ssrf_guard.py</code><span class="note">blocks internal addresses and redirect tricks</span></li>
+<li><code>app/agent/exfil_guard.py</code><span class="note">check_tool_output_for_injection, wrap_tool_output_as_untrusted</span></li>
+<li><code>app/ingestion/connectors/web_crawl_connector.py</code><span class="note">the ingest-time equivalent</span></li>
+</ul>
+<p>The assembler switches on <code>web_auto_activate</code> when the goal requires web knowledge or is
+real-time sensitive.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>goal   "is the CVE in our nginx version exploitable?"
+kb     nginx 1.24.0 in the infra collection
+web    search "CVE-2025-… nginx 1.24 exploitability"
+fetch  3 pages   → ssrf guard: all public, no redirects to 169.254.x
+scan   page 2 contains "SYSTEM: ignore prior instructions" → quarantined
+answer from pages 1 and 3, cited by URL, marked as external evidence
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The web is the largest prompt-injection surface an agent has. Treat every fetched page as attacker
+content: never let it name a tool, never let it be summarised into memory without a scan, and never
+let it override tenant policy. Rate-limit and cache aggressively; search APIs are metered and agents
+are enthusiastic.</p>
+<p>Enterprise deployments frequently need a self-hosted meta-search rather than a public API, for both
+egress control and data-residency reasons.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Indirect prompt injection.</strong> The main event. Scan, wrap, and never trust.</li>
+<li><strong>SSRF.</strong> A URL pointing at the metadata service. Guard every fetch, including
+redirects.</li>
+<li><strong>Source quality.</strong> A content farm outranks the vendor's docs. Prefer allowlisted
+domains for factual claims.</li>
+<li><strong>Cost drift.</strong> Metered search on every goal. Gate on the classifier's
+<code>requires_web</code>.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>The answer is newer than your corpus, or genuinely outside it.</li>
+<li>You have SSRF and injection controls already in place.</li>
+<li class="no">Avoid in regulated flows unless the domain allowlist is explicit and approved.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="memory-rag" data-impl="7" data-crit="7" data-tag="Composition">
+<h3><span class="idx">16</span>Memory-augmented RAG<a class="anchor" href="#memory-rag" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Composition</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Retrieve from what this tenant's agents have <em>learned</em> — past runs, lessons,
+preferences, tool reliability — not just from documents.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Memory tiers are retrievable stores with the same interface as a document collection, but different
+trust and lifecycle rules. At context assembly, memory recall runs alongside document retrieval and the
+results compete for the same token budget, with memory usually capped as a fraction of it.</p>
+<p>The difference from document RAG is provenance: a document is evidence, a memory is a <em>claim the
+system made about itself</em>. It must be scoped, decayed, and treated as lower-trust than a source
+document.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/memory/repository.py</code><span class="note">recall ranking, poison quarantine</span></li>
+<li><code>app/memory/long_term.py</code>, <code>episodic.py</code>, <code>procedural.py</code><span class="note">the tiers</span></li>
+<li><code>app/memory/knowledge_graph_memory.py</code><span class="note">memory as graph</span></li>
+<li><code>app/memory/salience.py</code><span class="note">what deserves to be remembered</span></li>
+<li><code>app/context/context_pipeline.py</code><span class="note">where memory and documents are merged under one budget</span></li>
+</ul>
+<p>Chapter 3 covers the tiers in full; here the point is that memory is a retrieval source.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>goal "prepare the monthly vendor report"
+documents  6 chunks: this month's invoices, the template
+memory
+  procedural  "vendor reports use the two-page format, not the deck"
+  episodic    "last month Contoso's numbers came from the CSV, not the API"
+  reliability "vendor-api tool: 62% success in the last 30 days"
+plan  changes as a result: pull the CSV first, skip the flaky API
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Memory recall is what makes an agent feel like it has been working here for a year. It is also the
+highest-risk retrieval source, because memory is written by the system itself and can be poisoned via
+an earlier goal. Cap memory at a modest share of the context budget, scope it hard, and log which
+memories entered a prompt — when an agent starts behaving strangely, that log is the first place to
+look.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Poisoned memory.</strong> An attacker-shaped lesson recalled forever. Quarantine on write,
+validate on read.</li>
+<li><strong>Stale preferences.</strong> A preference from a departed employee. Decay and re-confirm.</li>
+<li><strong>Budget crowding.</strong> Memory pushing out the actual evidence. Hard cap.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Agents run repeatedly for the same tenant and context carries over.</li>
+<li class="no">Skip for stateless one-shot tasks — the recall cost buys nothing.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="code-rag" data-impl="7" data-crit="7" data-tag="Domain">
+<h3><span class="idx">17</span>Code RAG<a class="anchor" href="#code-rag" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Domain</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">Retrieving code is a different problem: chunk on syntax not sentences, embed with a
+code-aware model, and return the symbol's definition plus its callers, not a window of characters.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Four changes to the standard pipeline. <em>Chunking</em> follows the AST — one function, class or
+method per chunk, with the enclosing signature preserved as context. <em>Embedding</em> uses a model
+trained on code, where identifier structure carries meaning. <em>Metadata</em> carries language, path,
+symbol name, and imports. <em>Retrieval</em> can follow structure: definition, references, tests,
+and the surrounding module.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/ingestion/chunkers/ast_chunker.py</code><span class="note">syntax-aware chunking</span></li>
+<li><code>app/embedding/router.py</code><span class="note">routes code content to a code embedding model</span></li>
+<li><code>app/ingestion/connectors/github_connector.py</code>, <code>gitlab_connector.py</code><span class="note">source acquisition</span></li>
+<li><code>app/knowledge/ingestors/github_ingestor.py</code><span class="note">repository ingestion</span></li>
+<li><code>app/ingestion/repository_security.py</code><span class="note">secret scanning before indexing</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Purposeful example</h4>
+<pre>query "where do we validate webhook signatures?"
+
+prose chunking  returns 400-char windows spanning two functions — unusable
+ast chunking    returns verify_signature() whole, with its decorator,
+                its module imports, and the 3 call sites
+plus            the test file that exercises it (linked by symbol metadata)
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Two non-negotiables. Scan for secrets <em>before</em> indexing — a repository index is a very
+efficient way to make a leaked key searchable by every agent in the tenant. And index by commit, so
+retrieval can be pinned to the revision an agent is reasoning about; answering questions about `main`
+using a six-month-old index produces confident nonsense.</p>
+<p>Embedding dimension and model choice differ from prose; keep code in its own collection so the index
+is homogeneous (chapter 7).</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Prose chunkers on code.</strong> The single most common mistake — semantically meaningless
+chunks.</li>
+<li><strong>Missing context.</strong> A function without its imports or class is not runnable
+knowledge. Include the enclosing signature.</li>
+<li><strong>Secrets indexed.</strong> Scan first, always.</li>
+<li><strong>Index drift.</strong> Re-index on merge, not on a weekly cron.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Agents answer questions about, or modify, a codebase.</li>
+<li class="no">Do not reuse your document pipeline for code and hope.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="colbert" data-impl="6" data-crit="5" data-tag="Ranking">
+<h3><span class="idx">18</span>ColBERT and late interaction<a class="anchor" href="#colbert" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Ranking</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i></span><span class="dv">5<small>/10</small></span></span></div>
+<p class="tldr">Instead of one vector per chunk, keep one per token and score by summing each query
+token's best match — much finer-grained matching, at a large index cost.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Single-vector retrieval compresses a whole passage into one point, which blurs specifics. Late
+interaction keeps token-level vectors and computes MaxSim: for each query token, the maximum similarity
+against any document token, summed. The result approaches cross-encoder quality at a fraction of the
+query-time cost — but the index is one or two orders of magnitude larger.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/patterns/colbert.py</code><span class="note">the pattern</span></li>
+<li><code>app/rag/gateway.py</code><span class="note">probe_colbert_readiness() — the gateway refuses to promise what is not indexed</span></li>
+<li><code>app/rag/cross_encoder.py</code><span class="note">the alternative: rerank a small candidate set instead</span></li>
+</ul>
+<p>Readiness probing is the interesting detail — ColBERT is only offered when its index actually exists,
+otherwise the gateway delegates to a ready strategy.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>query "refund window for damaged goods"
+single-vector  matches the general refunds passage (0.71)
+late interaction
+  "refund"  → best match in passage A (0.9), B (0.8)
+  "window"  → A (0.4), B (0.9)
+  "damaged" → A (0.2), B (0.95)   ← the distinguishing token
+  MaxSim sum: B wins clearly; single-vector had them nearly tied
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The honest recommendation: try bi-encoder retrieval plus a cross-encoder rerank of the top 50 first.
+It usually gets most of the quality at a fraction of the storage, and it is far easier to operate.
+Reach for ColBERT when your corpus is large, queries are long and specific, and rerank latency has
+become the bottleneck.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Index size shock.</strong> 10–100× the vector storage. Plan capacity before enabling.</li>
+<li><strong>Half-built index.</strong> Enabled for a collection that was never indexed — which is
+exactly what the readiness probe prevents.</li>
+<li><strong>Re-index cost.</strong> Model changes mean re-embedding every token.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Precision on long, specific queries matters and you can afford the index.</li>
+<li class="no">Start with cross-encoder reranking instead.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="raft" data-impl="6" data-crit="4" data-tag="Training">
+<h3><span class="idx">19</span>RAFT — retrieval-aware fine-tuning<a class="anchor" href="#raft" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Training</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="dv">4<small>/10</small></span></span></div>
+<p class="tldr">Train the model to use retrieved context correctly, including ignoring distractor
+documents — the only pattern here that changes the model rather than the pipeline.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Build training data where each example contains the question, the golden document, <em>and</em>
+distractors, with the target answer citing only the golden one. The model learns to read selectively
+rather than to summarise everything it is given. It is the counter to a real failure mode: models that
+dutifully incorporate irrelevant retrieved text because it was in the prompt.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/raft.py</code><span class="note">RAFTService</span></li>
+<li><code>app/rag/raft_repository.py</code><span class="note">dataset persistence</span></li>
+<li><code>app/db/models/raft.py</code><span class="note">stored artifacts</span></li>
+<li><code>app/rag/gateway.py</code><span class="note">checks for a completed RAFT model before offering the strategy</span></li>
+<li><code>app/api/training_export.py</code><span class="note">exporting training sets</span></li>
+</ul>
+<p>Present as a service and dataset pipeline; the fine-tune itself happens outside the platform, which
+is why the gateway must check whether a completed model exists.</p>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>training example
+  question    "what is the escalation path for a P1?"
+  golden      runbooks/oncall.md#4
+  distractors runbooks/oncall.md#9, policies/hr-escalation.md#2
+  target      answer citing only #4, explicitly ignoring the HR document
+after tuning: distractor incorporation drops from 23% to 6% on the eval set
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>RAFT is for organisations with a stable domain, a labelled corpus, and enough volume to amortise a
+fine-tune — and it fights the platform's vendor-neutrality, since a tuned model is a lock-in. In
+practice most teams get more from better retrieval and a distractor-resistant prompt than from tuning.
+Keep the dataset pipeline regardless: those examples are also your eval set.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Overfitting to the corpus.</strong> The model becomes brittle when documents change.</li>
+<li><strong>Stale tuned model.</strong> Domain moves, model does not. Version and re-eval.</li>
+<li><strong>Provider lock-in.</strong> Your fallback provider does not have your tune.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Stable domain, high volume, measured distractor problem.</li>
+<li class="no">Not before you have exhausted retrieval and prompt fixes.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="modular-rag" data-impl="7" data-crit="6" data-tag="Composition">
+<h3><span class="idx">20</span>Modular RAG<a class="anchor" href="#modular-rag" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Composition</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">Treat retrieval as a pipeline of swappable modules — rewrite, retrieve, rerank, filter,
+compress, generate — and let a tenant or a goal compose its own arrangement.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Each stage is an interface with several implementations. A pipeline is a validated list of stages;
+validation rejects arrangements that cannot work (rerank before retrieve, compress with no budget).
+The named patterns in this chapter then become <em>presets</em> over the same module set, which is what
+keeps eighteen strategies from being eighteen codebases.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/modular.py</code><span class="note">modules(), validate_modular_pipeline()</span></li>
+<li><code>app/rag/agentic/patterns/modular.py</code><span class="note">the runtime, including _fallback()</span></li>
+<li><code>app/rag_platform/query_planner.py</code><span class="note">plans which modules to run</span></li>
+<li><code>app/rag/certification.py</code><span class="note">certifies a pipeline as fit to serve</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>tenant "legal" pipeline
+  rewrite:    legal_terminology_expander
+  retrieve:   hybrid(k=40)
+  rerank:     cross_encoder(top=10)
+  filter:     jurisdiction == tenant.jurisdiction
+  compress:   citation_preserving(budget=6k)
+  generate:   with_mandatory_citations
+
+validation: passes. the same modules with rerank before retrieve → rejected
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Modularity is how a platform serves tenants with genuinely different retrieval needs without forking.
+The cost is a combinatorial test surface — which is why pipelines need certification and a fallback:
+if a custom arrangement fails at runtime, fall back to a known-good preset rather than failing the goal.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Invalid compositions.</strong> Caught by validation, not at 3 a.m.</li>
+<li><strong>Untested combinations.</strong> Certify pipelines against an eval set before allowing them
+in production.</li>
+<li><strong>Debug difficulty.</strong> Six stages, one bad result. Per-stage traces are mandatory.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Different tenants or domains need materially different retrieval.</li>
+<li class="no">Overkill for a single-domain product — use presets.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="adaptive-rag" data-impl="8" data-crit="8" data-tag="Selection">
+<h3><span class="idx">21</span>Adaptive RAG &amp; retrieval strategy selection<a class="anchor" href="#adaptive-rag" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Selection</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Classify the query, then pick the cheapest strategy that can answer it — no retrieval
+for chit-chat, hybrid for lookups, agentic for research.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A classifier assigns the query to a complexity band, and a policy maps band to strategy. The policy
+is a table, not a model, so it is auditable and adjustable:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Query type</th><th>Strategy</th><th>Typical cost</th></tr></thead>
+<tbody>
+<tr><td>No knowledge needed</td><td>none</td><td>0</td></tr>
+<tr><td>Single-fact lookup</td><td>hybrid</td><td>1×</td></tr>
+<tr><td>Ambiguous phrasing</td><td>fusion or HyDE</td><td>2–3×</td></tr>
+<tr><td>Accuracy-critical</td><td>corrective</td><td>2–4×</td></tr>
+<tr><td>Relationship question</td><td>graph</td><td>1–2×</td></tr>
+<tr><td>Multi-source research</td><td>agentic</td><td>5–20×</td></tr>
+</tbody>
+</table></div>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/agentic/patterns/adaptive.py</code><span class="note">the pattern</span></li>
+<li><code>app/rag/agentic/retrieval_policy.py</code><span class="note">the policy table</span></li>
+<li><code>app/agent/pattern_assembler.py</code><span class="note">goal-level RAG pattern selection</span></li>
+<li><code>app/rag_platform/query_planner.py</code><span class="note">query-level planning</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>"thanks!"                              → none        $0.000
+"what's the refund window?"            → hybrid      $0.002
+"how do our refund terms compare
+ to what we promised Contoso?"         → agentic     $0.140
+same endpoint, same tenant, 70× cost difference — decided by the classifier
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Adaptive selection is the difference between a RAG bill that scales with traffic and one that scales
+with your most expensive strategy. In a mixed workload, routing away from the heavy strategies on the
+80% of trivial queries typically cuts total retrieval spend by more than half.</p>
+<p>Log the chosen strategy with every request. Without that label you cannot compute cost or quality per
+strategy, and you are tuning blind.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Under-classification.</strong> A research question routed to hybrid returns a shallow answer
+that looks fine. Sample and audit.</li>
+<li><strong>Classifier cost.</strong> Do not use a large model to decide whether to use a large model.</li>
+<li><strong>Policy rot.</strong> Re-tune the table as strategies and prices change.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Query mix is heterogeneous — which it always is in a real product.</li>
+<li class="no">Skip only if every query is genuinely the same shape.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="readiness-delegation" data-impl="8" data-crit="8" data-tag="Operations">
+<h3><span class="idx">22</span>Strategy readiness &amp; delegation<a class="anchor" href="#readiness-delegation" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Operations</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">A strategy you cannot run is not an error to throw at the user — the gateway checks
+capability facts and delegates to the best <em>ready</em> alternative, recording the substitution.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Each strategy declares its requirements in a capability catalogue: an embedder, a built ColBERT
+index, a reachable reranker, a populated graph, an enabled web tool, a completed RAFT model. At request
+time the gateway gathers <em>readiness facts</em> about the current tenant and deployment, evaluates
+the requested strategy against them, and either runs it or picks a delegation candidate that is ready.
+The substitution appears in the trace.</p>
+<p>This is what turns eighteen strategies from a fragility into a resilience feature: the system
+degrades along a defined ladder instead of failing.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/catalogue.py</code><span class="note">RAG_CAPABILITY_CATALOGUE, DELEGATION_CANDIDATES</span></li>
+<li><code>app/rag/gateway.py</code><span class="note">readiness(), readiness_context(), ReadinessFact, probe_colbert_readiness()</span></li>
+<li><code>app/rag/readiness.py</code><span class="note">the readiness model</span></li>
+<li><code>app/rag/contracts.py</code><span class="note">UnavailableRAGStrategyError for the cases that cannot degrade</span></li>
+<li><code>app/runtime_readiness/degraded_mode_policy.py</code><span class="note">the platform-wide equivalent</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>requested   colbert
+facts       embedder ok · colbert index MISSING for collection "wiki"
+delegate    colbert → hybrid + cross_encoder   (nearest ready capability)
+trace       {requested:"colbert", executed:"hybrid+rerank",
+             reason:"colbert index not built for collection wiki"}
+user sees   an answer; the operator sees a build-the-index task
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Readiness is the difference between a multi-strategy platform and a demo. Tenants enable features at
+different times, indexes get rebuilt, providers go down — and none of that should turn into a user-facing
+error. Expose readiness on a status endpoint so support can answer "why is this tenant's search worse
+today" in one look.</p>
+<p>Alarm on delegation rate. A spike means a capability broke, and it will otherwise be invisible
+because every request still succeeds.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Silent degradation.</strong> Delegation with no trace and no metric — your evals then
+measure a strategy that never ran.</li>
+<li><strong>Delegation cascades.</strong> A → B → C. Bound the chain, then fail honestly.</li>
+<li><strong>Stale facts.</strong> Cached readiness that no longer holds. TTL the cache.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>More than one strategy, or any capability that can be absent per tenant.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="semantic-cache" data-impl="8" data-crit="8" data-tag="Cost">
+<h3><span class="idx">23</span>Semantic caching<a class="anchor" href="#semantic-cache" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Cost</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span></div>
+<p class="tldr">Two users ask the same question in different words — serve the second from cache by
+matching embeddings rather than strings.</p>
+
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>Embed the incoming query, search the cache of previous query embeddings, and if the nearest neighbour
+is above a similarity threshold, return its stored answer. The threshold is the whole design: too low
+and you serve the wrong answer confidently, too high and you never hit. Cache keys must include tenant,
+collection set, and any filter — a cached answer scoped wrongly is a data leak, not a performance win.</p>
+<p>Two layers in practice: cache the retrieval result (safe, high hit rate) and cache the final
+generation (bigger saving, needs a stricter threshold and shorter TTL).</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/rag/semantic_cache.py</code><span class="note">SemanticCache — dedupes LLM calls by embedding</span></li>
+<li><code>app/rag/llm_response_cache.py</code><span class="note">response-level cache</span></li>
+<li><code>app/rag/vector_cache_backend.py</code><span class="note">the backing store</span></li>
+<li><code>app/mcp/tool_cache.py</code><span class="note">ToolResultCache — the same idea for tool calls</span></li>
+<li><code>app/optimization/cache_optimizer.py</code><span class="note">tuning hit rate vs risk</span></li>
+</ul>
+</section>
+</div>
+
+<section class="band example">
+<h4>Worked example</h4>
+<pre>q1  "how long do I have to return an item?"     MISS → full pipeline, $0.004
+q2  "what's the return window?"                 sim 0.94 → HIT, $0.00002
+q3  "what's the return window for Contoso?"     sim 0.88 → MISS (below 0.92)
+                                                 — correctly, the answer differs
+key = hash(tenant, collections, filters, normalised query embedding)
+</pre>
+</section>
+
+<section class="band prod">
+<h4>At production scale</h4>
+<p>On support and FAQ workloads a semantic cache commonly removes 25–40% of pipeline executions, which is
+the largest single cost reduction available in RAG. Two rules keep it safe: never share a cache across
+tenants, and invalidate on ingestion — a cached answer from before this morning's document update is a
+correctness bug that no user will report.</p>
+</section>
+
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Threshold too loose.</strong> "Refund policy" answered with "return policy". Tune against
+labelled near-miss pairs.</li>
+<li><strong>Cross-tenant hit.</strong> Catastrophic. Tenant must be part of the key, enforced in code.</li>
+<li><strong>Stale after ingest.</strong> Invalidate by collection version.</li>
+<li><strong>Personalised answers cached.</strong> Never cache anything containing user-specific data.</li>
+</ul>
+</section>
+
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>Query distribution is repetitive — support, FAQ, internal help.</li>
+<li class="no">Avoid where answers are personalised or the corpus changes hourly.</li>
+</ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="ch2-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Learned strategy selection.</strong> Adaptive RAG uses a hand-written policy table. The
+      obvious upgrade is a bandit trained on measured answer quality per strategy per query class.</li>
+      <li><strong>Retrieval evaluation in the live path.</strong> Offline retrieval evals exist
+      (chapter 10), but there is no continuous online estimate of retrieval precision per collection to
+      drive automatic strategy changes.</li>
+      <li><strong>Cross-encoder distillation.</strong> Nothing distils the reranker's judgements back
+      into the bi-encoder, which is the standard way to make cheap retrieval better over time.</li>
+      <li><strong>Query-time index selection.</strong> The system picks a strategy but not an index —
+      no mechanism to choose between a fresh small index and a large stale one under latency pressure.</li>
+    </ul>
+  </div>
+</section>
+
+<div class="pagenav"><a class="prev" href="agent-patterns.html"><div class="d">Previous · CH 01</div><div class="t">Agent patterns</div></a><a class="next" href="agent-memory.html"><div class="d">Next · CH 03</div><div class="t">Agent memories</div></a></div>
+<p class="footnote">AgentVerse Field Manual · ratings are this author's judgement of the code as it stands, not a vendor claim. File paths are navigation anchors; line numbers drift.</p>
+</div></main>
+</div>
+<script>
+(function () {
+  var r = document.documentElement;
+  try { var t = localStorage.getItem('avfm-theme'); if (t) r.setAttribute('data-theme', t); } catch (e) {}
+  function cur() {
+    var a = r.getAttribute('data-theme');
+    if (a) return a;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  document.addEventListener('click', function (ev) {
+    var b = ev.target.closest('[data-theme-toggle]');
+    if (!b) return;
+    var n = cur() === 'dark' ? 'light' : 'dark';
+    r.setAttribute('data-theme', n);
+    try { localStorage.setItem('avfm-theme', n); } catch (e) {}
+  });
+  var f = document.querySelector('[data-filter]');
+  if (f) {
+    f.addEventListener('input', function () {
+      var q = f.value.trim().toLowerCase();
+      document.querySelectorAll('[data-filter-row]').forEach(function (el) {
+        el.hidden = q.length > 0 && el.getAttribute('data-filter-row').indexOf(q) === -1;
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,357 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>The autonomous agent loop (chapter 1) is the platform's headline, but it is not the only execution model.
+    Alongside it runs a <strong>deterministic workflow engine</strong>: a versioned DSL of typed steps that
+    executes exactly as authored, with no model deciding control flow. The two are complementary — the agent
+    loop for open-ended goals where the path is unknown, the workflow engine for known processes that must run
+    the same way every time.</p>
+
+    <p>The distinction is the whole point. A goal like "investigate this incident" wants an agent; a process
+    like "on every invoice: validate, screen for fraud, route for approval, file" wants a workflow — auditable,
+    testable, versioned, and identical on run one and run ten thousand. A world-class platform needs both, and
+    needs them to compose: workflow steps that invoke agents, agents that trigger workflows.</p>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 860 240" role="img" aria-label="The workflow engine: a versioned DSL definition is compiled and validated, then a runner executes typed steps (tool, LLM, RAG, conditional, parallel, foreach, HITL, sub-workflow) against a variable context, with audit and HITL pause built in.">
+      <defs><marker id="wf1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="0" y="30" width="130" height="42" rx="3"></rect>
+        <rect x="160" y="30" width="130" height="42" rx="3"></rect>
+        <rect x="320" y="30" width="130" height="42" rx="3"></rect>
+      </g>
+      <rect x="480" y="30" width="130" height="42" rx="3" fill="none" stroke="#00A8CC" stroke-width="1.6"></rect>
+      <g font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor" text-anchor="middle">
+        <text x="65" y="50">DSL definition</text><text x="65" y="65" font-size="9.5" opacity="0.6">versioned YAML</text>
+        <text x="225" y="50">compile</text><text x="225" y="65" font-size="9.5" opacity="0.6">validate the DAG</text>
+        <text x="385" y="50">test run</text><text x="385" y="65" font-size="9.5" opacity="0.6">dry-run before live</text>
+      </g>
+      <text x="545" y="50" font-family="Archivo, sans-serif" font-size="11.5" fill="#00A8CC" text-anchor="middle">runner</text>
+      <text x="545" y="65" font-family="IBM Plex Mono, monospace" font-size="8.5" fill="#00A8CC" text-anchor="middle">executes steps</text>
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#wf1)">
+        <line x1="130" y1="51" x2="156" y2="51"></line><line x1="290" y1="51" x2="316" y2="51"></line>
+        <line x1="450" y1="51" x2="476" y2="51"></line>
+      </g>
+      <path d="M545,72 L545,100" fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#wf1)"></path>
+      <rect x="0" y="104" width="860" height="70" rx="4" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="4 3"></rect>
+      <text x="16" y="120" font-family="IBM Plex Mono, monospace" font-size="9" fill="currentColor" opacity="0.6">TYPED STEPS (each a first-class, auditable unit)</text>
+      <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor">
+        <text x="16" y="140">tool · llm · rag · http · code</text>
+        <text x="230" y="140">conditional · parallel · foreach</text>
+        <text x="470" y="140">wait · set-var · transform · emit</text>
+        <text x="700" y="140">hitl · sub-workflow</text>
+        <text x="16" y="162" fill="#00A8CC">variable context (${step.output} references, expression engine)  ·  audit middleware  ·  HITL pause/resume</text>
+      </g>
+      <text x="0" y="200" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">deterministic: no model decides control flow — the same definition produces the same execution, run 1 and run 10,000</text>
+      <text x="0" y="220" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.68">composes with the agent loop: an llm/agent step invokes an agent; an agent can trigger a workflow (chapter 27)</text>
+    </svg>
+    <figcaption>The deterministic complement to the agent loop. Control flow is authored, not decided — which is
+    exactly what a regulated, repeatable process needs, and what an <span class="fig-em">llm step</span> lets
+    you blend with agent autonomy where a step genuinely needs judgement.</figcaption>
+  </figure>
+</section>
+
+<section class="block" id="workflow-engine">
+  <h2>The engine</h2>
+
+<article class="concept" id="we-dsl" data-impl="8" data-crit="8" data-tag="Definition">
+<h3>The workflow DSL and definition</h3>
+<p class="tldr">A workflow is authored as a versioned definition — a DAG of typed steps with a variable context —
+not written in code, so it can be created, reviewed, and changed without a deploy.</p>
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A <code>WorkflowDefinition</code> declares steps, their types, their inputs (including
+<code>${step.output}</code> references resolved by an expression engine), and their dependencies. It is data
+— YAML or a stored definition — so a workflow is a configuration object with a version, not a function. That
+makes it reviewable by non-engineers, diffable across versions, and changeable at runtime.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/workflow/dsl.py</code><span class="note">WorkflowDefinition, StepDefinition</span></li>
+<li><code>app/workflow/expression_engine.py</code>, <code>variables.py</code>, <code>context.py</code><span class="note">variable references and context</span></li>
+<li><code>app/workflow/registry.py</code><span class="note">StepTypeRegistry</span></li>
+<li><code>app/db/models/workflow.py</code><span class="note">the persisted Workflow model</span></li>
+</ul>
+</section>
+</div>
+<section class="band example">
+<h4>Worked example</h4>
+<pre>workflow "invoice-processing" v3
+  steps
+    parse:     tool  document_parser(input: ${trigger.file})
+    validate:  code  check_totals(${parse.output})
+    fraud:     rag   screen(${parse.output.vendor})       deps [validate]
+    approve:   hitl  "approve payment ${parse.output.total}?"  deps [fraud]
+    file:      tool  erp.create_payment(...)               deps [approve]
+authored as data, versioned, reviewable — no code deploy to change it
+</pre>
+</section>
+<section class="band prod">
+<h4>At production scale</h4>
+<p>A DSL is what lets a compliance or operations team own a process without owning code. The variable context
+with explicit <code>${step.output}</code> references is the detail that makes workflows composable and
+testable — every data flow is declared, so the compiler can validate it and a reviewer can read it. Versioning
+is non-negotiable: a running process must not change under a live run, and an audit must show which version
+executed.</p>
+</section>
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Workflows as code.</strong> Every change a deploy, unreviewable by process owners.</li>
+<li><strong>Unversioned definitions.</strong> A process that changed mid-run, unauditable.</li>
+<li><strong>Implicit data flow.</strong> Undeclared dependencies the compiler cannot validate.</li>
+</ul>
+</section>
+<section class="band when">
+<h4>Choose it when</h4>
+<ul>
+<li>A process is known, repeatable, and must run identically every time.</li>
+<li class="no">Not for open-ended goals where the path is unknown — that is the agent loop.</li>
+</ul>
+</section>
+</article>
+
+<article class="concept" id="we-compiler" data-impl="8" data-crit="7" data-tag="Validation">
+<h3>Compilation and testing</h3>
+<p class="tldr">Before a workflow runs it is compiled — the DAG validated, variable references resolved, step
+types checked — and can be dry-run against test inputs, so a broken workflow fails at authoring, not at 3 a.m.</p>
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>The compiler turns a definition into an executable form, validating that the DAG is acyclic, that every
+<code>${...}</code> reference resolves to a real upstream output, that step types exist, and that required
+inputs are present. A test runner executes the compiled workflow against sample inputs with mocked side
+effects — the simulation discipline of chapter 31 applied to workflows — so it can be proven before it goes
+live.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/workflow/compiler.py</code><span class="note">WorkflowCompiler</span></li>
+<li><code>app/workflow/test_runner.py</code><span class="note">dry-run against test inputs</span></li>
+<li><code>app/workflow/security.py</code><span class="note">security validation of a definition</span></li>
+<li><code>app/workflow/state.py</code>, <code>storage.py</code><span class="note">compiled state and storage</span></li>
+</ul>
+</section>
+</div>
+<section class="band example">
+<h4>Worked example</h4>
+<pre>compile "invoice-processing" v4
+  DAG acyclic?            yes
+  ${fraud.output.risk}    references a real fraud-step output?  yes
+  step type "code"        registered?  yes
+  approve step gated?     yes (hitl)
+test run against 3 sample invoices (mocked ERP) → all pass → cleared to
+publish; a v5 that referenced a deleted step would fail compilation
+</pre>
+</section>
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Compilation catches the errors that would otherwise surface mid-run against real systems — a dangling
+reference, a cycle, a missing input. The test runner is the workflow equivalent of the certification gate
+(chapter 10): a workflow that touches money or files a return must be proven against sample data before it is
+allowed to run live. Security validation matters because a workflow with an http or code step is an
+execution surface.</p>
+</section>
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>No compile-time validation.</strong> A dangling reference discovered at runtime.</li>
+<li><strong>No dry-run.</strong> A workflow's first real run is its first test.</li>
+<li><strong>Unvalidated code/http steps.</strong> An execution surface with no security check.</li>
+</ul>
+</section>
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Always, before a workflow serves production.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="we-steps" data-impl="8" data-crit="8" data-tag="Execution">
+<h3>Typed steps and the runner</h3>
+<p class="tldr">Fifteen step types — tool, LLM, RAG, HTTP, code, conditional, parallel, foreach, wait, set-var,
+transform, emit-event, HITL, sub-workflow, org — each a first-class auditable unit the runner executes against
+the variable context.</p>
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>The runner walks the compiled DAG, executing each step by type: <em>tool</em> and <em>http</em> call out,
+<em>llm</em> and <em>rag</em> invoke the model and retrieval, <em>code</em> runs in the sandbox (chapter 25),
+<em>conditional</em>/<em>parallel</em>/<em>foreach</em> are control flow, <em>hitl</em> pauses for approval,
+<em>sub-workflow</em> composes, <em>set-var</em>/<em>transform</em>/<em>emit-event</em> manipulate state. Each
+step's execution is audited. The <em>llm</em> and agent-invoking steps are where determinism meets autonomy —
+a mostly-fixed process with one judgement step.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/workflow/runner.py</code><span class="note">WorkflowRunner (wired in create_app)</span></li>
+<li><code>app/workflow/steps/*.py</code><span class="note">tool, llm, rag, http, code, conditional, parallel, foreach, wait, set_variable, transform, emit_event, hitl, sub_workflow, org steps</span></li>
+<li><code>app/workflow/celery_tasks.py</code><span class="note">execute_workflow_run</span></li>
+<li><code>app/workflow/audit_middleware.py</code><span class="note">AutoAuditMiddleware — audits each step</span></li>
+</ul>
+</section>
+</div>
+<section class="band example">
+<h4>Worked example</h4>
+<pre>runner executes invoice-processing
+  parse (tool)      → invoice fields                    audited
+  validate (code)   → sandbox, totals consistent        audited
+  fraud (rag)       → risk score 0.2                     audited
+  approve (hitl)    → pause → human approves → resume    audited
+  file (tool)       → ERP payment created                audited
+foreach variant: process 200 invoices, parallel-bounded, one workflow run
+</pre>
+</section>
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Typed steps are what make a workflow both expressive and governable — each step type has its own risk
+profile, audit shape, and failure handling, so the platform's controls (tool risk, sandbox, HITL, rollback)
+apply per step. The <em>foreach</em> and <em>parallel</em> steps bring the wave-execution benefit (chapter 1)
+to deterministic processes. The <em>llm</em> step is the seam that lets a workflow stay mostly deterministic
+while delegating the one genuinely-judgement step to a model or a full agent.</p>
+</section>
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Untyped steps.</strong> Controls that cannot apply per step.</li>
+<li><strong>Unbounded foreach.</strong> A 10,000-item fan-out exhausting the pool (chapter 28).</li>
+<li><strong>Unaudited steps.</strong> A process no one can reconstruct.</li>
+</ul>
+</section>
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Any repeatable multi-step process — the more regulated, the more this beats an agent.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="we-versions-hitl" data-impl="8" data-crit="8" data-tag="Lifecycle">
+<h3>Versioning, HITL, and runs</h3>
+<p class="tldr">Every workflow is versioned, every run records which version it executed, HITL steps pause durably
+like the agent loop, and templates ship proven processes (AML screening, KYC, invoice processing) ready to
+instantiate.</p>
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>A workflow has versions; a run pins the version it executed, so an audit shows exactly what ran. HITL steps
+use the same durable-pause machinery as the agent loop (chapter 1) — the run checkpoints, releases its worker,
+and resumes on approval via callback. Templates package proven workflows with their steps, gates, and
+validation, so a tenant instantiates AML screening or invoice processing rather than authoring it. Runs are
+observable and replayable (chapter 11).</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/workflow/router_versions.py</code>, <code>router_runs.py</code>, <code>router_templates.py</code>, <code>router_hitl.py</code><span class="note">versions, runs, templates, HITL routing</span></li>
+<li><code>app/workflow/hitl_extension.py</code>, <code>steps/hitl_step.py</code><span class="note">HITLWorkflowGateway — durable pause</span></li>
+<li><code>app/workflow/template_store.py</code>, <code>templates/*.yaml</code><span class="note">aml-screening, kyc-automation, invoice-processing</span></li>
+<li><code>app/workflow/nl_trigger.py</code>, <code>service.py</code>, <code>otel.py</code><span class="note">NL triggering, service, tracing</span></li>
+</ul>
+</section>
+</div>
+<section class="band example">
+<h4>Worked example</h4>
+<pre>tenant instantiates the "kyc-automation" template
+  comes with: document parse, identity extraction (OCR ch 21), sanctions
+  screen, risk scoring, HITL gate for high-risk, audit on every step
+run r-4471 pins workflow v3 → HITL pause at the high-risk gate → analyst
+approves → resumes → completes; the audit shows v3 ran, who approved, when
+</pre>
+</section>
+<section class="band prod">
+<h4>At production scale</h4>
+<p>Versioning plus per-run version pinning is what makes workflows defensible to a regulator — "this exact
+process, this version, ran, and here is the audit". Templates are how vertical processes (KYC, AML, invoicing)
+become instantly available with governance baked in (chapter 20). The shared HITL machinery means a workflow's
+approval gate has the same durability and argument-hashing guarantees as an agent's (chapter 1). Together they
+make the deterministic engine as production-grade as the agent loop.</p>
+</section>
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Runs not pinned to a version.</strong> An audit that cannot say what executed.</li>
+<li><strong>HITL blocking a worker.</strong> Use the durable pause, not a held thread (chapter 1).</li>
+<li><strong>Uncertified templates.</strong> A shared process that never passed its test runner.</li>
+</ul>
+</section>
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Regulated, repeatable processes — and start from a template where one exists.</li></ul>
+</section>
+</article>
+
+<article class="concept" id="we-conversational" data-impl="7" data-crit="6" data-tag="Adjacent">
+<h3>Conversational and collaborative execution</h3>
+<p class="tldr">Two adjacent execution surfaces: a chat layer that runs goals conversationally with intent
+detection and streaming, and a collaboration runtime for multiple humans steering shared work in real time.</p>
+<div class="cols">
+<section class="mech">
+<h4>Mechanism</h4>
+<p>The chat layer wraps the agent loop in a conversation: it detects intent (a question, a command, a goal),
+maintains conversational context and session memory (chapter 3), and streams responses — the same goal engine,
+a conversational front door. The collaboration runtime adds real-time multi-human coordination over a
+WebSocket (chapter 23): shared goal views, clarification capture, human decision traces, and preference
+capture, so several operators can steer one piece of work.</p>
+</section>
+<section class="code">
+<h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/chat/service.py</code>, <code>intent.py</code>, <code>execution.py</code>, <code>context.py</code>, <code>stream.py</code><span class="note">the conversational layer</span></li>
+<li><code>app/chat/memory_api.py</code>, <code>search.py</code>, <code>templates.py</code><span class="note">chat memory, search, templates</span></li>
+<li><code>app/collab/agent_collab.py</code>, <code>store.py</code><span class="note">agent collaboration</span></li>
+<li><code>app/collaboration_runtime/clarification.py</code>, <code>human_decision_trace.py</code>, <code>preference_capture.py</code>, <code>missing_input_request.py</code><span class="note">human-in-the-loop collaboration</span></li>
+</ul>
+</section>
+</div>
+<section class="band example">
+<h4>Worked example</h4>
+<pre>chat: "reconcile March payouts, then tell me the variance"
+  intent → goal → agent loop runs → streams progress → answers in the thread
+  follow-up "and file the amendment" → continues the session with context
+
+collab: two analysts watch a KYC review; one requests clarification, the
+  other approves the gate; both decisions recorded in the human decision trace
+</pre>
+</section>
+<section class="band prod">
+<h4>At production scale</h4>
+<p>The chat layer is how most users actually reach the platform — a conversation, not an API call — so it
+inherits every control (auth, scope, guardrails) while adding conversational context management, which is where
+multi-turn constraint persistence matters (chapter 10). The collaboration runtime is thinner (rated 7): real-time
+multi-operator steering with presence and conflict handling is an area a world-class platform would deepen —
+which is exactly the kind of gap the upgrade plan targets.</p>
+</section>
+<section class="band fail">
+<h4>Failure modes</h4>
+<ul>
+<li><strong>Chat losing constraints across turns.</strong> A stated constraint forgotten (chapter 10).</li>
+<li><strong>Collaboration without decision traces.</strong> No record of who steered what.</li>
+<li><strong>Session memory unbounded.</strong> Context overflow on long conversations (chapter 3).</li>
+</ul>
+</section>
+<section class="band when">
+<h4>Choose it when</h4>
+<ul><li>Users interact conversationally, or multiple humans steer shared work.</li></ul>
+</section>
+</article>
+</section>
+
+<section class="block" id="ch34-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Agent ⇄ workflow composition as first-class.</strong> An llm/agent step invokes an agent and
+      an agent can trigger a workflow, but a seamless "escalate from deterministic to autonomous mid-process
+      and back" is not fully first-class.</li>
+      <li><strong>Workflow eval and certification parity.</strong> The test runner exists; a required
+      certification gate for workflows matching the agent-side one (chapter 10) is thinner.</li>
+      <li><strong>Real-time collaboration depth.</strong> Multi-operator steering with presence, cursors, and
+      conflict resolution is early (chapter 23).</li>
+      <li><strong>Conversational constraint persistence.</strong> Extracting stated constraints from chat into
+      durable state, rather than trusting the transcript, is not fully wired (chapter 10).</li>
+    </ul>
+  </div>
+</section>

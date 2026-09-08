@@ -1,0 +1,214 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>Every chapter ended with a "what is missing" section. This chapter gathers those gaps into a coherent
+    picture of the frontier — not a list of bugs, but the honest boundary of what this architecture, and
+    agentic AI generally, cannot yet do well. A field manual that only described what works would be a sales
+    brochure; the gaps are where the interesting work is.</p>
+
+    <p>The gaps cluster into five themes. Each is a place where the current answer is "hand-tuned rules" or
+    "not yet built", and where the next generation of agent platforms will differentiate.</p>
+  </div>
+</section>
+
+<section class="block" id="frontier">
+  <h2>The frontier</h2>
+
+<article class="concept" id="fr-learned-decisions" data-impl="4" data-crit="8" data-tag="Frontier">
+<h3>Learned decisions replacing hand-tuned rules</h3>
+<p class="tldr">The platform is full of hand-written rule tables — pattern assembly, RAG strategy selection,
+model routing, retention. The frontier is replacing them with decisions learned from measured outcomes.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Today's decision points use ordered rule tables that a human wrote and tunes: the pattern assembler (chapter
+1), adaptive RAG selection (chapter 2), per-role model routing (chapter 16). These are auditable and
+predictable, which is why they exist — but they are also static and hand-tuned. The frontier is a bandit or
+learned policy over each, optimising measured success-per-dollar per goal class, with the eval and experiment
+machinery (chapters 9–10) providing the training signal. The tension is auditability: a learned policy is
+harder to explain to a regulator than a rule table.</p></section>
+<section class="code"><h4>Where it would attach</h4>
+<ul class="filelist">
+<li><code>app/agent/pattern_assembler.py</code><span class="note">learned pattern selection</span></li>
+<li><code>app/rag/agentic/retrieval_policy.py</code><span class="note">learned RAG strategy selection</span></li>
+<li><code>app/ai_router/role_policy.py</code><span class="note">learned model routing</span></li>
+<li><code>app/intelligence/experiment_registry.py</code><span class="note">the training signal (chapter 9)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>The gap</h4>
+<pre>today   the assembler applies a hand-written rule table (chapter 1)
+frontier a bandit over pattern sets, learning which combination gives the
+         best success-per-dollar for each goal class, from measured outcomes
+blocker  the eval/experiment machinery exists but is not wired to decisions;
+         and learned policies are harder to audit than rule tables
+</pre></section>
+<section class="band prod"><h4>Why it matters</h4>
+<p>Rated 4/8 — barely implemented, highly valuable. Hand-tuned rules are where a lot of the platform's
+remaining cost and quality sits: the assembler over-provisions patterns "to be safe", routing is conservative,
+retrieval selection is coarse. Learned decisions would close that gap, and the infrastructure to train them
+already exists. The open question is governance — how to keep a learned policy explainable enough for a
+regulated deployment.</p></section>
+<section class="band fail"><h4>The risk</h4>
+<ul><li><strong>Unexplainable decisions.</strong> A learned policy a regulator cannot audit.</li>
+<li><strong>Reward hacking.</strong> Optimising a proxy (cost) against quality.</li></ul></section>
+<section class="band when"><h4>The path</h4>
+<ul><li>Wire evals to decisions, start with the lowest-risk (model routing), keep a rule-table fallback.</li></ul></section>
+</article>
+
+<article class="concept" id="fr-cross-tenant" data-impl="3" data-crit="7" data-tag="Frontier">
+<h3>Privacy-preserving cross-tenant learning</h3>
+<p class="tldr">Every tenant learns alone. The frontier is aggregating lessons, failure modes, and attack
+patterns across tenants without leaking any tenant's data — the largest unrealised value in the platform.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Memory, reflexion lessons, red-team findings, and retrieval quality all improve per tenant in isolation
+(chapters 3, 9, 12) — which means common failure modes are rediscovered independently by every tenant. The
+frontier is privacy-preserving aggregation: federated learning, differential privacy, or careful
+anonymisation that lets the platform learn "this class of goal often fails this way" or "this injection pattern
+is circulating" across the fleet without any tenant's data reaching another. The hard part is proving the
+privacy guarantee.</p></section>
+<section class="code"><h4>Where it would attach</h4>
+<ul class="filelist">
+<li><code>app/memory/*</code><span class="note">cross-tenant lesson aggregation (chapter 3)</span></li>
+<li><code>app/enterprise/red_team_corpus.py</code><span class="note">shared attack intelligence (chapter 12)</span></li>
+<li><code>app/evals/dataset_builder.py</code><span class="note">shared failure patterns (chapter 10)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>The gap</h4>
+<pre>today   tenant A discovers an injection pattern; tenants B-Z stay vulnerable
+        until each is attacked independently
+frontier the pattern hardens the detectors for everyone, without A's data
+         leaving A
+blocker  the privacy guarantee must be provable, not hoped
+</pre></section>
+<section class="band prod"><h4>Why it matters</h4>
+<p>Rated 3/7 — essentially unbuilt, genuinely valuable. Security is the clearest case: an attack seen once
+should protect everyone, immediately. But the same applies to failure modes and retrieval quality. The reason
+it is unbuilt is that the privacy bar is high and the failure is catastrophic — a cross-tenant leak dressed as
+learning ends contracts. It is a frontier precisely because the value is large and the safety requirement is
+absolute.</p></section>
+<section class="band fail"><h4>The risk</h4>
+<ul><li><strong>Cross-tenant leakage.</strong> The catastrophic failure this must never cause.</li>
+<li><strong>Weak anonymisation.</strong> Re-identification from aggregated lessons.</li></ul></section>
+<section class="band when"><h4>The path</h4>
+<ul><li>Start with the safest signal (attack patterns, which are not tenant data), prove the guarantee, then expand.</li></ul></section>
+</article>
+
+<article class="concept" id="fr-native-multimodal" data-impl="4" data-crit="5" data-tag="Frontier">
+<h3>Native multimodal and richer perception</h3>
+<p class="tldr">Multimodal is extract-to-text today. The frontier is native reasoning over pixels, audio, and
+video — and the joint embeddings, cross-modal grounding, and speech-to-speech that come with it.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The current path captions images, transcribes audio, and reduces everything to text (chapter 15) — pragmatic,
+citable, governable, and lossy. The frontier is native multimodal: joint image/text embeddings for visual
+search (chapter 7), cross-modal grounding (verifying a claim against a chart, chapter 18), speech-to-speech
+voice without the STT/TTS round-trip (chapter 26), and true document understanding where layout is meaning.
+Each is more capable and harder to cite and govern, which is why the production path stays extract-to-text.</p></section>
+<section class="code"><h4>Where it would attach</h4>
+<ul class="filelist">
+<li><code>app/embedding/router.py</code><span class="note">native joint embeddings (chapter 7)</span></li>
+<li><code>app/perception/multimodal.py</code><span class="note">native perception (chapter 15)</span></li>
+<li><code>app/voice/*</code><span class="note">speech-to-speech (chapter 26)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>The gap</h4>
+<pre>today   a diagram → caption + OCR → text → retrieve/reason (lossy)
+frontier reason over the diagram's pixels directly, cite the region, ground
+         a claim against a chart
+blocker  citation and governance are harder for native modalities than for
+         extracted text
+</pre></section>
+<section class="band prod"><h4>Why it matters</h4>
+<p>Rated 4/5 — the production path (extraction) is sound and the frontier is genuinely better only for specific
+uses (visual search, document understanding, low-latency voice). It is a real frontier but a narrower one than
+the others — for most workloads, extract-to-text will remain the right, governable choice. The interesting
+cases are where layout or visual detail <em>is</em> the information, and extraction demonstrably loses it.</p></section>
+<section class="band fail"><h4>The risk</h4>
+<ul><li><strong>Uncitable claims.</strong> Native reasoning without a verifiable source.</li>
+<li><strong>Ungovernable modalities.</strong> Audio/video harder to scan and redact.</li></ul></section>
+<section class="band when"><h4>The path</h4>
+<ul><li>Adopt where extraction demonstrably loses information; keep extraction as the governable default.</li></ul></section>
+</article>
+
+<article class="concept" id="fr-formal-guarantees" data-impl="3" data-crit="6" data-tag="Frontier">
+<h3>Formal guarantees and verifiable safety</h3>
+<p class="tldr">Safety today is enforced by controls and measured by evals. The frontier is provable
+guarantees — checkable arguments that a loop terminates, that a scope cannot leak, that a control cannot be
+bypassed.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The platform enforces safety through deterministic controls (chapter 12), scope composition (chapter 14), and
+append-only invariants (chapter 1), and measures it through evals and red teaming (chapters 10, 31). These are
+strong but empirical — they show safety holds on the cases tested. The frontier is formal: a checkable proof
+that the agent loop must terminate, that the scope intersection cannot leak, that a fail-closed control cannot
+degrade to fail-open under any path. Formal methods for AI systems are early, but the highest-risk autonomous
+flows are where they would matter most.</p></section>
+<section class="code"><h4>Where it would attach</h4>
+<ul class="filelist">
+<li><code>app/agent/patterns/loop_engineering.py</code><span class="note">termination proofs (chapter 1)</span></li>
+<li><code>app/orchestration/runtime_profile_builder.py</code><span class="note">scope-composition proofs (chapter 14)</span></li>
+<li><code>app/policy_runtime/compiler.py</code><span class="note">provable policy invariants (chapter 13)</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>The gap</h4>
+<pre>today   iteration caps enforce termination numerically; tests show scopes
+        don't leak on the cases tried
+frontier a checkable argument that the loop MUST terminate, that a tenant-A
+         request CANNOT return a tenant-B row under any path
+blocker  formal methods for non-deterministic AI systems are immature
+</pre></section>
+<section class="band prod"><h4>Why it matters</h4>
+<p>Rated 3/6 — unbuilt, and valuable specifically for the highest-risk autonomous flows. For most goals,
+empirical safety (controls plus evals) is proportionate. But for an agent that can move money or delete data
+autonomously, a proof that a control cannot be bypassed is worth more than a thousand passing tests. This is
+the longest-horizon frontier, gated on the maturity of formal methods for AI, but it is where the ceiling of
+trustworthy autonomy ultimately sits.</p></section>
+<section class="band fail"><h4>The risk</h4>
+<ul><li><strong>False confidence.</strong> A proof of the wrong property.</li>
+<li><strong>Proving the model, not the system.</strong> Guarantees that do not cover the LLM's behaviour.</li></ul></section>
+<section class="band when"><h4>The path</h4>
+<ul><li>Start with the deterministic parts (loop termination, scope composition) where proofs are tractable.</li></ul></section>
+</article>
+
+<article class="concept" id="fr-summary" data-impl="6" data-crit="9" data-tag="Synthesis">
+<h3>The state of the art, honestly</h3>
+<p class="tldr">This platform is a genuinely complete production agent system — and it is complete in the way a
+first-generation system is: the capabilities exist, the hard problems have real answers, and the next
+generation of work is optimisation, learning, and formal rigour on top.</p>
+<div class="cols">
+<section class="mech"><h4>The assessment</h4>
+<p>Across 33 chapters and 300+ concepts, the pattern is consistent: the <em>capabilities</em> are shipped and
+governed (agent loop, retrieval, memory, guardrails, governance, observability all rate high), while the
+<em>intelligence</em> that would make those capabilities self-improving is where the gaps cluster (learned
+decisions, cross-tenant learning, formal guarantees all rate low). That is the honest shape of the current
+state of the art in production agentic AI: we know how to build agents that plan, retrieve, act, verify, and
+stay governed and safe; we are still learning how to make them get better on their own without giving up the
+auditability that makes them deployable.</p></section>
+<section class="code"><h4>The evidence</h4>
+<ul class="filelist">
+<li><code>graphify-out/</code><span class="note">21,585 nodes, 1,165 communities, 45 subsystems — the map this manual is drawn from</span></li>
+<li>The ratings across all chapters<span class="note">high on capability, low on learned intelligence — the shape of the frontier</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>The shape</h4>
+<pre>rated high (shipped, governed)   the agent loop, RAG, memory tiers, guardrails,
+                                 governance, scopes, observability, MCP, cost
+rated low (frontier)             learned pattern/RAG/model selection,
+                                 cross-tenant learning, native multimodal,
+                                 formal guarantees, 10M/day topology
+the capabilities are built; the self-improving intelligence on top is next
+</pre></section>
+<section class="band prod"><h4>What to take from this</h4>
+<p>If you are building an agent platform, this book is a map of the problems you will face and real answers to
+most of them — the capability layer is well-understood and this system implements it thoroughly. If you are
+researching, the low-rated concepts are the open problems worth your time. And if you are an architect
+deciding whether to build or buy: the hard, unglamorous 80% (isolation, idempotency, rollback, audit, cost
+control, degraded mode) is exactly what separates a demo from a platform, and it is exactly what a first
+survey underestimates. That 80% is most of this book.</p></section>
+<section class="band fail"><h4>The honest caveat</h4>
+<ul><li><strong>Ratings are one engineer's reading</strong> of the code as it stands, not a benchmark.</li>
+<li><strong>The frontier moves.</strong> Today's low-rated concept is next year's table stakes.</li></ul></section>
+<section class="band when"><h4>Where to go next</h4>
+<ul><li>Builders: the capability chapters (1–20). Researchers: the low-rated concepts. Architects: the reliability, governance, and scale chapters (13, 28–32).</li></ul></section>
+</article>
+</section>

@@ -1,0 +1,809 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coordination protocols · AgentVerse Field Manual</title>
+<meta name="description" content="CH 24 · Coordination protocols">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>/* ==========================================================================
+   AgentVerse Field Manual — instrument chrome + engineering-manual body.
+   Tokens: complete light palette on :root; dark redefined for the two
+   dark states (un-stamped OS-dark, and explicit data-theme="dark").
+   ========================================================================== */
+
+:root {
+  /* ground + surfaces (cool slate neutrals, biased toward the cyan accent) */
+  --bg:        #EFF2F5;
+  --paper:     #FFFFFF;
+  --raised:    #F6F8FA;
+  --sunken:    #E7ECF1;
+  --rail:      #FBFCFD;
+
+  /* ink */
+  --ink:       #0B1220;
+  --ink-2:     #3C4A5A;
+  --ink-3:     #6B7A8B;
+  --ink-4:     #93A1B0;
+
+  /* lines */
+  --line:      #D5DDE5;
+  --line-soft: #E4EAF0;
+  --line-hard: #B9C5D0;
+
+  /* accent — JARVIS electric, darkened for contrast on paper */
+  --accent:      #007D9C;
+  --accent-2:    #00A8CC;
+  --accent-wash: rgba(0,168,204,0.10);
+  --accent-line: rgba(0,125,156,0.35);
+
+  /* semantic (ratings, status, diagram emphasis) */
+  --good:      #0E7C55;
+  --good-wash: rgba(14,124,85,0.10);
+  --warn:      #A2650A;
+  --warn-wash: rgba(162,101,10,0.10);
+  --bad:       #B3303B;
+  --bad-wash:  rgba(179,48,59,0.10);
+  --note:      #6D46C4;
+  --note-wash: rgba(109,70,196,0.10);
+
+  --shadow-1: 0 1px 2px rgba(11,18,32,0.05);
+  --shadow-2: 0 8px 28px rgba(11,18,32,0.10);
+
+  --measure: 68ch;
+  --rail-w: 274px;
+  --topbar-h: 52px;
+
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #070A10;
+    --paper:     #0C1017;
+    --raised:    #12171F;
+    --sunken:    #090D13;
+    --rail:      #0A0E15;
+
+    --ink:       #E9EFF5;
+    --ink-2:     #B3C0CD;
+    --ink-3:     #8593A2;
+    --ink-4:     #5D6C7B;
+
+    --line:      rgba(255,255,255,0.09);
+    --line-soft: rgba(255,255,255,0.055);
+    --line-hard: rgba(255,255,255,0.16);
+
+    --accent:      #35D8F5;
+    --accent-2:    #00D4FF;
+    --accent-wash: rgba(0,212,255,0.10);
+    --accent-line: rgba(0,212,255,0.35);
+
+    --good:      #2ED08C;
+    --good-wash: rgba(46,208,140,0.12);
+    --warn:      #F0B429;
+    --warn-wash: rgba(240,180,41,0.12);
+    --bad:       #FF6B78;
+    --bad-wash:  rgba(255,107,120,0.12);
+    --note:      #B08CFF;
+    --note-wash: rgba(176,140,255,0.12);
+
+    --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+    --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:        #070A10;
+  --paper:     #0C1017;
+  --raised:    #12171F;
+  --sunken:    #090D13;
+  --rail:      #0A0E15;
+
+  --ink:       #E9EFF5;
+  --ink-2:     #B3C0CD;
+  --ink-3:     #8593A2;
+  --ink-4:     #5D6C7B;
+
+  --line:      rgba(255,255,255,0.09);
+  --line-soft: rgba(255,255,255,0.055);
+  --line-hard: rgba(255,255,255,0.16);
+
+  --accent:      #35D8F5;
+  --accent-2:    #00D4FF;
+  --accent-wash: rgba(0,212,255,0.10);
+  --accent-line: rgba(0,212,255,0.35);
+
+  --good:      #2ED08C;
+  --good-wash: rgba(46,208,140,0.12);
+  --warn:      #F0B429;
+  --warn-wash: rgba(240,180,41,0.12);
+  --bad:       #FF6B78;
+  --bad-wash:  rgba(255,107,120,0.12);
+  --note:      #B08CFF;
+  --note-wash: rgba(176,140,255,0.12);
+
+  --shadow-1: 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-2: 0 10px 34px rgba(0,0,0,0.55);
+
+  color-scheme: dark;
+}
+
+/* -------------------------------------------------- base */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 17.5px;
+  line-height: 1.62;
+  font-synthesis-weight: none;
+}
+
+a { color: var(--accent); text-decoration-color: var(--accent-line); text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 2px; }
+
+h1, h2, h3, h4, h5 { font-family: var(--f-display); font-weight: 650; letter-spacing: -0.015em; text-wrap: balance; margin: 0; }
+p { margin: 0 0 0.85em; }
+p:last-child { margin-bottom: 0; }
+ul, ol { margin: 0 0 0.9em; padding-left: 1.25em; }
+li { margin: 0.25em 0; }
+li > ul, li > ol { margin-bottom: 0.2em; }
+strong { font-weight: 650; }
+code, kbd, samp { font-family: var(--f-mono); font-size: 0.855em; }
+:not(pre) > code {
+  background: var(--sunken); border: 1px solid var(--line-soft);
+  padding: 0.08em 0.34em; border-radius: 3px; color: var(--ink-2);
+  word-break: break-word;
+}
+hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+
+.mono { font-family: var(--f-mono); }
+.eyebrow {
+  font-family: var(--f-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3);
+}
+
+/* -------------------------------------------------- top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 50;
+  height: var(--topbar-h);
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 16px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .brand {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink);
+  text-decoration: none; white-space: nowrap;
+}
+.topbar .brand b { color: var(--accent); font-weight: 600; }
+.topbar .crumb {
+  font-family: var(--f-mono); font-size: 11px; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topbar .spacer { flex: 1 1 auto; }
+.tb-btn {
+  font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  background: transparent; color: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 5px 9px; cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.tb-btn:hover { border-color: var(--accent-line); color: var(--accent); }
+
+/* -------------------------------------------------- shell */
+.shell { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); align-items: start; }
+
+.rail {
+  position: sticky; top: var(--topbar-h);
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--rail);
+  border-right: 1px solid var(--line);
+  padding: 18px 0 40px;
+}
+.rail h4 { font-size: 10.5px; font-family: var(--f-mono); font-weight: 500; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink-4); padding: 0 18px; margin: 16px 0 8px; }
+.rail .part-label { padding: 0 18px; margin: 20px 0 6px; }
+.rail nav a {
+  display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: baseline;
+  padding: 5px 18px; text-decoration: none; color: var(--ink-2);
+  font-family: var(--f-display); font-size: 13.5px; line-height: 1.35; letter-spacing: -0.005em;
+  border-left: 2px solid transparent;
+}
+.rail nav a .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.rail nav a:hover { background: var(--accent-wash); color: var(--ink); }
+.rail nav a[aria-current="page"] { color: var(--accent); border-left-color: var(--accent); background: var(--accent-wash); }
+.rail nav a[aria-current="page"] .n { color: var(--accent); }
+.rail .inpage { border-top: 1px solid var(--line-soft); margin-top: 14px; padding-top: 4px; }
+.rail .inpage a { grid-template-columns: 26px 1fr; font-size: 12.5px; color: var(--ink-3); }
+.rail .filter { padding: 0 14px 6px; }
+.rail .filter input {
+  width: 100%; font-family: var(--f-mono); font-size: 11.5px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
+}
+.rail .filter input::placeholder { color: var(--ink-4); }
+
+main { min-width: 0; padding: 0 0 96px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 clamp(18px, 4vw, 52px); }
+.prose { max-width: var(--measure); }
+
+/* -------------------------------------------------- chapter head */
+.chead { padding: 46px 0 26px; border-bottom: 1px solid var(--line); }
+.chead .kicker { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.chead .cnum {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
+  color: var(--accent); border: 1px solid var(--accent-line); border-radius: 3px; padding: 3px 7px;
+}
+.chead h1 { font-size: clamp(30px, 4.4vw, 46px); line-height: 1.06; font-weight: 700; letter-spacing: -0.028em; }
+.chead .lede { font-size: 20px; line-height: 1.5; color: var(--ink-2); margin-top: 16px; max-width: 62ch; }
+
+.statstrip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 0; margin-top: 26px;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--paper); overflow: hidden;
+}
+.statstrip div { padding: 11px 16px; border-right: 1px solid var(--line-soft); }
+.statstrip div:last-child { border-right: 0; }
+.statstrip .k { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.statstrip .v { font-family: var(--f-display); font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------- sections */
+section.block { padding: 38px 0 8px; }
+section.block > h2 {
+  font-size: 25px; font-weight: 700; letter-spacing: -0.022em; padding-bottom: 8px;
+  border-bottom: 2px solid var(--ink); display: inline-block; margin-bottom: 20px;
+}
+section.block > .prose { margin-bottom: 8px; }
+
+.callout {
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  background: var(--paper); padding: 14px 16px; margin: 18px 0; border-radius: 0 4px 4px 0;
+  font-size: 16.5px;
+}
+.callout.warn { border-left-color: var(--warn); }
+.callout.bad  { border-left-color: var(--bad); }
+.callout.good { border-left-color: var(--good); }
+.callout .lbl { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); display: block; margin-bottom: 5px; }
+
+/* -------------------------------------------------- concept card */
+.concept {
+  border-top: 1px solid var(--line);
+  padding: 30px 0 34px;
+  scroll-margin-top: calc(var(--topbar-h) + 12px);
+}
+.concept:first-of-type { border-top-width: 2px; border-top-color: var(--ink); }
+.concept > h3 {
+  font-size: 23px; font-weight: 700; letter-spacing: -0.022em; line-height: 1.18;
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.concept > h3 .idx {
+  font-family: var(--f-mono); font-size: 11px; font-weight: 500; color: var(--ink-4);
+  letter-spacing: 0.06em; font-variant-numeric: tabular-nums;
+}
+.concept > h3 a.anchor { color: var(--ink-4); text-decoration: none; font-family: var(--f-mono); font-size: 13px; opacity: 0; }
+.concept:hover > h3 a.anchor { opacity: 1; }
+
+.dials { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin: 12px 0 16px; }
+.dial { display: flex; align-items: center; gap: 8px; }
+.dial .dl { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-4); }
+.meter { display: inline-flex; gap: 2px; }
+.meter i { display: block; width: 7px; height: 12px; background: var(--line); border-radius: 1px; }
+.meter i.on { background: var(--accent); }
+.dial.crit .meter i.on { background: var(--note); }
+.dial .dv { font-family: var(--f-mono); font-size: 12px; font-weight: 600; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.dial .dv small { font-weight: 400; color: var(--ink-4); }
+.pill {
+  font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap;
+}
+.pill.shipped { color: var(--good); background: var(--good-wash); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.pill.partial { color: var(--warn); background: var(--warn-wash); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.pill.thin    { color: var(--bad);  background: var(--bad-wash);  border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.pill.tag     { color: var(--ink-3); background: var(--sunken); border-color: var(--line-soft); }
+
+.tldr { font-size: 18.5px; line-height: 1.5; color: var(--ink); max-width: 66ch; }
+.tldr b, .tldr strong { color: var(--ink); }
+
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 20px 0 0; }
+.cols > section { min-width: 0; }
+.cols h4, .band h4 {
+  font-family: var(--f-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; color: var(--ink-3); margin: 0 0 8px;
+  padding-bottom: 5px; border-bottom: 1px solid var(--line-soft);
+}
+.cols section p, .band p, .cols section li, .band li { font-size: 16.5px; }
+
+.band { margin-top: 18px; padding: 15px 17px; border-radius: 4px; border: 1px solid var(--line-soft); background: var(--raised); }
+.band.example { background: var(--sunken); }
+.band.prod  { border-color: color-mix(in srgb, var(--accent) 22%, var(--line-soft)); background: var(--accent-wash); }
+.band.fail  { border-color: color-mix(in srgb, var(--bad) 22%, var(--line-soft)); background: var(--bad-wash); }
+.band.when  { background: var(--paper); }
+.band.example h4 { color: var(--ink-2); }
+.band.prod h4 { color: var(--accent); border-bottom-color: var(--accent-line); }
+.band.fail h4 { color: var(--bad); border-bottom-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+
+.band.when ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.band.when li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; }
+.band.when li::before { content: "+"; font-family: var(--f-mono); color: var(--good); font-weight: 600; }
+.band.when li.no::before { content: "\2212"; color: var(--bad); }
+
+/* -------------------------------------------------- code + pre */
+pre {
+  margin: 12px 0; padding: 13px 15px; overflow-x: auto;
+  background: var(--sunken); border: 1px solid var(--line-soft); border-radius: 4px;
+  font-family: var(--f-mono); font-size: 12.5px; line-height: 1.62; color: var(--ink-2);
+  tab-size: 2;
+}
+:root[data-theme="dark"] pre, :root:not([data-theme="light"]) pre { color: var(--ink-2); }
+pre .c { color: var(--ink-4); }
+pre .k { color: var(--accent); }
+pre .s { color: var(--good); }
+
+.filelist { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.filelist li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; font-size: 15px; }
+.filelist code { font-size: 12.3px; background: none; border: 0; padding: 0; color: var(--accent); word-break: break-all; }
+.filelist .note { color: var(--ink-3); font-size: 15px; }
+
+/* -------------------------------------------------- tables */
+.tablewrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+table { border-collapse: collapse; width: 100%; font-family: var(--f-display); font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+th {
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-3); background: var(--raised); border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+td code { font-size: 12px; }
+
+/* -------------------------------------------------- figures */
+figure { margin: 22px 0; }
+figure svg { display: block; max-width: 100%; height: auto; color: var(--ink-2); }
+figcaption { font-size: 14.5px; color: var(--ink-3); margin-top: 9px; font-family: var(--f-display); max-width: 70ch; }
+.fig-em { color: var(--accent); }
+
+/* -------------------------------------------------- index page bits */
+.chapgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 4px; overflow: hidden; margin: 22px 0; }
+.chapgrid a {
+  background: var(--paper); padding: 16px 17px; text-decoration: none; color: var(--ink);
+  display: flex; flex-direction: column; gap: 7px; min-height: 128px;
+}
+.chapgrid a:hover { background: var(--accent-wash); }
+.chapgrid .n { font-family: var(--f-mono); font-size: 10.5px; color: var(--accent); letter-spacing: 0.1em; }
+.chapgrid .t { font-family: var(--f-display); font-size: 16.5px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.25; }
+.chapgrid .d { font-size: 14.5px; color: var(--ink-3); line-height: 1.45; }
+.chapgrid .m { margin-top: auto; font-family: var(--f-mono); font-size: 10px; color: var(--ink-4); letter-spacing: 0.06em; }
+
+.matrix td.c1 { font-family: var(--f-display); font-weight: 600; }
+.matrix .bar { display: inline-flex; gap: 2px; vertical-align: middle; }
+.matrix .bar i { width: 5px; height: 10px; background: var(--line); border-radius: 1px; display: block; }
+.matrix .bar i.on { background: var(--accent); }
+.matrix .bar.crit i.on { background: var(--note); }
+
+/* -------------------------------------------------- footer nav */
+.pagenav { display: flex; gap: 12px; justify-content: space-between; margin-top: 54px; padding-top: 20px; border-top: 1px solid var(--line); }
+.pagenav a { flex: 1 1 0; text-decoration: none; border: 1px solid var(--line); border-radius: 4px; padding: 13px 15px; background: var(--paper); color: var(--ink); }
+.pagenav a:hover { border-color: var(--accent-line); }
+.pagenav .d { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-4); }
+.pagenav .t { font-family: var(--f-display); font-weight: 650; font-size: 15.5px; letter-spacing: -0.015em; }
+.pagenav a.next { text-align: right; }
+
+.footnote { margin-top: 30px; font-size: 14.5px; color: var(--ink-3); font-family: var(--f-display); }
+
+/* -------------------------------------------------- responsive */
+@media (max-width: 1080px) {
+  .cols { grid-template-columns: 1fr; gap: 14px; }
+}
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail {
+    position: static; height: auto; max-height: 340px;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  body { font-size: 17px; }
+  .chead { padding-top: 30px; }
+}
+@media print {
+  .rail, .topbar, .pagenav { display: none; }
+  body { background: #fff; color: #000; font-size: 10.5pt; }
+  .shell { grid-template-columns: 1fr; }
+}
+
+.idxhead { background: var(--raised); font-family: var(--f-mono); font-size: 11px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="index.html">AgentVerse <b>Field Manual</b></a>
+  <span class="crumb">CH 24 · Coordination protocols</span>
+  <span class="spacer"></span>
+  <button class="tb-btn" data-theme-toggle type="button">Theme</button>
+</header>
+<div class="shell">
+<aside class="rail"><h4>Field manual</h4><nav><a href="index.html"><span class="n">00</span><span>Hub &amp; how to read</span></a></nav></nav><div class="part-label eyebrow">I · The agent</div><nav><a href="agent-patterns.html"><span class="n">01</span><span>Agent patterns</span></a><a href="rag-patterns.html"><span class="n">02</span><span>RAG patterns</span></a><a href="agent-memory.html"><span class="n">03</span><span>Agent memories</span></a></nav><div class="part-label eyebrow">II · Knowledge</div><nav><a href="knowledge-and-graphs.html"><span class="n">04</span><span>Knowledge &amp; knowledge graph</span></a><a href="ingestion.html"><span class="n">05</span><span>Ingestion</span></a><a href="retrieval-strategies.html"><span class="n">06</span><span>Retrieval strategies</span></a><a href="embeddings.html"><span class="n">07</span><span>Embeddings</span></a><a href="chunking.html"><span class="n">17</span><span>Chunking strategies</span></a></nav><div class="part-label eyebrow">III · Context &amp; quality</div><nav><a href="prompt-builder.html"><span class="n">08</span><span>Prompt builder</span></a><a href="agent-improvement.html"><span class="n">09</span><span>Agent improvement</span></a><a href="evals.html"><span class="n">10</span><span>Evals</span></a><a href="hallucination.html"><span class="n">18</span><span>Hallucination handling</span></a></nav><div class="part-label eyebrow">IV · Safety &amp; control</div><nav><a href="guardrails.html"><span class="n">12</span><span>Guardrails</span></a><a href="governance.html"><span class="n">13</span><span>Governance</span></a><a href="scopes.html"><span class="n">14</span><span>Scopes</span></a><a href="observability.html"><span class="n">11</span><span>Observability</span></a></nav><div class="part-label eyebrow">V · Modality &amp; models</div><nav><a href="multimodal.html"><span class="n">15</span><span>Multimodal</span></a><a href="ocr.html"><span class="n">21</span><span>OCR</span></a><a href="model-router.html"><span class="n">16</span><span>Multi-model router</span></a></nav><div class="part-label eyebrow">VI · The platform</div><nav><a href="platform-workflows.html"><span class="n">19</span><span>Core platform workflows</span></a><a href="platform-concepts.html"><span class="n">20</span><span>Other core platform concepts</span></a><a href="agent-teams.html"><span class="n">22</span><span>AI agent teams</span></a><a href="jarvis.html"><span class="n">23</span><span>Jervis (JARVIS) console</span></a></nav><div class="part-label eyebrow">VII · Not on the list</div><nav><a href="coordination-protocols.html" aria-current="page"><span class="n">24</span><span>Coordination protocols</span></a><a href="code-execution.html"><span class="n">25</span><span>Code execution &amp; sandboxing</span></a><a href="voice.html"><span class="n">26</span><span>Voice &amp; realtime agents</span></a><a href="triggers.html"><span class="n">27</span><span>Triggers &amp; event-driven agents</span></a><a href="reliability-qos.html"><span class="n">28</span><span>Reliability &amp; QoS</span></a><a href="cost-capacity.html"><span class="n">29</span><span>Cost &amp; capacity engineering</span></a><a href="data-lifecycle.html"><span class="n">30</span><span>Data lifecycle &amp; provenance</span></a><a href="testing-certification.html"><span class="n">31</span><span>Testing &amp; certification</span></a><a href="scale-playbook.html"><span class="n">32</span><span>Scale playbook</span></a><a href="workflow-engine.html"><span class="n">34</span><span>Workflow engine</span></a><a href="frontier.html"><span class="n">33</span><span>Frontier &amp; gaps</span></a></nav><div class="part-label eyebrow">Appendix</div><nav><a href="appendix-ratings.html"><span class="n">A</span><span>Ratings matrix</span></a><a href="appendix-glossary.html"><span class="n">B</span><span>Glossary</span></a></nav><div class="inpage"><h4>In this chapter</h4><nav><a href="#co-service"><span class="n">01</span><span>The coordination substrate</span></a><a href="#co-magentic"><span class="n">02</span><span>Magentic: ledger-driven orchestration</span></a><a href="#co-group-chat"><span class="n">03</span><span>Group chat</span></a><a href="#co-handoffs"><span class="n">04</span><span>Handoffs</span></a><a href="#co-swarm"><span class="n">05</span><span>Swarm and mixture-of-agents</span></a><a href="#co-auction"><span class="n">06</span><span>Auction-based allocation</span></a><a href="#co-camel-generative"><span class="n">07</span><span>CAMEL role-play and generative agents</span></a><a href="#co-a2a"><span class="n">08</span><span>Agent-to-agent (A2A) communication</span></a></nav></div></aside>
+<main><div class="wrap">
+<header class="chead"><div class="kicker"><span class="cnum">CH 24</span><span class="eyebrow">VII · Not on the list</span></div><h1>Coordination protocols</h1><p class="lede">Magentic, group chat, swarm, auction, CAMEL, MoA, handoffs, A2A.</p><div class="statstrip"><div><div class="k">Concepts</div><div class="v">8</div></div><div><div class="k">Mean impl</div><div class="v">6.8</div></div><div><div class="k">Mean criticality</div><div class="v">5.2</div></div><div><div class="k">Shipped</div><div class="v">1</div></div><div><div class="k">Thin / missing</div><div class="v">0</div></div></div></header><section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>Chapter 1 covered the multi-agent <em>patterns</em> that run inside one goal. This chapter is about
+    the coordination <em>protocols</em> underneath them — the durable, event-sourced machinery that lets
+    agents negotiate, hand off, converge, and bid over time, with state that survives restarts and a
+    transcript that can be replayed. These are the primitives that turn "several agents in a loop" into a
+    governed multi-agent system.</p>
+
+    <p>The unifying design is <strong>event-sourced coordination</strong>: each protocol is a state machine
+    whose transitions are recorded, so coordination is durable (survives a worker dying), auditable (every
+    decision is in the ledger), and replayable (you can reconstruct exactly what happened). Each protocol
+    below is one answer to "how do multiple agents agree on something".</p>
+  </div>
+</section>
+
+<section class="block" id="coordination">
+  <h2>The protocols</h2>
+
+<article class="concept" id="co-service" data-impl="8" data-crit="7" data-tag="Foundation">
+<h3><span class="idx">01</span>The coordination substrate<a class="anchor" href="#co-service" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill shipped">Shipped</span><span class="pill tag">Foundation</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="dv">8<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span></div>
+<p class="tldr">A shared service, contracts, store, and state machines that every coordination protocol builds
+on — event-sourced, tenant-scoped, and replayable.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The coordination service provides the common machinery: typed contracts for coordination messages, a
+durable store, state machines, streaming, an outbox for reliable delivery, and replay. Each protocol
+(magentic, group chat, swarm, auction…) is an adapter over this substrate, so they share persistence,
+audit, and cross-replica delivery rather than each reinventing it.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/coordination/service.py</code><span class="note">CoordinationService</span></li>
+<li><code>app/coordination/contracts.py</code>, <code>store.py</code>, <code>state_machines.py</code>, <code>state_repository.py</code><span class="note">the substrate</span></li>
+<li><code>app/coordination/outbox.py</code>, <code>streaming.py</code>, <code>streams.py</code><span class="note">reliable delivery + streaming</span></li>
+<li><code>app/coordination/replay.py</code>, <code>read_models.py</code><span class="note">replay and projections</span></li>
+<li><code>app/coordination/transcript/*</code><span class="note">the transcript service and projections</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>a coordination session (any protocol)
+ messages recorded as events in the store (tenant-scoped)
+ state machine advances on each event
+ outbox guarantees delivery across replicas
+ transcript projection → a readable record → replayable for audit
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Event-sourcing coordination is what makes multi-agent systems debuggable at all. When a negotiation
+produces a strange outcome, the transcript is the only artifact that explains it, and replay lets you
+reconstruct it exactly. Building the substrate once means every protocol inherits durability and audit.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Coordination state in memory.</strong> Lost on restart, unauditable.</li>
+<li><strong>No transcript.</strong> Outcomes that cannot be explained.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any durable multi-agent coordination.</li></ul></section>
+</article>
+
+<article class="concept" id="co-magentic" data-impl="7" data-crit="6" data-tag="Protocol">
+<h3><span class="idx">02</span>Magentic: ledger-driven orchestration<a class="anchor" href="#co-magentic" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Protocol</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">A supervisor protocol with a task ledger: the orchestrator tracks progress against a plan,
+detects stalls, evaluates progress, and replans — a durable, auditable version of the supervisor pattern.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Magentic maintains a ledger of the plan and its revisions. A progress evaluator judges whether the team is
+advancing; a stall detector catches lack of progress; a replan manager revises the plan (recording a ledger
+revision); a participant policy governs who acts; and human review can be inserted. It is the supervisor
+pattern (chapter 1) made durable and event-sourced.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/coordination/magentic/adapter.py</code><span class="note">the protocol adapter</span></li>
+<li><code>app/coordination/magentic/progress_evaluator.py</code>, <code>stall_detector.py</code><span class="note">progress and stall</span></li>
+<li><code>app/coordination/magentic/replan_manager.py</code>, <code>participant_policy.py</code><span class="note">replan and participation</span></li>
+<li><code>app/coordination/magentic/human_review.py</code>, <code>models.py</code><span class="note">human review</span></li>
+<li><code>app/coordination/ledger/*</code><span class="note">LedgerRevision — the task ledger</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>magentic session, goal "resolve the incident"
+ ledger v1: [gather metrics, diff deploys, analyse queries, remediate]
+ progress evaluator: steps 1-2 done, step 3 stalled (same result 3×)
+ stall detector fires → replan manager → ledger v2 (new approach for step 3)
+ all revisions recorded → replayable, auditable
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Magentic's value over the plain supervisor pattern is durability and the explicit stall/progress
+machinery — a long-running multi-agent goal survives restarts and cannot silently spin. The ledger is the
+audit artifact that explains why the plan changed. Reserve it for goals long or complex enough to justify
+the coordination overhead.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Weak progress signal.</strong> A stall not detected, or false stalls.</li>
+<li><strong>Unbounded replanning.</strong> Ledger revisions without a cap.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Long, complex multi-agent goals needing durable orchestration.</li></ul></section>
+</article>
+
+<article class="concept" id="co-group-chat" data-impl="7" data-crit="5" data-tag="Protocol">
+<h3><span class="idx">03</span>Group chat<a class="anchor" href="#co-group-chat" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Protocol</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i></span><span class="dv">5<small>/10</small></span></span></div>
+<p class="tldr">Multiple agents in a shared conversation, with a speaker policy deciding who talks next and
+compaction keeping the transcript within budget.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Agents share a conversation; a speaker policy (round-robin, or a selector that picks the most relevant next
+speaker) governs turn-taking, preventing the free-for-all that makes group chat incoherent. A state machine
+tracks the conversation; compaction summarises old turns so a long discussion stays within the context
+budget (chapter 8).</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/coordination/group_chat/adapter.py</code>, <code>state_machine.py</code><span class="note">the protocol</span></li>
+<li><code>app/coordination/group_chat/speaker_policy.py</code><span class="note">turn-taking</span></li>
+<li><code>app/coordination/group_chat/compaction.py</code><span class="note">transcript compaction</span></li>
+<li><code>app/api/coordination_group_chat.py</code><span class="note">the API</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>group chat: architect, security, cost agents discuss a design
+ speaker policy: relevance-based → security speaks when risk is raised
+ compaction: after 40 turns, older turns summarised to stay in budget
+ outcome: a design with all three perspectives, in one transcript
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Group chat is useful for genuinely multi-perspective deliberation but expensive (every agent reads every
+turn) and prone to incoherence without a good speaker policy. The compaction is essential — an uncompacted
+group chat hits the context limit fast. Prefer a supervisor or debate protocol unless the value is
+specifically in the open conversation.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>No speaker policy.</strong> Incoherent free-for-all.</li>
+<li><strong>No compaction.</strong> Context overflow.</li>
+<li><strong>Cost blowout.</strong> Every agent reading every turn.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Multi-perspective deliberation where the conversation itself is the value.</li></ul></section>
+</article>
+
+<article class="concept" id="co-handoffs" data-impl="7" data-crit="6" data-tag="Protocol">
+<h3><span class="idx">04</span>Handoffs<a class="anchor" href="#co-handoffs" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Protocol</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">An agent explicitly transfers control to another, with membership and a state machine
+governing the handoff — the "escalate to a specialist" pattern, made durable.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>An agent decides a task belongs to another and hands off, passing a compact brief. Membership governs who
+can receive a handoff; a state machine tracks the transfer so control is never lost or duplicated. The
+receiving agent inherits the necessary context but not more than its scope allows (chapter 14).</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/coordination/handoffs/service.py</code>, <code>state_machine.py</code><span class="note">the protocol</span></li>
+<li><code>app/coordination/handoffs/membership.py</code>, <code>models.py</code>, <code>repository.py</code><span class="note">membership and state</span></li>
+<li><code>app/api/coordination_handoffs.py</code><span class="note">the API</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>support-agent handles a ticket → recognises it needs billing expertise
+ → handoff to billing-agent with a brief (not the whole transcript)
+ → state machine: control transferred, support-agent no longer acting
+ → billing-agent resolves, control returns or closes
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Handoffs are the clean way to compose specialists without a supervisor overhead — each agent does what it
+is good at and passes on the rest. The state machine matters: without it, a handoff can leave control
+ambiguous (both agents acting) or lost (neither acting). Pass a brief, not the whole history, to keep the
+receiving agent's context focused.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Control ambiguity.</strong> Both or neither agent acting.</li>
+<li><strong>Context dump.</strong> The whole transcript handed over.</li>
+<li><strong>Handoff loops.</strong> Two agents bouncing a task.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Work moves cleanly between specialists.</li></ul></section>
+</article>
+
+<article class="concept" id="co-swarm" data-impl="6" data-crit="4" data-tag="Protocol">
+<h3><span class="idx">05</span>Swarm and mixture-of-agents<a class="anchor" href="#co-swarm" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Protocol</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="dv">4<small>/10</small></span></span></div>
+<p class="tldr">Two decentralised protocols: a swarm where agents claim work and converge via gossip, and
+mixture-of-agents where layers of agents refine a proposal with diversity and quorum.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p><em>Swarm</em>: agents claim tasks from a shared pool, share state via gossip, and converge without a
+central coordinator — resilient but harder to reason about. <em>Mixture-of-agents (MoA)</em>: several agents
+propose independently, then layers of aggregator agents refine, with a diversity policy ensuring the
+proposals differ and a quorum deciding acceptance. Both trade central control for parallelism or diversity.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/coordination/swarm/*</code><span class="note">claims, convergence, gossip</span></li>
+<li><code>app/coordination/moa/aggregator.py</code>, <code>layer_planner.py</code>, <code>diversity_policy.py</code>, <code>quorum.py</code><span class="note">MoA aggregation</span></li>
+<li><code>app/api/coordination_swarm.py</code>, <code>coordination_moa.py</code><span class="note">the APIs</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>MoA on a hard question
+ layer 1: 4 agents propose independently (diversity policy enforces difference)
+ layer 2: 2 aggregators refine the proposals
+ quorum: accept when 2 of 2 agree → a stronger answer than any single agent
+swarm on a large task pool: agents claim, gossip progress, converge
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Rated low on criticality because both are specialised: swarm suits large, parallelisable task pools where
+central coordination is a bottleneck; MoA suits hard questions where diverse refinement beats a single
+strong model. For most production work a supervisor or debate protocol is more predictable and cheaper. Use
+these where their specific shape — decentralisation or diverse aggregation — is genuinely needed.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Swarm non-convergence.</strong> Agents never agreeing.</li>
+<li><strong>MoA fake diversity.</strong> Proposals that agree because they are similar.</li>
+<li><strong>Cost.</strong> Many agents, high spend.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Large parallel pools (swarm) or hard questions needing diverse refinement (MoA).</li></ul></section>
+</article>
+
+<article class="concept" id="co-auction" data-impl="6" data-crit="4" data-tag="Protocol">
+<h3><span class="idx">06</span>Auction-based allocation<a class="anchor" href="#co-auction" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Protocol</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="dv">4<small>/10</small></span></span></div>
+<p class="tldr">Agents bid for tasks; a sealed-bid auction allocates work to the best-fit agent, with
+fairness and threat detection — a market mechanism for task assignment.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Tasks are auctioned; agents submit sealed bids reflecting their fit and capacity; an allocator assigns based
+on scoring, with a fairness policy preventing one agent from winning everything and threat detection catching
+manipulation. It is an alternative to the router (chapter 1) for task allocation — a market rather than a
+scorer — useful when agents have genuine capacity constraints.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/coordination/auction/sealed_bids.py</code>, <code>allocator.py</code>, <code>scoring.py</code><span class="note">the auction</span></li>
+<li><code>app/coordination/auction/fairness.py</code>, <code>threat_detection.py</code><span class="note">fairness and anti-manipulation</span></li>
+<li><code>app/coordination/auction/state_machine.py</code>, <code>models.py</code><span class="note">state</span></li>
+<li><code>app/api/coordination_auction.py</code><span class="note">the API</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>task pool auctioned across a team
+ agents bid (fit × available capacity)
+ sealed bids → allocator assigns → fairness policy caps any one winner
+ threat detection: an agent bidding to starve others → flagged
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Auctions are a specialised allocation mechanism — most task assignment is better served by the router's
+multi-signal scoring (chapter 1). Auctions earn their place when agents have real, differing capacity and a
+market clears it better than a central scorer. The fairness and threat-detection machinery signals the
+concern: any market invites gaming.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Bid gaming.</strong> Agents manipulating the market.</li>
+<li><strong>Unfair concentration.</strong> One agent winning everything.</li>
+<li><strong>Overhead.</strong> Auction cost exceeding the allocation benefit.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Agents have genuine capacity constraints a market clears well.</li></ul></section>
+</article>
+
+<article class="concept" id="co-camel-generative" data-impl="6" data-crit="4" data-tag="Protocol">
+<h3><span class="idx">07</span>CAMEL role-play and generative agents<a class="anchor" href="#co-camel-generative" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Protocol</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="dv">4<small>/10</small></span></span></div>
+<p class="tldr">Two more specialised protocols: CAMEL pairs a role-playing "user" and "assistant" agent to
+drive a task through inception prompting, and generative agents simulate personas with memory, observation,
+reflection, and a simulation clock.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p><em>CAMEL</em>: two agents role-play (a task-giver and a task-doer) with an inception prompt setting up the
+collaboration, useful for autonomous task completion through dialogue, bounded by a termination condition.
+<em>Generative agents</em>: personas with observation, memory, reflection, and a simulation clock — the
+"believable agents" research direction, for simulation rather than production tasks.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/coordination/camel/inception.py</code>, <code>adapter.py</code>, <code>termination.py</code><span class="note">CAMEL role-play</span></li>
+<li><code>app/coordination/generative/persona.py</code>, <code>observation.py</code>, <code>reflection.py</code>, <code>simulation_clock.py</code><span class="note">generative agents</span></li>
+<li><code>app/api/coordination_camel.py</code>, <code>coordination_generative.py</code><span class="note">the APIs</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>CAMEL: "user" agent gives sub-tasks, "assistant" agent executes, dialogue
+ continues until the termination condition → autonomous completion
+generative: personas observe a simulated environment, form memories, reflect,
+ and act on a simulation clock → a believable-behaviour sandbox
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Both are research-leaning. CAMEL's role-play can drive some autonomous tasks but is less controllable than
+plan-execute; generative agents are for simulation (testing how a population of agents behaves) rather than
+production work. They are included because they are real, distinct protocols in the platform — and because a
+complete map of coordination should name the experimental corners honestly, not just the production ones.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>CAMEL non-termination.</strong> Role-play that never ends.</li>
+<li><strong>Generative drift.</strong> Personas behaving unpredictably.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>CAMEL for dialogue-driven autonomous tasks; generative for simulation.</li>
+<li class="no">Not for controllable production work — use plan-execute or supervisor.</li></ul></section>
+</article>
+
+<article class="concept" id="co-a2a" data-impl="7" data-crit="6" data-tag="Protocol">
+<h3><span class="idx">08</span>Agent-to-agent (A2A) communication<a class="anchor" href="#co-a2a" aria-label="Link to this concept">#</a></h3>
+<div class="dials"><span class="pill partial">Partial</span><span class="pill tag">Protocol</span><span class="dial"><span class="dl">Impl</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="dv">7<small>/10</small></span></span><span class="dial crit"><span class="dl">Criticality</span><span class="meter" aria-hidden="true"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span><span class="dv">6<small>/10</small></span></span></div>
+<p class="tldr">The protocol for agents calling agents — across the same tenant or federated across
+platforms — with the security and dispatch machinery to make it safe.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A2A lets one agent invoke another as a capability, over MCP (chapter 20). Within a tenant it is a scoped
+call inheriting the caller's constraints; across platforms it is a federated call with its own security
+(a2a_security) and dispatch. It is how agents compose into larger systems — an agent using another agent as a
+tool — with the same validation and risk classification as any other tool call.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/mcp/a2a.py</code>, <code>app/agent/tools/a2a_call.py</code><span class="note">A2A over MCP</span></li>
+<li><code>app/civilization/a2a_dispatch.py</code>, <code>a2a_repository.py</code>, <code>a2a_security.py</code><span class="note">dispatch and security</span></li>
+<li><code>app/api/a2a.py</code><span class="note">the API</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>agent A needs a specialised analysis agent B provides
+ A calls B via a2a_call (an MCP tool) with a scoped brief
+ B runs as itself, within its own scope, returns a result
+ the call is validated, risk-classified, and audited like any tool call
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>A2A is how agents become composable building blocks — but it inherits every risk of tool calling plus the
+risk of an agent as an untrusted caller. Treat an A2A call like any external tool: validate, scope, classify
+risk, audit. Federated A2A (across platforms) needs its own trust model, which is why a2a_security is a
+distinct concern.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Unscoped A2A.</strong> A called agent exceeding the caller's scope.</li>
+<li><strong>A2A loops.</strong> Agents calling each other cyclically.</li>
+<li><strong>Federated trust gaps.</strong> Trusting a remote agent's output.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Agents compose into larger systems as capabilities.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch24-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Protocol selection guidance in the assembler.</strong> The pattern assembler picks
+      single-agent patterns; choosing among coordination protocols for a multi-agent goal is more manual.</li>
+      <li><strong>Cross-protocol composition.</strong> Running, say, a handoff inside a magentic session is
+      possible but not a first-class composition.</li>
+      <li><strong>Coordination eval.</strong> Individual agents and teams are evaluated; the effectiveness of
+      a coordination protocol as such is not systematically measured.</li>
+      <li><strong>Federated A2A trust framework.</strong> Cross-platform agent calls need a maturer trust and
+      reputation model.</li>
+    </ul>
+  </div>
+</section>
+
+<div class="pagenav"><a class="prev" href="jarvis.html"><div class="d">Previous · CH 23</div><div class="t">Jervis (JARVIS) console</div></a><a class="next" href="code-execution.html"><div class="d">Next · CH 25</div><div class="t">Code execution &amp; sandboxing</div></a></div>
+<p class="footnote">AgentVerse Field Manual · ratings are this author's judgement of the code as it stands, not a vendor claim. File paths are navigation anchors; line numbers drift.</p>
+</div></main>
+</div>
+<script>
+(function () {
+  var r = document.documentElement;
+  try { var t = localStorage.getItem('avfm-theme'); if (t) r.setAttribute('data-theme', t); } catch (e) {}
+  function cur() {
+    var a = r.getAttribute('data-theme');
+    if (a) return a;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  document.addEventListener('click', function (ev) {
+    var b = ev.target.closest('[data-theme-toggle]');
+    if (!b) return;
+    var n = cur() === 'dark' ? 'light' : 'dark';
+    r.setAttribute('data-theme', n);
+    try { localStorage.setItem('avfm-theme', n); } catch (e) {}
+  });
+  var f = document.querySelector('[data-filter]');
+  if (f) {
+    f.addEventListener('input', function () {
+      var q = f.value.trim().toLowerCase();
+      document.querySelectorAll('[data-filter-row]').forEach(function (el) {
+        el.hidden = q.length > 0 && el.getAttribute('data-filter-row').indexOf(q) === -1;
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>

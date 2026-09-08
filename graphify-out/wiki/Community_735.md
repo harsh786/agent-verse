@@ -1,0 +1,31 @@
+# Community 735
+
+> 6 nodes · cohesion 0.47
+
+## Key Concepts
+
+- **trello_server.py** (7 connections) — `agent-verse-backend/app/mcp/servers/trello_server.py`
+- **call_tool()** (3 connections) — `agent-verse-backend/app/mcp/servers/trello_server.py`
+- **_call_tool_inner()** (3 connections) — `agent-verse-backend/app/mcp/servers/trello_server.py`
+- **Any** (2 connections)
+- **Trello MCP server — Trello REST API v1 integration. Environment variables:…** (1 connections) — `agent-verse-backend/app/mcp/servers/trello_server.py`
+- **_trello_params()** (1 connections) — `agent-verse-backend/app/mcp/servers/trello_server.py`
+
+## Relationships
+
+- [Content Parsing & MCP Servers](Content_Parsing_&_MCP_Servers.md) (2 shared connections)
+- [Agent LangGraph Kernel](Agent_LangGraph_Kernel.md) (1 shared connections)
+
+## Source Files
+
+- `agent-verse-backend/app/mcp/servers/trello_server.py`
+
+## Audit Trail
+
+- EXTRACTED: 10 (100%)
+- INFERRED: 0 (0%)
+- AMBIGUOUS: 0 (0%)
+
+---
+
+*Part of the graphify knowledge wiki. See [index](index.md) to navigate.*

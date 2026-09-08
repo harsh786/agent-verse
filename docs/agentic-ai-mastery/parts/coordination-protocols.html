@@ -1,0 +1,321 @@
+<section class="block" id="orientation">
+  <h2>Orientation</h2>
+  <div class="prose">
+    <p>Chapter 1 covered the multi-agent <em>patterns</em> that run inside one goal. This chapter is about
+    the coordination <em>protocols</em> underneath them — the durable, event-sourced machinery that lets
+    agents negotiate, hand off, converge, and bid over time, with state that survives restarts and a
+    transcript that can be replayed. These are the primitives that turn "several agents in a loop" into a
+    governed multi-agent system.</p>
+
+    <p>The unifying design is <strong>event-sourced coordination</strong>: each protocol is a state machine
+    whose transitions are recorded, so coordination is durable (survives a worker dying), auditable (every
+    decision is in the ledger), and replayable (you can reconstruct exactly what happened). Each protocol
+    below is one answer to "how do multiple agents agree on something".</p>
+  </div>
+</section>
+
+<section class="block" id="coordination">
+  <h2>The protocols</h2>
+
+<article class="concept" id="co-service" data-impl="8" data-crit="7" data-tag="Foundation">
+<h3>The coordination substrate</h3>
+<p class="tldr">A shared service, contracts, store, and state machines that every coordination protocol builds
+on — event-sourced, tenant-scoped, and replayable.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>The coordination service provides the common machinery: typed contracts for coordination messages, a
+durable store, state machines, streaming, an outbox for reliable delivery, and replay. Each protocol
+(magentic, group chat, swarm, auction…) is an adapter over this substrate, so they share persistence,
+audit, and cross-replica delivery rather than each reinventing it.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/coordination/service.py</code><span class="note">CoordinationService</span></li>
+<li><code>app/coordination/contracts.py</code>, <code>store.py</code>, <code>state_machines.py</code>, <code>state_repository.py</code><span class="note">the substrate</span></li>
+<li><code>app/coordination/outbox.py</code>, <code>streaming.py</code>, <code>streams.py</code><span class="note">reliable delivery + streaming</span></li>
+<li><code>app/coordination/replay.py</code>, <code>read_models.py</code><span class="note">replay and projections</span></li>
+<li><code>app/coordination/transcript/*</code><span class="note">the transcript service and projections</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>a coordination session (any protocol)
+ messages recorded as events in the store (tenant-scoped)
+ state machine advances on each event
+ outbox guarantees delivery across replicas
+ transcript projection → a readable record → replayable for audit
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Event-sourcing coordination is what makes multi-agent systems debuggable at all. When a negotiation
+produces a strange outcome, the transcript is the only artifact that explains it, and replay lets you
+reconstruct it exactly. Building the substrate once means every protocol inherits durability and audit.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Coordination state in memory.</strong> Lost on restart, unauditable.</li>
+<li><strong>No transcript.</strong> Outcomes that cannot be explained.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Any durable multi-agent coordination.</li></ul></section>
+</article>
+
+<article class="concept" id="co-magentic" data-impl="7" data-crit="6" data-tag="Protocol">
+<h3>Magentic: ledger-driven orchestration</h3>
+<p class="tldr">A supervisor protocol with a task ledger: the orchestrator tracks progress against a plan,
+detects stalls, evaluates progress, and replans — a durable, auditable version of the supervisor pattern.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Magentic maintains a ledger of the plan and its revisions. A progress evaluator judges whether the team is
+advancing; a stall detector catches lack of progress; a replan manager revises the plan (recording a ledger
+revision); a participant policy governs who acts; and human review can be inserted. It is the supervisor
+pattern (chapter 1) made durable and event-sourced.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/coordination/magentic/adapter.py</code><span class="note">the protocol adapter</span></li>
+<li><code>app/coordination/magentic/progress_evaluator.py</code>, <code>stall_detector.py</code><span class="note">progress and stall</span></li>
+<li><code>app/coordination/magentic/replan_manager.py</code>, <code>participant_policy.py</code><span class="note">replan and participation</span></li>
+<li><code>app/coordination/magentic/human_review.py</code>, <code>models.py</code><span class="note">human review</span></li>
+<li><code>app/coordination/ledger/*</code><span class="note">LedgerRevision — the task ledger</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>magentic session, goal "resolve the incident"
+ ledger v1: [gather metrics, diff deploys, analyse queries, remediate]
+ progress evaluator: steps 1-2 done, step 3 stalled (same result 3×)
+ stall detector fires → replan manager → ledger v2 (new approach for step 3)
+ all revisions recorded → replayable, auditable
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Magentic's value over the plain supervisor pattern is durability and the explicit stall/progress
+machinery — a long-running multi-agent goal survives restarts and cannot silently spin. The ledger is the
+audit artifact that explains why the plan changed. Reserve it for goals long or complex enough to justify
+the coordination overhead.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Weak progress signal.</strong> A stall not detected, or false stalls.</li>
+<li><strong>Unbounded replanning.</strong> Ledger revisions without a cap.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Long, complex multi-agent goals needing durable orchestration.</li></ul></section>
+</article>
+
+<article class="concept" id="co-group-chat" data-impl="7" data-crit="5" data-tag="Protocol">
+<h3>Group chat</h3>
+<p class="tldr">Multiple agents in a shared conversation, with a speaker policy deciding who talks next and
+compaction keeping the transcript within budget.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Agents share a conversation; a speaker policy (round-robin, or a selector that picks the most relevant next
+speaker) governs turn-taking, preventing the free-for-all that makes group chat incoherent. A state machine
+tracks the conversation; compaction summarises old turns so a long discussion stays within the context
+budget (chapter 8).</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/coordination/group_chat/adapter.py</code>, <code>state_machine.py</code><span class="note">the protocol</span></li>
+<li><code>app/coordination/group_chat/speaker_policy.py</code><span class="note">turn-taking</span></li>
+<li><code>app/coordination/group_chat/compaction.py</code><span class="note">transcript compaction</span></li>
+<li><code>app/api/coordination_group_chat.py</code><span class="note">the API</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>group chat: architect, security, cost agents discuss a design
+ speaker policy: relevance-based → security speaks when risk is raised
+ compaction: after 40 turns, older turns summarised to stay in budget
+ outcome: a design with all three perspectives, in one transcript
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Group chat is useful for genuinely multi-perspective deliberation but expensive (every agent reads every
+turn) and prone to incoherence without a good speaker policy. The compaction is essential — an uncompacted
+group chat hits the context limit fast. Prefer a supervisor or debate protocol unless the value is
+specifically in the open conversation.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>No speaker policy.</strong> Incoherent free-for-all.</li>
+<li><strong>No compaction.</strong> Context overflow.</li>
+<li><strong>Cost blowout.</strong> Every agent reading every turn.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Multi-perspective deliberation where the conversation itself is the value.</li></ul></section>
+</article>
+
+<article class="concept" id="co-handoffs" data-impl="7" data-crit="6" data-tag="Protocol">
+<h3>Handoffs</h3>
+<p class="tldr">An agent explicitly transfers control to another, with membership and a state machine
+governing the handoff — the "escalate to a specialist" pattern, made durable.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>An agent decides a task belongs to another and hands off, passing a compact brief. Membership governs who
+can receive a handoff; a state machine tracks the transfer so control is never lost or duplicated. The
+receiving agent inherits the necessary context but not more than its scope allows (chapter 14).</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/coordination/handoffs/service.py</code>, <code>state_machine.py</code><span class="note">the protocol</span></li>
+<li><code>app/coordination/handoffs/membership.py</code>, <code>models.py</code>, <code>repository.py</code><span class="note">membership and state</span></li>
+<li><code>app/api/coordination_handoffs.py</code><span class="note">the API</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>support-agent handles a ticket → recognises it needs billing expertise
+ → handoff to billing-agent with a brief (not the whole transcript)
+ → state machine: control transferred, support-agent no longer acting
+ → billing-agent resolves, control returns or closes
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Handoffs are the clean way to compose specialists without a supervisor overhead — each agent does what it
+is good at and passes on the rest. The state machine matters: without it, a handoff can leave control
+ambiguous (both agents acting) or lost (neither acting). Pass a brief, not the whole history, to keep the
+receiving agent's context focused.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Control ambiguity.</strong> Both or neither agent acting.</li>
+<li><strong>Context dump.</strong> The whole transcript handed over.</li>
+<li><strong>Handoff loops.</strong> Two agents bouncing a task.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Work moves cleanly between specialists.</li></ul></section>
+</article>
+
+<article class="concept" id="co-swarm" data-impl="6" data-crit="4" data-tag="Protocol">
+<h3>Swarm and mixture-of-agents</h3>
+<p class="tldr">Two decentralised protocols: a swarm where agents claim work and converge via gossip, and
+mixture-of-agents where layers of agents refine a proposal with diversity and quorum.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p><em>Swarm</em>: agents claim tasks from a shared pool, share state via gossip, and converge without a
+central coordinator — resilient but harder to reason about. <em>Mixture-of-agents (MoA)</em>: several agents
+propose independently, then layers of aggregator agents refine, with a diversity policy ensuring the
+proposals differ and a quorum deciding acceptance. Both trade central control for parallelism or diversity.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/coordination/swarm/*</code><span class="note">claims, convergence, gossip</span></li>
+<li><code>app/coordination/moa/aggregator.py</code>, <code>layer_planner.py</code>, <code>diversity_policy.py</code>, <code>quorum.py</code><span class="note">MoA aggregation</span></li>
+<li><code>app/api/coordination_swarm.py</code>, <code>coordination_moa.py</code><span class="note">the APIs</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>MoA on a hard question
+ layer 1: 4 agents propose independently (diversity policy enforces difference)
+ layer 2: 2 aggregators refine the proposals
+ quorum: accept when 2 of 2 agree → a stronger answer than any single agent
+swarm on a large task pool: agents claim, gossip progress, converge
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Rated low on criticality because both are specialised: swarm suits large, parallelisable task pools where
+central coordination is a bottleneck; MoA suits hard questions where diverse refinement beats a single
+strong model. For most production work a supervisor or debate protocol is more predictable and cheaper. Use
+these where their specific shape — decentralisation or diverse aggregation — is genuinely needed.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Swarm non-convergence.</strong> Agents never agreeing.</li>
+<li><strong>MoA fake diversity.</strong> Proposals that agree because they are similar.</li>
+<li><strong>Cost.</strong> Many agents, high spend.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Large parallel pools (swarm) or hard questions needing diverse refinement (MoA).</li></ul></section>
+</article>
+
+<article class="concept" id="co-auction" data-impl="6" data-crit="4" data-tag="Protocol">
+<h3>Auction-based allocation</h3>
+<p class="tldr">Agents bid for tasks; a sealed-bid auction allocates work to the best-fit agent, with
+fairness and threat detection — a market mechanism for task assignment.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>Tasks are auctioned; agents submit sealed bids reflecting their fit and capacity; an allocator assigns based
+on scoring, with a fairness policy preventing one agent from winning everything and threat detection catching
+manipulation. It is an alternative to the router (chapter 1) for task allocation — a market rather than a
+scorer — useful when agents have genuine capacity constraints.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/coordination/auction/sealed_bids.py</code>, <code>allocator.py</code>, <code>scoring.py</code><span class="note">the auction</span></li>
+<li><code>app/coordination/auction/fairness.py</code>, <code>threat_detection.py</code><span class="note">fairness and anti-manipulation</span></li>
+<li><code>app/coordination/auction/state_machine.py</code>, <code>models.py</code><span class="note">state</span></li>
+<li><code>app/api/coordination_auction.py</code><span class="note">the API</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>task pool auctioned across a team
+ agents bid (fit × available capacity)
+ sealed bids → allocator assigns → fairness policy caps any one winner
+ threat detection: an agent bidding to starve others → flagged
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Auctions are a specialised allocation mechanism — most task assignment is better served by the router's
+multi-signal scoring (chapter 1). Auctions earn their place when agents have real, differing capacity and a
+market clears it better than a central scorer. The fairness and threat-detection machinery signals the
+concern: any market invites gaming.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Bid gaming.</strong> Agents manipulating the market.</li>
+<li><strong>Unfair concentration.</strong> One agent winning everything.</li>
+<li><strong>Overhead.</strong> Auction cost exceeding the allocation benefit.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Agents have genuine capacity constraints a market clears well.</li></ul></section>
+</article>
+
+<article class="concept" id="co-camel-generative" data-impl="6" data-crit="4" data-tag="Protocol">
+<h3>CAMEL role-play and generative agents</h3>
+<p class="tldr">Two more specialised protocols: CAMEL pairs a role-playing "user" and "assistant" agent to
+drive a task through inception prompting, and generative agents simulate personas with memory, observation,
+reflection, and a simulation clock.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p><em>CAMEL</em>: two agents role-play (a task-giver and a task-doer) with an inception prompt setting up the
+collaboration, useful for autonomous task completion through dialogue, bounded by a termination condition.
+<em>Generative agents</em>: personas with observation, memory, reflection, and a simulation clock — the
+"believable agents" research direction, for simulation rather than production tasks.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/coordination/camel/inception.py</code>, <code>adapter.py</code>, <code>termination.py</code><span class="note">CAMEL role-play</span></li>
+<li><code>app/coordination/generative/persona.py</code>, <code>observation.py</code>, <code>reflection.py</code>, <code>simulation_clock.py</code><span class="note">generative agents</span></li>
+<li><code>app/api/coordination_camel.py</code>, <code>coordination_generative.py</code><span class="note">the APIs</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>CAMEL: "user" agent gives sub-tasks, "assistant" agent executes, dialogue
+ continues until the termination condition → autonomous completion
+generative: personas observe a simulated environment, form memories, reflect,
+ and act on a simulation clock → a believable-behaviour sandbox
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>Both are research-leaning. CAMEL's role-play can drive some autonomous tasks but is less controllable than
+plan-execute; generative agents are for simulation (testing how a population of agents behaves) rather than
+production work. They are included because they are real, distinct protocols in the platform — and because a
+complete map of coordination should name the experimental corners honestly, not just the production ones.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>CAMEL non-termination.</strong> Role-play that never ends.</li>
+<li><strong>Generative drift.</strong> Personas behaving unpredictably.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>CAMEL for dialogue-driven autonomous tasks; generative for simulation.</li>
+<li class="no">Not for controllable production work — use plan-execute or supervisor.</li></ul></section>
+</article>
+
+<article class="concept" id="co-a2a" data-impl="7" data-crit="6" data-tag="Protocol">
+<h3>Agent-to-agent (A2A) communication</h3>
+<p class="tldr">The protocol for agents calling agents — across the same tenant or federated across
+platforms — with the security and dispatch machinery to make it safe.</p>
+<div class="cols">
+<section class="mech"><h4>Mechanism</h4>
+<p>A2A lets one agent invoke another as a capability, over MCP (chapter 20). Within a tenant it is a scoped
+call inheriting the caller's constraints; across platforms it is a federated call with its own security
+(a2a_security) and dispatch. It is how agents compose into larger systems — an agent using another agent as a
+tool — with the same validation and risk classification as any other tool call.</p></section>
+<section class="code"><h4>In AgentVerse</h4>
+<ul class="filelist">
+<li><code>app/mcp/a2a.py</code>, <code>app/agent/tools/a2a_call.py</code><span class="note">A2A over MCP</span></li>
+<li><code>app/civilization/a2a_dispatch.py</code>, <code>a2a_repository.py</code>, <code>a2a_security.py</code><span class="note">dispatch and security</span></li>
+<li><code>app/api/a2a.py</code><span class="note">the API</span></li>
+</ul></section>
+</div>
+<section class="band example"><h4>Worked example</h4>
+<pre>agent A needs a specialised analysis agent B provides
+ A calls B via a2a_call (an MCP tool) with a scoped brief
+ B runs as itself, within its own scope, returns a result
+ the call is validated, risk-classified, and audited like any tool call
+</pre></section>
+<section class="band prod"><h4>At production scale</h4>
+<p>A2A is how agents become composable building blocks — but it inherits every risk of tool calling plus the
+risk of an agent as an untrusted caller. Treat an A2A call like any external tool: validate, scope, classify
+risk, audit. Federated A2A (across platforms) needs its own trust model, which is why a2a_security is a
+distinct concern.</p></section>
+<section class="band fail"><h4>Failure modes</h4>
+<ul><li><strong>Unscoped A2A.</strong> A called agent exceeding the caller's scope.</li>
+<li><strong>A2A loops.</strong> Agents calling each other cyclically.</li>
+<li><strong>Federated trust gaps.</strong> Trusting a remote agent's output.</li></ul></section>
+<section class="band when"><h4>Choose it when</h4><ul><li>Agents compose into larger systems as capabilities.</li></ul></section>
+</article>
+</section>
+
+<section class="block" id="ch24-gaps">
+  <h2>What is missing here</h2>
+  <div class="prose">
+    <ul>
+      <li><strong>Protocol selection guidance in the assembler.</strong> The pattern assembler picks
+      single-agent patterns; choosing among coordination protocols for a multi-agent goal is more manual.</li>
+      <li><strong>Cross-protocol composition.</strong> Running, say, a handoff inside a magentic session is
+      possible but not a first-class composition.</li>
+      <li><strong>Coordination eval.</strong> Individual agents and teams are evaluated; the effectiveness of
+      a coordination protocol as such is not systematically measured.</li>
+      <li><strong>Federated A2A trust framework.</strong> Cross-platform agent calls need a maturer trust and
+      reputation model.</li>
+    </ul>
+  </div>
+</section>
