@@ -169,7 +169,10 @@ _KEYWORD_RULES: list[tuple[re.Pattern, TriggerType, dict]] = [
     ),
     (
         re.compile(
-            r"\bmeeting\s+end\b|\bmeeting\s+finish",
+            # Match natural variants: "meeting end(s|ed|ing)", "meeting finished",
+            # "meeting is over", "meeting wrapped up", "meeting concluded/adjourned".
+            # Stems have no trailing \b so suffixes (ends/ended/finished) match.
+            r"\bmeeting\b[^\n]*\b(?:end|finish|over|wrap|conclud|adjourn)",
             re.I,
         ),
         TriggerType.MEETING_ENDED,

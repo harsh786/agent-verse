@@ -38,9 +38,12 @@ _GOLDEN: list[tuple[str, TriggerType]] = [
     ("when someone types /deploy", TriggerType.CHAT_COMMAND),
     ("on a discord message", TriggerType.DISCORD_EVENT),
     ("when an sms arrives via twilio", TriggerType.SMS_INBOUND),
-    # NOTE: rule matches the stem "meeting end"/"meeting finish" (a boundary after
-    # "end"); "meeting ends"/"ended" do not match — documented fragility.
-    ("trigger on meeting end", TriggerType.MEETING_ENDED),
+    ("when a meeting ends", TriggerType.MEETING_ENDED),
+    ("after the meeting ended", TriggerType.MEETING_ENDED),
+    ("when the meeting is over", TriggerType.MEETING_ENDED),
+    # NOTE: a leading "once" would hit the ONCE rule first (first-match-wins),
+    # so this phrasing deliberately avoids it.
+    ("the meeting wrapped up", TriggerType.MEETING_ENDED),
     ("on form submission", TriggerType.FORM_SUBMISSION),
     # D. Condition / state
     ("on a state machine transition", TriggerType.STATE_TRANSITION),
