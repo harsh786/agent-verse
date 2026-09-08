@@ -142,6 +142,45 @@ class WorkflowRunStore(Protocol):
 
     async def delete_expired_runs(self) -> int: ...
 
+    # ── Advanced features (2.W-2) ─────────────────────────────────────────────
+    async def list_versions(
+        self, tenant_id: str, workflow_id: str
+    ) -> list[dict[str, Any]]: ...
+
+    async def get_definition_version(
+        self, tenant_id: str, workflow_id: str, version: str
+    ) -> dict[str, Any] | None: ...
+
+    async def get_permissions(
+        self, tenant_id: str, workflow_id: str
+    ) -> list[dict[str, Any]]: ...
+
+    async def add_permission(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        *,
+        subject_type: str,
+        subject_id: str,
+        permission: str,
+    ) -> dict[str, Any]: ...
+
+    async def remove_permission(
+        self, tenant_id: str, workflow_id: str, permission_id: str
+    ) -> bool: ...
+
+    async def workflow_run_stats(
+        self, tenant_id: str, workflow_id: str, days: int = 30
+    ) -> dict[str, Any]: ...
+
+    async def aggregate_run_stats(
+        self, tenant_id: str, days: int = 30
+    ) -> dict[str, Any]: ...
+
+    async def list_webhook_events(
+        self, tenant_id: str, workflow_id: str, *, limit: int = 20, offset: int = 0
+    ) -> tuple[list[dict[str, Any]], int]: ...
+
 
 class PostgresWorkflowRunStore:
     """Async SQLAlchemy-backed run store with per-query RLS enforcement."""
@@ -514,6 +553,244 @@ class PostgresWorkflowRunStore:
                     )
                 )
             return int(result.rowcount or 0)
+
+    # ── Versions (workflow_definition_versions) ───────────────────────────────
+    async def list_versions(self, tenant_id: str, workflow_id: str) -> list[dict[str, Any]]:
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            rows = (
+                await session.execute(
+                    sa_text(
+                        "SELECT id, version, change_summary, published_by, published_at "
+                        "FROM workflow_definition_versions "
+                        "WHERE workflow_id = CAST(:wid AS uuid) "
+                        "ORDER BY published_at DESC"
+                    ),
+                    {"wid": workflow_id},
+                )
+            ).mappings().all()
+            return [
+                {
+                    "version_id": str(r["id"]),
+                    "version": r["version"],
+                    "change_summary": r["change_summary"],
+                    "published_by": str(r["published_by"]) if r["published_by"] else None,
+                    "published_at": _iso(r["published_at"]),
+                }
+                for r in rows
+            ]
+
+    async def get_definition_version(
+        self, tenant_id: str, workflow_id: str, version: str
+    ) -> dict[str, Any] | None:
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        "SELECT version, definition_yaml, definition_json "
+                        "FROM workflow_definition_versions "
+                        "WHERE workflow_id = CAST(:wid AS uuid) AND version = :ver"
+                    ),
+                    {"wid": workflow_id, "ver": version},
+                )
+            ).mappings().first()
+            if row is None:
+                return None
+            return {
+                "version": row["version"],
+                "definition_yaml": row["definition_yaml"],
+                "definition_json": _as_obj(row["definition_json"]) or {},
+            }
+
+    # ── Permissions (workflow_permissions) ────────────────────────────────────
+    async def get_permissions(self, tenant_id: str, workflow_id: str) -> list[dict[str, Any]]:
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            rows = (
+                await session.execute(
+                    sa_text(
+                        "SELECT id, subject_type, subject_id, permission, granted_by, granted_at "
+                        "FROM workflow_permissions "
+                        "WHERE workflow_id = CAST(:wid AS uuid) ORDER BY granted_at DESC"
+                    ),
+                    {"wid": workflow_id},
+                )
+            ).mappings().all()
+            return [
+                {
+                    "id": str(r["id"]),
+                    "subject_type": r["subject_type"],
+                    "subject_id": r["subject_id"],
+                    "permission": r["permission"],
+                    "granted_by": str(r["granted_by"]) if r["granted_by"] else None,
+                    "granted_at": _iso(r["granted_at"]),
+                }
+                for r in rows
+            ]
+
+    async def add_permission(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        *,
+        subject_type: str,
+        subject_id: str,
+        permission: str,
+    ) -> dict[str, Any]:
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session, session.begin():
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        "INSERT INTO workflow_permissions "
+                        "  (workflow_id, tenant_id, subject_type, subject_id, permission) "
+                        "VALUES (CAST(:wid AS uuid), CAST(:tid AS uuid), :st, :sid, :perm) "
+                        "ON CONFLICT (workflow_id, subject_type, subject_id, permission) "
+                        "  DO UPDATE SET granted_at = NOW() "
+                        "RETURNING id, subject_type, subject_id, permission, granted_at"
+                    ),
+                    {
+                        "wid": workflow_id,
+                        "tid": tenant_id,
+                        "st": subject_type,
+                        "sid": subject_id,
+                        "perm": permission,
+                    },
+                )
+            ).mappings().first()
+            return {
+                "id": str(row["id"]),
+                "subject_type": row["subject_type"],
+                "subject_id": row["subject_id"],
+                "permission": row["permission"],
+                "granted_at": _iso(row["granted_at"]),
+            }
+
+    async def remove_permission(
+        self, tenant_id: str, workflow_id: str, permission_id: str
+    ) -> bool:
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session, session.begin():
+            await self._set_tenant(session, tenant_id)
+            result = await session.execute(
+                sa_text(
+                    "DELETE FROM workflow_permissions "
+                    "WHERE id = CAST(:pid AS uuid) AND workflow_id = CAST(:wid AS uuid)"
+                ),
+                {"pid": permission_id, "wid": workflow_id},
+            )
+            return int(result.rowcount or 0) > 0
+
+    # ── Analytics (aggregated from workflow_runs) ─────────────────────────────
+    _STATS_SELECT = (
+        "SELECT COUNT(*) AS total, "
+        " COUNT(*) FILTER (WHERE status = 'complete') AS completed, "
+        " COUNT(*) FILTER (WHERE status IN ('failed', 'timed_out')) AS failed, "
+        " COALESCE(AVG(EXTRACT(EPOCH FROM (completed_at - started_at))) "
+        "   FILTER (WHERE completed_at IS NOT NULL AND started_at IS NOT NULL), 0) "
+        "   AS avg_duration_s "
+        "FROM workflow_runs "
+    )
+
+    @staticmethod
+    def _stats_row(row: Any) -> dict[str, Any]:
+        return {
+            "total": int(row["total"] or 0),
+            "completed": int(row["completed"] or 0),
+            "failed": int(row["failed"] or 0),
+            "avg_duration_s": float(row["avg_duration_s"] or 0.0),
+        }
+
+    async def workflow_run_stats(
+        self, tenant_id: str, workflow_id: str, days: int = 30
+    ) -> dict[str, Any]:
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        self._STATS_SELECT
+                        + "WHERE workflow_id = CAST(:wid AS uuid) "
+                        + "AND created_at >= NOW() - make_interval(days => :days)"
+                    ),
+                    {"wid": workflow_id, "days": int(days)},
+                )
+            ).mappings().first()
+            return self._stats_row(row)
+
+    async def aggregate_run_stats(self, tenant_id: str, days: int = 30) -> dict[str, Any]:
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        self._STATS_SELECT
+                        + "WHERE created_at >= NOW() - make_interval(days => :days)"
+                    ),
+                    {"days": int(days)},
+                )
+            ).mappings().first()
+            return self._stats_row(row)
+
+    # ── Webhook events (workflow_webhook_events) ──────────────────────────────
+    async def list_webhook_events(
+        self, tenant_id: str, workflow_id: str, *, limit: int = 20, offset: int = 0
+    ) -> tuple[list[dict[str, Any]], int]:
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            params = {"wid": workflow_id, "limit": limit, "offset": offset}
+            total = (
+                await session.execute(
+                    sa_text(
+                        "SELECT COUNT(*) FROM workflow_webhook_events "
+                        "WHERE workflow_id = CAST(:wid AS uuid)"
+                    ),
+                    {"wid": workflow_id},
+                )
+            ).scalar_one()
+            rows = (
+                await session.execute(
+                    sa_text(
+                        "SELECT id, webhook_token, status, attempts, last_error, run_id, "
+                        " received_at, last_attempted_at, completed_at "
+                        "FROM workflow_webhook_events "
+                        "WHERE workflow_id = CAST(:wid AS uuid) "
+                        "ORDER BY received_at DESC LIMIT :limit OFFSET :offset"
+                    ),
+                    params,
+                )
+            ).mappings().all()
+            events = [
+                {
+                    "id": str(r["id"]),
+                    "webhook_token": r["webhook_token"],
+                    "status": r["status"],
+                    "attempts": int(r["attempts"] or 0),
+                    "last_error": r["last_error"],
+                    "run_id": str(r["run_id"]) if r["run_id"] else None,
+                    "received_at": _iso(r["received_at"]),
+                    "last_attempted_at": _iso(r["last_attempted_at"]),
+                    "completed_at": _iso(r["completed_at"]),
+                }
+                for r in rows
+            ]
+            return events, int(total)
 
     # ── Row mappers ───────────────────────────────────────────────────────────
     @staticmethod

@@ -35,7 +35,14 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 APP_ROLE = "workflow_app"
-GRANT_TABLES = ("workflow_definitions", "workflow_runs", "workflow_step_results")
+GRANT_TABLES = (
+    "workflow_definitions",
+    "workflow_runs",
+    "workflow_step_results",
+    "workflow_definition_versions",
+    "workflow_permissions",
+    "workflow_webhook_events",
+)
 
 _DEF_DSL = {
     "name": "Nightly Report",
@@ -85,9 +92,7 @@ async def factories(postgres_url: str) -> AsyncIterator[tuple]:
         await conn.execute(text(f"GRANT CONNECT ON DATABASE test TO {APP_ROLE}"))
         await conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {APP_ROLE}"))
         for tbl in GRANT_TABLES:
-            await conn.execute(
-                text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {tbl} TO {APP_ROLE}")
-            )
+            await conn.execute(text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {tbl} TO {APP_ROLE}"))
 
     app_engine = create_async_engine(_app_url(postgres_url, password), pool_size=4, max_overflow=0)
     yield (
@@ -125,8 +130,14 @@ async def seeded(factories: tuple) -> AsyncIterator[dict]:
             },
         )
     yield {**ids, "store": PostgresWorkflowRunStore(app_factory)}
-    # Delete runs first (step_results cascade via run_id FK), then the definition.
+    # webhook_events reference both runs and the definition with no ON DELETE
+    # CASCADE, so purge them first; runs' step_results cascade via run_id;
+    # versions/permissions cascade off the definition.
     async with admin_factory() as s, s.begin():
+        await s.execute(
+            text("DELETE FROM workflow_webhook_events WHERE workflow_id = CAST(:id AS uuid)"),
+            {"id": ids["workflow_id"]},
+        )
         await s.execute(
             text("DELETE FROM workflow_runs WHERE workflow_id = CAST(:id AS uuid)"),
             {"id": ids["workflow_id"]},
@@ -248,3 +259,125 @@ async def test_cross_tenant_rls_isolation(seeded: dict) -> None:
     # And it does not leak into tenant B's listing.
     items, _total = await store.list(seeded["tenant_b"])
     assert all(r["run_id"] != run_id for r in items)
+
+
+# ── 2.W-2: advanced features (versions / permissions / analytics / webhooks) ──
+
+
+async def test_list_versions_and_get_definition_version(seeded: dict, factories: tuple) -> None:
+    admin_factory, _ = factories
+    store: PostgresWorkflowRunStore = seeded["store"]
+    async with admin_factory() as s, s.begin():
+        for ver, summary in (("1.0.0", "init"), ("1.1.0", "tweak")):
+            await s.execute(
+                text(
+                    "INSERT INTO workflow_definition_versions "
+                    "(workflow_id, tenant_id, version, definition_yaml, definition_json, "
+                    " change_summary) "
+                    "VALUES (CAST(:wid AS uuid), CAST(:tid AS uuid), :ver, :yaml, "
+                    " CAST(:dj AS jsonb), :sum)"
+                ),
+                {
+                    "wid": seeded["workflow_id"],
+                    "tid": seeded["tenant_a"],
+                    "ver": ver,
+                    "yaml": f"name: v{ver}",
+                    "dj": json.dumps({"name": f"v{ver}", "steps": []}),
+                    "sum": summary,
+                },
+            )
+    versions = await store.list_versions(seeded["tenant_a"], seeded["workflow_id"])
+    assert {v["version"] for v in versions} == {"1.0.0", "1.1.0"}
+
+    snap = await store.get_definition_version(seeded["tenant_a"], seeded["workflow_id"], "1.1.0")
+    assert snap is not None
+    assert snap["definition_json"] == {"name": "v1.1.0", "steps": []}
+    # Unknown version → None.
+    assert (
+        await store.get_definition_version(seeded["tenant_a"], seeded["workflow_id"], "9") is None
+    )
+    # RLS: tenant B cannot see tenant A's versions.
+    assert await store.list_versions(seeded["tenant_b"], seeded["workflow_id"]) == []
+
+
+async def test_permissions_crud(seeded: dict) -> None:
+    store: PostgresWorkflowRunStore = seeded["store"]
+    created = await store.add_permission(
+        seeded["tenant_a"],
+        seeded["workflow_id"],
+        subject_type="user",
+        subject_id="user-1",
+        permission="editor",
+    )
+    assert created["subject_id"] == "user-1"
+    perms = await store.get_permissions(seeded["tenant_a"], seeded["workflow_id"])
+    assert any(p["permission"] == "editor" for p in perms)
+    # Idempotent upsert — same (subject, permission) does not duplicate.
+    await store.add_permission(
+        seeded["tenant_a"],
+        seeded["workflow_id"],
+        subject_type="user",
+        subject_id="user-1",
+        permission="editor",
+    )
+    perms2 = await store.get_permissions(seeded["tenant_a"], seeded["workflow_id"])
+    assert sum(1 for p in perms2 if p["subject_id"] == "user-1") == 1
+    # Remove it.
+    assert await store.remove_permission(seeded["tenant_a"], seeded["workflow_id"], created["id"])
+    assert (
+        await store.remove_permission(seeded["tenant_a"], seeded["workflow_id"], created["id"])
+        is False
+    )
+
+
+async def test_run_stats_computed_from_runs(seeded: dict) -> None:
+    store: PostgresWorkflowRunStore = seeded["store"]
+    # 2 complete, 1 failed.
+    for status in (
+        WorkflowRunStatus.COMPLETE,
+        WorkflowRunStatus.COMPLETE,
+        WorkflowRunStatus.FAILED,
+    ):
+        rid = str(uuid.uuid4())
+        await store.create(
+            run_id=rid, workflow_id=seeded["workflow_id"], tenant_id=seeded["tenant_a"]
+        )
+        await store.update_status(rid, WorkflowRunStatus.RUNNING, tenant_id=seeded["tenant_a"])
+        await store.update_status(rid, status, tenant_id=seeded["tenant_a"])
+
+    stats = await store.workflow_run_stats(seeded["tenant_a"], seeded["workflow_id"], days=30)
+    assert stats["total"] >= 3
+    assert stats["completed"] >= 2
+    assert stats["failed"] >= 1
+    agg = await store.aggregate_run_stats(seeded["tenant_a"], days=30)
+    assert agg["total"] >= 3
+
+
+async def test_list_webhook_events(seeded: dict, factories: tuple) -> None:
+    admin_factory, _ = factories
+    store: PostgresWorkflowRunStore = seeded["store"]
+    async with admin_factory() as s, s.begin():
+        await s.execute(
+            text(
+                "INSERT INTO workflow_webhook_events "
+                "(tenant_id, workflow_id, webhook_token, payload, status, attempts) "
+                "VALUES (CAST(:tid AS uuid), CAST(:wid AS uuid), :tok, CAST(:pl AS jsonb), "
+                " 'completed', 1)"
+            ),
+            {
+                "tid": seeded["tenant_a"],
+                "wid": seeded["workflow_id"],
+                "tok": "tok-123",
+                "pl": json.dumps({"hello": "world"}),
+            },
+        )
+    events, total = await store.list_webhook_events(
+        seeded["tenant_a"], seeded["workflow_id"], limit=20, offset=0
+    )
+    assert total >= 1
+    assert any(e["webhook_token"] == "tok-123" for e in events)
+    # RLS: tenant B sees none of tenant A's events.
+    b_events, b_total = await store.list_webhook_events(
+        seeded["tenant_b"], seeded["workflow_id"], limit=20, offset=0
+    )
+    assert b_total == 0 and b_events == []

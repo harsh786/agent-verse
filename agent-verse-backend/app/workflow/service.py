@@ -1,8 +1,11 @@
 """WorkflowService — database-backed CRUD service for the workflow engine router.
 
-Wraps _WorkflowStore (app/api/workflows.py) for basic CRUD and provides
-stub implementations for advanced features (versions, permissions, analytics,
-templates, marketplace) so the router never returns 503.
+Wraps _WorkflowStore (app/api/workflows.py) for basic CRUD and delegates the
+advanced features (versions, permissions, analytics, webhook events) to the
+injected WorkflowRunStore, which reads/writes the real workflow_* tables.
+Templates and the marketplace are backed by the SystemTemplateStore. When no
+run store is wired the advanced reads return honest-empty results (never
+fabricated data).
 
 Wire up in main.py:
     from app.workflow.service import WorkflowService
@@ -124,39 +127,62 @@ class WorkflowService:
     # ── Versions ──────────────────────────────────────────────────────────────
 
     async def list_versions(self, tenant_id: str, workflow_id: str) -> list[dict[str, Any]]:
-        """Return version history. Returns current version only until full
-        version control is implemented."""
-        item = await self._store.get(tenant_id=tenant_id, workflow_id=workflow_id)
-        if not item:
+        """Return the real published version history from
+        ``workflow_definition_versions``. Honest-empty when no run store is wired."""
+        if self._run_store is None:
             return []
-        return [
-            {
-                "version_id": item.get("id", workflow_id),
-                "version": 1,
-                "created_at": item.get("created_at", datetime.now(UTC).isoformat()),
-                "status": item.get("status", "draft"),
-                "notes": "Initial version",
-            }
-        ]
+        return await self._run_store.list_versions(tenant_id, workflow_id)
 
     async def restore_version(
-        self, tenant_id: str, workflow_id: str, version_id: str
+        self, tenant_id: str, workflow_id: str, version: str | int
     ) -> dict[str, Any] | None:
-        """Restore a previous version (stub — returns current state)."""
-        return await self._store.get(tenant_id=tenant_id, workflow_id=workflow_id)
+        """Restore a previous version: load its stored definition and write it
+        back onto the current workflow. Raises ValueError if the version is
+        unknown."""
+        if self._run_store is None:
+            raise ValueError(f"version {version} not found")
+        snapshot = await self._run_store.get_definition_version(
+            tenant_id, workflow_id, str(version)
+        )
+        if not snapshot:
+            raise ValueError(f"version {version} not found")
+        return await self._store.update(
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            definition=snapshot.get("definition_json") or {},
+        )
 
     # ── Permissions ───────────────────────────────────────────────────────────
 
     async def get_permissions(self, tenant_id: str, workflow_id: str) -> list[dict[str, Any]]:
-        return []
+        if self._run_store is None:
+            return []
+        return await self._run_store.get_permissions(tenant_id, workflow_id)
 
     async def add_permission(
-        self, tenant_id: str, workflow_id: str, **kwargs: Any
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        *,
+        subject: str = "",
+        role: str = "",
+        subject_type: str = "user",
+        **_: Any,
     ) -> dict[str, Any]:
-        return {"workflow_id": workflow_id, **kwargs, "created_at": datetime.now(UTC).isoformat()}
+        if self._run_store is None:
+            raise RuntimeError("permission persistence unavailable (no run store wired)")
+        return await self._run_store.add_permission(
+            tenant_id,
+            workflow_id,
+            subject_type=subject_type,
+            subject_id=subject,
+            permission=role,
+        )
 
     async def remove_permission(self, tenant_id: str, workflow_id: str, permission_id: str) -> bool:
-        return True
+        if self._run_store is None:
+            return False
+        return await self._run_store.remove_permission(tenant_id, workflow_id, permission_id)
 
     # ── Templates ─────────────────────────────────────────────────────────────
 
@@ -214,28 +240,50 @@ class WorkflowService:
 
     # ── Analytics ─────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _rates(stats: dict[str, Any]) -> tuple[float, float]:
+        """(success_rate, error_rate) from a run-stats dict, div-by-zero safe."""
+        total = int(stats.get("total") or 0)
+        if total <= 0:
+            return 0.0, 0.0
+        completed = int(stats.get("completed") or 0)
+        failed = int(stats.get("failed") or 0)
+        return completed / total, failed / total
+
     async def analytics_summary(self, tenant_id: str, days: int = 30) -> dict[str, Any]:
         items = await self._store.list(tenant_id=tenant_id)
+        stats = (
+            await self._run_store.aggregate_run_stats(tenant_id, days)
+            if self._run_store is not None
+            else {}
+        )
+        success_rate, _ = self._rates(stats)
         return {
             "total_workflows": len(items),
             "published": sum(1 for i in items if i.get("status") == "published"),
             "draft": sum(1 for i in items if i.get("status") == "draft"),
             "archived": sum(1 for i in items if i.get("status") == "archived"),
-            "total_runs": 0,
-            "success_rate": 0.0,
-            "avg_duration_s": 0.0,
+            "total_runs": int(stats.get("total") or 0),
+            "success_rate": success_rate,
+            "avg_duration_s": float(stats.get("avg_duration_s") or 0.0),
             "period_days": days,
         }
 
     async def workflow_analytics(
         self, tenant_id: str, workflow_id: str, days: int = 30
     ) -> dict[str, Any]:
+        stats = (
+            await self._run_store.workflow_run_stats(tenant_id, workflow_id, days)
+            if self._run_store is not None
+            else {}
+        )
+        success_rate, error_rate = self._rates(stats)
         return {
             "workflow_id": workflow_id,
-            "total_runs": 0,
-            "success_rate": 0.0,
-            "avg_duration_s": 0.0,
-            "error_rate": 0.0,
+            "total_runs": int(stats.get("total") or 0),
+            "success_rate": success_rate,
+            "avg_duration_s": float(stats.get("avg_duration_s") or 0.0),
+            "error_rate": error_rate,
             "period_days": days,
         }
 
@@ -248,7 +296,11 @@ class WorkflowService:
         page: int = 1,
         per_page: int = 20,
     ) -> tuple[list[dict[str, Any]], int]:
-        return [], 0
+        if self._run_store is None:
+            return [], 0
+        return await self._run_store.list_webhook_events(
+            tenant_id, workflow_id, limit=per_page, offset=(page - 1) * per_page
+        )
 
     # ── Runs (delegated to the injected WorkflowRunStore) ─────────────────────
 
@@ -383,5 +435,32 @@ class WorkflowService:
         page: int = 1,
         per_page: int = 20,
         category: str | None = None,
+        q: str | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
-        return [], 0
+        """The workflow marketplace is the gallery of installable system
+        templates. Backed by the real SystemTemplateStore; filtered by category
+        and free-text ``q`` (name/description/tags)."""
+        from app.main import app as _app
+
+        template_store = getattr(getattr(_app, "state", None), "template_store_we", None)
+        if template_store is None:
+            return [], 0
+        try:
+            templates = await template_store.list_all()
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.warning("workflow.service.marketplace_list_failed", error=str(exc))
+            return [], 0
+        if category:
+            templates = [t for t in templates if t.get("category") == category]
+        if q:
+            needle = q.lower()
+            templates = [
+                t
+                for t in templates
+                if needle in str(t.get("name", "")).lower()
+                or needle in str(t.get("description", "")).lower()
+                or any(needle in str(tag).lower() for tag in (t.get("tags") or []))
+            ]
+        total = len(templates)
+        start = (page - 1) * per_page
+        return templates[start : start + per_page], total
