@@ -44,7 +44,7 @@ class DepartmentHandoffStep:
 
     async def execute(self, state: WorkflowState) -> dict[str, Any]:
         with _tracer.start_as_current_span("step.department_handoff") as span:
-            config = self._step.config or {}
+            config = self._step.input or {}
             target_dept = config.get("target_department", "")
             requires_approval = config.get("requires_approval", False)
             approval_roles = config.get("approval_roles", [])
@@ -54,7 +54,9 @@ class DepartmentHandoffStep:
             span.set_attribute("requires_approval", requires_approval)
 
             # Get the artifact to hand off
-            artifact = state.vars.get(artifact_key) or state.step_outputs.get(self._step.id, {})
+            artifact = (state.get("vars") or {}).get(artifact_key) or (
+                state.get("step_outputs") or {}
+            ).get(self._step.id, {})
 
             result: dict[str, Any] = {
                 "handoff_to": target_dept,
@@ -102,7 +104,7 @@ class CrossTeamReviewStep:
 
     async def execute(self, state: WorkflowState) -> dict[str, Any]:
         with _tracer.start_as_current_span("step.cross_team_review") as span:
-            config = self._step.config or {}
+            config = self._step.input or {}
             reviewer_role = config.get("reviewer_role", "qa_engineer")
             reviewer_dept = config.get("reviewer_department", "qa")
             review_criteria = config.get("review_criteria", [])
@@ -111,7 +113,9 @@ class CrossTeamReviewStep:
             span.set_attribute("reviewer_role", reviewer_role)
             span.set_attribute("reviewer_dept", reviewer_dept)
 
-            content = state.vars.get(content_key) or state.step_outputs.get(self._step.id, {})
+            content = (state.get("vars") or {}).get(content_key) or (
+                state.get("step_outputs") or {}
+            ).get(self._step.id, {})
 
             # In production: dispatch to reviewer agent via agent orchestrator
             # For now: record review request and return pending
@@ -156,7 +160,7 @@ class OrgDecisionStep:
 
     async def execute(self, state: WorkflowState) -> dict[str, Any]:
         with _tracer.start_as_current_span("step.org_decision") as span:
-            config = self._step.config or {}
+            config = self._step.input or {}
             problem = config.get("problem", "")
             options = config.get("options", [])
             evidence_keys = config.get("evidence_sources", [])
@@ -168,7 +172,7 @@ class OrgDecisionStep:
             # Gather evidence from workflow state
             evidence = []
             for key in evidence_keys:
-                if val := state.vars.get(key):
+                if val := (state.get("vars") or {}).get(key):
                     evidence.append({"source": key, "content": str(val)[:200]})
 
             # Simple option selection heuristic if no LLM available
@@ -218,7 +222,7 @@ class ParallelDepartmentStep:
 
     async def execute(self, state: WorkflowState) -> dict[str, Any]:
         with _tracer.start_as_current_span("step.parallel_departments") as span:
-            config = self._step.config or {}
+            config = self._step.input or {}
             departments = config.get("departments", [])
             merge_strategy = config.get("merge_strategy", "all_required")
             timeout_hours = config.get("timeout_hours", 4.0)

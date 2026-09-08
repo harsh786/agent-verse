@@ -114,6 +114,12 @@ def _register_built_ins() -> None:
     from app.workflow.steps.hitl_step import HITLStepNode
     from app.workflow.steps.http_step import HTTPStepNode
     from app.workflow.steps.llm_step import LLMStepNode
+    from app.workflow.steps.org_steps import (
+        CrossTeamReviewStep,
+        DepartmentHandoffStep,
+        OrgDecisionStep,
+        ParallelDepartmentStep,
+    )
     from app.workflow.steps.parallel_step import ParallelStepNode
     from app.workflow.steps.rag_step import RAGStepNode
     from app.workflow.steps.set_variable_step import SetVariableStepNode
@@ -321,6 +327,62 @@ def _register_built_ins() -> None:
                 {},
                 "Publish a Redis event to other workflows",
                 color="#F0F9FF",
+            ),
+        ),
+        (
+            "department_handoff",
+            DepartmentHandoffStep,
+            StepTypeMeta(
+                "department_handoff",
+                "Department Handoff",
+                "Org",
+                "handshake",
+                {},
+                {},
+                "Hand an artifact from one department to another, with optional approval",
+                color="#FEF3C7",
+            ),
+        ),
+        (
+            "cross_team_review",
+            CrossTeamReviewStep,
+            StepTypeMeta(
+                "cross_team_review",
+                "Cross-Team Review",
+                "Org",
+                "users",
+                {},
+                {},
+                "Send work to a reviewer in a different team",
+                color="#FEF3C7",
+            ),
+        ),
+        (
+            "org_decision",
+            OrgDecisionStep,
+            StepTypeMeta(
+                "org_decision",
+                "Org Decision",
+                "Org",
+                "scale",
+                {},
+                {},
+                "Record a decision with options, evidence, and a recommendation",
+                color="#FEF3C7",
+            ),
+        ),
+        (
+            "parallel_departments",
+            ParallelDepartmentStep,
+            StepTypeMeta(
+                "parallel_departments",
+                "Parallel Departments",
+                "Org",
+                "git-fork",
+                {},
+                {},
+                "Run multiple departments in parallel and merge their results",
+                color="#FEF3C7",
             ),
         ),
     ]
