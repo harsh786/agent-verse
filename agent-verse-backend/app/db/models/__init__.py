@@ -26,6 +26,7 @@ from app.db.models.civilization import (  # noqa: E402
 from app.db.models.coordination import COORDINATION_TABLES  # noqa: E402
 from app.db.models.goal import Goal, GoalCheckpoint, GoalEvent, GoalStep  # noqa: E402
 from app.db.models.governance import ApprovalRequest, AuditLog  # noqa: E402
+from app.db.models.guardrail_rule import GuardrailRuleRow  # noqa: E402
 from app.db.models.intelligence import (  # noqa: E402
     AgentTemplate,
     CollabOperation,
@@ -79,6 +80,7 @@ __all__ = [  # noqa: RUF022
     # governance
     "AuditLog",
     "ApprovalRequest",
+    "GuardrailRuleRow",
     # mcp
     "MCPServer",
     "MCPCredential",

@@ -884,6 +884,22 @@ def create_app(
             db_factory = get_session_factory()
             app.state.db_session_factory = db_factory
             event_store = EventStore(db_factory)
+
+            # P1-4: bind the guardrails engine to a durable, RLS-scoped repository
+            # and rehydrate any persisted rules (two-phase wiring — in-memory in
+            # create_app, DB-backed here). Best-effort: a load failure must not
+            # abort startup (defaults are re-seeded per goal by the selector).
+            try:
+                from app.guardrails_v2.engine import guardrails_engine
+                from app.guardrails_v2.repository import PostgresGuardrailRuleRepository
+
+                guardrails_engine.bind_repository(
+                    PostgresGuardrailRuleRepository(db_factory), auto_persist=True
+                )
+                _loaded_rules = await guardrails_engine.load_from_repo()
+                logger.info("guardrails_rules_loaded", extra={"count": _loaded_rules})
+            except Exception:
+                logger.exception("failed to load persisted guardrail rules")
             from app.coordination.service import CoordinationService
             from app.coordination.store import CoordinationStore
 
