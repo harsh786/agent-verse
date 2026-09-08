@@ -46,20 +46,19 @@ class _SecretLeakProvider(FakeProvider):
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def secret_tenant(app: Any, client: Any) -> AsyncIterator[tuple[Any, str]]:
-    """Fresh tenant with baseline guardrail BLOCK rules seeded; yields (client, tenant_id)."""
-    from httpx import ASGITransport, AsyncClient
+    """A fresh, UNCONFIGURED tenant; yields (client, tenant_id).
 
-    from app.guardrails_v2.engine import guardrails_engine
+    Deliberately does NOT seed guardrail rules — the verifier's FINAL_OUTPUT gate
+    must seed the tenant's baseline BLOCK rules itself, so an unconfigured tenant
+    is protected by default (regression guard for the inert-by-default defect).
+    """
+    from httpx import ASGITransport, AsyncClient
 
     email = f"guard-{uuid.uuid4().hex[:12]}@example.com"
     resp = await client.post("/tenants/signup", json={"name": "Guard", "email": email})
     assert resp.status_code == 201, resp.text
     body = resp.json()
     api_key, tenant_id = body["api_key"], body["tenant_id"]
-
-    # Seed the tenant's baseline BLOCK rules (injection/PII/secret) — the same
-    # engine singleton the verifier's FINAL_OUTPUT gate uses.
-    guardrails_engine.ensure_default_rules(tenant_id)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(

@@ -656,6 +656,15 @@ class VerifierMixin:
                         or agent_state.verification_feedback
                     )
                     if _g2_final_content:
+                        # Seed the tenant's baseline BLOCK rules (injection / PII /
+                        # secret) so the FINAL_OUTPUT gate actually enforces. The
+                        # only other caller of ensure_default_rules is behind the
+                        # default-off enable_guardrail_profile / dynamic_orchestration
+                        # flags, so without this an unconfigured tenant had zero
+                        # rules here and evaluate() returned blocked=False for
+                        # everything — guardrail output enforcement was inert by
+                        # default. Idempotent and cheap.
+                        guardrails_engine.ensure_default_rules(tenant_ctx.tenant_id)
                         _g2_final_result = await guardrails_engine.evaluate(
                             content=str(_g2_final_content)[:2000],
                             layer=GuardrailLayer.FINAL_OUTPUT,
