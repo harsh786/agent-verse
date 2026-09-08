@@ -946,6 +946,7 @@ class GoalService:
             "tool_reliability_store": getattr(app_state, "tool_reliability_store", None),
             "episodic_memory": getattr(app_state, "episodic_memory", None),
             "procedural_memory": getattr(app_state, "procedural_memory", None),
+            "reflexion_service": getattr(app_state, "reflexion_service", None),
         }
         if runtime_profile is not None:
             from app.orchestration.strategy_adapters import ExecutionTier

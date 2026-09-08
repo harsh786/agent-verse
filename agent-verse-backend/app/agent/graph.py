@@ -156,6 +156,7 @@ class AgentGraph(
         tool_reliability_store: Any = None,
         episodic_memory: Any = None,
         procedural_memory: Any = None,
+        reflexion_service: Any | None = None,
         runtime_profile: Any | None = None,
         **kwargs: Any,
     ) -> None:
@@ -233,6 +234,7 @@ class AgentGraph(
         self._tool_reliability_store = tool_reliability_store
         self._episodic_memory = episodic_memory
         self._procedural_memory = procedural_memory
+        self._reflexion_service = reflexion_service
         self._graph = self._build()
         # Per-run event callback (set in run())
         self._event_callback: EventCallback | None = None

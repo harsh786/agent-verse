@@ -220,6 +220,34 @@ class PlannerMixin:
         except Exception:
             pass
 
+        # D-17: Structured reflexion recall — evidence-backed lessons from ReflexionService
+        try:
+            if self._reflexion_service is not None:
+                _reflexion_records = await self._reflexion_service.recall(
+                    tenant_id=tenant_ctx.tenant_id,
+                    query=agent_state.goal,
+                    allowed_data_classes=frozenset(
+                        {"public", "internal"}
+                    ),
+                    top_k=5,
+                    token_budget=800,
+                )
+                if _reflexion_records:
+                    _reflexion_lines: list[str] = []
+                    for _rec in _reflexion_records:
+                        _conf = _rec.confidence
+                        _summary = _rec.safe_summary[:200]
+                        _refs = ", ".join(_rec.evidence_refs[:3]) if _rec.evidence_refs else "none"
+                        _reflexion_lines.append(
+                            f"- [{_conf}/10000] {_summary} (evidence: {_refs})"
+                        )
+                    extra_parts.append(
+                        "[Structured reflexion — evidence-backed lessons]\n"
+                        + "\n".join(_reflexion_lines)
+                    )
+        except Exception:
+            pass
+
         user_content = f"Goal: {agent_state.goal}"
         if extra_parts:
             user_content += "\n\n" + "\n\n".join(extra_parts)
