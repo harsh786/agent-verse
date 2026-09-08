@@ -1,7 +1,6 @@
 """Tests for critical graph.py fixes."""
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
+from typing import ClassVar
 
 
 def _agent_source() -> str:
@@ -14,11 +13,10 @@ def _agent_source() -> str:
 
 def test_toolcall_import_exists():
     """ToolCall must be importable from tool_calls — no NameError in graph.py"""
-    from app.agent.tool_calls import ToolCall, extract_tool_call
+    from app.agent.tool_calls import ToolCall
     assert ToolCall is not None
     # Verify graph.py imports it
-    import inspect
-    from app.agent import graph
+
     src = _agent_source()
     assert "ToolCall" in src
     # The import line must exist
@@ -34,18 +32,18 @@ def test_tool_call_instantiation():
 
 def test_persistence_success_detects_lowercase_complete():
     """GoalPersistenceEngine detects 'complete' (lowercase) as success."""
-    from app.agent.persistence import GoalPersistenceEngine, AttemptRecord
+    from app.agent.persistence import AttemptRecord, GoalPersistenceEngine
 
-    engine = GoalPersistenceEngine()
+    _engine = GoalPersistenceEngine()
 
     class FakeState:
         status = "complete"
         verification_success = False
-        steps = []
+        steps: ClassVar[list] = []
         goal = "test"
         error_message = ""
 
-    attempt = AttemptRecord(attempt_number=1)
+    _attempt = AttemptRecord(attempt_number=1)
     # Simulate what the engine does when detecting success
     state = FakeState()
     success = getattr(state, "verification_success", False) or (
@@ -79,6 +77,7 @@ def test_persistence_success_rejects_old_uppercase_endswith():
 def test_analytics_uses_correct_event_type():
     """Analytics should look for tool_call_complete not tool_call."""
     import inspect
+
     from app.analytics import aggregator
     src = inspect.getsource(aggregator)
     assert "tool_call_complete" in src or "step_complete" in src, \
@@ -89,23 +88,29 @@ def test_analytics_uses_correct_event_type():
 
 def test_graph_state_has_privacy_safe_reasoning_evidence():
     """GraphState exposes bounded evidence instead of private model reasoning."""
-    from app.agent.graph import GraphState
+    from app.agent.graph_types import GraphState
     # total=False means all keys are optional; just check the annotation is present
     annotations = GraphState.__annotations__
     assert "reasoning_evidence" in annotations
     assert "cot_reasoning" not in annotations
 
 
-def test_toolcall_imported_in_graph_module():
-    """ToolCall is in graph.py's module namespace — no NameError at structured tool call line."""
-    import app.agent.graph as graph_module
-    assert hasattr(graph_module, "ToolCall"), \
-        "ToolCall must be importable at module level in graph.py"
+def test_toolcall_imported_where_structured_tool_calls_run():
+    """ToolCall must be importable at module level where the structured tool-call
+    line runs — no NameError. The execute node moved from graph.py into
+    executor_mixin.py, which constructs ToolCall(...) (~L1089), so that is where
+    the import must live now.
+    """
+    import app.agent.nodes.executor_mixin as executor_module
+
+    assert hasattr(executor_module, "ToolCall"), (
+        "ToolCall must be importable at module level in executor_mixin.py "
+        "(the structured tool-call construction site)"
+    )
 
 
 def test_parallel_wave_gather_cancels_on_permission_error():
     """When one wave step raises PermissionError, others are cancelled."""
-    import asyncio
     from app.agent.graph import AgentGraph
     # This just validates the graph module can be imported without NameError
     assert AgentGraph is not None

@@ -99,13 +99,20 @@ async def test_empty_kb_pipeline_still_returns_context(tenant_ctx):
 
 # ── GuardrailEnforcer wired into execution ────────────────────────────────────
 
-def test_guardrail_enforcer_catches_injection():
+async def test_guardrail_enforcer_catches_injection():
     """GuardrailEnforcer must catch prompt injection in tool args."""
-    from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig, RiskLevel,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        RiskLevel,
+        SecurityConfig,
     )
+    from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
     enforcer = GuardrailEnforcer()
     profile = GoalRuntimeProfile(
         goal_id="g1", tenant_id="t1",
@@ -114,7 +121,7 @@ def test_guardrail_enforcer_catches_injection():
         model_plan=ModelPlanConfig(), security=SecurityConfig(),
         memory_cache=MemoryCacheConfig(), eval_config=EvalConfig(),
     )
-    result = enforcer.check_tool_args(
+    result = await enforcer.check_tool_args(
         tool_name="postgres_query",
         tool_args={"query": "SELECT 1; DROP TABLE users; --"},
         profile=profile,
@@ -123,13 +130,20 @@ def test_guardrail_enforcer_catches_injection():
     assert result.injection_detected is True
 
 
-def test_guardrail_enforcer_passes_safe_args():
+async def test_guardrail_enforcer_passes_safe_args():
     """GuardrailEnforcer must pass clean tool args without blocking."""
-    from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig, RiskLevel,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        RiskLevel,
+        SecurityConfig,
     )
+    from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
     enforcer = GuardrailEnforcer()
     profile = GoalRuntimeProfile(
         goal_id="g1", tenant_id="t1",
@@ -138,7 +152,7 @@ def test_guardrail_enforcer_passes_safe_args():
         model_plan=ModelPlanConfig(), security=SecurityConfig(),
         memory_cache=MemoryCacheConfig(), eval_config=EvalConfig(),
     )
-    result = enforcer.check_tool_args(
+    result = await enforcer.check_tool_args(
         tool_name="jira.search_issues",
         tool_args={"jql": "project = MYPROJECT AND status = Open"},
         profile=profile,

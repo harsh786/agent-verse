@@ -1,5 +1,4 @@
 """Unit tests verifying all 6 hallucination-elimination fixes."""
-import pytest
 
 
 # ── Vector 5: Grounded executor prompt ───────────────────────────────────────
@@ -41,7 +40,8 @@ def test_validate_tool_name_rejects_unknown():
     result = validate_tool_name("jira_server.jira_update_sprint_velocity", allowed)
 
     assert result is not None, "Must return rejection message for unknown tool"
-    assert "not available" in result.lower() or "unknown" in result.lower() or "not in" in result.lower(), (
+    _rl = result.lower()
+    assert "not available" in _rl or "unknown" in _rl or "not in" in _rl, (
         f"Rejection message must explain the tool is not available. Got: {result}"
     )
     assert "jira_update_sprint_velocity" in result, (
@@ -73,8 +73,8 @@ def test_validate_tool_name_accepts_rpa_tools():
 def test_executor_context_limit_is_larger_than_sse_limit():
     """Executor LLM context limit must be >= 5000 chars."""
     from app.agent.sanitization import (
-        _TOOL_EVENT_MAX_LENGTH,
         _EXECUTOR_CONTEXT_MAX_LENGTH,
+        _TOOL_EVENT_MAX_LENGTH,
     )
     assert _EXECUTOR_CONTEXT_MAX_LENGTH >= 5000, (
         f"Executor context limit must be >= 5000, got {_EXECUTOR_CONTEXT_MAX_LENGTH}"
@@ -121,7 +121,7 @@ def test_verifier_summary_includes_all_failed_steps():
         s.tool_calls = []
         steps.append(s)
 
-    from app.agent.graph import _build_verifier_summary
+    from app.agent.nodes._helpers import _build_verifier_summary
     summary = _build_verifier_summary(steps)
 
     assert "Step 2" in summary, "Failed step 2 must appear even though not in last 5"
@@ -195,6 +195,7 @@ def test_validate_tool_arguments_handles_missing_schema():
 def test_agentgraph_accepts_separate_verifier():
     """AgentGraph must store planner, executor, verifier as distinct attributes."""
     from unittest.mock import MagicMock
+
     from app.agent.graph import AgentGraph
 
     planner = MagicMock()
@@ -220,15 +221,16 @@ def test_build_verifier_provider_is_callable_in_main():
 
 def test_self_optimizer_threshold_is_half():
     """Self-optimizer must only fire on failing goals (< 0.5), not all goals."""
-    import pathlib
     src = _agent_source()
     # Find lines with average_score() threshold comparisons
-    lines = [l.strip() for l in src.splitlines() if "average_score()" in l and "< " in l]
-    threshold_lines = [l for l in lines if "0." in l]
-    assert any("0.5" in l or "0.50" in l for l in threshold_lines), (
+    lines = [ln.strip() for ln in src.splitlines() if "average_score()" in ln and "< " in ln]
+    threshold_lines = [ln for ln in lines if "0." in ln]
+    assert any("0.5" in ln or "0.50" in ln for ln in threshold_lines), (
         f"Self-optimizer threshold must be 0.5 (not 1.0). Found: {threshold_lines}"
     )
     # Confirm 1.0 is NOT the threshold
-    assert not any(l.strip() == "and scorecard.average_score() < 1.0" for l in src.splitlines()), (
+    assert not any(
+        ln.strip() == "and scorecard.average_score() < 1.0" for ln in src.splitlines()
+    ), (
         "Threshold of 1.0 would fire on every non-perfect goal — must be 0.5"
     )

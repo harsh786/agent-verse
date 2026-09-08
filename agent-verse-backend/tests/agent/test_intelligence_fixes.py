@@ -9,7 +9,6 @@ Bug 4: Model router missing keys for "think", "reflection", "execution", "verifi
 from __future__ import annotations
 
 
-
 def _agent_source() -> str:
     """Read combined source of graph.py and all node mixin files."""
     import pathlib
@@ -29,34 +28,34 @@ def test_verifier_system_prompt_instructs_json_output():
 
 def test_parse_verifier_response_handles_json():
     """Parser handles clean JSON from verifier."""
-    from app.agent.graph import _parse_verifier_response
+    from app.agent.nodes._helpers import _parse_verifier_response
     result = _parse_verifier_response('{"success": true, "reason": "done"}')
     assert result["success"] is True
     assert result["reason"] == "done"
 
 
 def test_parse_verifier_response_handles_json_false():
-    from app.agent.graph import _parse_verifier_response
+    from app.agent.nodes._helpers import _parse_verifier_response
     result = _parse_verifier_response('{"success": false, "reason": "missing step", "retry": true}')
     assert result["success"] is False
     assert result.get("retry") is True
 
 
 def test_parse_verifier_response_handles_success_text():
-    from app.agent.graph import _parse_verifier_response
+    from app.agent.nodes._helpers import _parse_verifier_response
     result = _parse_verifier_response("SUCCESS: Goal completed successfully")
     assert result["success"] is True
 
 
 def test_parse_verifier_response_handles_retry_text():
-    from app.agent.graph import _parse_verifier_response
+    from app.agent.nodes._helpers import _parse_verifier_response
     result = _parse_verifier_response("RETRY: Step 2 failed, need to retry")
     assert result["success"] is False
     assert result.get("retry") is True
 
 
 def test_parse_verifier_response_handles_fail_text():
-    from app.agent.graph import _parse_verifier_response
+    from app.agent.nodes._helpers import _parse_verifier_response
     result = _parse_verifier_response("FAIL: Cannot achieve this goal")
     assert result["success"] is False
     assert result.get("retry") is False
@@ -65,6 +64,7 @@ def test_parse_verifier_response_handles_fail_text():
 def test_openai_provider_parses_tool_args_as_dict():
     """OpenAI tool call arguments must be parsed from JSON string to dict."""
     import json
+
     from app.providers.openai_compatible import OpenAICompatibleProvider
 
     # Simulate what the OpenAI SDK returns: tc.function.arguments is a JSON string
@@ -94,8 +94,6 @@ def test_model_router_has_execution_and_verification_keys():
 
 def test_executor_uses_model_router_not_hardcoded():
     """_execute_step must use model_router.model_for('execution') not hardcoded string."""
-    import inspect
-    from app.agent import graph
     src = _agent_source()
     # Find the executor CompletionRequest — should NOT have hardcoded model
     # The fix should have model=_exec_model or similar
@@ -105,8 +103,6 @@ def test_executor_uses_model_router_not_hardcoded():
 
 def test_verifier_uses_model_router_not_hardcoded():
     """_node_verify must use model_router not hardcoded model."""
-    import inspect
-    from app.agent import graph
     src = _agent_source()
     assert '_verify_model' in src or 'model_for("verification")' in src or "verification" in src, \
         "Verifier must use model router for model selection"
