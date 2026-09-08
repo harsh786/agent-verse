@@ -285,6 +285,17 @@ class PromptOptimizer:
             return random.choice(challengers)
         return None
 
+    def get_variant(
+        self, variant_id: str, *, tenant_id: str = "global"
+    ) -> PromptVariant | None:
+        """Return a registered variant by id for a tenant, or None if absent.
+
+        Public accessor used by the improvement-action handlers to apply prompt
+        updates idempotently (register only when the deterministic variant id is
+        not already present).
+        """
+        return self._variants.get(tenant_id, {}).get(variant_id)
+
     def record_result(self, variant_id: str, eval_score: float) -> None:
         """Record an eval score for a variant after a goal run.
 

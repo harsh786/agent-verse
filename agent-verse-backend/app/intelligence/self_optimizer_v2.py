@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from app.memory.contracts import ImprovementActionRecord
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -144,6 +145,133 @@ Respond with ONLY valid JSON:
         self._state = TenantOptimizationState(redis)
 
     # ── Public API ────────────────────────────────────────────────────────
+
+    def plan_improvement_actions(
+        self,
+        *,
+        tenant_id: str,
+        goal_id: str,
+        scores: dict[str, float],
+        score_threshold: float = 0.5,
+        agent_config: dict[str, Any] | None = None,
+        verification_feedback: str | None = None,
+        failing_tool_pattern: str | None = None,
+        candidate_prompt: str | None = None,
+        slow_model_task: str = "execution",
+        cheaper_model: str = "claude-haiku-3-5",
+        rag_strategy: str = "rerank_hybrid",
+    ) -> list[ImprovementActionRecord]:
+        """Turn low-scoring eval signals into concrete improvement actions.
+
+        This is the pure, DB-free entry point that makes the optimizer runnable
+        in isolation: given a per-dimension ``scores`` mapping (as produced by
+        the eval scorecard), it returns a list of ``ImprovementActionRecord``
+        objects ready to hand to ``ImprovementActionExecutor.execute``.  Each
+        record has a deterministic ``idempotency_key`` so re-planning the same
+        goal yields the same actions (the executor then dedupes).
+
+        Thresholds mirror ``app.evals.self_improvement_engine.SelfImprovementEngine``
+        so the two decision surfaces stay consistent.  Returns ``[]`` when the
+        overall score is at or above ``score_threshold`` (nothing to improve).
+        """
+        if not scores:
+            return []
+        overall = sum(scores.values()) / len(scores)
+        if overall >= score_threshold:
+            return []
+
+        actions: list[ImprovementActionRecord] = []
+
+        def _record(action_type: str, payload: dict[str, Any]) -> ImprovementActionRecord:
+            return ImprovementActionRecord(
+                action_id=f"{action_type}:{goal_id}:{uuid4().hex[:8]}",
+                tenant_id=tenant_id,
+                goal_id=goal_id,
+                action_type=action_type,  # type: ignore[arg-type]
+                payload=payload,
+                state="pending",
+                idempotency_key=f"{action_type}:{tenant_id}:{goal_id}",
+                attempts=0,
+                created_at=datetime.now(UTC),
+            )
+
+        goal_success = scores.get("goal_success", 1.0)
+        tool_success = scores.get("tool_success_rate", 1.0)
+
+        if scores.get("rag_quality", 1.0) < 0.5 or scores.get("retrieval_confidence", 1.0) < 0.4:
+            actions.append(
+                _record(
+                    "update_rag_strategy",
+                    {"tenant_id": tenant_id, "goal_id": goal_id, "strategy": rag_strategy},
+                )
+            )
+
+        if goal_success < 0.7 or tool_success < 0.5:
+            if verification_feedback and verification_feedback.strip():
+                actions.append(
+                    _record(
+                        "store_reflexion_lesson",
+                        {
+                            "tenant_id": tenant_id,
+                            "goal_id": goal_id,
+                            "lesson": verification_feedback.strip()[:500],
+                        },
+                    )
+                )
+            base_prompt = ""
+            if agent_config:
+                base_prompt = str(agent_config.get("system_prompt", ""))
+            new_prompt = candidate_prompt or (
+                f"{base_prompt}\n\nBefore finishing, verify each step's output "
+                "and retry failed tool calls with corrected arguments."
+            ).strip()
+            actions.append(
+                _record(
+                    "update_prompt_variant",
+                    {
+                        "tenant_id": tenant_id,
+                        "goal_id": goal_id,
+                        "prompt_key": "system_prompt",
+                        "variant_name": f"auto-{goal_id}",
+                        "prompt_text": new_prompt,
+                    },
+                )
+            )
+
+        if tool_success < 0.3 and failing_tool_pattern:
+            actions.append(
+                _record(
+                    "blacklist_tool_pattern",
+                    {"tenant_id": tenant_id, "goal_id": goal_id, "pattern": failing_tool_pattern},
+                )
+            )
+
+        if scores.get("cost_efficiency", 1.0) < 0.3 or scores.get("latency", 1.0) < 0.3:
+            actions.append(
+                _record(
+                    "update_model_routing",
+                    {
+                        "tenant_id": tenant_id,
+                        "goal_id": goal_id,
+                        "task_type": slow_model_task,
+                        "model": cheaper_model,
+                    },
+                )
+            )
+
+        if overall < 0.4:
+            actions.append(
+                _record(
+                    "create_regression_case",
+                    {
+                        "tenant_id": tenant_id,
+                        "goal_id": goal_id,
+                        "reason": f"overall_score={overall:.2f} below 0.4",
+                    },
+                )
+            )
+
+        return actions
 
     async def on_goal_completed(
         self,
