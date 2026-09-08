@@ -107,3 +107,62 @@ async def extract_and_store_graph(
         source_id,
     )
     return added
+
+
+class KGIngestionHook:
+    """Object adapter the :class:`~app.ingestion.pipeline.IngestionPipeline` calls
+    once per indexed document (D-15 wiring).
+
+    ``extract_and_store_graph`` returns a single combined node+edge count, but the
+    pipeline records entities and relations separately, so ``process`` runs the
+    same real extractor/store path and splits the two counts.
+
+    Holds the shared ``kg_store`` singleton by default — the same object the
+    FastAPI lifespan upgrades with a DB session factory (``kg_store.set_db(...)``)
+    — so DB persistence follows automatically once wiring completes. Deterministic
+    (regex) extraction is the default; passing an LLM ``provider`` to ``process``
+    selects the higher-quality LLM path.
+    """
+
+    def __init__(self, *, store: object | None = None, extractor: object | None = None) -> None:
+        from app.knowledge_graph.extractor import EntityExtractor
+        from app.knowledge_graph.store import kg_store
+
+        self._store = store if store is not None else kg_store
+        self._extractor = extractor if extractor is not None else EntityExtractor()
+
+    async def process(
+        self,
+        *,
+        chunks: list[str],
+        document_id: str,
+        tenant_id: str,
+        provider: LLMProvider | None = None,
+    ) -> dict[str, int]:
+        """Extract entities/relations from each chunk and persist them; return counts.
+
+        Errors from the extractor/store surface to the caller (the pipeline wraps
+        this call in its own guard so a KG failure never blocks ingestion).
+        """
+        entities = 0
+        relations = 0
+        for idx, text in enumerate(chunks):
+            if not text or not text.strip():
+                continue
+            source_id = f"{document_id}:{idx}"
+            if provider is not None:
+                self._extractor.set_provider(provider)
+                nodes = await self._extractor.extract_entities_llm(text, tenant_id, source_id)
+                edges = await self._extractor.extract_relationships_llm(
+                    text, nodes, tenant_id, source_id
+                )
+            else:
+                nodes = self._extractor.extract_entities_deterministic(text, tenant_id, source_id)
+                edges = []
+            for node in nodes:
+                self._store.add_node(node)
+                entities += 1
+            for edge in edges:
+                self._store.add_edge(edge)
+                relations += 1
+        return {"entities": entities, "relations": relations}

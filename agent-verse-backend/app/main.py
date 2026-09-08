@@ -494,9 +494,21 @@ def create_app(
         from app.ingestion.pipeline import IngestionPipeline
 
         load_all_connectors()
+        # D-15: auto-populate the knowledge graph from each indexed document. The
+        # hook holds the shared kg_store singleton (DB-upgraded in the lifespan),
+        # so document ingestion feeds knowledge_nodes/knowledge_edges that GraphRAG
+        # reads — previously only manual REST calls did. Deterministic extraction by
+        # default (kg_provider left None) so it needs no LLM key.
+        try:
+            from app.knowledge_graph.ingestion_hook import KGIngestionHook
+
+            _kg_ingestion_hook: Any = KGIngestionHook()
+        except Exception:
+            _kg_ingestion_hook = None
         _ingestion_pipeline = IngestionPipeline(
             knowledge_store=_knowledge_store,
             embedder=_app_provider,
+            kg_hook=_kg_ingestion_hook,
         )
         _ingestion_job_tracker = IngestionJobTracker()
     except Exception as _ing_exc:

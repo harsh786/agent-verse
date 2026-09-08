@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from app.knowledge_graph.extractor import EntityExtractor
-from app.knowledge_graph.ingestion_hook import extract_and_store_graph
+from app.knowledge_graph.ingestion_hook import KGIngestionHook, extract_and_store_graph
 from app.knowledge_graph.models import NodeType
 from app.knowledge_graph.store import KnowledgeGraphStore
 from app.providers.fake import FakeProvider
@@ -129,3 +129,47 @@ async def test_store_failure_surfaces_not_swallowed() -> None:
             tenant_id="t-1", source_id="c1",
             extractor=EntityExtractor(), store=BrokenStore(),
         )
+
+
+# ── KGIngestionHook adapter — the object the IngestionPipeline actually calls ──
+
+
+async def test_kg_ingestion_hook_process_populates_store_and_splits_counts() -> None:
+    """The pipeline calls hook.process(chunks=..., document_id=..., tenant_id=...)
+    and reads {entities, relations}. Deterministic path: proper nouns + acronym
+    become entities, no relations, and the nodes land in the injected store."""
+    store = KnowledgeGraphStore()
+    hook = KGIngestionHook(store=store, extractor=EntityExtractor())
+
+    result = await hook.process(
+        chunks=["Alice Johnson met Bob Smith at ACME headquarters."],
+        document_id="doc-1",
+        tenant_id="t-kg",
+        provider=None,  # deterministic
+    )
+
+    assert result["entities"] >= 3  # "Alice Johnson", "Bob Smith", "ACME"
+    assert result["relations"] == 0  # deterministic path emits no edges
+    stored = store.query_nodes(tenant_id="t-kg")
+    labels = {n.label for n in stored}
+    assert "ACME" in labels
+    assert any(n.node_type == NodeType.ENTITY for n in stored)
+
+
+async def test_kg_ingestion_hook_skips_blank_chunks() -> None:
+    store = KnowledgeGraphStore()
+    hook = KGIngestionHook(store=store, extractor=EntityExtractor())
+    result = await hook.process(
+        chunks=["   ", ""], document_id="d", tenant_id="t", provider=None
+    )
+    assert result == {"entities": 0, "relations": 0}
+    assert store.query_nodes(tenant_id="t") == []
+
+
+async def test_kg_ingestion_hook_defaults_to_shared_singleton() -> None:
+    """With no store injected, the hook binds the shared kg_store singleton — the
+    same object the lifespan DB-upgrades — so wiring is live end-to-end."""
+    from app.knowledge_graph.store import kg_store
+
+    hook = KGIngestionHook()
+    assert hook._store is kg_store

@@ -266,3 +266,22 @@ class TestPhase3GraphWiring:
         source = inspect.getsource(goal_service)
         assert "calibration_store" in source, \
             "Phase 3: calibration_store not passed to AgentGraph in goal_service"
+
+
+class TestIngestionKGWiring:
+    """D-15: create_app() must construct the IngestionPipeline WITH a live KG hook,
+    otherwise KG auto-population from ingested documents is silently inert."""
+
+    def test_ingestion_pipeline_has_live_kg_hook(self):
+        """Behavioural (not source-grep): the real app.state pipeline carries a
+        KGIngestionHook, so ingesting a document actually feeds the graph."""
+        from app.knowledge_graph.ingestion_hook import KGIngestionHook
+        from app.main import create_app
+
+        app = create_app()
+        pipeline = getattr(app.state, "ingestion_pipeline", None)
+        assert pipeline is not None, "ingestion_pipeline not on app.state"
+        assert isinstance(pipeline._kg_hook, KGIngestionHook), (
+            "D-15: IngestionPipeline constructed without a KGIngestionHook — "
+            "document ingestion would feed nothing into knowledge_nodes/edges"
+        )
