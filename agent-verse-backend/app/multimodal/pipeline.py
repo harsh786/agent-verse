@@ -362,6 +362,35 @@ class MultimodalPipeline:
             lines.append("| " + " | ".join(cells[: len(columns)]) + " |")
         return "\n".join(lines)
 
+    def detect_and_extract_tables(self, text: str) -> list[ExtractedSpan]:
+        """Heuristically detect markdown tables in *text* and return one span per table."""
+        import re
+
+        spans: list[ExtractedSpan] = []
+        blocks = re.split(r"\n{2,}", text)
+        for block in blocks:
+            lines = [ln for ln in block.splitlines() if ln.strip().startswith("|")]
+            if len(lines) < 3:
+                continue
+            parsed = self._parse_markdown_table(lines)
+            if parsed is None:
+                continue
+            columns, rows = parsed
+            markdown = self._table_to_markdown(columns, rows)
+            spans.append(
+                ExtractedSpan(
+                    content=markdown,
+                    modality=Modality.TABLE,
+                    confidence=0.85,
+                    metadata={
+                        "columns": columns,
+                        "row_count": len(rows),
+                        "extractor": "heuristic-markdown",
+                    },
+                )
+            )
+        return spans
+
     async def _describe_image(self, image_base64: str, model: str = "") -> str:
         """Use LLM vision to describe an image.
 
