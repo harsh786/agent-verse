@@ -5,7 +5,7 @@ Truly live end-to-end tests — ZERO mocking, ZERO stubs, ZERO FakeProvider.
 ✅ Redis 8.4.0                      (checkpointing)
 ✅ OpenAI gpt-4o-mini               (planner, executor, verifier)
 ✅ OpenAI text-embedding-3-small    (1536-dim vector embeddings)
-✅ Jira REST API v3                 (pinelabsgroups.atlassian.net)
+✅ Jira REST API v3                 (harshgroups.atlassian.net)
 ✅ AgentGraph full wiring           (DB-backed KnowledgeStore)
 ✅ All 9 RAG patterns               (real retriever, real Postgres)
 ✅ Sentence-transformers ColBERT    (all-MiniLM-L6-v2)
@@ -479,7 +479,7 @@ async def test_b3_agentic_chunking_real_openai():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_b4_jira_list_projects():
-    """List real Jira projects from pinelabsgroups.atlassian.net."""
+    """List real Jira projects from harshgroups.atlassian.net."""
     data = _jira("GET", "project/search?maxResults=20")
     projects = data.get("values", [])
     assert len(projects) >= 5

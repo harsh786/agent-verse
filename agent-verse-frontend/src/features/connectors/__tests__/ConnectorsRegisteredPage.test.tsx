@@ -42,7 +42,7 @@ const EMPTY_LIST = { match: (u: string) => u.endsWith('/connectors'), response: 
 const CONNECTOR_ROW = {
   server_id: 's-jira-001',
   name: 'PineLabs JIRA',
-  url: 'https://pinelabs.atlassian.net',
+  url: 'https://harsh.atlassian.net',
   auth_type: 'basic',
   auth_config: { username: '***', password: '***' },
   status: 'healthy',
@@ -84,7 +84,7 @@ describe('Page rendering', () => {
     mockFetch([{ match: (u) => u.endsWith('/connectors'), response: [CONNECTOR_ROW] }]);
     renderPage();
     expect(await screen.findByText('PineLabs JIRA')).toBeInTheDocument();
-    expect(screen.getByText('https://pinelabs.atlassian.net')).toBeInTheDocument();
+    expect(screen.getByText('https://harsh.atlassian.net')).toBeInTheDocument();
     expect(screen.getByText('Basic Auth')).toBeInTheDocument();
   });
 
@@ -435,15 +435,15 @@ describe('Form submission', () => {
       EMPTY_LIST,
       {
         match: (u, init) => u.endsWith('/connectors') && init?.method === 'POST',
-        response: { server_id: 'jira-1', name: 'JIRA', url: 'https://pinelabs.atlassian.net' },
+        response: { server_id: 'jira-1', name: 'JIRA', url: 'https://harsh.atlassian.net' },
       },
     ]);
     renderPage();
     await userEvent.click(await screen.findByRole('button', { name: /register connector/i }));
     await userEvent.type(screen.getByLabelText(/name/i), 'JIRA');
-    await userEvent.type(screen.getByLabelText(/url/i), 'https://pinelabs.atlassian.net');
+    await userEvent.type(screen.getByLabelText(/url/i), 'https://harsh.atlassian.net');
     await userEvent.selectOptions(screen.getByRole('combobox', { name: /auth type/i }), 'basic');
-    await userEvent.type(screen.getByLabelText(/username/i), 'harsh@pinelabs.com');
+    await userEvent.type(screen.getByLabelText(/username/i), 'harsh@harsh.com');
     await userEvent.type(screen.getByLabelText(/password/i), 'ATATT3x...');
     await userEvent.click(screen.getByRole('button', { name: /^register$/i }));
     await waitFor(() => {
@@ -453,7 +453,7 @@ describe('Form submission', () => {
       expect(postCall).toBeTruthy();
       const body = JSON.parse(String((postCall![1] as RequestInit).body));
       expect(body.auth_type).toBe('basic');
-      expect(body.auth_config.username).toBe('harsh@pinelabs.com');
+      expect(body.auth_config.username).toBe('harsh@harsh.com');
       expect(body.auth_config.password).toBe('ATATT3x...');
     });
   });

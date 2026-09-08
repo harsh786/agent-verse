@@ -172,7 +172,7 @@ Playwright (all 9 projects — smoke-live, accessibility, security-smoke,
 
 ## Launch Blockers (must resolve before production)
 
-1. **Rotate `.env` credentials** — live OpenAI (`sk-proj-B8u...`) and Atlassian Jira/Confluence tokens (`ATATT3x...`) tied to `harsh.kumar01@pinelabs.com` must be revoked and replaced with placeholder values before any staging/CI system touches this repo
+1. **Rotate `.env` credentials** — live OpenAI (`sk-proj-B8u...`) and Atlassian Jira/Confluence tokens (`ATATT3x...`) tied to `harsh.kumar01@harsh.com` must be revoked and replaced with placeholder values before any staging/CI system touches this repo
 2. **Production Redis** — provision Redis Sentinel (1 primary + 2 replicas minimum) or Redis Cluster; required for: LangGraph `RedisSaver` checkpointer, distributed MFA replay cache, atomic rate limiter, SSE pub/sub cross-replica delivery, cost controller accuracy
 3. **LangGraph checkpointer in Celery workers** — initialise a module-level `_WORKER_CHECKPOINTER` (Redis `RedisSaver`) in `@worker_init.connect`; pass `checkpointer=_WORKER_CHECKPOINTER` when constructing `AgentGraph` in `run_goal` — without this, every worker OOM-kill silently discards in-flight goal state and re-bills all LLM tokens
 

@@ -1109,7 +1109,7 @@ asyncio.run(flush())
 
 ```bash
 curl -s -X POST "http://localhost:8000/goals" \
-  -H "X-API-Key: av_free_pinelabs_dev_2026" \
+  -H "X-API-Key: av_free_harsh_dev_2026" \
   -H "Content-Type: application/json" \
   -d '{
     "goal": "Search for all Jira issues in project 2FAS with status Open assigned to Abhay Dwivedi and return the count",
@@ -1121,7 +1121,7 @@ Wait 30 seconds, then check:
 ```bash
 sleep 30
 curl -s "http://localhost:8000/goals" \
-  -H "X-API-Key: av_free_pinelabs_dev_2026" | python3 -c "
+  -H "X-API-Key: av_free_harsh_dev_2026" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
 goals = d.get('goals',[])

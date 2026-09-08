@@ -49,10 +49,10 @@ uv run celery -A app.scaling.celery_app worker --loglevel=info -Q goals,schedule
 
 | Field | Value |
 |-------|-------|
-| **Name** | `pinelabs-jira` |
-| **URL** | `https://pinelabs.atlassian.net` ← auto-filled when you type "jira" |
+| **Name** | `harsh-jira` |
+| **URL** | `https://harsh.atlassian.net` ← auto-filled when you type "jira" |
 | **Auth Type** | `Basic Auth` |
-| **Username/Email** | `harsh.kumar01@pinelabs.com` |
+| **Username/Email** | `harsh.kumar01@harsh.com` |
 | **Password/API Token** | `[your NEW Atlassian API token]` |
 
 > **Get a new API token here:** https://id.atlassian.com/manage-profile/security/api-tokens
@@ -65,14 +65,14 @@ uv run celery -A app.scaling.celery_app worker --loglevel=info -Q goals,schedule
 
 ```bash
 # Generate base64 of email:token
-ENCODED=$(echo -n "harsh.kumar01@pinelabs.com:YOUR_NEW_TOKEN" | base64)
+ENCODED=$(echo -n "harsh.kumar01@harsh.com:YOUR_NEW_TOKEN" | base64)
 
 curl -s -X POST http://localhost:8000/connectors \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d "{
-    \"name\": \"pinelabs-jira\",
-    \"url\": \"https://pinelabs.atlassian.net\",
+    \"name\": \"harsh-jira\",
+    \"url\": \"https://harsh.atlassian.net\",
     \"auth_type\": \"custom_header\",
     \"auth_config\": {
       \"Authorization\": \"Basic ${ENCODED}\"
@@ -87,13 +87,13 @@ export JIRA_CONNECTOR_ID="<server_id from response>"
 
 ```bash
 # Test that your token can see JIRA projects
-curl -s -u "harsh.kumar01@pinelabs.com:YOUR_NEW_TOKEN" \
-  "https://pinelabs.atlassian.net/rest/api/3/project/search" \
+curl -s -u "harsh.kumar01@harsh.com:YOUR_NEW_TOKEN" \
+  "https://harsh.atlassian.net/rest/api/3/project/search" \
   -H "Accept: application/json" | python3 -m json.tool | grep '"key"'
 ```
 
 **If you get `"total": 0`** — your account needs to be added to a JIRA project by your admin.
-Ask your JIRA admin: *"Please add harsh.kumar01@pinelabs.com to the [PROJECT] project with Browse + Edit permissions"*
+Ask your JIRA admin: *"Please add harsh.kumar01@harsh.com to the [PROJECT] project with Browse + Edit permissions"*
 
 ---
 
@@ -235,7 +235,7 @@ curl -s http://localhost:8000/governance/approvals \
 curl -s -X POST http://localhost:8000/governance/approvals/{request_id}/approve \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"approver": "harsh.kumar01@pinelabs.com", "note": "Looks correct, approved"}'
+  -d '{"approver": "harsh.kumar01@harsh.com", "note": "Looks correct, approved"}'
 ```
 
 ---
@@ -349,7 +349,7 @@ curl -s -X POST http://localhost:8000/connectors \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "pinelabs-github",
+    "name": "harsh-github",
     "url": "https://api.github.com",
     "auth_type": "bearer",
     "auth_config": {"token": "ghp_your_github_token_here"},
@@ -372,7 +372,7 @@ curl -s -X POST http://localhost:8000/connectors \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "pinelabs-slack",
+    "name": "harsh-slack",
     "url": "https://slack.com/api",
     "auth_type": "bearer",
     "auth_config": {"token": "xoxb-your-slack-bot-token"},
@@ -428,14 +428,14 @@ curl -s -X POST http://localhost:8000/goals \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "goal": "Get all pull requests merged to main branch in the pinelabs/backend repo in the last 24 hours. For each PR: 1) Find if there is a linked JIRA ticket mentioned in the PR title or description (format: PLAT-XXX). 2) If found, add a comment on the JIRA ticket: PR merged: [PR title] - [PR URL]. 3) If no JIRA ticket found, create a new JIRA task with the PR title as summary.",
+    "goal": "Get all pull requests merged to main branch in the harsh/backend repo in the last 24 hours. For each PR: 1) Find if there is a linked JIRA ticket mentioned in the PR title or description (format: PLAT-XXX). 2) If found, add a comment on the JIRA ticket: PR merged: [PR title] - [PR URL]. 3) If no JIRA ticket found, create a new JIRA task with the PR title as summary.",
     "agent_id": "'"$SYNC_AGENT_ID"'"
   }'
 ```
 
 **What happens (parallel execution):**
 ```
-Wave 1: github_list_pull_requests(repo="pinelabs/backend", state="closed", since="24h ago")
+Wave 1: github_list_pull_requests(repo="harsh/backend", state="closed", since="24h ago")
          → Returns [PR#123, PR#124, PR#125]
 
 Wave 2 (parallel for each PR):
@@ -454,7 +454,7 @@ curl -s -X POST http://localhost:8000/goals \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "goal": "Generate the weekly engineering report: 1) Get all JIRA tickets completed this week in project PLAT (status transitioned to Done). 2) Get all PRs merged to main this week in pinelabs/backend. 3) Calculate: total story points delivered, number of bugs fixed, number of features shipped. 4) Post a formatted summary to Slack channel #engineering-weekly. Format: bold headers, bullet points, include ticket/PR links.",
+    "goal": "Generate the weekly engineering report: 1) Get all JIRA tickets completed this week in project PLAT (status transitioned to Done). 2) Get all PRs merged to main this week in harsh/backend. 3) Calculate: total story points delivered, number of bugs fixed, number of features shipped. 4) Post a formatted summary to Slack channel #engineering-weekly. Format: bold headers, bullet points, include ticket/PR links.",
     "agent_id": "'"$SYNC_AGENT_ID"'"
   }'
 ```
@@ -466,7 +466,7 @@ curl -s -X POST http://localhost:8000/goals \
   -H "X-API-Key: $AV_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "goal": "Find all open GitHub PRs in pinelabs/backend that have been waiting for review for more than 3 days. For each stale PR: 1) Find the linked JIRA ticket. 2) Update the JIRA ticket comment: PR stale since [date], needs review. 3) Send a Slack DM to the PR author reminding them to ping reviewers.",
+    "goal": "Find all open GitHub PRs in harsh/backend that have been waiting for review for more than 3 days. For each stale PR: 1) Find the linked JIRA ticket. 2) Update the JIRA ticket comment: PR stale since [date], needs review. 3) Send a Slack DM to the PR author reminding them to ping reviewers.",
     "agent_id": "'"$SYNC_AGENT_ID"'"
   }'
 ```
@@ -495,7 +495,7 @@ curl -s -X POST http://localhost:8000/schedules \
   -d '{
     "name": "Daily PR-JIRA Sync",
     "cron": "0 18 * * 1-5",
-    "goal_template": "Sync all PRs merged today in pinelabs/backend to their corresponding JIRA tickets. Post daily summary to #dev-updates",
+    "goal_template": "Sync all PRs merged today in harsh/backend to their corresponding JIRA tickets. Post daily summary to #dev-updates",
     "agent_id": "'"$SYNC_AGENT_ID"'",
     "enabled": true
   }'
@@ -587,7 +587,7 @@ Sub-goal A → JIRA Specialist:
   "Get all PLAT tickets with status Done in Sprint 23. Include: key, summary, assignee, story points, completion date"
 
 Sub-goal B → GitHub Specialist:
-  "List all PRs merged to pinelabs/backend tagged with Sprint 23 or merged during Sprint 23 dates. Include author, title, URL, lines changed"
+  "List all PRs merged to harsh/backend tagged with Sprint 23 or merged during Sprint 23 dates. Include author, title, URL, lines changed"
 
 Sub-goal C → JIRA Specialist (after A):
   "Find all PLAT tickets that were in Sprint 23 but got moved to backlog. Identify the reasons from comments"
@@ -844,7 +844,7 @@ curl -s -X POST http://localhost:8000/schedules \
   -d '{
     "name": "PR Review Reminders",
     "cron": "0 11,16 * * 1-5",
-    "goal_template": "Find all open PRs in pinelabs/backend awaiting review for more than 4 hours. For each: notify the reviewer on Slack and add a comment on the linked JIRA ticket",
+    "goal_template": "Find all open PRs in harsh/backend awaiting review for more than 4 hours. For each: notify the reviewer on Slack and add a comment on the linked JIRA ticket",
     "civilization_id": "'"$CIV_ID"'",
     "enabled": true
   }'

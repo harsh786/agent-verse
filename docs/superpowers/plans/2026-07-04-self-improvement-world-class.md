@@ -1827,7 +1827,7 @@ sleep 8
 
 # Submit a real goal
 GOAL_ID=$(curl -s -X POST "http://localhost:8000/goals" \
-  -H "X-API-Key: av_free_pinelabs_dev_2026" \
+  -H "X-API-Key: av_free_harsh_dev_2026" \
   -H "Content-Type: application/json" \
   -d '{"goal": "Search for all open Jira issues in project 2FAS and return count by priority", "agent_id": "c33e80b578524170b64a6722fbe12efa"}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin).get('goal_id',''))")

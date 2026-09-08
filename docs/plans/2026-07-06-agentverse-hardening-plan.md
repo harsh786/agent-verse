@@ -70,7 +70,7 @@
 ---
 
 ### P0-4: Rotate Real Credentials in `.env` + Add Secret Scan to CI
-- **Risk:** `agent-verse-backend/.env` contains live Atlassian (Jira + Confluence) and OpenAI API keys tied to a real enterprise account (`harsh.kumar01@pinelabs.com`). A workstation compromise, accidental Docker build context inclusion, or screen share exposes production credentials.
+- **Risk:** `agent-verse-backend/.env` contains live Atlassian (Jira + Confluence) and OpenAI API keys tied to a real enterprise account (`harsh.kumar01@harsh.com`). A workstation compromise, accidental Docker build context inclusion, or screen share exposes production credentials.
 - **Files:** `agent-verse-backend/.env`, `.github/workflows/ci.yml`
 - **Fix (immediate — do before anything else):**
   1. Rotate the OpenAI key at https://platform.openai.com/api-keys.

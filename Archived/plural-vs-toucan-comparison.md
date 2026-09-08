@@ -170,7 +170,7 @@ This is the **widest gap** between the two platforms. Plural invests heavily in 
 ### 3.7 Documentation Quality Indicators
 
 **Plural:**
-- Integrated developer portal at `pinelabs.com/docs/online-payments`
+- Integrated developer portal at `harsh.com/docs/online-payments`
 - AI-powered search ("Ask AI") on every doc page
 - Every doc page has "Copy for LLM", "Open in ChatGPT", "Open in Claude", "Open in Perplexity" — making the docs instantly AI-queryable
 - Glossary of payment terms
@@ -195,7 +195,7 @@ This is the **widest gap** between the two platforms. Plural invests heavily in 
 ### 3.8 GitHub Presence
 
 **Plural:**
-- Public GitHub organization: `github.com/plural-pinelabs/`
+- Public GitHub organization: `github.com/plural-harsh/`
 - Open repositories for SDKs, sample integrations
 
 **Toucan:**
@@ -917,7 +917,7 @@ Both platforms cover the main e-commerce platforms. Toucan claims Wix and Zoho a
 
 **Plural:**
 - 24/7 technical support (stated in Payouts section)
-- `pgsupport@pinelabs.com` for feature activation requests
+- `pgsupport@harsh.com` for feature activation requests
 - Contact support via developer portal
 - GitHub issues (via public org)
 - Documentation: FAQ section, Go-live checklist
@@ -1064,5 +1064,5 @@ Plural (Pine Labs Online) and Toucan Pay serve overlapping segments but at very 
 ---
 
 *Document prepared: July 2026*
-*Sources: https://toucanpay.in/ and https://www.pinelabs.com/docs/online-payments/*
+*Sources: https://toucanpay.in/ and https://www.harsh.com/docs/online-payments/*
 *Based on publicly available information only. Features may exist in either product without public documentation.*

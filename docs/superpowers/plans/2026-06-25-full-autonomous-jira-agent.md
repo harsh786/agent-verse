@@ -58,7 +58,7 @@ Expected response contains:
     "url": "https://mcp.atlassian.com/v1/mcp",
     "auth_type": "basic",
     "auth_config": {
-      "username": "harsh.kumar01@pinelabs.com",
+      "username": "harsh.kumar01@harsh.com",
       "password": "<redacted>"
     }
   }

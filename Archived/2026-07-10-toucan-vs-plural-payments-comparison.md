@@ -33,33 +33,33 @@ Important: "Not publicly present in Toucan" does not prove Toucan cannot support
 
 | Source | URL | Relevant evidence |
 | --- | --- | --- |
-| Plural overview | https://www.pinelabs.com/docs/online-payments/overview | Product catalog, checkout, payment links, SDKs, affordability, subscriptions, split settlements, payouts, international payments, plugins, MCP, API/OpenAPI/playground. |
-| Quick start | https://www.pinelabs.com/docs/online-payments/quick-start-guide | Self-serve developer account, UAT credentials, API keys, dashboard setup. |
-| Accept payments | https://www.pinelabs.com/docs/online-payments/accept-payments | Hosted/custom checkout, SDKs, plugins, recurring, refunds, settlements, webhooks, real-time status. |
-| API reference | https://www.pinelabs.com/docs/online-payments/api/ | Endpoint catalog for authentication, orders, refunds, settlements, split settlements, checkout, payment links, card, UPI, net banking, wallet, Pay by Points, e-challans, Apple Pay, international, customers, tokenization, payouts, affordability, BNPL, convenience fees, brand wallet, subscriptions, UPI Reserve Pay. |
-| Checkout options | https://www.pinelabs.com/docs/online-payments/checkout-options | Hosted, custom, iFrame, pre-auth, split settlement, convenience fees, tokenized payments, device fingerprinting, express checkout. |
-| Payment methods | https://www.pinelabs.com/docs/online-payments/payment-methods | Cards, UPI, net banking, wallets, Pay by Points, BNPL, international, e-challan, brand wallets. |
-| Cards | https://www.pinelabs.com/docs/online-payments/payment-methods/cards | Native OTP, CVV-less, tokenized card flow, decoupled authorization. |
-| UPI | https://www.pinelabs.com/docs/online-payments/payment-methods/upi | UPI collect, intent, TPV for BFSI/SEBI compliance. |
-| Tokenization | https://www.pinelabs.com/docs/online-payments/tokenization | COFT token management, customer vault, external PA/PG token support, cryptograms, capture/cancel flows. |
-| Payment links | https://www.pinelabs.com/docs/online-payments/payment-links | Link lifecycle, API/dashboard creation, cancel/expiry states, automated SMS/email sharing, analytics. |
-| Settlements | https://www.pinelabs.com/docs/online-payments/settlements | T+1, early batch, same-day, dashboard/API settlement management, 60-day query range, 6-month storage, near real-time data. |
-| Subscriptions | https://www.pinelabs.com/docs/online-payments/subscriptions | UPI AutoPay, fixed/variable/on-demand mandates, trial periods, retries, lifecycle APIs, dashboards. |
-| UPI Reserve Pay | https://www.pinelabs.com/docs/online-payments/upi-reserve-pay | Single Block Multi Debit / Reserve Pay, block once, debit multiple times, live balance. |
-| Affordability Suite | https://www.pinelabs.com/docs/online-payments/affordability-suite | Credit EMI, debit EMI, cardless EMI, down payment EMI, no-cost/low-cost/standard EMI, brand EMI, bundled offers, split EMI, full swipe offers. |
-| Payouts | https://www.pinelabs.com/docs/online-payments/payouts | Individual/bulk payouts, IMPS/NEFT/RTGS/UPI, real-time tracking, role-based dashboard, VAS. |
-| Split settlements | https://www.pinelabs.com/docs/online-payments/split-settlements | Marketplace split settlement, automated distribution, sub-merchant visibility, release/cancel APIs. |
-| International payments | https://www.pinelabs.com/docs/online-payments/international-payments | DCC, MCC, Apple Pay, import payments, FRM, 50+ currencies, dashboard, TCS/invoice/AWB APIs in API reference. |
-| Convenience fees | https://www.pinelabs.com/docs/online-payments/convenience-fees | Fixed/percentage/combined surcharge calculation and refund behavior. |
-| Pay by Points | https://www.pinelabs.com/docs/online-payments/pay-by-points | Reward-point redemption, point balance, point-to-INR conversion, 14 banks, settlement/refund behavior. |
-| E-challan / ECMS | https://www.pinelabs.com/docs/online-payments/payments-e-challan | Bank transfer challans, unique customer identifier, IMPS/NEFT/RTGS/offline bank branch, challan PDF, reconciliation. |
-| Dashboard | https://www.pinelabs.com/docs/online-payments/dashboard | Payments, refunds, settlements, payouts, payment links, settings, exports, filters, team roles, UAT/prod environments. |
-| Developer tools | https://www.pinelabs.com/docs/online-payments/developer-tools | Postman/OpenAPI, IPs/ciphers, method-wise error codes, webhooks, test cards. |
-| Webhooks | https://www.pinelabs.com/docs/online-payments/developer-tools/webhooks | JSON POST webhooks, retry attempts, webhook setup, NAT IP allowlist. |
-| Go-live checklist | https://www.pinelabs.com/docs/online-payments/go-live-checklist | Production readiness, idempotency, webhook signature verification, PCI SAQ guidance, load testing. |
-| CLI | https://www.pinelabs.com/docs/online-payments/cli | Official CLI, orders/refunds/payouts/subscriptions/settlements, webhook relay/replay, doctor/whoami, audit logs, CI. |
-| AI solutions | https://www.pinelabs.com/docs/online-payments/ai | MCP server, Pine Labs Payments Protocol, Agent Enablement Toolkit, Agentic Commerce. |
-| Ecommerce plugins | https://www.pinelabs.com/docs/online-payments/e-commerce-plugins | Shopify, Magento, WooCommerce, OpenCart plugin docs. |
+| Plural overview | https://www.harsh.com/docs/online-payments/overview | Product catalog, checkout, payment links, SDKs, affordability, subscriptions, split settlements, payouts, international payments, plugins, MCP, API/OpenAPI/playground. |
+| Quick start | https://www.harsh.com/docs/online-payments/quick-start-guide | Self-serve developer account, UAT credentials, API keys, dashboard setup. |
+| Accept payments | https://www.harsh.com/docs/online-payments/accept-payments | Hosted/custom checkout, SDKs, plugins, recurring, refunds, settlements, webhooks, real-time status. |
+| API reference | https://www.harsh.com/docs/online-payments/api/ | Endpoint catalog for authentication, orders, refunds, settlements, split settlements, checkout, payment links, card, UPI, net banking, wallet, Pay by Points, e-challans, Apple Pay, international, customers, tokenization, payouts, affordability, BNPL, convenience fees, brand wallet, subscriptions, UPI Reserve Pay. |
+| Checkout options | https://www.harsh.com/docs/online-payments/checkout-options | Hosted, custom, iFrame, pre-auth, split settlement, convenience fees, tokenized payments, device fingerprinting, express checkout. |
+| Payment methods | https://www.harsh.com/docs/online-payments/payment-methods | Cards, UPI, net banking, wallets, Pay by Points, BNPL, international, e-challan, brand wallets. |
+| Cards | https://www.harsh.com/docs/online-payments/payment-methods/cards | Native OTP, CVV-less, tokenized card flow, decoupled authorization. |
+| UPI | https://www.harsh.com/docs/online-payments/payment-methods/upi | UPI collect, intent, TPV for BFSI/SEBI compliance. |
+| Tokenization | https://www.harsh.com/docs/online-payments/tokenization | COFT token management, customer vault, external PA/PG token support, cryptograms, capture/cancel flows. |
+| Payment links | https://www.harsh.com/docs/online-payments/payment-links | Link lifecycle, API/dashboard creation, cancel/expiry states, automated SMS/email sharing, analytics. |
+| Settlements | https://www.harsh.com/docs/online-payments/settlements | T+1, early batch, same-day, dashboard/API settlement management, 60-day query range, 6-month storage, near real-time data. |
+| Subscriptions | https://www.harsh.com/docs/online-payments/subscriptions | UPI AutoPay, fixed/variable/on-demand mandates, trial periods, retries, lifecycle APIs, dashboards. |
+| UPI Reserve Pay | https://www.harsh.com/docs/online-payments/upi-reserve-pay | Single Block Multi Debit / Reserve Pay, block once, debit multiple times, live balance. |
+| Affordability Suite | https://www.harsh.com/docs/online-payments/affordability-suite | Credit EMI, debit EMI, cardless EMI, down payment EMI, no-cost/low-cost/standard EMI, brand EMI, bundled offers, split EMI, full swipe offers. |
+| Payouts | https://www.harsh.com/docs/online-payments/payouts | Individual/bulk payouts, IMPS/NEFT/RTGS/UPI, real-time tracking, role-based dashboard, VAS. |
+| Split settlements | https://www.harsh.com/docs/online-payments/split-settlements | Marketplace split settlement, automated distribution, sub-merchant visibility, release/cancel APIs. |
+| International payments | https://www.harsh.com/docs/online-payments/international-payments | DCC, MCC, Apple Pay, import payments, FRM, 50+ currencies, dashboard, TCS/invoice/AWB APIs in API reference. |
+| Convenience fees | https://www.harsh.com/docs/online-payments/convenience-fees | Fixed/percentage/combined surcharge calculation and refund behavior. |
+| Pay by Points | https://www.harsh.com/docs/online-payments/pay-by-points | Reward-point redemption, point balance, point-to-INR conversion, 14 banks, settlement/refund behavior. |
+| E-challan / ECMS | https://www.harsh.com/docs/online-payments/payments-e-challan | Bank transfer challans, unique customer identifier, IMPS/NEFT/RTGS/offline bank branch, challan PDF, reconciliation. |
+| Dashboard | https://www.harsh.com/docs/online-payments/dashboard | Payments, refunds, settlements, payouts, payment links, settings, exports, filters, team roles, UAT/prod environments. |
+| Developer tools | https://www.harsh.com/docs/online-payments/developer-tools | Postman/OpenAPI, IPs/ciphers, method-wise error codes, webhooks, test cards. |
+| Webhooks | https://www.harsh.com/docs/online-payments/developer-tools/webhooks | JSON POST webhooks, retry attempts, webhook setup, NAT IP allowlist. |
+| Go-live checklist | https://www.harsh.com/docs/online-payments/go-live-checklist | Production readiness, idempotency, webhook signature verification, PCI SAQ guidance, load testing. |
+| CLI | https://www.harsh.com/docs/online-payments/cli | Official CLI, orders/refunds/payouts/subscriptions/settlements, webhook relay/replay, doctor/whoami, audit logs, CI. |
+| AI solutions | https://www.harsh.com/docs/online-payments/ai | MCP server, Pine Labs Payments Protocol, Agent Enablement Toolkit, Agentic Commerce. |
+| Ecommerce plugins | https://www.harsh.com/docs/online-payments/e-commerce-plugins | Shopify, Magento, WooCommerce, OpenCart plugin docs. |
 
 ## Executive Summary
 
@@ -111,7 +111,7 @@ Plural's developer experience is publicly documented as a complete integration e
 | Postman collection | Plural docs link to Postman collection. | No comparable public Postman collection found. | Makes QA, support, and partner onboarding faster. |
 | Playground | Plural overview links to an API playground for safe validation. | Toucan mentions sandbox but no comparable public playground was found. | Lets developers test requests before code changes. |
 | SDK language matrix | Plural documents web SDK, mobile SDKs for Android/iOS/Flutter/React Native, and server SDKs for Node.js, Python, PHP, Java, Ruby, Go, and .NET. | Toucan says SDKs exist but no public language matrix was found in reviewed Toucan pages. | Enterprise teams can choose official libraries aligned with their stack. |
-| CLI | Plural documents official `pinelabs` CLI for orders, refunds, payouts, subscriptions, settlements, webhook listen/replay, doctor/whoami, audit logs, CI use, and MCP-backed ask. | No Toucan CLI found in public pages reviewed. | This is a major developer-ops differentiator for debugging, CI smoke tests, local webhook development, and support handoffs. |
+| CLI | Plural documents official `harsh` CLI for orders, refunds, payouts, subscriptions, settlements, webhook listen/replay, doctor/whoami, audit logs, CI use, and MCP-backed ask. | No Toucan CLI found in public pages reviewed. | This is a major developer-ops differentiator for debugging, CI smoke tests, local webhook development, and support handoffs. |
 | Webhook documentation | Plural documents JSON POST webhooks, retries, polling recommendation, webhook endpoint setup, and IP allowlist. | Toucan public pages reviewed do not expose webhook docs. | Event-driven merchants can automate fulfillment, refunds, reconciliation, and alerts. |
 | Webhook reliability tooling | Plural CLI supports local webhook relay, signature verification, failed-delivery spool, and replay. | No comparable public Toucan tooling found. | Reduces one of the highest-friction parts of payment integration: local and staging webhook testing. |
 | Method-specific error codes | Plural developer tools split errors into common, UPI, card, net banking, EMI, and BNPL categories. | Toucan public pages reviewed do not expose error-code catalog. | Helps merchants build precise failure handling, payment retry logic, and support scripts. |

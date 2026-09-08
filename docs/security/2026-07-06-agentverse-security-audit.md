@@ -249,14 +249,14 @@ Require explicit `ALLOW_DEV_VAULT=true` env var in non-production to acknowledge
 JIRA_API_TOKEN=ATATT3xFfGF0o25[...redacted in this document...]
 CONFLUENCE_API_TOKEN=ATATT3xFfGF0o25[...redacted in this document...]
 OPENAI_API_KEY=sk-proj-B8u6nVz0Tyw7Tb[...redacted in this document...]
-JIRA_EMAIL=harsh.kumar01@pinelabs.com
+JIRA_EMAIL=harsh.kumar01@harsh.com
 ```
 
 **Description:** The `.env` file contains live API credentials for Atlassian (Jira + Confluence), OpenAI, and a real corporate email address. The file is listed in `.gitignore` and not currently tracked in the git repository, but it exists on the developer's workstation in plaintext. These are production-quality credentials (real company account, real API keys). Risks include:
 1. Developer workstation compromise (laptop theft, malware) leaks all keys.
 2. Accidental inclusion in a tar archive, Docker build context, or screen share.
 3. If `.gitignore` is accidentally removed, a commit would expose keys in git history permanently.
-4. Jira API token grants access to `pinelabsgroups.atlassian.net` — a real enterprise Atlassian instance.
+4. Jira API token grants access to `harshgroups.atlassian.net` — a real enterprise Atlassian instance.
 
 **Immediate action required:**
 1. Rotate the OpenAI API key immediately via https://platform.openai.com/api-keys.

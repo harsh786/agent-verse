@@ -39,15 +39,15 @@ async function setupAuth(page: Page): Promise<void> {
 const CHANNEL = { channel_id: 'ch-1', type: 'slack', enabled: true };
 const CHANNELS = [CHANNEL, { channel_id: 'ch-2', type: 'webhook', enabled: false }];
 const ROLES = [
-  { id: 'r1', user_id: 'alice@pinelabs.com', role: 'admin', created_at: new Date().toISOString() },
-  { id: 'r2', user_id: 'bob@pinelabs.com',   role: 'viewer', created_at: new Date().toISOString() },
+  { id: 'r1', user_id: 'alice@harsh.com', role: 'admin', created_at: new Date().toISOString() },
+  { id: 'r2', user_id: 'bob@harsh.com',   role: 'viewer', created_at: new Date().toISOString() },
 ];
 const IPS = [{ id: 'e1', cidr: '10.0.0.0/8', description: 'Office network', created_at: new Date().toISOString() }];
-const HOLDS = [{ id: 'h1', reason: 'SEC investigation hold', expires_at: null, created_by: 'admin@pinelabs.com' }];
+const HOLDS = [{ id: 'h1', reason: 'SEC investigation hold', expires_at: null, created_by: 'admin@harsh.com' }];
 const AUDIT_EVENTS = [
   { event_id: 'evt-001', goal_id: 'goal-aaa', tool_name: 'shell:execute', action_level: 'deny', outcome: 'blocked', approver: null, note: null },
   { event_id: 'evt-002', goal_id: 'goal-bbb', tool_name: 'jira:search', action_level: 'allow_log', outcome: 'success', approver: null, note: null },
-  { event_id: 'evt-003', goal_id: 'goal-ccc', tool_name: 'stripe:charge', action_level: 'approval', outcome: 'approved', approver: 'alice@pinelabs.com', note: 'Reviewed' },
+  { event_id: 'evt-003', goal_id: 'goal-ccc', tool_name: 'stripe:charge', action_level: 'approval', outcome: 'approved', approver: 'alice@harsh.com', note: 'Reviewed' },
 ];
 const GUARDRAILS = [
   { id: 'gr-1', name: 'Block PII Output', rule_type: 'pii_detection', severity: 'critical', enabled: true, layers: ['goal', 'final'], config: {}, created_at: '2026-01-01T00:00:00Z' },
@@ -87,7 +87,7 @@ async function setupRbacRoutes(page: Page): Promise<void> {
     route.fulfill({ status: 204, body: '' })
   );
   await page.route(/localhost:8000\/tenants\/me\/roles(\?.*)?$/, (route) => {
-    if (route.request().method() === 'POST') return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ id: 'r-new', user_id: 'carol@pinelabs.com', role: 'operator' }) });
+    if (route.request().method() === 'POST') return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ id: 'r-new', user_id: 'carol@harsh.com', role: 'operator' }) });
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(ROLES) });
   });
   await page.route(/localhost:8000\/tenants\/me\/ip-allowlist\/.*/, (route) =>
@@ -299,8 +299,8 @@ test.describe('Access Control', () => {
     await setupAuth(page);
     await setupRbacRoutes(page);
     await page.goto('/rbac');
-    await expect(page.getByText('alice@pinelabs.com')).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText('bob@pinelabs.com')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('alice@harsh.com')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('bob@harsh.com')).toBeVisible({ timeout: 5000 });
     await expect(page.getByText('admin').first()).toBeVisible({ timeout: 5000 });
     await expect(page.getByText('viewer').first()).toBeVisible({ timeout: 5000 });
   });
@@ -392,7 +392,7 @@ test.describe('Compliance', () => {
     await expect(page.getByRole('heading', { name: /compliance/i })).toBeVisible({ timeout: 10000 });
     await page.getByRole('button', { name: /legal holds/i }).click();
     await expect(page.getByText('SEC investigation hold')).toBeVisible({ timeout: 8000 });
-    await expect(page.getByText('admin@pinelabs.com')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('admin@harsh.com')).toBeVisible({ timeout: 5000 });
   });
 
   test('18. Data Export tab has Start Export button', async ({ page }) => {

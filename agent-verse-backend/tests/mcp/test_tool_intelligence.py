@@ -142,14 +142,14 @@ class TestUniversalArgumentResolver:
         assert resolved["message"] == "Hello from body"
 
     def test_github_repository_becomes_repo(self):
-        args = {"repository": "agentverse", "owner": "pinelabs", "pr_number": 42}
+        args = {"repository": "agentverse", "owner": "harsh", "pr_number": 42}
         resolved = self.r.resolve(GITHUB_PR_SCHEMA, args)
         assert resolved["repo"] == "agentverse"
 
     def test_github_org_becomes_owner(self):
-        args = {"repo": "agentverse", "org": "pinelabs", "pr_number": 42}
+        args = {"repo": "agentverse", "org": "harsh", "pr_number": 42}
         resolved = self.r.resolve(GITHUB_PR_SCHEMA, args)
-        assert resolved["owner"] == "pinelabs"
+        assert resolved["owner"] == "harsh"
 
     # ── Normalised key matching (case/punctuation insensitive) ────────────────
 

@@ -166,7 +166,7 @@ async def test_jira_rest_connector_exposes_search_tool() -> None:
     server_id = await registry.register(
         MCPServerConfig(
             name="PineLabs JIRA",
-            url="https://pinelabs.atlassian.net",
+            url="https://harsh.atlassian.net",
             auth_type="custom_header",
             auth_config={"Authorization": "Basic test-token"},
         ),
@@ -186,7 +186,7 @@ async def test_jira_rest_connector_exposes_search_tool_without_url_protocol() ->
     server_id = await registry.register(
         MCPServerConfig(
             name="PineLabs JIRA",
-            url="pinelabs.atlassian.net",
+            url="harsh.atlassian.net",
             auth_type="custom_header",
             auth_config={"Authorization": "Basic test-token"},
         ),
@@ -346,7 +346,7 @@ async def test_jira_rest_connector_dispatches_search_tool() -> None:
     server_id = await registry.register(
         MCPServerConfig(
             name="PineLabs JIRA",
-            url="https://pinelabs.atlassian.net",
+            url="https://harsh.atlassian.net",
             auth_type="custom_header",
             auth_config={"Authorization": "Basic test-token"},
         ),
@@ -355,7 +355,7 @@ async def test_jira_rest_connector_dispatches_search_tool() -> None:
     client = MCPClient(registry=registry)
 
     with respx.mock:
-        route = respx.post("https://pinelabs.atlassian.net/rest/api/3/search/jql").mock(
+        route = respx.post("https://harsh.atlassian.net/rest/api/3/search/jql").mock(
             return_value=httpx.Response(
                 200,
                 json={
@@ -404,7 +404,7 @@ async def test_jira_rest_connector_dispatches_search_tool_without_url_protocol()
     server_id = await registry.register(
         MCPServerConfig(
             name="PineLabs JIRA",
-            url="pinelabs.atlassian.net",
+            url="harsh.atlassian.net",
             auth_type="custom_header",
             auth_config={"Authorization": "Basic test-token"},
         ),
@@ -413,7 +413,7 @@ async def test_jira_rest_connector_dispatches_search_tool_without_url_protocol()
     client = MCPClient(registry=registry)
 
     with respx.mock:
-        route = respx.post("https://pinelabs.atlassian.net/rest/api/3/search/jql").mock(
+        route = respx.post("https://harsh.atlassian.net/rest/api/3/search/jql").mock(
             return_value=httpx.Response(200, json={"total": 0, "issues": []})
         )
         result = await client.call_tool(
@@ -435,7 +435,7 @@ async def test_jira_rest_connector_counts_issues_when_search_jql_omits_total() -
     server_id = await registry.register(
         MCPServerConfig(
             name="PineLabs JIRA",
-            url="https://pinelabs.atlassian.net",
+            url="https://harsh.atlassian.net",
             auth_type="custom_header",
             auth_config={"Authorization": "Basic test-token"},
         ),
@@ -444,7 +444,7 @@ async def test_jira_rest_connector_counts_issues_when_search_jql_omits_total() -
     client = MCPClient(registry=registry)
 
     with respx.mock:
-        respx.post("https://pinelabs.atlassian.net/rest/api/3/search/jql").mock(
+        respx.post("https://harsh.atlassian.net/rest/api/3/search/jql").mock(
             return_value=httpx.Response(
                 200,
                 json={

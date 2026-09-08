@@ -65,7 +65,7 @@ async function setupAuth(page: Page): Promise<void> {
 // REALISTIC MOCK DATA — PineLabs Engineering Ops Civilization
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const CIV_ID = 'civ-pinelabs-engineering-ops';
+const CIV_ID = 'civ-harsh-engineering-ops';
 
 const CIVILIZATION = {
   id: CIV_ID,

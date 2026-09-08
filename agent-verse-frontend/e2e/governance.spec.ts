@@ -55,7 +55,7 @@ const RESOLVED = [
 const AUDIT_EVENTS = [
   { event_id: 'evt-001', goal_id: 'goal-aaa', tool_name: 'shell:execute', action_level: 'deny', outcome: 'blocked', approver: null, note: null },
   { event_id: 'evt-002', goal_id: 'goal-bbb', tool_name: 'jira:search', action_level: 'allow', outcome: 'success', approver: null, note: null },
-  { event_id: 'evt-003', goal_id: 'goal-ccc', tool_name: 'github:delete_repo', action_level: 'approval', outcome: 'approved', approver: 'alice@pinelabs.com', note: 'Reviewed and approved' },
+  { event_id: 'evt-003', goal_id: 'goal-ccc', tool_name: 'github:delete_repo', action_level: 'approval', outcome: 'approved', approver: 'alice@harsh.com', note: 'Reviewed and approved' },
 ];
 
 const BUDGET = { tenant_id: 'test-tenant', per_goal_usd: 10.0, per_tenant_daily_usd: 500.0 };
@@ -520,7 +520,7 @@ test.describe('Governance — Audit Tab', () => {
     await page.goto('/governance');
 
     await page.getByTestId('tab-audit').click();
-    await expect(page.getByText('alice@pinelabs.com')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('alice@harsh.com')).toBeVisible({ timeout: 10000 });
   });
 
   test('26. Empty state shown when no audit events match', async ({ page }) => {

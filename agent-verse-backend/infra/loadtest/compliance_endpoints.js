@@ -30,7 +30,7 @@ export const options = {
 };
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8000';
-const API_KEY = __ENV.API_KEY || 'av_free_pinelabs_dev_2026';
+const API_KEY = __ENV.API_KEY || 'av_free_harsh_dev_2026';
 
 const headers = {
   'Content-Type': 'application/json',

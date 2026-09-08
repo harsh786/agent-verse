@@ -72,9 +72,9 @@ const JIRA_RESULT_ARTIFACT = {
         { key: 'updated', label: 'Updated', type: 'datetime' },
       ],
       rows: [
-        { key: 'OPP-34746', summary: 'Removed Logging in txn data service', status: 'To be deployed', priority: 'High', updated: '2026-06-29T12:56:40.089+0530', url: 'https://pinelabsgroups.atlassian.net/browse/OPP-34746' },
-        { key: 'OPP-34672', summary: 'MID whitelisting in CG config', status: 'In-progress', priority: 'Highest', updated: '2026-06-23T12:12:08.687+0530', url: 'https://pinelabsgroups.atlassian.net/browse/OPP-34672' },
-        { key: 'BAU-151026', summary: 'Diners Token PAN Mapping Fix', status: 'Resolved', priority: 'Medium', updated: '2026-06-28T09:00:00.000+0530', url: 'https://pinelabsgroups.atlassian.net/browse/BAU-151026' },
+        { key: 'OPP-34746', summary: 'Removed Logging in txn data service', status: 'To be deployed', priority: 'High', updated: '2026-06-29T12:56:40.089+0530', url: 'https://harshgroups.atlassian.net/browse/OPP-34746' },
+        { key: 'OPP-34672', summary: 'MID whitelisting in CG config', status: 'In-progress', priority: 'Highest', updated: '2026-06-23T12:12:08.687+0530', url: 'https://harshgroups.atlassian.net/browse/OPP-34672' },
+        { key: 'BAU-151026', summary: 'Diners Token PAN Mapping Fix', status: 'Resolved', priority: 'Medium', updated: '2026-06-28T09:00:00.000+0530', url: 'https://harshgroups.atlassian.net/browse/BAU-151026' },
       ],
     },
   ],

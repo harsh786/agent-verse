@@ -72,7 +72,7 @@ def _extract_credentials_from_server(cfg: MCPServerConfig) -> dict[str, str]:
     IMPORTANT: for builtin connectors (e.g. 'builtin-jira') whose cfg.url is set
     to a remote MCP endpoint like https://mcp.atlassian.com/v1/mcp/authv2, we must
     NOT override auth_config['url'] (which holds the actual Jira Cloud URL like
-    https://pinelabsgroups.atlassian.net). Overriding it would cause jira_server.py
+    https://harshgroups.atlassian.net). Overriding it would cause jira_server.py
     to call https://mcp.atlassian.com/.../rest/api/3/search instead of the real API.
     """
     result: dict[str, str] = {}
