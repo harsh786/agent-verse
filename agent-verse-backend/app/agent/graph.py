@@ -14,6 +14,7 @@ a crashed goal can be resumed by re-invoking with the same thread_id.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import re
 import uuid
 from collections.abc import Awaitable, Callable
@@ -130,6 +131,9 @@ class AgentGraph(
         enable_self_consistency: bool = False,
         enable_tree_of_thoughts: bool = False,
         enable_peer_review: bool = False,
+        # D-1/D-2: multi-agent pattern flags (supervisor decomposition, debate voting)
+        enable_supervisor: bool = False,
+        enable_debate: bool = False,
         # Autonomy
         autonomy_mode: str = "bounded-autonomous",
         # Goal-tree decomposition
@@ -197,6 +201,10 @@ class AgentGraph(
             enable_tree_of_thoughts or "tree_of_thoughts" in selected_strategy_ids
         )
         self._enable_peer_review = enable_peer_review or "peer_review" in selected_strategy_ids
+        # D-1/D-2: multi-agent patterns — enabled per-agent via ctor flag or a
+        # runtime-profile strategy id, mirroring the other optional reasoning nodes.
+        self._enable_supervisor = enable_supervisor or "supervisor" in selected_strategy_ids
+        self._enable_debate = enable_debate or "debate" in selected_strategy_ids
         self._autonomy_mode = autonomy_mode
         self._enable_goal_tree = enable_goal_tree
         self._goal_tree_threshold = goal_tree_threshold
@@ -299,19 +307,21 @@ class AgentGraph(
 
         g.add_edge(START, "initialize")
         g.add_edge("initialize", "rag_retrieval")
-        # H7: CoT + tree_of_thoughts: rag_retrieval → [think] → [tree_of_thoughts] → plan
+        # Pre-plan reasoning chain: rag_retrieval → [think] → [tree_of_thoughts] →
+        # [supervisor] → [debate] → plan. Each optional node is inserted only when
+        # enabled, so the default path stays rag_retrieval → plan.
+        pre_plan_chain: list[str] = ["rag_retrieval"]
+        if self._enable_cot:
+            pre_plan_chain.append("think")
         if getattr(self, "_enable_tree_of_thoughts", False):
-            if self._enable_cot:
-                g.add_edge("rag_retrieval", "think")
-                g.add_edge("think", "tree_of_thoughts")
-            else:
-                g.add_edge("rag_retrieval", "tree_of_thoughts")
-            g.add_edge("tree_of_thoughts", "plan")
-        elif self._enable_cot:
-            g.add_edge("rag_retrieval", "think")
-            g.add_edge("think", "plan")
-        else:
-            g.add_edge("rag_retrieval", "plan")
+            pre_plan_chain.append("tree_of_thoughts")
+        if getattr(self, "_enable_supervisor", False):
+            pre_plan_chain.append("supervisor")
+        if getattr(self, "_enable_debate", False):
+            pre_plan_chain.append("debate")
+        pre_plan_chain.append("plan")
+        for _src, _dst in itertools.pairwise(pre_plan_chain):
+            g.add_edge(_src, _dst)
         g.add_edge("plan", "execute")
         # H1 + H7: execute → [refine] → [self_consistency] → verify
         _post_exec_target = "verify"
