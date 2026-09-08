@@ -1,13 +1,26 @@
-"""EmbeddingOrchestrator — selects embedding model per content type and tenant policy."""
+"""EmbeddingOrchestrator — selects embedding model per content type and tenant policy.
+
+Honesty note on "multimodal" embeddings (finding D-11)
+------------------------------------------------------
+The registry advertises ``voyage-multimodal-3`` for image/video content, but the
+platform does **not** currently have a real image->vector path. Image and video
+content is embedded as *caption-then-text-embed*: a caption is produced upstream
+(perception/OCR) and that text is embedded with a text model. To keep this
+honest, a selection whose modality is image/multimodal is flagged with
+``requires_captioning=True`` and any physical embedding through this orchestrator
+reports ``embedding_input="text_of_caption"`` — never a native multimodal vector.
+"""
 
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.embedding.dimension_policy import DimensionPolicy
 from app.embedding.model_registry import EmbeddingModelRegistry
+from app.embedding.vector_index_policy import VectorIndexPolicy
 from app.ingestion.content_classifier import ContentType
 
 if TYPE_CHECKING:
@@ -41,6 +54,10 @@ _FALLBACK_ORDER = ["anthropic", "openai", "voyage", "gemini", "fake"]
 # Default batch size for embed_batch()
 _DEFAULT_BATCH_SIZE = 32
 
+# Modalities that cannot be embedded natively and are realised as
+# caption-then-text-embed (see the module docstring, finding D-11).
+_CAPTION_FIRST_MODALITIES = frozenset({"image", "multimodal"})
+
 
 @dataclass
 class EmbeddingSelectionResult:
@@ -50,6 +67,9 @@ class EmbeddingSelectionResult:
     cost_class: str
     provider: str
     selection_reason: str = ""
+    # D-11: True when the modality (image/multimodal) is realised as
+    # caption-then-text-embed rather than a native multimodal vector.
+    requires_captioning: bool = False
 
 
 @dataclass
@@ -58,12 +78,28 @@ class BatchEmbeddingResult:
     model_id: str
     provider: str
     errors: list[str] = field(default_factory=list)
+    # D-12: indices whose embedding FAILED. Their slot in ``embeddings`` is the
+    # empty-list sentinel ``[]`` — never a zero vector — so callers can skip or
+    # retry them instead of indexing corruption.
+    failed_indices: list[int] = field(default_factory=list)
+
+
+@dataclass
+class RoutedEmbeddingResult:
+    """Result of physically embedding via the *selected* model (finding D-10)."""
+
+    embeddings: list[list[float]]
+    model_id: str
+    provider: str
+    # "native" for text/code; "text_of_caption" for image/multimodal (D-11).
+    embedding_input: str = "native"
 
 
 class EmbeddingOrchestrator:
     def __init__(self, registry: EmbeddingModelRegistry | None = None) -> None:
         self._registry = registry or EmbeddingModelRegistry.build_default()
         self._dim_policy = DimensionPolicy()
+        self._index_policy = VectorIndexPolicy()
 
     def select(
         self,
@@ -93,6 +129,7 @@ class EmbeddingOrchestrator:
                     cost_class=best.cost_class,
                     provider=best.provider,
                     selection_reason=f"content_type={content_type.value} modality={modality}",
+                    requires_captioning=best.modality in _CAPTION_FIRST_MODALITIES,
                 )
 
         # Fallback to any text model
@@ -159,6 +196,7 @@ class EmbeddingOrchestrator:
 
         all_embeddings: list[list[float]] = [[] for _ in texts]
         errors: list[str] = []
+        failed_indices: list[int] = []
         num_batches = math.ceil(len(texts) / batch_size)
         used_provider = "unknown"
         used_model = ""
@@ -184,14 +222,108 @@ class EmbeddingOrchestrator:
                     continue
 
             if not batch_ok:
-                # Fill with empty vectors so downstream code can handle gracefully
-                dim = 10
+                # D-12: DO NOT fill zero vectors — a zero vector matches nothing and
+                # distorts similarity, silently corrupting the index. Leave the
+                # empty-list sentinel and surface the failed indices so callers can
+                # skip or retry them.
                 for i in range(len(batch_texts)):
-                    all_embeddings[start + i] = [0.0] * dim
+                    idx = start + i
+                    all_embeddings[idx] = []
+                    failed_indices.append(idx)
 
         return BatchEmbeddingResult(
             embeddings=all_embeddings,
             model_id=used_model,
             provider=used_provider,
             errors=errors,
+            failed_indices=failed_indices,
         )
+
+    async def _embed_texts_with_model(
+        self,
+        texts: list[str],
+        provider: Any,
+        model_id: str,
+    ) -> list[list[float]]:
+        """Physically embed *texts* on *provider*, requesting *model_id*.
+
+        Mirrors :func:`app.providers.base.embed_texts` safety semantics — when no
+        provider is available or it does not implement embedding, the empty-list
+        sentinel is returned (never a zero/noise vector). The key difference is
+        that the *selected* ``model_id`` is threaded into the request, so the
+        provider actually uses the chosen model (finding D-10).
+        """
+        if provider is None:
+            return [[] for _ in texts]
+        try:
+            from app.providers.base import EmbedRequest
+
+            resp = await provider.embed(EmbedRequest(texts=texts, model=model_id))
+            return resp.embeddings
+        except NotImplementedError:
+            return [[] for _ in texts]
+
+    async def embed_for_content(
+        self,
+        texts: list[str],
+        *,
+        content_type: ContentType,
+        tenant_ctx: TenantContext | None = None,
+        default_provider: Any = None,
+        provider_resolver: Callable[[str], Any] | None = None,
+        collection_size: int = 0,
+    ) -> RoutedEmbeddingResult:
+        """Select a model for *content_type* and ACTUALLY embed with it (D-10).
+
+        The chosen model id is threaded into the physical embed call, so a CODE
+        content type is embedded with the code model, image content is embedded
+        via caption-then-text-embed, etc. — instead of the previous behaviour of
+        selecting a model and then discarding it in favour of one fixed embedder.
+
+        Provider resolution:
+          * ``provider_resolver`` (optional) maps the selected provider name to a
+            concrete provider instance. When it returns a provider, that provider
+            is used.
+          * Otherwise ``default_provider`` is used (safe fallback), still with the
+            selected model id threaded through.
+        """
+        selection = self.select(content_type, tenant_ctx, collection_size)
+
+        provider = default_provider
+        if provider_resolver is not None:
+            try:
+                resolved = provider_resolver(selection.provider)
+            except Exception:
+                resolved = None
+            if resolved is not None:
+                provider = resolved
+
+        embeddings = await self._embed_texts_with_model(texts, provider, selection.model_id)
+        embedding_input = "text_of_caption" if selection.requires_captioning else "native"
+        return RoutedEmbeddingResult(
+            embeddings=embeddings,
+            model_id=selection.model_id,
+            provider=selection.provider,
+            embedding_input=embedding_input,
+        )
+
+    def guard_dimension_change(self, *, existing_dim: int, new_dim: int) -> bool:
+        """Reject an embedding-dimension change that would corrupt a vector index.
+
+        Wires :meth:`VectorIndexPolicy.is_dimension_compatible` so a re-embed or
+        model swap cannot silently write vectors of a different dimension into an
+        existing collection (which pgvector would reject or, worse, mis-index).
+
+        Returns ``True`` when compatible; raises ``ValueError`` on mismatch.
+
+        TODO(main.py wiring): call this from the ingest/index path once the
+        collection's stored embedding dimension is available to
+        ``IngestionOrchestrator`` (the ``KnowledgeStore`` does not yet expose it
+        within this module's scope).
+        """
+        if not self._index_policy.is_dimension_compatible(existing_dim, new_dim):
+            raise ValueError(
+                f"Embedding dimension mismatch: collection has {existing_dim}, "
+                f"new model produces {new_dim}. Re-embed the collection before switching."
+            )
+        return True
