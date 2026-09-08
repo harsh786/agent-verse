@@ -135,6 +135,18 @@ class CostController:
         self._reset_if_new_day(tenant_ctx.tenant_id)
         return self._daily_totals.get(tenant_ctx.tenant_id, 0.0)
 
+    def has_remaining_budget(self, *, tenant_ctx: TenantContext) -> bool:
+        """True if the tenant has any daily budget left for a new goal.
+
+        Used as a goal-submission pre-flight so an over-budget tenant is blocked
+        up-front with a budget reason, rather than accepted and then silently
+        having every step skipped. A per-tenant daily budget of 0 means "no
+        budget" — nothing can run.
+        """
+        self._reset_if_new_day(tenant_ctx.tenant_id)
+        spent = self._daily_totals.get(tenant_ctx.tenant_id, 0.0)
+        return spent < self._cfg.per_tenant_daily_usd
+
     def get_tenant_cost_today(self, tenant_ctx: TenantContext) -> float:
         """Return the current-day spend for the tenant (resets at UTC midnight)."""
         self._reset_if_new_day(tenant_ctx.tenant_id)

@@ -610,6 +610,45 @@ class GoalService:
             _GOAL_PAUSE_EVENTS.pop(gid, None)
         return len(stale)
 
+    async def _check_budget_preflight(self, tenant_ctx: TenantContext) -> None:
+        """Reject goal submission when the tenant's daily cost budget is exhausted.
+
+        Best-effort and fail-open: a budgeting error must never block legitimate
+        goals. Prefers the Redis controller (cross-replica) and falls back to the
+        in-memory one. Raises PlanLimitExceededError (HTTP 429) with a budget
+        reason when there is no remaining daily budget.
+        """
+        from app.tenancy.limits import PlanLimitExceededError
+
+        _aps: Any = self._app_state
+        try:
+            from starlette.applications import Starlette as _Starlette
+
+            if isinstance(self._app_state, _Starlette):
+                _aps = self._app_state.state
+        except Exception:
+            pass
+        redis_cc = getattr(_aps, "redis_cost_controller", None) if _aps else None
+        mem_cc = getattr(_aps, "cost_controller", None) if _aps else None
+
+        has_budget = True
+        try:
+            if redis_cc is not None and hasattr(redis_cc, "get_budget_status"):
+                status = await redis_cc.get_budget_status(tenant_ctx=tenant_ctx)
+                has_budget = float(status.get("daily_remaining", 1.0)) > 0.0
+            elif mem_cc is not None and hasattr(mem_cc, "has_remaining_budget"):
+                has_budget = mem_cc.has_remaining_budget(tenant_ctx=tenant_ctx)
+        except PlanLimitExceededError:
+            raise
+        except Exception:
+            return  # fail-open on any budgeting error
+
+        if not has_budget:
+            raise PlanLimitExceededError(
+                "Daily cost budget exhausted for this tenant — goal rejected. "
+                "Increase the budget or wait for the daily reset."
+            )
+
     async def _check_daily_goal_limit_redis(self, tenant_ctx: TenantContext) -> None:
         """Atomic Redis-based daily goal counter — works across all replicas.
 
@@ -1653,8 +1692,17 @@ class GoalService:
                 # ``self._app_state`` is the FastAPI app; eval_runner (like every
                 # other service) lives on ``app.state``. Reading it off the app
                 # directly always returned None, so auto-eval on goal completion
-                # never ran (GET /eval stayed 'not_evaluated'). Unwrap to app.state.
-                _eval_aps = getattr(self._app_state, "state", self._app_state)
+                # never ran (GET /eval stayed 'not_evaluated'). Unwrap to app.state
+                # only for the real Starlette app (a mock/plain object is used as-is,
+                # so unit tests that set _app_state.eval_runner directly still work).
+                _eval_aps: Any = self._app_state
+                try:
+                    from starlette.applications import Starlette as _Starlette
+
+                    if isinstance(self._app_state, _Starlette):
+                        _eval_aps = self._app_state.state
+                except Exception:
+                    pass
                 eval_runner = getattr(_eval_aps, "eval_runner", None)
                 if eval_runner is not None:
                     tenant_ctx_for_record: TenantContext = (
@@ -2413,6 +2461,12 @@ class GoalService:
 
             # Enforce daily goal limit per plan tier (Redis-backed for multi-process safety)
             await self._check_daily_goal_limit_redis(tenant_ctx)
+
+            # Budget pre-flight: reject up-front when the tenant has exhausted its
+            # daily cost budget, so an over-budget tenant is blocked with a budget
+            # reason instead of being accepted and then having every step silently
+            # skipped ("Step skipped: budget exceeded.") mid-run.
+            await self._check_budget_preflight(tenant_ctx)
 
             # Check and atomically increment the concurrent-goal counter.
             # Raises PlanLimitExceededError (HTTP 429) when the tenant is at limit.

@@ -56,72 +56,71 @@ class _CompletingProvider(FakeProvider):
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def budget_client(app: Any, client: Any) -> AsyncIterator[Any]:
+async def budget_client(app: Any, client: Any) -> AsyncIterator[tuple[Any, str]]:
     from httpx import ASGITransport, AsyncClient
 
     email = f"budget-{uuid.uuid4().hex[:12]}@example.com"
     resp = await client.post("/tenants/signup", json={"name": "Budget", "email": email})
     assert resp.status_code == 201, f"signup failed: {resp.status_code} {resp.text}"
-    api_key = resp.json()["api_key"]
+    body = resp.json()
+    api_key, tenant_id = body["api_key"], body["tenant_id"]
     transport = ASGITransport(app=app)
     async with AsyncClient(
         transport=transport, base_url="http://e2e-full", headers={"X-API-Key": api_key}
     ) as c:
-        yield c
+        yield c, tenant_id
 
 
 @pytest.fixture
-def _zero_budget_inline(app: Any) -> Any:
-    """Pin a zero-budget in-memory CostController and run goals inline."""
+def _zero_budget_inline(app: Any, budget_client: tuple[Any, str]) -> Any:
+    """Zero the tenant's daily cost budget on the controller the goal path uses.
+
+    The live path prefers ``redis_cost_controller``; set that tenant's budget to
+    0 (falling back to the in-memory controller when Redis isn't wired).
+    """
     from app.governance.cost import BudgetConfig, CostController
 
+    _c, tenant_id = budget_client
     gs = app.state.goal_service
     prev_override = getattr(app.state, "_llm_provider_override", None)
     prev_queue = gs._task_queue
-    prev_cost = getattr(app.state, "cost_controller", None)
-
     app.state._llm_provider_override = _CompletingProvider()
     gs._task_queue = None
-    # In-memory controller: a 0.0 limit means any positive cost is over budget.
-    app.state.cost_controller = CostController(
-        BudgetConfig(per_goal_usd=0.0, per_tenant_daily_usd=0.0)
-    )
+
+    redis_cc = getattr(app.state, "redis_cost_controller", None)
+    prev_mem = getattr(app.state, "cost_controller", None)
+    zero = BudgetConfig(per_goal_usd=0.0, per_tenant_daily_usd=0.0)
+    if redis_cc is not None and hasattr(redis_cc, "configure_tenant_budget"):
+        redis_cc.configure_tenant_budget(tenant_id, zero)
+    else:
+        app.state.cost_controller = CostController(zero)
     try:
         yield
     finally:
         app.state._llm_provider_override = prev_override
         gs._task_queue = prev_queue
-        app.state.cost_controller = prev_cost
+        app.state.cost_controller = prev_mem
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "No goal-level budget gate: budget is enforced only per-step in the "
-        "executor ('Step skipped: budget exceeded.'); there is no blocked/paused "
-        "goal status and no budget reason surfaced at the goal level."
-    ),
-)
 async def test_zero_budget_goal_is_blocked_with_budget_reason(
-    budget_client: Any, _zero_budget_inline: Any
+    budget_client: tuple[Any, str], _zero_budget_inline: Any
 ) -> None:
-    submit = await budget_client.post("/goals", json={"goal": "Run an expensive analysis"})
+    client, _tenant_id = budget_client
+    submit = await client.post("/goals", json={"goal": "Run an expensive analysis"})
 
-    # DESIRED: submission is rejected for budget, OR the goal ends in a
-    # budget-driven paused/blocked state carrying a budget reason.
+    # Submission is rejected up-front for budget (the goal-level budget gate), OR
+    # the goal ends in a budget-driven paused/blocked state carrying a reason.
     if submit.status_code != 202:
-        # A budget-driven rejection would be an acceptable realization of the DoD.
         assert submit.status_code in (402, 429, 403)
         assert "budget" in submit.text.lower()
         return
 
     goal_id = submit.json()["goal_id"]
     final = await wait_for_status(
-        budget_client, goal_id, {"complete", "failed", "paused", "blocked"}, timeout=30.0
+        client, goal_id, {"complete", "failed", "paused", "blocked"}, timeout=30.0
     )
     status = str(final.get("status"))
-    reason_blob = " ".join(
-        str(final.get(k, "")) for k in ("status", "reason", "error", "error_message", "block_reason")
-    ).lower()
+    _keys = ("status", "reason", "error", "error_message", "block_reason")
+    reason_blob = " ".join(str(final.get(k, "")) for k in _keys).lower()
     assert status in ("paused", "blocked"), f"expected a budget pause/block, got {status!r}"
     assert "budget" in reason_blob, f"no budget reason surfaced: {final!r}"
