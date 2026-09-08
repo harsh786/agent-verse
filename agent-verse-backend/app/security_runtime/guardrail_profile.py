@@ -40,6 +40,20 @@ class GuardrailProfileSelector:
 
         risk = profile.properties.risk
         compliance = profile.security.compliance_tags
+
+        # Defect 5: seed the tenant's baseline BLOCK rules (+ any compliance-bundle
+        # rules) so an unconfigured tenant is protected. Idempotent and best-effort
+        # — a guardrails-engine failure must never break profile selection.
+        try:
+            from app.guardrails_v2.engine import guardrails_engine
+
+            guardrails_engine.ensure_default_rules(
+                profile.tenant_id, bundles=list(compliance or [])
+            )
+        except Exception:  # pragma: no cover - defensive
+            import logging
+
+            logging.getLogger(__name__).exception("failed to seed default guardrail rules")
         regulated_tags = {"gdpr", "hipaa", "pci", "soc2", "dpdp", "sox"}
         # Note: REGULATED takes precedence over STRICT when both risk and compliance apply.
         # REGULATED is a strict superset of STRICT (adds PII redaction + output schema validation),
