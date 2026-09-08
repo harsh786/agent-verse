@@ -486,6 +486,71 @@ async def test_node_verify_with_exec_memory_on_success() -> None:
     exec_mem.record.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_node_verify_grounding_gate_fails_closed_on_high_risk() -> None:
+    """D-4/D-5: a verifier-accepted answer with claims unsupported by evidence on a
+    HIGH-RISK goal must be flipped to failure (fail-closed replan)."""
+    events: list[dict] = []
+
+    async def _cb(event: dict) -> None:
+        events.append(event)
+
+    provider = FakeProvider()
+    provider._fake_response = '{"success": true, "reason": "looks done"}'
+    graph = AgentGraph(planner=provider, executor=provider, verifier=provider)
+    graph._event_callback = _cb
+
+    agent_state = AgentState(goal="Deploy release to prod", tenant_ctx=T)
+    step = StepResult(
+        description="deploy",
+        status=StepStatus.COMPLETE,
+        output="Deployed build 98765 and ticket PROJ-4321 was closed",
+        tool_calls=[{"output": "server acknowledged the request"}],
+    )
+    agent_state.steps = [step]
+    state = _make_state(agent_state=agent_state)
+    result = await graph._node_verify(state)
+
+    assert result["agent_state"].verification_success is False
+    assert any(
+        e.get("type") == "grounding_warning" and e.get("stage") == "final_answer"
+        and e.get("high_risk") is True
+        for e in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_node_verify_grounding_gate_fails_open_on_normal_goal() -> None:
+    """D-4/D-5: ungrounded claims on a NON-high-risk goal warn but do not block
+    (fail-open) — verification stays successful."""
+    events: list[dict] = []
+
+    async def _cb(event: dict) -> None:
+        events.append(event)
+
+    provider = FakeProvider()
+    provider._fake_response = '{"success": true, "reason": "done"}'
+    graph = AgentGraph(planner=provider, executor=provider, verifier=provider)
+    graph._event_callback = _cb
+
+    agent_state = AgentState(goal="Summarize the quarterly report", tenant_ctx=T)
+    step = StepResult(
+        description="summarize",
+        status=StepStatus.COMPLETE,
+        output="Revenue was 987654 and 445566 across regions",
+        tool_calls=[{"output": "the report text mentions growth"}],
+    )
+    agent_state.steps = [step]
+    state = _make_state(agent_state=agent_state)
+    result = await graph._node_verify(state)
+
+    assert result["agent_state"].verification_success is True
+    assert any(
+        e.get("type") == "grounding_warning" and e.get("high_risk") is False
+        for e in events
+    )
+
+
 # ---------------------------------------------------------------------------
 # _route
 # ---------------------------------------------------------------------------

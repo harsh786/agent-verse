@@ -207,6 +207,71 @@ class VerifierMixin:
             except Exception as exc:
                 self._logger.warning("consensus_verify_failed", error=str(exc)[:80])
 
+        # D-4/D-5: final-answer grounding gate. Verify the answer the verifier is
+        # about to accept is grounded in the evidence gathered during execution.
+        # Fail-OPEN (annotate + warn) on normal goals — mirrors the executor gate —
+        # but fail-CLOSED (flip success → replan) on high-risk goals so an
+        # ungrounded high-risk answer is never emitted. Fully guarded.
+        if success:
+            try:
+                from app.agent.grounding import annotate_ungrounded, check_grounding
+                from app.agent.nodes._helpers import _is_high_risk_step
+
+                _final_answer = (
+                    agent_state.cited_answer
+                    or " ".join(s.output for s in agent_state.steps if s.output)
+                ).strip()
+                _evidence = [
+                    str(tc.get("output", ""))
+                    for step in agent_state.steps
+                    for tc in getattr(step, "tool_calls", [])
+                    if tc.get("output")
+                ]
+                _high_risk = _is_high_risk_step(agent_state.goal)
+                if _final_answer and _evidence:
+                    _grounding = check_grounding(
+                        output=_final_answer,
+                        tool_outputs=_evidence,
+                        strict=_high_risk,
+                    )
+                    agent_state.context["final_answer_grounded"] = _grounding.grounded
+                    if not _grounding.grounded:
+                        agent_state.ungrounded_claims.extend(
+                            _grounding.ungrounded_claims[:5]
+                        )
+                        await self._emit(
+                            {
+                                "type": "grounding_warning",
+                                "stage": "final_answer",
+                                "high_risk": _high_risk,
+                                "ungrounded_claims": _grounding.ungrounded_claims[:5],
+                            }
+                        )
+                        if _high_risk:
+                            # Fail-closed: drive a replan instead of emitting.
+                            success = False
+                            retry = True
+                            agent_state.context["verification_retry"] = True
+                            reason = (
+                                "Final answer failed grounding on a high-risk goal: "
+                                f"{len(_grounding.ungrounded_claims)} unsupported claim(s). "
+                                "Re-execute and cite evidence for every claim. "
+                                + (reason or "")
+                            ).strip()
+                            self._logger.warning(
+                                "final_grounding_gate_replan",
+                                goal_id=agent_state.goal_id,
+                                ungrounded=_grounding.ungrounded_claims[:3],
+                            )
+                        elif agent_state.cited_answer:
+                            # Fail-open: annotate the answer with grounding caveats.
+                            agent_state.cited_answer = annotate_ungrounded(
+                                agent_state.cited_answer, _grounding
+                            )
+            except Exception as exc:
+                # Grounding-gate errors must never crash verification.
+                self._logger.warning("final_grounding_gate_error", error=str(exc)[:80])
+
         agent_state.verification_success = success
         agent_state.verification_feedback = reason
         await self._emit({"type": "verification_done", "success": success, "reason": reason})
