@@ -487,6 +487,14 @@ def create_app(
     _nl_sched = NLScheduler(provider=_app_provider)
     _knowledge_store = KnowledgeStore()
     _semantic_cache = SemanticCache()
+    # D-23: multimodal ingestion pipeline, DI'd via app.state instead of the
+    # module-level singleton so its job store can be upgraded to a
+    # Redis-backed one below (two-phase wiring, same pattern as ScheduleStore
+    # / KnowledgeStore). In-memory only until the lifespan runs.
+    from app.multimodal.pipeline import MultimodalPipeline
+
+    _multimodal_pipeline = MultimodalPipeline()
+    _multimodal_pipeline.set_provider(_app_provider)
     # Ingestion framework — LAW-01: single pipeline path
     try:
         from app.ingestion.connector_registry import load_all_connectors
@@ -889,6 +897,17 @@ def create_app(
                         app.state.llm_config_store = _llm_store
                     except Exception as exc:
                         logger.warning("Could not connect to Redis for rate limiter: %s", exc)
+
+            # D-23: upgrade the multimodal asset-job store from in-memory-only
+            # to Redis-backed persistence so ingestion jobs survive a process
+            # restart and are visible across replicas (two-phase wiring).
+            if redis_for_runtime is not None:
+                from app.multimodal.job_store import AssetJobStore as _AssetJobStoreCls
+
+                app.state.multimodal_pipeline.set_job_store(
+                    _AssetJobStoreCls(redis=redis_for_runtime)
+                )
+                logger.info("multimodal_job_store_redis_backed")
 
             # Wire DB session factory into services so they persist to PostgreSQL.
             from app.db.session import get_session_factory
@@ -1978,6 +1997,9 @@ def create_app(
     # Knowledge + Memory
     app.state.knowledge_store = _knowledge_store
     app.state.repository_ingestion_tasks = set()
+    # D-23: multimodal ingestion pipeline (upgraded to Redis-backed job
+    # persistence in the lifespan below, when a Redis connection exists).
+    app.state.multimodal_pipeline = _multimodal_pipeline
     # Ingestion framework
     app.state.ingestion_pipeline = _ingestion_pipeline
     app.state.ingestion_job_tracker = _ingestion_job_tracker
