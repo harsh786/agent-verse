@@ -950,11 +950,33 @@ class GoalService:
         if runtime_profile is not None:
             from app.orchestration.graph_factory import GraphFactory
 
-            graph = GraphFactory().create(
-                runtime_profile,
-                graph_services,
-                agent_config=_agent_config,
-            )
+            try:
+                graph = GraphFactory().create(
+                    runtime_profile,
+                    graph_services,
+                    agent_config=_agent_config,
+                )
+            except ValueError as _gf_exc:
+                # D-1: a DISTRIBUTED-tier strategy needs the StrategyRunner distributed
+                # executor, which is not wired on the live path yet. Rather than fail the
+                # goal with an opaque error, degrade to the local AgentGraph kernel so the
+                # goal still executes — and make the fallback observable instead of silent.
+                _svc_logger.warning(
+                    "runtime_profile_local_fallback",
+                    goal_id=getattr(runtime_profile, "goal_id", None),
+                    tenant=tenant_ctx.tenant_id,
+                    execution_tier=getattr(
+                        getattr(runtime_profile, "execution_tier", None), "value", None
+                    ),
+                    primary_strategy=getattr(
+                        getattr(runtime_profile, "primary_strategy", None), "strategy_id", None
+                    ),
+                    reason=str(_gf_exc),
+                )
+                # Base local kernel (no profile-derived topology); the profile is kept
+                # only as an observability attribute below, not as a ctor arg.
+                graph = AgentGraph(**graph_services)
+                graph._runtime_profile = runtime_profile
         else:
             graph = AgentGraph(**graph_services)
         # Wire attributes that are set externally (not constructor params)
