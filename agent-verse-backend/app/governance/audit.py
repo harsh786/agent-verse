@@ -54,10 +54,29 @@ class AuditLog:
     def __init__(self, db_session_factory: Any = None) -> None:
         self._log: dict[str, list[AuditEvent]] = {}
         self._db = db_session_factory
+        # Optional SIEM forwarder — when wired, every recorded event is also
+        # enqueued for batched delivery to the configured SIEM platform.
+        self._siem_forwarder: Any = None
+
+    def set_siem_forwarder(self, forwarder: Any) -> None:
+        """Attach a ``SIEMForwarder`` so recorded events are forwarded to SIEM.
+
+        Wired from ``create_app``'s lifespan after the SIEM adapter is built.
+        Passing ``None`` detaches forwarding.
+        """
+        self._siem_forwarder = forwarder
 
     def record(self, event: AuditEvent, *, tenant_ctx: TenantContext) -> None:
-        """Record in memory, then fire-and-forget to DB."""
+        """Record in memory, fire-and-forget to DB, and forward to SIEM."""
         self._log.setdefault(tenant_ctx.tenant_id, []).append(event)
+        # Forward to SIEM (non-blocking, never raises — protects the write path).
+        if self._siem_forwarder is not None:
+            try:
+                self._siem_forwarder.enqueue(
+                    self._to_siem_event(event, tenant_ctx.tenant_id)
+                )
+            except Exception as exc:
+                _log.warning("audit_siem_enqueue_failed", error=str(exc))
         if self._db is not None:
             import asyncio
 
@@ -66,6 +85,40 @@ class AuditLog:
                 _task = loop.create_task(self._db_record(event, tenant_ctx.tenant_id))  # noqa: RUF006
             except RuntimeError:
                 pass  # No running loop (e.g., in sync test context)
+
+    @staticmethod
+    def _to_siem_event(event: AuditEvent, tenant_id: str) -> dict[str, Any]:
+        """Map an :class:`AuditEvent` to the flat dict shape SIEM adapters read.
+
+        Adapters (Splunk/Elasticsearch/Datadog/CEF/LEEF/Webhook) consume keys
+        like ``event_type``, ``created_at``, ``action``, ``status`` and
+        ``metadata.severity``; this projects the audit record onto that shape.
+        """
+        from datetime import UTC, datetime
+
+        return {
+            "id": event.event_id,
+            "tenant_id": tenant_id,
+            "event_type": "audit.tool_execution",
+            "resource_type": "tool",
+            "resource_id": event.tool_name,
+            "action": event.tool_name or event.action_level.value,
+            "status": event.outcome,
+            "created_at": datetime.now(UTC).isoformat(),
+            "goal_id": event.goal_id,
+            "request_id": event.request_id,
+            "ip_address": event.ip_address,
+            "user_agent": event.user_agent,
+            "actor_label": event.approver or event.api_key_id,
+            "api_key_id": event.api_key_id,
+            "metadata": {
+                "step_id": event.step_id,
+                "note": event.note,
+                "action_level": event.action_level.value,
+                "connector_id": event.connector_id,
+                "auth_type": event.auth_type,
+            },
+        }
 
     async def _db_record(self, event: AuditEvent, tenant_id: str) -> None:
         from opentelemetry import trace as _trace

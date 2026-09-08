@@ -1676,37 +1676,65 @@ def create_app(
                 except Exception as _cw_exc:
                     logger.warning("permission_cache_warm_failed", error=str(_cw_exc))
 
-            # ── H-4: Wire SIEM adapter if configured ──────────────────────────────
+            # ── H-4: Wire SIEM adapter + forwarder if configured ──────────────────
+            # Build the adapter, then attach a SIEMForwarder to the primary audit
+            # trail so recorded events are batched and shipped to the SIEM. The
+            # forwarder enqueues on write (non-blocking) and a background task
+            # drains it via ``adapter.send(batch, config)``.
             try:
                 import os as _os_siem
 
                 _siem_adapter = None
+                _siem_cfg = None
+                _siem_forwarder = None
                 if _os_siem.getenv("SIEM_TYPE") or settings.siem_type:
                     from app.governance.siem_adapters import (
                         SIEMConfig,
+                        SIEMForwarder,
                         SIEMType,
                         build_siem_adapter,
                     )
 
                     _siem_type_str = _os_siem.getenv("SIEM_TYPE") or settings.siem_type
                     try:
+                        _siem_api_key = (
+                            _os_siem.getenv("SIEM_API_KEY")
+                            or _os_siem.getenv("SIEM_TOKEN")
+                            or settings.siem_api_key
+                            or settings.siem_token
+                        )
                         _siem_cfg = SIEMConfig(
                             siem_type=SIEMType(_siem_type_str),
                             endpoint=_os_siem.getenv("SIEM_ENDPOINT") or settings.siem_endpoint,
-                            credentials={
+                            api_key=_siem_api_key,
+                            extra={
                                 "token": _os_siem.getenv("SIEM_TOKEN") or settings.siem_token,
-                                "api_key": _os_siem.getenv("SIEM_API_KEY") or settings.siem_api_key,
                             },
                         )
-                        _siem_adapter = build_siem_adapter(_siem_cfg)
+                        _siem_adapter = build_siem_adapter(_siem_cfg.siem_type)
+                        _siem_forwarder = SIEMForwarder(_siem_adapter, _siem_cfg)
+                        _siem_forwarder.start()
+                        _audit_log_for_siem = getattr(app.state, "audit_log", None)
+                        if _audit_log_for_siem is not None and hasattr(
+                            _audit_log_for_siem, "set_siem_forwarder"
+                        ):
+                            _audit_log_for_siem.set_siem_forwarder(_siem_forwarder)
                     except Exception as _siem_init_exc:
                         logger.warning("siem_adapter_init_failed", error=str(_siem_init_exc))
                 app.state.siem_adapter = _siem_adapter
+                app.state.siem_config = _siem_cfg
+                app.state.siem_forwarder = _siem_forwarder
                 if _siem_adapter:
-                    logger.info("siem_adapter_registered", siem_type=_siem_type_str)
+                    logger.info(
+                        "siem_adapter_registered",
+                        siem_type=_siem_type_str,
+                        forwarding=_siem_forwarder is not None,
+                    )
             except Exception as _siem_exc:
                 logger.warning("siem_adapter_setup_failed", error=str(_siem_exc))
                 app.state.siem_adapter = None
+                app.state.siem_config = None
+                app.state.siem_forwarder = None
 
             # ── H-5: Wire LegalHoldManager with DB + Redis ────────────────────────
             try:
@@ -1799,6 +1827,11 @@ def create_app(
 
                     with contextlib.suppress(Exception):
                         await _ps_task
+                if _siem_fwd := getattr(app.state, "siem_forwarder", None):
+                    import contextlib
+
+                    with contextlib.suppress(Exception):
+                        await _siem_fwd.stop()
                 await active.shutdown()
         else:
             try:

@@ -13,8 +13,11 @@ Supported SIEM platforms:
 from __future__ import annotations
 
 import abc
+import asyncio
+import contextlib
 import enum
 import json
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
@@ -325,3 +328,108 @@ def build_siem_adapter(siem_type: str | SIEMType) -> SIEMAdapter:
     if cls is None:
         raise ValueError(f"Unknown SIEM type: {siem_type!r}")
     return cls()
+
+
+# ---------------------------------------------------------------------------
+# SIEMForwarder — batched, non-blocking audit → SIEM pump
+# ---------------------------------------------------------------------------
+
+
+class SIEMForwarder:
+    """Buffers audit events and drains them to a :class:`SIEMAdapter` in batches.
+
+    Design
+    ------
+    The audit write path must never block the HTTP response and must never
+    raise, so :meth:`enqueue` only appends to a bounded in-memory buffer.  A
+    background task started via :meth:`start` drains that buffer on an interval,
+    calling ``adapter.send(batch, config)`` — the adapter's list-oriented
+    interface — so events are shipped in batches rather than one network call
+    per event.
+
+    This is the "enqueue-on-write, async batched drain" model: it forwards the
+    events that actually flow through :class:`~app.governance.audit.AuditLog`
+    while keeping O(1) write latency.  A failed ``send`` is logged (the batch is
+    dropped) rather than propagated, matching the audit trail's fire-and-forget
+    contract.
+    """
+
+    def __init__(
+        self,
+        adapter: SIEMAdapter,
+        config: SIEMConfig,
+        *,
+        batch_size: int = 100,
+        flush_interval: float = 5.0,
+        max_buffer: int = 10_000,
+    ) -> None:
+        self._adapter = adapter
+        self._config = config
+        self._batch_size = max(1, batch_size)
+        self._flush_interval = flush_interval
+        self._buffer: deque[dict[str, Any]] = deque(maxlen=max_buffer)
+        self._task: asyncio.Task[None] | None = None
+        self._stopped = False
+
+    def enqueue(self, event: dict[str, Any]) -> None:
+        """Buffer one audit event for forwarding. Non-blocking; never raises.
+
+        When the buffer is full the oldest event is dropped (``deque(maxlen=...)``)
+        so audit-heavy bursts can never exhaust memory or stall the caller.
+        """
+        try:
+            self._buffer.append(event)
+        except Exception as exc:  # pragma: no cover - defensive, deque.append is total
+            logger.error("siem_enqueue_failed", error=str(exc))
+
+    async def flush_once(self) -> int:
+        """Send up to ``batch_size`` buffered events. Returns the count sent.
+
+        Returns 0 when the buffer is empty or the adapter fails.
+        """
+        if not self._buffer:
+            return 0
+        batch: list[dict[str, Any]] = []
+        while self._buffer and len(batch) < self._batch_size:
+            batch.append(self._buffer.popleft())
+        if not batch:
+            return 0
+        try:
+            ok = await self._adapter.send(batch, self._config)
+        except Exception as exc:
+            logger.error("siem_forward_error", error=str(exc), count=len(batch))
+            return 0
+        if not ok:
+            logger.warning("siem_forward_rejected", count=len(batch))
+            return 0
+        return len(batch)
+
+    async def run(self) -> None:
+        """Background loop: drain the buffer every ``flush_interval`` seconds."""
+        while not self._stopped:
+            try:
+                while self._buffer:
+                    if await self.flush_once() == 0:
+                        break  # empty or adapter failing — wait for next interval
+            except Exception as exc:  # pragma: no cover - loop must never die
+                logger.error("siem_forwarder_loop_error", error=str(exc))
+            await asyncio.sleep(self._flush_interval)
+
+    def start(self) -> None:
+        """Launch the background drain task (idempotent)."""
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self.run())
+
+    async def stop(self) -> None:
+        """Signal shutdown, cancel the task, and flush anything left buffered."""
+        self._stopped = True
+        if self._task is not None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+            self._task = None
+        # Best-effort final drain so shutdown doesn't lose buffered events.
+        with contextlib.suppress(Exception):
+            while self._buffer:
+                if await self.flush_once() == 0:
+                    break
