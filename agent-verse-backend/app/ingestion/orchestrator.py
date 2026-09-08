@@ -58,6 +58,15 @@ class IngestionOrchestrator:
         self._classifier = ContentClassifier()
         self._chunking_selector = ChunkingStrategySelector()
         self._parser_registry = ParserRegistry()
+        self._embedding_orchestrator: Any = None
+
+    def _embedding_orch(self) -> Any:
+        """Lazily build and cache the EmbeddingOrchestrator (avoids import cycles)."""
+        if self._embedding_orchestrator is None:
+            from app.embedding.orchestrator import EmbeddingOrchestrator
+
+            self._embedding_orchestrator = EmbeddingOrchestrator()
+        return self._embedding_orchestrator
 
     def _filter_quality(self, chunks: list[str]) -> list[str]:
         """Filter out low-quality chunks using QualityChecker."""
@@ -197,16 +206,22 @@ class IngestionOrchestrator:
             except ValueError:
                 detected = ContentType.TEXT
 
-        # 1b. Select embedding model policy for this content type
+        # 1b. Select embedding model policy for this content type.
+        # D-10: the selection is no longer cosmetic — it is ACTUALLY used to route
+        # the physical embedding below (see embed_for_content). Record it in
+        # metadata for provenance and downstream re-embedding decisions.
         try:
-            from app.embedding.orchestrator import EmbeddingOrchestrator
-
-            _emb_orch = EmbeddingOrchestrator()
-            _emb_policy = _emb_orch.select(content_type=detected, tenant_ctx=tenant_ctx)
-            # Store selected policy in metadata for downstream use
+            _emb_selection = self._embedding_orch().select(
+                content_type=detected, tenant_ctx=tenant_ctx
+            )
             if metadata is None:
                 metadata = {}
-            metadata["embedding_model"] = _emb_policy.model_id if _emb_policy else "default"
+            metadata["embedding_model"] = _emb_selection.model_id
+            # D-11: image/video content is embedded as caption-then-text-embed, not
+            # a native multimodal vector — record that honestly.
+            metadata["embedding_input"] = (
+                "text_of_caption" if _emb_selection.requires_captioning else "native"
+            )
         except Exception:
             pass
 
@@ -294,9 +309,17 @@ class IngestionOrchestrator:
                 persisted=True,
             )
 
-        from app.providers.base import embed_texts
-
-        embeddings = await embed_texts(chunks_text, provider=self._embedder)
+        # D-10: route the embedding through the SELECTED model instead of calling a
+        # fixed embedder and discarding the selection. embed_for_content threads the
+        # chosen model id into the physical embed call, falling back safely to the
+        # configured embedder as the provider.
+        routed = await self._embedding_orch().embed_for_content(
+            chunks_text,
+            content_type=detected,
+            tenant_ctx=tenant_ctx,
+            default_provider=self._embedder,
+        )
+        embeddings = routed.embeddings
         if len(embeddings) != chunks_prepared:
             raise RuntimeError("Embedding provider returned an incomplete batch")
 
