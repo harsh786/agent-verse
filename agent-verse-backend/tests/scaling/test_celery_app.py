@@ -74,56 +74,84 @@ def test_check_mcp_health_task_name_matches_route() -> None:
     assert tasks.check_mcp_health.name == "app.scaling.tasks.check_mcp_health"
 
 
-def test_run_scheduled_goal_dispatches_downstream_goal_to_schedules_queue(monkeypatch: Any) -> None:
+def test_run_scheduled_goal_routes_through_governed_dispatcher(monkeypatch: Any) -> None:
+    # WT-9: run_scheduled_goal no longer enqueues run_goal directly — it routes
+    # the fire through the governed TriggerDispatcher and maps the resulting
+    # TriggerEvent onto its return dict.
     from app.scaling import tasks
 
-    calls: list[dict[str, Any]] = []
+    captured: dict[str, Any] = {}
     schedule_id = "schedule:tenant-with-long-id:uuid-1234567890abcdef1234567890abcdef"
 
-    class Result:
-        id = "task-123"
+    async def fake_governed(
+        sched_id: str,
+        tenant_id: str,
+        goal_template: str,
+        agent_id: str,
+        fire_instance_id: str,
+    ) -> SimpleNamespace:
+        captured.update(
+            schedule_id=sched_id,
+            tenant_id=tenant_id,
+            goal_template=goal_template,
+            agent_id=agent_id,
+            fire_instance_id=fire_instance_id,
+        )
+        return SimpleNamespace(goal_created=True, goal_id="g-1", skip_reason=None)
 
-    def fake_apply_async(*, kwargs: dict[str, Any], queue: str) -> Result:
-        calls.append({"kwargs": kwargs, "queue": queue})
-        return Result()
-
-    monkeypatch.setattr(tasks.run_goal, "apply_async", fake_apply_async)
+    monkeypatch.setattr(tasks, "_run_scheduled_goal_governed", fake_governed)
 
     result = tasks.run_scheduled_goal.run(
         schedule_id,
         "tenant-1",
         "Compile report",
         "agent-1",
+        "fire-xyz",
     )
 
     assert result == {
         "status": "dispatched",
         "schedule_id": schedule_id,
-        "task_id": "task-123",
+        "goal_id": "g-1",
+        "skip_reason": None,
     }
-    assert calls == [
-        {
-            "kwargs": {
-                "goal_id": calls[0]["kwargs"]["goal_id"],
-                "goal_text": "Compile report",
-                "tenant_id": "tenant-1",
-                "agent_id": "agent-1",
-            },
-            "queue": "schedules",
-        }
-    ]
-    assert calls[0]["kwargs"]["goal_id"].startswith("sched_")
-    assert len(calls[0]["kwargs"]["goal_id"]) <= 32
-    assert ":" not in calls[0]["kwargs"]["goal_id"]
+    assert captured == {
+        "schedule_id": schedule_id,
+        "tenant_id": "tenant-1",
+        "goal_template": "Compile report",
+        "agent_id": "agent-1",
+        "fire_instance_id": "fire-xyz",
+    }
+
+
+def test_run_scheduled_goal_skip_maps_to_skipped_status(monkeypatch: Any) -> None:
+    # A governed skip (e.g. dedup / condition_false) surfaces as status "skipped"
+    # with no goal id — no goal is enqueued.
+    from app.scaling import tasks
+
+    async def fake_governed(*_a: Any, **_k: Any) -> SimpleNamespace:
+        return SimpleNamespace(goal_created=False, goal_id=None, skip_reason="dedup")
+
+    monkeypatch.setattr(tasks, "_run_scheduled_goal_governed", fake_governed)
+
+    result = tasks.run_scheduled_goal.run(
+        "schedule:tenant-1:sched-1",
+        "tenant-1",
+        "Compile report",
+        "agent-1",
+    )
+    assert result["status"] == "skipped"
+    assert result["skip_reason"] == "dedup"
+    assert result["goal_id"] is None
 
 
 def test_run_scheduled_goal_retries_dispatch_failure(monkeypatch: Any) -> None:
     from app.scaling import tasks
 
-    def fail_apply_async(*, kwargs: dict[str, Any], queue: str) -> SimpleNamespace:
+    async def fail_governed(*_a: Any, **_k: Any) -> SimpleNamespace:
         raise RuntimeError("broker down")
 
-    monkeypatch.setattr(tasks.run_goal, "apply_async", fail_apply_async)
+    monkeypatch.setattr(tasks, "_run_scheduled_goal_governed", fail_governed)
 
     with pytest.raises(RuntimeError, match="broker down"):
         tasks.run_scheduled_goal.run(
@@ -221,24 +249,22 @@ def test_fire_due_schedules_discovers_schedule_store_payload(monkeypatch: Any) -
         "redis",
         SimpleNamespace(from_url=lambda *args, **kwargs: FakeRedis()),
     )
-    monkeypatch.setattr(tasks.run_goal, "apply_async", fake_apply_async)
+    # WT-9: Redis-backed schedules now dispatch through run_scheduled_goal, which
+    # routes the fire through the governed TriggerDispatcher.
+    monkeypatch.setattr(tasks.run_scheduled_goal, "apply_async", fake_apply_async)
 
     result = tasks.fire_due_schedules()
 
     assert result["schedules_checked"] == 1
     assert result["schedules_fired"] == 1
-    assert dispatched == [
-        {
-            "kwargs": {
-                "goal_id": dispatched[0]["kwargs"]["goal_id"],
-                "goal_text": "Compile report",
-                "goal_template": "Compile report",
-                "tenant_id": "tenant-1",
-                "agent_id": "agent-1",
-            },
-            "queue": "schedules",
-        }
-    ]
+    assert len(dispatched) == 1
+    kwargs = dispatched[0]["kwargs"]
+    assert dispatched[0]["queue"] == "schedules"
+    assert kwargs["schedule_id"] == "schedule:tenant-1:sched-1"
+    assert kwargs["tenant_id"] == "tenant-1"
+    assert kwargs["goal_template"] == "Compile report"
+    assert kwargs["agent_id"] == "agent-1"
+    assert kwargs["fire_instance_id"]
 
 
 def test_fire_due_schedules_redacts_legacy_redis_secret_fields(monkeypatch: Any) -> None:
@@ -283,7 +309,8 @@ def test_fire_due_schedules_redacts_legacy_redis_secret_fields(monkeypatch: Any)
         "redis",
         SimpleNamespace(from_url=lambda *args, **kwargs: FakeRedis()),
     )
-    monkeypatch.setattr(tasks.run_goal, "apply_async", fake_apply_async)
+    # WT-9: schedules dispatch through run_scheduled_goal (governed path).
+    monkeypatch.setattr(tasks.run_scheduled_goal, "apply_async", fake_apply_async)
 
     result = tasks.fire_due_schedules()
 

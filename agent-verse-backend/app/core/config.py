@@ -130,6 +130,15 @@ class Settings(BaseSettings):
     isolated_execution_local_runner: bool = False  # subprocess runner
     isolated_execution_kubernetes_runner: bool = False  # Kubernetes Job runner
 
+    # --- Trigger consumers (WT-4) ---
+    # Master switch: start the long-running trigger consumers (chain/HITL/memory)
+    # on app startup. Default on — consumers self-disable when Redis is absent.
+    triggers_consumers_enabled: bool = True
+    # Gate the extended trigger families (data/monitoring/iot/advanced). These
+    # require external clients (MQTT/S3/etc.) that are not wired by default, so
+    # they stay off unless explicitly enabled.
+    triggers_extended_consumers_enabled: bool = False
+
     # Advanced RAG pattern feature flags
     enable_raptor: bool = True
     enable_flare: bool = True

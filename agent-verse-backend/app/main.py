@@ -1700,9 +1700,44 @@ def create_app(
             except Exception as _orch_exc:
                 logger.warning("orchestration_state_hydration_failed", error=str(_orch_exc))
 
+            # ── WT-4: Start the long-running trigger consumers ────────────────────
+            # Owns chain/HITL/memory consumer tasks; each subscribes to Redis
+            # pub/sub and dispatches matching triggers through the governed
+            # TriggerDispatcher. Consumers self-skip when their deps are missing.
+            if getattr(settings, "triggers_consumers_enabled", True):
+                try:
+                    from app.triggers.supervisor import TriggerConsumerSupervisor
+
+                    _trigger_consumers = TriggerConsumerSupervisor(
+                        schedule_store=getattr(app.state, "schedule_store", None),
+                        dispatcher=getattr(app.state, "trigger_dispatcher", None),
+                        redis=redis_for_runtime,
+                        enable_extended=getattr(
+                            settings, "triggers_extended_consumers_enabled", False
+                        ),
+                    )
+                    app.state.trigger_consumers = _trigger_consumers
+                    await _trigger_consumers.start()
+                    logger.info(
+                        "trigger_consumers_wired",
+                        started=len(_trigger_consumers.tasks),
+                        skipped=len(_trigger_consumers.skipped),
+                    )
+                except Exception as _tc_exc:
+                    logger.warning("trigger_consumers_start_failed", error=str(_tc_exc))
+
             try:
                 yield
             finally:
+                # WT-4: Stop the trigger consumers (cancel + await all tasks).
+                _tc = getattr(app.state, "trigger_consumers", None)
+                if _tc is not None:
+                    try:
+                        await _tc.stop()
+                    except Exception as _tc_stop_exc:
+                        logger.warning(
+                            "trigger_consumers_stop_failed", error=str(_tc_stop_exc)
+                        )
                 await close_retrieval_gateways()
                 await close_process_rerankers()
                 _repo_tasks = list(getattr(app.state, "repository_ingestion_tasks", set()))

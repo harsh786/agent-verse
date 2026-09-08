@@ -1461,28 +1461,35 @@ def run_scheduled_goal(
     agent_id: str = "",
     fire_instance_id: str = "",
 ) -> dict[str, Any]:
-    """Execute a scheduled goal trigger."""
+    """Execute a scheduled goal trigger.
+
+    WT-9: routes through the TriggerDispatcher so scheduled fires get the same
+    dedup / rate-limit / circuit-breaker / condition governance as every other
+    trigger type, instead of enqueueing ``run_goal`` directly. The dispatcher
+    creates the goal via ``GoalService.create_goal``.
+    """
     logger.info("Firing schedule %s for tenant %s", schedule_id, tenant_id)
     try:
-        result = run_goal.apply_async(
-            kwargs={
-                "goal_id": _scheduled_goal_id(
-                    schedule_id,
-                    fire_instance_id=fire_instance_id or None,
-                ),
-                "goal_text": goal_template,
-                "tenant_id": tenant_id,
-                "agent_id": agent_id,
-            },
-            queue="schedules",
+        event = _run_async(
+            _run_scheduled_goal_governed(
+                schedule_id,
+                tenant_id,
+                goal_template,
+                agent_id,
+                fire_instance_id,
+            )
         )
     except Exception as exc:
         logger.warning("Scheduled goal dispatch failed for %s: %s", schedule_id, exc)
         raise self.retry(exc=exc, countdown=2**self.request.retries) from exc
+
+    goal_created = bool(getattr(event, "goal_created", False))
+    skip_reason = getattr(event, "skip_reason", None)
     return {
-        "status": "dispatched",
+        "status": "dispatched" if goal_created else "skipped",
         "schedule_id": schedule_id,
-        "task_id": result.id,
+        "goal_id": getattr(event, "goal_id", None),
+        "skip_reason": skip_reason,
     }
 
 
@@ -1526,23 +1533,161 @@ def _dispatch_due_schedule(
     )
     if goal_kwargs is None:
         return None
-    if via_scheduled_task:
-        run_scheduled_goal.apply_async(
-            kwargs={
-                "schedule_id": schedule_key,
-                "tenant_id": goal_kwargs["tenant_id"],
-                "goal_template": goal_kwargs["goal_template"],
-                "agent_id": str(goal_kwargs.get("agent_id") or ""),
-                "fire_instance_id": fire_instance_id,
-            },
-            queue="schedules",
-        )
-    else:
-        run_goal.apply_async(
-            kwargs=goal_kwargs,
-            queue="schedules",
-        )
+    # WT-9: both DB- and Redis-backed schedules dispatch through run_scheduled_goal,
+    # which routes the fire through the governed TriggerDispatcher. via_scheduled_task
+    # is retained for callers/telemetry that distinguish the two schedule sources.
+    _ = via_scheduled_task
+    run_scheduled_goal.apply_async(
+        kwargs={
+            "schedule_id": schedule_key,
+            "tenant_id": goal_kwargs["tenant_id"],
+            "goal_template": goal_kwargs["goal_template"],
+            "agent_id": str(goal_kwargs.get("agent_id") or ""),
+            "fire_instance_id": fire_instance_id,
+        },
+        queue="schedules",
+    )
     return goal_kwargs
+
+
+def _build_scheduled_trigger_spec(schedule_key: str, sched: dict[str, Any]) -> Any:
+    """Map a schedule dict onto a TriggerSpec for governed dispatch (WT-9)."""
+    from app.triggers.models import TriggerSpec, TriggerType
+
+    raw_type = str(sched.get("trigger_type") or "cron")
+    try:
+        trigger_type = TriggerType(raw_type)
+    except ValueError:
+        trigger_type = TriggerType.ONCE
+
+    goal_text = str(sched.get("goal_template") or sched.get("goal_id") or "")
+    spec = TriggerSpec(
+        trigger_type=trigger_type,
+        goal_template=goal_text,
+        condition=str(sched.get("condition") or ""),
+        max_firings_per_hour=int(sched.get("max_firings_per_hour") or 0),
+        watch_agent_id=str(sched.get("agent_id") or ""),
+    )
+    # trigger_id is an instance attribute (not a dataclass field) — see dispatcher.
+    spec.trigger_id = schedule_key  # type: ignore[attr-defined]
+    return spec
+
+
+async def _dispatch_scheduled_via_dispatcher(
+    schedule_key: str,
+    sched: dict[str, Any],
+    *,
+    fire_instance_id: str,
+    goal_service: Any = None,
+    redis: Any = None,
+    db_factory: Any = None,
+    dispatcher: Any = None,
+) -> Any:
+    """Route a scheduled fire through the TriggerDispatcher for governance parity.
+
+    The dispatcher applies the same dedup / rate-limit / circuit-breaker /
+    condition pipeline as every other trigger type. ``scheduled_fire_time`` (the
+    fire instance id) makes the idempotency key stable per fire, so a duplicate
+    beat tick for the same instant is deduped instead of creating a second goal.
+
+    Returns the ``TriggerEvent`` / ``SimulatedTriggerResult`` from the dispatcher,
+    or ``None`` when the schedule has no usable goal/tenant.
+    """
+    from types import SimpleNamespace
+
+    goal_kwargs = _scheduled_goal_kwargs(schedule_key, sched, fire_instance_id=fire_instance_id)
+    if goal_kwargs is None:
+        return None
+
+    spec = _build_scheduled_trigger_spec(schedule_key, sched)
+    tenant_ctx = SimpleNamespace(
+        tenant_id=str(sched.get("tenant_id") or ""),
+        plan=str(sched.get("tenant_plan") or "free"),
+    )
+
+    if dispatcher is None:
+        from app.triggers.dispatcher import TriggerDispatcher
+
+        dispatcher = TriggerDispatcher(
+            goal_service=goal_service,
+            db_session_factory=db_factory,
+            redis=redis,
+        )
+
+    return await dispatcher.dispatch(
+        spec,
+        dict(goal_kwargs),
+        tenant_ctx,
+        scheduled_fire_time=fire_instance_id,
+    )
+
+
+def _build_worker_goal_service() -> tuple[Any, Any]:
+    """Construct a worker-local GoalService + DB factory (Celery worker context).
+
+    Mirrors the pattern used by the email/IMAP task: a fresh async session
+    factory feeds an EventStore-backed GoalService. Returns ``(goal_service,
+    db_factory)``; on failure returns ``(None, None)`` so the caller can degrade.
+    """
+    try:
+        from app.db.session import get_session_factory
+        from app.services.event_store import EventStore
+        from app.services.goal_service import GoalService
+
+        db_factory = get_session_factory()
+        goal_service = GoalService(
+            db_session_factory=db_factory,
+            event_store=EventStore(db_factory),
+        )
+        return goal_service, db_factory
+    except Exception as exc:
+        logger.warning("worker_goal_service_build_failed", error=str(exc)[:120])
+        return None, None
+
+
+def _worker_async_redis() -> Any:
+    """Best-effort async Redis client for the worker (or ``None``)."""
+    redis_url = os.getenv("REDIS_URL", "") or celery_app.conf.broker_url or ""
+    if not redis_url:
+        return None
+    try:
+        import redis.asyncio as aioredis
+
+        return aioredis.from_url(redis_url, decode_responses=True)
+    except Exception as exc:
+        logger.warning("worker_async_redis_failed", error=str(exc)[:120])
+        return None
+
+
+async def _run_scheduled_goal_governed(
+    schedule_id: str,
+    tenant_id: str,
+    goal_template: str,
+    agent_id: str,
+    fire_instance_id: str,
+) -> Any:
+    """Async body of ``run_scheduled_goal`` — governed scheduled dispatch (WT-9)."""
+    goal_service, db_factory = _build_worker_goal_service()
+    redis = _worker_async_redis()
+    sched = {
+        "trigger_type": "cron",
+        "goal_template": goal_template,
+        "tenant_id": tenant_id,
+        "agent_id": agent_id,
+    }
+    try:
+        return await _dispatch_scheduled_via_dispatcher(
+            schedule_id,
+            sched,
+            fire_instance_id=fire_instance_id,
+            goal_service=goal_service,
+            redis=redis,
+            db_factory=db_factory,
+        )
+    finally:
+        if redis is not None:
+            with contextlib.suppress(Exception):
+                await redis.aclose()
 
 
 async def _build_goal_kwargs_for_alert(
