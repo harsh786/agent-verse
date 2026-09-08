@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.tenancy.context import TenantContext
@@ -184,6 +184,30 @@ async def create_trigger(request: Request, body: CreateTriggerRequest) -> dict[s
     if rec is None:
         raise HTTPException(status_code=500, detail="Failed to retrieve created trigger")
     return _serialize_record(rec)
+
+
+# ── Event emission (declared BEFORE /{schedule_id} to avoid shadowing) ───────
+
+
+@router.post("/events/{event_channel}", status_code=202)
+async def emit_trigger_event(
+    event_channel: str, request: Request, body: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Publish a custom event that fires this tenant's matching EVENT triggers.
+
+    The authenticated tenant is stamped onto the event server-side, so a tenant
+    can only fire its own EVENT triggers.
+    """
+    tenant_ctx = _require_tenant(request)
+    redis = getattr(request.app.state, "trigger_event_redis", None)
+    if redis is None:
+        raise HTTPException(status_code=503, detail="Event bus unavailable")
+    from app.triggers.consumers.event import publish_trigger_event
+
+    await publish_trigger_event(
+        redis, event_channel=event_channel, tenant_id=tenant_ctx.tenant_id, payload=body
+    )
+    return {"published": True, "event_channel": event_channel}
 
 
 # ── DLQ routes (must be declared BEFORE /{schedule_id} to avoid shadowing) ───

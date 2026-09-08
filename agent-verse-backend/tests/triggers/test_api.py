@@ -240,3 +240,32 @@ def test_create_accepts_supported_consumer_type(client):
         "goal_template": "follow up on {{payload.goal_id}}",
     })
     assert resp.status_code == 201
+
+
+# ── 2.W-1: EVENT emission endpoint ────────────────────────────────────────────
+
+def test_emit_event_publishes_with_tenant_stamped(app, client):
+    import json as _json
+
+    published = []
+
+    class _FakeRedis:
+        def publish(self, channel, data):
+            published.append((channel, data))
+
+    app.state.trigger_event_redis = _FakeRedis()
+    resp = client.post("/triggers/events/deployments", json={"sha": "abc"})
+    assert resp.status_code == 202
+    assert resp.json()["event_channel"] == "deployments"
+    assert len(published) == 1
+    channel, data = published[0]
+    assert channel == "trigger:event:deployments"
+    body = _json.loads(data)
+    assert body["tenant_id"] == "t1"  # stamped server-side from the auth context
+    assert body["sha"] == "abc"
+
+
+def test_emit_event_503_without_bus(app, client):
+    app.state.trigger_event_redis = None
+    resp = client.post("/triggers/events/deployments", json={})
+    assert resp.status_code == 503

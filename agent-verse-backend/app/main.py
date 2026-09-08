@@ -1791,6 +1791,9 @@ def create_app(
                         ),
                     )
                     app.state.trigger_consumers = _trigger_consumers
+                    # Expose the runtime redis so POST /triggers/events/{channel}
+                    # publishes onto the same bus the EVENT consumer subscribes to.
+                    app.state.trigger_event_redis = redis_for_runtime
                     await _trigger_consumers.start()
                     logger.info(
                         "trigger_consumers_wired",
