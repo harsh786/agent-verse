@@ -14,6 +14,8 @@ class Modality(StrEnum):
     AUDIO = "audio"
     VIDEO = "video"
     OCR = "ocr"
+    TABLE = "table"
+    CODE = "code"
 
 
 @dataclass
@@ -34,7 +36,14 @@ class ExtractedSpan:
 
 @dataclass
 class AssetIngestionJob:
-    """A multimodal asset ingestion job."""
+    """A multimodal asset ingestion job.
+
+    TODO(row-16/D-23): asset-ingestion jobs are currently held only in the
+    in-memory ``MultimodalPipeline._jobs`` dict — they do not survive a process
+    restart and are not shared across replicas. Persisting them requires a new
+    ``asset_ingestion_jobs`` DB model + Alembic migration (with tenant RLS), which
+    is out of scope for this change. Follow-up.
+    """
 
     job_id: str
     tenant_id: str

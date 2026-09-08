@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import csv
 import io
 import logging
+import re
 import uuid
 from typing import Any
 
 from app.multimodal.models import AssetIngestionJob, ExtractedSpan, Modality
+
+# A markdown separator cell, e.g. "---", ":--", "--:", ":-:".
+_MD_SEPARATOR_CELL = re.compile(r"^:?-+:?$")
 
 _log = logging.getLogger(__name__)
 
@@ -153,6 +158,195 @@ class MultimodalPipeline:
             job.error = str(exc)
         self._jobs[job.job_id] = job
         return job
+
+    async def ingest_code(
+        self,
+        content: str,
+        tenant_id: str,
+        language: str | None = None,
+        collection_id: str | None = None,
+    ) -> AssetIngestionJob:
+        """Ingest source code, preserving structure (function/class boundaries).
+
+        Code is chunked AST-aware (reusing the ingestion AST chunker) so that
+        symbol boundaries survive, rather than being flattened / reflowed as
+        prose. Each resulting span is tagged ``modality=CODE`` with the symbol
+        type, name and language recorded in metadata.
+        """
+        job = self._create_job(tenant_id, Modality.CODE, collection_id=collection_id)
+        try:
+            job.status = "processing"
+            job.spans = self._extract_code_spans(content, language)
+            job.status = "completed"
+        except Exception as exc:
+            job.status = "failed"
+            job.error = str(exc)
+            _log.warning("Code ingestion failed: %s", exc)
+        self._jobs[job.job_id] = job
+        return job
+
+    async def ingest_table(
+        self,
+        source: list[dict[str, Any]] | str,
+        tenant_id: str,
+        collection_id: str | None = None,
+    ) -> AssetIngestionJob:
+        """Ingest a table (records, CSV, or a markdown table) as a structured span.
+
+        The table is normalized to a markdown rendering (for retrieval) while the
+        columns and row count are preserved in metadata, so tabular data is kept
+        structured rather than collapsed to flat prose text.
+        """
+        job = self._create_job(tenant_id, Modality.TABLE, collection_id=collection_id)
+        try:
+            job.status = "processing"
+            columns, rows = self._normalize_table(source)
+            markdown = self._table_to_markdown(columns, rows)
+            job.spans = [
+                ExtractedSpan(
+                    content=markdown,
+                    modality=Modality.TABLE,
+                    confidence=1.0,
+                    metadata={
+                        "columns": columns,
+                        "row_count": len(rows),
+                        "extractor": "structured",
+                    },
+                )
+            ]
+            job.status = "completed"
+        except Exception as exc:
+            job.status = "failed"
+            job.error = str(exc)
+            _log.warning("Table ingestion failed: %s", exc)
+        self._jobs[job.job_id] = job
+        return job
+
+    def detect_and_extract_tables(self, text: str) -> list[ExtractedSpan]:
+        """Best-effort extraction of markdown-style table regions from free text.
+
+        Contiguous blocks of ``| ... |`` lines that carry a separator row are
+        pulled out as ``modality=TABLE`` spans. This is a heuristic (not a full
+        table detector), so confidence is < 1.0 and the extractor used is
+        recorded in metadata for honesty.
+        """
+        spans: list[ExtractedSpan] = []
+        lines = text.splitlines()
+        block: list[str] = []
+
+        def _flush(candidate: list[str]) -> None:
+            if len(candidate) < 2:
+                return
+            parsed = self._parse_markdown_table(candidate)
+            if parsed is None:
+                return
+            columns, rows = parsed
+            if not rows:
+                return
+            spans.append(
+                ExtractedSpan(
+                    content=self._table_to_markdown(columns, rows),
+                    modality=Modality.TABLE,
+                    confidence=0.7,
+                    metadata={
+                        "columns": columns,
+                        "row_count": len(rows),
+                        "extractor": "heuristic-markdown",
+                    },
+                )
+            )
+
+        for line in lines:
+            if line.strip().startswith("|"):
+                block.append(line)
+            else:
+                _flush(block)
+                block = []
+        _flush(block)
+        return spans
+
+    def _extract_code_spans(self, content: str, language: str | None) -> list[ExtractedSpan]:
+        from app.ingestion.chunkers.ast_chunker import ASTChunker
+
+        chunks = ASTChunker().chunk(content)
+        spans: list[ExtractedSpan] = []
+        for chunk in chunks:
+            metadata: dict[str, Any] = dict(chunk.metadata)
+            if language is not None:
+                metadata["language"] = language
+            spans.append(
+                ExtractedSpan(
+                    content=chunk.content,
+                    modality=Modality.CODE,
+                    confidence=1.0,
+                    language=language,
+                    metadata=metadata,
+                )
+            )
+        return spans
+
+    def _normalize_table(
+        self, source: list[dict[str, Any]] | str
+    ) -> tuple[list[str], list[list[str]]]:
+        """Normalize records / CSV / markdown-table input to (columns, rows)."""
+        if isinstance(source, list):
+            return self._records_to_table(source)
+        stripped = source.lstrip()
+        if stripped.startswith("|"):
+            parsed = self._parse_markdown_table(source.splitlines())
+            if parsed is not None:
+                return parsed
+        return self._csv_to_table(source)
+
+    @staticmethod
+    def _records_to_table(records: list[dict[str, Any]]) -> tuple[list[str], list[list[str]]]:
+        columns: list[str] = []
+        for record in records:
+            for key in record:
+                if key not in columns:
+                    columns.append(key)
+        rows = [[str(record.get(col, "")) for col in columns] for record in records]
+        return columns, rows
+
+    @staticmethod
+    def _csv_to_table(text: str) -> tuple[list[str], list[list[str]]]:
+        reader = csv.reader(io.StringIO(text))
+        table = [row for row in reader if row]
+        if not table:
+            return [], []
+        header = [cell.strip() for cell in table[0]]
+        rows = [[cell.strip() for cell in row] for row in table[1:]]
+        return header, rows
+
+    @staticmethod
+    def _parse_markdown_table(
+        lines: list[str],
+    ) -> tuple[list[str], list[list[str]]] | None:
+        """Parse markdown table lines into (columns, data_rows), or None if invalid."""
+        cell_rows = [
+            [cell.strip() for cell in line.strip().strip("|").split("|")]
+            for line in lines
+            if line.strip().startswith("|")
+        ]
+        if len(cell_rows) < 2:
+            return None
+        header = cell_rows[0]
+        separator = cell_rows[1]
+        if not separator or not all(_MD_SEPARATOR_CELL.match(cell) for cell in separator):
+            return None
+        data_rows = cell_rows[2:]
+        return header, data_rows
+
+    @staticmethod
+    def _table_to_markdown(columns: list[str], rows: list[list[str]]) -> str:
+        lines = [
+            "| " + " | ".join(columns) + " |",
+            "| " + " | ".join(["---"] * len(columns)) + " |",
+        ]
+        for row in rows:
+            cells = list(row) + [""] * (len(columns) - len(row))
+            lines.append("| " + " | ".join(cells[: len(columns)]) + " |")
+        return "\n".join(lines)
 
     async def _describe_image(self, image_base64: str) -> str:
         """Use LLM vision to describe an image."""
