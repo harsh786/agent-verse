@@ -1,7 +1,17 @@
 """Multi-hop graph reasoning over the AgentVerse knowledge graph.
 
 Provides BFS-based path finding between entities and ego-network subgraph
-extraction for use in graph-augmented RAG.
+extraction, operating over any store exposing tenant-scoped ``get_neighbors`` /
+``get_node`` (see :class:`~app.knowledge_graph.store.KnowledgeGraphStore`, whose
+``get_neighbors`` explicitly backs this class — D-16).
+
+Scope note (D-16): this is the **in-memory BFS** reasoner, useful over an
+in-memory ``KnowledgeGraphStore`` (contexts without a live DB session). It is
+NOT the live graph-augmented RAG retrieval path — production multi-hop evidence
+is retrieved by the SQL ``WITH RECURSIVE`` traversal in
+``app.rag.agentic.patterns.graph.query_graph_evidence`` (tenant-scoped via RLS,
+scaled at the database). Keep the two distinct: use this for in-process graph
+reasoning over a loaded store; use ``query_graph_evidence`` for DB-backed RAG.
 """
 
 from __future__ import annotations
