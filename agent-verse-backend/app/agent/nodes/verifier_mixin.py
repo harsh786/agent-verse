@@ -268,6 +268,50 @@ class VerifierMixin:
                             agent_state.cited_answer = annotate_ungrounded(
                                 agent_state.cited_answer, _grounding
                             )
+
+                    # D-4/D-5: higher-fidelity NLI claim + citation-attribution
+                    # gate. Composes ClaimDecomposer + NLIChecker +
+                    # AttributionVerifier via verify_grounding. Runs
+                    # deterministically (provider=None) so it is safe on the hot
+                    # path; still atomises the answer into claims and checks each
+                    # against the evidence, catching reworded fabrications the
+                    # keyword gate above misses. Fail-OPEN on normal goals,
+                    # fail-CLOSED (replan) on high-risk goals.
+                    from app.intelligence.grounding_verification import verify_grounding
+
+                    _verdict = await verify_grounding(_final_answer, _evidence)
+                    agent_state.context["claim_grounding_safe"] = _verdict.safe_to_emit
+                    agent_state.context["claim_grounding_score"] = _verdict.claim_score
+                    if not _verdict.safe_to_emit:
+                        _bad_claims = (
+                            _verdict.contradicted_claims + _verdict.unsupported_claims
+                        )
+                        agent_state.ungrounded_claims.extend(_bad_claims[:5])
+                        await self._emit(
+                            {
+                                "type": "claim_grounding_warning",
+                                "stage": "final_answer",
+                                "high_risk": _high_risk,
+                                "reasons": _verdict.reasons[:5],
+                                "contradicted": _verdict.contradicted_claims[:3],
+                            }
+                        )
+                        if _high_risk and success:
+                            success = False
+                            retry = True
+                            agent_state.context["verification_retry"] = True
+                            _why = "; ".join(_verdict.reasons[:2])
+                            reason = (
+                                "Final answer failed NLI claim/attribution "
+                                f"grounding on a high-risk goal ({_why}). "
+                                "Re-execute and cite evidence for every claim. "
+                                + (reason or "")
+                            ).strip()
+                            self._logger.warning(
+                                "final_claim_grounding_gate_replan",
+                                goal_id=agent_state.goal_id,
+                                reasons=_verdict.reasons[:3],
+                            )
             except Exception as exc:
                 # Grounding-gate errors must never crash verification.
                 self._logger.warning("final_grounding_gate_error", error=str(exc)[:80])
