@@ -188,6 +188,33 @@ async def tenant_client(app: Any, client: Any) -> AsyncIterator[Any]:
         yield c
 
 
+# ── Signup rate-limit reset ───────────────────────────────────────────────────
+
+
+@pytest_asyncio.fixture(autouse=True, loop_scope="session")
+async def _reset_signup_rate_limit(app: Any) -> AsyncIterator[None]:
+    """Clear the per-IP signup rate-limit counter before each test.
+
+    ``POST /tenants/signup`` allows only 10 signups per IP per hour
+    (``signup_rl:{ip}`` in Redis). The in-process ASGI transport reports a single
+    constant client IP, so every test's signups share one counter. Goal-heavy
+    tests deliberately seed a *fresh* tenant per test (to dodge cumulative
+    plan/concurrency caps), so across the whole suite the shared counter would
+    trip a 429 mid-run. Resetting it before each test keeps per-tenant isolation
+    without hitting the (real, production-only) IP limit. Autouse so it also
+    protects the existing tests that sign up directly.
+    """
+    redis = getattr(app.state, "_redis", None)
+    if redis is not None:
+        try:
+            keys = await redis.keys("signup_rl:*")
+            if keys:
+                await redis.delete(*keys)
+        except Exception:
+            pass  # fail open — the limit fails open too
+    yield
+
+
 # ── Polling helpers ───────────────────────────────────────────────────────────
 
 
