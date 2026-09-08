@@ -93,6 +93,70 @@ def _build_multimodal_goal_text(
     return "\n".join(parts)
 
 
+# D-23: attachment "type" -> the MultimodalPipeline modality it maps to.
+# URL-based attachments (e.g. "image_url") are deliberately excluded -- only
+# base64-carrying attachments are processed here, to avoid a server-side
+# fetch of an arbitrary caller-supplied URL.
+_ATTACHMENT_TYPE_MODALITY: dict[str, str] = {
+    "image_base64": "image",
+    "image": "image",
+    "pdf_base64": "pdf",
+    "pdf": "pdf",
+    "audio_base64": "audio",
+    "audio": "audio",
+    "video_base64": "video",
+    "video": "video",
+    "text": "text",
+    "code": "code",
+    "table": "table",
+    "csv": "table",
+}
+
+
+async def _extract_multimodal_context(
+    attachments: list[dict[str, str]],
+    pipeline: Any,
+    tenant_id: str,
+) -> str:
+    """Run goal attachments through MultimodalPipeline so their extracted
+    content reaches the planner (D-23) instead of `attachments` being inert
+    metadata that nothing downstream ever reads.
+
+    Best-effort per attachment: one bad/unsupported/oversized attachment must
+    never block goal submission.
+    """
+    parts: list[str] = []
+    for attachment in attachments:
+        modality = _ATTACHMENT_TYPE_MODALITY.get(attachment.get("type", ""))
+        if modality is None:
+            continue
+        data = attachment.get("data", "")
+        if modality != "text" and not data:
+            continue
+        try:
+            if modality == "image":
+                job = await pipeline.ingest_image(data, tenant_id)
+            elif modality == "pdf":
+                job = await pipeline.ingest_pdf(data, tenant_id)
+            elif modality == "audio":
+                job = await pipeline.ingest_audio(data, tenant_id)
+            elif modality == "video":
+                job = await pipeline.ingest_video(data, tenant_id)
+            elif modality == "code":
+                job = await pipeline.ingest_code(data, tenant_id, attachment.get("language"))
+            elif modality == "table":
+                job = await pipeline.ingest_table(data, tenant_id)
+            else:  # text
+                job = await pipeline.ingest_text(data or attachment.get("content", ""), tenant_id)
+        except Exception as exc:
+            _logger.warning("multimodal_attachment_ingest_failed", type=modality, error=str(exc))
+            continue
+        for span in job.spans:
+            if span.content:
+                parts.append(f"[{modality} attachment] {span.content}")
+    return "\n\n".join(parts)
+
+
 class ApproveRequest(BaseModel):
     request_id: str
     action: str  # "approve" | "reject"
@@ -176,6 +240,20 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
     # Gap 2: Multimodal attachments → propagate to execution context
     if body.attachments:
         exec_ctx["attachments"] = body.attachments
+        # D-23: also run attachments through MultimodalPipeline so their
+        # extracted content reaches the planner via agent_state.context
+        # (see app.agent.nodes.planner_mixin._node_plan), not just inert
+        # metadata that nothing downstream reads.
+        try:
+            pipeline = getattr(request.app.state, "multimodal_pipeline", None)
+            if pipeline is not None:
+                multimodal_context = await _extract_multimodal_context(
+                    body.attachments, pipeline, tenant.tenant_id
+                )
+                if multimodal_context:
+                    exec_ctx["multimodal_context"] = multimodal_context
+        except Exception as exc:
+            _logger.warning("multimodal_attachment_extraction_failed", error=str(exc))
     if body.image_url:
         exec_ctx["image_url"] = body.image_url
 

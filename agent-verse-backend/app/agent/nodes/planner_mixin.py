@@ -144,6 +144,15 @@ class PlannerMixin:
         if image_context:
             extra_parts.append(f"[Visual context]\n{image_context}")
 
+        # D-23: surface extracted spans from goal attachments processed
+        # through MultimodalPipeline (see app.api.goals._extract_multimodal_context)
+        # so the planner actually sees what was in an image/PDF/audio/table/
+        # code attachment, instead of the pipeline output being dead-ended
+        # at the ingestion API.
+        multimodal_context: str = agent_state.context.get("multimodal_context", "")
+        if multimodal_context:
+            extra_parts.append(f"[Multimodal asset context]\n{multimodal_context}")
+
         if agent_state.verification_feedback:
             extra_parts.append(f"[Previous attempt feedback]\n{agent_state.verification_feedback}")
 
