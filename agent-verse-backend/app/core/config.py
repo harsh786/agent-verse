@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     # disabled or when the reranker backend is unavailable.
     rag_default_rerank_enabled: bool = True
     rag_default_rerank_strategy: str = "auto"  # score|rrf|diversity|cross_encoder|llm|auto
+    # Calibrated retrieval confidence below this [0,1] threshold flags a result as
+    # low-confidence and (when the fallback is on) triggers a real widening retry.
+    rag_low_confidence_threshold: float = 0.35
+    rag_low_confidence_fallback_enabled: bool = True
+    rag_low_confidence_widen_factor: int = 4  # widen candidate pool by this multiple
 
     # --- Agent multi-agent auto-selection (WS-10) -----------------------------
     # Default-off safety gate for the advanced multi-agent tier: when on, a goal's

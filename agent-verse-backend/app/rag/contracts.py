@@ -163,6 +163,10 @@ class RAGExecutionResult(BaseModel):
     strategy_trace: list[RAGStrategyTrace] = Field(default_factory=list)
     answer: str = ""
     grounded: bool = False
+    # WS-10: calibrated aggregate confidence in [0,1] over the retrieved set, and
+    # a flag raised when it falls below the configured low-confidence threshold.
+    retrieval_confidence: float = 0.0
+    low_confidence: bool = False
     _budget_context: object | None = PrivateAttr(default=None)
 
 

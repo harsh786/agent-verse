@@ -784,10 +784,13 @@ async def execute_core_strategy(
             retrieval_mode="vector",
             evidence=evidence,
         )
+        results = await _rerank_default_path(request, results, embedding)
+        results, fb_trace = await _maybe_low_confidence_fallback(
+            context, request, results, embedding, evidence, retrieval_mode="vector"
+        )
         for item in evidence:
             item["query"] = request.query
-        results = await _rerank_default_path(request, results, embedding)
-        return _canonical_result(request, strategy, results, evidence)
+        return _canonical_result(request, strategy, results, evidence, initial_trace=fb_trace)
 
     if strategy is RAGStrategy.HYBRID:
         embedding = await _embed_text(context, request.query, strategy)
@@ -801,7 +804,12 @@ async def execute_core_strategy(
             evidence=evidence,
         )
         results = await _rerank_default_path(request, results, embedding)
-        return _canonical_result(request, strategy, results, evidence, rrf=True)
+        results, fb_trace = await _maybe_low_confidence_fallback(
+            context, request, results, embedding, evidence, retrieval_mode="hybrid"
+        )
+        return _canonical_result(
+            request, strategy, results, evidence, rrf=True, initial_trace=fb_trace
+        )
 
     if strategy is RAGStrategy.GRAPH:
         from app.rag.agentic.patterns.graph import (
@@ -1570,6 +1578,65 @@ async def _rerank_default_path(
     )
 
 
+async def _maybe_low_confidence_fallback(
+    context: RetrievalExecutionContext,
+    request: RAGExecutionRequest,
+    results: list[EngineRetrievalResult],
+    embedding: list[float] | None,
+    evidence: list[dict[str, Any]],
+    *,
+    retrieval_mode: str,
+) -> tuple[list[EngineRetrievalResult], tuple[str, dict[str, Any]] | None]:
+    """WS-10: a REAL fallback when the default-path retrieval is low-confidence.
+
+    When the calibrated confidence of the current set falls below the configured
+    threshold, re-run retrieval over a WIDER candidate pool and rerank — a
+    deterministic, dependency-free way to surface a stronger hit the narrow pool
+    missed. Returns the (possibly widened) results plus a trace tuple describing
+    the fallback, or ``(results, None)`` when no fallback was needed/enabled.
+    """
+    from app.core.config import get_settings
+    from app.rag.score_calibration import retrieval_confidence
+
+    settings = get_settings()
+    if not results or not bool(getattr(settings, "rag_low_confidence_fallback_enabled", True)):
+        return results, None
+    threshold = float(getattr(settings, "rag_low_confidence_threshold", 0.35))
+    confidence = retrieval_confidence([float(r.score) for r in results])
+    if confidence >= threshold:
+        return results, None
+
+    factor = max(2, int(getattr(settings, "rag_low_confidence_widen_factor", 4)))
+    widened_top_k = max(request.top_k * factor, request.top_k + 1)
+    widened_evidence: list[dict[str, Any]] = []
+    widened = await _search_persisted(
+        context,
+        request,
+        query=request.query,
+        embedding=embedding,
+        retrieval_mode=retrieval_mode,
+        evidence=widened_evidence,
+        top_k=widened_top_k,
+    )
+    reranked = await _rerank_default_path(request, widened, embedding)
+    final = reranked[: request.top_k]
+    # Reflect the actual retrieval that produced the returned citations.
+    evidence[:] = widened_evidence
+    post_confidence = (
+        retrieval_confidence([float(r.score) for r in final]) if final else 0.0
+    )
+    trace = (
+        "low_confidence_fallback",
+        {
+            "initial_confidence": confidence,
+            "threshold": threshold,
+            "widened_top_k": widened_top_k,
+            "post_confidence": post_confidence,
+        },
+    )
+    return final, trace
+
+
 def _mark_source_type(results: list[EngineRetrievalResult], source_type: str) -> None:
     for result in results:
         result.source_metadata = {
@@ -1695,6 +1762,14 @@ def _canonical_result(
                 detail={"rrf_scores": {result.chunk_id: result.rrf_score for result in results}},
             )
         )
+    # WS-10: surface a calibrated aggregate retrieval confidence (row-6 wiring),
+    # keyed off absolute score magnitude so a uniformly weak set stays low.
+    from app.core.config import get_settings
+    from app.rag.score_calibration import retrieval_confidence
+
+    confidence = retrieval_confidence([float(r.score) for r in results]) if results else 0.0
+    threshold = float(getattr(get_settings(), "rag_low_confidence_threshold", 0.35))
+    is_low = bool(results) and confidence < threshold
     return RAGExecutionResult(
         requested_strategy_id=request.requested_strategy_id,
         resolved_strategy_id=strategy,
@@ -1702,6 +1777,8 @@ def _canonical_result(
         retrieval_legs=retrieval_legs,
         strategy_trace=trace,
         grounded=bool(citations),
+        retrieval_confidence=confidence,
+        low_confidence=is_low,
     )
 
 

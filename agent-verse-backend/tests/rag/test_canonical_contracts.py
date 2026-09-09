@@ -185,6 +185,8 @@ def test_execution_result_serializes_strategy_evidence() -> None:
         ],
         "answer": "The evidence is tenant scoped [citation-1].",
         "grounded": True,
+        "retrieval_confidence": 0.0,
+        "low_confidence": False,
     }
 
 
