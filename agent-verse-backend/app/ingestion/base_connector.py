@@ -123,7 +123,7 @@ class BaseConnector(ABC):
         """
         return []
 
-    async def delete_doc(
+    async def delete_doc(  # noqa: B027  # intentional optional no-op hook, not abstract by design
         self,
         config: SourceConfig,
         doc_id: str,

@@ -145,7 +145,7 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
                 from app.tenancy.context import PlanTier, TenantContext
 
                 _settings = get_settings()
-                tenant_ctx = TenantContext(
+                _tenant_ctx = TenantContext(
                     tenant_id=tenant_id,
                     api_key_id="scheduler",
                     plan=PlanTier.FREE,

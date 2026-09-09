@@ -294,7 +294,9 @@ class OrgLearningPipeline:
         return list(self._quarantine)
 
     def clear_quarantine(self, lesson_id: str) -> bool:
-        self._quarantine = [l for l in self._quarantine if l.lesson_id != lesson_id]
+        self._quarantine = [
+            lesson for lesson in self._quarantine if lesson.lesson_id != lesson_id
+        ]
         return True
 
     @staticmethod

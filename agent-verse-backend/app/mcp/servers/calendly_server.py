@@ -163,7 +163,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     params["user"] = user
                 if org := arguments.get("organization"):
                     params["organization"] = org
-                if active := arguments.get("active") is not None:
+                if arguments.get("active") is not None:
                     params["active"] = (
                         str(arguments["active"]).lower() if "active" in arguments else None
                     )

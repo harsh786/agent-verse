@@ -991,7 +991,7 @@ async def stream_civilization(request: Request, civ_id: str) -> StreamingRespons
 
         channel = f"civ_sse:{tenant_ctx.tenant_id}:{civ_id}"
         try:
-            async with _nullctx(redis) as r:
+            async with _NullCtx(redis) as r:
                 pubsub = r.pubsub() if hasattr(r, "pubsub") else redis.pubsub()
                 await pubsub.subscribe(channel)
                 async for message in pubsub.listen():
@@ -1015,7 +1015,7 @@ async def stream_civilization(request: Request, civ_id: str) -> StreamingRespons
     )
 
 
-class _nullctx:
+class _NullCtx:
     """Null async context manager — passes the value through unchanged."""
 
     def __init__(self, v: Any) -> None:

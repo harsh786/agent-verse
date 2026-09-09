@@ -686,7 +686,7 @@ def create_app(
     from app.agent.model_router import ModelRouter
 
     try:
-        _mr_provider = "openai" if _openai_key else ("anthropic" if _anthropic_key else "anthropic")
+        _mr_provider = "openai" if _openai_key else "anthropic"
         _model_router: Any = ModelRouter(provider_name=_mr_provider)
     except Exception as _mr_exc:
         _model_router = None

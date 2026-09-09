@@ -1074,7 +1074,9 @@ async def rollback_agent(request: Request, agent_id: str, snapshot_id: str) -> d
 
 
 @router.get("/{agent_id}/export")
-async def export_agent(request: Request, agent_id: str, format: str = "openai") -> dict[str, Any]:
+async def export_agent(
+    request: Request, agent_id: str, format: str = "openai"  # noqa: A002  # public query param name, part of the API contract
+) -> dict[str, Any]:
     """Export agent config in a provider-specific format (openai | anthropic)."""
     tenant = _require_tenant(request)
     store = _agent_store(request)

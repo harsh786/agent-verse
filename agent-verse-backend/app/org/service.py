@@ -1761,7 +1761,7 @@ class OrgService:
             "deliverable": goal_result,
             "generated_at": datetime.now(UTC).isoformat(),
         }
-        mission.outputs = list(mission.outputs or []) + [report]
+        mission.outputs = [*list(mission.outputs or []), report]
         new_meta = dict(mission.extra_data or {})
         new_meta["result"] = report
         mission.extra_data = new_meta

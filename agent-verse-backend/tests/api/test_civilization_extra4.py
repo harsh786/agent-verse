@@ -749,17 +749,17 @@ def test_stream_civilization_with_catchup_events() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _nullctx helper (lines 832-842)
+# _NullCtx helper (lines 832-842)
 # ---------------------------------------------------------------------------
 
-def test_nullctx_helper() -> None:
-    """Lines 836-842: _nullctx passes value through as async context manager."""
+def test_NullCtx_helper() -> None:
+    """Lines 836-842: _NullCtx passes value through as async context manager."""
     import asyncio
 
-    from app.api.civilization import _nullctx
+    from app.api.civilization import _NullCtx
 
     async def _run():
-        async with _nullctx("test-value") as v:
+        async with _NullCtx("test-value") as v:
             return v
 
     result = asyncio.run(_run())

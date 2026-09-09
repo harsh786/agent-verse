@@ -295,10 +295,11 @@ async def zapier_trigger(
 
 
 class AlertmanagerPayload(BaseModel):
+    # field names mirror the Alertmanager webhook JSON schema verbatim (external API contract)
     alerts: list[dict] = []
-    groupLabels: dict = {}
-    commonAnnotations: dict = {}
-    externalURL: str = ""
+    groupLabels: dict = {}  # noqa: N815
+    commonAnnotations: dict = {}  # noqa: N815
+    externalURL: str = ""  # noqa: N815
     status: str = "firing"
 
 

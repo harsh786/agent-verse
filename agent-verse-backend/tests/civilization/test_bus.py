@@ -411,23 +411,23 @@ async def test_emit_civilization_event_db_exception_is_swallowed():
     assert msg_id
 
 
-# ── _nullctx ──────────────────────────────────────────────────────────────────
+# ── _NullCtx ──────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_nullctx_as_context_manager():
-    from app.civilization.bus import _nullctx
+async def test_NullCtx_as_context_manager():
+    from app.civilization.bus import _NullCtx
 
     value = object()
-    async with _nullctx(value) as v:
+    async with _NullCtx(value) as v:
         assert v is value
 
 
 @pytest.mark.asyncio
-async def test_nullctx_exit_returns_none():
-    from app.civilization.bus import _nullctx
+async def test_NullCtx_exit_returns_none():
+    from app.civilization.bus import _NullCtx
 
-    ctx = _nullctx("test-value")
+    ctx = _NullCtx("test-value")
     result = await ctx.__aenter__()
     assert result == "test-value"
     exit_result = await ctx.__aexit__(None, None, None)

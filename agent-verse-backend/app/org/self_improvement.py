@@ -264,9 +264,10 @@ class OrgLearningSystem:
         status_order = {"pending": 0, "validated": 1, "promoted": 2, "quarantined": -1}
         min_order = status_order.get(min_status, 0)
         return [
-            l
-            for l in self._lessons.values()
-            if l.category == category and status_order.get(l.status, -1) >= min_order
+            lesson
+            for lesson in self._lessons.values()
+            if lesson.category == category
+            and status_order.get(lesson.status, -1) >= min_order
         ]
 
     @staticmethod

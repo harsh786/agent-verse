@@ -2,7 +2,7 @@
 
 Covers app/gateway/rate_limiter.py:
   - ChannelRateLimiter in-memory fallback (no Redis required)
-  - RateLimitExceeded exception structure
+  - RateLimitExceededError exception structure
   - CHANNEL_LIMITS / ACTION_LIMITS constants
   - check_and_increment allow / deny paths
 """
@@ -14,24 +14,24 @@ from app.gateway.rate_limiter import (
     ACTION_LIMITS,
     CHANNEL_LIMITS,
     ChannelRateLimiter,
-    RateLimitExceeded,
+    RateLimitExceededError,
 )
 
-# ── RateLimitExceeded ─────────────────────────────────────────────────────────
+# ── RateLimitExceededError ─────────────────────────────────────────────────────────
 
 class TestRateLimitExceededException:
     def test_attributes_set(self) -> None:
-        exc = RateLimitExceeded(limit=100, window_seconds=3600, retry_after=60)
+        exc = RateLimitExceededError(limit=100, window_seconds=3600, retry_after=60)
         assert exc.limit == 100
         assert exc.window_seconds == 3600
         assert exc.retry_after == 60
 
     def test_str_contains_limit(self) -> None:
-        exc = RateLimitExceeded(limit=10, window_seconds=60, retry_after=30)
+        exc = RateLimitExceededError(limit=10, window_seconds=60, retry_after=30)
         assert "10" in str(exc)
 
     def test_is_exception_subclass(self) -> None:
-        assert issubclass(RateLimitExceeded, Exception)
+        assert issubclass(RateLimitExceededError, Exception)
 
 
 # ── CHANNEL_LIMITS constants ──────────────────────────────────────────────────
@@ -118,13 +118,13 @@ class TestChannelRateLimiterMemory:
     async def test_limit_exceeded_raises_rate_limit_exceeded(
         self, limiter: ChannelRateLimiter
     ) -> None:
-        """Exhaust the email limit (10/hour) — next call raises RateLimitExceeded."""
+        """Exhaust the email limit (10/hour) — next call raises RateLimitExceededError."""
         email_limit = CHANNEL_LIMITS["email"]["limit"]
         for _ in range(email_limit):
             await limiter.check_and_increment(
                 tenant_id="exhaust-t", org_id="org1", channel="email", actor_id="u"
             )
-        with pytest.raises(RateLimitExceeded) as exc_info:
+        with pytest.raises(RateLimitExceededError) as exc_info:
             await limiter.check_and_increment(
                 tenant_id="exhaust-t", org_id="org1", channel="email", actor_id="u"
             )

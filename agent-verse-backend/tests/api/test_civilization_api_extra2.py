@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from app.api.civilization import (
     _civilization_not_found,
     _get_db,
-    _nullctx,
+    _NullCtx,
     _require_feature_enabled,
     _require_tenant,
     router,
@@ -121,18 +121,18 @@ class TestHelpers:
         # Acceptable to be None in test environment
 
 
-# ── _nullctx async context manager ────────────────────────────────────────────
+# ── _NullCtx async context manager ────────────────────────────────────────────
 
 class TestNullCtx:
     @pytest.mark.asyncio
     async def test_passes_value_through(self):
         sentinel = object()
-        async with _nullctx(sentinel) as val:
+        async with _NullCtx(sentinel) as val:
             assert val is sentinel
 
     @pytest.mark.asyncio
     async def test_exit_does_nothing(self):
-        async with _nullctx("anything") as val:
+        async with _NullCtx("anything") as val:
             pass  # should not raise
 
 

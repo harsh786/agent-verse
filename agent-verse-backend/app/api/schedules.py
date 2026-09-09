@@ -526,7 +526,13 @@ async def suggest_schedule(request: Request, body: SuggestScheduleRequest) -> di
                 max_tokens=600,
             )
         )
-        raw = resp.content.strip().lstrip("```json").lstrip("```").rstrip("```")
+        raw = (
+            resp.content.strip()
+            .removeprefix("```json")
+            .removeprefix("```")
+            .removesuffix("```")
+            .strip()
+        )
         data = _json.loads(raw)
         suggestions = data.get("suggestions", [])
     except Exception:

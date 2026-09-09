@@ -676,7 +676,7 @@ class TestResumeGoal:
 
         async def _astream(*a, **kw):
             return
-            yield  # noqa: unreachable
+            yield  # unreachable, required to make this an async generator
 
         mock_graph._graph = MagicMock()
         mock_graph._graph.astream = _astream
