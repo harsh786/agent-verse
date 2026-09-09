@@ -74,7 +74,6 @@ def test_production_guard_fake_provider_celery(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    import app.scaling.tasks  # noqa: F401  ensure app.scaling.tasks is bound before setattr
     from app.scaling.celery_app import celery_app
     celery_app.conf.task_always_eager = True
     try:

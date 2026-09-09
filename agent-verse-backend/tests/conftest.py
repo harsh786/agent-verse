@@ -63,17 +63,22 @@ def _keep_scaling_tasks_bound():
     import importlib
     import sys
 
-    # Ensure app.scaling.tasks is loaded (and thus bound as an attribute of the
-    # app.scaling package) before every test. A prior test may have deleted the
-    # app.scaling package from sys.modules; if it is then re-imported fresh
-    # without tasks (e.g. a test that only imports app.scaling.celery_app), the
-    # package loses its `tasks` attribute and monkeypatch.setattr(
-    # "app.scaling.tasks.X") fails with AttributeError. Importing here is a cheap
-    # cached lookup once loaded, and closes that gap regardless of ordering.
-    scaling = sys.modules.get("app.scaling")
-    if scaling is None or not hasattr(scaling, "tasks"):
-        with contextlib.suppress(Exception):
-            importlib.import_module("app.scaling.tasks")
+    # Ensure the app.scaling package exposes its `tasks` submodule as an
+    # attribute before every test. A prior test may replace the app.scaling
+    # *package* object in sys.modules (re-importing it fresh without tasks, e.g.
+    # a test that only imports app.scaling.celery_app). The fresh package then
+    # lacks a `tasks` attribute and monkeypatch.setattr("app.scaling.tasks.X")
+    # fails with AttributeError. A plain ``import app.scaling.tasks`` does NOT
+    # fix this when the submodule is already cached — CPython only binds the
+    # parent attribute during the submodule's original import, not on cached
+    # re-imports — so force-rebind the attribute explicitly.
+    with contextlib.suppress(Exception):
+        tasks_mod = sys.modules.get("app.scaling.tasks") or importlib.import_module(
+            "app.scaling.tasks"
+        )
+        scaling = sys.modules.get("app.scaling")
+        if scaling is not None and getattr(scaling, "tasks", None) is not tasks_mod:
+            scaling.tasks = tasks_mod  # type: ignore[attr-defined]
     yield
 
 
