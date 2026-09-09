@@ -209,8 +209,21 @@ class AgentGraph(
         self._enable_peer_review = enable_peer_review or "peer_review" in selected_strategy_ids
         # D-1/D-2: multi-agent patterns — enabled per-agent via ctor flag or a
         # runtime-profile strategy id, mirroring the other optional reasoning nodes.
-        self._enable_supervisor = enable_supervisor or "supervisor" in selected_strategy_ids
-        self._enable_debate = enable_debate or "debate" in selected_strategy_ids
+        # WS-10: additionally AUTO-select supervisor/debate from the goal's own
+        # characteristics (one reachable selector) when the default-off safety gate
+        # is open. The explicit ctor flag remains an override that always wins.
+        auto_multi_agent = self._auto_select_multi_agent(runtime_profile)
+        self._auto_multi_agent = auto_multi_agent
+        self._enable_supervisor = (
+            enable_supervisor
+            or "supervisor" in selected_strategy_ids
+            or "supervisor" in auto_multi_agent
+        )
+        self._enable_debate = (
+            enable_debate
+            or "debate" in selected_strategy_ids
+            or "debate" in auto_multi_agent
+        )
         self._autonomy_mode = autonomy_mode
         self._enable_goal_tree = enable_goal_tree
         self._goal_tree_threshold = goal_tree_threshold
@@ -276,6 +289,39 @@ class AgentGraph(
     @property
     def runtime_profile(self) -> Any | None:
         return self._runtime_profile
+
+    @staticmethod
+    def _auto_select_multi_agent(runtime_profile: Any | None) -> frozenset[str]:
+        """Auto-select supervisor/debate from the goal's classified properties.
+
+        Returns an empty set unless the default-off ``agent_auto_multi_agent_enabled``
+        safety gate is open AND the runtime profile carries goal properties. Uses the
+        one characteristic-driven selector so any execution seam routes identically.
+        """
+        props = getattr(runtime_profile, "properties", None)
+        if props is None:
+            return frozenset()
+        try:
+            from app.core.config import get_settings
+
+            if not get_settings().agent_auto_multi_agent_enabled:
+                return frozenset()
+        except Exception:  # pragma: no cover - defensive; fail safe (no auto-select)
+            return frozenset()
+
+        from app.agent.multi_agent_selector import select_multi_agent_patterns
+
+        def _val(name: str, default: str = "") -> str:
+            raw = getattr(props, name, None)
+            return str(getattr(raw, "value", raw) or default).lower()
+
+        selection = select_multi_agent_patterns(
+            complexity=_val("complexity"),
+            domain=_val("domain"),
+            multi_step=bool(getattr(props, "multi_step", True)),
+            risk=_val("risk"),
+        )
+        return selection.patterns
 
     # ------------------------------------------------------------------
     # Graph construction

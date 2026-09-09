@@ -101,6 +101,13 @@ class Settings(BaseSettings):
     rag_default_rerank_enabled: bool = True
     rag_default_rerank_strategy: str = "auto"  # score|rrf|diversity|cross_encoder|llm|auto
 
+    # --- Agent multi-agent auto-selection (WS-10) -----------------------------
+    # Default-off safety gate for the advanced multi-agent tier: when on, a goal's
+    # complexity/domain/risk can auto-route it to the in-graph supervisor /debate
+    # nodes (per-agent enable_* flags remain an explicit override that always wins).
+    # The distributed autonomous tier stays governed by ``coordination_ready``.
+    agent_auto_multi_agent_enabled: bool = False
+
     # --- default model names per task type (override via env vars) ---
     default_planning_model: str = "qwen3.8:latest"
     default_planning_provider: str = "ollama"
