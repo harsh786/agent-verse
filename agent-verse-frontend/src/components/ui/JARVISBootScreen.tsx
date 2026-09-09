@@ -13,8 +13,8 @@
  * Usage:
  *   <JARVISBootScreen onComplete={() => setBooted(true)} orgName="Acme AI" />
  */
-import { useEffect, useState } from 'react';
-import { motion, AnimatePresence, useAnimation } from 'framer-motion';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface JARVISBootScreenProps {
   orgName?: string;
@@ -186,10 +186,18 @@ function AICore() {
 }
 
 export function JARVISBootScreen({ orgName = 'AgentVerse OS', onComplete, duration = 3200 }: JARVISBootScreenProps) {
-  const [retracting, setRetracting] = useState(false);
+  const [visible, setVisible] = useState(true);
   const [visibleLines, setVisibleLines] = useState<number[]>([]);
   const title = useTypingEffect(`INITIALIZING ${orgName.toUpperCase()}`, 900, 22);
-  const controls = useAnimation();
+
+  // Fire onComplete exactly once. The host page (e.g. OrgPage) gates ALL of its
+  // content on this callback, so it must be impossible to miss.
+  const completedRef = useRef(false);
+  const finish = useCallback(() => {
+    if (completedRef.current) return;
+    completedRef.current = true;
+    onComplete();
+  }, [onComplete]);
 
   // Schedule each boot line
   useEffect(() => {
@@ -199,22 +207,30 @@ export function JARVISBootScreen({ orgName = 'AgentVerse OS', onComplete, durati
     return () => timers.forEach(clearTimeout);
   }, []);
 
-  // Auto-retract after duration
+  // Begin the exit after `duration`.
   useEffect(() => {
-    const t = setTimeout(async () => {
-      setRetracting(true);
-      await controls.start({ y: '-100%', opacity: 0, transition: { duration: 0.65, ease: [0.4, 0, 0.2, 1] } });
-      onComplete();
-    }, duration);
+    const t = setTimeout(() => setVisible(false), duration);
     return () => clearTimeout(t);
-  }, [duration, onComplete, controls]);
+  }, [duration]);
+
+  // Guarantee completion shortly after the exit begins, with a timer that does
+  // NOT depend on the framer-motion exit promise. The previous implementation
+  // awaited controls.start() on a node that unmounts the instant retraction
+  // starts, so the promise never resolved and onComplete never fired — leaving
+  // OrgPage stuck on the boot screen (blank) forever. `finish` is idempotent, so
+  // AnimatePresence's onExitComplete can also call it for a snappier hand-off.
+  useEffect(() => {
+    if (visible) return;
+    const t = setTimeout(finish, 720);
+    return () => clearTimeout(t);
+  }, [visible, finish]);
 
   return (
-    <AnimatePresence>
-      {!retracting ? (
+    <AnimatePresence onExitComplete={finish}>
+      {visible ? (
         <motion.div
-          animate={controls}
           initial={{ y: 0, opacity: 1 }}
+          exit={{ y: '-100%', opacity: 0, transition: { duration: 0.65, ease: [0.4, 0, 0.2, 1] } }}
           className="fixed inset-0 flex flex-col items-center justify-center overflow-hidden select-none"
           style={{ background: '#060810', zIndex: 9999 }}
           role="status"
