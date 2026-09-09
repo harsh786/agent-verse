@@ -12,7 +12,7 @@ Enforced at FastAPI dependency level.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from fastapi import Depends, HTTPException, Request, status
 from opentelemetry import trace
@@ -34,7 +34,7 @@ class OrgRole:
     VIEWER = "viewer"
 
     # Permission sets per role
-    PERMISSIONS: dict[str, frozenset[str]] = {
+    PERMISSIONS: ClassVar[dict[str, frozenset[str]]] = {
         "org_admin": frozenset(
             {"read", "write", "delete", "approve", "admin", "change_settings", "change_autonomy"}
         ),
@@ -45,7 +45,7 @@ class OrgRole:
     }
 
     # Role hierarchy (higher index = more permissions)
-    HIERARCHY = ["viewer", "agent", "team_lead", "dept_admin", "org_admin"]
+    HIERARCHY: ClassVar[list[str]] = ["viewer", "agent", "team_lead", "dept_admin", "org_admin"]
 
     @classmethod
     def can(cls, role: str, permission: str) -> bool:

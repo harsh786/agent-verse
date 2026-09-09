@@ -8,6 +8,7 @@ HTTP-Referer / X-Title headers required by OpenRouter.
 from __future__ import annotations
 
 import os
+from typing import ClassVar
 
 import httpx
 
@@ -23,7 +24,7 @@ class OpenRouterProvider(OpenAICompatibleProvider):
 
     provider_name = "openrouter"
 
-    POPULAR_MODELS: list[str] = [
+    POPULAR_MODELS: ClassVar[list[str]] = [
         "anthropic/claude-3-5-sonnet",
         "anthropic/claude-3-opus",
         "openai/gpt-4o",

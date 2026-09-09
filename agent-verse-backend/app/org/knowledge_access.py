@@ -7,7 +7,7 @@ Enforces confidentiality tiers: public | internal | confidential | restricted.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import structlog
 
@@ -38,7 +38,7 @@ class KnowledgeAccessPolicy:
     """
 
     # Default per-department collection restrictions
-    DEPT_COLLECTIONS: dict[str, list[str]] = {
+    DEPT_COLLECTIONS: ClassVar[dict[str, list[str]]] = {
         "executive": ["executive_strategy", "all_internal", "all_confidential"],
         "engineering": ["engineering_docs", "product_specs", "architecture", "all_internal"],
         "marketing": ["marketing_assets", "product_docs", "customer_insights", "all_internal"],
@@ -63,7 +63,7 @@ class KnowledgeAccessPolicy:
     }
 
     # Sensitivity mappings for special collections
-    SENSITIVITY_MAP: dict[str, SensitivityLevel] = {
+    SENSITIVITY_MAP: ClassVar[dict[str, SensitivityLevel]] = {
         "finance_restricted": "restricted",
         "security_restricted": "restricted",
         "executive_strategy": "confidential",
