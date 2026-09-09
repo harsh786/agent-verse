@@ -101,6 +101,33 @@ def _extract_key(request: Request) -> str | None:
     return None
 
 
+def _stream_token_context(request: Request, claims: dict[str, Any]) -> TenantContext:
+    """Build a minimal, read-only TenantContext from a verified stream token.
+
+    The SSE endpoints that accept stream tokens are not scope-gated, so no roles
+    are granted (least privilege). The tenant's real plan is looked up from the
+    in-memory tenant cache when available, defaulting to ``free``.
+    """
+    from app.tenancy.context import PlanTier
+
+    tenant_id = str(claims["tenant_id"])
+    plan_value = "free"
+    svc = getattr(getattr(request.app, "state", None), "tenant_service", None)
+    tenants = getattr(svc, "_tenants", None)
+    if isinstance(tenants, dict):
+        plan_value = str((tenants.get(tenant_id) or {}).get("plan", "free"))
+    try:
+        plan = PlanTier(plan_value)
+    except ValueError:
+        plan = PlanTier.FREE
+    return TenantContext(
+        tenant_id=tenant_id,
+        plan=plan,
+        api_key_id=str(claims.get("key_id", "")),
+        roles=(),
+    )
+
+
 def _is_cors_preflight(request: Request) -> bool:
     return (
         request.method == "OPTIONS"
@@ -201,6 +228,20 @@ class TenantMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if _is_cors_preflight(request) or any(path.startswith(p) for p in _BYPASS_PREFIXES):
             return await call_next(request)
+
+        # Short-lived stream token (?token=): EventSource cannot send headers, so
+        # SSE clients exchange their API key for a read-only, ~10-minute token and
+        # pass THAT in the stream URL — keeping the permanent api_key out of URLs,
+        # access logs, and proxy caches. A valid token authenticates the tenant
+        # directly; an invalid/expired one falls through to normal auth (→ 401).
+        stream_token = request.query_params.get("token")
+        if stream_token:
+            from app.auth.stream_tokens import verify_stream_token
+
+            claims = verify_stream_token(stream_token)
+            if claims is not None:
+                request.state.tenant = _stream_token_context(request, claims)
+                return await call_next(request)
 
         raw_key = _extract_key(request)
         if raw_key is None:

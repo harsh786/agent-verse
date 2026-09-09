@@ -112,6 +112,23 @@ async def get_me(
     return JSONResponse(result)
 
 
+@router.get("/stream-token")
+async def get_stream_token(
+    ctx: TenantContext = Depends(_require_tenant),
+) -> JSONResponse:
+    """Mint a short-lived, read-only token for SSE/EventSource connections.
+
+    EventSource cannot send headers, so browsers pass this token as ``?token=`` on
+    stream URLs instead of the permanent API key — keeping the key out of URLs,
+    access logs, and proxy caches. The token is bound to this tenant, is read-only,
+    and expires quickly.
+    """
+    from app.auth.stream_tokens import STREAM_TOKEN_TTL, mint_stream_token
+
+    token = mint_stream_token(tenant_id=ctx.tenant_id, key_id=ctx.api_key_id or "")
+    return JSONResponse({"token": token, "expires_in": STREAM_TOKEN_TTL})
+
+
 @router.get("/me/keys")
 async def list_keys(
     request: Request,
