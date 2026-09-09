@@ -2971,10 +2971,18 @@ class GoalService:
                         SELECT
                           COUNT(*) FILTER (WHERE status IN ('complete','completed')) AS completed,
                           COUNT(*) FILTER (WHERE status IN ('failed','error')) AS failed,
-                          COUNT(*) FILTER (WHERE status IN ('planning','executing','waiting_human')) AS active,  # noqa: E501
+                          COUNT(*) FILTER (
+                            WHERE status IN ('planning','executing','waiting_human')
+                          ) AS active,
                           COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
-                          COUNT(*) FILTER (WHERE status IN ('complete','completed') AND created_at::date = CURRENT_DATE) AS completed_today,  # noqa: E501
-                          AVG(EXTRACT(EPOCH FROM (completed_at - created_at))*1000) FILTER (WHERE status IN ('complete','completed') AND completed_at IS NOT NULL) AS avg_latency_ms,  # noqa: E501
+                          COUNT(*) FILTER (
+                            WHERE status IN ('complete','completed')
+                              AND created_at::date = CURRENT_DATE
+                          ) AS completed_today,
+                          AVG(EXTRACT(EPOCH FROM (completed_at - created_at))*1000) FILTER (
+                            WHERE status IN ('complete','completed')
+                              AND completed_at IS NOT NULL
+                          ) AS avg_latency_ms,
                           COUNT(*) FILTER (WHERE created_at::date = CURRENT_DATE) AS submitted_today
                         FROM goals WHERE tenant_id = :tid
                     """),
