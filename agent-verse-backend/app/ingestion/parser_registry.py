@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 from app.ingestion.content_classifier import ContentType
+
+if TYPE_CHECKING:
+    from app.providers.base import LLMProvider
 
 
 class TextParser:
@@ -312,7 +317,9 @@ class ParserRegistry:
         if vision_provider is not None:
             from app.ingestion.parsers.vision_parser import VisionParser
 
-            vres = await VisionParser(provider=vision_provider).parse_image_bytes(content, name)
+            vres = await VisionParser(
+                provider=cast("LLMProvider | None", vision_provider)
+            ).parse_image_bytes(content, name)
             desc = vres.description or ""
             if desc.strip() and not desc.startswith("[Image:"):
                 parts.append(desc.strip())

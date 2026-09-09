@@ -113,7 +113,10 @@ class EmailIMAPConnector(BaseConnector):
             conn.select(mailbox)
 
             last_uid = cursor or "0"
-            typ, data = conn.uid("SEARCH", None, f"UID {int(last_uid) + 1}:*")
+            # NOTE: unlike search(), uid() has no charset special-casing for
+            # SEARCH — passing None here would be stringified into the raw
+            # IMAP command ("SEARCH None UID ...") and silently match nothing.
+            typ, data = conn.uid("SEARCH", f"UID {int(last_uid) + 1}:*")
             uids = data[0].split() if data and data[0] else []
             uids = uids[:batch_size]
 

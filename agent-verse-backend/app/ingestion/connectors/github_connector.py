@@ -74,10 +74,12 @@ class GitHubConnector(BaseConnector):
         for repo in repos:
             try:
                 if include_code:
+                    owner, _, repo_name = repo.partition("/")
                     chunks = await ingestor.ingest_repo(
-                        repo,
+                        owner,
+                        repo_name,
                         branch=config.connection_config.get("branch", "main"),
-                        file_extensions=config.connection_config.get(
+                        file_patterns=config.connection_config.get(
                             "file_extensions", [".py", ".ts", ".md"]
                         ),
                     )

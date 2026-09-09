@@ -10,7 +10,7 @@ import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -81,10 +81,12 @@ class ElasticsearchConnector(BaseConnector):
                 if cursor_parsed:
                     body["search_after"] = cursor_parsed
 
+                request_kwargs: dict[str, Any] = {"json": body}
+                if auth is not None:
+                    request_kwargs["auth"] = auth
                 r = await client.post(
                     f"{base_url}/{index}/_search",
-                    json=body,
-                    auth=auth,
+                    **request_kwargs,
                 )
                 if not r.is_success:
                     _log.warning("elasticsearch: %d %s", r.status_code, r.text[:200])

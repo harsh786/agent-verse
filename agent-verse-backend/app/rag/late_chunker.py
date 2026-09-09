@@ -12,6 +12,10 @@ module falls back to returning `None` so the caller can use standard embedding.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from app.providers.base import LLMProvider
 
 
 @dataclass
@@ -81,7 +85,7 @@ class LateChunker:
         """Fallback: embed each chunk independently (standard RAG embedding)."""
         from app.providers.base import embed_texts
 
-        embeddings = await embed_texts(chunks, provider=provider)
+        embeddings = await embed_texts(chunks, provider=cast("LLMProvider | None", provider))
         result: list[LateChunk] = []
         offset = 0
         for _i, (chunk, emb) in enumerate(zip(chunks, embeddings, strict=False)):
