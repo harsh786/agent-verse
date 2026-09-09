@@ -23,6 +23,32 @@ export default defineConfig(({ command, mode }) => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    // Split heavy, independently-cacheable vendor libraries out of the main
+    // entry chunk so first paint downloads far less and returning visitors reuse
+    // cached vendor bundles. (The app itself is already route-level lazy-loaded.)
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("framer-motion") || id.includes("motion-dom") || id.includes("motion-utils"))
+            return "vendor-motion";
+          if (id.includes("@xyflow") || id.includes("reactflow") || id.includes("d3-"))
+            return "vendor-graph";
+          if (id.includes("codemirror") || id.includes("@uiw/react-codemirror"))
+            return "vendor-editor";
+          if (id.includes("/three/") || id.includes("@react-three")) return "vendor-three";
+          if (id.includes("yjs") || id.includes("y-websocket") || id.includes("y-protocols"))
+            return "vendor-collab";
+          if (id.includes("i18next") || id.includes("react-i18next")) return "vendor-i18n";
+          if (id.includes("@tanstack")) return "vendor-query";
+          if (id.includes("react-dom") || id.includes("/scheduler/")) return "vendor-react";
+          return "vendor";
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     proxy: {
