@@ -139,6 +139,17 @@ For any path where pause/resume is not truly wired, wire it. Reject/deny path al
 - **Universal OCR fallback** (ties to WS-6): unreadable format → rasterize → OCR.
 **DoD:** unit tests per parser/route; mypy clean. **e2e (`tests/e2e_full/test_ingestion_worldclass_e2e.py`):** real PDF+DOCX+CSV+image+audio through the connector/scheduler path → real text (no garbage) → correct chunker (no silent fixed) → pgvector rows → retrievable by query → `knowledge.updated` published → dedup on re-ingest.
 
+## WS-13 · Unified world-class knowledge base — ALL sources converge (backend + frontend)
+**Detailed by recon `recon/G-ingestion-worldclass-kb.md` + `recon/H-unified-kb-convergence.md` (read both first).** The user's requirement: the KB created from ingestion, from RPA scraping, AND from OCR must be ONE coherent, world-class knowledge base — every source's content becomes retrievable, cited, deduped, provenance-tagged, tenant-isolated knowledge, with a unified frontend view.
+### Backend
+- **One KnowledgeStore, all sources:** confirm ingestion, RPA, and OCR all write chunks+embeddings into the SAME `KnowledgeStore` (not silos).
+- **RPA → KB (likely the key gap):** if RPA/browser-scraped content is only returned/stored as artifacts and never ingested, wire it: RPA output → `RawDocument` → the unified pipeline → KB chunks (retrievable + cited). Ties to WS-5 (RPA→PDF is the document deliverable; RPA→KB is the knowledge deliverable — do both).
+- **OCR → KB:** confirm OCR'd text lands in the KB as retrievable chunks with `source=ocr` provenance (ING-11 closed — verify end-to-end).
+- **Provenance + dedup + citation + RLS across sources:** every chunk records its origin (ingestion/rpa/ocr/connector/source_id); dedup/hashing consistent across sources; citations source-attributed; RLS enforced regardless of source.
+### Frontend
+- **Unified KB view:** one surface showing KB documents/chunks REGARDLESS of origin (uploaded file, RPA scrape, OCR image), with source-provenance badges + filtering, search, and citations. Elevate to JARVIS-shell quality. (Extends WS-11.)
+**DoD:** content from all three sources is retrievable by query, cited, provenance-tagged, RLS-isolated; frontend shows a unified, filterable KB. **e2e (`tests/e2e_full/test_kb_convergence_e2e.py`):** ingest a file + scrape a page via RPA + OCR an image → all three become retrievable KB chunks with correct provenance; a query returns hits from each; dedup on re-add.
+
 ## Status tracker (update as waves land)
 - WS-0 BK6: ✅ DONE 13fcf398 (deleted orphan ImprovementActionExecutor; safety gate default-off kept; mypy 0, tier 20989)
 - WS-1 Civilization throttle: TODO
