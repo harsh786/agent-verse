@@ -62,6 +62,7 @@ ORG_ROLE_PERMISSIONS: dict[OrgRole, list[str]] = {
         "write_memory",
         "view_audit",
         "manage_knowledge",
+        "admin",
     ],
     OrgRole.DEPT_ADMIN: [
         "read",
@@ -158,7 +159,7 @@ ORG_AUDIT_EVENTS = [
 ]
 
 # Map each event to its notification severity
-from app.gateway.notification_router import EVENT_SEVERITY_MAP, NotificationSeverity
+from app.gateway.notification_router import EVENT_SEVERITY_MAP, NotificationSeverity  # noqa: E402
 
 
 @dataclass
