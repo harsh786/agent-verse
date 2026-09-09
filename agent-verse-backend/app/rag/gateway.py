@@ -1563,6 +1563,36 @@ def _canonical_result(
     rrf: bool = False,
     initial_trace: tuple[str, dict[str, Any]] | None = None,
 ) -> RAGExecutionResult:
+    # Row-6 wiring: surface a calibrated confidence on each citation of the
+    # default RAG path. Order is deliberately PRESERVED — the resolved strategy
+    # owns ranking (e.g. code-RAG boosts exact symbol matches), so the gateway
+    # must not re-sort and override it. Fail-safe: any error leaves citations
+    # exactly as before (no calibrated_confidence).
+    calibrated_by_chunk: dict[str, float] = {}
+    try:
+        from app.context.rerank_policy import RerankPolicy, RerankStrategy
+
+        # SCORE keeps things deterministic (no cross-encoder model load) and is
+        # only used to compute per-chunk calibrated confidence — the returned
+        # ordering is intentionally discarded.
+        policy = RerankPolicy(
+            strategy=RerankStrategy.SCORE,
+            deduplicate=False,
+            min_score=0.0,
+            max_per_source=0,
+        )
+        chunk_dicts = [
+            {"_idx": i, "score": float(r.score), "content": r.content}
+            for i, r in enumerate(results)
+        ]
+        for c in policy.rerank(chunk_dicts, str(request.query)):
+            idx = c.get("_idx")
+            conf = c.get("calibrated_confidence")
+            if isinstance(idx, int) and 0 <= idx < len(results) and conf is not None:
+                calibrated_by_chunk[results[idx].chunk_id] = float(conf)
+    except Exception:  # pragma: no cover - defensive; keep citations unchanged
+        calibrated_by_chunk = {}
+
     citations = [
         RAGCitation(
             citation_id=f"citation-{index}",
@@ -1580,6 +1610,7 @@ def _canonical_result(
                 **result.source_metadata,
                 "component_scores": dict(result.component_scores),
                 "rrf_score": result.rrf_score,
+                "calibrated_confidence": calibrated_by_chunk.get(result.chunk_id),
             },
         )
         for index, result in enumerate(results, start=1)
