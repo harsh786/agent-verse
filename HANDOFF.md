@@ -34,7 +34,8 @@ uv run pytest tests/ -m "not integration and not slow and not e2e_full" \
 ## 2. Ledger + artifacts (the recovery map)
 
 - **Ledger:** `.superpowers/sdd/go-through-it-users-harsh-documents-lear-snug-allen/progress.md` — full per-wave record, rulings, commit shas. Git-ignored scratch, but on disk.
-- **Recon reports:** `.superpowers/sdd/.../recon/` — A1 (rag/embed/router/kg), A2 (patterns/memory/safety), B (frontend), C (verification). These are the authoritative current-state audit.
+- **Recon reports:** `.superpowers/sdd/.../recon/` — the authoritative current-state audit; each carries x/10 ratings + the exact gap per area. A1 (rag/embed/router/kg), A2 (patterns/memory/safety), B (frontend), C (verification), D (org/civ/coord/rpa/ocr/hitl), E (rag/retrieval/chunk/embed/rerank/kg/patterns/memory backend), F (knowledge/rag/memory/graph FRONTEND UX), G (ingestion generic + world-class KB). To reverify any area: re-read its report + the live code before implementing.
+- **Ratings snapshot (2026-09-10, D+E):** Chunking 9 · RAG-patterns 8 · Retrieval 8 · KB 8 · KG 8 · Org 8 · JARVIS-UI 8 · HITL 8 · OCR 8 · Self-improve 8 · Embeddings 7 · Agent-patterns 7(generic:n) · Memory 7 · RPA 7 · Reranking 6(generic:n) · Coordination 6 · Civilization 5. These drive the WS priorities in `/PROGRAM-WORLDCLASS.md`; F+G add the frontend-UX + ingestion ratings.
 - **Task briefs:** `.superpowers/sdd/.../briefs/` — one `*.md` per task + `*-report.md` results. **BK6 brief already written and ready to dispatch: `briefs/BK6-d3-self-optimizer.md`.**
 
 ## 3. DONE this session (12 commits on the branch)

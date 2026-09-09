@@ -106,6 +106,37 @@ For any path where pause/resume is not truly wired, wire it. Reject/deny path al
 **Tasks (staged, low-risk first):** (1) `ruff check --fix` the safe auto-fixable set, commit in reviewable batches by rule family (imports/I, unused/F401, UP, C4) — run the fast tier after each batch to prove no behavior change; (2) hand-fix the residual `app/` errors (the 325 — these are the ones that matter most); (3) leave genuinely-intentional violations with scoped `# noqa` + reason or a per-file ignore in `pyproject.toml`; (4) then make CI gate on `ruff check .` so debt can't regrow.
 **DoD:** `app/` ruff = 0; tests ruff reduced to <a small documented residual or 0; fast tier still ~20990 passed; mypy still 0. Do NOT `--unsafe-fixes` without per-fix review.
 
+## WS-10 · RAG/retrieval/reranking/patterns — make generic & world-class (backend)
+**Detailed by recon `recon/E-rag-knowledge-intelligence-backend.md` (rated 2026-09-10). Chunking is already 9/10 (real semantic + tokenizer — DONE). Focus on the confirmed gaps:**
+- **[6/10, generic:n] Reranking on the DEFAULT path** — cross-encoder / MMR / ColBERT currently fire only on explicit pattern branches, NOT the default hybrid `retrieve()`. Wire a reranking stage into the default retrieval flow (config-gated, degrade when the reranker/dep is absent). Score calibration beyond raw MMR.
+- **[7/10, generic:n] Agent-pattern auto-selection** — ToT/supervisor/debate engage only via per-agent flags. Add automatic per-goal complexity detection that routes a goal to the right pattern (keep an explicit override). One reachable selector (respect the existing default-off safety gate for the advanced tier — make selection real but safe).
+- **[8/10] Retrieval confidence** — replace heuristic confidence with calibrated scoring; real fallback when confidence low.
+- **[7/10] Embeddings multimodal** — confirm/ās upgrade image path from caption-to-text toward true multimodal vectors where the provider supports it; else keep honest labeling. Add drift/re-embedding policy.
+- **[8/10] RAG-pattern selection** — optionally upgrade the keyword/regex adaptive selector toward a light classifier (only if it measurably improves routing).
+- **[7/10] Memory TTL** — confirm uniform TTL purge across episodic/procedural (not just cache/tool-call).
+- **[8/10] Self-improvement** — trace `apply_suggestion` end-to-end into the live agent-config read path (or confirm it's intentionally gated).
+**DoD:** each item has a behavioural test proving it engages generically; mypy clean; fast tier green. **e2e:** a golden-set query exercises hybrid retrieve→**rerank on the default path**→grounded answer with real scores; a complex goal auto-routes to the right agent pattern.
+
+## WS-11 · Knowledge / RAG / memory / graph FRONTEND UX — world-class customer experience (frontend)
+**Detailed by recon report `recon/F-knowledge-rag-frontend-ux.md` (read it first).** Build world-class UX for the power features (the org/JARVIS console is the quality bar). Likely surfaces:
+- **Knowledge base UI**: collections/documents, upload/ingest with progress, hybrid search with citations, per-collection settings.
+- **RAG configuration UX**: see/choose retrieval strategy, chunking, reranking, embedding model per collection — with plain-language explanations.
+- **Obsidian / knowledge-graph explorer**: interactive nodes/edges wired to GraphRAG, not cosmetic — elevate to awe level like the org constellation.
+- **Memory inspector**: view episodic/procedural/long-term memories + reflexion lessons, scoped.
+- **Retrieval/grounding trace viewer**: what was retrieved, scores, which chunks grounded the answer.
+- Consistent design tokens, loading/empty/error states, a11y, tasteful motion. Follow the artifact-design principles.
+**DoD:** typecheck 0, vitest green (+ component tests), build ok (lazy-load heavy viz), each surface wired to real backend. **e2e:** Playwright covers KB search+citation, graph explore, RAG-config change.
+
+## WS-12 · Ingestion — GENERIC handling + world-class knowledge base (backend)
+**Detailed by recon report `recon/G-ingestion-worldclass-kb.md` (read it first).** The user emphasized: ingestion must handle ALL things generically and produce a world-class KB. Close whatever recon marks PARTIAL/STUB. Likely items:
+- **Generic parser coverage**: every input type (PDF text+scanned, DOCX, CSV/Excel, JSON, HTML, MD, code, image, audio, video) routed to a REAL parser by MIME — no naive string parsers, no silent drops (ING-4/7/11/12 — confirm closed).
+- **Pipeline EMIT + metrics** actually publish `knowledge.updated` + increment counters (ING-8/9); scheduler/connector path alive (ING-11).
+- **Two-stack convergence**: `IngestionPipeline` / `IngestionOrchestrator` / `knowledge/ingestors/*` share one parser registry + chunker selector (ING-13) — no silent divergence.
+- **Connectors**: Confluence/Jira/Slack/GitHub/S3/GDrive/web real + correct `RawDocument.content_type`; each stub either implemented or marked unsupported.
+- **Dedup/hashing, incremental re-ingest, failure/reprocessing** generic; RLS-isolated; retrievable + cited.
+- **Universal OCR fallback** (ties to WS-6): unreadable format → rasterize → OCR.
+**DoD:** unit tests per parser/route; mypy clean. **e2e (`tests/e2e_full/test_ingestion_worldclass_e2e.py`):** real PDF+DOCX+CSV+image+audio through the connector/scheduler path → real text (no garbage) → correct chunker (no silent fixed) → pgvector rows → retrievable by query → `knowledge.updated` published → dedup on re-ingest.
+
 ## Status tracker (update as waves land)
 - WS-0 BK6: ✅ DONE 13fcf398 (deleted orphan ImprovementActionExecutor; safety gate default-off kept; mypy 0, tier 20989)
 - WS-1 Civilization throttle: TODO
