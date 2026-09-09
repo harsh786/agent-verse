@@ -129,6 +129,47 @@ describe('KnowledgePage – Ask AI tab', () => {
     expect(await screen.findByTestId('answer-panel')).toBeInTheDocument();
     expect(await screen.findByText(/CI\/CD pipelines/i)).toBeInTheDocument();
   });
+
+  test('inline citation markers hover-link to their source chunk', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET');
+      if (url.includes('/knowledge/collections')) return new Response(JSON.stringify([COLLECTION]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/knowledge/chat') && method === 'POST')
+        return new Response(JSON.stringify({
+          answer: 'CI/CD pipelines run on every push [1]. Secrets rotate monthly [2].',
+          citations: [
+            { index: 1, chunk_id: 'c1', collection_id: 'col-1', score: 0.92, source_url: '', page_number: null, excerpt: 'Pipelines trigger on push to main.' },
+            { index: 2, chunk_id: 'c2', collection_id: 'col-1', score: 0.55, source_url: 'https://example.com/secrets', page_number: null, excerpt: 'Secrets rotation policy: 30 days.' },
+          ],
+          collections_searched: 1, chunks_retrieved: 2, question: 'How does CI/CD work?',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response('{}', { status: 200 });
+    });
+    renderPage();
+    await screen.findByRole('heading', { name: /knowledge/i });
+    await userEvent.click(screen.getByTestId('tab-ask'));
+    await userEvent.type(screen.getByTestId('ask-input'), 'How does CI/CD work?');
+    await userEvent.click(screen.getByTestId('ask-btn'));
+
+    const marker1 = await screen.findByTestId('citation-marker-1');
+    expect(marker1).toHaveTextContent('[1]');
+
+    // No tooltip/highlight until hovered.
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    expect(screen.getByTestId('citation-source-1')).not.toHaveClass('ring-violet-300');
+
+    await userEvent.hover(marker1);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(/Pipelines trigger on push to main/);
+    expect(screen.getByTestId('citation-source-1')).toHaveClass('ring-violet-300');
+
+    await userEvent.unhover(marker1);
+    await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+
+    // Clicking scrolls the matching source into view (jsdom-polyfilled no-op) and re-activates it.
+    await userEvent.click(await screen.findByTestId('citation-marker-2'));
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(/Secrets rotation policy/);
+  });
 });
 
 describe('KnowledgePage – Ingest tab', () => {

@@ -194,6 +194,107 @@ function CollectionsTab() {
 
 // ── Ask AI Tab ────────────────────────────────────────────────────────────────
 
+/** Score badge shared by inline citation hover previews and the Sources list. */
+function ScoreBadge({ score }: { score: number }) {
+  return (
+    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${score > 0.8 ? 'bg-green-100 text-green-700' : score > 0.6 ? 'bg-amber-100 text-amber-700' : 'bg-muted text-muted-foreground'}`}>
+      {(score * 100).toFixed(0)}%
+    </span>
+  );
+}
+
+/**
+ * Renders an answer with inline `[n]` citation markers hover/focus-linked to
+ * their source card below: hovering (or focusing via keyboard) a marker shows
+ * a small chunk preview and highlights the matching Sources row; clicking
+ * scrolls that row into view. Falls back to plain text for `[n]` sequences
+ * that don't match a real citation index (never fabricates a link).
+ */
+function AnswerWithCitations({ answer, citations }: { answer: string; citations: Citation[] }) {
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const sourceRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const citationByIndex = new Map(citations.map((c) => [c.index, c]));
+
+  const activate = useCallback((n: number) => setActiveIndex(n), []);
+  const deactivate = useCallback(() => setActiveIndex(null), []);
+  const jumpToSource = useCallback((n: number) => {
+    setActiveIndex(n);
+    sourceRefs.current[n]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, []);
+
+  const parts = answer.split(/(\[\d+\])/g);
+
+  return (
+    <>
+      <div className="p-4">
+        <p className="text-sm leading-relaxed whitespace-pre-wrap">
+          {parts.map((part, i) => {
+            const m = /^\[(\d+)\]$/.exec(part);
+            const citation = m ? citationByIndex.get(Number(m[1])) : undefined;
+            if (!m || !citation) return <span key={i}>{part}</span>;
+            const n = citation.index;
+            const tooltipId = `citation-tooltip-${n}`;
+            return (
+              <span key={i} className="relative inline-block">
+                <button
+                  type="button"
+                  data-testid={`citation-marker-${n}`}
+                  aria-describedby={activeIndex === n ? tooltipId : undefined}
+                  aria-label={`Citation ${n}, source: ${citation.excerpt.slice(0, 60)}`}
+                  onMouseEnter={() => activate(n)}
+                  onMouseLeave={deactivate}
+                  onFocus={() => activate(n)}
+                  onBlur={deactivate}
+                  onClick={() => jumpToSource(n)}
+                  className="mx-0.5 px-1 py-0.5 rounded bg-violet-100 text-violet-700 font-mono text-[11px] align-baseline hover:bg-violet-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+                >
+                  [{n}]
+                </button>
+                {activeIndex === n && (
+                  <span
+                    id={tooltipId}
+                    role="tooltip"
+                    className="absolute z-20 bottom-full left-1/2 -translate-x-1/2 mb-1 w-56 rounded-lg border border-border bg-popover text-popover-foreground text-[11px] p-2 shadow-md"
+                  >
+                    <span className="line-clamp-3">{citation.excerpt}</span>
+                    <span className="flex items-center gap-1.5 mt-1">
+                      <ScoreBadge score={citation.score} />
+                    </span>
+                  </span>
+                )}
+              </span>
+            );
+          })}
+        </p>
+      </div>
+      {citations.length > 0 && (
+        <div data-testid="citations-panel" className="border-t border-border px-4 py-3 bg-muted/20 space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">Sources</p>
+          {citations.map((c) => (
+            <div
+              key={c.index}
+              ref={(el) => { sourceRefs.current[c.index] = el; }}
+              data-testid={`citation-source-${c.index}`}
+              onMouseEnter={() => activate(c.index)}
+              onMouseLeave={deactivate}
+              className={`flex items-start gap-2 text-xs rounded-lg -mx-1.5 px-1.5 py-1 transition-colors ${activeIndex === c.index ? 'bg-violet-100/60 ring-1 ring-violet-300' : ''}`}
+            >
+              <span className="bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded font-mono shrink-0">[{c.index}]</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-muted-foreground line-clamp-2">{c.excerpt}</p>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <ScoreBadge score={c.score} />
+                  {c.source_url && <a href={c.source_url} target="_blank" rel="noreferrer" className="flex items-center gap-0.5 text-blue-500 hover:underline"><ExternalLink className="h-3 w-3" />source</a>}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
 function AskAITab() {
   const [question, setQuestion] = useState('');
   const [history, setHistory] = useState<Array<{ q: string; a: RagAnswer }>>([]);
@@ -339,28 +440,7 @@ function AskAITab() {
                   {a.chunks_retrieved} chunks from {a.collections_searched} collection{a.collections_searched !== 1 ? 's' : ''}
                 </p>
               </div>
-              <div className="p-4">
-                <p className="text-sm leading-relaxed whitespace-pre-wrap">{a.answer}</p>
-              </div>
-              {a.citations.length > 0 && (
-                <div data-testid="citations-panel" className="border-t border-border px-4 py-3 bg-muted/20 space-y-2">
-                  <p className="text-xs font-medium text-muted-foreground">Sources</p>
-                  {a.citations.map((c) => (
-                    <div key={c.index} className="flex items-start gap-2 text-xs">
-                      <span className="bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded font-mono shrink-0">[{c.index}]</span>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-muted-foreground line-clamp-2">{c.excerpt}</p>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${c.score > 0.8 ? 'bg-green-100 text-green-700' : c.score > 0.6 ? 'bg-amber-100 text-amber-700' : 'bg-muted text-muted-foreground'}`}>
-                            {(c.score * 100).toFixed(0)}%
-                          </span>
-                          {c.source_url && <a href={c.source_url} target="_blank" rel="noreferrer" className="flex items-center gap-0.5 text-blue-500 hover:underline"><ExternalLink className="h-3 w-3" />source</a>}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <AnswerWithCitations answer={a.answer} citations={a.citations} />
             </div>
           ))}
         </div>
