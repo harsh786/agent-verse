@@ -476,7 +476,7 @@ export const connectorsApi = {
       body: JSON.stringify({ code, state, connector_name: connectorName }),
     }),
   getUsage: (connectorId: string) =>
-    request<{ goals: any[]; total: number; success_rate: number | null; filtered: boolean }>(
+    request<{ goals: GoalResponse[]; total: number; success_rate: number | null; filtered: boolean }>(
       `/connectors/${connectorId}/usage`
     ),
 };
@@ -2146,8 +2146,8 @@ export interface GuardrailStats {
 export const guardrailsApi = {
   list: () =>
     request<{ configs: GuardrailConfig[]; total: number } | GuardrailConfig[]>("/guardrails").then(
-      (res) => (Array.isArray(res) ? res : (res as any).configs ?? [])
-    ) as Promise<GuardrailConfig[]>,
+      (res) => (Array.isArray(res) ? res : res.configs ?? [])
+    ),
   create: (body: CreateGuardrailRequest) =>
     request<GuardrailConfig>("/guardrails", { method: "POST", body: JSON.stringify(body) }),
   update: (id: string, body: Partial<CreateGuardrailRequest> & { enabled?: boolean }) =>
@@ -2164,8 +2164,8 @@ export const guardrailsApi = {
     return request<{ violations: GuardrailViolation[]; total: number } | GuardrailViolation[]>(
       `/guardrails/violations${q ? `?${q}` : ""}`
     ).then(
-      (res) => (Array.isArray(res) ? res : (res as any).violations ?? [])
-    ) as Promise<GuardrailViolation[]>;
+      (res) => (Array.isArray(res) ? res : res.violations ?? [])
+    );
   },
   getStats: () => request<GuardrailStats>("/guardrails/stats"),
 };
@@ -2543,18 +2543,33 @@ export const ocrApi = {
 // Admin auth is enforced server-side: the backend checks the calling tenant's
 // role for "admin" or "system" — no admin secret is needed in the frontend.
 
+export interface AdminTenant {
+  tenant_id: string;
+  name?: string;
+  plan: string;
+  created_at?: string;
+  goal_count?: number;
+}
+
+export interface PlatformUsage {
+  active_goals: number;
+  total_tenants: number;
+  goals_today?: number;
+  avg_latency_ms?: number;
+}
+
 export const adminApi = {
   listTenants: (params?: { search?: string; limit?: number }) => {
     const qs = new URLSearchParams({ limit: String(params?.limit ?? 100) });
     if (params?.search) qs.set('search', params.search);
-    return request<{ tenants: any[]; total: number }>(`/admin/tenants?${qs}`);
+    return request<{ tenants: AdminTenant[]; total: number }>(`/admin/tenants?${qs}`);
   },
   updatePlan: (tenantId: string, plan: string) =>
-    request<any>(`/admin/tenants/${tenantId}/plan`, {
+    request<unknown>(`/admin/tenants/${tenantId}/plan`, {
       method: 'PUT',
       body: JSON.stringify({ plan }),
     }),
-  getPlatformUsage: () => request<any>('/admin/usage'),
+  getPlatformUsage: () => request<PlatformUsage>('/admin/usage'),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2586,6 +2601,31 @@ export interface WERun {
   duration_ms?: number;
   step_count: number;
   cost_usd: number;
+}
+
+export interface WEWorkflowTemplate {
+  slug: string;
+  name: string;
+  description: string;
+  category: string;
+  tags: string[];
+  complexity: string;
+  popularity_score: number;
+  definition?: Record<string, unknown>;
+}
+
+export interface WEApprovalRequest {
+  request_id: string;
+  run_id: string;
+  step_id: string;
+  workflow_id: string;
+  priority: string;
+  status: string;
+  context: Array<{ display_type: string; title: string; data: unknown }>;
+  actions: Array<{ id: string; label: string }>;
+  deadline_at: string | null;
+  created_at: string;
+  note?: string;
 }
 
 export interface WEStepResult {
@@ -2673,7 +2713,7 @@ export const workflowEngineApi = {
 
   // ── Versions ─────────────────────────────────────────────────────────────
 
-  listVersions: (id: string) => request<any[]>(`${V1}/workflows/${id}/versions`),
+  listVersions: (id: string) => request<unknown[]>(`${V1}/workflows/${id}/versions`),
 
   // ── NL trigger preview ────────────────────────────────────────────────────
 
@@ -2691,10 +2731,10 @@ export const workflowEngineApi = {
     if (params?.q) qs.set('q', params.q);
     if (params?.page) qs.set('page', String(params.page));
     if (params?.per_page) qs.set('per_page', String(params.per_page));
-    return request<{ items: any[]; total: number }>(`${V1}/workflow-templates?${qs}`);
+    return request<{ items: WEWorkflowTemplate[]; total: number }>(`${V1}/workflow-templates?${qs}`);
   },
 
-  getTemplate: (slug: string) => request<any>(`${V1}/workflow-templates/${slug}`),
+  getTemplate: (slug: string) => request<WEWorkflowTemplate>(`${V1}/workflow-templates/${slug}`),
 
   forkTemplate: (slug: string, overrides?: Record<string, unknown>) =>
     request<WEWorkflow>(`${V1}/workflow-templates/${slug}/fork`, {
@@ -2712,14 +2752,14 @@ export const workflowEngineApi = {
     if (params?.priority) qs.set('priority', params.priority);
     if (params?.page) qs.set('page', String(params.page));
     if (params?.per_page) qs.set('per_page', String(params.per_page));
-    return request<{ items: any[]; total: number }>(`${V1}/approvals?${qs}`);
+    return request<{ items: WEApprovalRequest[]; total: number }>(`${V1}/approvals?${qs}`);
   },
 
   decideApproval: (requestId: string, body: { action: string; note?: string; form_data?: Record<string, unknown> }) =>
-    request<any>(`${V1}/approvals/${requestId}/decide`, { method: 'POST', body: JSON.stringify(body) }),
+    request<unknown>(`${V1}/approvals/${requestId}/decide`, { method: 'POST', body: JSON.stringify(body) }),
 
   delegateApproval: (requestId: string, toUserId: string, note?: string) =>
-    request<any>(`${V1}/approvals/${requestId}/delegate`, {
+    request<unknown>(`${V1}/approvals/${requestId}/delegate`, {
       method: 'POST', body: JSON.stringify({ to_user_id: toUserId, note: note ?? '' }),
     }),
 
