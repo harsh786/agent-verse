@@ -86,12 +86,19 @@ For any path where pause/resume is not truly wired, wire it. Reject/deny path al
 - **Motion polish:** page-load orchestration, hover micro-interactions, tasteful — not busy. Respect reduced-motion.
 **DoD:** typecheck 0, vitest green (+ tests for the animation state machine & TTS trigger/mute), build ok, bundle not bloated (lazy-load heavy motion libs). **e2e:** Playwright asserts spawn + handoff animations mount and TTS is invoked on a simulated event (mock audio).
 
-## WS-8 · Full e2e + Playwright automation suite (both) — final gate
+## WS-8 · FULL automated test pyramid — unit + functional + integration + e2e_full + Playwright (both) — final gate
+**User requirement (explicit): EVERYTHING automated. Every feature must have the complete pyramid, run automatically in CI. UI e2e via Playwright must run automatically. Workflow especially must be fully e2e-tested and automated.**
 **Tasks:**
-- Backend `e2e_full`: ensure every major feature has a real-infra e2e (goal lifecycle+HITL, trigger, workflow-on-celery, ingestion+OCR, org mission+HITL, RPA→PDF, scopes/RLS isolation).
-- Frontend Playwright **real-backend** suite (not mocked): login → submit goal → live SSE → HITL approve → complete; org mission live viz; workflow run; approvals inbox. Keep the fast mocked tier for PR.
-- Wire tiers into CI: fast unit (PR), integration (testcontainers), e2e_full subset (PR)+full (nightly), Playwright full-stack (nightly).
-**DoD:** all suites green locally; documented run commands; negative checks (each gate proven to bite).
+- **Unit + functional (per feature):** confirm every feature package has real unit + functional tests (backend `tests/<pkg>/`, frontend vitest). Fill gaps (recon flagged thin areas: coordination 1-test-per-60-LOC, multimodal, ingestion mock-heavy). No feature ships without them.
+- **Integration (testcontainers):** real Postgres+Redis integration tests for each subsystem that touches infra.
+- **Backend `e2e_full` (real infra):** a real-infra e2e for EVERY major feature — goal lifecycle+HITL, **trigger→workflow→schedule on real Celery** (add the worker to compose, WS-4), ingestion+OCR (WS-12), org mission+HITL+any-task (WS-2/3), RPA→PDF + RPA→KB (WS-5/13), OCR-everywhere (WS-14), KB convergence (WS-13), scopes/RLS isolation. Currently missing per recon: real ingestion e2e, workflow-on-real-Celery e2e, KB-convergence e2e.
+- **Frontend Playwright REAL-BACKEND suite (automated, not mocked):** login → submit goal → live SSE → HITL approve → complete; org mission live viz + awe animations; **workflow builder → create → trigger → run → live run view → terminal**; approvals inbox; KB search+citation + real graph explore (WS-11); RAG-config change. Keep the fast mocked tier for PR speed; add the real-backend project with a `webServer`/compose baseURL so it runs automatically.
+- **CI automation (the point):** wire all tiers into CI so they run automatically — fast unit+functional (every PR), integration (testcontainers, PR), e2e_full subset (PR) + full (nightly), **Playwright real-backend (nightly + on-demand)**, k6 load (nightly). Document the exact commands; ensure a stopped Docker FAILS (not skips).
+- **Negative verification:** each gate proven to bite (delete a test → coverage fails; unwire a path → its e2e fails).
+
+### ▶ WORKFLOW — full automation (user emphasis, called out explicitly)
+The workflow feature gets the deepest coverage: **unit** (DSL parse/validate, step types, retries/timeout/on_failure), **functional** (each of the 14+ step types executes; org step types), **integration** (WorkflowRunStore round-trip, RLS), **backend e2e_full** (`test_workflow_run_e2e.py`: create → `/trigger` → REAL Celery run → 2+ real step rows, no `{"_mock":true}` → terminal; + trigger→workflow, scheduled→workflow, HITL-gate-inside-workflow), and **Playwright UI e2e** (open builder → compose a 2-step workflow → save → run → watch the live run view render step-by-step → terminal, against a real backend). Workflow is not "done" until all five layers are green and automated.
+**DoD:** every feature has the full pyramid green + automated in CI; workflow has all five layers; documented commands; negative checks pass.
 
 ---
 
