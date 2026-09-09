@@ -57,6 +57,8 @@ class WorkflowHITLRequest:
     workflow_id: str = ""
     tenant_id: str = ""
     step_id: str = ""
+    step_name: str = ""
+    workflow_name: str = ""
 
     # Assignment
     assignment_strategy: AssignmentStrategy = "round_robin"
@@ -129,6 +131,62 @@ class HITLWorkflowGateway:
         self._store: dict[str, WorkflowHITLRequest] = {}
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    async def create_workflow_approval(
+        self,
+        *,
+        run_id: str,
+        step_id: str,
+        step_name: str = "",
+        workflow_name: str = "",
+        tenant_id: str = "",
+        assignee_role: str = "",
+        strategy: AssignmentStrategy = "round_robin",
+        specific_user: str | None = None,
+        context_payload: list[dict[str, Any]] | None = None,
+        actions_config: list[dict[str, Any]] | None = None,
+        deadline_hours: float | None = None,
+        escalation_hours: float | None = None,
+        escalation_to_role: str | None = None,
+        custom_form_schema: dict[str, Any] | None = None,
+        priority: Priority = "medium",
+        timeout_action: TimeoutAction = "escalate",
+    ) -> str:
+        """Build + persist a :class:`WorkflowHITLRequest` for a suspended step.
+
+        Bridges ``HITLStepNode.execute()``'s step-suspend call onto
+        :meth:`create_request` (WS-3 fix: this method previously did not exist
+        at all, so every real HITL workflow step raised ``AttributeError`` the
+        first time it tried to suspend). Returns the new request's id.
+        """
+        from datetime import timedelta
+
+        deadline_at = None
+        if deadline_hours is not None:
+            deadline_at = (datetime.now(UTC) + timedelta(hours=deadline_hours)).isoformat()
+
+        req = WorkflowHITLRequest(
+            run_id=run_id,
+            step_id=step_id,
+            step_name=step_name,
+            workflow_name=workflow_name,
+            tenant_id=tenant_id,
+            assignment_strategy=strategy,
+            assigned_to=specific_user,
+            assigned_role=assignee_role or None,
+            priority=priority,
+            context=context_payload or [],
+            actions=actions_config or [],
+            custom_form_schema=custom_form_schema,
+            deadline_at=deadline_at,
+            timeout_action=timeout_action,
+            escalation_to_role=escalation_to_role,
+            escalation_after_hours=(
+                escalation_hours if escalation_hours is not None else 48.0
+            ),
+        )
+        saved = await self.create_request(req)
+        return saved.request_id
 
     async def create_request(self, req: WorkflowHITLRequest) -> WorkflowHITLRequest:
         """Persist a new HITL request and send notifications."""

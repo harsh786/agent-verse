@@ -138,18 +138,33 @@ async def test_http_step_ssrf_blocked() -> None:
 
 @pytest.mark.asyncio
 async def test_hitl_step_suspends() -> None:
+    """WS-3: uses a REAL HITLWorkflowGateway (not a loose AsyncMock) so a typo'd
+    or missing method on the gateway (e.g. ``create_workflow_approval``) fails
+    this test instead of being silently absorbed by mock auto-attributes."""
+    from app.workflow.hitl_extension import HITLWorkflowGateway
     from app.workflow.steps.hitl_step import HITLStepNode
     step = StepDefinition(
         id="review",
         type="hitl",
         actions=[HITLAction(id="approve"), HITLAction(id="reject")],
     )
-    gateway = AsyncMock()
-    gateway.create_request.return_value = MagicMock(request_id="req-1")
-    node = HITLStepNode(step, _ctx(), hitl_gateway=gateway)
+    gateway = HITLWorkflowGateway()
+    # NOTE: the constructor key is "hitl_workflow_gateway" (matching the
+    # services dict the WorkflowCompiler threads through) — a prior version of
+    # this test passed "hitl_gateway" instead, which HITLStepNode silently
+    # ignored (falling back to its no-gateway test-mode branch) and hid the
+    # fact that neither the real gateway nor the compiler wired it correctly.
+    node = HITLStepNode(step, _ctx(), hitl_workflow_gateway=gateway)
     state = _state()
     result = await node.execute(state)  # type: ignore[arg-type]
     assert result.get("status") == WorkflowRunStatus.WAITING_HITL
+
+    # The request must actually be persisted in the gateway's store, reachable
+    # via list_pending (the /approvals inbox), keyed off the real run/step ids.
+    pending, total = await gateway.list_pending(tenant_id="t-1")
+    assert total == 1
+    assert pending[0].run_id == "run-1"
+    assert pending[0].step_id == "review"
 
 
 @pytest.mark.asyncio
@@ -161,7 +176,7 @@ async def test_hitl_step_resumes_with_action() -> None:
         actions=[HITLAction(id="approve"), HITLAction(id="reject")],
     )
     gateway = AsyncMock()
-    node = HITLStepNode(step, _ctx(), hitl_gateway=gateway)
+    node = HITLStepNode(step, _ctx(), hitl_workflow_gateway=gateway)
     # State has HITL already decided
     state = _state(
         hitl_request_id="review",

@@ -28,15 +28,30 @@ def _build_worker_runner() -> Any:
     from app.scaling.tasks import _WORKER_CHECKPOINTER
     from app.workflow.compiler import WorkflowCompiler
     from app.workflow.context import ContextResolver
+    from app.workflow.hitl_extension import HITLWorkflowGateway
     from app.workflow.run_store import PostgresWorkflowRunStore
     from app.workflow.runner import WorkflowRunner
 
     db_factory = get_session_factory()
     run_store = PostgresWorkflowRunStore(db_factory)
+    # WS-3: reuse the API server's hitl_workflow_gateway when this worker
+    # shares process state with it (e.g. tests, single-process deployments);
+    # otherwise fall back to a worker-local instance so HITLStepNode at least
+    # gets a working gateway instead of silently skipping approval creation.
+    hitl_workflow_gateway: Any = None
+    try:
+        from app.main import app as _fastapi_app  # type: ignore[import]
+
+        hitl_workflow_gateway = getattr(_fastapi_app.state, "hitl_workflow_gateway", None)
+    except Exception:
+        hitl_workflow_gateway = None
+    if hitl_workflow_gateway is None:
+        hitl_workflow_gateway = HITLWorkflowGateway()
     compiler = WorkflowCompiler(
         context_resolver=ContextResolver(),
         checkpointer=_WORKER_CHECKPOINTER,
         run_store=run_store,
+        hitl_workflow_gateway=hitl_workflow_gateway,
     )
     _WORKER_RUNNER = WorkflowRunner(compiler=compiler, run_store=run_store, celery_app=celery_app)
     return _WORKER_RUNNER

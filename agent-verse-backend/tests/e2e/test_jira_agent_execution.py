@@ -75,7 +75,13 @@ class FakeTenantService:
 
 class DeterministicJiraGoalService(GoalService):
     def _make_agent_loop_for_tenant(
-        self, tenant_ctx: TenantContext, app_state: Any, *, agent_id: str | None = None
+        self,
+        tenant_ctx: TenantContext,
+        app_state: Any,
+        *,
+        agent_id: str | None = None,
+        runtime_profile: Any | None = None,
+        execution_context: dict[str, Any] | None = None,
     ) -> AgentGraph:
         return AgentGraph(
             planner=FakeProvider(
@@ -372,7 +378,13 @@ class DeterministicJiraHITLGoalService(GoalService):
     """Goal service whose executor always proposes jira_create_issue (write-high risk)."""
 
     def _make_agent_loop_for_tenant(
-        self, tenant_ctx: TenantContext, app_state: Any, *, agent_id: str | None = None
+        self,
+        tenant_ctx: TenantContext,
+        app_state: Any,
+        *,
+        agent_id: str | None = None,
+        runtime_profile: Any | None = None,
+        execution_context: dict[str, Any] | None = None,
     ) -> AgentGraph:
         graph = AgentGraph(
             planner=FakeProvider(

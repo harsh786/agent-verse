@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
@@ -396,6 +396,36 @@ class _FakeLuaScript:
                 self._redis._d[key] = str(new_val)
                 self._redis._ttl[key] = float(expiry_ts) - _time.time() + _time.monotonic()
                 return str(new_val)
+
+
+# ── workflow HITL wiring ──────────────────────────────────────────────────────
+
+
+def _make_workflow_hitl_resume_callback(
+    runner: Any,
+) -> Callable[[Any], Coroutine[Any, Any, None]]:
+    """Build the ``HITLWorkflowGateway`` resume callback bound to *runner*.
+
+    WS-3: a decided :class:`~app.workflow.hitl_extension.WorkflowHITLRequest`
+    only carries the reviewer's decision — this closure maps it onto the
+    ``WorkflowRunner.resume_from_hitl`` call that actually re-invokes the
+    suspended LangGraph checkpoint. Kept as a standalone factory (rather than
+    inline) so the lifespan can rebind it to the DB-backed runner once that
+    replaces the in-memory one.
+    """
+
+    async def _resume(req: Any) -> None:
+        await runner.resume_from_hitl(
+            run_id=req.run_id,
+            step_id=req.step_id,
+            action=req.action_taken or "",
+            actor_id=req.reviewed_by or "",
+            note=req.note,
+            form_data=req.form_data,
+            tenant_id=req.tenant_id,
+        )
+
+    return _resume
 
 
 # ── error handlers ─────────────────────────────────────────────────────────────
@@ -1251,11 +1281,16 @@ def create_app(
                 _wf_run_store = _PgRunStore(db_factory)
                 _wf_checkpointer = getattr(app.state, "langgraph_checkpointer", None)
                 _wf_mcp_client = getattr(app.state, "mcp_client", None)
+                # WS-3: carry the existing hitl_workflow_gateway into the
+                # rebuilt compiler — otherwise HITLStepNode loses its gateway
+                # the moment this DB-backed compiler replaces the in-memory one.
+                _wf_hitl_gw_existing = getattr(app.state, "hitl_workflow_gateway", None)
                 _wf_compiler_db = _WFCompiler(
                     context_resolver=_WFCtx(),
                     checkpointer=_wf_checkpointer,
                     mcp_client=_wf_mcp_client,
                     run_store=_wf_run_store,
+                    hitl_workflow_gateway=_wf_hitl_gw_existing,
                 )
                 _wf_runner_db = _WFRunner(
                     compiler=_wf_compiler_db,
@@ -1269,6 +1304,15 @@ def create_app(
                 if _workflow_store is not None:
                     app.state.workflow_service = _WFService(
                         _workflow_store, run_store=_wf_run_store
+                    )
+                # WS-3: rebind the HITL resume callback to the DB/Celery-backed
+                # runner that just replaced the in-memory one — otherwise an
+                # approval decided after this swap would resume against a
+                # runner with no run_store, silently no-oping.
+                _wf_hitl_gw = getattr(app.state, "hitl_workflow_gateway", None)
+                if _wf_hitl_gw is not None:
+                    _wf_hitl_gw._resume_callback = _make_workflow_hitl_resume_callback(
+                        _wf_runner_db
                     )
                 logger.info("workflow_engine_db_wired")
             except Exception as _wf_db_exc:
@@ -2201,9 +2245,21 @@ def create_app(
         from app.workflow.template_store import SystemTemplateStore
 
         _wf_ctx = ContextResolver()
-        _wf_compiler = WorkflowCompiler(context_resolver=_wf_ctx)
-        _wf_runner = WorkflowRunner(compiler=_wf_compiler)
         _hitl_wf_gateway = HITLWorkflowGateway()
+        # WS-3: the compiler must receive the gateway as a named service so
+        # HITLStepNode.__init__ (``services.get("hitl_workflow_gateway")``)
+        # actually finds it — previously it was never passed at all, so every
+        # HITL step silently took the no-gateway "test mode" fallback branch
+        # and no approval request was ever created for a real workflow run.
+        _wf_compiler = WorkflowCompiler(
+            context_resolver=_wf_ctx, hitl_workflow_gateway=_hitl_wf_gateway
+        )
+        _wf_runner = WorkflowRunner(compiler=_wf_compiler)
+        # WS-3: wire the resume callback so an approve/reject decision on a
+        # suspended HITL step actually re-invokes the paused workflow run.
+        # Without this, decide() only updated the WorkflowHITLRequest itself —
+        # the LangGraph checkpoint it belonged to was never resumed.
+        _hitl_wf_gateway._resume_callback = _make_workflow_hitl_resume_callback(_wf_runner)
         _nl_trigger_resolver = NLTriggerResolver()
         _system_template_store = SystemTemplateStore()
 

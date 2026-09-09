@@ -965,7 +965,13 @@ async def test_run_agent_loop_seeds_tool_context_without_mcp_client() -> None:
 
     class CapturingGoalService(GoalService):
         def _make_agent_loop_for_tenant(
-            self, tenant_ctx: TenantContext, app_state: Any, *, agent_id: str | None = None
+            self,
+            tenant_ctx: TenantContext,
+            app_state: Any,
+            *,
+            agent_id: str | None = None,
+            runtime_profile: Any | None = None,
+            execution_context: dict[str, Any] | None = None,
         ) -> FakeLoop:
             return FakeLoop()
 

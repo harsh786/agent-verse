@@ -222,7 +222,13 @@ class WorkflowRunner:
         config = {"configurable": {"thread_id": run_id}}
         state_update: dict[str, Any] = {
             "status": WorkflowRunStatus.RUNNING,
-            "hitl_request_id": None,
+            # WS-3 fix: must equal step_id, not None. HITLStepNode.execute()
+            # detects "we are resuming" via
+            # ``state.get("hitl_request_id") == self.step.id`` — clearing it to
+            # None here made that comparison always false, so a re-invoked run
+            # re-entered the hitl step as if it were a brand new suspend
+            # instead of processing the reviewer's decision.
+            "hitl_request_id": step_id,
             "hitl_action": action,
             "hitl_note": note,
             "hitl_reviewer": actor_id,

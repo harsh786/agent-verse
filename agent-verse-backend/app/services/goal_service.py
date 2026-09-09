@@ -758,6 +758,7 @@ class GoalService:
         *,
         agent_id: str | None = None,
         runtime_profile: Any | None = None,
+        execution_context: dict[str, Any] | None = None,
     ) -> Any:
         """Build an AgentGraph using the tenant's configured LLM provider AND all
         governance/RAG/memory services from app.state.
@@ -1057,7 +1058,16 @@ class GoalService:
             "enable_cot": _agent_config.get("enable_cot", False),
             "enable_reflection": _agent_config.get("enable_reflection", False),
             "enable_goal_tree": _agent_config.get("enable_goal_tree", False),
-            "autonomy_mode": _agent_config.get("autonomy_mode", "bounded-autonomous"),
+            # WS-3: a caller-supplied execution_context override (currently used
+            # by OrgService.create_mission_and_execute to force "supervised" when
+            # its MetaOrchestrator flags the mission as needing an approval gate)
+            # takes precedence over the agent's own configured autonomy_mode, so
+            # a mission-level HITL requirement cannot be silently downgraded by
+            # whatever agent auto-routing happens to pick.
+            "autonomy_mode": (
+                (execution_context or {}).get("autonomy_mode")
+                or _agent_config.get("autonomy_mode", "bounded-autonomous")
+            ),
             # N1: pattern flags passed at construction so _build() includes them in the graph
             "enable_self_refine": _enable_self_refine,
             "enable_self_consistency": _enable_self_consistency,
@@ -1805,6 +1815,19 @@ class GoalService:
             record.status = GoalStatus.CANCELLED
             record.completed_at = datetime.now(UTC).isoformat()
             self._record_terminal_goal_metrics(record, "cancelled")
+        elif etype in ("waiting_approval", "tool_call_pending_approval"):
+            # WS-3: reflect an in-flight HITL gate on the goal's own status so
+            # GET /goals/{id} shows "waiting_human" while the executor blocks on
+            # HITLGateway.wait_for_approval — previously the record stayed
+            # "executing" for the whole pause, which hid the gate from anyone
+            # polling goal status instead of the approvals inbox.
+            if record.status not in _TERMINAL_STATUSES:
+                record.status = GoalStatus.WAITING_HUMAN
+        elif etype == "approval_granted":
+            # Approval resolved and the executor is about to resume — flip the
+            # goal back to EXECUTING so status reporting matches reality.
+            if record.status == GoalStatus.WAITING_HUMAN:
+                record.status = GoalStatus.EXECUTING
         # Decrement the per-tenant concurrent-goal counter for every terminal event.
         if etype in {"goal_complete", "goal_failed", "goal_cancelled"}:
             from app.tenancy.limits import decrement_concurrent_goals
@@ -1962,6 +1985,9 @@ class GoalService:
                 tenant_ctx,
                 self._app_state,
                 agent_id=_persist_record.agent_id if _persist_record is not None else None,
+                execution_context=(
+                    _persist_record.execution_context if _persist_record is not None else None
+                ),
                 **_persist_profile_kwargs,
             )
             _persist_collection_ids: list[str] = []
@@ -2114,6 +2140,7 @@ class GoalService:
                 tenant_ctx,
                 self._app_state,
                 agent_id=record.agent_id if record is not None else None,
+                execution_context=record.execution_context if record is not None else None,
                 **_profile_kwargs,
             )
             # Store graph instance on record so HITL resume can re-invoke from checkpoint

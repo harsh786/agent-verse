@@ -1558,7 +1558,13 @@ class OrgService:
 
                         _engine = get_approval_engine()
                         _publisher = get_org_event_publisher()
-                        _notif = getattr(getattr(_app, "state", None), "notification_service", None)
+                        # WS-3 fix: this referenced an undefined ``_app`` name,
+                        # which raised NameError on every single mission that
+                        # computed any approval_gates — silently swallowed by
+                        # the broad except below as "approval_gate_wiring_failed"
+                        # and skipping task/approval-request/notification
+                        # creation *and* the supervised-autonomy override below.
+                        _notif = getattr(app_state, "notification_service", None)
 
                         for gate in (
                             approval_gates[:3] if isinstance(approval_gates, list) else []
@@ -1688,6 +1694,16 @@ class OrgService:
                     execution_ctx["dept_id"] = dept_id
                 if assigned_team_id:
                     execution_ctx["team_id"] = assigned_team_id
+                if approval_gates:
+                    # WS-3: MetaOrchestrator already flagged this mission as
+                    # needing human oversight (high/critical risk, legal/finance
+                    # involvement, or over the cost threshold — see
+                    # _compute_approval_gates). Force the dispatched goal into
+                    # "supervised" autonomy so its agent actually BLOCKS on a
+                    # gated action via the shared HITLGateway (bounded-autonomous,
+                    # the default, only logs and proceeds) instead of relying on
+                    # whichever agent auto-routing happens to pick.
+                    execution_ctx["autonomy_mode"] = "supervised"
 
                 workflow_mode = dispatch_result.get("topology", "sequential")
                 # Map org topologies → GoalService workflow modes

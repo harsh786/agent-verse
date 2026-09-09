@@ -130,6 +130,16 @@ async def test_high_risk_goal_gates_then_completes_on_approval(
     assert pending["risk_level"] in ("high", "HIGH")
     request_id = pending["request_id"]
 
+    # WS-3: the goal's own status must reflect the pause too — not just the
+    # approvals inbox — so a caller polling GET /goals/{id} instead of
+    # /governance/approvals can still tell the goal is blocked on a human.
+    goal_while_paused = await tenant_client.get(f"/goals/{goal_id}")
+    assert goal_while_paused.status_code == 200
+    assert str(goal_while_paused.json().get("status")) == "waiting_human", (
+        f"goal should read waiting_human while a HITL approval is pending, "
+        f"got {goal_while_paused.json().get('status')!r}"
+    )
+
     # Approve over the HTTP API — unblocks the waiting executor.
     approve = await tenant_client.post(
         f"/goals/{goal_id}/approve",
