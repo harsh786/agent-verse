@@ -179,8 +179,8 @@ class TestBatchFailureSurfaced:
         assert isinstance(result, BatchEmbeddingResult)
         # The failed index is surfaced.
         assert result.failed_indices == [1]
-        # The failed slot is an empty sentinel, NOT a silent zero vector.
-        assert result.embeddings[1] == []
+        # The failed slot is the None sentinel, NOT a silent zero vector.
+        assert result.embeddings[1] is None
         # No slot is a non-empty all-zeros vector (the old corruption bug).
         assert not any(v and all(x == 0.0 for x in v) for v in result.embeddings)
         # Successful slots carry real vectors.

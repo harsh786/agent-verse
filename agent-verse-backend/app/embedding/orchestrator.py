@@ -90,9 +90,9 @@ class BatchEmbeddingResult:
     model_id: str
     provider: str
     errors: list[str] = field(default_factory=list)
-    # D-12: indices whose embedding FAILED. Their slot in ``embeddings`` is the
-    # empty-list sentinel ``[]`` — never a zero vector — so callers can skip or
-    # retry them instead of indexing corruption.
+    # D-12: indices whose embedding FAILED. Their slot in ``embeddings`` is
+    # ``None`` — never a zero vector — so callers can skip or retry them instead
+    # of corrupting the index.
     failed_indices: list[int] = field(default_factory=list)
 
 
