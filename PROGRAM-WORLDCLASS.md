@@ -151,8 +151,28 @@ For any path where pause/resume is not truly wired, wire it. Reject/deny path al
 - **[6/10] Unified KB view:** `KnowledgePage.tsx` already shows `source_type`-badged docs (incl. `rpa-web`) — good; extend it to include OCR-sourced docs and add source-provenance filtering + search + citations. **Link the isolated `OcrPage.tsx` back to the KB** (its extracts should be viewable in the unified KB). Elevate to JARVIS-shell quality. (Extends WS-11.)
 **DoD:** content from ingestion + RPA (via RPAExecutor) + OCR (pipeline AND standalone) is retrievable by query, cited, `source`-tagged, RLS-isolated; the duplicate ad-hoc scraper is gone; frontend shows a unified, filterable KB incl. OCR. **e2e (`tests/e2e_full/test_kb_convergence_e2e.py`):** ingest a file + scrape a page via the REAL RPAExecutor + OCR an image → all three become retrievable KB chunks with correct `source` provenance; a query returns hits from each; cross-source dedup on re-add.
 
+## WS-14 · OCR everywhere — independent execution + a capability in EVERY execution engine (backend + frontend)
+**User requirement:** OCR must have (a) its own independent execution, AND (b) work inside workflow-engine execution, agent execution, AI-org-team execution, and goal execution — generically, via one OCR engine (`app/ocr/OcrEngine`).
+### Backend
+- **Independent OCR execution:** the standalone `/ocr/extract` API stays a first-class feature — world-class, and with an opt-in persist-to-KB (ties WS-13). Add batch + async job support if missing.
+- **OCR as a callable capability (one engine, many callers):** expose `OcrEngine` as:
+  - a **tool** the agent loop can invoke (register in the tool/MCP surface) → available in **goal execution** and **agent execution**;
+  - a **workflow step type** (e.g. `ocr`) so a **workflow** can OCR a document/image mid-flow (register in `StepTypeRegistry`, validated in DSL);
+  - reachable from **AI-org-team** missions (org agents can OCR as part of a task).
+  Never duplicate OCR logic per engine — all routes call the one `OcrEngine`.
+- **Generic input:** any document/image (incl. rasterize-any-format from WS-6) → OCR → structured text/report, with provenance.
+### Frontend
+- Surface OCR as: a usable standalone page (link it into the KB per WS-13), an available workflow step in the builder, and an agent/goal tool the user can see was invoked (trace).
+**DoD:** OCR invocable + tested from all four execution paths (goal, agent, workflow step, org mission) + standalone; one engine, no duplication; mypy clean. **e2e (`tests/e2e_full/test_ocr_everywhere_e2e.py`):** an image is OCR'd via (1) standalone API, (2) a goal whose agent calls the OCR tool, (3) a workflow with an OCR step, (4) an org mission task — each yields the same extracted text; frontend shows the OCR step/tool in the builder + trace.
+
+## Global requirement (applies to EVERY workstream WS-1…WS-14)
+Per the user: everything must be **analyzed → built generically → implemented world-class for BOTH frontend and backend → covered by e2e tests + an automation suite**. Concretely, no workstream is "done" until: (1) backend capability is generic (handles arbitrary inputs, one reachable impl); (2) a world-class frontend surface exists for it (org/JARVIS console is the quality bar); (3) unit + integration tests pass; (4) a real-infra `e2e_full` backend test AND a real-backend Playwright test exercise it (WS-8 aggregates the automation suite + CI tiers). No fabricated data anywhere.
+
 ## Status tracker (update as waves land)
 - WS-0 BK6: ✅ DONE 13fcf398 (deleted orphan ImprovementActionExecutor; safety gate default-off kept; mypy 0, tier 20989)
+- WS-3 HITL flawless: 🔄 IN FLIGHT (backend)
+- WS-7 Org frontend AWE: ✅ DONE 1f692319/bea0daef/12e08caf (spawn+handoff+bots-alive+JARVIS-speech, all SSE-event-driven, TTS opt-in default-off, main chunk 148.69KB, 1032 tests)
+- WS-1/2/4/5/6/8/9/10/11/12/13/14: TODO (all recon-detailed; briefs to write per wave)
 - WS-1 Civilization throttle: TODO
 - WS-2 Org de-fake: TODO
 - WS-3 HITL flawless: TODO
