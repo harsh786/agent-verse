@@ -43,15 +43,20 @@ class _FakeSession:
 
     def __init__(self, rows: list[Any]) -> None:
         self._rows = list(rows)
+        self.param_bindings: list[dict[str, Any]] = []
 
-    async def execute(self, *_a: Any, **_kw: Any) -> _Result:
+    async def execute(self, _stmt: Any, params: dict[str, Any] | None = None) -> _Result:
+        self.param_bindings.append(dict(params or {}))
         return _Result(self._rows.pop(0) if self._rows else None)
 
 
-def _factory(rows: list[Any]) -> Any:
+def _factory(rows: list[Any], sink: list[_FakeSession] | None = None) -> Any:
     @asynccontextmanager
     async def _cm() -> Any:
-        yield _FakeSession(rows)
+        sess = _FakeSession(rows)
+        if sink is not None:
+            sink.append(sess)
+        yield sess
 
     def _make() -> Any:
         return _cm()
@@ -106,3 +111,22 @@ async def test_health_stable_collection_needs_no_reembed() -> None:
     assert data["drift_severity"] == "stable"
     assert data["reembed_trigger"] == "none"
     assert data["needs_reembed"] is False
+
+
+@pytest.mark.asyncio
+async def test_health_scopes_every_query_to_the_caller_tenant() -> None:
+    """Security: collection_id is client-supplied — every query must be scoped to
+    the caller's tenant so it cannot read another tenant's collection (IDOR)."""
+    recent = _dt.datetime.now(_dt.UTC)
+    rows = [(10, 10, recent), ("voyage-3-large", 1024), (0.9,)]
+    sink: list[_FakeSession] = []
+    app = _make_app()
+    with patch("app.db.session.get_session_factory", return_value=_factory(rows, sink)):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            resp = await c.get("/embeddings/health/some-other-tenant-collection")
+    assert resp.status_code == 200
+    assert sink, "session was never opened"
+    bindings = sink[0].param_bindings
+    assert bindings, "no queries executed"
+    # Every query carries the tenant filter with the caller's tenant id.
+    assert all(b.get("tid") == "t-health" for b in bindings), bindings

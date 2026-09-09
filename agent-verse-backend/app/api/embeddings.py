@@ -103,11 +103,14 @@ async def get_embedding_usage(request: Request) -> dict[str, Any]:
     return embedding_router.get_usage_stats()
 
 
-async def _collection_avg_similarity(session: Any, collection_id: str) -> float | None:
+async def _collection_avg_similarity(
+    session: Any, collection_id: str, tenant_id: str
+) -> float | None:
     """Average cosine similarity of a collection's chunk embeddings to their
     centroid (a semantic-drift signal: low similarity ⇒ the collection's vectors
-    have spread out / drifted). Returns ``None`` when there are no embeddings or
-    pgvector is unavailable, so callers degrade gracefully.
+    have spread out / drifted). Scoped to ``tenant_id`` so it never reads another
+    tenant's vectors. Returns ``None`` when there are no embeddings or pgvector is
+    unavailable, so callers degrade gracefully.
     """
     from sqlalchemy import text as _t
 
@@ -117,13 +120,15 @@ async def _collection_avg_similarity(session: Any, collection_id: str) -> float 
                 _t(
                     "WITH c AS ("
                     "  SELECT AVG(embedding) AS centroid FROM knowledge_chunks "
-                    "  WHERE collection_id = :cid AND embedding IS NOT NULL"
+                    "  WHERE collection_id = :cid AND tenant_id = :tid "
+                    "        AND embedding IS NOT NULL"
                     ") "
                     "SELECT AVG(1 - (k.embedding <=> c.centroid)) "
                     "FROM knowledge_chunks k, c "
-                    "WHERE k.collection_id = :cid AND k.embedding IS NOT NULL"
+                    "WHERE k.collection_id = :cid AND k.tenant_id = :tid "
+                    "      AND k.embedding IS NOT NULL"
                 ),
-                {"cid": collection_id},
+                {"cid": collection_id, "tid": tenant_id},
             )
         ).fetchone()
     except Exception:
@@ -146,7 +151,8 @@ async def get_embedding_health(request: Request, collection_id: str) -> dict[str
     from app.embedding.drift_monitor import DriftSeverity, EmbeddingDriftMonitor
     from app.embedding.reembedding_policy import ReembeddingPolicy, ReembeddingTrigger
 
-    _require_tenant(request)
+    tenant = _require_tenant(request)
+    tenant_id = str(getattr(tenant, "tenant_id", tenant))
 
     total_chunks = 0
     embedded_chunks = 0
@@ -162,13 +168,17 @@ async def get_embedding_health(request: Request, collection_id: str) -> dict[str
 
         db = get_session_factory()
         async with db() as session:
+            # Every query is scoped to the caller's tenant — collection_id is a
+            # client-supplied identifier, so an unscoped read would leak another
+            # tenant's collection stats/model/drift (cross-tenant IDOR).
             row = (
                 await session.execute(
                     _t(
                         "SELECT COUNT(*), COUNT(embedding), MAX(updated_at) "
-                        "FROM knowledge_chunks WHERE collection_id = :cid"
+                        "FROM knowledge_chunks "
+                        "WHERE collection_id = :cid AND tenant_id = :tid"
                     ),
-                    {"cid": collection_id},
+                    {"cid": collection_id, "tid": tenant_id},
                 )
             ).fetchone()
             if row:
@@ -179,16 +189,18 @@ async def get_embedding_health(request: Request, collection_id: str) -> dict[str
                 await session.execute(
                     _t(
                         "SELECT embedder, embedding_dim FROM knowledge_collections "
-                        "WHERE id = :cid"
+                        "WHERE id = :cid AND tenant_id = :tid"
                     ),
-                    {"cid": collection_id},
+                    {"cid": collection_id, "tid": tenant_id},
                 )
             ).fetchone()
             if crow:
                 model = str(crow[0] or model)
                 embedding_dim = int(crow[1]) if crow[1] is not None else None
             if embedded_chunks > 0:
-                avg_similarity = await _collection_avg_similarity(session, collection_id)
+                avg_similarity = await _collection_avg_similarity(
+                    session, collection_id, tenant_id
+                )
     except Exception:
         pass  # DB unavailable — degrade to coverage-only signal below
 
