@@ -92,6 +92,27 @@ class Settings(BaseSettings):
     # --- Embedding vector dimension (must match the embed model) --------------
     embedding_dim: int = 2048  # qwen3-embedding uses 2048-d vectors
 
+    # --- RAG default-path reranking (WS-10) -----------------------------------
+    # Engage a reranking STAGE on the DEFAULT hybrid retrieval path (not only on
+    # explicit pattern branches). Uses the one RerankPolicy registry. ``auto``
+    # prefers the cross-encoder when its model is available and degrades to a
+    # deterministic score-sort otherwise; the stage is an honest passthrough when
+    # disabled or when the reranker backend is unavailable.
+    rag_default_rerank_enabled: bool = True
+    rag_default_rerank_strategy: str = "auto"  # score|rrf|diversity|cross_encoder|llm|auto
+    # Calibrated retrieval confidence below this [0,1] threshold flags a result as
+    # low-confidence and (when the fallback is on) triggers a real widening retry.
+    rag_low_confidence_threshold: float = 0.35
+    rag_low_confidence_fallback_enabled: bool = True
+    rag_low_confidence_widen_factor: int = 4  # widen candidate pool by this multiple
+
+    # --- Agent multi-agent auto-selection (WS-10) -----------------------------
+    # Default-off safety gate for the advanced multi-agent tier: when on, a goal's
+    # complexity/domain/risk can auto-route it to the in-graph supervisor /debate
+    # nodes (per-agent enable_* flags remain an explicit override that always wins).
+    # The distributed autonomous tier stays governed by ``coordination_ready``.
+    agent_auto_multi_agent_enabled: bool = False
+
     # --- default model names per task type (override via env vars) ---
     default_planning_model: str = "qwen3.8:latest"
     default_planning_provider: str = "ollama"
