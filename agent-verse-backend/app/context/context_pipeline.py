@@ -71,7 +71,11 @@ class ContextPipeline:
         original_count = len(chunks)
         reranked = self._reranker.rerank(chunks, query=query)
         dedup_removed = original_count - len(reranked)
-        budget_result = self._budget.apply(reranked)
+        # Value-based packing: greedily fill the token budget by value-per-token
+        # density (relevance x trust x recency x usefulness) instead of first-fit,
+        # maximising total context value. predict_chunk_value defaults missing
+        # signals gracefully, so this degrades to score-ordered packing.
+        budget_result = self._budget.apply(reranked, strategy="value")
         included = budget_result.included_chunks
 
         # Step: thread citation indices onto chunks before citation extraction
