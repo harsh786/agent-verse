@@ -198,7 +198,13 @@ Per the user: everything must be **analyzed → built generically → implemente
 - WS-7 Org frontend AWE: ✅ DONE 1f692319/bea0daef/12e08caf
 - WS-1 Civilization throttle: ✅ DONE 34608add (Redis run-lock + min-interval guard around tick; civ_tick_skipped_total metric; 4 unit tests; 18 bare-pass triaged = all legit; mypy 0)
 - WS-11a real KG graph + trace: ✅ DONE 560d52e6/b02e8823/2444253e. WS-11b (honesty/polish): ✅ DONE 73a68acc (Obsidian Bases/Maps/Timeline honest preview states; prior session left the file uncompilable — completed + tested). WS-11c (real analogs): queued.
-- WS-2/4/5/6/8/9/10/12/13/14/15: TODO (all recon-detailed). Execution model (user): PARALLEL via isolated worktrees, disjoint trees, merged as each lands; WS-8 before WS-15.
+- WS-5 RPA→PDF: ✅ DONE 76ada05f + SSRF fix 78d9c76e (scrape→report→fpdf2 PDF, POST /rpa/report, e2e real-infra PASS; mypy 0)
+- WS-6 OCR universal: ✅ DONE 114412a1 (OcrEngine.extract_any any-format→image→OCR + honest degradation metadata; 97 ocr tests)
+- WS-11c + WS-11/13 frontend: ✅ DONE 34a1ca08 (Obsidian Bases/Maps/Timeline→real org+KG data, KB source filter, OcrPage→KB save; typecheck 0, vitest 59/59)
+- WS-12 ingestion/KB foundation: ✅ DONE 7b5b19d6 (exists_by_hash dead-dedup fix, registered connectors + honest delta_reingest, video branch, provenance, zero-vector guard; 438 tests, e2e PASS). Provides exists_by_hash(content_hash, tenant_id, collection_id) for cross-source dedup.
+- WS-14 (slice): ✅ OCR tool universal input 96b51364. Remaining: workflow ocr step type + org-mission reach + cross-engine e2e.
+- WS-2 org / WS-10 RAG framework / WS-4 workflow-Celery: 🔄 IN FLIGHT (worktrees wt-ws2/wt-ws10/wt-ws4).
+- WS-13 RPA→KB + OCR→KB convergence, WS-8 (full pyramid+CI), WS-9 (ruff), WS-15 (convergence): TODO. Full fast tier baseline @ 7b5b19d6: 20874 passed / 0 failed. Execution model (user): PARALLEL worktrees, disjoint trees, merged as each lands; WS-8 before WS-15.
 - WS-1 Civilization throttle: TODO
 - WS-2 Org de-fake: TODO
 - WS-3 HITL flawless: TODO
