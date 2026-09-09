@@ -91,6 +91,7 @@ CONSUMER_TYPES: frozenset[TriggerType] = frozenset(
         # Same conversational bus, driven by the email/discord ingestion endpoints.
         TriggerType.EMAIL_ARRIVAL,
         TriggerType.DISCORD_EVENT,
+        TriggerType.MEETING_ENDED,
     }
 )
 

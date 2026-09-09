@@ -195,3 +195,12 @@ def test_email_arrival_and_discord_event() -> None:
     assert not conversational_matches(
         "discord_event", _spec(), {"channel_type": "slack", "text": "/x"}
     )
+
+
+def test_meeting_ended_matcher() -> None:
+    assert conversational_matches(
+        "meeting_ended", _spec(), {"channel_type": "meeting", "meeting_platform": "zoom"}
+    )
+    assert not conversational_matches(
+        "meeting_ended", _spec(), {"channel_type": "slack", "text": "hi"}
+    )

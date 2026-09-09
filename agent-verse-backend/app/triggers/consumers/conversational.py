@@ -42,6 +42,7 @@ _CONV_TYPES = (
     "voice_transcript",
     "form_submission",
     "discord_event",
+    "meeting_ended",
 )
 _SLACK_MENTION = re.compile(r"<@([A-Z0-9]+)>")
 
@@ -100,6 +101,9 @@ def normalize_conversational_event(channel_type: str, body: dict[str, Any]) -> d
     elif channel_type == "form":
         ev["form_id"] = str(body.get("form_id", "") or "")
         ev["text"] = json.dumps({k: v for k, v in body.items() if k != "form_id"})
+    elif channel_type == "meeting":
+        ev["meeting_platform"] = str(body.get("platform", "") or "")
+        ev["text"] = str(body.get("summary", "") or body.get("transcript", "") or "")
     ev["mentions"] = [m for m in ev["mentions"] if m]
     return ev
 
@@ -175,6 +179,11 @@ def conversational_matches(ttype: str, spec: Any, event: dict[str, Any]) -> bool
     if ttype == "discord_event":
         # Fire on any Discord event for the tenant (channel scoping applied above).
         return event.get("channel_type", "") == "discord"
+    if ttype == "meeting_ended":
+        if event.get("channel_type", "") != "meeting":
+            return False
+        want = getattr(spec, "meeting_platform", "") or ""
+        return (not want) or want == event.get("meeting_platform", "")
     return False
 
 

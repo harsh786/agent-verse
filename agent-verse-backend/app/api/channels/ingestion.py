@@ -288,6 +288,30 @@ async def form_submission(form_id: str, request: Request) -> dict:
     return {"status": "ok"}
 
 
+# ── Meeting ended ─────────────────────────────────────────────────────────────
+
+
+@router.post("/meeting/ended")
+async def meeting_ended(request: Request) -> dict:
+    """Handle a meeting-ended webhook (Zoom / Teams / Google Meet)."""
+    body = await request.json()
+    tenant_id = request.headers.get("X-Tenant-ID", "")
+    db = getattr(request.app.state, "db", None)
+    if not tenant_id:
+        tenant_id = (
+            await _resolve_tenant_from_channel("meeting", body.get("account_id", ""), db) or ""
+        )
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Unable to resolve tenant")
+    gateway = _get_gateway(request)
+    if gateway:
+        await gateway.ingest("meeting", body, tenant_id=tenant_id)
+    await _emit_chat_event(
+        request, "meeting", body, tenant_id, verified=_channel_verified(request, "meeting")
+    )
+    return {"status": "ok"}
+
+
 # ── Channel mappings CRUD ─────────────────────────────────────────────────────
 
 

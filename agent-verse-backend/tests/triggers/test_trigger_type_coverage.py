@@ -84,9 +84,9 @@ def test_distribution_matches_verified_ground_truth() -> None:
     # cron/interval/once/file_drop/rss_feed/api_poll + relative_delay/deadline/business_calendar
     assert counts[DispatchMechanism.BEAT] == 9
     assert counts[DispatchMechanism.PUSH] == 16
-    # goal-chain(3)+hitl(2)+memory+event+familyD(5)+conversational(7)+email_arrival+discord
-    assert counts[DispatchMechanism.CONSUMER] == 21
-    assert counts[DispatchMechanism.UNSUPPORTED] == 12
+    # chain(3)+hitl(2)+memory+event+familyD(5)+conversational(7)+email_arrival+discord+meeting
+    assert counts[DispatchMechanism.CONSUMER] == 22
+    assert counts[DispatchMechanism.UNSUPPORTED] == 11
 
 
 def test_known_unsupported_types_are_unsupported() -> None:
