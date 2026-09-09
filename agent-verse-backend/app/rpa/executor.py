@@ -223,9 +223,9 @@ class RPAExecutor:
                 vision_analysis = ""
                 if self._vision_provider:
                     try:
-                        from app.perception.browser_agent import BrowserAgent as _ba_cls
+                        from app.perception.browser_agent import BrowserAgent
 
-                        _ba = _ba_cls(vision_provider=self._vision_provider)
+                        _ba = BrowserAgent(vision_provider=self._vision_provider)
                         vision_analysis = await _ba.analyze_screenshot(
                             b64,
                             "Describe the main content and purpose of this page.",

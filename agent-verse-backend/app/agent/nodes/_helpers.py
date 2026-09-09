@@ -47,9 +47,9 @@ def _build_verifier_summary(steps: list) -> str:  # type: ignore[type-arg]
     def _step_line(s: Any) -> str:
         parts = [f"- {getattr(s, 'description', '?')}: {getattr(s, 'output', '')}"]
         if getattr(s, "status", None) is not None:
-            from app.agent.state import StepStatus as _ss
+            from app.agent.state import StepStatus
 
-            if s.status == _ss.UNGROUNDED:
+            if s.status == StepStatus.UNGROUNDED:
                 parts.append(
                     "  [UNGROUNDED CLAIM] Step output contains claims not found in tool outputs"
                 )

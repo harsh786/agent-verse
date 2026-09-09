@@ -170,24 +170,25 @@ class ExecutorMixin:
         # Build StructuredPlan for wave-based parallel execution (Fix 1 + Fix 3)
         import asyncio as _asyncio
 
-        from app.agent.structured_plan import StructuredPlan as _sp
-        from app.agent.structured_plan import StructuredStep as _ss
+        from app.agent.structured_plan import StructuredPlan, StructuredStep
 
-        _structured: _sp | None = None
+        _structured: StructuredPlan | None = None
         for _entry in plan:
             try:
                 _parsed = json.loads(_entry)
                 if isinstance(_parsed, dict) and "steps" in _parsed:
-                    _structured = _sp.from_llm_response(_entry)
+                    _structured = StructuredPlan.from_llm_response(_entry)
                     break
             except Exception:
                 pass
 
         if _structured is None:
             # Plain string steps — treat as sequential (each depends on the previous)
-            _structured = _sp(
+            _structured = StructuredPlan(
                 steps=[
-                    _ss(id=f"s{i}", description=sd, depends_on=[f"s{i - 1}"] if i > 0 else [])
+                    StructuredStep(
+                        id=f"s{i}", description=sd, depends_on=[f"s{i - 1}"] if i > 0 else []
+                    )
                     for i, sd in enumerate(plan)
                 ]
             )

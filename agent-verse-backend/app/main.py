@@ -1528,9 +1528,9 @@ def create_app(
                         _mcp._oauth_manager = getattr(app.state, "oauth_manager", None)
                     # Wire ToolResultCache (created fresh with Redis backend)
                     try:
-                        from app.mcp.tool_cache import ToolResultCache as _trc
+                        from app.mcp.tool_cache import ToolResultCache
 
-                        _tool_cache = _trc(redis=redis_for_runtime)
+                        _tool_cache = ToolResultCache(redis=redis_for_runtime)
                         _mcp._tool_cache = _tool_cache
                         app.state.tool_cache = _tool_cache
                         logger.info("tool_result_cache_wired")
@@ -1587,9 +1587,9 @@ def create_app(
 
                 # LLMResponseCache: wire Redis for cross-replica LLM cache.
                 try:
-                    from app.rag.llm_response_cache import LLMResponseCache as _llmrc
+                    from app.rag.llm_response_cache import LLMResponseCache
 
-                    _llm_rc = _llmrc(redis=redis_for_runtime)
+                    _llm_rc = LLMResponseCache(redis=redis_for_runtime)
                     app.state.llm_response_cache = _llm_rc
                     logger.info("llm_response_cache_wired")
                 except Exception as _lrc_exc:
@@ -1968,13 +1968,13 @@ def create_app(
                 _voice_asyncio.create_task(_voice_warmup())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 logger.info("voice_providers_warmup_scheduled")
                 # D-6: Start proactive voice alert manager
-                from app.voice.alerts import VoiceAlertManager as _vam
+                from app.voice.alerts import VoiceAlertManager
 
                 # app.state._redis is the runtime redis client (set at the pool
                 # wiring above); app.state.redis is never set — reading it left
                 # the alert manager with no redis, so proactive voice alerts were
                 # silently never delivered.
-                _alert_mgr = _vam(redis=getattr(app.state, "_redis", None))
+                _alert_mgr = VoiceAlertManager(redis=getattr(app.state, "_redis", None))
                 await _alert_mgr.start()
                 app.state.voice_alert_manager = _alert_mgr
                 logger.info("voice_alert_manager_started")

@@ -529,12 +529,12 @@ def run_goal(
     except Exception:
         pass
 
-    from app.tenancy.context import PlanTier as _pt
+    from app.tenancy.context import PlanTier
 
     try:
-        plan = _pt(_plan_str)
+        plan = PlanTier(_plan_str)
     except ValueError:
-        plan = _pt.PROFESSIONAL
+        plan = PlanTier.PROFESSIONAL
 
     tenant_ctx = TenantContext(
         tenant_id=tenant_id,
@@ -1260,7 +1260,7 @@ def run_goal(
                 _RunnerUnavail: type | None = None  # noqa: N806  # holds a class (exception type) for isinstance checks below
                 try:
                     from app.execution_environment.envelope import build_envelope as _build_env
-                    from app.execution_environment.models import RunnerType as _runner_type_cls
+                    from app.execution_environment.models import RunnerType
                     from app.execution_environment.scheduler import (
                         ExecutionEnvironmentScheduler as _Scheduler,
                     )
@@ -1270,11 +1270,11 @@ def run_goal(
 
                     _iso_flags = _rt  # reuse already-fetched flags (G-44)
                     if _iso_flags.isolated_execution_kubernetes_runner:
-                        _iso_runner_type = _runner_type_cls.KUBERNETES
+                        _iso_runner_type = RunnerType.KUBERNETES
                     elif _iso_flags.isolated_execution_local_runner:
-                        _iso_runner_type = _runner_type_cls.LOCAL
+                        _iso_runner_type = RunnerType.LOCAL
                     else:
-                        _iso_runner_type = _runner_type_cls.FAKE
+                        _iso_runner_type = RunnerType.FAKE
 
                     # Build feature flags snapshot for the envelope (G-28)
                     _iso_feature_flags = {
