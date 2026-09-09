@@ -10,6 +10,35 @@ import importlib
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_scaling_modules():
+    """Keep sys.modules hermetic across these tests.
+
+    Several tests below delete every ``app.scaling.*`` module from
+    ``sys.modules`` and re-import ``app.scaling.celery_app`` under a *mocked*
+    ``celery`` so module-level ``os.getenv()`` re-evaluates. Without restoration
+    that leaks a mock-built ``celery_app`` (and a deleted ``app.scaling.tasks``)
+    into every later suite — which made the Celery-task tests in
+    ``tests/scaling`` fail non-deterministically in the full run, because a task
+    re-imported against the mock celery app no longer honours a
+    ``patch("app.scaling.tasks._run_async")``. Snapshot the affected entries and
+    restore them after each test.
+    """
+    def _affected(name: str) -> bool:
+        return name == "celery" or name.startswith(("app.scaling", "celery."))
+
+    saved = {k: v for k, v in sys.modules.items() if _affected(k)}
+    try:
+        yield
+    finally:
+        for k in [k for k in sys.modules if _affected(k)]:
+            if k not in saved:
+                del sys.modules[k]
+        sys.modules.update(saved)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -38,7 +67,10 @@ def _reload_celery_module(monkeypatch):
     # beat_scheduler attribute must be a plain string (not a mock) for the
     # getattr check in the Sentinel block.
     type(celery_instance.conf).beat_scheduler = ""
-    with patch.dict(sys.modules, {"celery": MagicMock(Celery=celery_stub), "celery.schedules": MagicMock()}):
+    with patch.dict(
+        sys.modules,
+        {"celery": MagicMock(Celery=celery_stub), "celery.schedules": MagicMock()},
+    ):
         mod = importlib.import_module("app.scaling.celery_app")
     return mod
 
@@ -253,7 +285,10 @@ class TestCeleryBrokerUrl:
 
         with patch.dict(
             sys.modules,
-            {"celery": MagicMock(Celery=MagicMock(return_value=MagicMock())), "celery.schedules": MagicMock()},
+            {
+                "celery": MagicMock(Celery=MagicMock(return_value=MagicMock())),
+                "celery.schedules": MagicMock(),
+            },
         ):
             mod = importlib.import_module("app.scaling.celery_app")
 
@@ -273,7 +308,10 @@ class TestCeleryBrokerUrl:
 
         with patch.dict(
             sys.modules,
-            {"celery": MagicMock(Celery=MagicMock(return_value=MagicMock())), "celery.schedules": MagicMock()},
+            {
+                "celery": MagicMock(Celery=MagicMock(return_value=MagicMock())),
+                "celery.schedules": MagicMock(),
+            },
         ):
             mod = importlib.import_module("app.scaling.celery_app")
 
@@ -295,7 +333,10 @@ class TestCeleryBrokerUrl:
 
         with patch.dict(
             sys.modules,
-            {"celery": MagicMock(Celery=MagicMock(return_value=MagicMock())), "celery.schedules": MagicMock()},
+            {
+                "celery": MagicMock(Celery=MagicMock(return_value=MagicMock())),
+                "celery.schedules": MagicMock(),
+            },
         ):
             mod = importlib.import_module("app.scaling.celery_app")
 
@@ -315,7 +356,10 @@ class TestCeleryBrokerUrl:
 
         with patch.dict(
             sys.modules,
-            {"celery": MagicMock(Celery=MagicMock(return_value=MagicMock())), "celery.schedules": MagicMock()},
+            {
+                "celery": MagicMock(Celery=MagicMock(return_value=MagicMock())),
+                "celery.schedules": MagicMock(),
+            },
         ):
             mod = importlib.import_module("app.scaling.celery_app")
 
@@ -334,7 +378,10 @@ class TestCeleryBrokerUrl:
 
         with patch.dict(
             sys.modules,
-            {"celery": MagicMock(Celery=MagicMock(return_value=MagicMock())), "celery.schedules": MagicMock()},
+            {
+                "celery": MagicMock(Celery=MagicMock(return_value=MagicMock())),
+                "celery.schedules": MagicMock(),
+            },
         ):
             mod = importlib.import_module("app.scaling.celery_app")
 
