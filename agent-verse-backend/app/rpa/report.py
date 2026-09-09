@@ -82,7 +82,9 @@ def assemble_report_from_results(
             png = _decode_data_uri_png(r.artifact_url)
             if png is not None:
                 report.screenshots.append(
-                    ReportScreenshot(caption=r.artifact_name or f"screenshot-{i + 1}", png_bytes=png)
+                    ReportScreenshot(
+                        caption=r.artifact_name or f"screenshot-{i + 1}", png_bytes=png
+                    )
                 )
                 continue
         if r.output and r.output.strip():

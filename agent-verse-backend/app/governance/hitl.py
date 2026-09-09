@@ -499,8 +499,11 @@ class HITLGateway:
                             tenant_id=_tenant_id,
                             auto_rejected=True,
                         )
-                        with contextlib.suppress(RuntimeError):  # no running loop — skip notification
-                            _aio.ensure_future(_coro)  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
+                        # no running loop — skip notification
+                        with contextlib.suppress(RuntimeError):
+                            _aio.ensure_future(  # noqa: RUF006  # fire-and-forget by design
+                                _coro
+                            )
                     except Exception:
                         pass
         return expired

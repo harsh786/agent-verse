@@ -324,7 +324,8 @@ class IngestionJobTracker:
                            AND sync_mode != 'streaming'
                            AND (
                                last_synced_at IS NULL
-                               OR last_synced_at + (sync_interval_seconds || ' seconds')::interval <= NOW()
+                               OR last_synced_at + (sync_interval_seconds || ' seconds')::interval
+                                  <= NOW()
                            )
                     """)
                 )
@@ -383,9 +384,11 @@ class IngestionJobTracker:
                 await session.execute(
                     text("""
                         INSERT INTO ingestion_dlq
-                            (dlq_id, source_id, tenant_id, doc_id, error_message, raw_doc_json, retry_count, created_at)
+                            (dlq_id, source_id, tenant_id, doc_id, error_message,
+                             raw_doc_json, retry_count, created_at)
                         VALUES
-                            (:dlq_id, :source_id, :tenant_id, :doc_id, :error, :raw_doc_json, 0, NOW())
+                            (:dlq_id, :source_id, :tenant_id, :doc_id, :error,
+                             :raw_doc_json, 0, NOW())
                     """),
                     {
                         "dlq_id": str(_uuid.uuid4()),
