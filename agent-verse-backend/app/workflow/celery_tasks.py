@@ -12,14 +12,58 @@ from app.scaling.celery_app import celery_app
 _log = get_logger(__name__)
 
 
+# Cached DB-backed runner built once per Celery worker process (the FastAPI
+# lifespan does not run in a worker, so app.state holds only the in-memory
+# fallback runner — MemorySaver + mock tools + no persistence).
+_WORKER_RUNNER: Any = None
+
+
+def _build_worker_runner() -> Any:
+    """Construct a DB-backed WorkflowRunner from the worker's fresh session
+    factory, mirroring the FastAPI lifespan wiring. Cached per process."""
+    global _WORKER_RUNNER
+    if _WORKER_RUNNER is not None:
+        return _WORKER_RUNNER
+    from app.db.session import get_session_factory
+    from app.scaling.tasks import _WORKER_CHECKPOINTER
+    from app.workflow.compiler import WorkflowCompiler
+    from app.workflow.context import ContextResolver
+    from app.workflow.run_store import PostgresWorkflowRunStore
+    from app.workflow.runner import WorkflowRunner
+
+    db_factory = get_session_factory()
+    run_store = PostgresWorkflowRunStore(db_factory)
+    compiler = WorkflowCompiler(
+        context_resolver=ContextResolver(),
+        checkpointer=_WORKER_CHECKPOINTER,
+        run_store=run_store,
+    )
+    _WORKER_RUNNER = WorkflowRunner(compiler=compiler, run_store=run_store, celery_app=celery_app)
+    return _WORKER_RUNNER
+
+
 def _get_runner() -> Any:
-    """Lazily import runner from app.state to avoid circular imports."""
+    """Return a DB-backed workflow runner.
+
+    In-process (the FastAPI lifespan ran) the DB-backed runner is on
+    ``app.state``. In a Celery worker the lifespan never runs, so ``app.state``
+    carries only the in-memory fallback — detect that (no ``_run_store``) and
+    build a worker-local DB-backed runner instead, so worker-executed runs
+    actually persist and run real steps rather than MemorySaver + mock tools.
+    """
     try:
         from app.main import app as fastapi_app  # type: ignore[import]
 
-        return fastapi_app.state.workflow_runner
+        state_runner = getattr(fastapi_app.state, "workflow_runner", None)
+        if state_runner is not None and getattr(state_runner, "_run_store", None) is not None:
+            return state_runner
     except Exception:
-        return None
+        state_runner = None
+    try:
+        return _build_worker_runner()
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.error("worker_runner_build_failed", error=str(exc))
+        return state_runner
 
 
 def _run_async(coro: Any) -> Any:
@@ -107,9 +151,7 @@ def retry_dead_letter_webhooks() -> None:
 
     async def _retry() -> None:
         try:
-            from app.main import app as fastapi_app  # type: ignore[import]
-
-            runner = getattr(fastapi_app.state, "workflow_runner", None)
+            runner = _get_runner()
             run_store = getattr(runner, "_run_store", None) if runner else None
             if run_store and hasattr(run_store, "get_retryable_webhooks"):
                 events = await run_store.get_retryable_webhooks(max_attempts=3)
@@ -132,9 +174,7 @@ def cleanup_expired_runs() -> None:
 
     async def _cleanup() -> None:
         try:
-            from app.main import app as fastapi_app  # type: ignore[import]
-
-            runner = getattr(fastapi_app.state, "workflow_runner", None)
+            runner = _get_runner()
             run_store = getattr(runner, "_run_store", None) if runner else None
             if run_store and hasattr(run_store, "delete_expired_runs"):
                 deleted = await run_store.delete_expired_runs()
