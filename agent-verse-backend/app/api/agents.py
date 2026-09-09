@@ -33,23 +33,22 @@ async def _save_snapshot_to_db(snapshot: dict[str, Any], db: Any, tenant_id: str
 
         from app.db.rls import sqlalchemy_rls_context
 
-        async with db() as session, session.begin():
-            async with sqlalchemy_rls_context(session, tenant_id):
-                await session.execute(
-                    text(
-                        """INSERT INTO agent_snapshots
-                           (id, tenant_id, agent_id, version, snapshot, snapshotted_at)
-                           VALUES (:id, :tid, :aid, :version, CAST(:snap AS jsonb), NOW())
-                           ON CONFLICT (id) DO NOTHING"""
-                    ),
-                    {
-                        "id": snapshot["snapshot_id"],
-                        "tid": tenant_id,
-                        "aid": snapshot["agent_id"],
-                        "version": snapshot["version"],
-                        "snap": json.dumps(snapshot),
-                    },
-                )
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+            await session.execute(
+                text(
+                    """INSERT INTO agent_snapshots
+                       (id, tenant_id, agent_id, version, snapshot, snapshotted_at)
+                       VALUES (:id, :tid, :aid, :version, CAST(:snap AS jsonb), NOW())
+                       ON CONFLICT (id) DO NOTHING"""
+                ),
+                {
+                    "id": snapshot["snapshot_id"],
+                    "tid": tenant_id,
+                    "aid": snapshot["agent_id"],
+                    "version": snapshot["version"],
+                    "snap": json.dumps(snapshot),
+                },
+            )
     except Exception as exc:
         import logging
 

@@ -478,9 +478,8 @@ async def create_role(
             user_id=body.user_id,
             role=body.role,
         )
-        async with db() as session, session.begin():
-            async with sqlalchemy_rls_context(session, ctx.tenant_id):
-                session.add(row)
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, ctx.tenant_id):
+            session.add(row)
         return {
             "id": role_id,
             "user_id": body.user_id,
@@ -507,18 +506,17 @@ async def delete_role(
         from app.db.models.rbac import UserRole
         from app.db.rls import sqlalchemy_rls_context
 
-        async with db() as session, session.begin():
-            async with sqlalchemy_rls_context(session, ctx.tenant_id):
-                result = await session.execute(
-                    select(UserRole).where(
-                        UserRole.id == role_id,
-                        UserRole.tenant_id == ctx.tenant_id,
-                    )
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, ctx.tenant_id):
+            result = await session.execute(
+                select(UserRole).where(
+                    UserRole.id == role_id,
+                    UserRole.tenant_id == ctx.tenant_id,
                 )
-                row = result.scalar_one_or_none()
-                if row is None:
-                    raise HTTPException(status_code=404, detail="Role assignment not found")
-                await session.delete(row)
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Role assignment not found")
+            await session.delete(row)
     except HTTPException:
         raise
     except Exception as exc:
@@ -600,9 +598,8 @@ async def create_ip_allowlist_entry(
             cidr=body.cidr,
             description=body.description,
         )
-        async with db() as session, session.begin():
-            async with sqlalchemy_rls_context(session, ctx.tenant_id):
-                session.add(row)
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, ctx.tenant_id):
+            session.add(row)
         return {"id": entry_id, "cidr": body.cidr, "description": body.description}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -719,18 +716,17 @@ async def delete_ip_allowlist_entry(
         from app.db.models.rbac import IPAllowlistEntry
         from app.db.rls import sqlalchemy_rls_context
 
-        async with db() as session, session.begin():
-            async with sqlalchemy_rls_context(session, ctx.tenant_id):
-                result = await session.execute(
-                    select(IPAllowlistEntry).where(
-                        IPAllowlistEntry.id == entry_id,
-                        IPAllowlistEntry.tenant_id == ctx.tenant_id,
-                    )
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, ctx.tenant_id):
+            result = await session.execute(
+                select(IPAllowlistEntry).where(
+                    IPAllowlistEntry.id == entry_id,
+                    IPAllowlistEntry.tenant_id == ctx.tenant_id,
                 )
-                row = result.scalar_one_or_none()
-                if row is None:
-                    raise HTTPException(status_code=404, detail="Allowlist entry not found")
-                await session.delete(row)
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Allowlist entry not found")
+            await session.delete(row)
     except HTTPException:
         raise
     except Exception as exc:

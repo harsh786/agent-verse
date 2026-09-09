@@ -212,83 +212,86 @@ class CollaborationStore:
 
         from sqlalchemy import text
 
-        async with self._db() as db_session, db_session.begin():
-            async with sqlalchemy_rls_context(db_session, tenant_ctx.tenant_id):
-                # 1. Verify session exists (no lock needed)
-                session_check = await db_session.execute(
-                    select(CollabSession.id, CollabSession.content, CollabSession.updated_at).where(
-                        CollabSession.id == session_id,
-                        CollabSession.tenant_id == tenant_ctx.tenant_id,
-                    )
+        async with (
+            self._db() as db_session,
+            db_session.begin(),
+            sqlalchemy_rls_context(db_session, tenant_ctx.tenant_id),
+        ):
+            # 1. Verify session exists (no lock needed)
+            session_check = await db_session.execute(
+                select(CollabSession.id, CollabSession.content, CollabSession.updated_at).where(
+                    CollabSession.id == session_id,
+                    CollabSession.tenant_id == tenant_ctx.tenant_id,
                 )
-                session_row = session_check.first()
-                if session_row is None:
-                    raise KeyError(session_id)
+            )
+            session_row = session_check.first()
+            if session_row is None:
+                raise KeyError(session_id)
 
-                # 2. Atomic INSERT ... SELECT with HAVING-based version check.
-                #    Avoids SELECT FOR UPDATE and O(N) count.
-                insert_result = await db_session.execute(
-                    text("""
-                        INSERT INTO collab_operations
-                            (id, session_id, tenant_id, version, operation, author, created_at)
-                        SELECT
-                            :op_id,
-                            :session_id,
-                            :tenant_id,
-                            COALESCE(MAX(version), 0) + 1,
-                            :operation::jsonb,
-                            :author,
-                            NOW()
-                        FROM collab_operations
-                        WHERE session_id = :session_id2 AND tenant_id = :tenant_id2
-                        HAVING :expected_version IS NULL
-                            OR COALESCE(MAX(version), 0) = :expected_version
-                        RETURNING id, version, created_at
-                    """),
+            # 2. Atomic INSERT ... SELECT with HAVING-based version check.
+            #    Avoids SELECT FOR UPDATE and O(N) count.
+            insert_result = await db_session.execute(
+                text("""
+                    INSERT INTO collab_operations
+                        (id, session_id, tenant_id, version, operation, author, created_at)
+                    SELECT
+                        :op_id,
+                        :session_id,
+                        :tenant_id,
+                        COALESCE(MAX(version), 0) + 1,
+                        :operation::jsonb,
+                        :author,
+                        NOW()
+                    FROM collab_operations
+                    WHERE session_id = :session_id2 AND tenant_id = :tenant_id2
+                    HAVING :expected_version IS NULL
+                        OR COALESCE(MAX(version), 0) = :expected_version
+                    RETURNING id, version, created_at
+                """),
+                {
+                    "op_id": uuid.uuid4().hex,
+                    "session_id": session_id,
+                    "tenant_id": tenant_ctx.tenant_id,
+                    "session_id2": session_id,
+                    "tenant_id2": tenant_ctx.tenant_id,
+                    "operation": _json.dumps(operation),
+                    "author": author,
+                    "expected_version": expected_version,
+                },
+            )
+
+            inserted = insert_result.fetchone()
+            if inserted is None:
+                # HAVING clause rejected — version conflict; fetch actual version
+                max_result = await db_session.execute(
+                    text(
+                        "SELECT COALESCE(MAX(version), 0) FROM collab_operations "
+                        "WHERE session_id = :sid AND tenant_id = :tid"
+                    ),
+                    {"sid": session_id, "tid": tenant_ctx.tenant_id},
+                )
+                current_v = max_result.scalar() or 0
+                raise VersionConflictError(
+                    f"Optimistic concurrency conflict: expected {expected_version}, current {current_v}",  # noqa: E501
+                    current_version=current_v,
+                    expected_version=expected_version or 0,
+                )
+
+            op_id, new_version, created_at = inserted
+
+            # 3. Update session content (last writer wins)
+            if operation.get("type") == "content_update":
+                await db_session.execute(
+                    text(
+                        "UPDATE collab_sessions SET content = :content, updated_at = NOW() "
+                        "WHERE id = :sid AND tenant_id = :tid"
+                    ),
                     {
-                        "op_id": uuid.uuid4().hex,
-                        "session_id": session_id,
-                        "tenant_id": tenant_ctx.tenant_id,
-                        "session_id2": session_id,
-                        "tenant_id2": tenant_ctx.tenant_id,
-                        "operation": _json.dumps(operation),
-                        "author": author,
-                        "expected_version": expected_version,
+                        "content": str(operation.get("content", "")),
+                        "sid": session_id,
+                        "tid": tenant_ctx.tenant_id,
                     },
                 )
-
-                inserted = insert_result.fetchone()
-                if inserted is None:
-                    # HAVING clause rejected — version conflict; fetch actual version
-                    max_result = await db_session.execute(
-                        text(
-                            "SELECT COALESCE(MAX(version), 0) FROM collab_operations "
-                            "WHERE session_id = :sid AND tenant_id = :tid"
-                        ),
-                        {"sid": session_id, "tid": tenant_ctx.tenant_id},
-                    )
-                    current_v = max_result.scalar() or 0
-                    raise VersionConflictError(
-                        f"Optimistic concurrency conflict: expected {expected_version}, current {current_v}",  # noqa: E501
-                        current_version=current_v,
-                        expected_version=expected_version or 0,
-                    )
-
-                op_id, new_version, created_at = inserted
-
-                # 3. Update session content (last writer wins)
-                if operation.get("type") == "content_update":
-                    await db_session.execute(
-                        text(
-                            "UPDATE collab_sessions SET content = :content, updated_at = NOW() "
-                            "WHERE id = :sid AND tenant_id = :tid"
-                        ),
-                        {
-                            "content": str(operation.get("content", "")),
-                            "sid": session_id,
-                            "tid": tenant_ctx.tenant_id,
-                        },
-                    )
 
         return {
             "operation_id": op_id,

@@ -4403,10 +4403,13 @@ def org_brain_loop() -> dict[str, int]:
                         from app.db.rls import sqlalchemy_rls_context
                         from app.org.service import OrgService
 
-                        async with db_factory() as s2, s2.begin():
-                            async with sqlalchemy_rls_context(s2, str(tenant_id)):
-                                svc = OrgService(s2, str(tenant_id))
-                                health = await svc.get_org_health(str(org_id))
+                        async with (
+                            db_factory() as s2,
+                            s2.begin(),
+                            sqlalchemy_rls_context(s2, str(tenant_id)),
+                        ):
+                            svc = OrgService(s2, str(tenant_id))
+                            health = await svc.get_org_health(str(org_id))
                         blocked = health.get("task_counts", {}).get("blocked", 0)
                         failed = health.get("task_counts", {}).get("failed", 0)
                         if blocked > 3 or failed > 0:

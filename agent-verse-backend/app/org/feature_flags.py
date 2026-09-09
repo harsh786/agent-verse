@@ -175,13 +175,12 @@ async def _run_org_intelligence_cron() -> dict[str, Any]:
 
         for org_id, tenant_id in orgs:
             try:
-                async with db_factory() as s2:
-                    async with sqlalchemy_rls_context(s2, str(tenant_id)):
-                        svc = OrgAnalyticsService(s2, str(tenant_id))
-                        await svc.get_org_health_score(str(org_id))
-                        bottlenecks = await svc.get_bottlenecks(str(org_id))
-                        if bottlenecks:
-                            insights_generated += len(bottlenecks)
+                async with db_factory() as s2, sqlalchemy_rls_context(s2, str(tenant_id)):
+                    svc = OrgAnalyticsService(s2, str(tenant_id))
+                    await svc.get_org_health_score(str(org_id))
+                    bottlenecks = await svc.get_bottlenecks(str(org_id))
+                    if bottlenecks:
+                        insights_generated += len(bottlenecks)
                 processed += 1
             except Exception as exc:
                 _log.warning("org_intelligence_cron.org_failed", org_id=str(org_id), error=str(exc))
@@ -219,11 +218,10 @@ async def _run_org_digest_cron() -> dict[str, Any]:
 
         for org_id, tenant_id in orgs:
             try:
-                async with db_factory() as s2:
-                    async with sqlalchemy_rls_context(s2, str(tenant_id)):
-                        digest_svc = OrgDigestService(s2, str(tenant_id))
-                        await digest_svc.generate(str(org_id))
-                        digests_generated += 1
+                async with db_factory() as s2, sqlalchemy_rls_context(s2, str(tenant_id)):
+                    digest_svc = OrgDigestService(s2, str(tenant_id))
+                    await digest_svc.generate(str(org_id))
+                    digests_generated += 1
                 processed += 1
             except Exception as exc:
                 _log.warning("org_digest_cron.org_failed", org_id=str(org_id), error=str(exc))

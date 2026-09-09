@@ -321,50 +321,53 @@ class EvalRunner:
             )
             eval_id = uuid.uuid5(uuid.NAMESPACE_URL, identity).hex
             try:
-                async with db() as session, session.begin():
-                    async with sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
-                        await session.execute(
-                            text("""
-                            INSERT INTO evaluations
-                                (id, goal_id, tenant_id, scores, average_score, passed,
-                                 primary_strategy_id, primary_strategy_version,
-                                 auxiliary_strategy_versions, profile_id, profile_version,
-                                 strategy_execution_id, evaluator_version,
-                                 evidence_completeness, correlation_id, causation_id, created_at)
-                            VALUES
-                                (:id, :gid, :tid, CAST(:scores AS json), :avg, :passed,
-                                 :primary_strategy_id, :primary_strategy_version,
-                                 CAST(:auxiliary_strategy_versions AS jsonb), :profile_id,
-                                 :profile_version, :strategy_execution_id, :evaluator_version,
-                                 CAST(:evidence_completeness AS jsonb), :correlation_id,
-                                 :causation_id, NOW())
-                            ON CONFLICT
-                                (tenant_id, goal_id, strategy_execution_id, evaluator_version)
-                            DO NOTHING
-                            """),
-                            {
-                                "id": eval_id,
-                                "gid": state.goal_id,
-                                "tid": tenant_ctx.tenant_id,
-                                "scores": json.dumps(scorecard.scores),
-                                "avg": round(scorecard.average_score(), 6),
-                                "passed": scorecard.passed(),
-                                "primary_strategy_id": scorecard.primary_strategy_id,
-                                "primary_strategy_version": scorecard.primary_strategy_version,
-                                "auxiliary_strategy_versions": json.dumps(
-                                    scorecard.auxiliary_strategy_versions
-                                ),
-                                "profile_id": scorecard.profile_id,
-                                "profile_version": scorecard.profile_version,
-                                "strategy_execution_id": scorecard.strategy_execution_id,
-                                "evaluator_version": scorecard.evaluator_version,
-                                "evidence_completeness": json.dumps(
-                                    scorecard.evidence_completeness
-                                ),
-                                "correlation_id": scorecard.correlation_id,
-                                "causation_id": scorecard.causation_id,
-                            },
-                        )
+                async with (
+                    db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+                ):
+                    await session.execute(
+                        text("""
+                        INSERT INTO evaluations
+                            (id, goal_id, tenant_id, scores, average_score, passed,
+                             primary_strategy_id, primary_strategy_version,
+                             auxiliary_strategy_versions, profile_id, profile_version,
+                             strategy_execution_id, evaluator_version,
+                             evidence_completeness, correlation_id, causation_id, created_at)
+                        VALUES
+                            (:id, :gid, :tid, CAST(:scores AS json), :avg, :passed,
+                             :primary_strategy_id, :primary_strategy_version,
+                             CAST(:auxiliary_strategy_versions AS jsonb), :profile_id,
+                             :profile_version, :strategy_execution_id, :evaluator_version,
+                             CAST(:evidence_completeness AS jsonb), :correlation_id,
+                             :causation_id, NOW())
+                        ON CONFLICT
+                            (tenant_id, goal_id, strategy_execution_id, evaluator_version)
+                        DO NOTHING
+                        """),
+                        {
+                            "id": eval_id,
+                            "gid": state.goal_id,
+                            "tid": tenant_ctx.tenant_id,
+                            "scores": json.dumps(scorecard.scores),
+                            "avg": round(scorecard.average_score(), 6),
+                            "passed": scorecard.passed(),
+                            "primary_strategy_id": scorecard.primary_strategy_id,
+                            "primary_strategy_version": scorecard.primary_strategy_version,
+                            "auxiliary_strategy_versions": json.dumps(
+                                scorecard.auxiliary_strategy_versions
+                            ),
+                            "profile_id": scorecard.profile_id,
+                            "profile_version": scorecard.profile_version,
+                            "strategy_execution_id": scorecard.strategy_execution_id,
+                            "evaluator_version": scorecard.evaluator_version,
+                            "evidence_completeness": json.dumps(
+                                scorecard.evidence_completeness
+                            ),
+                            "correlation_id": scorecard.correlation_id,
+                            "causation_id": scorecard.causation_id,
+                        },
+                    )
             except Exception as exc:
                 get_logger(__name__).warning("eval_persist_failed", error=str(exc))
 
