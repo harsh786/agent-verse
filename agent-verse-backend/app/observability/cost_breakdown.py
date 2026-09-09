@@ -93,8 +93,8 @@ _goal_breakdowns: dict[str, GoalCostBreakdown] = {}
 # (production reads via get_breakdown and never calls finalize_breakdown, so the data is
 # meant to survive for later retrieval). Left unset -> pure in-memory, as before.
 #
-# TODO(wiring): call configure_persistence(<redis client>) from create_app()/lifespan so the
-# running server actually persists. Kept out of app/main.py here to avoid cross-cutting edits.
+# Wired (D-21): the FastAPI lifespan calls ``configure_persistence`` with a sync
+# Redis client, so per-goal cost breakdowns survive a restart on the running server.
 _backend: Any | None = None
 
 

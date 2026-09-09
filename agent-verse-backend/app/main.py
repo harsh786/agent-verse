@@ -1794,6 +1794,25 @@ def create_app(
                     # Expose the runtime redis so POST /triggers/events/{channel}
                     # publishes onto the same bus the EVENT consumer subscribes to.
                     app.state.trigger_event_redis = redis_for_runtime
+                    # D-21: enable Redis-backed persistence for per-goal cost
+                    # breakdowns so they survive a restart. The cost-breakdown store
+                    # calls get/set synchronously, so it needs a *sync* client.
+                    try:
+                        from app.net.redis_factory import make_sync_redis
+                        from app.observability.cost_breakdown import (
+                            configure_persistence as _cb_persist,
+                        )
+
+                        _cb_sync_redis = make_sync_redis(
+                            sentinel_urls=getattr(settings, "redis_sentinel_urls", "") or "",
+                            redis_url=str(settings.redis_url),
+                            decode_responses=True,
+                        )
+                        _cb_persist(_cb_sync_redis)
+                        app.state._cost_breakdown_redis = _cb_sync_redis
+                        logger.info("cost_breakdown_persistence_wired")
+                    except Exception as _cb_exc:
+                        logger.warning("cost_breakdown_persistence_failed", error=str(_cb_exc))
                     await _trigger_consumers.start()
                     logger.info(
                         "trigger_consumers_wired",
