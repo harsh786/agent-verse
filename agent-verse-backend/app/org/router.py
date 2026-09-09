@@ -592,7 +592,7 @@ async def approve_task(
     updated = await service.update_task_status(
         task_id,
         "running",
-        outputs={"approved_by": body.approver, "approval_note": body.note},
+        outputs=[{"approved_by": body.approver, "approval_note": body.note}],
     )
     if not updated:
         raise _not_found("Task", task_id, x_request_id)
@@ -645,7 +645,7 @@ async def reject_task(
     updated = await service.update_task_status(
         task_id,
         "failed",
-        outputs={"rejected_by": body.approver, "rejection_reason": body.note},
+        outputs=[{"rejected_by": body.approver, "rejection_reason": body.note}],
     )
     if not updated:
         raise _not_found("Task", task_id, x_request_id)

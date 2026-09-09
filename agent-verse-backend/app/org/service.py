@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import structlog
 from opentelemetry import trace
@@ -174,7 +174,7 @@ class OrgService:
             self._session.add(org)
             await self._session.flush()
             await self._emit_event(
-                org.id,
+                cast(uuid.UUID, org.id),
                 "organization.created",
                 title=f"Organization '{name}' created",
                 entity_type="organization",
@@ -637,7 +637,7 @@ class OrgService:
             mission = await self.get_mission(mission_id)
             if not mission:
                 return None
-            old_status = mission.status
+            old_status = str(mission.status)
             mission.status = status
             mission.updated_at = datetime.now(UTC)
             if status == "active" and not mission.started_at:
@@ -646,7 +646,7 @@ class OrgService:
                 mission.completed_at = datetime.now(UTC)
             await self._session.flush()
             await self._emit_event(
-                mission.org_id,
+                cast(uuid.UUID, mission.org_id),
                 f"mission.{status}",
                 title=f"Mission '{mission.title}' -> {status}",
                 entity_type="mission",
@@ -834,7 +834,7 @@ class OrgService:
         ]
         await self._session.flush()
         await self._emit_event(
-            task.org_id,
+            cast(uuid.UUID, task.org_id),
             f"task.{status}",
             title=f"Task '{task.title}' → {status}",
             entity_type="task",
@@ -1110,7 +1110,7 @@ class OrgService:
     #   OrgService.create_mission_and_execute()
     #     → MetaOrchestrator.plan_mission()        (team formation + topology)
     #     → GoalService.submit_goal()              (Celery dispatch → AgentGraph)
-    #     → mission.metadata["goal_id"] updated    (linkage preserved in DB)
+    #     → mission.extra_data["goal_id"] updated  (linkage preserved in DB)
 
     async def create_mission_and_execute(
         self,
@@ -1486,7 +1486,11 @@ class OrgService:
             # ── Step 5: Write goal_id back to mission + activate it ───────────
             goal_id = dispatch_result.get("goal_id")
             if goal_id:
-                new_meta = dict(mission.metadata or {})
+                # NOTE: OrgMission has no "metadata" column — that name is the
+                # SQLAlchemy declarative Base.metadata (a MetaData registry
+                # object). The actual JSONB scratch field is "extra_data";
+                # writing to "metadata" silently no-ops on the DB row.
+                new_meta = dict(mission.extra_data or {})
                 new_meta["goal_id"] = goal_id
                 new_meta["orchestration_plan_summary"] = {
                     "topology": dispatch_result.get("topology"),
@@ -1494,7 +1498,7 @@ class OrgService:
                     "autonomy_level": dispatch_result.get("autonomy_level"),
                     "estimated_cost_usd": dispatch_result.get("estimated_cost_usd"),
                 }
-                mission.metadata = new_meta
+                mission.extra_data = new_meta
                 mission.updated_at = datetime.now(UTC)
                 await self._session.flush()
                 # Transition to active — triggers the mission.active event
