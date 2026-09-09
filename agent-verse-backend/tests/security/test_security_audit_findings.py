@@ -255,19 +255,19 @@ def test_ssrf_guard_blocks_file_scheme():
 
 
 def test_ssrf_guard_allows_public_url():
-    """assert_public_url must NOT raise for legitimate public URLs."""
+    """assert_public_url must NOT raise for a host that resolves to a public IP."""
+    from unittest.mock import patch
+
     from app.net.ssrf_guard import assert_public_url
 
-    # Should not raise (public DNS resolves fine even in offline test env;
-    # if DNS fails, ssrf_guard should still not raise SSRFError for public IPs)
-    try:
-        assert_public_url("https://api.github.com/repos", context="test")
-    except Exception as exc:
-        # Only DNS resolution errors are acceptable — not SSRFError
-        from app.net.ssrf_guard import SSRFError
-        assert not isinstance(exc, SSRFError), (
-            f"Public URL incorrectly flagged as SSRF risk: {exc}"
-        )
+    # Mock DNS resolution to a known public IP so the test is deterministic and
+    # network-independent. assert_public_url fails CLOSED on real DNS failure
+    # (raising SSRFError), so resolving api.github.com for real made this flake
+    # under full-suite load / DNS hiccups. The behaviour under test is that a
+    # public IP is not flagged as an SSRF risk.
+    with patch("app.net.ssrf_guard._resolve_host", return_value=["140.82.112.3"]):
+        result = assert_public_url("https://api.github.com/repos", context="test")
+    assert result == ["140.82.112.3"]
 
 
 # ===========================================================================
