@@ -1056,24 +1056,11 @@ def create_app(
             from app.memory.reflexion import ReflexionService
 
             app.state.reflexion_service = ReflexionService(repository=app.state.memory_repository)
-            from app.intelligence.improvement_action_executor import (
-                ImprovementActionExecutor,
-            )
-            from app.intelligence.improvement_handlers import build_default_handlers
             from app.intelligence.learning_experiments import LearningExperimentService
             from app.memory.prospective import ProspectiveMemoryService
 
             app.state.prospective_memory_service = ProspectiveMemoryService()
             app.state.learning_experiment_service = LearningExperimentService()
-            from app.core.runtime_flags import get_runtime_flags as _get_rt_flags
-
-            _rt_flags = _get_rt_flags()
-            _improvement_handlers = (
-                build_default_handlers() if _rt_flags.enable_improvement_handlers else {}
-            )
-            app.state.improvement_action_executor = ImprovementActionExecutor(
-                handlers=_improvement_handlers
-            )
 
             # Wire DB into UsageService so buffer flushes actually reach Postgres.
             _usage_svc = getattr(app.state, "usage_service", None)
@@ -2031,22 +2018,11 @@ def create_app(
     from app.memory.reflexion import ReflexionService
 
     app.state.reflexion_service = ReflexionService(repository=app.state.memory_repository)
-    from app.intelligence.improvement_action_executor import ImprovementActionExecutor
-    from app.intelligence.improvement_handlers import build_default_handlers
     from app.intelligence.learning_experiments import LearningExperimentService
     from app.memory.prospective import ProspectiveMemoryService
 
     app.state.prospective_memory_service = ProspectiveMemoryService()
     app.state.learning_experiment_service = LearningExperimentService()
-    from app.core.runtime_flags import get_runtime_flags as _get_rt_flags2
-
-    _rt_flags2 = _get_rt_flags2()
-    _improvement_handlers2 = (
-        build_default_handlers() if _rt_flags2.enable_improvement_handlers else {}
-    )
-    app.state.improvement_action_executor = ImprovementActionExecutor(
-        handlers=_improvement_handlers2
-    )
     from app.coordination.auction.repository import (
         InMemoryAuctionRepository,
         InMemorySealedBidInbox,

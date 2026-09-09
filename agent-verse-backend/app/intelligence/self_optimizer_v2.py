@@ -166,9 +166,9 @@ Respond with ONLY valid JSON:
         This is the pure, DB-free entry point that makes the optimizer runnable
         in isolation: given a per-dimension ``scores`` mapping (as produced by
         the eval scorecard), it returns a list of ``ImprovementActionRecord``
-        objects ready to hand to ``ImprovementActionExecutor.execute``.  Each
-        record has a deterministic ``idempotency_key`` so re-planning the same
-        goal yields the same actions (the executor then dedupes).
+        objects describing the improvement actions. Each record has a
+        deterministic ``idempotency_key`` so re-planning the same goal yields
+        the same actions.
 
         Thresholds mirror ``app.evals.self_improvement_engine.SelfImprovementEngine``
         so the two decision surfaces stay consistent.  Returns ``[]`` when the
