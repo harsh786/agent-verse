@@ -1206,6 +1206,17 @@ def create_app(
             app.state.knowledge_store = _knowledge_store_db
             app.state.collab_store = _collab_store_db
 
+            # Bug fix: IngestionPipeline captured the pre-lifespan in-memory
+            # KnowledgeStore at construction time (app.state.knowledge_store
+            # above just got swapped for the DB-backed instance). Without this,
+            # every real /sources/*/sync ingestion writes through a dead
+            # in-memory store that was never told about any collection created
+            # after startup, and indexing fails with "Collection ... not found".
+            _ing_pipe_kb = getattr(app.state, "ingestion_pipeline", None)
+            if _ing_pipe_kb is not None:
+                _ing_pipe_kb._kb = _knowledge_store_db
+                logger.info("ingestion_pipeline_knowledge_store_rewired")
+
             # WT-3: wire the TriggerDispatcher so trigger fires actually create
             # goals (previously never instantiated -> every fire returned 503).
             from app.triggers.dispatcher import TriggerDispatcher as _TriggerDispatcher
@@ -1914,7 +1925,11 @@ def create_app(
                 # D-6: Start proactive voice alert manager
                 from app.voice.alerts import VoiceAlertManager as _VAM
 
-                _alert_mgr = _VAM(redis=getattr(app.state, "redis", None))
+                # app.state._redis is the runtime redis client (set at the pool
+                # wiring above); app.state.redis is never set — reading it left
+                # the alert manager with no redis, so proactive voice alerts were
+                # silently never delivered.
+                _alert_mgr = _VAM(redis=getattr(app.state, "_redis", None))
                 await _alert_mgr.start()
                 app.state.voice_alert_manager = _alert_mgr
                 logger.info("voice_alert_manager_started")
