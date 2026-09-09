@@ -821,11 +821,16 @@ def test_fire_due_schedules_interval_due_dispatches_goal(monkeypatch: pytest.Mon
     mock_r.get.return_value = json.dumps(interval_schedule)
     mock_r.set = MagicMock()
 
+    # WT-9: schedules dispatch through run_scheduled_goal (the governed path).
+    # Patch that task's apply_async — NOT the stale run_goal — so the dispatch is
+    # hermetic and never opens a real Celery broker connection. (Patching run_goal
+    # left run_scheduled_goal.apply_async live, which cached a working kombu
+    # ConnectionPool on the shared celery_app and leaked into later tests whose
+    # own faked redis was then bypassed.)
     with (
         patch("redis.from_url", return_value=mock_r),
-        patch("app.scaling.tasks.run_goal") as mock_run_goal,
+        patch("app.scaling.tasks.run_scheduled_goal.apply_async", MagicMock()),
     ):
-        mock_run_goal.apply_async = MagicMock()
         result = fire_due_schedules.run()
 
     # Should have fired the schedule
@@ -1014,11 +1019,16 @@ def test_fire_due_schedules_cron_due_dispatches_goal(monkeypatch: pytest.MonkeyP
     mock_r.get.return_value = json.dumps(cron_schedule)
     mock_r.set = MagicMock()
 
+    # WT-9: schedules dispatch through run_scheduled_goal (the governed path).
+    # Patch that task's apply_async — NOT the stale run_goal — so the dispatch is
+    # hermetic and never opens a real Celery broker connection. (Patching run_goal
+    # left run_scheduled_goal.apply_async live, which cached a working kombu
+    # ConnectionPool on the shared celery_app and leaked into later tests whose
+    # own faked redis was then bypassed.)
     with (
         patch("redis.from_url", return_value=mock_r),
-        patch("app.scaling.tasks.run_goal") as mock_run_goal,
+        patch("app.scaling.tasks.run_scheduled_goal.apply_async", MagicMock()),
     ):
-        mock_run_goal.apply_async = MagicMock()
         result = fire_due_schedules.run()
 
     assert result["schedules_fired"] == 1
@@ -1049,11 +1059,16 @@ def test_fire_due_schedules_once_schedule_due_fires(monkeypatch: pytest.MonkeyPa
     mock_r.get.return_value = json.dumps(once_schedule)
     mock_r.set = MagicMock()
 
+    # WT-9: schedules dispatch through run_scheduled_goal (the governed path).
+    # Patch that task's apply_async — NOT the stale run_goal — so the dispatch is
+    # hermetic and never opens a real Celery broker connection. (Patching run_goal
+    # left run_scheduled_goal.apply_async live, which cached a working kombu
+    # ConnectionPool on the shared celery_app and leaked into later tests whose
+    # own faked redis was then bypassed.)
     with (
         patch("redis.from_url", return_value=mock_r),
-        patch("app.scaling.tasks.run_goal") as mock_run_goal,
+        patch("app.scaling.tasks.run_scheduled_goal.apply_async", MagicMock()),
     ):
-        mock_run_goal.apply_async = MagicMock()
         result = fire_due_schedules.run()
 
     assert result["schedules_fired"] == 1
@@ -1900,11 +1915,16 @@ def test_fire_due_schedules_schedule_with_secret_fields_sanitized(
     mock_r.get.return_value = json.dumps(schedule_with_secret)
     mock_r.set = MagicMock()
 
+    # WT-9: schedules dispatch through run_scheduled_goal (the governed path).
+    # Patch that task's apply_async — NOT the stale run_goal — so the dispatch is
+    # hermetic and never opens a real Celery broker connection. (Patching run_goal
+    # left run_scheduled_goal.apply_async live, which cached a working kombu
+    # ConnectionPool on the shared celery_app and leaked into later tests whose
+    # own faked redis was then bypassed.)
     with (
         patch("redis.from_url", return_value=mock_r),
-        patch("app.scaling.tasks.run_goal") as mock_run_goal,
+        patch("app.scaling.tasks.run_scheduled_goal.apply_async", MagicMock()),
     ):
-        mock_run_goal.apply_async = MagicMock()
         result = fire_due_schedules.run()
 
     # Secret field removed, schedule re-saved, and fired

@@ -390,7 +390,10 @@ def test_fire_due_schedules_sanitizes_undispatched_legacy_redis_secrets(
         "redis",
         SimpleNamespace(from_url=lambda *args, **kwargs: FakeRedis()),
     )
-    monkeypatch.setattr(tasks.run_goal, "apply_async", fail_apply_async)
+    # WT-9: schedules dispatch through run_scheduled_goal, so patch that task's
+    # apply_async (not the stale run_goal) to exercise the real dispatch path
+    # without opening a live Celery broker connection.
+    monkeypatch.setattr(tasks.run_scheduled_goal, "apply_async", fail_apply_async)
 
     result = tasks.fire_due_schedules()
 
@@ -822,7 +825,10 @@ def test_fire_due_schedules_retries_dispatch_failure(monkeypatch: Any) -> None:
         "redis",
         SimpleNamespace(from_url=lambda *args, **kwargs: FakeRedis()),
     )
-    monkeypatch.setattr(tasks.run_goal, "apply_async", fail_apply_async)
+    # WT-9: schedules dispatch through run_scheduled_goal, so patch that task's
+    # apply_async (not the stale run_goal) to exercise the real dispatch path
+    # without opening a live Celery broker connection.
+    monkeypatch.setattr(tasks.run_scheduled_goal, "apply_async", fail_apply_async)
 
     # BUG 6 fix: per-schedule dispatch failures are now continued (not re-raised),
     # so the task completes normally with schedules_fired=0.
@@ -879,7 +885,10 @@ def test_fire_due_schedules_cron_dispatch_failure_raises(monkeypatch: Any) -> No
         "croniter",
         SimpleNamespace(croniter=lambda *args, **kwargs: FakeCron()),
     )
-    monkeypatch.setattr(tasks.run_goal, "apply_async", fail_apply_async)
+    # WT-9: schedules dispatch through run_scheduled_goal, so patch that task's
+    # apply_async (not the stale run_goal) to exercise the real dispatch path
+    # without opening a live Celery broker connection.
+    monkeypatch.setattr(tasks.run_scheduled_goal, "apply_async", fail_apply_async)
 
     # BUG 6 fix: per-schedule dispatch failures are now continued (not re-raised),
     # so the task completes normally with schedules_fired=0.
