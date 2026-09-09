@@ -278,7 +278,7 @@ warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
 disallow_any_generics = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "union-attr", "assignment", "arg-type", "call-arg", "return-value", "index", "operator", "name-defined"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "union-attr", "assignment", "return-value", "index", "operator", "name-defined"]
 
 # Agent graph + loop: LangGraph StateGraph dynamic compilation
 [[tool.mypy.overrides]]
@@ -361,7 +361,7 @@ warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
 disallow_any_generics = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value", "union-attr", "import-untyped"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value", "union-attr", "import-untyped"]
 
 # Goal service + event store: dynamic event dispatch + Redis pub/sub
 [[tool.mypy.overrides]]
@@ -369,7 +369,7 @@ module = ["app.services.*", "app.services.goal_events"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_any_generics = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "unused-ignore", "assignment", "arg-type", "call-arg", "return-value", "union-attr"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "unused-ignore", "assignment", "return-value", "union-attr"]
 
 # Phase 1: goal_service re-enables call-arg/arg-type (the disconnect-catching codes)
 [[tool.mypy.overrides]]
@@ -410,7 +410,7 @@ module = ["app.governance.*"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_any_generics = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value"]
 
 # Knowledge + RAG: dynamic retrieval + vector ops
 [[tool.mypy.overrides]]

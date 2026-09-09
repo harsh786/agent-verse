@@ -171,7 +171,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
                 endpoint = f"{BASE}/grants"
                 if action == "revoke":
-                    r = await client.delete(endpoint, headers=headers, json=payload)
+                    # httpx's delete() has no json= param; a DELETE with a body
+                    # must go through request() or it raises TypeError at runtime.
+                    r = await client.request(
+                        "DELETE", endpoint, headers=headers, json=payload
+                    )
                 else:
                     r = await client.post(endpoint, headers=headers, json=payload)
                 r.raise_for_status()

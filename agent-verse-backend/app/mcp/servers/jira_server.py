@@ -254,7 +254,7 @@ async def _call_tool_inner(
 ) -> dict[str, Any]:
     creds = credentials or {}
     base = _absolute_http_url(
-        creds.get("url") or creds.get("base_url") or os.getenv("JIRA_BASE_URL", "")
+        str(creds.get("url") or creds.get("base_url") or os.getenv("JIRA_BASE_URL", ""))
     )
     if not base:
         return {"error": "JIRA_BASE_URL not configured"}

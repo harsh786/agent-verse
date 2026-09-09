@@ -134,7 +134,7 @@ async def call_tool(
         or creds.get("password")
         or os.getenv("GITHUB_TOKEN", "")
     )
-    base_url = (
+    base_url = str(
         creds.get("url")
         or creds.get("base_url")
         or os.getenv("GITHUB_BASE_URL", "https://api.github.com")

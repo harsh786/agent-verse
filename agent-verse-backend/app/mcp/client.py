@@ -21,10 +21,14 @@ import httpx
 
 from app.mcp.registry import MCPRegistry, MCPServerConfig
 from app.net.ssrf_guard import SSRFError, assert_public_url
+from app.observability.logging import get_logger
 from app.providers.vault import is_connector_secret_ref, resolve_connector_secret_ref
 from app.tenancy.context import TenantContext
 
-logger = logging.getLogger(__name__)
+# Structlog logger: the call sites pass structured kwargs (tool=, server=, …),
+# which the stdlib logging.getLogger() logger rejects with a TypeError at
+# runtime. Use the project's structlog binder so those calls actually work.
+logger = get_logger(__name__)
 SecretResolver = Callable[..., str | None | Awaitable[str | None]]
 
 

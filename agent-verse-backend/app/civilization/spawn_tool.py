@@ -8,7 +8,7 @@ from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
-SPAWN_TOOL_DEFINITION = {
+SPAWN_TOOL_DEFINITION: dict[str, Any] = {
     "name": "civilization_spawn",
     "description": (
         "Spawn a new child agent within the civilization to handle a specific "

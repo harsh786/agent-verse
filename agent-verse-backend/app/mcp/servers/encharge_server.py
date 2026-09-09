@@ -183,7 +183,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     if isinstance(arguments["tags"], str)
                     else ",".join(arguments["tags"]),
                 }
-                r = await c.delete("/tags", json=body)
+                # httpx's delete() has no json= param; use request() for a body.
+                r = await c.request("DELETE", "/tags", json=body)
                 r.raise_for_status()
                 return {"removed": True}
 

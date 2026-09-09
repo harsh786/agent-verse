@@ -386,7 +386,10 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "openai_create_file":
                 content = arguments["file_content"].encode("utf-8")
-                files = {
+                # Heterogeneous multipart payload (a file 3-tuple plus a
+                # (None, value) form field) — a valid httpx `files=` mapping that
+                # its stricter tuple typing does not infer from the literal.
+                files: dict[str, Any] = {
                     "file": (arguments["filename"], content, "application/octet-stream"),
                     "purpose": (None, arguments.get("purpose", "fine-tune")),
                 }

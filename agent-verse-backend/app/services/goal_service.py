@@ -3379,7 +3379,7 @@ class GoalService:
         record = local_record
         queue: asyncio.Queue[dict[str, Any] | None] | None = None
         if record.status not in _TERMINAL_STATUSES:
-            queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=512)
+            queue = asyncio.Queue(maxsize=512)
             record.subscribers.append(queue)
 
         try:

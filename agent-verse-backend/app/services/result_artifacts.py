@@ -77,7 +77,8 @@ def build_result_artifact(goal: str, status: str, events: list[dict[str, Any]]) 
         output = (
             raw_output if isinstance(raw_output, dict) else _coerce_output(jira_event.get("output"))
         )
-        issues = output.get("issues") if isinstance(output.get("issues"), list) else []
+        _issues = output.get("issues")
+        issues = _issues if isinstance(_issues, list) else []
         rows = _jira_rows(issues)
         issue_word = "issue" if len(rows) == 1 else "issues"
         return {
