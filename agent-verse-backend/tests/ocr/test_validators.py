@@ -1,5 +1,4 @@
 """Tests for OCR field validators."""
-import pytest
 
 from app.ocr.validators import (
     mask_aadhaar,

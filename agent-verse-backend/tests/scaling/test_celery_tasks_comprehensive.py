@@ -5,11 +5,8 @@ The core run_goal task requires heavy mocking of the Celery/AgentGraph machinery
 """
 from __future__ import annotations
 
-import hashlib
 import time
-from datetime import UTC, datetime
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -186,7 +183,6 @@ class TestRunGoalDlq:
 
 class TestGetSyncRedis:
     def test_get_redis_pool_returns_pool(self) -> None:
-        import redis as sync_redis
 
         from app.scaling.tasks import _get_redis_pool
 

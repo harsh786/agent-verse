@@ -83,7 +83,7 @@ class TestRegisterBuiltinServers:
 
         # Patch MCPRegistry.register_builtin_handler
         with patch("app.mcp.registry.MCPRegistry.register_builtin_handler"):
-            env_patch = {var: "dummy_value" for var in target["requires_env"]}
+            env_patch = dict.fromkeys(target["requires_env"], "dummy_value")
             with patch.dict(os.environ, env_patch):
                 count = await register_builtin_servers(mock_registry, MagicMock())
 

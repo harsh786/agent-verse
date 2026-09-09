@@ -2,8 +2,6 @@
 """Phase 6: Dead code wiring and consistency fixes."""
 from __future__ import annotations
 
-import pytest
-
 
 def test_citation_threader_wired_in_pipeline():
     """CitationThreader must be imported/usable by ContextPipeline."""

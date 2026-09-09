@@ -2,15 +2,15 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.triggers.bulkhead import PLAN_CONCURRENCY, TriggerBulkhead
+from app.triggers.bulkhead import TriggerBulkhead
 from app.triggers.circuit_breaker import CircuitBreakerRegistry, TriggerCircuitBreaker
 from app.triggers.dedup import derive_idempotency_key
 from app.triggers.dispatcher import TriggerDispatcher
-from app.triggers.events import SimulatedTriggerResult, TriggerEvent
+from app.triggers.events import SimulatedTriggerResult
 from app.triggers.models import TriggerSpec, TriggerType
 from app.triggers.quota import TriggerQuotaEnforcer, TriggerQuotaExceeded
 from app.triggers.rate_limiter import TriggerRateLimiter, effective_rate_cap

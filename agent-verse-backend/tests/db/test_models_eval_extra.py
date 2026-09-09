@@ -1,8 +1,6 @@
 """Coverage for app/db/models/eval.py — EvalSuite and EvalSuiteRunResult ORM models."""
 from __future__ import annotations
 
-import pytest
-
 
 class TestEvalSuiteModel:
     def test_import(self):
@@ -36,7 +34,6 @@ class TestEvalSuiteModel:
         # We verify it by directly calling it
         import uuid
 
-        from app.db.models.eval import EvalSuite
         id1 = uuid.uuid4().hex
         id2 = uuid.uuid4().hex
         assert id1 != id2
@@ -82,7 +79,6 @@ class TestEvalSuiteRunResultModel:
     def test_default_id_generated(self):
         import uuid
 
-        from app.db.models.eval import EvalSuiteRunResult
         id1 = uuid.uuid4().hex
         id2 = uuid.uuid4().hex
         assert id1 != id2

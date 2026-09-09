@@ -2,8 +2,6 @@
 import logging
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 def test_resolve_checkpointer_uses_app_state_first():
     """A pre-wired saver that implements the ASYNC checkpoint API is used as-is.
@@ -87,9 +85,8 @@ def test_resolve_checkpointer_logs_warning_on_memory_fallback(caplog, capsys):
     app_state = MagicMock()
     app_state.langgraph_checkpointer = None
     # No REDIS_URL set; MagicMock settings.redis_url is not a str so it is ignored.
-    with patch.dict("os.environ", {}, clear=True):
-        with caplog.at_level(logging.WARNING):
-            result = _resolve_checkpointer(app_state)
+    with patch.dict("os.environ", {}, clear=True), caplog.at_level(logging.WARNING):
+        result = _resolve_checkpointer(app_state)
 
     assert isinstance(result, MemorySaver)
     # structlog may write to stdout rather than Python logging; check both.

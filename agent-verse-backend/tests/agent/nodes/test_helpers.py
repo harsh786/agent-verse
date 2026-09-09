@@ -1,8 +1,6 @@
 """Unit tests for app.agent.nodes._helpers — pure utility functions."""
 from __future__ import annotations
 
-import pytest
-
 from app.agent.nodes._helpers import (
     _build_verifier_summary,
     _extract_scope_value,

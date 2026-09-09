@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -788,11 +787,10 @@ class TestRunWithSignals:
         with patch("app.scaling.tasks._get_sync_redis", return_value=mock_sync_r), \
              patch("app.reliability.goal_lifecycle.is_paused_sync", is_paused), \
              patch("app.reliability.goal_lifecycle.is_cancelled_sync", is_cancelled), \
-             patch("asyncio.sleep", AsyncMock()):
-            with pytest.raises(GoalCancelledError):
-                await _run_with_signals(
-                    mock_runner, "Do task", tenant_ctx, AsyncMock(), "goal-1"
-                )
+             patch("asyncio.sleep", AsyncMock()), pytest.raises(GoalCancelledError):
+            await _run_with_signals(
+                mock_runner, "Do task", tenant_ctx, AsyncMock(), "goal-1"
+            )
 
     async def test_cancel_before_pause(self):
         """Lines 228-234: cancel detected before pause check."""
@@ -810,11 +808,10 @@ class TestRunWithSignals:
         with patch("app.scaling.tasks._get_sync_redis", return_value=mock_sync_r), \
              patch("app.reliability.goal_lifecycle.is_cancelled_sync", return_value=True), \
              patch("app.reliability.goal_lifecycle.is_paused_sync", return_value=False), \
-             patch("asyncio.sleep", AsyncMock()):
-            with pytest.raises(GoalCancelledError):
-                await _run_with_signals(
-                    mock_runner, "Do task", MagicMock(), AsyncMock(), "goal-cancel"
-                )
+             patch("asyncio.sleep", AsyncMock()), pytest.raises(GoalCancelledError):
+            await _run_with_signals(
+                mock_runner, "Do task", MagicMock(), AsyncMock(), "goal-cancel"
+            )
 
 
 # ── check_email_goals (IMAP disabled path) ────────────────────────────────────

@@ -4,13 +4,11 @@ Targets uncovered lines: 165-166, 225-227, 246-291, 411-467.
 """
 from __future__ import annotations
 
-import asyncio
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.enterprise.simulation import MockMCPClient, SimulationRun, SimulationRunner
+from app.enterprise.simulation import SimulationRun, SimulationRunner
 from app.tenancy.context import PlanTier, TenantContext
 
 _CTX = TenantContext(tenant_id="t-sim2", plan=PlanTier.ENTERPRISE, api_key_id="k2")

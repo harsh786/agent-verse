@@ -1,12 +1,11 @@
 """Full RPA integration tests — all 6 gaps verified."""
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.rpa.executor import RPAExecutor, RPAResult
+from app.rpa.executor import RPAExecutor
 from app.rpa.session_manager import BrowserSession, BrowserSessionManager
 
 # ── Gap 1: RPA tools visible to agent ─────────────────────────────────────────

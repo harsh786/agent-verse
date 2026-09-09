@@ -10,7 +10,6 @@ from app.workflow.dsl import (
     ConditionalBranch,
     HITLAction,
     StepDefinition,
-    WorkflowDefinition,
 )
 from app.workflow.state import WorkflowRunStatus
 

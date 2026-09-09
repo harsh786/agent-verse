@@ -50,5 +50,5 @@ class TestGoogleOAuthRouter:
 
 class TestEntitlementsModule:
     def test_entitlements_importable(self):
-        from app.tenancy.entitlements import assert_feature, has_feature
+        from app.tenancy.entitlements import has_feature
         assert callable(has_feature)

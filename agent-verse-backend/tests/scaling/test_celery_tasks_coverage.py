@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import hashlib
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -718,7 +717,6 @@ def test_check_mcp_health_fallback_with_valid_server(monkeypatch: pytest.MonkeyP
         mock_r.aclose = AsyncMock()
         return mock_r
 
-    import httpx
 
     with (
         patch("redis.asyncio.from_url", side_effect=_from_url),
@@ -1135,7 +1133,6 @@ def test_setup_sigterm_handler_raises_system_exit() -> None:
 
 def test_setup_sigterm_handles_os_error_gracefully() -> None:
     """_setup_sigterm catches OSError/ValueError from invalid signal contexts."""
-    import signal as _sig
     with patch("signal.signal", side_effect=OSError("not main thread")):
         from app.scaling.tasks import _setup_sigterm
         _setup_sigterm()  # should not raise
@@ -1831,7 +1828,6 @@ def test_fire_due_schedules_exception_in_schedule_processing(monkeypatch: pytest
     """Exception processing a single schedule key is caught and logged."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
-    import json
 
     from app.scaling.tasks import fire_due_schedules
 

@@ -80,7 +80,6 @@ def test_get_unknown_task_returns_404() -> None:
 
 def test_hmac_verification_disabled_without_secret(monkeypatch) -> None:
     """When A2A_SHARED_SECRET not set, any request is accepted."""
-    import os
     monkeypatch.delenv("A2A_SHARED_SECRET", raising=False)
     client = TestClient(_make_app())
     resp = client.post(
@@ -93,7 +92,6 @@ def test_hmac_verification_disabled_without_secret(monkeypatch) -> None:
 
 def test_hmac_verification_rejects_bad_signature(monkeypatch) -> None:
     """When A2A_SHARED_SECRET is set, bad signature returns 401."""
-    import os
     monkeypatch.setenv("A2A_SHARED_SECRET", "real-secret")
     client = TestClient(_make_app())
     resp = client.post(

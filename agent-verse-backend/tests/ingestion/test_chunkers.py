@@ -1,12 +1,9 @@
 """Every content type must produce structured chunks with metadata."""
 from __future__ import annotations
 
-import pytest
-
 from app.ingestion.chunkers import get_chunker_for_strategy
 from app.ingestion.chunkers.ast_chunker import ASTChunker
 from app.ingestion.chunkers.base import Chunk as ChunkerChunk
-from app.ingestion.chunkers.base import ChunkerBase
 from app.ingestion.chunkers.heading import HeadingChunker
 from app.ingestion.chunkers.pdf_layout import PDFLayoutChunker
 from app.ingestion.chunkers.scene import SceneChunker

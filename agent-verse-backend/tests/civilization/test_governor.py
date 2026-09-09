@@ -1,8 +1,6 @@
 """Tests for Governor — central authority for the civilization."""
-import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -769,7 +767,6 @@ async def test_governor_auto_pause_hitl_exception_is_swallowed():
 @pytest.mark.asyncio
 async def test_governor_auto_retire_idle_by_ttl():
     """Members past idle TTL should be retired."""
-    from datetime import timedelta
     old_time = datetime(2020, 1, 1, tzinfo=UTC)  # far in the past
     mock_session = AsyncMock()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)

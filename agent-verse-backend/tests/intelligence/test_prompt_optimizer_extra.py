@@ -7,8 +7,6 @@ Targets uncovered lines: 98-99, 131-136, 146, 150-155, 184-186,
 from __future__ import annotations
 
 import asyncio
-import random
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

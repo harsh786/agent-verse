@@ -1,11 +1,8 @@
 """Comprehensive tests for app/analytics/aggregator.py."""
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
-
-import pytest
 
 from app.analytics.aggregator import (
     AgentMetrics,

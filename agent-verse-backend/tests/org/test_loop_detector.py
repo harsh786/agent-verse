@@ -1,8 +1,6 @@
 """Tests for OrgLoopDetector — app/org/loop_detector.py"""
 from __future__ import annotations
 
-import pytest
-
 from app.org.loop_detector import OrgLoopDetector
 
 

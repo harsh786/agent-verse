@@ -1,11 +1,9 @@
 """World-class tests for the Agent Identity Layer."""
 from __future__ import annotations
 
-import pytest
-
 from app.auth.agent_credentials import AgentCredentialStore, generate_agent_api_key, is_agent_key
 from app.auth.agent_manifest import build_manifest, sign_manifest, verify_manifest
-from app.auth.delegation import DelegationChain, DelegationLink
+from app.auth.delegation import DelegationChain
 from app.auth.goal_tokens import mint_goal_token, verify_goal_token
 
 
@@ -85,7 +83,7 @@ class TestGoalTokens:
         token = mint_goal_token(goal_id="g1", tenant_id="t1", agent_id="a1")
         payload = verify_goal_token(token)
         assert payload is not None
-        assert "goal:g1" == payload["sub"]
+        assert payload["sub"] == "goal:g1"
         assert payload["tenant_id"] == "t1"
 
     def test_expired_token_invalid(self):

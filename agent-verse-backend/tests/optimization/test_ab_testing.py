@@ -1,11 +1,8 @@
 """A/B testing: arm selection, eval regression gating."""
 from __future__ import annotations
 
-import pytest
-
 from app.optimization.ab_testing import (
     ABTestingEngine,
-    ExperimentArm,
     ExperimentType,
     ab_testing_engine,
 )

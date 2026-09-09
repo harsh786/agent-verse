@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.api.marketplace_monetization import OnboardAuthorRequest, PricingRequest
+from app.api.marketplace_monetization import PricingRequest
 
 
 def test_pricing_request_validates_revenue_share():

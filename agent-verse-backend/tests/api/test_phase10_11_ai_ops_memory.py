@@ -1,5 +1,4 @@
 """Phase 10+11: AI Ops (Evals/Drift) + Agent Memory 2.0 tests."""
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

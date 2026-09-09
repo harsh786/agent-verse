@@ -3,14 +3,11 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from app.agent.structured_plan import StructuredPlan
 from app.agent.workflow_planner import (
     WorkflowPlan,
     WorkflowPlanner,
     WorkflowStep,
-    _StaticWorkflowPlan,
     _StaticWorkflowStep,
     build_static_workflow,
 )

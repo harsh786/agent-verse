@@ -873,7 +873,7 @@ async def test_execute_step_permission_matrix_allow_proceeds() -> None:
 @pytest.mark.asyncio
 async def test_execute_step_policy_engine_deny_raises() -> None:
     """PolicyEngine DENY raises PermissionError."""
-    from app.governance.policies import Policy, PolicyEngine, PolicyResult
+    from app.governance.policies import PolicyEngine, PolicyResult
 
     mock_policy = MagicMock(spec=PolicyEngine)
     mock_policy.evaluate.return_value = PolicyResult.DENY

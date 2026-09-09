@@ -2,8 +2,6 @@
 """SSE events, Prometheus metrics, structured logging, OTEL tracing."""
 from __future__ import annotations
 
-import pytest
-
 # ── SSE EVENTS ────────────────────────────────────────────────────────────────
 
 def test_all_9_sse_event_types_defined():

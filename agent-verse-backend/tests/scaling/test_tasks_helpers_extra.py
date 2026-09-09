@@ -291,7 +291,7 @@ def test_datetime_to_naive_iso_with_naive_datetime() -> None:
 
 def test_datetime_to_naive_iso_with_aware_datetime_converts_to_utc() -> None:
     """_datetime_to_naive_iso converts aware datetime to UTC naive ISO."""
-    dt = datetime.datetime(2024, 1, 15, 12, 30, 45, tzinfo=datetime.timezone.utc)
+    dt = datetime.datetime(2024, 1, 15, 12, 30, 45, tzinfo=datetime.UTC)
     result = tasks._datetime_to_naive_iso(dt)
     # UTC datetime should be unchanged after astimezone(UTC) (no offset suffix)
     assert result == "2024-01-15T12:30:45"

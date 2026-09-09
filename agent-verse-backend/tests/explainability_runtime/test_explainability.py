@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from app.explainability_runtime.decision_explainer import DecisionExplainer, ExplanationBundle
 from app.explainability_runtime.runtime_profile_explainer import RuntimeProfileExplainer
 from app.explainability_runtime.source_explainer import SourceExplainer

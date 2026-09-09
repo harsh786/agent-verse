@@ -12,7 +12,6 @@ Run with:
 from __future__ import annotations
 
 import os
-import uuid
 
 import pytest
 from dotenv import load_dotenv

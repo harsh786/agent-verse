@@ -4,12 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.reliability.goal_lifecycle import (
-    GoalCancelledError,
     check_pause_cancel,
     clear_signals,
-    is_cancelled_sync,
-    is_paused_sync,
-    signal_cancel,
     signal_pause,
     signal_resume,
 )

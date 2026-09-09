@@ -10,11 +10,9 @@ Targets uncovered lines: 28-53, 60-83, 106, 112-119, 144-183, 191-192,
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

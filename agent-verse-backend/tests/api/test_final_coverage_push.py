@@ -16,10 +16,9 @@ import asyncio
 import hashlib
 import hmac
 import json
-import os
 import time
 import uuid
-from typing import Any
+from datetime import UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -278,7 +277,7 @@ class TestCollabPubSubListener:
                 task = asyncio.create_task(ps._listener_loop())
                 try:
                     await asyncio.wait_for(task, timeout=2.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                except (TimeoutError, asyncio.CancelledError, Exception):
                     pass
         assert call_count[0] >= 1
 
@@ -318,7 +317,7 @@ class TestCollabPubSubListener:
             task = asyncio.create_task(ps._listener_loop())
             try:
                 await asyncio.wait_for(task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+            except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
         _ws_connections.pop(session_id, None)
 
@@ -352,7 +351,7 @@ class TestCollabPubSubListener:
             task = asyncio.create_task(ps._listener_loop())
             try:
                 await asyncio.wait_for(task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+            except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
 
     @pytest.mark.asyncio
@@ -393,11 +392,11 @@ class TestCollabPubSubListener:
             task = asyncio.create_task(ps._listener_loop())
             try:
                 await asyncio.wait_for(processed.wait(), timeout=2.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             try:
                 await asyncio.wait_for(task, timeout=0.5)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+            except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
             # The broadcast attempt was made (send_text was called on dead_ws)
             dead_ws.send_text.assert_called_once()
@@ -1447,7 +1446,7 @@ class TestPoliciesExtra:
                 )
                 try:
                     await asyncio.wait_for(task, timeout=2.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                except (TimeoutError, asyncio.CancelledError, Exception):
                     pass
         assert call_count[0] >= 1
 
@@ -1489,7 +1488,7 @@ class TestPoliciesExtra:
             )
             try:
                 await asyncio.wait_for(task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+            except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
 
         engine.reload_from_db.assert_called_once_with(None, tenant_id="t1")
@@ -1544,7 +1543,7 @@ class TestAuditExtra:
     # lines 225–254 — sync_from_db with rows
     @pytest.mark.asyncio
     async def test_sync_from_db_with_rows(self) -> None:
-        from app.governance.audit import ActionLevel, AuditLog
+        from app.governance.audit import AuditLog
 
         mock_row = MagicMock()
         mock_row.id = "evt-1"
@@ -1578,7 +1577,7 @@ class TestAuditExtra:
     # lines 156–160 — query_db with time filters → hits start/end time params
     @pytest.mark.asyncio
     async def test_query_db_with_time_filters(self) -> None:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from app.governance.audit import AuditLog
 
@@ -1594,7 +1593,7 @@ class TestAuditExtra:
             return mock_session
 
         audit = AuditLog(db_session_factory=_db)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         # Patch sqlalchemy_rls_context where it's actually used
         mock_ctx = MagicMock()
@@ -1621,7 +1620,7 @@ class TestEvalSuiteExtra:
     # lines 353–375 — run_with_llm_judge: DB persist
     @pytest.mark.asyncio
     async def test_run_with_llm_judge_persists_to_db(self) -> None:
-        from app.intelligence.eval_suite import EvalSuiteRunner, GoldenTask
+        from app.intelligence.eval_suite import EvalSuiteRunner
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -2336,7 +2335,6 @@ class TestMCPClientWave4:
     @pytest.mark.asyncio
     async def test_call_tool_update_stats_exception_swallowed(self) -> None:
         """Lines 450-451, 468-469, 489-490: _update_tool_stats exception swallowed."""
-        import httpx
 
         from app.mcp.client import MCPClient
         from app.mcp.registry import MCPServerConfig
@@ -3133,7 +3131,7 @@ class TestConnectorsWave6:
     async def test_resolve_auth_value_no_resolver(self) -> None:
         """Line 129: _resolve_auth_value returns empty string when secret_resolver is None."""
         from app.api.connectors import _resolve_auth_value
-        from app.providers.vault import connector_secret_ref, store_connector_secret
+        from app.providers.vault import connector_secret_ref
 
         ref = connector_secret_ref("srv-noresolver", "key")
         # Don't store the secret - resolve_connector_secret_ref returns None
@@ -3305,7 +3303,6 @@ class TestConnectorsWave7:
 
     def test_update_connector_secret_fail_503(self) -> None:
         """Lines 336-337: update_connector secret storage fails → 503."""
-        from app.mcp.registry import MCPServerConfig
         from app.mcp.registry import MCPServerConfig as ExistingCfg
         from app.providers.vault import connector_secret_ref
 
@@ -3402,7 +3399,7 @@ class TestQuickWinsWave8:
             task = asyncio.create_task(ps._listener_loop())
             try:
                 await asyncio.wait_for(task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+            except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
 
     # templates.py line 75 — _TemplateStore.set_db

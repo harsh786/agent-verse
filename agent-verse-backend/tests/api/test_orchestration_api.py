@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import os
 
-import pytest
-
 
 async def test_readiness_gate_blocks_goal_when_unavailable():
     """ReadinessGate.check() must return ready=False when LLM provider is down."""

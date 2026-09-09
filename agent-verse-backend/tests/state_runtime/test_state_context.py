@@ -1,8 +1,6 @@
 """StateRuntimeContext: 8 sources, StateContextBuilder, session memory clearing."""
 from __future__ import annotations
 
-import pytest
-
 from app.orchestration.runtime_profile import (
     AgentPatternConfig,
     EvalConfig,
@@ -13,8 +11,7 @@ from app.orchestration.runtime_profile import (
     RAGStrategyConfig,
     SecurityConfig,
 )
-from app.state_runtime.state_context import StateContextBuilder, StateRuntimeContext
-from app.tenancy.context import PlanTier, TenantContext
+from app.state_runtime.state_context import StateRuntimeContext
 
 
 def _make_profile(use_ltm=True):

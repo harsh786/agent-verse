@@ -1,7 +1,7 @@
 """Tests for system_session RLS bypass in app/db/rls.py."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 def test_system_session_is_importable() -> None:
     """system_session must be importable from app.db.rls."""
-    from app.db.rls import system_session  # noqa: F401
+    from app.db.rls import system_session
     assert callable(system_session)
 
 

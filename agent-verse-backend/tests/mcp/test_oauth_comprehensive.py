@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-import pytest
 import respx
 
 from app.mcp.oauth import _OAUTH_STATE_TTL, OAuthFlowManager, OAuthState, OAuthToken

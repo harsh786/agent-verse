@@ -184,7 +184,6 @@ def test_admin_key_comparison_is_constant_time():
 
 def test_admin_endpoint_rejects_wrong_key(client, monkeypatch):
     """Admin endpoints must return 401 for an incorrect key value."""
-    import os
     monkeypatch.setenv("PLATFORM_ADMIN_KEY", "correct-secret-key-xyz")
     response = client.get(
         "/admin/tenants",
@@ -195,7 +194,6 @@ def test_admin_endpoint_rejects_wrong_key(client, monkeypatch):
 
 def test_admin_endpoint_rejects_empty_key(client, monkeypatch):
     """Admin endpoints must return 401 when X-Admin-Key header is absent."""
-    import os
     monkeypatch.setenv("PLATFORM_ADMIN_KEY", "some-secret")
     response = client.get("/admin/tenants")
     assert response.status_code == 401
@@ -297,7 +295,6 @@ def test_mfa_enrollment_does_not_log_secret(client, caplog):
 def test_mfa_enrollment_response_contains_secret_not_logged():
     """The enrollment endpoint returns the secret in the response body;
     verify the MFA module does NOT log it via the module logger."""
-    import logging as _logging
 
     from app.api import mfa as mfa_module
 

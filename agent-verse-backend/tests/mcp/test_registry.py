@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from app.mcp.a2a import AgentCard
-from app.mcp.catalog import CONNECTOR_CATALOG, ConnectorSpec
+from app.mcp.catalog import CONNECTOR_CATALOG
 from app.mcp.registry import MCPRegistry, MCPServerConfig, ServerStatus
 from app.tenancy.context import PlanTier, TenantContext
 

@@ -1,5 +1,4 @@
 """Tests that parallel step execution actually uses asyncio.gather."""
-import asyncio
 
 import pytest
 

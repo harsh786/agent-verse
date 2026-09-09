@@ -1,7 +1,5 @@
 """Tests for per-tenant circuit breaker isolation."""
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
+from unittest.mock import MagicMock
 
 
 def test_circuit_breaker_key_is_tenant_scoped():

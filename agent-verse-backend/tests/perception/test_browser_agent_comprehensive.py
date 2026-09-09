@@ -1,9 +1,7 @@
 """Comprehensive tests for app/perception/browser_agent.py — covers all paths without real browser."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 import app.perception.browser_agent as ba_module
 from app.perception.browser_agent import BrowserAction, BrowserAgent, BrowserResult
@@ -146,7 +144,6 @@ async def test_analyze_screenshot_vision_provider_no_supports_vision() -> None:
 
 
 async def test_analyze_screenshot_with_vision_returns_content() -> None:
-    from app.providers.base import CompletionResponse
 
     mock_vision = MagicMock()
     mock_vision.supports_vision = MagicMock(return_value=True)

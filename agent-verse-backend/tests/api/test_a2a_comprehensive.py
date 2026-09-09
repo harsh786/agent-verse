@@ -100,7 +100,6 @@ async def test_send_callback_noop_empty_url() -> None:
 
 async def test_send_callback_http_error_is_swallowed(respx_mock) -> None:
     import httpx
-    import respx
 
     respx_mock.post("https://callback.example.com/done").mock(
         side_effect=httpx.ConnectTimeout("timeout")

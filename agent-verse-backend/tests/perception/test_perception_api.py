@@ -6,10 +6,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.api.perception import router as perception_router
-from app.api.tenants import router as tenants_router
 from app.main import create_app
-from app.services.tenant_service import TenantService
-from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
 
 @pytest.fixture

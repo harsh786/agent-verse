@@ -6,8 +6,6 @@ spec.runner_type) invalidate the signature when tampered.
 """
 from __future__ import annotations
 
-import pytest
-
 from app.execution_environment.envelope import build_envelope, verify_envelope
 from app.execution_environment.models import (
     CodeExecutionWorkload,
@@ -111,7 +109,6 @@ def test_hmac_expired_envelope_fails_verification() -> None:
     from datetime import UTC, datetime, timedelta
 
     from app.execution_environment.envelope import sign_envelope
-    from app.execution_environment.models import ExecutionEnvelope
 
     old_envelope = build_envelope(tenant_id="t1", goal_id="g1", goal_text="old goal")
     # Manually set issued_at to 2 hours ago

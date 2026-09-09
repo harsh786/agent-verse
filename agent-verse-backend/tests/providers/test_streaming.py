@@ -35,7 +35,7 @@ async def test_fake_provider_stream_yields_tokens():
 @pytest.mark.asyncio
 async def test_anthropic_provider_stream_complete_yields_tokens():
     """AnthropicProvider.stream_complete yields tokens from the streaming API."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
 
     from app.providers.anthropic_provider import AnthropicProvider
     from app.providers.base import CompletionRequest, Message

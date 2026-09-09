@@ -1,10 +1,6 @@
 """Tests for CEL evaluator, CounterThreshold, WindowAggregate, CompoundTrigger."""
 from __future__ import annotations
 
-import time
-
-import pytest
-
 from app.triggers.condition.evaluator import (
     CELEvaluator,
     CompoundTriggerEvaluator,

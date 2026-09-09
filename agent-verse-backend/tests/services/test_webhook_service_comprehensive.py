@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-import pytest
 
 from app.services.webhook_service import (
     _DELIVERY_TTL_SECONDS,

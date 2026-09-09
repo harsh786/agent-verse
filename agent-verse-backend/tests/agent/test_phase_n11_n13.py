@@ -2,8 +2,6 @@
 """Phase N11-N13: chunkers + granular flags + advanced RAG dispatch."""
 from __future__ import annotations
 
-import pytest
-
 # ── N11: Chunker dispatch ────────────────────────────────────────────────────
 
 def test_ingestion_orchestrator_dispatches_ast_chunker_for_code():

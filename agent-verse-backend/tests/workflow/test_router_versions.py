@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 
-def make_app(service: MagicMock) -> "TestClient":
+def make_app(service: MagicMock) -> TestClient:
     from fastapi import FastAPI, Request
 
     from app.tenancy.context import PlanLimits, PlanTier, TenantContext
@@ -85,14 +85,14 @@ def ver_service() -> MagicMock:
 
 
 @pytest.fixture
-def client(ver_service: MagicMock) -> "TestClient":
+def client(ver_service: MagicMock) -> TestClient:
     return make_app(ver_service)
 
 
 # ── Version list ──────────────────────────────────────────────────────────────
 
 
-def test_list_versions(client: "TestClient") -> None:
+def test_list_versions(client: TestClient) -> None:
     resp = client.get("/api/v1/workflows/wf-1/versions")
     assert resp.status_code == 200
     data = resp.json()
@@ -132,14 +132,14 @@ def test_list_versions_service_unavailable() -> None:
 # ── Get specific version ──────────────────────────────────────────────────────
 
 
-def test_get_version(client: "TestClient") -> None:
+def test_get_version(client: TestClient) -> None:
     resp = client.get("/api/v1/workflows/wf-1/versions/1")
     assert resp.status_code == 200
     data = resp.json()
     assert data["version"] == 1
 
 
-def test_get_version_not_found(client: "TestClient", ver_service: MagicMock) -> None:
+def test_get_version_not_found(client: TestClient, ver_service: MagicMock) -> None:
     ver_service.get_version.return_value = None
     resp = client.get("/api/v1/workflows/wf-1/versions/999")
     assert resp.status_code == 404
@@ -148,14 +148,14 @@ def test_get_version_not_found(client: "TestClient", ver_service: MagicMock) -> 
 # ── Restore version ───────────────────────────────────────────────────────────
 
 
-def test_restore_version(client: "TestClient") -> None:
+def test_restore_version(client: TestClient) -> None:
     resp = client.post("/api/v1/workflows/wf-1/versions/1/restore")
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "draft"
 
 
-def test_restore_version_not_found(client: "TestClient", ver_service: MagicMock) -> None:
+def test_restore_version_not_found(client: TestClient, ver_service: MagicMock) -> None:
     ver_service.restore_version.side_effect = ValueError("Version not found")
     resp = client.post("/api/v1/workflows/wf-1/versions/999/restore")
     assert resp.status_code == 404
@@ -164,7 +164,7 @@ def test_restore_version_not_found(client: "TestClient", ver_service: MagicMock)
 # ── Diff versions ─────────────────────────────────────────────────────────────
 
 
-def test_diff_versions(client: "TestClient") -> None:
+def test_diff_versions(client: TestClient) -> None:
     resp = client.get("/api/v1/workflows/wf-1/versions/1/diff/2")
     assert resp.status_code == 200
     data = resp.json()
@@ -173,7 +173,7 @@ def test_diff_versions(client: "TestClient") -> None:
     assert "modified_steps" in data
 
 
-def test_diff_versions_not_found(client: "TestClient", ver_service: MagicMock) -> None:
+def test_diff_versions_not_found(client: TestClient, ver_service: MagicMock) -> None:
     ver_service.diff_versions.side_effect = ValueError("Version not found")
     resp = client.get("/api/v1/workflows/wf-1/versions/1/diff/999")
     assert resp.status_code == 404
@@ -182,20 +182,20 @@ def test_diff_versions_not_found(client: "TestClient", ver_service: MagicMock) -
 # ── Publishing approval ────────────────────────────────────────────────────────
 
 
-def test_submit_for_approval(client: "TestClient") -> None:
+def test_submit_for_approval(client: TestClient) -> None:
     resp = client.post("/api/v1/workflows/wf-1/submit-for-approval")
     assert resp.status_code == 202
     data = resp.json()
     assert data["status"] == "pending_approval"
 
 
-def test_submit_for_approval_conflict(client: "TestClient", ver_service: MagicMock) -> None:
+def test_submit_for_approval_conflict(client: TestClient, ver_service: MagicMock) -> None:
     ver_service.submit_for_approval.side_effect = ValueError("Already submitted")
     resp = client.post("/api/v1/workflows/wf-1/submit-for-approval")
     assert resp.status_code == 409
 
 
-def test_approve_publish(client: "TestClient") -> None:
+def test_approve_publish(client: TestClient) -> None:
     resp = client.post("/api/v1/workflows/wf-1/approve-publish", json={
         "note": "LGTM", "approver_id": "admin-1"
     })
@@ -205,7 +205,7 @@ def test_approve_publish(client: "TestClient") -> None:
     assert data["publish_approved_by"] == "admin-1"
 
 
-def test_reject_publish(client: "TestClient") -> None:
+def test_reject_publish(client: TestClient) -> None:
     resp = client.post("/api/v1/workflows/wf-1/reject-publish", json={
         "note": "Needs more review"
     })
@@ -217,7 +217,7 @@ def test_reject_publish(client: "TestClient") -> None:
 # ── YAML export ───────────────────────────────────────────────────────────────
 
 
-def test_export_yaml(client: "TestClient") -> None:
+def test_export_yaml(client: TestClient) -> None:
     resp = client.get("/api/v1/workflows/wf-1/yaml")
     assert resp.status_code == 200
     # Should return YAML string
@@ -225,7 +225,7 @@ def test_export_yaml(client: "TestClient") -> None:
     assert len(body) > 0
 
 
-def test_export_yaml_not_found(client: "TestClient", ver_service: MagicMock) -> None:
+def test_export_yaml_not_found(client: TestClient, ver_service: MagicMock) -> None:
     ver_service.get.return_value = None
     resp = client.get("/api/v1/workflows/bad-id/yaml")
     assert resp.status_code == 404
@@ -234,7 +234,7 @@ def test_export_yaml_not_found(client: "TestClient", ver_service: MagicMock) -> 
 # ── Import YAML ───────────────────────────────────────────────────────────────
 
 
-def test_import_yaml(client: "TestClient") -> None:
+def test_import_yaml(client: TestClient) -> None:
     yaml_body = b"name: Test WF\nsteps: []\n"
     resp = client.post("/api/v1/workflows/import-yaml",
                        content=yaml_body,
@@ -242,7 +242,7 @@ def test_import_yaml(client: "TestClient") -> None:
     assert resp.status_code in (201, 422)  # 422 if DSL validation fails on minimal yaml
 
 
-def test_import_invalid_yaml(client: "TestClient") -> None:
+def test_import_invalid_yaml(client: TestClient) -> None:
     resp = client.post("/api/v1/workflows/import-yaml",
                        content=b"{ invalid yaml {{{{",
                        headers={"Content-Type": "text/plain"})
@@ -252,14 +252,14 @@ def test_import_invalid_yaml(client: "TestClient") -> None:
 # ── Clone ─────────────────────────────────────────────────────────────────────
 
 
-def test_clone_workflow(client: "TestClient") -> None:
+def test_clone_workflow(client: TestClient) -> None:
     resp = client.post("/api/v1/workflows/wf-1/clone")
     assert resp.status_code == 201
     data = resp.json()
     assert "copy" in data["name"].lower() or data["id"] != "wf-1"
 
 
-def test_clone_not_found(client: "TestClient", ver_service: MagicMock) -> None:
+def test_clone_not_found(client: TestClient, ver_service: MagicMock) -> None:
     ver_service.get.return_value = None
     resp = client.post("/api/v1/workflows/bad-id/clone")
     assert resp.status_code == 404

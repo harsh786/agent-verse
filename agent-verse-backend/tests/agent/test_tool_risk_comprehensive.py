@@ -1,8 +1,6 @@
 """Comprehensive tests for app/agent/tool_risk.py — targets 90%+ statement coverage."""
 from __future__ import annotations
 
-import pytest
-
 from app.agent.tool_risk import _name_tokens, classify_tool_risk
 
 # ── _name_tokens ──────────────────────────────────────────────────────────────

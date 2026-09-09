@@ -1,5 +1,4 @@
 """P1.1 advanced DAG tests: conditional branches and loop fields."""
-import pytest
 
 
 def test_structured_step_has_condition_field():

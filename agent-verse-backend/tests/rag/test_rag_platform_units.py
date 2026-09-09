@@ -7,8 +7,6 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-import time
-from typing import Any
 
 import pytest
 
@@ -18,7 +16,6 @@ from app.rag_platform.reranker_contract import (
     BoundedAsyncExecutor,
     RerankerInferenceError,
     RerankerLoadError,
-    RerankerProtocol,
 )
 
 # ── RetrievalLeg ──────────────────────────────────────────────────────────────

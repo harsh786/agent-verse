@@ -28,7 +28,7 @@ def test_embed_texts_returns_empty_list_without_provider():
     """embed_texts() returns empty embeddings, not random vectors, when no provider."""
     import asyncio
 
-    from app.providers.base import EmbedRequest, embed_texts
+    from app.providers.base import embed_texts
     result = asyncio.run(embed_texts(["test text"], provider=None))
     # Either returns empty list or single empty embedding
     assert isinstance(result, list)

@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from app.reliability.dedup import DeduplicationCache
 from app.tenancy.context import PlanTier, TenantContext
 

@@ -1,5 +1,4 @@
 """Tests for cost-aware efficiency scoring."""
-import pytest
 
 from app.agent.state import AgentState, GoalStatus
 from app.intelligence.eval_runner import EvalRunner

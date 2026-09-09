@@ -16,21 +16,12 @@ and require Docker/colima to be running (so that the full app import tree works)
 """
 from __future__ import annotations
 
-import os
-
-import pytest
-
 from app.execution_environment.envelope import build_envelope
 from app.execution_environment.local_runner import (
     _ALLOWED_ENV_KEYS,
     LocalSubprocessRunner,
     _encode_envelope,
     _try_forward_event,
-)
-from app.execution_environment.models import (
-    ExecutionFailureReason,
-    ExecutionRequest,
-    RunnerType,
 )
 
 # ── Allowlist checks ──────────────────────────────────────────────────────────
@@ -101,7 +92,6 @@ def test_encode_envelope_excludes_scoped_credentials() -> None:
         scoped_db_url="postgresql://user:pass@host/db",
     )
     import base64
-    import json
     payload = envelope.to_dict()
     encoded = _encode_envelope(payload)
     decoded_str = base64.b64decode(encoded).decode()

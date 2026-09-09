@@ -5,9 +5,7 @@ ExecutionMemory, ReflexionStore, and SemanticCache — all with mocked DB.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 
 def _tenant_ctx(tenant_id: str = "tenant1"):  # type: ignore[return]

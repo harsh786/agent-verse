@@ -1,8 +1,6 @@
 """Tests for publish approval workflow (requires_publish_approval flag)."""
 from __future__ import annotations
 
-import pytest
-
 from app.workflow.dsl import WorkflowDefinition
 
 

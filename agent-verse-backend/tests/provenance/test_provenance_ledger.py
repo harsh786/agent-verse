@@ -1,9 +1,6 @@
 """Tests for ProvenanceLedger with claim-level source chain — 6 tests."""
 from __future__ import annotations
 
-import pytest
-
-from app.provenance.claim_trace import ProvenanceRecord
 from app.provenance.ledger import ProvenanceLedger
 from app.provenance.source_ref import SourceRef
 

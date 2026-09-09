@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 def _make_state_with_statuses(statuses: list[str]) -> object:
     """Build a minimal AgentState-like object with steps of given statuses."""
-    from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
+    from app.agent.state import StepStatus
 
     state = MagicMock()
     steps = []
@@ -26,7 +26,6 @@ class TestStuckLoopDetection:
         return g
 
     def test_returns_false_when_no_steps(self) -> None:
-        from app.agent.state import AgentState
         graph = self._get_graph()
         state = MagicMock()
         state.steps = []

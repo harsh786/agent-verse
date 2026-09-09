@@ -1,8 +1,6 @@
 """Tests for TeamFormationEngine — app/org/team_formation.py"""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 
 from app.org.team_formation import RoleMapper, TeamFormationEngine, TeamManifest

@@ -1,11 +1,9 @@
 """Tests for Phase 3 Track D (consensus verifier) and Track E (calibration)."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
-from app.agent.consensus import ConsensusVerifier, VerifierVote, requires_consensus
+from app.agent.consensus import ConsensusVerifier, requires_consensus
 
 
 class TestRequiresConsensus:
@@ -82,7 +80,6 @@ class TestConsensusVerifier:
     @pytest.mark.asyncio
     async def test_fail_closed_on_provider_error(self) -> None:
         """A verifier that throws an exception counts as a failure vote."""
-        from app.providers.fake import FakeProvider
 
         class BoomProvider:
             async def complete(self, req: object) -> object:

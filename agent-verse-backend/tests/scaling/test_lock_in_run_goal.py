@@ -1,7 +1,5 @@
 """Tests that the distributed lock is properly acquired in run_goal."""
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 
 def test_run_goal_skips_when_lock_not_acquired():

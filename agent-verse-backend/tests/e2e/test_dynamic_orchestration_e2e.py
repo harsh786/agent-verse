@@ -527,7 +527,6 @@ def test_ac_readiness_gate_blocks_when_postgres_down():
         MemoryCacheConfig,
         ModelPlanConfig,
         RAGStrategyConfig,
-        RiskLevel,
         SecurityConfig,
     )
 

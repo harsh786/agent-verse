@@ -172,7 +172,7 @@ def test_schedule_datetime_datetime_object_naive() -> None:
 
 def test_schedule_datetime_aware_datetime_converts() -> None:
     from app.scaling.tasks import _schedule_datetime
-    dt = datetime.datetime(2024, 3, 15, 9, 30, 0, tzinfo=datetime.timezone.utc)
+    dt = datetime.datetime(2024, 3, 15, 9, 30, 0, tzinfo=datetime.UTC)
     result = _schedule_datetime(dt)
     assert result.tzinfo is None
 

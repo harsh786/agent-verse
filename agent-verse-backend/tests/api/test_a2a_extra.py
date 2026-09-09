@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

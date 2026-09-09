@@ -5,11 +5,11 @@ import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
-from app.civilization.bus import CivilizationBus, _nullctx
+from app.civilization.bus import CivilizationBus
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -17,7 +17,7 @@ from app.civilization.bus import CivilizationBus, _nullctx
 class _noop_ctx:
     """Null async context manager."""
 
-    async def __aenter__(self) -> "_noop_ctx":
+    async def __aenter__(self) -> _noop_ctx:
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -31,7 +31,7 @@ class _FakeSession:
         self.executions: list[Any] = []
         self._rows = rows or []
 
-    async def __aenter__(self) -> "_FakeSession":
+    async def __aenter__(self) -> _FakeSession:
         return self
 
     async def __aexit__(self, *args: Any) -> None:

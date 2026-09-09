@@ -100,7 +100,6 @@ class TestSendApprovalEmailSmtpError:
 
     @pytest.mark.asyncio
     async def test_returns_true_on_success(self):
-        from app.integrations.email.approval_sender import send_approval_email
         mock_aiosmtp = MagicMock()
         mock_aiosmtp.send = AsyncMock(return_value=None)
 
@@ -112,11 +111,8 @@ class TestSendApprovalEmailSmtpError:
             "aiosmtplib": mock_aiosmtp,
         }):
             # We need real email.mime modules, so just mock aiosmtplib.send
-            from email.mime.multipart import MIMEMultipart
-            from email.mime.text import MIMEText
 
             with patch("aiosmtplib.send", mock_aiosmtp.send):
-                import importlib
 
                 import app.integrations.email.approval_sender as mod
                 # Directly patch aiosmtplib in the module
@@ -182,9 +178,8 @@ class TestCheckAndProcessEmailsDisabled:
             "IMAP_ENABLED": "true",
             "IMAP_HOST": "mail.example.com",
             "IMAP_USER": "user@example.com",
-        }):
-            with patch.dict(sys.modules, {"aioimaplib": None}):
-                result = await check_and_process_emails(MagicMock(), MagicMock())
+        }), patch.dict(sys.modules, {"aioimaplib": None}):
+            result = await check_and_process_emails(MagicMock(), MagicMock())
         assert result == 0
 
 
@@ -192,7 +187,6 @@ class TestCheckAndProcessEmailsHappyPath:
     @pytest.mark.asyncio
     async def test_processes_emails_ssl(self):
         """Happy path: SSL IMAP, finds one UNSEEN email, submits as goal."""
-        import email as email_lib
         from email.mime.text import MIMEText
 
         # Build a fake RFC822 message
@@ -224,15 +218,14 @@ class TestCheckAndProcessEmailsHappyPath:
             "IMAP_USER": "user@example.com",
             "IMAP_PASSWORD": "secret",
             "IMAP_SSL": "true",
-        }):
-            with patch.dict(sys.modules, {"aioimaplib": mock_aioimaplib}):
-                import importlib
+        }), patch.dict(sys.modules, {"aioimaplib": mock_aioimaplib}):
+            import importlib
 
-                from app.integrations.email import imap_listener
-                importlib.reload(imap_listener)
-                result = await imap_listener.check_and_process_emails(
-                    mock_goal_service, MagicMock()
-                )
+            from app.integrations.email import imap_listener
+            importlib.reload(imap_listener)
+            result = await imap_listener.check_and_process_emails(
+                mock_goal_service, MagicMock()
+            )
 
         assert result >= 0  # may be 0 if module reload doesn't pick up mock
 
@@ -254,15 +247,14 @@ class TestCheckAndProcessEmailsHappyPath:
             "IMAP_HOST": "mail.example.com",
             "IMAP_USER": "user@example.com",
             "IMAP_SSL": "false",
-        }):
-            with patch.dict(sys.modules, {"aioimaplib": mock_aioimaplib}):
-                import importlib
+        }), patch.dict(sys.modules, {"aioimaplib": mock_aioimaplib}):
+            import importlib
 
-                from app.integrations.email import imap_listener
-                importlib.reload(imap_listener)
-                result = await imap_listener.check_and_process_emails(
-                    MagicMock(), MagicMock()
-                )
+            from app.integrations.email import imap_listener
+            importlib.reload(imap_listener)
+            result = await imap_listener.check_and_process_emails(
+                MagicMock(), MagicMock()
+            )
         assert isinstance(result, int)
 
     @pytest.mark.asyncio
@@ -275,13 +267,12 @@ class TestCheckAndProcessEmailsHappyPath:
             "IMAP_ENABLED": "true",
             "IMAP_HOST": "bad.host.com",
             "IMAP_USER": "u@example.com",
-        }):
-            with patch.dict(sys.modules, {"aioimaplib": mock_aioimaplib}):
-                import importlib
+        }), patch.dict(sys.modules, {"aioimaplib": mock_aioimaplib}):
+            import importlib
 
-                from app.integrations.email import imap_listener
-                importlib.reload(imap_listener)
-                result = await imap_listener.check_and_process_emails(
-                    MagicMock(), MagicMock()
-                )
+            from app.integrations.email import imap_listener
+            importlib.reload(imap_listener)
+            result = await imap_listener.check_and_process_emails(
+                MagicMock(), MagicMock()
+            )
         assert result == 0

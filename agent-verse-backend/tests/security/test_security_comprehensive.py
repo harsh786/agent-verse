@@ -499,7 +499,6 @@ class TestRequireRoleDependency:
         """require_role must return 401 when no tenant context is present."""
         from fastapi import Depends, FastAPI
         from httpx import ASGITransport, AsyncClient
-        from starlette.requests import Request
 
         from app.tenancy.rbac import require_role
 
@@ -802,7 +801,6 @@ class TestVaultConnectorSecretHelpers:
     async def test_store_connector_secret_for_tenant_mapping(self):
         """store_connector_secret_for_tenant() with a plain dict store is sync."""
         from app.providers.vault import (
-            resolve_connector_secret_ref,
             store_connector_secret_for_tenant,
         )
 

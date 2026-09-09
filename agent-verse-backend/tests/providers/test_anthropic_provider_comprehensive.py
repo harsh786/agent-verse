@@ -470,7 +470,7 @@ async def test_stream_complete_yields_text_chunks() -> None:
     from app.providers.anthropic_provider import AnthropicProvider
 
     class _FakeStream:
-        async def __aenter__(self) -> "_FakeStream":
+        async def __aenter__(self) -> _FakeStream:
             return self
 
         async def __aexit__(self, *a: object) -> None:
@@ -480,7 +480,7 @@ async def test_stream_complete_yields_text_chunks() -> None:
         def text_stream(self):  # type: ignore[return]
             return self
 
-        def __aiter__(self) -> "_FakeStream":
+        def __aiter__(self) -> _FakeStream:
             self._items = iter(["Hello", " ", "World"])
             return self
 
@@ -519,7 +519,7 @@ async def test_stream_complete_with_system_message() -> None:
         def __init__(self, **kw: object) -> None:
             captured_kwargs.append(kw)
 
-        async def __aenter__(self) -> "_FakeStream":
+        async def __aenter__(self) -> _FakeStream:
             return self
 
         async def __aexit__(self, *a: object) -> None:
@@ -529,7 +529,7 @@ async def test_stream_complete_with_system_message() -> None:
         def text_stream(self):  # type: ignore[return]
             return self
 
-        def __aiter__(self) -> "_FakeStream":
+        def __aiter__(self) -> _FakeStream:
             return self
 
         async def __anext__(self) -> str:
@@ -561,7 +561,7 @@ async def test_stream_complete_yields_error_on_exception() -> None:
     from app.providers.anthropic_provider import AnthropicProvider
 
     class _BrokenStream:
-        async def __aenter__(self) -> "_BrokenStream":
+        async def __aenter__(self) -> _BrokenStream:
             raise OSError("Network error")
 
         async def __aexit__(self, *a: object) -> None:

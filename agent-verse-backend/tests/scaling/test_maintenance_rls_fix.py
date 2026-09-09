@@ -56,7 +56,7 @@ class TestMaintenanceRLS:
 
     def test_system_session_exists_in_rls_module(self) -> None:
         """system_session must be importable from app.db.rls."""
-        from app.db.rls import system_session  # noqa: F401
+        from app.db.rls import system_session
         assert callable(system_session)
 
     @pytest.mark.asyncio

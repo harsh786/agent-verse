@@ -1,10 +1,9 @@
 """Tests for Phase 10 security guardrails."""
-import pytest
 
 
 class TestRedTeamCorpus:
     def test_corpus_importable(self):
-        from app.enterprise.red_team_corpus import CORPUS_VERSION, RED_TEAM_CORPUS
+        from app.enterprise.red_team_corpus import RED_TEAM_CORPUS
 
         assert len(RED_TEAM_CORPUS) >= 15
 

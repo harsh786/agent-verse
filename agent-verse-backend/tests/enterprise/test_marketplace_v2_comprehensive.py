@@ -17,9 +17,6 @@ Covers the 45% gap remaining from the existing test_marketplace_v2.py:
 """
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
 from app.enterprise.marketplace_v2 import (

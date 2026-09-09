@@ -45,7 +45,6 @@ class TestWaitForApprovalCrossReplica:
     @pytest.mark.asyncio
     async def test_wait_unblocks_from_redis_result(self) -> None:
         """Approval from another replica (Redis BLPOP) unblocks the waiter."""
-        import json
 
         gateway_replica_a = HITLGateway(timeout_seconds=5.0)
         gateway_replica_b = HITLGateway(timeout_seconds=5.0)

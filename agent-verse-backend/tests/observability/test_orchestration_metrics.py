@@ -2,8 +2,6 @@
 """Orchestration metrics must be registered and incrementable."""
 from __future__ import annotations
 
-import pytest
-
 
 def test_orchestration_metrics_registered():
     from app.observability.metrics import (

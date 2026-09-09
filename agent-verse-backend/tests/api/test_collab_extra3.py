@@ -6,7 +6,6 @@ Targets missing lines:
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -17,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from app.api.collab import _CollabPubSub
 from app.api.collab import router as collab_router
-from app.collab.store import CollaborationStore, VersionConflictError
+from app.collab.store import VersionConflictError
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import TenantMiddleware
 
@@ -387,12 +386,11 @@ def test_collab_websocket_session_not_found() -> None:
     app = _make_app(store=store)
     client = StarletteClient(app)
 
-    with pytest.raises(Exception):
-        with client.websocket_connect(
-            "/collab/sessions/nonexistent-sid/ws",
-            headers={"X-API-Key": _KEY_A},
-        ) as ws:
-            pass  # should fail immediately
+    with pytest.raises(Exception), client.websocket_connect(
+        "/collab/sessions/nonexistent-sid/ws",
+        headers={"X-API-Key": _KEY_A},
+    ) as ws:
+        pass  # should fail immediately
 
 
 def test_collab_websocket_no_auth() -> None:
@@ -403,9 +401,8 @@ def test_collab_websocket_no_auth() -> None:
     app = _make_app(store=store)
     client = StarletteClient(app)
 
-    with pytest.raises(Exception):
-        with client.websocket_connect("/collab/sessions/s1/ws") as ws:
-            pass
+    with pytest.raises(Exception), client.websocket_connect("/collab/sessions/s1/ws") as ws:
+        pass
 
 
 def test_collab_websocket_send_and_receive() -> None:
@@ -677,7 +674,6 @@ def test_collab_store_lazy_init_on_create() -> None:
 # Lines 242-245 — _resolve_ws_tenant via tenant_service (no _tenant_key_resolver)
 def test_collab_ws_resolve_via_tenant_service() -> None:
     """Lines 242-245: WebSocket auth via tenant_service.resolve_api_key when no key_resolver."""
-    from starlette.testclient import TestClient as StarletteClient
 
     store = FakeCollabStore()
     app = _make_app(store=store)
@@ -706,7 +702,6 @@ def test_collab_ws_resolve_via_tenant_service() -> None:
 def test_collab_ws_no_auth_closes() -> None:
     """Lines 367+: WebSocket with no valid auth → closes with 4001."""
     from starlette.testclient import TestClient as StarletteClient
-    from starlette.websockets import WebSocketState
 
     store = FakeCollabStore()
     app = _make_app(store=store)
@@ -845,7 +840,6 @@ def test_collab_ws_presence_join_broadcast() -> None:
 
     from starlette.testclient import TestClient as StarletteClient
 
-    import app.api.collab as collab_module
 
     store = FakeCollabStore()
     app = _make_app(store=store)

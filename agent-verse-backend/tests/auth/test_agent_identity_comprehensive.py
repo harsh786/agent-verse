@@ -1,18 +1,14 @@
 """Comprehensive tests for app/auth/agent_identity.py."""
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
 from jose import jwt as jose_jwt
 
 from app.auth.agent_identity import (
     JWT_ALGORITHM,
-    JWT_EXPIRY_MINUTES,
     AgentIdentityService,
     _build_jwks,
     generate_agent_keypair,

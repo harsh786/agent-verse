@@ -1,7 +1,7 @@
 """Extra coverage tests for app/tools/email_tool.py — targeting 85%+ coverage."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -197,7 +197,6 @@ async def test_read_inbox_success():
     tool = EmailTool(imap_config=imap_config)
 
     # Build a minimal RFC822 message bytes
-    import email as _email_lib
     from email.mime.text import MIMEText
 
     msg = MIMEText("Hello from test")
@@ -499,7 +498,6 @@ async def test_email_send_with_tls(monkeypatch):
 @pytest.mark.asyncio
 async def test_email_send_missing_aiosmtplib():
     """Returns error dict when aiosmtplib is not installed."""
-    import importlib
     import sys
 
     # Temporarily hide aiosmtplib
@@ -507,7 +505,6 @@ async def test_email_send_missing_aiosmtplib():
     sys.modules["aiosmtplib"] = None  # type: ignore[assignment]
     try:
         # Reload to pick up missing import
-        import importlib
 
         import app.tools.email_tool as et_mod
         # We can't easily re-run ImportError here since module is cached,

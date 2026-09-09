@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.core.errors import ConflictError, NotFoundError
+from app.core.errors import NotFoundError
 from app.services.tenant_service import TenantService
 
 
@@ -15,7 +15,7 @@ async def test_create_tenant_fires_background_db_task():
 
     # Must match the async_sessionmaker() interface: sync callable → async context manager
     class _ErrorSession:
-        async def __aenter__(self) -> "_ErrorSession":
+        async def __aenter__(self) -> _ErrorSession:
             call_log.append("called")
             raise RuntimeError("DB unavailable")
 
@@ -38,13 +38,13 @@ async def test_create_tenant_persists_tenant_and_default_key_before_return():
     persisted: list[str] = []
 
     class _Session:
-        async def __aenter__(self) -> "_Session":
+        async def __aenter__(self) -> _Session:
             return self
 
         async def __aexit__(self, *args: object) -> None:
             pass
 
-        def begin(self) -> "_Session":
+        def begin(self) -> _Session:
             return self
 
         async def execute(self, *args: object, **kwargs: object) -> None:
@@ -105,7 +105,7 @@ async def test_sync_from_db_loads_api_keys_with_tenant_rls_context():
     class _Session:
         current_tenant: str | None = None
 
-        async def __aenter__(self) -> "_Session":
+        async def __aenter__(self) -> _Session:
             return self
 
         async def __aexit__(self, *args: object) -> None:

@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from app.perception.browser_agent import BrowserResult
 from app.perception.page_analyzer import PageAnalysis, PageAnalyzer
 

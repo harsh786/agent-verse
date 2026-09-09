@@ -7,9 +7,7 @@ NOT NULL constraints only at flush/commit time, not at Python __init__.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-
-import pytest
+from datetime import UTC, datetime
 
 
 def _uuid() -> str:
@@ -17,7 +15,7 @@ def _uuid() -> str:
 
 
 def _now() -> datetime:
-    return datetime.now(tz=timezone.utc)
+    return datetime.now(tz=UTC)
 
 
 # ── Import all models ─────────────────────────────────────────────────────────
@@ -25,41 +23,7 @@ def _now() -> datetime:
 def test_base_and_all_model_imports():
     """Importing all models does not raise."""
     from app.db.models import (
-        Agent,
-        AgentPermission,
-        AgentTemplate,
-        ApiKey,
-        ApprovalRequest,
-        AuditLog,
         Base,
-        BlackboardEntry,
-        BusMessage,
-        Civilization,
-        CivilizationAgent,
-        CivilizationEvent,
-        CivilizationLearning,
-        CollabOperation,
-        CollabSession,
-        CostLedger,
-        DecisionTrace,
-        Document,
-        Evaluation,
-        ExecutionMemory,
-        Goal,
-        GoalCheckpoint,
-        GoalEvent,
-        GoalStep,
-        GoalTemplate,
-        KnowledgeCollection,
-        LongTermMemory,
-        MCPCredential,
-        MCPServer,
-        OAuthToken,
-        Policy,
-        Schedule,
-        SpawnRequest,
-        Tenant,
-        Workflow,
     )
     assert Base is not None
 

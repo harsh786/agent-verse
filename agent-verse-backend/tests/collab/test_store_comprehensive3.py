@@ -3,8 +3,6 @@ close_session DB, append_operation DB, list_operations DB.
 """
 from __future__ import annotations
 
-import json
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,7 +11,6 @@ from app.collab.store import (
     CollaborationStore,
     VersionConflictError,
     _operation_to_dict,
-    _session_to_dict,
 )
 from app.tenancy.context import PlanTier, TenantContext
 

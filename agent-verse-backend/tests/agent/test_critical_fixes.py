@@ -36,9 +36,7 @@ def test_redis_cost_controller_has_check_and_record():
 
 def test_model_router_has_no_route_method_called_in_graph():
     """graph.py must not call model_router.route() — use model_for() or similar."""
-    import inspect
 
-    from app.agent import graph
 
     src = _agent_source()
     assert "model_router.route(" not in src, (

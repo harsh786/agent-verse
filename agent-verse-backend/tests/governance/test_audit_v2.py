@@ -10,9 +10,7 @@ import pytest
 from app.governance.audit_v2 import (
     WAL_KEY,
     AuditEvent,
-    AuditFlusher,
     AuditWriter,
-    HashChainVerifier,
     audit_admin_action,
 )
 from app.governance.siem_adapters import LEEFAdapter, SIEMConfig, SIEMType
@@ -424,7 +422,7 @@ class TestBatchApprove:
     async def test_batch_approve_100_requests(self) -> None:
         """batch_approve endpoint logic handles up to 100 IDs correctly."""
         from app.api.governance import BatchApproveRequest, batch_approve
-        from app.governance.hitl import ApprovalStatus, HITLGateway
+        from app.governance.hitl import HITLGateway
         from app.tenancy.context import PlanTier, TenantContext
 
         gateway = HITLGateway()

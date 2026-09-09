@@ -1,5 +1,4 @@
 """Tests for P0 governance fixes."""
-import pytest
 
 from app.governance.hitl import ApprovalStatus, HITLGateway
 from app.governance.pricing import estimate_cost

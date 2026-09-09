@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.intelligence.benchmarking import AgentBenchmark, BenchmarkStore
+from app.intelligence.benchmarking import BenchmarkStore
 from app.intelligence.eval import EvalScorecard
 from app.tenancy.context import PlanTier, TenantContext
 
@@ -13,7 +13,7 @@ CTX = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k1")
 def _scorecard(avg: float, goal_id: str = "g1") -> EvalScorecard:
     return EvalScorecard(
         goal_id=goal_id,
-        scores={k: avg for k in ["task_completion", "efficiency", "accuracy", "safety", "coherence"]},
+        scores=dict.fromkeys(["task_completion", "efficiency", "accuracy", "safety", "coherence"], avg),
     )
 
 

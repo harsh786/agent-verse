@@ -16,7 +16,6 @@ This test file provides comprehensive coverage for:
 """
 import base64
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

@@ -1,10 +1,8 @@
 """Tests for OcrEngine — Tesseract primary, LLM vision fallback."""
 from __future__ import annotations
 
-import io
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from PIL import Image
 
 from app.ocr.engine import CONFIDENCE_THRESHOLD, OcrEngine

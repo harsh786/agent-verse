@@ -18,7 +18,6 @@ Covers:
 from __future__ import annotations
 
 import base64
-import inspect
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,8 +27,6 @@ import pytest
 from app.mcp.client import (
     CircuitBreakerOpenError,
     MCPClient,
-    ToolCallResult,
-    ToolDefinition,
     _is_mcp_endpoint,
     _jsonrpc,
 )

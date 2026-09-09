@@ -1,7 +1,6 @@
 """Phase 3+4 tests: Embedding Platform + Multimodal Intelligence."""
 import base64
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

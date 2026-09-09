@@ -3,10 +3,8 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 from typer.testing import CliRunner
 
 from app.cli.main import app as cli_app
@@ -533,7 +531,6 @@ def test_run_tests_failure_propagates():
 
 def test_stream_goal_events():
     """Test _stream_goal processes various SSE event types."""
-    import io
 
     from app.cli.main import _stream_goal
 

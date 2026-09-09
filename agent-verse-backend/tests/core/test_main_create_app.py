@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -254,7 +254,6 @@ def test_health_route_registered(test_app):
     """App has routes registered (health route is deeply nested)."""
     # FastAPI include_router nests routes under the app.router
     # Check via the OpenAPI schema or via the app.router
-    from fastapi.routing import APIRoute
 
     def _collect_routes(router):
         paths = []
@@ -266,7 +265,6 @@ def test_health_route_registered(test_app):
         return paths
 
     # A simpler check: use the OpenAPI schema which lists all routes
-    import json
 
     openapi = test_app.openapi()
     paths = list(openapi.get("paths", {}).keys())
@@ -274,7 +272,6 @@ def test_health_route_registered(test_app):
 
 
 def test_auth_routes_registered(test_app):
-    import json
 
     openapi = test_app.openapi()
     paths = list(openapi.get("paths", {}).keys())
@@ -534,7 +531,6 @@ def test_resolve_provider_openai_fallback():
     """Returns OpenAI provider when ANTHROPIC_API_KEY absent but OPENAI_API_KEY present."""
     from app.core.config import Settings
     from app.main import _resolve_provider_for_app
-    from app.providers.fake import FakeProvider
 
     # Make Anthropic fail to simulate "installed but key present" path
     mock_openai_provider = MagicMock()

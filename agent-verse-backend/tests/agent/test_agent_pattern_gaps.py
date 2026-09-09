@@ -1,8 +1,6 @@
 """Agent pattern gaps from doc-1 §3.4, doc-3 §11 must all be addressed."""
 from __future__ import annotations
 
-import pytest
-
 from app.agent.patterns import ALL_PATTERNS
 from app.agent.patterns.base import PatternState
 from app.agent.patterns.peer_review import PeerReviewPattern

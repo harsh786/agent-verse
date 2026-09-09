@@ -4,7 +4,7 @@ apply_suggestion, rollback, arm assignment, compute_delta, list_experiments.
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 

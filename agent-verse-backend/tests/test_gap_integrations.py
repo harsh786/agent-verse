@@ -1,5 +1,4 @@
 """Tests for critical wiring gaps - guardrails in graph, AI router in goal service."""
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -141,7 +140,6 @@ def test_ai_router_selection_stored_in_execution_context():
 
 def test_ai_router_health_tracking_affects_selection():
     """Circuit open providers should not be selected."""
-    from app.ai_router.models import TaskType
     from app.ai_router.registry import ModelRegistry
     from app.ai_router.router import AIRouter
 

@@ -3,8 +3,6 @@ and SkillExecutor."""
 
 from __future__ import annotations
 
-import pytest
-
 from app.providers.fake import FakeProvider
 from app.skills_runtime.executor import (
     ScopedPermissionChecker,
@@ -15,7 +13,6 @@ from app.skills_runtime.models import (
     BUILTIN_SKILLS,
     SkillDefinition,
     SkillScope,
-    SkillStatus,
 )
 
 # ── helpers ───────────────────────────────────────────────────────────────────

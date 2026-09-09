@@ -10,8 +10,6 @@ H-6  AgentRouter uses pre-wired instance
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 
 # ── H-2: SSRF protection ──────────────────────────────────────────────────────

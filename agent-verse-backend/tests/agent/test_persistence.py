@@ -1,7 +1,6 @@
 """Tests for GoalPersistenceEngine — agent retry and persistence logic."""
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 
 import pytest

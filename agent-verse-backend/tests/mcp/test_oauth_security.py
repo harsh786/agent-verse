@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import httpx
-import pytest
 import respx
 
-from app.mcp.oauth import OAuthFlowManager, OAuthToken
+from app.mcp.oauth import OAuthFlowManager
 from app.tenancy.context import PlanTier, TenantContext
 
 T = TenantContext(tenant_id="oauth-sec-t1", plan=PlanTier.PROFESSIONAL, api_key_id="os1")

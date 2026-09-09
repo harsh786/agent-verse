@@ -1,8 +1,6 @@
 """Tests for the bug fixes described in the AgentVerse bug report."""
 from __future__ import annotations
 
-import pytest
-
 
 def test_decrement_concurrent_goals_signature():
     """decrement_concurrent_goals must accept tenant_id + redis kwargs."""

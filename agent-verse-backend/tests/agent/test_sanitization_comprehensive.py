@@ -1,13 +1,9 @@
 """Comprehensive tests for app/agent/sanitization.py — targets 90%+ statement coverage."""
 from __future__ import annotations
 
-import pytest
-
 from app.agent.sanitization import (
-    ResultProcessor,
     redact_sensitive_text,
     sanitize_event,
-    sanitize_event_value,
     sanitize_tool_event_value,
     sanitize_tool_raw_output,
 )

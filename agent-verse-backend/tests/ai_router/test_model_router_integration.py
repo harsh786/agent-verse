@@ -5,7 +5,7 @@ import pytest
 
 from app.agent.goal_classifier import goal_classifier
 from app.agent.pattern_assembler import pattern_assembler
-from app.agent.pattern_config import Complexity, GoalProperties, RiskLevel
+from app.agent.pattern_config import Complexity
 from app.ai_router.model_orchestrator import ModelOrchestrator
 
 

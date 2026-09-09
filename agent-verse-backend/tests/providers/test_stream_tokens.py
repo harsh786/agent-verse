@@ -166,7 +166,7 @@ async def test_all_required_providers_have_stream_tokens() -> None:
 
     for cls in (FakeProvider, AnthropicProvider):
         assert hasattr(cls, "stream_tokens"), f"{cls.__name__} missing stream_tokens()"
-        method = getattr(cls, "stream_tokens")
+        method = cls.stream_tokens
         assert inspect.iscoroutinefunction(method), (
             f"{cls.__name__}.stream_tokens must be a coroutine function"
         )

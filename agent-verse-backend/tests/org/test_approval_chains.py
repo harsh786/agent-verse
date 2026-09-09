@@ -1,9 +1,7 @@
 """Tests for ApprovalChain — app/org/approval_chain.py"""
 from __future__ import annotations
 
-import pytest
-
-from app.org.approval_chain import ApprovalChain, ApprovalChainRegistry, ApprovalRequest
+from app.org.approval_chain import ApprovalChainRegistry, ApprovalRequest
 
 
 def test_approval_chain_prod_deploy_requires_multiple():

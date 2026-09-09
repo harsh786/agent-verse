@@ -5,7 +5,6 @@ Uses the same mock pattern: patch httpx.AsyncClient, provide correct args.
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1585,7 +1584,6 @@ _GDRIVE = {"GOOGLE_ACCESS_TOKEN": "gdrive-tok"}
 
 @pytest.mark.asyncio
 async def test_drive_download_file():
-    import base64
 
     from app.mcp.servers.google_drive_server import call_tool
     mc = mk_client()
@@ -1780,7 +1778,6 @@ async def test_k8s_restart_deployment():
 
 @pytest.mark.asyncio
 async def test_k8s_apply_manifest():
-    import json
 
     from app.mcp.servers.kubernetes_server import call_tool
     manifest = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "my-config", "namespace": "default"}, "data": {"key": "value"}}

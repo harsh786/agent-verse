@@ -2,8 +2,6 @@
 """HITL, audit trail, compliance, rate limiting, RBAC."""
 from __future__ import annotations
 
-import pytest
-
 # ── HITL GATEWAY ──────────────────────────────────────────────────────────────
 
 def test_hitl_gateway_request_approval():

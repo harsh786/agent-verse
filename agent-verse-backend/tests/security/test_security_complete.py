@@ -31,7 +31,6 @@ def test_api_key_scoped_to_tenant():
 
 def test_identity_profile_all_scopes():
     from app.security_runtime.identity_profile import (
-        IdentityProfile,
         IdentityResolver,
         IdentityScope,
     )

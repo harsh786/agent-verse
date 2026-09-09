@@ -1,5 +1,4 @@
 """Tests for Constitution — pure policy evaluator, zero I/O."""
-import pytest
 
 from app.civilization.constitution import evaluate_breach, evaluate_spawn
 from app.civilization.models import BreachContext, Constitution, SpawnContext, SpawnDecision

@@ -1,8 +1,6 @@
 """Comprehensive tests for app/agent/model_router.py — targets 90%+ statement coverage."""
 from __future__ import annotations
 
-import pytest
-
 from app.agent.model_router import (
     _PROVIDER_DEFAULTS,
     ModelRouter,

@@ -3,13 +3,12 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.governance.audit_v2 import (
     _PII_KEYS,
-    WAL_DEAD_LETTER,
     WAL_KEY,
     AuditEvent,
     AuditFlusher,
@@ -69,7 +68,7 @@ class TestRedactPii:
             "password", "secret", "token", "api_key", "private_key",
             "authorization", "auth_token", "access_token", "refresh_token",
         }
-        assert _PII_KEYS == expected
+        assert expected == _PII_KEYS
 
 
 # ── AuditEvent ────────────────────────────────────────────────────────────────

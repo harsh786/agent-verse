@@ -7,12 +7,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.triggers.iot.geofence import (
-    GeofenceRegion,
-    GeofenceTriggerEvaluator,
-    LatLng,
-    haversine_meters,
-)
 from app.triggers.iot.mqtt import MQTTTriggerConsumer
 from app.triggers.iot.sensor import SensorThresholdEvaluator, convert_to_base
 from app.triggers.models import TriggerSpec, TriggerType

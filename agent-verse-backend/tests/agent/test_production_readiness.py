@@ -1,7 +1,5 @@
 """Production-readiness tests for critical and high-severity fixes."""
-import os
 
-import pytest
 
 from tests._paths import BACKEND_ROOT, INFRA_DIR
 
@@ -77,7 +75,7 @@ def test_sse_bridge_handles_missing_goal_record():
 
     from app.services import goal_service
     src = inspect.getsource(goal_service)
-    assert "stub" in src.lower() or "GoalRecord" in src and "bridge" in src.lower(), \
+    assert "stub" in src.lower() or ("GoalRecord" in src and "bridge" in src.lower()), \
         "Event bridge must handle missing goal records by creating stubs"
 
 

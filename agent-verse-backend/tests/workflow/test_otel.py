@@ -1,8 +1,6 @@
 """Tests for WorkflowOTEL span helpers (graceful no-op when OTEL not installed)."""
 from __future__ import annotations
 
-import pytest
-
 from app.workflow.dsl import StepDefinition
 from app.workflow.otel import run_span, step_span
 from app.workflow.state import WorkflowRunStatus

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 
 def test_knowledge_graph_store_has_hydrated_tenants_set():
     """KnowledgeGraphStore must track hydrated tenants for lazy load."""
@@ -67,7 +65,6 @@ async def test_orchestration_persistence_wildcard_loads_all():
 
 def test_kg_lazy_hydration_triggers_on_first_miss():
     """query_nodes() for unknown tenant must schedule DB load."""
-    import asyncio
 
     from app.knowledge_graph.store import KnowledgeGraphStore
 

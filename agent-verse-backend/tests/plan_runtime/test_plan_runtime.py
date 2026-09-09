@@ -15,8 +15,7 @@ from app.orchestration.runtime_profile import (
     SecurityConfig,
 )
 from app.plan_runtime.plan_cost_estimator import PlanCostEstimator
-from app.plan_runtime.plan_risk_analyzer import PlanRiskAnalyzer
-from app.plan_runtime.plan_verifier import PlanVerificationResult, PlanVerifier
+from app.plan_runtime.plan_verifier import PlanVerifier
 
 
 def _make_profile(risk: RiskLevel = RiskLevel.LOW, hitl: bool = False) -> GoalRuntimeProfile:

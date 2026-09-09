@@ -12,13 +12,12 @@ import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.governance import router as governance_router
 from app.governance.audit import AuditLog
-from app.governance.cost import BudgetConfig, CostController
+from app.governance.cost import CostController
 from app.governance.hitl import HITLGateway
 from app.governance.policies import PolicyEngine
 from app.tenancy.context import PlanTier, TenantContext
@@ -221,7 +220,6 @@ def test_stream_approvals_no_redis() -> None:
 
 def test_stream_approvals_with_redis() -> None:
     """Lines 524+: with Redis — emits snapshot then tails channel."""
-    import asyncio
 
     pubsub = MagicMock()
     pubsub.subscribe = AsyncMock()
@@ -760,12 +758,11 @@ def test_verify_audit_chain_with_db() -> None:
     with patch(
         "app.governance.audit_v2.HashChainVerifier.verify",
         new_callable=lambda: lambda *args, **kwargs: AsyncMock(return_value=mock_result)(),
-    ):
-        with patch("app.api.governance._get_db", return_value=db_factory):
-            client = TestClient(_make_app(), raise_server_exceptions=False)
-            resp = client.get("/governance/audit/integrity/verify", headers=_headers())
-            # Even if the mock path fails, it should not be 503
-            assert resp.status_code in (200, 500)
+    ), patch("app.api.governance._get_db", return_value=db_factory):
+        client = TestClient(_make_app(), raise_server_exceptions=False)
+        resp = client.get("/governance/audit/integrity/verify", headers=_headers())
+        # Even if the mock path fails, it should not be 503
+        assert resp.status_code in (200, 500)
 
 
 # ---------------------------------------------------------------------------
@@ -892,7 +889,6 @@ def test_create_notification_channel_no_service() -> None:
 
 def test_create_notification_channel_with_service() -> None:
     """Lines 661+: notification_service adds channel."""
-    from app.services.notification_service import NotificationChannel
     added = []
 
     svc = MagicMock()
@@ -1021,7 +1017,6 @@ def test_list_legal_holds_with_rows() -> None:
 # Lines 1208-1241, 1249-1250 — rollback_policy SUCCESS path
 def test_rollback_policy_success() -> None:
     """Lines 1208-1241: rollback policy to target version."""
-    import json as json_
 
     target_row = ("ver-snap-id", "policy-name", "Block deletes", '{"rules": []}', 2)
     max_ver_result = MagicMock()

@@ -1,5 +1,4 @@
 """Tests for Phase 9 workflow node executors."""
-import asyncio
 
 import pytest
 
@@ -140,6 +139,6 @@ class TestSandboxGuard:
 
         from app.tools.code_interpreter import CodeInterpreter
         source = inspect.getsource(CodeInterpreter)
-        assert "production" in source.lower() and "subprocess" in source.lower() or \
+        assert ("production" in source.lower() and "subprocess" in source.lower()) or \
                "ENVIRONMENT" in source, \
             "CodeInterpreter missing production guard for unsandboxed subprocess"

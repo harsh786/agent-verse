@@ -4,7 +4,6 @@ Targets all uncovered tool branches for servers still below 80%.
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 

@@ -6,8 +6,6 @@ Exercises the complete 12-step pipeline with every optional dependency.
 
 from __future__ import annotations
 
-import pytest
-
 from app.agent.graph import AgentGraph
 from app.agent.state import GoalStatus
 from app.governance.audit import AuditLog

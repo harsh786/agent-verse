@@ -403,10 +403,9 @@ async def test_userinfo_invalid_token_returns_401():
             "app.auth.keycloak.validate_jwt",
             new_callable=AsyncMock,
             side_effect=ValueError("token signature invalid"),
-        ),
+        ),pytest.raises(HTTPException) as exc_info
     ):
-        with pytest.raises(HTTPException) as exc_info:
-            await get_userinfo(mock_request)
+        await get_userinfo(mock_request)
 
     assert exc_info.value.status_code == 401
     assert "token signature invalid" in str(exc_info.value.detail)

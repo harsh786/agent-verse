@@ -1,5 +1,5 @@
 """Tests for multi-model routing."""
-from app.agent.model_router import ModelRouter, ModelRouterConfig, get_router_for_tenant
+from app.agent.model_router import ModelRouter, get_router_for_tenant
 
 
 def test_anthropic_defaults():

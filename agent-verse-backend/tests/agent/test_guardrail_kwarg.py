@@ -1,7 +1,5 @@
 """Test that GuardrailChecker.check_output is called with keyword argument."""
-import inspect
 
-import pytest
 
 
 def _agent_source() -> str:
@@ -37,7 +35,6 @@ def test_guardrail_check_output_fails_without_keyword():
 
 def test_guardrail_graph_uses_keyword():
     """graph.py source must use output= keyword for check_output."""
-    from app.agent import graph
 
     src = _agent_source()
     assert "check_output(output=" in src, (

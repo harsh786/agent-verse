@@ -2,8 +2,6 @@
 import os
 import unittest.mock as mock
 
-import pytest
-
 
 class TestProviderRegistry:
     def test_registry_importable(self) -> None:

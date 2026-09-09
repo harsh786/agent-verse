@@ -1,9 +1,7 @@
 """Tests for AgentRouter — intent-based agent routing."""
 from __future__ import annotations
 
-import pytest
-
-from app.agent.router import AgentRouter, RoutingDecision
+from app.agent.router import AgentRouter
 from app.api.agents import AgentStore
 from app.tenancy.context import PlanTier, TenantContext
 

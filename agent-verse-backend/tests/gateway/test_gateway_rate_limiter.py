@@ -8,9 +8,6 @@ Covers app/gateway/rate_limiter.py:
 """
 from __future__ import annotations
 
-import asyncio
-import time
-
 import pytest
 
 from app.gateway.rate_limiter import (
@@ -19,7 +16,6 @@ from app.gateway.rate_limiter import (
     ChannelRateLimiter,
     RateLimitExceeded,
 )
-
 
 # ── RateLimitExceeded ─────────────────────────────────────────────────────────
 

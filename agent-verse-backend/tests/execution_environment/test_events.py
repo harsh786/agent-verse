@@ -1,14 +1,11 @@
 """Tests for execution-environment event helpers."""
 from __future__ import annotations
 
-import pytest
-
 from app.execution_environment.events import (
     make_forwarding_callback,
     make_isolation_event,
     wrap_agent_event,
 )
-from app.execution_environment.models import ExecutionEvent
 
 
 def test_wrap_agent_event_preserves_payload() -> None:

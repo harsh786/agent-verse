@@ -1,11 +1,7 @@
 """Comprehensive tests for app/governance/audit.py — targeting 90%+ coverage."""
 from __future__ import annotations
 
-import asyncio
-from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
 
 from app.governance.audit import AuditEvent, AuditLog
 from app.governance.permissions import ActionLevel

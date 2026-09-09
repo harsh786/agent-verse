@@ -1,9 +1,8 @@
 """Verify SelfOptimizer and PromptOptimizer are wired and functional."""
-import pytest
 
 from app.intelligence.eval import EvalScorecard
 from app.intelligence.prompt_optimizer import PromptOptimizer
-from app.intelligence.self_optimization import OptimizationSuggestion, SelfOptimizer
+from app.intelligence.self_optimization import SelfOptimizer
 from app.tenancy.context import PlanTier, TenantContext
 
 

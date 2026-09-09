@@ -1,8 +1,6 @@
 """Extra coverage for app/api/workflows.py — workflow CRUD and run endpoints."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
-
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

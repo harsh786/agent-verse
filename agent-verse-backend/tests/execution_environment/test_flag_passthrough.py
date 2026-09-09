@@ -125,7 +125,7 @@ async def test_goal_service_does_not_use_isolation_when_flag_off(
 ) -> None:
     """GoalService._run_agent_loop falls through to in-process execution when flag off."""
     import os
-    from unittest.mock import AsyncMock, MagicMock, patch
+    from unittest.mock import AsyncMock
 
     # Ensure isolation flag is off
     os.environ.pop("ISOLATED_AGENT_EXECUTION", None)

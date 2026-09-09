@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.memory.long_term import LongTermMemory, LongTermMemoryStore
+from app.memory.long_term import LongTermMemoryStore
 from app.tenancy.context import PlanTier, TenantContext
 
 T = TenantContext(tenant_id="ltm-t1", plan=PlanTier.ENTERPRISE, api_key_id="k")

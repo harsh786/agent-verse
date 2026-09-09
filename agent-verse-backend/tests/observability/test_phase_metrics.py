@@ -25,7 +25,7 @@ def test_record_queue_wait():
 
 def test_record_plan_duration_clamps_iteration():
     """Iterations above 15 should be clamped to '15' label."""
-    from app.observability.metrics import PLAN_DURATION, record_plan_duration
+    from app.observability.metrics import record_plan_duration
     # Should not raise with large iteration value
     record_plan_duration(99, 0.1)
 

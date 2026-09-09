@@ -1,6 +1,5 @@
 """Tests for P0.1: Durable Execution Kernel."""
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -54,7 +53,7 @@ def test_resolve_checkpointer_warns_on_memory_saver(monkeypatch, capsys):
 
 @pytest.mark.asyncio
 async def test_signal_pause_sets_redis_flag():
-    from app.reliability.goal_lifecycle import _CANCEL_FLAG, _PAUSE_FLAG, signal_pause
+    from app.reliability.goal_lifecycle import signal_pause
     mock_redis = AsyncMock()
     mock_redis.set = AsyncMock()
     mock_redis.publish = AsyncMock()
@@ -110,7 +109,6 @@ async def test_check_pause_cancel_raises_on_cancel():
 
 def test_goal_lifecycle_module_importable():
     from app.reliability.goal_lifecycle import (
-        GoalCancelledError,
         check_pause_cancel,
         clear_signals,
         is_cancelled_sync,

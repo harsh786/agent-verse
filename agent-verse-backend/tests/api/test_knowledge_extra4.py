@@ -346,7 +346,6 @@ def test_ingest_file_no_embedder_uses_empty_embedding() -> None:
 
 def test_ingest_file_embedder_raises_exception() -> None:
     """Lines 443-447: Embedder exception → empty embedding, still ingests."""
-    from app.providers.base import EmbedResponse
     embedder = AsyncMock()
     embedder.embed = AsyncMock(side_effect=Exception("Embedder down"))
     client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
@@ -427,7 +426,6 @@ def test_ingest_repo_background_clone_failure() -> None:
                 tenant_ctx=_CTX,
             )
 
-    import asyncio
     asyncio.run(_run())
 
 

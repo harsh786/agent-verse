@@ -1,8 +1,6 @@
 """Comprehensive tests for app/enterprise/red_team.py."""
 from __future__ import annotations
 
-import pytest
-
 from app.enterprise.red_team import (
     _ADVERSARIAL_CASES,
     BehavioralRedTeamRunner,

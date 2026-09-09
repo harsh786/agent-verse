@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import pytest
 
-from app.workflow.context import ContextResolver
-from app.workflow.dsl import StepDefinition
 from app.workflow.registry import StepTypeMeta, StepTypeRegistry, UnknownStepTypeError
 from app.workflow.state import WorkflowState
 

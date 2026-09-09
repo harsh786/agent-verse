@@ -12,7 +12,6 @@ Covers:
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from types import SimpleNamespace
@@ -373,7 +372,7 @@ async def test_pipeline_kg_hook_failure_never_blocks_ingestion():
 @pytest.mark.asyncio
 async def test_job_tracker_create_and_complete():
     from app.ingestion.job_tracker import IngestionJobTracker
-    from app.ingestion.source_config import IngestionJob, SourceConfig, SourceFamily
+    from app.ingestion.source_config import SourceConfig, SourceFamily
 
     tracker = IngestionJobTracker()
     config = SourceConfig(source_id="s1", tenant_id="t1", name="T",

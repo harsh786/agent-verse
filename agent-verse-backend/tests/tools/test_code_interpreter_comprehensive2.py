@@ -11,7 +11,6 @@ import pytest
 from app.tools.code_interpreter import (
     _DOCKER_IMAGES,
     _FILE_EXTENSIONS,
-    _LANGUAGE_COMMANDS,
     CodeInterpreter,
     CodeResult,
     get_interpreter,
@@ -175,8 +174,6 @@ async def test_subprocess_fallback_unsupported_language():
 @pytest.mark.asyncio
 async def test_docker_execute_success():
     interp = CodeInterpreter()
-    import sys
-    import types
     # Mock asyncio.get_event_loop to return a mock that runs the lambda
     mock_loop = MagicMock()
     mock_loop.run_in_executor = AsyncMock(return_value=b"docker output")

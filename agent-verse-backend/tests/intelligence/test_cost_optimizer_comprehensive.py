@@ -4,10 +4,7 @@ from __future__ import annotations
 import pytest
 
 from app.intelligence.cost_optimizer import (
-    MODEL_COSTS_PER_1M,
-    MODEL_DOWNGRADE_PATH,
     CostOptimizer,
-    DowngradeSuggestion,
     ModelStats,
 )
 

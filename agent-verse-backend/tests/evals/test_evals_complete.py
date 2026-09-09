@@ -1,8 +1,6 @@
 """All 9 scorecard dimensions + self-improvement loop actions."""
 from __future__ import annotations
 
-import pytest
-
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
 from app.evals.agent_score import AgentScorer
 from app.evals.runtime_scorecard import RuntimeScorecard, ScorecardResult

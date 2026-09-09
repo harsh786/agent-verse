@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from app.auth.ip_allowlist import IPAllowlistCache, is_ip_allowed
 
 # ---------------------------------------------------------------------------
@@ -127,7 +125,6 @@ async def test_get_cidrs_cache_hit_empty_list():
 
 
 async def test_get_cidrs_cache_miss_queries_db():
-    import json
     redis_mock = AsyncMock()
     redis_mock.get = AsyncMock(return_value=None)  # Cache miss
     redis_mock.setex = AsyncMock()

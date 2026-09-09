@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-import pytest
 
 from app.services.notification_service import NotificationChannel, NotificationService
 

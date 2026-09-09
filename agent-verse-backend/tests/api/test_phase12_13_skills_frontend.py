@@ -1,9 +1,7 @@
 """Phase 12+13: Skills Runtime tests."""
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.skills_runtime import _enabled_skills, _platform_skills
 from app.api.skills_runtime import router as skills_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware

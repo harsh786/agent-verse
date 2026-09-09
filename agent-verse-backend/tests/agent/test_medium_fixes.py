@@ -1,8 +1,6 @@
 """Tests for medium and low severity fixes."""
 from __future__ import annotations
 
-import pytest
-
 from tests._paths import MIGRATIONS_DIR, require_frontend, require_sdk_python
 
 

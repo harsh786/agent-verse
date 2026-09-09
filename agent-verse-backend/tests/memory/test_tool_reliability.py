@@ -1,5 +1,4 @@
 """Tests for P2.3 tool reliability memory."""
-from unittest.mock import AsyncMock
 
 import pytest
 

@@ -1,8 +1,6 @@
 """Tests for scope-restricted permissions."""
 from __future__ import annotations
 
-import pytest
-
 from app.governance.permissions import ActionLevel, PermissionMatrix, PermissionRule
 from app.tenancy.context import PlanTier, TenantContext
 

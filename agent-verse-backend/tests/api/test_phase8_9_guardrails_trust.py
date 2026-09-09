@@ -7,7 +7,6 @@ from app.api.guardrails_v2 import router as g2_router
 from app.api.trust_governance import router as trust_router
 from app.guardrails_v2.engine import GuardrailsEngine
 from app.guardrails_v2.models import (
-    ComplianceBundle,
     GuardrailAction,
     GuardrailLayer,
     GuardrailRule,

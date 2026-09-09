@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import base64
 
-import pytest
-
 # ── PDF PARSER ────────────────────────────────────────────────────────────────
 
 def test_pdf_parser_with_text():
@@ -44,7 +42,7 @@ def test_pdf_parser_chunks_contain_source_name():
 
 
 def test_pdf_parse_result_full_text():
-    from app.ingestion.parsers.pdf_parser import PDFPage, PDFParser, PDFParseResult
+    from app.ingestion.parsers.pdf_parser import PDFPage, PDFParseResult
 
     result = PDFParseResult(
         source_name="test.pdf",
@@ -244,7 +242,7 @@ def test_model_orchestrator_tier_low():
 
 def test_ai_router_model_selection():
     from app.ai_router.models import TaskType
-    from app.ai_router.router import AIRouter, ai_router
+    from app.ai_router.router import ai_router
 
     result = ai_router.select_model(TaskType.PLANNING, "t1")
     # May be None if no models configured in registry, both are valid

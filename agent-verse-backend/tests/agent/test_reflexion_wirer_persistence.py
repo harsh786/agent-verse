@@ -2,7 +2,7 @@
 """ReflexionWirer must persist lessons to DB, not just in-memory."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

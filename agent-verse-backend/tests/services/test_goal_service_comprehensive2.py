@@ -5,10 +5,9 @@ get_eval, list_goals, get_metrics, handle_approval, subscribe_events, get_events
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 

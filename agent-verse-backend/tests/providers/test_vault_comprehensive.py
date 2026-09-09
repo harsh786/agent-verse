@@ -10,7 +10,7 @@ Extends the existing test_vault.py by covering the uncovered sections:
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 

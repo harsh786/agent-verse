@@ -9,9 +9,8 @@ from app.enterprise.compliance import ComplianceController
 from app.enterprise.marketplace import Marketplace
 from app.governance.audit import AuditLog
 from app.governance.cost import BudgetConfig, CostController
-from app.governance.hitl import ApprovalStatus, HITLGateway
+from app.governance.hitl import HITLGateway
 from app.governance.permissions import ActionLevel, PermissionMatrix, PermissionRule
-from app.governance.policies import Policy, PolicyEngine
 from app.intelligence.eval import EvalScorecard
 from app.intelligence.eval_runner import EvalRunner
 from app.intelligence.guardrails import GuardrailChecker
@@ -19,7 +18,6 @@ from app.intelligence.self_optimization import SelfOptimizer
 from app.memory.execution import ExecutionMemory
 from app.memory.long_term import LongTermMemory, LongTermMemoryStore
 from app.providers.fake import FakeProvider
-from app.rag.store import KnowledgeStore
 from app.reliability.circuit_breaker import CircuitBreaker
 from app.reliability.dedup import DeduplicationCache
 from app.reliability.result_processor import ResultProcessor

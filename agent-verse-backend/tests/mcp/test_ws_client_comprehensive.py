@@ -72,9 +72,8 @@ async def test_connect_with_auth_header():
         captured_headers.update(extra_headers or {})
         return mock_ws
 
-    with patch("websockets.connect", side_effect=mock_connect):
-        with patch("asyncio.create_task"):
-            await client.connect()
+    with patch("websockets.connect", side_effect=mock_connect), patch("asyncio.create_task"):
+        await client.connect()
 
     assert captured_headers.get("Authorization") == "Bearer mytoken"
 
@@ -89,9 +88,8 @@ async def test_connect_without_auth_no_auth_header():
         captured_headers.update(extra_headers or {})
         return mock_ws
 
-    with patch("websockets.connect", side_effect=mock_connect):
-        with patch("asyncio.create_task"):
-            await client.connect()
+    with patch("websockets.connect", side_effect=mock_connect), patch("asyncio.create_task"):
+        await client.connect()
 
     assert "Authorization" not in captured_headers
 
@@ -403,4 +401,4 @@ async def test_list_tools_calls_call_tool():
 def test_reconnect_constants():
     assert _RECONNECT_BASE == 1.0
     assert _RECONNECT_MAX == 60.0
-    assert 0 < _RECONNECT_MAX
+    assert _RECONNECT_MAX > 0

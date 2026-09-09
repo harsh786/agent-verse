@@ -6,7 +6,7 @@ scorecard. The existing 13 goal_service test files don't exercise this path.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -47,7 +47,7 @@ def _record(
         tenant_id=_CTX.tenant_id,
         priority="high",
         dry_run=False,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
         execution_context=execution_context
         if execution_context is not None
         else {"verification_feedback": "ok", "iterations": 2},

@@ -4,9 +4,7 @@ Tests RuntimeScorecard, SelfImprovementEngine, ABTestingEngine, EvalRunner.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -169,11 +167,7 @@ class TestSelfImprovementEngine:
         engine = SelfImprovementEngine()
         scorecard = ScorecardResult(
             goal_id="g1",
-            scores={k: 1.0 for k in [
-                "goal_success", "rag_quality", "safety", "latency",
-                "cost_efficiency", "grounding", "citation_quality",
-                "retrieval_confidence", "tool_success_rate",
-            ]},
+            scores=dict.fromkeys(["goal_success", "rag_quality", "safety", "latency", "cost_efficiency", "grounding", "citation_quality", "retrieval_confidence", "tool_success_rate"], 1.0),
             overall_score=0.95,
         )
         profile = _make_profile(score_threshold=0.72)
@@ -216,8 +210,7 @@ class TestSelfImprovementEngine:
         engine = SelfImprovementEngine()
         scorecard = ScorecardResult(
             goal_id="g1",
-            scores={k: 0.1 for k in ["rag_quality", "goal_success", "tool_success_rate",
-                                       "cost_efficiency", "latency"]},
+            scores=dict.fromkeys(["rag_quality", "goal_success", "tool_success_rate", "cost_efficiency", "latency"], 0.1),
             overall_score=0.1,
         )
         profile = _make_profile()

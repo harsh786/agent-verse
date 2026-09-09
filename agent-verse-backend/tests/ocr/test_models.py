@@ -1,5 +1,4 @@
 """Tests for OCR data models."""
-import pytest
 
 from app.ocr.models import DocumentType, ExtractedField, OcrResult
 

@@ -1,9 +1,8 @@
 """Tests for the artifacts REST API and MinIOArtifactStore fallback."""
 from __future__ import annotations
 
-import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI

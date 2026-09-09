@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from app.lifecycle.deletion_orchestrator import DeletionOrchestrator
 from app.lifecycle.export_policy import ExportPolicy
 from app.lifecycle.legal_hold_policy import LegalHoldPolicy

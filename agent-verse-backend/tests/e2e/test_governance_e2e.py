@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from app.agent.graph import AgentGraph
-from app.governance.audit import AuditEvent, AuditLog
-from app.governance.cost import BudgetConfig, CostController
+from app.governance.audit import AuditLog
+from app.governance.cost import CostController
 from app.governance.hitl import ApprovalStatus, HITLGateway
 from app.governance.permissions import ActionLevel, PermissionMatrix, PermissionRule
 from app.governance.policies import Policy, PolicyEngine, PolicyResult
@@ -187,7 +187,6 @@ async def test_permission_matrix_deny_blocks_execution() -> None:
 async def test_policy_engine_deny_blocks_agent_execution() -> None:
     """PolicyEngine deny policy blocks tool execution in the agent."""
     from app.agent.graph import AgentGraph
-    from app.agent.state import GoalStatus
     from app.governance.policies import Policy, PolicyEngine
     from app.providers.fake import FakeProvider
     from app.tenancy.context import PlanTier, TenantContext

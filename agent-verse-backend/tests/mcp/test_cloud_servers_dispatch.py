@@ -7,10 +7,10 @@ Covers: AWS S3, IAM, Lambda, CloudWatch (boto3),
 from __future__ import annotations
 
 import os
+from datetime import UTC
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 
 
@@ -324,7 +324,7 @@ async def test_lambda_list_aliases():
 
 @pytest.mark.asyncio
 async def test_cloudwatch_get_metric_data():
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from app.mcp.servers.aws_cloudwatch_server import call_tool
 
@@ -332,7 +332,7 @@ async def test_cloudwatch_get_metric_data():
     # Timestamp must be a datetime object (server calls .isoformat())
     mock_cw = MagicMock()
     mock_cw.get_metric_statistics.return_value = {
-        "Datapoints": [{"Timestamp": datetime(2024, 1, 1, tzinfo=timezone.utc), "Average": 50.0, "Unit": "Percent"}],
+        "Datapoints": [{"Timestamp": datetime(2024, 1, 1, tzinfo=UTC), "Average": 50.0, "Unit": "Percent"}],
         "Label": "CPUUtilization",
     }
     with patch.dict("os.environ", _AWS_ENV), patch("app.mcp.servers.aws_cloudwatch_server._cw_client", return_value=mock_cw):

@@ -42,9 +42,7 @@ async def test_rollback_all_async_awaited_on_failure():
 @pytest.mark.asyncio
 async def test_rollback_engine_in_agent_graph_uses_async():
     """AgentGraph must use rollback_all_async in its failure path."""
-    import inspect
 
-    import app.agent.graph as graph_module
 
     source = _agent_source()
     # Must contain rollback_all_async somewhere in the graph

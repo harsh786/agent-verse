@@ -1,15 +1,13 @@
 """Tests for inline eval trigger: POST /goals/{id}/eval."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.goals import router as goals_router
-from app.intelligence.eval import EvalScorecard
 from app.tenancy.context import PlanTier, TenantContext
 
 _TENANT = TenantContext(

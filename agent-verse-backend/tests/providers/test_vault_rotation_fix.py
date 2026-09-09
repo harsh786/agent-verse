@@ -1,6 +1,6 @@
 """Regression tests for C2 — vault key rotation must be correct end-to-end."""
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 

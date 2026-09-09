@@ -6,10 +6,6 @@ No real LLM calls — all responses are scripted.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
-
 from app.agent.loop import AgentLoop
 from app.agent.state import AgentState, GoalStatus, StepStatus
 from app.providers.fake import FakeProvider

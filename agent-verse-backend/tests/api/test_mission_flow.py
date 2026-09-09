@@ -8,9 +8,6 @@ Tests the complete mission lifecycle from goal submission to completion:
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 

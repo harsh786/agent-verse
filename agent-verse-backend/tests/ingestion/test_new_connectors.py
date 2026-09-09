@@ -148,7 +148,6 @@ class TestArXivConnector:
         assert get_connector("arxiv") is not None
 
     def test_get_delta_parses_atom(self):
-        import httpx
 
         from app.ingestion.connectors.arxiv_connector import ArXivConnector
 
@@ -215,7 +214,6 @@ class TestElasticsearchConnector:
         assert get_connector("opensearch") is not None
 
     def test_get_delta_pagination(self):
-        import json
 
         from app.ingestion.connectors.elasticsearch_connector import ElasticsearchConnector
 

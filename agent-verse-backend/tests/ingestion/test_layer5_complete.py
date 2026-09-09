@@ -2,8 +2,6 @@
 """All 8 Layer 5 files must exist and have standard interface."""
 from __future__ import annotations
 
-import pytest
-
 from app.ingestion.content_classifier import ContentType
 from app.ingestion.embedding_policy_selector import EmbeddingPolicy, EmbeddingPolicySelector
 from app.ingestion.modality_pipeline import ModalityPipeline, ModalityPipelineResult

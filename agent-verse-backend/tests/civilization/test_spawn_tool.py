@@ -1,5 +1,5 @@
 """Tests for execute_spawn_tool — governed spawn tool exposed to agents."""
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 

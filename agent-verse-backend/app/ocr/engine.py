@@ -207,7 +207,7 @@ class OcrEngine:
             with tempfile.TemporaryDirectory() as tmp:
                 src = Path(tmp) / f"input{suffix}"
                 src.write_bytes(data)
-                subprocess.run(  # noqa: S603 — fixed binary, no shell, temp-scoped paths
+                subprocess.run(
                     [soffice, "--headless", "--convert-to", "pdf", "--outdir", tmp, str(src)],
                     check=True,
                     capture_output=True,

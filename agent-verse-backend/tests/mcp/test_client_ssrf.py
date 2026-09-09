@@ -6,7 +6,7 @@ the registered server URL targets a loopback, private-range, or metadata address
 from __future__ import annotations
 
 import builtins
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -82,9 +82,8 @@ async def test_discover_tools_blocks_loopback_no_http_call() -> None:
     """No outbound HTTP must be attempted when the SSRF guard fires."""
     client, server_id = await _make_client_with_url("http://127.0.0.1:9001")
 
-    with patch("httpx.AsyncClient") as mock_http:
-        with pytest.raises((ValueError, SSRFError)):
-            await client.discover_tools(server_id=server_id, tenant_ctx=TENANT)
+    with patch("httpx.AsyncClient") as mock_http, pytest.raises((ValueError, SSRFError)):
+        await client.discover_tools(server_id=server_id, tenant_ctx=TENANT)
 
     mock_http.assert_not_called()
 

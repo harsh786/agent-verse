@@ -5,7 +5,6 @@ import pytest
 
 from app.workflow.expression_engine import (
     ExpressionEngine,
-    ExpressionEvalError,
     ExpressionSecurityError,
 )
 

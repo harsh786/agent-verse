@@ -532,7 +532,7 @@ class _AsyncIterator:
     def __init__(self, items: list) -> None:
         self._items = iter(items)
 
-    def __aiter__(self) -> "_AsyncIterator":
+    def __aiter__(self) -> _AsyncIterator:
         return self
 
     async def __anext__(self) -> object:

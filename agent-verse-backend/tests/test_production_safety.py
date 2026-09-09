@@ -1,10 +1,6 @@
 """Tests that production safety guards are in place."""
 from __future__ import annotations
 
-import os
-
-import pytest
-
 
 def test_no_random_embeddings_returned():
     """embed_texts() never returns random vectors — returns [] when no provider."""

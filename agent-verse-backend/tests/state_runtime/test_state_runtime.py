@@ -1,8 +1,6 @@
 """StateRuntime: MemoryPolicyEngine, CachePolicyEngine, ReflexionStore, SessionMemory, StateRuntimeContext."""
 from __future__ import annotations
 
-import pytest
-
 from app.orchestration.runtime_profile import (
     AgentPatternConfig,
     EvalConfig,
@@ -13,8 +11,8 @@ from app.orchestration.runtime_profile import (
     RAGStrategyConfig,
     SecurityConfig,
 )
-from app.state_runtime.cache_policy import CacheDecision, CachePolicyEngine
-from app.state_runtime.memory_policy import MemoryDecision, MemoryPolicyEngine
+from app.state_runtime.cache_policy import CachePolicyEngine
+from app.state_runtime.memory_policy import MemoryPolicyEngine
 from app.state_runtime.reflexion_store import ReflexionStore
 from app.state_runtime.session_memory import SessionMemory
 from app.state_runtime.state_context import StateRuntimeContext

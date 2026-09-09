@@ -1,12 +1,11 @@
 """Tests for Society — civilization membership, reputation EWMA, routing."""
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.civilization.society import _REPUTATION_EWMA_ALPHA, Society
+from app.civilization.society import Society
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 

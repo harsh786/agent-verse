@@ -43,9 +43,7 @@ def test_agentgraph_has_agent_collection_ids_attr():
 
 def test_graph_rag_comment_removed():
     """Graph must not skip KnowledgeStore with 'no collection_id available' comment."""
-    import inspect
 
-    from app.agent import graph
 
     src = _agent_source()
     assert "skip — no collection_id" not in src, (

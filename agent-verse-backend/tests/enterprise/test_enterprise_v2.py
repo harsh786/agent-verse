@@ -13,8 +13,7 @@ Covers:
 from __future__ import annotations
 
 import hashlib
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -95,9 +94,7 @@ def _make_checker_with_mock(
 
         if "enterprise_contracts" in q:
             signed = False
-            if contract_type_param == "baa" and baa_signed:
-                signed = True
-            elif contract_type_param == "dpa" and dpa_signed:
+            if (contract_type_param == "baa" and baa_signed) or (contract_type_param == "dpa" and dpa_signed):
                 signed = True
             if signed:
                 mock_result.fetchone = lambda: ("signed", "2026-01-01", "Test User")
@@ -434,9 +431,7 @@ async def test_enterprise_contracts_crud() -> None:
                 mock_result.fetchone = lambda: ("signed", "2026-06-28", "Jane")
             else:
                 mock_result.fetchone = lambda: None
-        elif "gdpr_export_jobs" in q:
-            mock_result.scalar = lambda: 0
-        elif "consent_records" in q:
+        elif "gdpr_export_jobs" in q or "consent_records" in q:
             mock_result.scalar = lambda: 0
         elif "data_region" in q:
             mock_result.fetchone = lambda: ("eu-west-1",)

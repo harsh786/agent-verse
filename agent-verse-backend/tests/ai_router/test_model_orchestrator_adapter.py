@@ -2,8 +2,6 @@
 """ModelOrchestratorAdapter wired into graph as model_router."""
 from __future__ import annotations
 
-import pytest
-
 
 def test_adapter_returns_models_for_all_task_types():
     """ModelOrchestratorAdapter must handle all model_for() task types."""
@@ -17,7 +15,7 @@ def test_adapter_returns_models_for_all_task_types():
 
 def test_adapter_budget_downgrade():
     """When budget > 90%, adapter must return low-tier models."""
-    from app.ai_router.model_orchestrator import ModelOrchestrator, ModelOrchestratorAdapter
+    from app.ai_router.model_orchestrator import ModelOrchestratorAdapter
     adapter = ModelOrchestratorAdapter(default_tier="high")
 
     # Simulate a runtime profile that allows downgrade

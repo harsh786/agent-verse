@@ -1,5 +1,4 @@
 """Tests for Phase 3 claim grounding checker."""
-import pytest
 
 from app.agent.grounding import (
     GroundingResult,

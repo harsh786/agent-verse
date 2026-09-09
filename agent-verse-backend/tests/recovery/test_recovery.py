@@ -1,8 +1,6 @@
 """Tests for FailureClassifier + RecoveryPolicy + RetryStrategySelector — 12 tests."""
 from __future__ import annotations
 
-import pytest
-
 from app.recovery.failure_classifier import FailureClass, FailureClassifier
 from app.recovery.recovery_policy import RecoveryAction, RecoveryPolicy
 from app.recovery.retry_strategy_selector import RetryStrategySelector

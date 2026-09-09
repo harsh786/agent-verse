@@ -1,5 +1,4 @@
 """Tests for Celery infrastructure critical fixes."""
-import pytest
 
 
 def test_goals_dlq_queue_in_worker_queues():

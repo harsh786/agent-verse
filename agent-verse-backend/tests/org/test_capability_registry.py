@@ -1,8 +1,6 @@
 """Tests for CapabilityRegistry — app/org/capability_registry.py"""
 from __future__ import annotations
 
-import pytest
-
 from app.org.capability_registry import CapabilityRegistry, CapabilitySpec
 
 

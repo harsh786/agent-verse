@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.mcp.client import MCPClient, ToolCallResult
+from app.mcp.client import MCPClient
 from app.mcp.registry import MCPRegistry, MCPServerConfig
 from app.tenancy.context import PlanTier, TenantContext
 

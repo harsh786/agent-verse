@@ -1,17 +1,15 @@
 """Tests for the main workflow engine router (CRUD + publish + trigger)."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.workflow.dsl import WorkflowDefinition
-
 # ── Minimal FastAPI test app ───────────────────────────────────────────────────
 
 
-def make_app(service: MagicMock) -> "TestClient":
+def make_app(service: MagicMock) -> TestClient:
     from fastapi import FastAPI, Request
 
     from app.tenancy.context import PlanLimits, PlanTier, TenantContext
@@ -96,14 +94,14 @@ def wf_service() -> MagicMock:
 
 
 @pytest.fixture
-def client(wf_service: MagicMock) -> "TestClient":
+def client(wf_service: MagicMock) -> TestClient:
     return make_app(wf_service)
 
 
 # ── CRUD endpoints ────────────────────────────────────────────────────────────
 
 
-def test_create_workflow(client: "TestClient", wf_service: MagicMock) -> None:
+def test_create_workflow(client: TestClient, wf_service: MagicMock) -> None:
     resp = client.post("/api/v1/workflows", json={
         "name": "My Workflow",
         "definition": {"name": "My Workflow", "steps": []},
@@ -114,7 +112,7 @@ def test_create_workflow(client: "TestClient", wf_service: MagicMock) -> None:
     assert data["name"] == "Test WF"
 
 
-def test_create_workflow_invalid_dsl(client: "TestClient") -> None:
+def test_create_workflow_invalid_dsl(client: TestClient) -> None:
     resp = client.post("/api/v1/workflows", json={
         "name": "Bad WF",
         "definition": {"steps": [{"id": "a", "depends_on": ["nonexistent"]}]},
@@ -122,7 +120,7 @@ def test_create_workflow_invalid_dsl(client: "TestClient") -> None:
     assert resp.status_code in (400, 422)
 
 
-def test_list_workflows(client: "TestClient") -> None:
+def test_list_workflows(client: TestClient) -> None:
     resp = client.get("/api/v1/workflows")
     assert resp.status_code == 200
     data = resp.json()
@@ -130,30 +128,30 @@ def test_list_workflows(client: "TestClient") -> None:
     assert data["total"] >= 0
 
 
-def test_get_workflow(client: "TestClient") -> None:
+def test_get_workflow(client: TestClient) -> None:
     resp = client.get("/api/v1/workflows/wf-1")
     assert resp.status_code == 200
     assert resp.json()["id"] == "wf-1"
 
 
-def test_get_workflow_not_found(client: "TestClient", wf_service: MagicMock) -> None:
+def test_get_workflow_not_found(client: TestClient, wf_service: MagicMock) -> None:
     wf_service.get.return_value = None
     resp = client.get("/api/v1/workflows/nonexistent")
     assert resp.status_code == 404
 
 
-def test_update_workflow(client: "TestClient") -> None:
+def test_update_workflow(client: TestClient) -> None:
     resp = client.patch("/api/v1/workflows/wf-1", json={"name": "Updated"})
     assert resp.status_code == 200
     assert resp.json()["name"] == "Updated"
 
 
-def test_delete_workflow(client: "TestClient") -> None:
+def test_delete_workflow(client: TestClient) -> None:
     resp = client.delete("/api/v1/workflows/wf-1")
     assert resp.status_code == 204
 
 
-def test_delete_workflow_not_found(client: "TestClient", wf_service: MagicMock) -> None:
+def test_delete_workflow_not_found(client: TestClient, wf_service: MagicMock) -> None:
     wf_service.archive.return_value = False
     resp = client.delete("/api/v1/workflows/nonexistent")
     assert resp.status_code == 404
@@ -162,19 +160,19 @@ def test_delete_workflow_not_found(client: "TestClient", wf_service: MagicMock) 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 
-def test_publish_workflow(client: "TestClient") -> None:
+def test_publish_workflow(client: TestClient) -> None:
     resp = client.post("/api/v1/workflows/wf-1/publish")
     assert resp.status_code == 200
     assert resp.json()["status"] == "published"
 
 
-def test_publish_not_found(client: "TestClient", wf_service: MagicMock) -> None:
+def test_publish_not_found(client: TestClient, wf_service: MagicMock) -> None:
     wf_service.publish.return_value = None
     resp = client.post("/api/v1/workflows/bad/publish")
     assert resp.status_code == 404
 
 
-def test_unpublish_workflow(client: "TestClient") -> None:
+def test_unpublish_workflow(client: TestClient) -> None:
     resp = client.post("/api/v1/workflows/wf-1/unpublish")
     assert resp.status_code == 200
     assert resp.json()["status"] == "draft"
@@ -183,7 +181,7 @@ def test_unpublish_workflow(client: "TestClient") -> None:
 # ── Validation ────────────────────────────────────────────────────────────────
 
 
-def test_validate_workflow_valid(client: "TestClient") -> None:
+def test_validate_workflow_valid(client: TestClient) -> None:
     resp = client.post("/api/v1/workflows/wf-1/validate")
     assert resp.status_code == 200
     data = resp.json()
@@ -191,7 +189,7 @@ def test_validate_workflow_valid(client: "TestClient") -> None:
     assert "errors" in data
 
 
-def test_validate_workflow_not_found(client: "TestClient", wf_service: MagicMock) -> None:
+def test_validate_workflow_not_found(client: TestClient, wf_service: MagicMock) -> None:
     wf_service.get.return_value = None
     resp = client.post("/api/v1/workflows/bad/validate")
     assert resp.status_code == 404
@@ -200,7 +198,7 @@ def test_validate_workflow_not_found(client: "TestClient", wf_service: MagicMock
 # ── NL trigger preview ────────────────────────────────────────────────────────
 
 
-def test_nl_trigger_preview_no_resolver(client: "TestClient") -> None:
+def test_nl_trigger_preview_no_resolver(client: TestClient) -> None:
     resp = client.post("/api/v1/workflows/nl-trigger-preview", json={"description": "every minute"})
     assert resp.status_code == 503  # resolver not configured
 
@@ -208,18 +206,18 @@ def test_nl_trigger_preview_no_resolver(client: "TestClient") -> None:
 # ── Templates ────────────────────────────────────────────────────────────────
 
 
-def test_list_templates(client: "TestClient") -> None:
+def test_list_templates(client: TestClient) -> None:
     resp = client.get("/api/v1/workflows/templates")
     assert resp.status_code == 200
 
 
-def test_get_template_found(client: "TestClient") -> None:
+def test_get_template_found(client: TestClient) -> None:
     resp = client.get("/api/v1/workflows/templates/kyc-automation")
     assert resp.status_code == 200
     assert resp.json()["slug"] == "kyc-automation"
 
 
-def test_get_template_not_found(client: "TestClient", wf_service: MagicMock) -> None:
+def test_get_template_not_found(client: TestClient, wf_service: MagicMock) -> None:
     wf_service.get_template.return_value = None
     resp = client.get("/api/v1/workflows/templates/bad-slug")
     assert resp.status_code == 404
@@ -228,12 +226,12 @@ def test_get_template_not_found(client: "TestClient", wf_service: MagicMock) -> 
 # ── Analytics ─────────────────────────────────────────────────────────────────
 
 
-def test_analytics_summary(client: "TestClient") -> None:
+def test_analytics_summary(client: TestClient) -> None:
     resp = client.get("/api/v1/workflows/analytics/summary")
     assert resp.status_code == 200
 
 
-def test_workflow_analytics(client: "TestClient") -> None:
+def test_workflow_analytics(client: TestClient) -> None:
     resp = client.get("/api/v1/workflows/wf-1/analytics")
     assert resp.status_code == 200
 
@@ -241,19 +239,19 @@ def test_workflow_analytics(client: "TestClient") -> None:
 # ── Permissions ───────────────────────────────────────────────────────────────
 
 
-def test_list_permissions(client: "TestClient") -> None:
+def test_list_permissions(client: TestClient) -> None:
     resp = client.get("/api/v1/workflows/wf-1/permissions")
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
 
 
-def test_add_permission(client: "TestClient") -> None:
+def test_add_permission(client: TestClient) -> None:
     resp = client.post("/api/v1/workflows/wf-1/permissions", json={
         "subject": "user-1", "role": "viewer"
     })
     assert resp.status_code == 201
 
 
-def test_remove_permission(client: "TestClient") -> None:
+def test_remove_permission(client: TestClient) -> None:
     resp = client.delete("/api/v1/workflows/wf-1/permissions/perm-1")
     assert resp.status_code == 204

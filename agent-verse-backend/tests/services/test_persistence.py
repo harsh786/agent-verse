@@ -1,8 +1,6 @@
 """Tests for persistence adapter (no real DB needed — tests graceful no-op behavior)."""
 from __future__ import annotations
 
-import pytest
-
 from app.services.persistence import persist_audit_event, persist_goal, persist_goal_status
 
 

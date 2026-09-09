@@ -4,8 +4,6 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from app.agent.router import AgentRouter, AgentScore, RoutingDecision
 from app.providers.fake import FakeProvider
 from app.tenancy.context import PlanTier, TenantContext

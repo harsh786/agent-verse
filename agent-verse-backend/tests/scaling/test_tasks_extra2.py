@@ -1,9 +1,6 @@
 """Extra coverage for app/scaling/tasks.py — utility functions and task helpers."""
 from __future__ import annotations
 
-import datetime
-import hashlib
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

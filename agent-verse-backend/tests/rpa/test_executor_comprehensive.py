@@ -1,10 +1,7 @@
 """Comprehensive tests for app/rpa/executor.py — simulation mode only (no real browser)."""
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, patch
 
 from app.rpa.executor import RPAExecutor, RPAResult
 

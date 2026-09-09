@@ -1,9 +1,7 @@
 """Comprehensive tests for app/auth/scope_seeder.py."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, call, patch
-
-import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 from app.auth.scope_seeder import (
     BUILTIN_ROLES,

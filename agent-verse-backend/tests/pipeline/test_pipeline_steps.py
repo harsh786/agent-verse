@@ -1,18 +1,14 @@
 """Tests for the 12-step tool-call pipeline (app/pipeline/steps.py)."""
 from __future__ import annotations
 
-import pytest
-
 from app.governance.permissions import ActionLevel
 from app.pipeline.steps import (
     circuit_breaker_check,
     cost_check,
     dedup_check,
-    exec_memory_lookup,
     governance_check,
     hitl_gate,
     record_rollback_point,
-    record_usage,
     result_processor_step,
 )
 from app.tenancy.context import PlanTier, TenantContext

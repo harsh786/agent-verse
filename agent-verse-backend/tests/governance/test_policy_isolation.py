@@ -1,5 +1,4 @@
 """Tests for per-tenant policy isolation."""
-import pytest
 
 from app.governance.policies import GovernancePolicy, PolicyEngine
 from app.tenancy.context import PlanTier, TenantContext

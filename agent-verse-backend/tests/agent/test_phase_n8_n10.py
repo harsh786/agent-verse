@@ -2,8 +2,6 @@
 """Phase N8-N10: OutputContract + executor/verifier contexts + ToolReliability."""
 from __future__ import annotations
 
-import pytest
-
 # ── N8: OutputContractBuilder ─────────────────────────────────────────────────
 
 def test_output_contract_builder_detects_json_from_goal():

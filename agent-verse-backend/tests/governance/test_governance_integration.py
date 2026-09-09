@@ -1,8 +1,6 @@
 """Governance: audit v3, HITL, compliance bundles, RBAC, cost hard stop."""
 from __future__ import annotations
 
-import pytest
-
 from app.lifecycle.export_policy import ExportPolicy
 from app.lifecycle.retention_policy import DataCategory, RetentionPolicy, RetentionTier
 from app.tenancy.context import PlanTier, TenantContext

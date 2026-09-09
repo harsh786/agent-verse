@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from app.agent.dynamic_graph import DynamicGraphAssembler
-from app.agent.pattern_config import Complexity, Domain, GoalProperties, PatternConfig, RiskLevel
+from app.agent.pattern_config import Complexity, GoalProperties, PatternConfig, RiskLevel
 from app.providers.fake import FakeProvider
 
 

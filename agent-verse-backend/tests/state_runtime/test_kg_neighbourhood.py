@@ -1,8 +1,6 @@
 """KGQueryEngine _neighbourhood must use n.label, not n.name."""
 from __future__ import annotations
 
-import pytest
-
 from app.knowledge_graph.store import GraphNode, KnowledgeGraphStore, NodeType
 from app.state_runtime.kg_query_engine import KGQueryEngine
 

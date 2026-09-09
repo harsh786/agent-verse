@@ -208,7 +208,6 @@ class TestCheckPauseCancel:
         # This test verifies the code path by observing the behavior with mocks
         # The exact flow: not_cancelled → paused → loop: not_paused → cancelled → raises
         # Due to asyncio.sleep in the loop, we mock it
-        import app.reliability.goal_lifecycle as glc_module
         original_sleep = asyncio.sleep
 
         async def fast_sleep(t: float) -> None:

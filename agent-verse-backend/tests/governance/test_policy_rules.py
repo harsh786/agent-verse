@@ -1,5 +1,4 @@
 """Test declarative policy-as-code rule evaluation."""
-import pytest
 
 from app.governance.policy_rules import evaluate_rule, evaluate_rules
 

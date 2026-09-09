@@ -1,8 +1,6 @@
 """E2E tests for all LLM provider interfaces and credential vault."""
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from app.providers.base import CompletionRequest, EmbedRequest, Message, embed_texts

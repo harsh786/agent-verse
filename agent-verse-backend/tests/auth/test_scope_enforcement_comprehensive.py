@@ -1,12 +1,9 @@
 """Comprehensive tests for app/auth/scope_enforcement.py."""
 from __future__ import annotations
 
-from datetime import UTC, datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-from fastapi import FastAPI, Request, Response
-from starlette.testclient import TestClient
+from fastapi import FastAPI, Request
 
 from app.auth.scope_enforcement import (
     _ALL_SCOPES,

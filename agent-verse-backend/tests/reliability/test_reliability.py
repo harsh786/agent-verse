@@ -9,8 +9,6 @@ Tests cover:
 
 from __future__ import annotations
 
-import pytest
-
 from app.reliability.circuit_breaker import CircuitBreaker, CircuitState
 from app.reliability.dedup import DeduplicationCache
 from app.reliability.result_processor import ResultProcessor

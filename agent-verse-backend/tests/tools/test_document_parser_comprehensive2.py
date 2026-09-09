@@ -1,13 +1,12 @@
 """Comprehensive tests for DocumentParserTool — all formats, truncation, error paths."""
 from __future__ import annotations
 
-import io
 import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.tools.document_parser import _MAX_CHARS, DocumentParserTool, ParsedDocument
+from app.tools.document_parser import _MAX_CHARS, DocumentParserTool
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

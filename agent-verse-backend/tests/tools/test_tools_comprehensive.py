@@ -8,8 +8,7 @@ Coverage targets:
 from __future__ import annotations
 
 import os
-import tempfile
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -169,7 +168,7 @@ class TestFileOpsClass:
 
         ops = FileOps(self.tenant_id)
         bytes_written = await ops.write("hello.txt", "hello world")
-        assert bytes_written == len("hello world".encode())
+        assert bytes_written == len(b"hello world")
 
         content = await ops.read("hello.txt")
         assert content == "hello world"
@@ -227,7 +226,6 @@ class TestFileOpsClass:
 
     @pytest.mark.asyncio
     async def test_delete_file(self):
-        import pathlib
 
         from app.tools.file_ops import FileOps
 
@@ -248,7 +246,6 @@ class TestFileOpsClass:
     @pytest.mark.asyncio
     async def test_delete_directory(self):
         """delete() on a directory uses shutil.rmtree."""
-        import pathlib
 
         from app.tools.file_ops import FileOps
 
@@ -337,7 +334,7 @@ class TestFileOpsWrappers:
 
         result = await file_write("bytes_test.txt", "hello bytes", tenant_id=self.tid)
         assert result["success"] is True
-        assert result["bytes_written"] == len("hello bytes".encode())
+        assert result["bytes_written"] == len(b"hello bytes")
         await file_delete("bytes_test.txt", tenant_id=self.tid)
 
     @pytest.mark.asyncio
@@ -497,9 +494,8 @@ class TestEmailToolSend:
         with patch(
             "aiosmtplib.send",
             side_effect=aiosmtplib.SMTPConnectError("Connection refused"),
-        ):
-            with pytest.raises(aiosmtplib.SMTPConnectError):
-                await tool.send(to="x@x.com", subject="s", body="b")
+        ), pytest.raises(aiosmtplib.SMTPConnectError):
+            await tool.send(to="x@x.com", subject="s", body="b")
 
     @pytest.mark.asyncio
     async def test_send_message_id_format(self):
@@ -516,7 +512,7 @@ class TestEmailToolSend:
 
 class TestEmailToolFromVaultConfig:
     def test_from_vault_config_with_smtp(self):
-        from app.tools.email_tool import EmailTool, SMTPConfig
+        from app.tools.email_tool import EmailTool
 
         config = {
             "smtp_host": "mail.example.com",

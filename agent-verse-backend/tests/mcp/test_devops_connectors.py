@@ -179,7 +179,6 @@ def test_all_tools_have_required_schema_fields():
 
 def test_all_servers_have_call_tool():
     """Every server must expose an async call_tool function."""
-    import asyncio
     import inspect
 
     from app.mcp.servers import (

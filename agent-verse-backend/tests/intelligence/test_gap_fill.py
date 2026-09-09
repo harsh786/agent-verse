@@ -6,7 +6,7 @@ import pytest
 from app.guardrails_v2.streaming_guard import StreamingGuard
 from app.guardrails_v2.toxicity import ToxicityClassifier
 from app.intelligence.claim_decomposer import ClaimDecomposer
-from app.intelligence.nli_checker import NLIChecker, NLIResult
+from app.intelligence.nli_checker import NLIChecker
 
 
 class FakeProvider:

@@ -1,4 +1,6 @@
 """Tests for GAP 2A-2D completions."""
+from datetime import UTC
+
 import pytest
 
 
@@ -28,12 +30,12 @@ async def test_citation_verifier_no_provider():
 
 @pytest.mark.asyncio
 async def test_memory_consolidation():
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from app.memory_v2.consolidation import MemoryConsolidator
 
     consolidator = MemoryConsolidator()
-    old_date = (datetime.now(timezone.utc) - timedelta(days=35)).isoformat()
+    old_date = (datetime.now(UTC) - timedelta(days=35)).isoformat()
 
     memories = {
         "t1:m1": {
@@ -113,7 +115,7 @@ def test_kg_export():
 
 
 def test_skill_update_increments_version():
-    from app.api.skills_runtime import _skill_versions, _tenant_skills
+    from app.api.skills_runtime import _tenant_skills
 
     # Pre-populate a skill
     skill_id = "test-version-skill"

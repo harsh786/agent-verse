@@ -1,7 +1,6 @@
 """Extra coverage for app/services/goal_service.py — utility functions and non-DB paths."""
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 

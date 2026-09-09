@@ -1,5 +1,4 @@
 """Tests for ArtifactTool and related infrastructure."""
-import asyncio
 
 import pytest
 

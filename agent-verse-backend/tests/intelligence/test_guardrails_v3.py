@@ -1,5 +1,4 @@
 """Tests for Guardrails v3 — indirect injection, encoding attacks, domain policies."""
-import pytest
 
 from app.intelligence.domain_policies import apply_domain_policy, get_domain_policy
 from app.intelligence.encoding_attacks import normalize_homoglyphs, scan_for_encoding_attacks

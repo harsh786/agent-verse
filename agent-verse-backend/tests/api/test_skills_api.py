@@ -1,5 +1,4 @@
 """Tests for skills CRUD API and red-team corpus expansion."""
-import pytest
 
 
 class TestSkillsAPI:

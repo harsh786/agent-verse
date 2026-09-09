@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import base64
-import tempfile
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

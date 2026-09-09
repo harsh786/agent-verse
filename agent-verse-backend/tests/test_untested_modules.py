@@ -58,7 +58,7 @@ class TestAgentRuntimeModels:
         assert step.error == ""
 
     def test_plan_step_custom_values(self) -> None:
-        from app.agent_runtime.models import AgentRole, PlanStep, RiskLevel, StepStatus
+        from app.agent_runtime.models import AgentRole, PlanStep, RiskLevel
         step = PlanStep(
             step_id="s2",
             description="Deploy to prod",
@@ -238,7 +238,7 @@ class TestMemoryConsolidator:
                 "memory_id": "mem1",
                 "content": "Paris is the capital of France",
                 "lifecycle_state": "active",
-                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "updated_at": datetime.datetime.now(datetime.UTC).isoformat(),
                 "confidence": 0.9,
             }
         }
@@ -251,7 +251,7 @@ class TestMemoryConsolidator:
     @pytest.mark.asyncio
     async def test_old_active_memory_marked_stale(self, consolidator) -> None:
         old_date = (
-            datetime.datetime.now(datetime.timezone.utc)
+            datetime.datetime.now(datetime.UTC)
             - datetime.timedelta(days=35)
         ).isoformat()
         store = {
@@ -270,7 +270,7 @@ class TestMemoryConsolidator:
     @pytest.mark.asyncio
     async def test_very_old_stale_memory_archived(self, consolidator) -> None:
         very_old = (
-            datetime.datetime.now(datetime.timezone.utc)
+            datetime.datetime.now(datetime.UTC)
             - datetime.timedelta(days=95)
         ).isoformat()
         store = {
@@ -288,7 +288,7 @@ class TestMemoryConsolidator:
 
     @pytest.mark.asyncio
     async def test_duplicate_content_merges(self, consolidator) -> None:
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        now = datetime.datetime.now(datetime.UTC).isoformat()
         # Two memories with IDENTICAL content (same first 100 chars triggers dedup)
         same_content = "The Eiffel Tower is in Paris and was built in 1889 as a landmark for the World Fair"
         store = {
@@ -315,7 +315,7 @@ class TestMemoryConsolidator:
     @pytest.mark.asyncio
     async def test_different_tenants_isolated(self, consolidator) -> None:
         old_date = (
-            datetime.datetime.now(datetime.timezone.utc)
+            datetime.datetime.now(datetime.UTC)
             - datetime.timedelta(days=35)
         ).isoformat()
         store = {
@@ -345,7 +345,7 @@ class TestMemoryConsolidator:
                 "memory_id": "mem8",
                 "content": "Already gone",
                 "lifecycle_state": "archived",
-                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "updated_at": datetime.datetime.now(datetime.UTC).isoformat(),
                 "confidence": 0.5,
             }
         }
@@ -529,7 +529,6 @@ class TestSkillsExecutorPublicSurface:
         assert executor is not None
 
     def test_executor_has_execute_method(self) -> None:
-        import inspect
 
         from app.skills_runtime.executor import SkillExecutor
         executor = SkillExecutor()

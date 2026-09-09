@@ -1,8 +1,6 @@
 """Tests for LLMConfigStore and RedisCircuitBreaker (in-memory Redis stubs)."""
 from __future__ import annotations
 
-import pytest
-
 from app.services.llm_config_store import LLMConfigStore
 
 # ── Minimal in-memory Redis fake (no external deps) ───────────────────────────

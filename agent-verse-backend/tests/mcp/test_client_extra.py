@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import inspect
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 

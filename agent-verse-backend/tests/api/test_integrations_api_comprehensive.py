@@ -3,13 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import os
 import time
 import urllib.parse
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

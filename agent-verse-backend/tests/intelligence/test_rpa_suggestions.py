@@ -1,5 +1,4 @@
 """Verify RPA-specific self-improvement suggestions are generated correctly."""
-import pytest
 
 from app.intelligence.self_optimization import SelfOptimizer
 from app.tenancy.context import PlanTier, TenantContext

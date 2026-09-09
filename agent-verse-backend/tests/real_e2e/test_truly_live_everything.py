@@ -259,7 +259,7 @@ async def test_b2_agent_with_redis_checkpointing():
     r.set(test_key, "live_ok", ex=30)
     assert r.get(test_key) == "live_ok", "Redis R/W failed"
     r.delete(test_key)
-    print(f"\n✅ Redis R/W confirmed")
+    print("\n✅ Redis R/W confirmed")
 
     # 2. Run AgentGraph with in-memory checkpointer (MemorySaver)
     p = _provider()

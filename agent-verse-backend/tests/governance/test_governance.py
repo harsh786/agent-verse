@@ -10,11 +10,9 @@ Tests cover:
 
 from __future__ import annotations
 
-import pytest
-
 from app.governance.audit import AuditEvent, AuditLog
 from app.governance.cost import BudgetConfig, CostController
-from app.governance.hitl import ApprovalRequest, ApprovalStatus, HITLGateway
+from app.governance.hitl import ApprovalStatus, HITLGateway
 from app.governance.permissions import ActionLevel, PermissionMatrix, PermissionRule
 from app.governance.policies import Policy, PolicyEngine, PolicyResult
 from app.tenancy.context import PlanTier, TenantContext

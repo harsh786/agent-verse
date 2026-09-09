@@ -79,7 +79,7 @@ async def test_build_greeting_time_of_day_morning(monkeypatch):
     class _FakeDatetime(_dt.datetime):
         @classmethod
         def now(cls, tz=None):   # type: ignore[override]
-            return cls(2026, 8, 20, 9, 0, tzinfo=_dt.timezone.utc)
+            return cls(2026, 8, 20, 9, 0, tzinfo=_dt.UTC)
 
     monkeypatch.setattr(gmod.datetime, "datetime", _FakeDatetime)
     script = await gmod.build_greeting_script(MOCK_HEALTH_HEALTHY, "Test")
@@ -96,7 +96,7 @@ async def test_build_greeting_time_of_day_evening(monkeypatch):
     class _FakeDatetime(_dt.datetime):
         @classmethod
         def now(cls, tz=None):   # type: ignore[override]
-            return cls(2026, 8, 20, 20, 0, tzinfo=_dt.timezone.utc)
+            return cls(2026, 8, 20, 20, 0, tzinfo=_dt.UTC)
 
     monkeypatch.setattr(gmod.datetime, "datetime", _FakeDatetime)
     script = await gmod.build_greeting_script(MOCK_HEALTH_HEALTHY, "Test")

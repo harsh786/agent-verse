@@ -1,7 +1,7 @@
 """Full coverage for TenantService — covers all branches and execution paths."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -104,7 +104,7 @@ async def test_expired_key_not_resolved() -> None:
     svc = TenantService()
     result = await svc.create_tenant(name="Expired", email="expired2@test.com")
     tid = result["tenant_id"]
-    expired_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    expired_at = datetime.now(UTC) - timedelta(hours=1)
     key_result = await svc.create_api_key(tid, "Expired", [], expired_at)
     ctx = await svc.resolve_api_key(key_result["raw_key"])
     assert ctx is None

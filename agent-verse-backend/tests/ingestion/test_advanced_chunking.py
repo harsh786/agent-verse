@@ -1,8 +1,6 @@
 """Tests for Phase 1: Advanced chunking strategy wiring."""
 from __future__ import annotations
 
-import pytest
-
 from app.ingestion.chunking_strategy_selector import (
     _ADVANCED_STRATEGIES,
     ChunkingStrategySelector,

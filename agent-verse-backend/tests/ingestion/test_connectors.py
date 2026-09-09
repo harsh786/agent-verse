@@ -1,8 +1,6 @@
 """Tests for new ingestion connectors and parsers."""
 from __future__ import annotations
 
-import pytest
-
 from app.ingestion.parsers.email_parser import EmailParser
 
 

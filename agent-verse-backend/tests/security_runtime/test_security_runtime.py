@@ -1,8 +1,6 @@
 """SecurityRuntime: GuardrailProfileSelector, GovernanceProfileSelector, PolicyBundleSelector."""
 from __future__ import annotations
 
-import pytest
-
 from app.orchestration.runtime_profile import (
     AgentPatternConfig,
     EvalConfig,
@@ -108,7 +106,7 @@ def test_unknown_dep_status_warns_but_passes():
         RAGStrategyConfig,
         SecurityConfig,
     )
-    from app.runtime_readiness.dependency_health import DependencyHealth, DepStatus
+    from app.runtime_readiness.dependency_health import DependencyHealth
     from app.runtime_readiness.readiness_gate import ReadinessGate
     # UNKNOWN health should generate warning but not block
     health = DependencyHealth()  # all UNKNOWN by default

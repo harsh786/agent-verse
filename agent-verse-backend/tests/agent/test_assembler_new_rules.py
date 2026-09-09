@@ -2,8 +2,6 @@
 """PatternAssembler must activate new patterns based on goal properties."""
 from __future__ import annotations
 
-import pytest
-
 from app.agent.pattern_assembler import PatternAssembler
 from app.agent.pattern_config import Complexity, Domain, GoalProperties, RiskLevel
 

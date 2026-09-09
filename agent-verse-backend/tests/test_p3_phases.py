@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import os
 
-import pytest
-
 from tests._paths import MIGRATIONS_DIR, require_frontend
 
 

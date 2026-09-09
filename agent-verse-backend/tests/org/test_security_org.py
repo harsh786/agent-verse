@@ -17,8 +17,6 @@ Tests the security model specified in PART 18 and PART 48:
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
-
 import pytest
 
 # ── 1. Goal Injection Detection ────────────────────────────────────────────────

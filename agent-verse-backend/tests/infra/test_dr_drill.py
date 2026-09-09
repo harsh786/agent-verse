@@ -1,5 +1,4 @@
 """DR drill validation — tests backup/restore capability."""
-import os
 import pathlib
 import subprocess
 

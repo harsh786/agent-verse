@@ -7,7 +7,8 @@ goal service full lifecycle, tenant service full lifecycle, audit log DB.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from datetime import UTC
+from unittest.mock import patch
 
 import pytest
 
@@ -1037,7 +1038,7 @@ async def test_tenant_service_get_tenant():
 
 async def test_tenant_service_key_expiry():
     """Expired API keys are rejected by resolve_api_key."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from app.services.tenant_service import TenantService
 
@@ -1046,7 +1047,7 @@ async def test_tenant_service_key_expiry():
     tenant_id = result["tenant_id"]
 
     # Create a key that expired 1 hour ago
-    expired_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    expired_at = datetime.now(UTC) - timedelta(hours=1)
     key_result = await svc.create_api_key(
         tenant_id=tenant_id, name="expired", scopes=[], expires_at=expired_at
     )
@@ -1059,7 +1060,7 @@ async def test_tenant_service_key_expiry():
 
 async def test_tenant_service_valid_key_resolves():
     """Valid non-expired API keys are resolved correctly."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from app.services.tenant_service import TenantService
 
@@ -1068,7 +1069,7 @@ async def test_tenant_service_valid_key_resolves():
     tenant_id = result["tenant_id"]
 
     # Create a key that expires in the future
-    future_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    future_at = datetime.now(UTC) + timedelta(hours=24)
     key_result = await svc.create_api_key(
         tenant_id=tenant_id, name="future", scopes=[], expires_at=future_at
     )

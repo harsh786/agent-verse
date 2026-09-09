@@ -1,8 +1,6 @@
 """Tests for GoalRecord eviction correctness."""
 from datetime import UTC, datetime, timedelta
 
-import pytest
-
 from app.agent.state import GoalStatus
 from app.services.goal_service import GoalRecord, GoalService
 from app.tenancy.context import PlanTier, TenantContext

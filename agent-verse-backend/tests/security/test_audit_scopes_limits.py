@@ -5,7 +5,7 @@ import pytest
 
 from app.auth.custom_roles import _BASE_ROLE_SCOPES, CustomRole, CustomRoleStore
 from app.auth.temp_elevation import grant_elevation, verify_elevation
-from app.governance.audit_v3 import AuditV3, _hash_dict, compute_entry_hash
+from app.governance.audit_v3 import AuditV3, compute_entry_hash
 from app.tenancy.limits_v2 import PLAN_LIMITS_V2, LimitsV2Checker
 
 

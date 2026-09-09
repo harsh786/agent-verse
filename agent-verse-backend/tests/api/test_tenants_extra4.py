@@ -10,12 +10,11 @@ import base64
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.tenants import router as tenants_router
-from app.core.errors import ConflictError, NotFoundError, PlatformError
+from app.core.errors import ConflictError, PlatformError
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 

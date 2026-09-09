@@ -1,7 +1,7 @@
 """Tests for working memory."""
 import pytest
 
-from app.memory.working_memory import WorkingMemory, WorkingMemoryItem
+from app.memory.working_memory import WorkingMemory
 
 
 class TestWorkingMemory:

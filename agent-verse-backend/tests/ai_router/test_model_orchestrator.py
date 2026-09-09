@@ -1,11 +1,8 @@
 """Tests for ModelOrchestrator + RolePolicy + ProviderHealthPolicy + CostLatencyQualityPolicy."""
 from __future__ import annotations
 
-import pytest
-
 from app.agent.pattern_config import Complexity, Domain, GoalProperties, PatternConfig, RiskLevel
-from app.ai_router.cost_latency_quality_policy import CostLatencyQualityPolicy
-from app.ai_router.model_orchestrator import ModelOrchestrator, ModelRoleAssignment
+from app.ai_router.model_orchestrator import ModelOrchestrator
 from app.ai_router.provider_health_policy import ProviderHealthPolicy
 from app.ai_router.role_policy import AgentRole, RolePolicy
 from app.ingestion.content_classifier import ContentType

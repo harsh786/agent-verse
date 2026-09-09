@@ -717,7 +717,7 @@ async def test_agentic_chunking_extracts_propositions_from_payment_docs():
 
     # Each result chunk must have content and chunk_id
     for rc in result_chunks:
-        assert "content" in rc and rc["content"], (
+        assert rc.get("content"), (
             f"Each proposition chunk must have non-empty content. Got: {rc}"
         )
         assert "chunk_id" in rc, f"Each proposition chunk must have chunk_id. Got: {rc}"

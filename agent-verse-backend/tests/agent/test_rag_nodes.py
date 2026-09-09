@@ -1,8 +1,6 @@
 """_node_rag_prime, _node_rag_remediate, _node_refine — doc-2 §9 + doc-1 §3.4."""
 from __future__ import annotations
 
-import pytest
-
 from app.rag.agentic.context_gap_detector import ContextGapDetector
 from app.rag.agentic.fallback_chain import FallbackChain
 

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -65,7 +64,6 @@ def test_server_has_callable_call_tool(module_name: str) -> None:
     """Every server exposes an async call_tool() callable."""
     mod = importlib.import_module(f"app.mcp.servers.{module_name}")
     assert hasattr(mod, "call_tool"), f"{module_name} missing call_tool"
-    import asyncio
     import inspect
     assert inspect.iscoroutinefunction(mod.call_tool), (
         f"{module_name}.call_tool must be an async function"

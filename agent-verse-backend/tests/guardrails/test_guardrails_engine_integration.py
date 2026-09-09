@@ -1,8 +1,6 @@
 """GuardrailEnforcer tests — no tool call bypasses guardrails."""
 from __future__ import annotations
 
-import pytest
-
 from app.orchestration.runtime_profile import (
     AgentPatternConfig,
     EvalConfig,

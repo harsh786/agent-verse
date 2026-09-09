@@ -1,15 +1,13 @@
 """Tests for catalog endpoint and auto-wiring."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.connectors import router as connectors_router
-from app.mcp.registry import MCPRegistry, MCPServerConfig
+from app.mcp.registry import MCPRegistry
 from app.tenancy.context import PlanTier, TenantContext
 
 _TENANT = TenantContext(tenant_id="cat-t1", plan=PlanTier.PROFESSIONAL, api_key_id="k")

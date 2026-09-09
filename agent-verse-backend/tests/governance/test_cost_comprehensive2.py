@@ -1,7 +1,7 @@
 """Comprehensive tests for app/governance/cost.py — targeting 90%+ coverage."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
