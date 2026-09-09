@@ -114,6 +114,7 @@ def _register_built_ins() -> None:
     from app.workflow.steps.hitl_step import HITLStepNode
     from app.workflow.steps.http_step import HTTPStepNode
     from app.workflow.steps.llm_step import LLMStepNode
+    from app.workflow.steps.ocr_step import OcrStepNode
     from app.workflow.steps.org_steps import (
         CrossTeamReviewStep,
         DepartmentHandoffStep,
@@ -169,6 +170,20 @@ def _register_built_ins() -> None:
                 {},
                 "Knowledge base retrieval + LLM",
                 color="#FFF7ED",
+            ),
+        ),
+        (
+            "ocr",
+            OcrStepNode,
+            StepTypeMeta(
+                "ocr",
+                "OCR Extract",
+                "AI",
+                "scan",
+                {},
+                {},
+                "Extract text from any document/image via the OCR engine",
+                color="#ECFEFF",
             ),
         ),
         (
