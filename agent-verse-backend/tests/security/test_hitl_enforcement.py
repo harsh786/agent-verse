@@ -127,7 +127,7 @@ def test_high_risk_keywords_includes_wipe_truncate() -> None:
 
 def test_high_risk_keywords_no_rm_false_positive() -> None:
     """C1: 'rm' should not falsely match 'format' or 'perform'."""
-    from app.agent.graph import _is_high_risk_step
+    from app.agent.nodes._helpers import _is_high_risk_step
 
     step = "format the document and perform analysis"
     assert not _is_high_risk_step(step)

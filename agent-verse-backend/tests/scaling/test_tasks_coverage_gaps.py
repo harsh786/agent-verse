@@ -164,7 +164,16 @@ async def test_run_with_signals_pause_resume():
         patch("app.reliability.goal_lifecycle.is_cancelled_sync", side_effect=_cancelled),
         patch("app.scaling.tasks.asyncio") as mock_asyncio,
     ):
-        mock_asyncio.sleep = AsyncMock(return_value=None)
+        # The stubbed sleep must still YIELD to the event loop (asyncio.sleep(0)),
+        # not return instantly: after resume, the freshly created run_task only
+        # runs to completion if the polling loop cedes control at least once. An
+        # AsyncMock(return_value=None) awaits without a suspension point, starving
+        # the child task and busy-looping forever (even wait_for's timeout can't
+        # fire because the loop never yields).
+        async def _yield_sleep(*_a: object, **_kw: object) -> None:
+            await asyncio.sleep(0)
+
+        mock_asyncio.sleep = _yield_sleep
         mock_asyncio.create_task = asyncio.create_task
         mock_asyncio.CancelledError = asyncio.CancelledError
         mock_asyncio.Event = asyncio.Event
