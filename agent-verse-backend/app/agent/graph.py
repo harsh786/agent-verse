@@ -450,18 +450,29 @@ class AgentGraph(
                             _dept_mem = DepartmentMemory()
                             _mem_entries = await _dept_mem.retrieve(dept_id, goal, top_k=6)
                             if _mem_entries:
+                                # MemoryEntry has no `category`; `tags` is the
+                                # analogous categorization field. (Reading a
+                                # non-existent attribute here previously raised
+                                # AttributeError that the broad except silently
+                                # swallowed, so dept memory was never injected
+                                # whenever entries existed — the case that matters.)
                                 _org_ctx["dept_memory"] = [
                                     {
                                         "content": e.content,
                                         "confidence": e.confidence,
-                                        "category": e.category,
+                                        "tags": e.tags,
                                     }
                                     for e in _mem_entries
                                 ]
                                 span.set_attribute("org.dept_memory_entries", len(_mem_entries))
                         except Exception as _dm_exc:
-                            # Non-fatal: proceed without dept memory
-                            pass
+                            # Non-fatal: proceed without dept memory, but log so a
+                            # silent regression in this path is visible.
+                            self._logger.warning(
+                                "dept_memory_injection_failed",
+                                dept_id=dept_id,
+                                error=str(_dm_exc),
+                            )
 
                     initial_context = _org_ctx
 
