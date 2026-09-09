@@ -49,6 +49,16 @@ class SimulateRequest(BaseModel):
     layer: str
 
 
+class CorpusSampleModel(BaseModel):
+    content: str
+    should_block: bool
+    layer: str = "final_output"
+
+
+class EvaluateCorpusRequest(BaseModel):
+    samples: list[CorpusSampleModel] = Field(..., max_length=500)
+
+
 @router.post("/rules")
 async def create_rule(request: Request, body: CreateRuleRequest) -> dict[str, Any]:
     """Create a new guardrail rule."""
@@ -134,6 +144,29 @@ async def simulate_evaluation(request: Request, body: SimulateRequest) -> dict[s
     from app.guardrails_v2.engine import guardrails_engine
 
     return await guardrails_engine.simulate(body.content, body.layer, tenant.tenant_id)
+
+
+@router.post("/evaluate-corpus")
+async def evaluate_corpus(request: Request, body: EvaluateCorpusRequest) -> dict[str, Any]:
+    """Measure the tenant's guardrail rules against a labelled corpus.
+
+    Runs ``simulate`` (records nothing) over each labelled sample and reports
+    precision/recall/F1 plus tuning recommendations — which rules are
+    over-aggressive (fire on benign content) and which attacks slip through.
+    """
+    from dataclasses import asdict
+
+    from app.guardrails_v2.engine import guardrails_engine
+    from app.guardrails_v2.tuner import CorpusSample, GuardrailTuner
+
+    tenant = _require_tenant(request)
+    tuner = GuardrailTuner(guardrails_engine)
+    samples = [
+        CorpusSample(content=s.content, should_block=s.should_block, layer=s.layer)
+        for s in body.samples
+    ]
+    report = await tuner.evaluate_corpus(tenant.tenant_id, samples)
+    return asdict(report)
 
 
 @router.get("/violations")
