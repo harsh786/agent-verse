@@ -124,7 +124,7 @@ class IngestionOrchestrator:
             try:
                 from app.rag.chunker import SemanticChunker as RagChunker
 
-                chunker_fixed = RagChunker(strategy="fixed")
+                chunker_fixed = RagChunker()
                 texts = [c.content for c in chunker_fixed.chunk(content) if c.content.strip()]
                 if texts:
                     return texts

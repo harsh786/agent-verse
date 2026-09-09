@@ -295,7 +295,7 @@ warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
 disallow_any_generics = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "union-attr", "assignment", "arg-type", "call-arg", "return-value", "index"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "union-attr", "assignment", "return-value", "index"]
 
 # Ingestion: dynamic parser registry + connector plugins
 [[tool.mypy.overrides]]
@@ -386,7 +386,7 @@ module = ["app.workflow.service", "app.workflow.*", "app.workflow.router_version
 warn_return_any = false
 no_warn_return_any = true
 disallow_any_generics = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value", "override"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value", "override"]
 
 # Triggers: croniter + dynamic schedule dispatch
 [[tool.mypy.overrides]]
@@ -394,7 +394,7 @@ module = ["app.triggers.dispatcher", "app.triggers.*"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value"]
 
 # RPA + Perception: Playwright dynamic page objects
 [[tool.mypy.overrides]]
@@ -525,7 +525,7 @@ warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
 disallow_any_generics = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value", "override", "union-attr"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value", "override", "union-attr"]
 
 # Coordination + contracts: dynamic A2A protocol
 [[tool.mypy.overrides]]

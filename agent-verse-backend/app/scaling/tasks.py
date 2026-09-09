@@ -2637,15 +2637,15 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                 # ── RELATIVE_DELAY (fire once at base + offset) ────────────────
                 elif trigger_type == "relative_delay":
                     last_dt = _schedule_datetime(sched.get("last_fired_at"))
-                    due = _relative_delay_due_utc(
+                    due_at = _relative_delay_due_utc(
                         sched.get("fire_at_iso", ""),
                         int(sched.get("relative_offset_seconds", 0) or 0),
                         now,
                         last_dt,
                     )
-                    if due is not None:
+                    if due_at is not None:
                         goal_kwargs = advance_and_dispatch_schedule(
-                            key, sched, fired_at=due, fire_instance_id=due.isoformat()
+                            key, sched, fired_at=due_at, fire_instance_id=due_at.isoformat()
                         )
                         if goal_kwargs is not None:
                             fired += 1
@@ -2654,15 +2654,15 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                 # ── DEADLINE (fire once, warning_seconds before deadline) ──────
                 elif trigger_type == "deadline":
                     last_dt = _schedule_datetime(sched.get("last_fired_at"))
-                    due = _deadline_due_utc(
+                    due_at = _deadline_due_utc(
                         sched.get("fire_at_iso", ""),
                         int(sched.get("deadline_warning_seconds", 0) or 0),
                         now,
                         last_dt,
                     )
-                    if due is not None:
+                    if due_at is not None:
                         goal_kwargs = advance_and_dispatch_schedule(
-                            key, sched, fired_at=due, fire_instance_id=due.isoformat()
+                            key, sched, fired_at=due_at, fire_instance_id=due_at.isoformat()
                         )
                         if goal_kwargs is not None:
                             fired += 1

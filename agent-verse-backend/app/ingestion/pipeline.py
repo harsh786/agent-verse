@@ -537,11 +537,11 @@ class IngestionPipeline:
             rag_chunks.append(rag_chunk)
 
         try:
-            from app.tenancy.context import TenantContext
+            from app.tenancy.context import PlanTier, TenantContext
 
             tenant_ctx = TenantContext(
                 tenant_id=config.tenant_id,
-                plan="free",
+                plan=PlanTier.FREE,
                 api_key_id="ingestion",
             )
             chunk_ids = await self._kb.ingest_chunks_async(

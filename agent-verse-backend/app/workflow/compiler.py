@@ -162,7 +162,7 @@ class WorkflowCompiler:
 
             # Persist step-result rows when a run store is wired (skip test runs,
             # which have no persisted run row to attach to).
-            persist = (
+            persist = bool(
                 run_store is not None
                 and state.get("run_id")
                 and state.get("tenant_id")
