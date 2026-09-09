@@ -128,13 +128,18 @@ def execute_workflow_run(
             if hasattr(current, "values"):
                 await compiled.ainvoke(dict(current.values), config)
         else:
-            # Fresh run — state already in checkpointer from runner.run()
-            definition = await runner._load_definition(workflow_id, tenant_id)
-            compiled = runner._compiler.compile(definition)
-            config = {"configurable": {"thread_id": run_id}}
-            current = await compiled.aget_state(config)
-            if hasattr(current, "values"):
-                await compiled.ainvoke(dict(current.values), config)
+            # Fresh run. runner.run()'s Celery-dispatch branch persists the run
+            # row but never seeds the LangGraph checkpointer, and this worker
+            # runs on its own per-process checkpointer — so there is nothing to
+            # read back. Reconstruct the initial state from the persisted run
+            # record + definition and execute it, so the worker runs real steps.
+            await runner.execute_fresh(
+                run_id,
+                workflow_id,
+                tenant_id,
+                is_test_run=is_test_run,
+                mock_overrides=mock_overrides or {},
+            )
 
     try:
         _run_async(_execute())
