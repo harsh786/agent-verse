@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.models import Base
@@ -53,8 +54,11 @@ class Schedule(Base):
     condition: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
     description: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
     # Family-specific config carried to the beat loop (file_watch_path, rss_url,
-    # poll_url, …) — see app.triggers.store.spec_config (migration 0116).
-    config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # poll_url, …) — see app.triggers.store.spec_config (migration 0116). Declared
+    # JSONB to match the actual column type migration 0116 creates, so alembic
+    # autogenerate doesn't propose a spurious type change and JSONB operators/GIN
+    # indexes are available.
+    config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

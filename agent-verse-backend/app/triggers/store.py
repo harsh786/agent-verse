@@ -10,6 +10,8 @@ async durable paths await persistence and raise failures to callers.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import dataclasses
 import inspect
 import json
 import logging
@@ -48,7 +50,62 @@ def spec_config(spec: TriggerSpec) -> dict[str, Any]:
         cfg["deadline_warning_seconds"] = int(spec.deadline_warning_seconds)
     if getattr(spec, "db_table", ""):
         cfg["db_table"] = spec.db_table
+    # Widen: persist every OTHER set family-specific field (S3/Sheets/SharePoint/
+    # GitHub/Jira/DB/IoT/price/log/… — ~90 fields on TriggerSpec) so a schedule's
+    # full config survives rehydration, not just the handful mapped above. Core
+    # Schedule columns and secrets are stored elsewhere and excluded.
+    for _f in dataclasses.fields(spec):
+        name = _f.name
+        if name in _CONFIG_EXCLUDE or name in cfg or name == "file_drop_path":
+            continue
+        value = getattr(spec, name, None)
+        if value in (None, "", 0, 0.0, [], {}, False):
+            continue
+        # Skip fields still at their declared default — they rehydrate to that
+        # default anyway, so persisting them only bloats the config.
+        if _f.default is not dataclasses.MISSING and value == _f.default:
+            continue
+        if _f.default_factory is not dataclasses.MISSING and value == _f.default_factory():
+            continue
+        cfg[name] = value
     return cfg
+
+
+# Fields NOT carried in the schedules.config column: core Schedule columns (stored
+# in their own columns) and webhook secrets (never persisted in plaintext config).
+_CONFIG_EXCLUDE: frozenset[str] = frozenset({
+    "trigger_type", "cron_expression", "timezone", "interval_seconds", "webhook_token",
+    "event_channel", "fire_at_iso", "condition", "description", "goal_template",
+    "webhook_signature_secret", "webhook_signature_secret_previous",
+    "webhook_signature_grace_until",
+})
+
+
+# Reverse of spec_config's remapping: the persisted config is keyed for the beat
+# loop (e.g. file_drop_path is stored as file_watch_path), so map those keys back
+# onto the spec's own field names when rehydrating from the DB.
+_CONFIG_KEY_TO_SPEC_FIELD: dict[str, str] = {"file_watch_path": "file_drop_path"}
+
+
+def apply_config_to_spec(spec: TriggerSpec, config: Any) -> None:
+    """Restore family-specific config (persisted by ``spec_config``) onto a spec.
+
+    Without this, a TriggerSpec rehydrated from the ``schedules`` table on a
+    restart or another replica loses every family field (file-watch path, RSS/poll
+    URL, db_table, time offsets, …): they read blank from the ScheduleStore and the
+    schedule API, even though the beat firing path reads them straight from the
+    same ``config`` column.
+    """
+    if not isinstance(config, dict):
+        return
+    for cfg_key, cfg_val in config.items():
+        if not isinstance(cfg_key, str):
+            continue
+        field = _CONFIG_KEY_TO_SPEC_FIELD.get(cfg_key, cfg_key)
+        if hasattr(spec, field):
+            # A bad value must never break schedule sync.
+            with contextlib.suppress(Exception):
+                setattr(spec, field, cfg_val)
 
 
 def _strip_secret_redis_fields(payload: dict[str, Any]) -> dict[str, Any]:
@@ -526,6 +583,10 @@ class ScheduleStore:
                             condition=row.condition or "",
                             description=row.description or "",
                         )
+                        # Rehydrate the family-specific config (file-watch path,
+                        # RSS/poll URL, db_table, time offsets, …) that spec_config
+                        # persisted into the schedules.config column on create.
+                        apply_config_to_spec(spec, getattr(row, "config", None))
                         self._data[key] = {
                             "schedule_id": row.id,
                             "goal_id": row.goal_id_template,
