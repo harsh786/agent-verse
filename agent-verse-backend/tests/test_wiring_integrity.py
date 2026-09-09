@@ -10,18 +10,20 @@ class TestGoalServiceWiring:
     """0B.1: goal_service.py must pass all required services to AgentGraph."""
 
     def test_goal_service_passes_llm_response_cache(self):
-        """AgentGraph construction in goal_service must include llm_response_cache."""
+        """AgentGraph must accept llm_response_cache and goal_service must wire it
+        (behavioural — tolerant of dict-based ``**graph_services`` construction)."""
+        from app.agent.graph import AgentGraph
         from app.services import goal_service
-        source = inspect.getsource(goal_service)
-        # Find AgentGraph constructor calls
-        assert "llm_response_cache=" in source, \
-            "0B.1: llm_response_cache not passed to AgentGraph in goal_service"
+        assert "llm_response_cache" in inspect.signature(AgentGraph.__init__).parameters
+        assert "llm_response_cache" in inspect.getsource(goal_service), \
+            "0B.1: llm_response_cache not wired into AgentGraph in goal_service"
 
     def test_goal_service_passes_semantic_cache(self):
+        from app.agent.graph import AgentGraph
         from app.services import goal_service
-        source = inspect.getsource(goal_service)
-        assert "semantic_cache=" in source, \
-            "goal_service must pass semantic_cache to AgentGraph"
+        assert "semantic_cache" in inspect.signature(AgentGraph.__init__).parameters
+        assert "semantic_cache" in inspect.getsource(goal_service), \
+            "goal_service must wire semantic_cache into AgentGraph"
 
     def test_goal_service_calls_dedup_release(self):
         """0B.10: goal_service must call dedup release on terminal states."""
@@ -196,11 +198,12 @@ class TestPhase3Wiring:
             "C1: answer_synthesizer not passed to AgentGraph in goal_service"
 
     def test_google_oauth_router_registered(self):
-        import inspect
-        from app import main
-        source = inspect.getsource(main)
-        assert "google_oauth" in source or "google_oauth_router" in source, \
-            "C2: google_oauth router not registered in main.py"
+        """The google-oauth router is imported and included by the router
+        registrar (registration lives in app.bootstrap.routers, not main.py)."""
+        from app.bootstrap import routers
+        source = inspect.getsource(routers)
+        assert "include_router(google_oauth_router)" in source, \
+            "C2: google_oauth router not registered by register_routers"
 
     def test_exfil_guard_in_mcp_client(self):
         import inspect
