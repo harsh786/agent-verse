@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, patch
 
 
 @pytest.mark.asyncio
@@ -18,6 +17,7 @@ async def test_digital_twin_sync_accepts_event():
     twin = OrgDigitalTwin()
     event = {"event_type": "org.mission.created", "org_id": "org1", "payload": {}}
     await twin.sync(event)   # should not raise
+    assert twin._synced_event_counts["org1"] == 1
 
 
 @pytest.mark.asyncio
@@ -25,18 +25,18 @@ async def test_digital_twin_simulate_returns_result():
     from app.org.digital_twin import OrgDigitalTwin
     twin = OrgDigitalTwin()
     result = await twin.simulate_mission(
-        mission={"goal": "Research competitors", "org_id": "org1"},
-        config={},
+        org_id="org1",
+        mission_config={"goal": "Research competitors"},
     )
     assert result is not None
-    assert hasattr(result, "duration_hours") or isinstance(result, dict)
+    assert hasattr(result, "estimated_duration_h")
 
 
 @pytest.mark.asyncio
 async def test_digital_twin_capacity_forecast():
     from app.org.digital_twin import OrgDigitalTwin
     twin = OrgDigitalTwin()
-    forecast = await twin.get_capacity_forecast(org_id="org1", hours_ahead=24)
+    forecast = await twin.capacity_plan(org_id="org1")
     assert forecast is not None
 
 
@@ -46,10 +46,11 @@ async def test_digital_twin_never_modifies_production():
     from app.org.digital_twin import OrgDigitalTwin
     twin = OrgDigitalTwin()
     # simulate should not write to real DB
-    # This test verifies no DB session is used
     result = await twin.simulate_mission(
-        mission={"goal": "Test", "org_id": "org1"},
-        config={"fast_mode": True},
+        org_id="org1",
+        mission_config={"goal": "Test"},
     )
     # If it reaches here without DB error, twin is stateless
-    assert True
+    assert result is not None
+    # No DB session was ever attached — nothing could have been written.
+    assert twin._db is None

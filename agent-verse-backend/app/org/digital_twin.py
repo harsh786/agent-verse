@@ -69,9 +69,33 @@ class OrgDigitalTwin:
 
     def __init__(self) -> None:
         self._db: Any = None  # async session factory (injected in lifespan)
+        self._last_synced_event: dict[str, dict[str, Any]] = {}  # org_id -> last event
+        self._synced_event_counts: dict[str, int] = {}  # org_id -> total events synced
 
     def set_db(self, db_factory: Any) -> None:
         self._db = db_factory
+
+    async def sync(self, event: dict[str, Any]) -> None:
+        """Update the twin's live-state snapshot from a real org event.
+
+        Called by the org-twin-sync trigger (app/org/feature_flags.py) on every
+        org event so what-if/capacity projections stay grounded in reality.
+        This never touches production state — it only updates the twin's own
+        in-memory snapshot.
+        """
+        org_id = event.get("org_id", "")
+        if not org_id:
+            return
+        with _tracer.start_as_current_span("digital_twin.sync") as span:
+            span.set_attribute("org_id", org_id)
+            span.set_attribute("event_type", event.get("event_type", ""))
+            self._last_synced_event[org_id] = event
+            self._synced_event_counts[org_id] = self._synced_event_counts.get(org_id, 0) + 1
+            _log.debug(
+                "digital_twin.synced",
+                org_id=org_id,
+                event_type=event.get("event_type", ""),
+            )
 
     async def simulate_mission(
         self,
