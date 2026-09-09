@@ -343,7 +343,7 @@ class ExecutorMixin:
                         _step_lat = float(agent_state.context.get("last_step_latency_ms", 200.0))
                         import asyncio as _tp_asyncio
 
-                        _tp_asyncio.ensure_future(
+                        _tp_asyncio.ensure_future(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                             _orch_persist.persist_tool_outcome(
                                 tool_name=_tool_nm,
                                 success=bool(_step_ok),
@@ -358,7 +358,7 @@ class ExecutorMixin:
                     try:
                         import asyncio as _asyncio_cb
 
-                        _asyncio_cb.create_task(
+                        _asyncio_cb.create_task(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                             self._step_callback(
                                 "step_completed",
                                 {
@@ -424,7 +424,7 @@ class ExecutorMixin:
                                 _step_ok_wave = bool(out and "error" not in out.lower()[:50])
                                 import asyncio as _wp_asyncio
 
-                                _wp_asyncio.ensure_future(
+                                _wp_asyncio.ensure_future(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                                     _orch_persist_wave.persist_tool_outcome(
                                         tool_name=_tool_nm_wave,
                                         success=_step_ok_wave,

@@ -188,6 +188,35 @@ ignore = ["A003", "B008"]
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
 
+[tool.ruff.lint.per-file-ignores]
+# RUF001/002/003 (ambiguous-unicode-character-*): intentional typographic
+# characters — EN DASH used as a prose separator in comments/docstrings, the
+# MULTIPLICATION SIGN in analytics docstrings, and (in guardrails_v2/engine.py
+# and toxicity.py) literal homoglyph characters that are the anti-spoofing
+# guardrail's own detection fixtures and must keep their exact Unicode
+# codepoints to do their job. None of these are typos; "fixing" them would
+# either read worse in prose or break the guardrail it lives in.
+"app/ai_router/shadow_router.py" = ["RUF003"]
+"app/api/costs.py" = ["RUF001"]
+"app/collab/agent_collab.py" = ["RUF002"]
+"app/db/migrations/versions/0055_guardrails.py" = ["RUF003"]
+"app/gateway/notification_router.py" = ["RUF002", "RUF003"]
+"app/guardrails_v2/engine.py" = ["RUF001"]
+"app/guardrails_v2/toxicity.py" = ["RUF002"]
+"app/mcp/servers/brave_search_server.py" = ["RUF001"]
+"app/mcp/servers/datadog_server.py" = ["RUF001"]
+"app/mcp/servers/insightly_server.py" = ["RUF001"]
+"app/mcp/servers/openai_server.py" = ["RUF001"]
+"app/mcp/servers/serpapi_server.py" = ["RUF001"]
+"app/mcp/servers/tavily_server.py" = ["RUF001"]
+"app/mcp/servers/x_twitter_server.py" = ["RUF001"]
+"app/mcp/servers/youtube_server.py" = ["RUF001"]
+"app/mcp/tool_cache.py" = ["RUF002"]
+"app/org/analytics.py" = ["RUF002"]
+"app/org/context_engine.py" = ["RUF003"]
+"app/org/org_learning.py" = ["RUF003"]
+"app/rag/agentic/llm_query_transformer.py" = ["RUF001", "RUF003"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true

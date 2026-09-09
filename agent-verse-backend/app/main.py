@@ -1186,7 +1186,7 @@ def create_app(
                             "execution_memory_hydration_failed", error=str(_em_inner_err)
                         )
 
-                _em_asyncio.create_task(_hydrate_exec_memory())
+                _em_asyncio.create_task(_hydrate_exec_memory())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
             except Exception as _em_exc:
                 logger.warning("execution_memory_hydration_setup_failed", error=str(_em_exc))
 
@@ -1426,7 +1426,7 @@ def create_app(
                 _ab_engine._db_factory = db_factory
                 import asyncio as _ab_asyncio
 
-                _ab_asyncio.create_task(_ab_engine.load_from_db(db_factory=db_factory))
+                _ab_asyncio.create_task(_ab_engine.load_from_db(db_factory=db_factory))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 logger.info("ab_testing_engine_wired")
             except Exception as _ab_exc:
                 logger.warning("ab_testing_engine_wire_failed", error=str(_ab_exc))
@@ -1660,7 +1660,7 @@ def create_app(
                     _audit_writer = _AuditWriter(redis=redis_for_runtime)
                     app.state.audit_writer = _audit_writer
                     _audit_flusher = _AuditFlusher(redis=redis_for_runtime, db_factory=db_factory)
-                    _flush_task = _asyncio_wal.create_task(_audit_flusher.run())
+                    _flush_task = _asyncio_wal.create_task(_audit_flusher.run())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                     logger.info("audit_v3_wired")
                 except Exception as _aw_exc:
                     logger.warning("audit_v3_wire_failed", error=str(_aw_exc))
@@ -1765,7 +1765,7 @@ def create_app(
 
                     from app.auth.cache_warmer import warm_permission_cache
 
-                    _asyncio_cw.create_task(
+                    _asyncio_cw.create_task(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                         warm_permission_cache(redis=redis_for_runtime, db_factory=db_factory)
                     )
                     logger.info("permission_cache_warming_started")
@@ -1864,7 +1864,7 @@ def create_app(
                 _orch_persistence = OrchestrationPersistence(db=db_factory)
                 import asyncio as _asyncio
 
-                _asyncio.create_task(_orch_persistence.load_tool_trust_from_db("*", db=db_factory))
+                _asyncio.create_task(_orch_persistence.load_tool_trust_from_db("*", db=db_factory))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 app.state.orchestration_persistence = _orch_persistence
                 logger.info("orchestration_persistence_hydration_started")
             except Exception as _orch_exc:
@@ -1965,7 +1965,7 @@ def create_app(
 
                 from app.voice.providers import warmup_providers as _voice_warmup
 
-                _voice_asyncio.create_task(_voice_warmup())
+                _voice_asyncio.create_task(_voice_warmup())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 logger.info("voice_providers_warmup_scheduled")
                 # D-6: Start proactive voice alert manager
                 from app.voice.alerts import VoiceAlertManager as _VAM

@@ -509,7 +509,7 @@ class VerifierMixin:
                                 ):
                                     import asyncio as _rc_asyncio
 
-                                    _rc_asyncio.ensure_future(
+                                    _rc_asyncio.ensure_future(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                                         _orch_p.persist_regression_case(
                                             {
                                                 **_regression_candidate,
@@ -572,7 +572,7 @@ class VerifierMixin:
                                         ):
                                             import asyncio as _mc_asyncio
 
-                                            _mc_asyncio.ensure_future(
+                                            _mc_asyncio.ensure_future(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                                                 _agent_store.update_config(
                                                     agent_id=self._agent_id,
                                                     tenant_ctx=tenant_ctx,
@@ -610,7 +610,7 @@ class VerifierMixin:
                                         for _ft in _failed_tools[:3]:
                                             import asyncio as _bl_asyncio
 
-                                            _bl_asyncio.ensure_future(
+                                            _bl_asyncio.ensure_future(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                                                 _tr_store.record(
                                                     tool_name=_ft,
                                                     tenant_id=tenant_ctx.tenant_id,
@@ -798,7 +798,7 @@ class VerifierMixin:
                 _rw = get_reflexion_wirer()
                 import asyncio as _rf_asyncio
 
-                _rf_asyncio.ensure_future(_rw.maybe_store_async(agent_state))
+                _rf_asyncio.ensure_future(_rw.maybe_store_async(agent_state))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
             except Exception:
                 pass
 
@@ -812,7 +812,7 @@ class VerifierMixin:
                 if _orch_p is not None and hasattr(_orch_p, "persist_reflexion_lesson"):
                     import asyncio as _rl_asyncio
 
-                    _rl_asyncio.ensure_future(_orch_p.persist_reflexion_lesson(agent_state))
+                    _rl_asyncio.ensure_future(_orch_p.persist_reflexion_lesson(agent_state))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
             except Exception:
                 pass
 

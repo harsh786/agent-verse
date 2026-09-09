@@ -67,7 +67,7 @@ class MCPWebSocketClient:
         self._connected = True
         logger.info("MCPWebSocketClient connected to %s", self._ws_url)
         # Start message dispatcher
-        asyncio.create_task(self._dispatch_messages())
+        asyncio.create_task(self._dispatch_messages())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
         return self
 
     async def disconnect(self) -> None:

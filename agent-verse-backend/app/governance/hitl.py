@@ -500,7 +500,7 @@ class HITLGateway:
                             auto_rejected=True,
                         )
                         try:
-                            _aio.ensure_future(_coro)
+                            _aio.ensure_future(_coro)  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                         except RuntimeError:
                             pass  # no running loop — skip notification
                     except Exception:

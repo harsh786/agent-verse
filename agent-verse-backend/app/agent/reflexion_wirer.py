@@ -87,7 +87,7 @@ class ReflexionWirer:
             try:
                 import asyncio
 
-                asyncio.ensure_future(
+                asyncio.ensure_future(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                     self._store.record_async(
                         tenant_id=state.tenant_ctx.tenant_id,
                         lesson=lesson,

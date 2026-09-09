@@ -177,7 +177,7 @@ def _resolve_checkpointer(app_state: Any) -> Any:
                 )
             try:
                 _loop = asyncio.get_running_loop()
-                _loop.create_task(_saver.setup())
+                _loop.create_task(_saver.setup())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
             except RuntimeError:
                 pass
             _svc_logger.info("checkpointer_redis_async_wired")
@@ -404,7 +404,7 @@ class GoalService:
         """Start the HITL rejection note subscriber as a background asyncio task."""
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(
+            loop.create_task(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 self._subscribe_hitl_rejections(redis_url),
                 name="hitl-rejection-subscriber",
             )
@@ -2733,7 +2733,7 @@ class GoalService:
             now = time.monotonic()
             if now - self._last_eviction_time > _EVICTION_INTERVAL_SECONDS:
                 self._last_eviction_time = now
-                asyncio.create_task(self._evict_async())
+                asyncio.create_task(self._evict_async())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
 
             # Fix 6: record that a new goal has been started.
             record_goal_started(tenant_id=tenant_ctx.tenant_id, priority=priority)
@@ -3256,7 +3256,7 @@ class GoalService:
                         if evt is not None:
                             evt.set()
 
-                _asyncio.create_task(_resume_graph())
+                _asyncio.create_task(_resume_graph())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 record.status = GoalStatus.EXECUTING
                 # C4 fix: clear Redis pause flag on checkpoint-based resume path too
                 try:
@@ -3264,7 +3264,7 @@ class GoalService:
 
                     _redis_cp = getattr(self, "_redis", None)
                     if _redis_cp is not None:
-                        _asyncio.ensure_future(_signal_resume_cp(goal_id, _redis_cp))
+                        _asyncio.ensure_future(_signal_resume_cp(goal_id, _redis_cp))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 except Exception:
                     pass
                 await self._dispatch_event(
@@ -3290,7 +3290,7 @@ class GoalService:
             if _redis is not None:
                 import asyncio as _c4_asyncio
 
-                _c4_asyncio.ensure_future(_signal_resume(goal_id, _redis))
+                _c4_asyncio.ensure_future(_signal_resume(goal_id, _redis))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
         except Exception:
             pass
         await self._dispatch_event(goal_id, {"type": "goal_resumed"}, tenant_ctx=tenant_ctx)

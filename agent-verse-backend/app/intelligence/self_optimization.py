@@ -124,7 +124,7 @@ class SelfOptimizer:
                 _s.tenant_id = tenant_ctx.tenant_id
                 try:
                     loop = _asyncio.get_running_loop()
-                    loop.create_task(
+                    loop.create_task(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                         self.persist_suggestion(_s, tenant_ctx=tenant_ctx, db=self._db)
                     )
                 except RuntimeError:
@@ -255,7 +255,7 @@ class SelfOptimizer:
                 _s.tenant_id = tenant_ctx.tenant_id
                 try:
                     loop = _asyncio.get_running_loop()
-                    loop.create_task(
+                    loop.create_task(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                         self.persist_suggestion(_s, tenant_ctx=tenant_ctx, db=self._db)
                     )
                 except RuntimeError:

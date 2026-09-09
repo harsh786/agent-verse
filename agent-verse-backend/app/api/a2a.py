@@ -290,7 +290,7 @@ async def receive_a2a_task(
             await _update_task_status(task_id, final_status, final_result, db)
             await _send_callback(body.callback_url or "", task_id, final_status, final_result)
 
-        asyncio.create_task(execute_and_callback())
+        asyncio.create_task(execute_and_callback())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
 
     return {
         "task_id": task_id,
