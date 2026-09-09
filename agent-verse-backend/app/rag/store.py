@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.observability.logging import get_logger
 from app.rag.models import Chunk, KnowledgeCollection
-from app.tenancy.context import TenantContext
+from app.tenancy.context import PlanTier, TenantContext
 
 if TYPE_CHECKING:
     from app.rag.contracts import RAGStrategy
@@ -675,6 +675,105 @@ class KnowledgeStore:
             )
         store.chunks.append(chunk)
         store.collection.document_count = len({c.document_id for c in store.chunks})
+
+    async def exists_by_hash(
+        self,
+        *,
+        content_hash: str,
+        tenant_id: str,
+        collection_id: str | None = None,
+    ) -> bool:
+        """Return True if content with this hash is already indexed (WS-12 dedup).
+
+        RLS/tenant-scoped content-hash lookup that backs cross-source dedup and
+        incremental re-ingest. A hash matches when either a chunk's native
+        per-chunk ``content_hash`` OR its ``doc_content_hash`` metadata equals
+        ``content_hash``. Ingestion (pipeline Stage 3), RPA→KB and OCR→KB all
+        call this before re-indexing, so the SAME content from any source dedups
+        against the one store.
+
+        Args:
+            content_hash: SHA-256 hex digest to look up. Empty never matches.
+            tenant_id: tenant whose collections are searched (RLS-scoped).
+            collection_id: when given, restrict the search to that collection;
+                otherwise search every collection in the tenant.
+        """
+        if not content_hash:
+            return False
+        if self._db is None:
+            return self._exists_by_hash_memory(content_hash, tenant_id, collection_id)
+        return await self._db_exists_by_hash(content_hash, tenant_id, collection_id)
+
+    def _exists_by_hash_memory(
+        self, content_hash: str, tenant_id: str, collection_id: str | None
+    ) -> bool:
+        for (tid, cid), store in self._data.items():
+            if tid != tenant_id:
+                continue
+            if collection_id is not None and cid != collection_id:
+                continue
+            for chunk in store.chunks:
+                meta = chunk.metadata or {}
+                if (
+                    meta.get("doc_content_hash") == content_hash
+                    or meta.get("content_hash") == content_hash
+                ):
+                    return True
+        return False
+
+    async def _db_exists_by_hash(
+        self, content_hash: str, tenant_id: str, collection_id: str | None
+    ) -> bool:
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        if collection_id is not None:
+            dim = await self.get_collection_embedding_dim(
+                collection_id,
+                tenant_ctx=TenantContext(
+                    tenant_id=tenant_id, api_key_id="dedup", plan=PlanTier.FREE
+                ),
+            )
+            dims: tuple[int, ...] = (dim,) if dim else SUPPORTED_EMBEDDING_DIMENSIONS
+        else:
+            dims = SUPPORTED_EMBEDDING_DIMENSIONS
+
+        params: dict[str, Any] = {"tid": tenant_id, "h": content_hash}
+        collection_clause = ""
+        if collection_id is not None:
+            collection_clause = "AND collection_id = :cid"
+            params["cid"] = collection_id
+
+        for dimension in dims:
+            table = _chunk_table(dimension)
+            # Each dimension is checked in its own transaction so a table that
+            # does not exist in this schema cannot abort the others.
+            try:
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
+                    found = (
+                        await session.execute(
+                            text(
+                                f"SELECT 1 FROM {table} "
+                                "WHERE tenant_id = :tid "
+                                f"{collection_clause} "
+                                "AND (content_hash = :h "
+                                "OR metadata->>'doc_content_hash' = :h) "
+                                "LIMIT 1"
+                            ),
+                            params,
+                        )
+                    ).scalar_one_or_none()
+                if found is not None:
+                    return True
+            except Exception as exc:  # missing table / transient DB error
+                _log.debug("exists_by_hash_probe_error table=%s: %s", table, exc)
+                continue
+        return False
 
     async def _db_ingest_chunk(self, chunk: Chunk, collection_id: str, tenant_id: str) -> None:
         if self._db is None:

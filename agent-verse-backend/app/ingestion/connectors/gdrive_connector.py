@@ -12,7 +12,16 @@ object or a service-account JSON key path via ``key_path``.
 from __future__ import annotations
 
 import io
-from typing import Any
+import time
+import uuid
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any
+
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_registry import register
+
+if TYPE_CHECKING:
+    from app.ingestion.source_config import RawDocument, SourceConfig
 
 
 class GDriveConnector:
@@ -134,3 +143,66 @@ class GDriveConnector:
             .get(fileId=file_id, fields="id,name,mimeType,modifiedTime,size,webViewLink")
             .execute()
         )
+
+
+@register("gdrive", feature_flag="ingestion_connector_gdrive_enabled")
+class GDriveSourceConnector(BaseConnector):
+    """BaseConnector adapter routing Google Drive files through the real pipeline.
+
+    Reads ``config.connection_config`` (``folder_id`` plus ``key_path`` or a
+    prebuilt ``credentials`` object) and yields one ``RawDocument`` per file.
+    Cursor is the max ``modifiedTime`` seen (LAW-03).
+    """
+
+    source_type = "gdrive"
+
+    def _client(self, config: SourceConfig) -> GDriveConnector:
+        cc = config.connection_config
+        return GDriveConnector(
+            credentials=cc.get("credentials"), key_path=cc.get("key_path")
+        )
+
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
+        t0 = time.perf_counter()
+        try:
+            client = self._client(config)
+            files = client.list_files(config.connection_config.get("folder_id", ""))
+            latency = (time.perf_counter() - t0) * 1000
+            return ConnectionHealth(ok=True, latency_ms=latency,
+                                    metadata={"files_visible": len(files)})
+        except Exception as exc:
+            return ConnectionHealth(ok=False, error=str(exc))
+
+    async def get_delta(
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
+        from app.ingestion.source_config import RawDocument
+
+        client = self._client(config)
+        folder_id = config.connection_config.get("folder_id", "")
+        files = client.list_files(folder_id)
+        new_cursor = cursor or ""
+        for meta in files:
+            file_id = meta.get("id", "")
+            mime = meta.get("mimeType", "")
+            if not file_id:
+                continue
+            modified = meta.get("modifiedTime", "")
+            if cursor and modified and modified <= cursor:
+                continue
+            if modified:
+                new_cursor = max(new_cursor, modified)
+            content = client.download_file(file_id, mime)
+            if not content.strip():
+                continue
+            doc = RawDocument(
+                doc_id=str(uuid.uuid4()),
+                source_id=config.source_id,
+                tenant_id=config.tenant_id,
+                title=meta.get("name", ""),
+                content=content.encode(),
+                content_type="text/plain",
+                modified_at=modified,
+                metadata={"gdrive_file_id": file_id, "source_type": "gdrive"},
+            )
+            yield doc, new_cursor

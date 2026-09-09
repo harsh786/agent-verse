@@ -6,7 +6,16 @@ Requires an Azure AD app registration with Sites.Read.All permission.
 
 from __future__ import annotations
 
-from typing import Any
+import time
+import uuid
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any
+
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_registry import register
+
+if TYPE_CHECKING:
+    from app.ingestion.source_config import RawDocument, SourceConfig
 
 _GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 _TOKEN_URL = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
@@ -174,3 +183,69 @@ class SharePointConnector:
     async def get_file_metadata(self, site_id: str, item_id: str) -> dict[str, Any]:
         """Return metadata for a single file."""
         return await self._get(f"sites/{site_id}/drive/items/{item_id}")
+
+
+@register("sharepoint", feature_flag="ingestion_connector_sharepoint_enabled")
+class SharePointSourceConnector(BaseConnector):
+    """BaseConnector adapter routing SharePoint/OneDrive files through the pipeline.
+
+    Reads ``config.connection_config`` (Azure ``tenant_id``, ``client_id``,
+    ``client_secret``, ``site_id`` and optional ``drive_id``) and yields one
+    ``RawDocument`` per file. Cursor is the max ``lastModifiedDateTime`` (LAW-03).
+    """
+
+    source_type = "sharepoint"
+
+    def _client(self, config: SourceConfig) -> SharePointConnector:
+        cc = config.connection_config
+        return SharePointConnector(
+            tenant_id=cc.get("tenant_id", ""),
+            client_id=cc.get("client_id", ""),
+            client_secret=cc.get("client_secret", ""),
+        )
+
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
+        t0 = time.perf_counter()
+        try:
+            client = self._client(config)
+            await client.get_access_token()
+            latency = (time.perf_counter() - t0) * 1000
+            return ConnectionHealth(ok=True, latency_ms=latency)
+        except Exception as exc:
+            return ConnectionHealth(ok=False, error=str(exc))
+
+    async def get_delta(
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
+        from app.ingestion.source_config import RawDocument
+
+        cc = config.connection_config
+        client = self._client(config)
+        site_id = cc.get("site_id", "")
+        drive_id = cc.get("drive_id")
+        files = await client.list_all_files(site_id, drive_id)
+        new_cursor = cursor or ""
+        for meta in files:
+            item_id = meta.get("id", "")
+            if not item_id:
+                continue
+            modified = meta.get("lastModifiedDateTime", "")
+            if cursor and modified and modified <= cursor:
+                continue
+            if modified:
+                new_cursor = max(new_cursor, modified)
+            content = await client.download_file(site_id, item_id)
+            if not content.strip():
+                continue
+            doc = RawDocument(
+                doc_id=str(uuid.uuid4()),
+                source_id=config.source_id,
+                tenant_id=config.tenant_id,
+                source_url=meta.get("webUrl", ""),
+                title=meta.get("name", ""),
+                content=content.encode(),
+                content_type="text/plain",
+                modified_at=modified,
+                metadata={"sharepoint_item_id": item_id, "source_type": "sharepoint"},
+            )
+            yield doc, new_cursor

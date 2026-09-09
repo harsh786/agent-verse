@@ -9,7 +9,16 @@ content = await connector.fetch_page_content(page_id="xyz...")
 
 from __future__ import annotations
 
-from typing import Any
+import time
+import uuid
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any
+
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_registry import register
+
+if TYPE_CHECKING:
+    from app.ingestion.source_config import RawDocument, SourceConfig
 
 
 class NotionConnector:
@@ -108,3 +117,79 @@ class NotionConnector:
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
         return pages
+
+
+@register("notion", feature_flag="ingestion_connector_notion_enabled")
+class NotionSourceConnector(BaseConnector):
+    """BaseConnector adapter that routes Notion pages through the real pipeline.
+
+    Reads credentials from ``config.connection_config`` (``api_key`` plus an
+    optional ``database_id``) and yields one ``RawDocument`` per page. Cursor is
+    the max ``last_edited_time`` seen, so re-syncs only pull newer pages (LAW-03).
+    """
+
+    source_type = "notion"
+
+    def _client(self, config: SourceConfig) -> NotionConnector:
+        return NotionConnector(api_key=config.connection_config.get("api_key", ""))
+
+    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
+        t0 = time.perf_counter()
+        try:
+            client = self._client(config)
+            database_id = config.connection_config.get("database_id", "")
+            if database_id:
+                pages = await client.list_pages(database_id, page_size=1)
+            else:
+                pages = await client.list_all_pages_in_workspace(page_size=1)
+            latency = (time.perf_counter() - t0) * 1000
+            return ConnectionHealth(ok=True, latency_ms=latency,
+                                    metadata={"pages_visible": len(pages)})
+        except Exception as exc:
+            return ConnectionHealth(ok=False, error=str(exc))
+
+    async def get_delta(
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
+        from app.ingestion.source_config import RawDocument
+
+        client = self._client(config)
+        database_id = config.connection_config.get("database_id", "")
+        pages = (
+            await client.list_pages(database_id)
+            if database_id
+            else await client.list_all_pages_in_workspace()
+        )
+        new_cursor = cursor or ""
+        for page in pages:
+            page_id = page.get("id", "")
+            if not page_id:
+                continue
+            modified = page.get("last_edited_time", "")
+            if cursor and modified and modified <= cursor:
+                continue
+            if modified:
+                new_cursor = max(new_cursor, modified)
+            text = await client.fetch_page_content(page_id)
+            if not text.strip():
+                continue
+            title = ""
+            props = page.get("properties", {})
+            for prop in props.values():
+                if prop.get("type") == "title":
+                    title = "".join(
+                        t.get("plain_text", "") for t in prop.get("title", [])
+                    )
+                    break
+            doc = RawDocument(
+                doc_id=str(uuid.uuid4()),
+                source_id=config.source_id,
+                tenant_id=config.tenant_id,
+                source_url=page.get("url", ""),
+                title=title,
+                content=text.encode(),
+                content_type="text/plain",
+                modified_at=modified,
+                metadata={"notion_page_id": page_id, "source_type": "notion"},
+            )
+            yield doc, new_cursor
