@@ -67,7 +67,9 @@ class ExecutorMixin:
             return
         try:
             latency_ms = (time.monotonic() - start) * 1000.0
-            router.record_provider_result(model or "", ok, latency_ms)
+            # Pass ok/latency_ms by keyword so the call is robust to both the
+            # adapter (positional model) and the raw orchestrator (keyword-only ok).
+            router.record_provider_result(model or "", ok=ok, latency_ms=latency_ms)
         except Exception:
             pass
 
