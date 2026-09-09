@@ -352,3 +352,29 @@ class EmbeddingOrchestrator:
                 f"new model produces {new_dim}. Re-embed the collection before switching."
             )
         return True
+
+
+def build_provider_resolver(
+    providers_by_name: dict[str, Any],
+) -> Callable[[str], Any] | None:
+    """Build a resolver mapping an embedding provider NAME to its instance.
+
+    Gives :meth:`EmbeddingOrchestrator.embed_for_content` real multi-provider
+    routing (D-10): the model selected for a content type is embedded on that
+    model's own provider (e.g. a ``voyage`` code model routes to the Voyage
+    provider) instead of always using one fixed embedder. The resolver returns
+    ``None`` for an unknown/absent provider name, which makes
+    ``embed_for_content`` fall back to ``default_provider`` — so a single-provider
+    deployment keeps working unchanged while a multi-provider one routes for real.
+
+    Returns ``None`` when no providers are supplied (callers then pass no
+    resolver and keep the single-embedder behaviour).
+    """
+    if not providers_by_name:
+        return None
+    mapping = dict(providers_by_name)
+
+    def _resolve(provider_name: str) -> Any:
+        return mapping.get(provider_name)
+
+    return _resolve

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -50,9 +50,15 @@ class IngestionOrchestrator:
         embedder: Any = None,
         indexing_dependencies: Mapping[RAGStrategy, IndexingDependency] | None = None,
         rag_indexing_config: RAGIndexingConfig | None = None,
+        embed_provider_resolver: Callable[[str], Any] | None = None,
     ) -> None:
         self._kb = knowledge_store
         self._embedder = embedder
+        # Maps an embedding provider name (e.g. "voyage", "openai") to a concrete
+        # provider instance so EmbeddingOrchestrator.select's chosen model is
+        # embedded on its own provider (multi-model routing / D-10). None → the
+        # single configured embedder is used for every content type.
+        self._embed_provider_resolver = embed_provider_resolver
         self._indexing_dependencies = dict(indexing_dependencies or {})
         self._rag_indexing_config = rag_indexing_config
         self._classifier = ContentClassifier()
@@ -318,6 +324,7 @@ class IngestionOrchestrator:
             content_type=detected,
             tenant_ctx=tenant_ctx,
             default_provider=self._embedder,
+            provider_resolver=self._embed_provider_resolver,
         )
         embeddings = routed.embeddings
         if len(embeddings) != chunks_prepared:

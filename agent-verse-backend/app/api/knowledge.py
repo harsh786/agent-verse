@@ -2113,6 +2113,9 @@ async def ingest_document_into_collection(
             embedder=embedder,
             indexing_dependencies=indexing_dependencies,
             rag_indexing_config=indexing_config,
+            embed_provider_resolver=getattr(
+                request.app.state, "embed_provider_resolver", None
+            ),
         )
         result = await orchestrator.ingest(
             content=body.content,

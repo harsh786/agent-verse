@@ -612,6 +612,46 @@ def create_app(
             logger.warning("local_embed_provider_failed", error=str(_exc))
     # app.state.embedder is set after app = FastAPI(...)
 
+    # Multi-model embedding routing (D-10): map EVERY configured embedding
+    # provider by name so EmbeddingOrchestrator.select's chosen model is embedded
+    # on its own provider (e.g. a code content type → the Voyage code model on the
+    # Voyage provider). Built independently of the single primary `_embedder`
+    # above; the resolver falls back to that primary when a provider is absent, so
+    # a single-provider deployment is unchanged.
+    _embed_providers_by_name: dict[str, Any] = {}
+    if _voyage_key:
+        try:
+            from app.providers.voyage_provider import VoyageProvider
+
+            _embed_providers_by_name["voyage"] = (
+                _embedder
+                if isinstance(_embedder, VoyageProvider)
+                else VoyageProvider(api_key=_voyage_key)
+            )
+        except Exception:
+            pass
+    if _openai_key:
+        try:
+            from app.providers.openai_compatible import OpenAICompatibleProvider
+
+            _embed_providers_by_name["openai"] = OpenAICompatibleProvider(
+                api_key=_openai_key, default_model="text-embedding-3-small"
+            )
+        except Exception:
+            pass
+    if get_provider_env("GOOGLE_API_KEY"):
+        try:
+            from app.providers.gemini_provider import GeminiProvider
+
+            _embed_providers_by_name["gemini"] = GeminiProvider(
+                api_key=get_provider_env("GOOGLE_API_KEY")
+            )
+        except Exception:
+            pass
+    from app.embedding.orchestrator import build_provider_resolver
+
+    _embed_provider_resolver = build_provider_resolver(_embed_providers_by_name)
+
     # Wire ModelRouter: selects optimal model per task type based on available provider
     from app.agent.model_router import ModelRouter
 
@@ -1909,6 +1949,8 @@ def create_app(
     # overwriting it with None when no real provider API key is available.
     if getattr(app.state, "embedder", None) is None:
         app.state.embedder = _embedder
+    # Resolver for multi-model embedding routing (None when ≤1 provider configured).
+    app.state.embed_provider_resolver = _embed_provider_resolver
     app.state.model_router = _model_router
     # Core services
     app.state.tenant_service = _tenant_svc
