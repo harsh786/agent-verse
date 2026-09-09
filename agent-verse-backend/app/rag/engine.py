@@ -35,8 +35,10 @@ from typing import Any, ClassVar
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.observability.logging import get_logger
 from app.rag.bm25 import BM25CorpusScorer, BM25Hit
+from app.rag.rerank_stage import apply_default_rerank
 
 logger = get_logger(__name__)
 
@@ -1730,7 +1732,7 @@ async def retrieve(
             if strategy == "naive"
             else retrieval_mode
         )
-        return await hybrid_search(
+        base_results = await hybrid_search(
             session,
             query=query,
             query_embedding=query_embedding,
@@ -1740,6 +1742,15 @@ async def retrieve(
             embedding_dim=embedding_dim,
             strict=strict,
             metadata_filter=metadata_filter,
+        )
+        # WS-10: reranking STAGE on the DEFAULT retrieval path (config-gated,
+        # honest passthrough when disabled or when the reranker is unavailable).
+        return await apply_default_rerank(
+            base_results,
+            query=query,
+            query_embedding=query_embedding,
+            settings=get_settings(),
+            top_k=top_k,
         )
     except Exception as exc:
         if strict:

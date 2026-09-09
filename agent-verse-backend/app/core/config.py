@@ -92,6 +92,15 @@ class Settings(BaseSettings):
     # --- Embedding vector dimension (must match the embed model) --------------
     embedding_dim: int = 2048  # qwen3-embedding uses 2048-d vectors
 
+    # --- RAG default-path reranking (WS-10) -----------------------------------
+    # Engage a reranking STAGE on the DEFAULT hybrid retrieval path (not only on
+    # explicit pattern branches). Uses the one RerankPolicy registry. ``auto``
+    # prefers the cross-encoder when its model is available and degrades to a
+    # deterministic score-sort otherwise; the stage is an honest passthrough when
+    # disabled or when the reranker backend is unavailable.
+    rag_default_rerank_enabled: bool = True
+    rag_default_rerank_strategy: str = "auto"  # score|rrf|diversity|cross_encoder|llm|auto
+
     # --- default model names per task type (override via env vars) ---
     default_planning_model: str = "qwen3.8:latest"
     default_planning_provider: str = "ollama"

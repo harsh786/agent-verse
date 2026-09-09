@@ -52,6 +52,7 @@ from app.rag.engine import (
     RetrievalStrategyExecutionError,
 )
 from app.rag.raft import RAFTService
+from app.rag.rerank_stage import apply_default_rerank
 from app.rag_platform.reranker_contract import AsyncCloseableProtocol
 from app.tenancy.context import TenantContext
 
@@ -785,6 +786,7 @@ async def execute_core_strategy(
         )
         for item in evidence:
             item["query"] = request.query
+        results = await _rerank_default_path(request, results, embedding)
         return _canonical_result(request, strategy, results, evidence)
 
     if strategy is RAGStrategy.HYBRID:
@@ -798,6 +800,7 @@ async def execute_core_strategy(
             retrieval_mode="hybrid",
             evidence=evidence,
         )
+        results = await _rerank_default_path(request, results, embedding)
         return _canonical_result(request, strategy, results, evidence, rrf=True)
 
     if strategy is RAGStrategy.GRAPH:
@@ -1542,6 +1545,28 @@ async def _search_persisted(
     return await context.run_db_operation(
         operation,
         repeatable_read=retrieval_mode == "hybrid",
+    )
+
+
+async def _rerank_default_path(
+    request: RAGExecutionRequest,
+    results: list[EngineRetrievalResult],
+    embedding: list[float] | None,
+) -> list[EngineRetrievalResult]:
+    """WS-10: apply the config-gated reranking STAGE to the default gateway path.
+
+    Runs BEFORE ``_canonical_result`` so the (deliberately order-preserving)
+    citation builder sees the already-reranked order. Honest passthrough when the
+    stage is disabled or the reranker is unavailable.
+    """
+    from app.core.config import get_settings
+
+    return await apply_default_rerank(
+        results,
+        query=str(request.query),
+        query_embedding=embedding,
+        settings=get_settings(),
+        top_k=request.top_k,
     )
 
 
