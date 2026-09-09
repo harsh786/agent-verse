@@ -11,7 +11,7 @@
  *   useVoiceAlerts({ orgId, enabled: true });
  */
 import { useEffect, useRef, useCallback } from 'react';
-import { API_BASE } from '@/lib/api/client';
+import { API_BASE, apiFetch } from '@/lib/api/client';
 import { useAuthStore } from '@/stores/auth';
 
 export interface VoiceAlertEvent {
@@ -54,26 +54,43 @@ export function useVoiceAlerts({ enabled = true, onAlert }: UseVoiceAlertsOpts =
 
   useEffect(() => {
     if (!enabled || !apiKey) return;
+    let cancelled = false;
 
-    // SSE requires URL-based auth (EventSource doesn't support headers)
-    const url = `${API_BASE}/v1/voice/alerts/stream?api_key=${encodeURIComponent(apiKey)}`;
-    const es  = new EventSource(url);
-    esRef.current = es;
-
-    es.onmessage = async (e) => {
+    // SSE requires URL-based auth (EventSource can't send headers). Exchange the
+    // permanent API key for a short-lived, read-only stream token so the key never
+    // lands in a stream URL / access log; fall back to api_key if minting fails.
+    const open = async () => {
+      esRef.current?.close();
+      let auth = `?api_key=${encodeURIComponent(apiKey)}`;
       try {
-        const event: VoiceAlertEvent = JSON.parse(e.data);
-        onAlert?.(event);
-        await playChunks(event.chunks ?? []);
-      } catch { /* ignore malformed events */ }
+        const { token } = await apiFetch<{ token: string }>('/tenants/stream-token');
+        auth = `?token=${encodeURIComponent(token)}`;
+      } catch { /* keep api_key fallback */ }
+      if (cancelled) return;
+
+      const es = new EventSource(`${API_BASE}/v1/voice/alerts/stream${auth}`);
+      esRef.current = es;
+      es.onmessage = async (e) => {
+        try {
+          const event: VoiceAlertEvent = JSON.parse(e.data);
+          onAlert?.(event);
+          await playChunks(event.chunks ?? []);
+        } catch { /* ignore malformed events */ }
+      };
+      es.onerror = () => {
+        // SSE auto-reconnects on error — no manual retry needed
+      };
     };
 
-    es.onerror = () => {
-      // SSE auto-reconnects on error — no manual retry needed
-    };
+    void open();
+    // Re-open with a fresh token before the ~10-minute token expires so a
+    // long-lived alert stream never drops on expiry.
+    const refresh = setInterval(() => void open(), 9 * 60 * 1000);
 
     return () => {
-      es.close();
+      cancelled = true;
+      clearInterval(refresh);
+      esRef.current?.close();
       esRef.current = null;
     };
   }, [enabled, apiKey, onAlert, playChunks]);

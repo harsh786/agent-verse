@@ -12,7 +12,7 @@ import { toast } from '@/stores/toast';
  */
 import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { API_BASE } from '@/lib/api/client';
+import { API_BASE, apiFetch } from '@/lib/api/client';
 import { useAuthStore } from '@/stores/auth';
 import { orgKeys } from './hooks/useOrg';
 
@@ -97,7 +97,7 @@ export class OrgRealtimeManager {
     this.onConnected = options.onConnected;
     this.onDisconnected = options.onDisconnected;
 
-    this._openEventSource();
+    void this._openEventSource();
   }
 
   disconnect(): void {
@@ -108,16 +108,23 @@ export class OrgRealtimeManager {
     this._closeEventSource();
   }
 
-  private _openEventSource(): void {
+  private async _openEventSource(): Promise<void> {
     if (this.eventSource) {
       this.eventSource.close();
     }
 
-    // Full backend origin + query-param auth: EventSource can't send headers and
-    // the app talks to the backend cross-origin, so a relative path would hit the
-    // dev server and 404 (this is why the stream was never live). Mirrors the
-    // working voice-alerts SSE pattern.
-    const auth = this.apiKey ? `?api_key=${encodeURIComponent(this.apiKey)}` : '';
+    // EventSource can't send headers and the app talks to the backend cross-origin,
+    // so auth goes in the URL. Exchange the permanent API key for a short-lived,
+    // read-only stream token (re-fetched on every (re)connect) so the key itself
+    // never lands in a stream URL / access log. Fall back to api_key only if the
+    // token mint fails, so the stream still works.
+    let auth = '';
+    try {
+      const { token } = await apiFetch<{ token: string }>('/tenants/stream-token');
+      auth = `?token=${encodeURIComponent(token)}`;
+    } catch {
+      if (this.apiKey) auth = `?api_key=${encodeURIComponent(this.apiKey)}`;
+    }
     const url = `${API_BASE}/v1/org/${this.orgId}/events/stream${auth}`;
     this.eventSource = new EventSource(url);
 
@@ -141,7 +148,7 @@ export class OrgRealtimeManager {
       this.onDisconnected?.();
       // Exponential backoff reconnect
       this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 30_000);
-      this.reconnectTimer = setTimeout(() => this._openEventSource(), this.reconnectDelay);
+      this.reconnectTimer = setTimeout(() => void this._openEventSource(), this.reconnectDelay);
     };
   }
 
