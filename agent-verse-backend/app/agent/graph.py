@@ -112,6 +112,10 @@ class AgentGraph(
         exec_memory: ExecutionMemory | None = None,
         long_term_memory: LongTermMemoryStore | None = None,
         knowledge_store: KnowledgeStore | None = None,
+        # BK3 (D-20 follow-up): tenant-scoped knowledge-graph store, used to
+        # produce graph_facts for the planner prompt. Optional — Any to avoid
+        # a hard dependency on app.knowledge_graph from the agent loop.
+        knowledge_graph_store: Any | None = None,
         retrieval_gateway: Any | None = None,
         mcp_client: Any | None = None,
         # Intelligence
@@ -176,6 +180,7 @@ class AgentGraph(
         self._exec_memory = exec_memory
         self._long_term_memory = long_term_memory
         self._knowledge_store = knowledge_store
+        self._knowledge_graph_store = knowledge_graph_store
         self._retrieval_gateway = retrieval_gateway
         self._mcp_client = mcp_client
         self._guardrail_checker = guardrail_checker

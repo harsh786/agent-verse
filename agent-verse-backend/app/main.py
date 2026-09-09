@@ -2146,6 +2146,18 @@ def create_app(
     )
     # Knowledge + Memory
     app.state.knowledge_store = _knowledge_store
+    # BK3 (D-20 follow-up): the shared kg_store singleton (same object the
+    # ingestion hook feeds and the lifespan DB-wires below), exposed on
+    # app.state so goal_service can inject it into the agent loop's planner
+    # context pipeline (graph_facts producer). In-memory-first, DB-upgraded
+    # in place — same two-phase pattern as the other app.state services.
+    try:
+        from app.knowledge_graph.store import kg_store as _kg_store_singleton
+
+        app.state.knowledge_graph_store = _kg_store_singleton
+    except Exception as _kg_state_exc:
+        logger.warning("knowledge_graph_store_state_wire_failed", error=str(_kg_state_exc))
+        app.state.knowledge_graph_store = None
     app.state.repository_ingestion_tasks = set()
     # D-23: multimodal ingestion pipeline (upgraded to Redis-backed job
     # persistence in the lifespan below, when a Redis connection exists).

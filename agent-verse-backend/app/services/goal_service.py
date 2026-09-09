@@ -895,6 +895,11 @@ class GoalService:
         # ── Extract RAG/routing/intelligence services from app.state ─────────────
         _embedder = getattr(app_state, "embedder", None) if app_state else None
         _semantic_cache = getattr(app_state, "semantic_cache", None) if app_state else None
+        # BK3 (D-20 follow-up): knowledge-graph store for the planner's
+        # graph_facts producer (ContextPipeline). Optional — None when unset.
+        _knowledge_graph_store = (
+            getattr(app_state, "knowledge_graph_store", None) if app_state else None
+        )
         _model_router = None  # built after _agent_config is loaded below
         _prompt_optimizer = getattr(app_state, "prompt_optimizer", None) if app_state else None
         _bulkhead_registry = getattr(app_state, "bulkhead_registry", None) if app_state else None
@@ -1022,6 +1027,7 @@ class GoalService:
             "cost_controller": cost_controller,
             "hitl_gateway": hitl_gateway,
             "knowledge_store": knowledge_store,
+            "knowledge_graph_store": _knowledge_graph_store,
             "retrieval_gateway": retrieval_gateway,
             "long_term_memory": long_term_memory,
             "mcp_client": mcp_client,

@@ -342,6 +342,15 @@ class SemanticCache:
         hit = await self.get_similar(embedding, tenant_id)
         return hit.response if hit else None
 
+    # BK3 (D-20 follow-up): synchronous, embedding-free lookup for callers that
+    # have no embedder / running event loop available (e.g. ContextPipeline,
+    # which builds the planner prompt synchronously). Exact-text-key match
+    # against the same L1 store the text-key fallback above already uses —
+    # tenant-scoped, in-process only. Returns None on miss.
+    def lookup_text(self, query: str, tenant_id: str) -> str | None:
+        """Tenant-scoped, embedding-free cache lookup keyed by exact query text."""
+        return self._l1_text_get(query, tenant_id)
+
     async def set_async(
         self,
         query: str,
