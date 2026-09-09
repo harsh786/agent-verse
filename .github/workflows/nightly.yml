@@ -72,6 +72,73 @@ jobs:
           flags: backend
           fail_ci_if_error: false
 
+  # ── Real-infra e2e_full tier (WS-8) — the whole-platform e2e suite ───────────
+  # Gates EVERY real-infra e2e: goal+HITL lifecycle, org any-task mission, RPA→PDF,
+  # ingestion+OCR world-class, KB convergence (RPA+OCR→one store), rerank-on-default,
+  # and the REAL out-of-process Celery workflow run (trigger→worker→terminal, no
+  # `_mock`) + scheduled-fire governance + workflow-HITL. E2E_* env vars point the
+  # e2e conftest at the CI services, so a down/broken backing service FAILS the job
+  # (it does not silently skip — WS-8 negative-verification requirement).
+  backend-e2e-full:
+    name: Backend e2e_full (real infra)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent-verse-backend
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: agentverse
+          POSTGRES_PASSWORD: agentverse
+          POSTGRES_DB: agentverse_e2e
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["56379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # The e2e_full conftest uses these external URLs instead of testcontainers,
+      # so the tier runs against the CI services and FAILS (never skips) if they
+      # are unavailable. Non-default ports match infra/docker-compose.e2e.yml.
+      E2E_DATABASE_URL: "postgresql+asyncpg://agentverse:agentverse@localhost:55432/agentverse_e2e"
+      E2E_REDIS_URL: "redis://localhost:56379/0"
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Assert e2e_full tier is not silently empty
+        run: |
+          count=$(uv run pytest tests/e2e_full -m e2e_full --co -q -o addopts="" 2>/dev/null | grep -c "::" || true)
+          echo "collected e2e_full tests: $count"
+          if [ "$count" -lt 20 ]; then
+            echo "::error::e2e_full tier collapsed to $count tests (<20) — a marker or import is broken"
+            exit 1
+          fi
+
+      - name: Run e2e_full suite (real Postgres + Redis + real Celery worker)
+        run: uv run pytest tests/e2e_full -m e2e_full -q --tb=short -o addopts=""
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+
   # ── Frontend full test suite ────────────────────────────────────────────────
   frontend-full:
     name: Frontend Full Suite
@@ -195,7 +262,7 @@ jobs:
   # ── Nightly summary notification ────────────────────────────────────────────
   notify:
     name: Notify
-    needs: [backend-full, frontend-full, security-smoke, playwright-full]
+    needs: [backend-full, backend-e2e-full, frontend-full, security-smoke, playwright-full]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -203,6 +270,7 @@ jobs:
         run: |
           echo "Nightly run complete"
           echo "backend-full: ${{ needs.backend-full.result }}"
+          echo "backend-e2e-full: ${{ needs.backend-e2e-full.result }}"
           echo "frontend-full: ${{ needs.frontend-full.result }}"
           echo "security-smoke: ${{ needs.security-smoke.result }}"
           echo "playwright-full: ${{ needs.playwright-full.result }}"
