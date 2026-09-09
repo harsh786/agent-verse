@@ -104,7 +104,7 @@ class OrgLoopDetector:
         """Detect repeated tool calls (same tool called too many times)."""
         counts = self._tool_call_counts.setdefault(agent_id, {})
         counts[tool_name] = counts.get(tool_name, 0) + 1
-        threshold = EXECUTION_BUDGETS["max_tool_calls_per_step"]
+        threshold = LOOP_PATTERNS["agent_obsession"].threshold
         if counts[tool_name] > threshold:
             return LoopDetection(
                 detected=True,
@@ -128,7 +128,7 @@ class OrgLoopDetector:
         return LoopDetection(detected=False)
 
     def check_cost_runaway(self, spent_usd: float, budget_usd: float) -> LoopDetection:
-        """Detect budget runaway (spent > 3× budget)."""
+        """Detect budget runaway (spent > 3x budget)."""
         if budget_usd > 0 and spent_usd / budget_usd > LOOP_PATTERNS["cost_runaway"].threshold:
             return LoopDetection(
                 detected=True,
@@ -220,7 +220,7 @@ class OrgSimulationEngine:
 
             blockers = []
             if "legal" in depts:
-                blockers.append("Legal review typically adds 4–8h")
+                blockers.append("Legal review typically adds 4-8h")
             if "finance" in depts:
                 blockers.append("Finance approval required for spend > $5,000")
 
@@ -262,7 +262,7 @@ class OrgSimulationEngine:
         scenarios = {
             "key_agent_fails": ChaosResult(
                 scenario="key_agent_fails",
-                impact="Mission delayed 4–8h; alternative agent assigned",
+                impact="Mission delayed 4-8h; alternative agent assigned",
                 recovery_strategy="Reassign to next-best agent by reputation",
                 estimated_recovery_hours=4.0,
                 can_auto_recover=True,
