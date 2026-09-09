@@ -6,17 +6,34 @@ Run with: .venv/bin/pytest tests/api/test_agent_sdk.py -v
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 
 import pytest
-
 
 REPO_ROOT = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "../../..")
 )
 ARCHIVED_ROOT = os.path.join(REPO_ROOT, "Archived")
 
+# The Python SDK (``agentverse``) is a separate monorepo project, installed into
+# the backend venv via ``[tool.uv.sources]`` when present. Skip the SDK-import
+# tests gracefully when it is absent from the checkout (matching the TypeScript
+# SDK tests), instead of a hard ModuleNotFoundError.
+_requires_python_sdk = pytest.mark.skipif(
+    importlib.util.find_spec("agentverse") is None,
+    reason="agent-verse-sdk-python not installed in this checkout",
+)
 
+# The TypeScript SDK source is read from the archived monorepo project; skip when
+# it is absent from the checkout instead of a FileNotFoundError.
+_requires_ts_sdk = pytest.mark.skipif(
+    not os.path.isdir(os.path.join(ARCHIVED_ROOT, "agent-verse-sdk-typescript", "src")),
+    reason="agent-verse-sdk-typescript not present in this checkout",
+)
+
+
+@_requires_python_sdk
 def test_python_sdk_has_update_agent():
     """Python SDK must have update_agent method."""
     from agentverse.client import AgentVerseClient
@@ -25,6 +42,7 @@ def test_python_sdk_has_update_agent():
     assert asyncio.iscoroutinefunction(AgentVerseClient.update_agent)
 
 
+@_requires_python_sdk
 def test_python_sdk_create_agent_request_has_system_prompt():
     """AgentCreateRequest must have system_prompt and model_override (not model)."""
     from agentverse.models import AgentCreateRequest
@@ -37,6 +55,7 @@ def test_python_sdk_create_agent_request_has_system_prompt():
     )
 
 
+@_requires_python_sdk
 def test_python_sdk_create_agent_request_new_fields():
     """AgentCreateRequest must include all new backend-aligned fields."""
     from agentverse.models import AgentCreateRequest
@@ -60,6 +79,7 @@ def test_python_sdk_create_agent_request_new_fields():
     assert req.connector_ids == ["c1", "c2"]
 
 
+@_requires_python_sdk
 def test_python_sdk_create_agent_request_defaults():
     """AgentCreateRequest defaults must match backend expectations."""
     from agentverse.models import AgentCreateRequest
@@ -76,6 +96,7 @@ def test_python_sdk_create_agent_request_defaults():
     assert req.eval_suite_id is None
 
 
+@_requires_ts_sdk
 def test_typescript_sdk_has_update_agent_request_type():
     """TypeScript types.ts must have UpdateAgentRequest interface."""
     types_path = os.path.join(ARCHIVED_ROOT, "agent-verse-sdk-typescript", "src", "types.ts")
@@ -90,6 +111,7 @@ def test_typescript_sdk_has_update_agent_request_type():
     )
 
 
+@_requires_ts_sdk
 def test_typescript_sdk_create_agent_request_no_legacy_fields():
     """TypeScript CreateAgentRequest must not have old description/tools/model fields."""
     types_path = os.path.join(ARCHIVED_ROOT, "agent-verse-sdk-typescript", "src", "types.ts")
@@ -105,6 +127,7 @@ def test_typescript_sdk_create_agent_request_no_legacy_fields():
     assert "description?" not in block, "CreateAgentRequest must not have 'description?' field"
 
 
+@_requires_ts_sdk
 def test_typescript_sdk_has_run_agent():
     """TypeScript SDK client must have runAgent and updateAgent methods."""
     client_path = os.path.join(ARCHIVED_ROOT, "agent-verse-sdk-typescript", "src", "client.ts")
@@ -166,6 +189,7 @@ def test_snapshot_rls_migration_content():
 def test_save_snapshot_uses_rls_context():
     """_save_snapshot_to_db and _load_snapshots_from_db must use sqlalchemy_rls_context."""
     import inspect
+
     from app.api import agents
 
     src = inspect.getsource(agents)
