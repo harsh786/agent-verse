@@ -257,7 +257,8 @@ class ExecutorMixin:
                                     or '"projects": []' in cached_resp
                                     or cached_resp.strip() in ("{}", "[]", "")
                                     or len(cached_resp.strip()) < 10
-                                    or _is_llm_reasoning  # Never serve stale LLM text as tool result
+                                    # Never serve stale LLM text as tool result
+                                    or _is_llm_reasoning
                                 )
                                 if not _is_empty:
                                     _batch_cache_results[desc] = cached_resp
