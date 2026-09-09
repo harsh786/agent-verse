@@ -30,4 +30,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Truncating back to 32 could fail on existing 36-char UUIDs; guard the shrink.
-    op.execute("ALTER TABLE approval_requests ALTER COLUMN goal_id TYPE VARCHAR(32) USING left(goal_id, 32)")
+    op.execute(
+        "ALTER TABLE approval_requests "
+        "ALTER COLUMN goal_id TYPE VARCHAR(32) USING left(goal_id, 32)"
+    )

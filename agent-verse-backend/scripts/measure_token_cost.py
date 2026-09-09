@@ -11,8 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from pathlib import Path
-
 
 GOLDEN_GOALS = [
     "Find all open JIRA tickets in project BAU assigned to harsh",
@@ -74,8 +72,8 @@ def main() -> int:
     results = measure_token_cost(goals)
 
     summary = results.get("__summary__", {})
-    print(f"\nToken Cost Measurement")
-    print(f"=" * 40)
+    print("\nToken Cost Measurement")
+    print("=" * 40)
     print(f"Goals measured: {summary.get('goals', 0)}")
     print(f"Total tokens: {summary.get('total_tokens', 0):,}")
     print(f"Avg tokens/goal: {summary.get('avg_tokens_per_goal', 0):,}")

@@ -22,7 +22,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Validate YAML only, no DB write")
     args = parser.parse_args()
 
-    from app.workflow.template_store import SystemTemplateStore, _TEMPLATES_DIR
+    from app.workflow.template_store import _TEMPLATES_DIR, SystemTemplateStore
 
     store = SystemTemplateStore()
     errors: list[str] = []
@@ -58,7 +58,7 @@ def main() -> None:
     print(f"\n✅ Seeded {len(loaded_slugs)} templates into system_workflow_templates")
 
 
-async def _upsert_to_db(slugs: list[str], store: "SystemTemplateStore") -> None:
+async def _upsert_to_db(slugs: list[str], store: SystemTemplateStore) -> None:
     """Upsert all templates into the DB. Requires DATABASE_URL env var."""
     import json
     import os
