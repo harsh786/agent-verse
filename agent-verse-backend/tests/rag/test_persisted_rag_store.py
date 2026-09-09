@@ -2490,3 +2490,27 @@ async def test_restricted_role_enforces_rls_on_every_chunk_table(
                         "embedding": str(_embedding(dimension)),
                     },
                 )
+
+
+async def test_ingest_rejects_embedding_dimension_mismatch(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    """D-10: re-ingesting into a collection with a different embedding dimension
+    must be rejected — otherwise the collection's vectors split across the
+    dimension-partitioned chunk tables and retrieval silently misses them."""
+    tenant_a, _ = tenants
+    collection_id, _ = await _ingest(postgres_database, tenant_a, dimension=768)
+
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    with pytest.raises(ValueError, match="dimensional embeddings"):
+        await store.ingest_document(
+            collection_id=collection_id,
+            content="A chunk embedded by a model with a different dimension",
+            metadata={"department": "legal"},
+            tenant_ctx=tenant_a,
+            embedder=_Embedder(_embedding(1536)),
+            source_url="https://example.test/mismatch",
+            source_type="policy",
+            source_doc_id=f"doc-mismatch-{collection_id}",
+        )

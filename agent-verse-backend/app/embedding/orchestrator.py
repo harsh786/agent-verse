@@ -338,10 +338,13 @@ class EmbeddingOrchestrator:
 
         Returns ``True`` when compatible; raises ``ValueError`` on mismatch.
 
-        TODO(main.py wiring): call this from the ingest/index path once the
-        collection's stored embedding dimension is available to
-        ``IngestionOrchestrator`` (the ``KnowledgeStore`` does not yet expose it
-        within this module's scope).
+        Note: the authoritative enforcement lives at the persistence boundary —
+        ``KnowledgeStore._persist_chunks`` reads the collection's stored
+        ``embedding_dim`` under ``FOR UPDATE`` and rejects a mismatch on a
+        non-empty collection (covered by
+        ``tests/rag/test_persisted_rag_store.py::test_ingest_rejects_embedding_dimension_mismatch``).
+        This method remains a reusable policy helper for callers that hold both
+        dimensions in hand.
         """
         if not self._index_policy.is_dimension_compatible(existing_dim, new_dim):
             raise ValueError(
