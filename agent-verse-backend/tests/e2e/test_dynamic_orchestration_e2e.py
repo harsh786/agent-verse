@@ -24,7 +24,6 @@ from app.orchestration.runtime_profile import (
 from app.orchestration.strategy_registry import build_default_registry
 from app.security_runtime.guardrail_profile import GuardrailProfileSelector, GuardrailBundle
 from app.security_runtime.governance_profile import GovernanceProfileSelector
-from app.policy_runtime.compiler import PolicyCompiler
 from app.plan_runtime.plan_verifier import PlanVerifier
 from app.runtime_readiness.readiness_gate import ReadinessGate
 from app.runtime_readiness.dependency_health import DependencyHealth, DepStatus
@@ -477,18 +476,6 @@ async def test_ac_guardrail_profile_correct_for_critical(builder, tenant_ctx):
     assert config.block_on_injection is True
 
 
-async def test_ac_policy_compiler_forensic_audit_for_critical(builder, tenant_ctx):
-    """AC §5.5 — PolicyCompiler sets audit_level=forensic for CRITICAL risk."""
-    profile, _ = await builder.build_with_trace(
-        "delete production database",
-        tenant_id="t1",
-        goal_id="ac5",
-    )
-    compiler = PolicyCompiler()
-    constraints = compiler.compile(profile, tenant_ctx=tenant_ctx)
-    assert constraints.audit_level == "forensic"
-
-
 def test_ac_plan_verifier_flags_critical_operation():
     """AC §5.6 — PlanVerifier flags destructive operations as critical."""
     from app.orchestration.runtime_profile import (
@@ -642,7 +629,7 @@ async def test_ac_profile_has_all_required_sections(builder):
 
 
 async def test_ac_full_pipeline_e2e(builder, tenant_ctx):
-    """AC §5.11 — Full pipeline: classify → select → guardrails → governance → policy."""
+    """AC §5.11 — Full pipeline: classify → select → guardrails → governance → verify."""
     goal = "analyze and synthesize market intelligence report across 15 data sources"
     profile, trace = await builder.build_with_trace(
         goal,
@@ -662,11 +649,6 @@ async def test_ac_full_pipeline_e2e(builder, tenant_ctx):
     gov_selector = GovernanceProfileSelector()
     gov_config = gov_selector.select(profile, tenant_ctx=tenant_ctx)
     assert gov_config.name is not None
-
-    # Policy compilation
-    compiler = PolicyCompiler()
-    constraints = compiler.compile(profile, tenant_ctx=tenant_ctx)
-    assert constraints.max_cost_usd > 0
 
     # Plan verification
     verifier = PlanVerifier()

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-from app.orchestration.runtime_profile import GoalRuntimeProfile, RiskLevel
-from app.policy_runtime.constraint_model import RuntimeConstraints
-from app.tenancy.context import PlanTier, TenantContext
+from app.orchestration.runtime_profile import RiskLevel
+from app.tenancy.context import PlanTier
 
 
 class _PolicyFields(TypedDict):
@@ -45,29 +44,3 @@ def _compute_policy_fields(
         "denied": denied,
         "data_classes": data_classes,
     }
-
-
-class PolicyCompiler:
-    def compile(
-        self, profile: GoalRuntimeProfile, *, tenant_ctx: TenantContext
-    ) -> RuntimeConstraints:
-        fields = _compute_policy_fields(
-            risk=profile.properties.risk,
-            plan=tenant_ctx.plan,
-            compliance=list(profile.security.compliance_tags),
-            hitl=profile.security.hitl_required,
-        )
-        return RuntimeConstraints(
-            allowed_capabilities=[
-                "model:completion",
-                "rag:read",
-                *(["tool:web_search"] if profile.properties.requires_web else []),
-                *(["tool:code"] if profile.properties.requires_code else []),
-            ],
-            denied_capabilities=fields["denied"],
-            required_approvals=fields["approvals"],
-            max_cost_usd=fields["max_cost"],
-            audit_level=fields["audit"],
-            data_classes_allowed=fields["data_classes"],
-            compliance_constraints=list(profile.security.compliance_tags),
-        )
