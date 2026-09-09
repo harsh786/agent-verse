@@ -1597,11 +1597,12 @@ async def org_universal_command(
         # Cap history at 200 per org
         _COMMAND_HISTORY[org_id] = _COMMAND_HISTORY[org_id][:200]
 
-        # Route to agent loop (fire-and-forget) when not high-risk
+        # Route to agent loop (fire-and-forget) when not high-risk. Pass the full
+        # TenantContext (not just the id) — GoalService.submit_goal requires it.
         if not high_risk:
             asyncio.get_event_loop().create_task(
                 _route_command_to_agent(
-                    command_id, org_id, tenant_id, body.command, request.app.state
+                    command_id, org_id, ctx, body.command, request.app.state
                 )
             )
 
@@ -1631,33 +1632,55 @@ async def org_universal_command(
 
 
 async def _route_command_to_agent(
-    command_id: str, org_id: str, tenant_id: str, command: str, app_state: Any = None
+    command_id: str, org_id: str, tenant_ctx: Any, command: str, app_state: Any = None
 ) -> None:
     """Route an accepted UCG command to the agent goal loop.
 
     ``app_state`` is the request's ``app.state`` (threaded by the caller) so this
     fire-and-forget task uses the lifespan-wired, DB/Redis-backed GoalService
     instead of the module-level app.main.app singleton (whose state carries
-    unwired in-memory fallbacks).
+    unwired in-memory fallbacks). ``tenant_ctx`` is the request's TenantContext,
+    which ``GoalService.submit_goal`` requires (a bare tenant_id string is not
+    accepted — passing one previously raised TypeError and every command
+    silently became ``routing_failed``).
     """
     import structlog as _sl
 
     _log = _sl.get_logger(__name__)
+    tenant_id = getattr(tenant_ctx, "tenant_id", str(tenant_ctx))
     try:
         goal_service = getattr(app_state, "goal_service", None)
-        if goal_service and hasattr(goal_service, "submit_goal"):
-            await goal_service.submit_goal(
-                tenant_id=tenant_id,
-                goal=command,
-                metadata={"source": "ucg", "org_id": org_id, "command_id": command_id},
-            )
-        # Update command status
+        if goal_service is None or not hasattr(goal_service, "submit_goal"):
+            raise RuntimeError("goal_service unavailable on app.state")
+        result = await goal_service.submit_goal(
+            goal=command,
+            priority="normal",
+            dry_run=False,
+            tenant_ctx=tenant_ctx,
+            execution_context={"source": "ucg", "org_id": org_id, "command_id": command_id},
+        )
+        goal_id = result.get("goal_id") if isinstance(result, dict) else None
+        # Update command status + surface the created goal id for polling/SSE.
         for cmd in _COMMAND_HISTORY.get(org_id, []):
             if cmd.get("command_id") == command_id:
                 cmd["status"] = "routed"
+                cmd["goal_id"] = goal_id
                 break
+        _log.info(
+            "org.command_routed",
+            command_id=command_id,
+            tenant_id=tenant_id,
+            org_id=org_id,
+            goal_id=goal_id,
+        )
     except Exception as exc:
-        _log.warning("org.command_route_failed", command_id=command_id, error=str(exc))
+        _log.warning(
+            "org.command_route_failed",
+            command_id=command_id,
+            tenant_id=tenant_id,
+            org_id=org_id,
+            error=str(exc),
+        )
         for cmd in _COMMAND_HISTORY.get(org_id, []):
             if cmd.get("command_id") == command_id:
                 cmd["status"] = "routing_failed"

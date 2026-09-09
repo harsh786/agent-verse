@@ -346,6 +346,51 @@ async def test_ucg_command_accepted(client: AsyncClient) -> None:
 
 
 @pytest.mark.anyio
+async def test_ucg_command_routes_to_goal_service_with_correct_signature() -> None:
+    """The fire-and-forget router must call GoalService.submit_goal with the REAL
+    signature (goal/priority/dry_run/tenant_ctx/execution_context) and mark the
+    command 'routed'.
+
+    Regression: it previously called submit_goal(tenant_id=..., goal=..., metadata=...)
+    — none of which are valid params — so every command raised TypeError and became
+    'routing_failed' on the live path (the whole "org performs the task" flow was
+    dead). The endpoint test above only asserts acceptance, never the routing.
+    """
+    from types import SimpleNamespace
+
+    from app.org.router import _COMMAND_HISTORY, _route_command_to_agent
+
+    org_id = str(uuid.uuid4())
+    command_id = str(uuid.uuid4())
+    tenant_ctx = SimpleNamespace(tenant_id=TENANT_ID)
+    submit_goal = AsyncMock(return_value={"goal_id": "goal-123"})
+    app_state = SimpleNamespace(goal_service=SimpleNamespace(submit_goal=submit_goal))
+
+    # Seed the command history the way the endpoint does before dispatching.
+    _COMMAND_HISTORY.setdefault(org_id, []).insert(
+        0, {"command_id": command_id, "status": "queued"}
+    )
+
+    await _route_command_to_agent(command_id, org_id, tenant_ctx, "Do the thing", app_state)
+
+    submit_goal.assert_awaited_once()
+    kwargs = submit_goal.await_args.kwargs
+    assert kwargs["tenant_ctx"] is tenant_ctx
+    assert kwargs["goal"] == "Do the thing"
+    assert kwargs["priority"] == "normal"
+    assert kwargs["dry_run"] is False
+    assert kwargs["execution_context"]["org_id"] == org_id
+    # The buggy kwargs must never be used again.
+    assert "tenant_id" not in kwargs
+    assert "metadata" not in kwargs
+
+    record = _COMMAND_HISTORY[org_id][0]
+    assert record["status"] == "routed"
+    assert record["goal_id"] == "goal-123"
+    _COMMAND_HISTORY.pop(org_id, None)
+
+
+@pytest.mark.anyio
 async def test_ucg_high_risk_command_flags_2fa(client: AsyncClient) -> None:
     """High-risk commands (delete, deploy) require 2FA."""
     resp = await client.post(f"/v1/org/{ORG_ID}/command", json={
