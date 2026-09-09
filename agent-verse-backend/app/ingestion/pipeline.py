@@ -286,7 +286,22 @@ class IngestionPipeline:
             # ── Stage 11: DEDUP CHUNKS ────────────────────────────────────────
             unique_chunks = self._dedup_chunks(embedded_chunks)
 
+            # ── Stage 11b: EMBEDDING INTEGRITY (D-12) ─────────────────────────
+            # ``embed_texts`` returns an empty list (never zero/noise vectors)
+            # when embedding is unavailable. Drop those chunks so we never index
+            # a silent zero-vector; if nothing survives, skip honestly rather
+            # than writing empty embeddings.
+            unique_chunks = [c for c in unique_chunks if c.get("embedding")]
+            if not unique_chunks:
+                result.status = "skipped"
+                result.skip_reason = "embedding_unavailable"
+                return result
+
             # ── Stage 12: INDEX ───────────────────────────────────────────────
+            # ``result.metadata`` carries the parse/OCR/degradation provenance
+            # gathered at Stage 5; persist it (and the document-level hash) onto
+            # every indexed chunk so dedup + provenance survive re-ingest.
+            provenance = dict(getattr(result, "metadata", {}) or {})
             chunk_ids = await self._index(
                 unique_chunks,
                 raw_doc,
@@ -294,6 +309,7 @@ class IngestionPipeline:
                 content_hash,
                 quality_score,
                 pii_detected,
+                provenance,
             )
             result.chunks_created = len(chunk_ids)
 
@@ -501,8 +517,17 @@ class IngestionPipeline:
         content_hash: str,
         quality_score: float,
         pii_detected: bool,
+        provenance: dict[str, Any] | None = None,
     ) -> list[str]:
-        """Write chunks to KnowledgeStore (pgvector + BM25)."""
+        """Write chunks to KnowledgeStore (pgvector + BM25).
+
+        ``content_hash`` is the document-level SHA-256 (LAW-02); it is persisted
+        on every chunk as ``doc_content_hash`` so ``KnowledgeStore.exists_by_hash``
+        can dedup a re-ingest of the same document. ``provenance`` carries the
+        parse/OCR/degradation metadata (ocr_used, ocr_engine, *_degraded, …) so
+        downstream consumers see how the text was obtained; RPA/OCR agents set
+        the same ``ingestion_provenance`` field on their own chunks.
+        """
         if self._kb is None or not config.collection_id:
             return []
 
@@ -510,6 +535,7 @@ class IngestionPipeline:
 
         from app.rag.models import Chunk
 
+        prov = dict(provenance or {})
         rag_chunks: list[Chunk] = []
         for c in chunks:
             chunk_id = _uuid.uuid4().hex
@@ -524,8 +550,14 @@ class IngestionPipeline:
                 "language": c.get("language", ""),
                 "acl": c.get("acl", []),
                 "content_hash": c.get("content_hash", ""),
+                "doc_content_hash": content_hash,
                 "correlation_id": c.get("correlation_id", ""),
             }
+            if prov:
+                metadata["ingestion_provenance"] = prov
+                # Surface the OCR-used flag at the top level for cheap filtering.
+                if prov.get("ocr_used"):
+                    metadata["ocr_used"] = True
             rag_chunk = Chunk(
                 chunk_id=chunk_id,
                 document_id=raw_doc.doc_id,
