@@ -175,3 +175,23 @@ async def test_consumer_ignores_non_matching() -> None:
     c = ConversationalTriggerConsumer(trigger_store=store, dispatcher=disp, redis=_FakeRedis([msg]))
     await c.start()
     assert disp.calls == []
+
+
+def test_email_arrival_and_discord_event() -> None:
+    assert conversational_matches(
+        "email_arrival", _spec(), {"channel_type": "email", "sender": "x@y.com"}
+    )
+    assert conversational_matches(
+        "email_arrival",
+        _spec(email_sender_filter="@corp"),
+        {"channel_type": "email", "sender": "a@corp"},
+    )
+    assert not conversational_matches(
+        "email_arrival", _spec(), {"channel_type": "slack", "text": "hi"}
+    )
+    assert conversational_matches(
+        "discord_event", _spec(), {"channel_type": "discord", "text": "/x"}
+    )
+    assert not conversational_matches(
+        "discord_event", _spec(), {"channel_type": "slack", "text": "/x"}
+    )

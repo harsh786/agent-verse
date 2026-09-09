@@ -83,9 +83,9 @@ def test_distribution_matches_verified_ground_truth() -> None:
         counts[mech] += 1
     assert counts[DispatchMechanism.BEAT] == 6  # cron/interval/once/file_drop/rss_feed/api_poll
     assert counts[DispatchMechanism.PUSH] == 16
-    # goal-chain(3)+hitl(2)+memory+event+familyD(5)+familyC-conversational(7)
-    assert counts[DispatchMechanism.CONSUMER] == 19
-    assert counts[DispatchMechanism.UNSUPPORTED] == 17
+    # goal-chain(3)+hitl(2)+memory+event+familyD(5)+conversational(7)+email_arrival+discord
+    assert counts[DispatchMechanism.CONSUMER] == 21
+    assert counts[DispatchMechanism.UNSUPPORTED] == 15
 
 
 def test_known_unsupported_types_are_unsupported() -> None:
@@ -93,7 +93,6 @@ def test_known_unsupported_types_are_unsupported() -> None:
     for t in (
         TriggerType.GOOGLE_SHEETS,
         TriggerType.SHAREPOINT,
-        TriggerType.DISCORD_EVENT,
         TriggerType.MQTT,
     ):
         assert not is_supported(t), f"{t.value} should be unsupported until wired"

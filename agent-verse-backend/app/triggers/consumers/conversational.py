@@ -37,9 +37,11 @@ _CONV_TYPES = (
     "chat_keyword",
     "chat_mention",
     "email_intent",
+    "email_arrival",
     "sms_inbound",
     "voice_transcript",
     "form_submission",
+    "discord_event",
 )
 _SLACK_MENTION = re.compile(r"<@([A-Z0-9]+)>")
 
@@ -165,6 +167,14 @@ def conversational_matches(ttype: str, spec: Any, event: dict[str, Any]) -> bool
     if ttype == "form_submission":
         want = getattr(spec, "form_id", "") or ""
         return (not want) or want == event.get("form_id", "")
+    if ttype == "email_arrival":
+        # Fire on any inbound email for the tenant (optional sender filter).
+        return event.get("channel_type", "") == "email" and _regex_ok(
+            getattr(spec, "email_sender_filter", "") or "", str(event.get("sender", ""))
+        )
+    if ttype == "discord_event":
+        # Fire on any Discord event for the tenant (channel scoping applied above).
+        return event.get("channel_type", "") == "discord"
     return False
 
 
