@@ -117,15 +117,17 @@ For any path where pause/resume is not truly wired, wire it. Reject/deny path al
 - **[8/10] Self-improvement** — trace `apply_suggestion` end-to-end into the live agent-config read path (or confirm it's intentionally gated).
 **DoD:** each item has a behavioural test proving it engages generically; mypy clean; fast tier green. **e2e:** a golden-set query exercises hybrid retrieve→**rerank on the default path**→grounded answer with real scores; a complex goal auto-routes to the right agent pattern.
 
-## WS-11 · Knowledge / RAG / memory / graph FRONTEND UX — world-class customer experience (frontend)
-**Detailed by recon report `recon/F-knowledge-rag-frontend-ux.md` (read it first).** Build world-class UX for the power features (the org/JARVIS console is the quality bar). Likely surfaces:
-- **Knowledge base UI**: collections/documents, upload/ingest with progress, hybrid search with citations, per-collection settings.
-- **RAG configuration UX**: see/choose retrieval strategy, chunking, reranking, embedding model per collection — with plain-language explanations.
-- **Obsidian / knowledge-graph explorer**: interactive nodes/edges wired to GraphRAG, not cosmetic — elevate to awe level like the org constellation.
-- **Memory inspector**: view episodic/procedural/long-term memories + reflexion lessons, scoped.
-- **Retrieval/grounding trace viewer**: what was retrieved, scores, which chunks grounded the answer.
-- Consistent design tokens, loading/empty/error states, a11y, tasteful motion. Follow the artifact-design principles.
-**DoD:** typecheck 0, vitest green (+ component tests), build ok (lazy-load heavy viz), each surface wired to real backend. **e2e:** Playwright covers KB search+citation, graph explore, RAG-config change.
+## WS-11 · Knowledge / RAG / memory / graph FRONTEND UX — world-class (frontend)
+**Detailed by recon `recon/F-knowledge-rag-frontend-ux.md` (rated 2026-09-10). This is the biggest world-class gap on the platform — the powerful backend has no UX to see/control it. Ordered by severity:**
+- **[3/10 — Obsidian/KG viz is FAKE] TOP FIX:** `src/features/obsidian/` glowing graph is **100% hardcoded demo data, not wired to the backend**; the only real data is a text-only list. Build a real interactive node-link graph explorer wired to the KG/GraphRAG endpoints (nodes/edges, click-to-expand, filter), elevated to org-constellation quality (d3-force/React Flow). No fabricated data — honesty rule.
+- **[2/10 — MISSING] RAG configuration UX:** today only embedder choice at collection creation. Add per-collection controls for retrieval strategy, chunking strategy, reranking, embedding model — with plain-language explanations of each. Wire to backend config.
+- **[2/10 — MISSING] Agent/RAG pattern selection UX:** no pattern selector anywhere. Add a surface to see/choose (or view auto-selected) agent pattern + RAG pattern per goal/agent, with explanation (pairs with WS-10 auto-selection).
+- **[4/10] Retrieval/grounding trace viewer:** the span waterfall exists but `attributes` (scores, retrieved chunks, which grounded the answer) are never rendered. Render them — show what was retrieved, scores, and grounding.
+- **[8/10] Knowledge base UI:** add inline citation source-hover/highlight linkage.
+- **[7/10] Memory inspector:** add episodic/procedural/reflexion categorization + goal-linkage.
+- **[8/10] Evals UX:** remove the duplicate eval-suites page; optionally add an auto-suggestion surface.
+- Consistent design tokens, loading/empty/error states, a11y, tasteful motion (artifact-design principles). Elevate the second-class graph/RAG-config surfaces to JARVIS-shell quality.
+**DoD:** typecheck 0, vitest green (+ component tests), build ok (lazy-load heavy viz, keep main chunk small), every surface wired to REAL backend (no demo data). **e2e:** Playwright covers KB search+citation, real graph explore, a RAG-config change, and the trace viewer showing scores.
 
 ## WS-12 · Ingestion — GENERIC handling + world-class knowledge base (backend)
 **Detailed by recon report `recon/G-ingestion-worldclass-kb.md` (read it first).** The user emphasized: ingestion must handle ALL things generically and produce a world-class KB. Close whatever recon marks PARTIAL/STUB. Likely items:
