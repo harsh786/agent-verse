@@ -142,8 +142,15 @@ class RAGMixin:
                     {"content": m.content} for m in ltm
                 ]
 
-        # 3. Required collection retrieval through the tenant-aware gateway.
+        # 3. Collection retrieval through the tenant-aware gateway.
+        # Collections the agent EXPLICITLY configured make grounding *required* (a
+        # retrieval failure fails the goal). When none are configured we fall back
+        # to auto-discovering the tenant's collections — but that is *ambient*: the
+        # goal never asked to be grounded on them, so a failure there degrades to
+        # best-effort instead of killing a goal that never requested RAG (otherwise
+        # an unrelated collection created elsewhere in the tenant breaks the goal).
         search_collections = list(self._agent_collection_ids[:3])
+        collections_explicit = bool(search_collections)
         if not search_collections and self._knowledge_store is not None:
             all_collections = await self._knowledge_store.list_collections_async(
                 tenant_ctx=tenant_ctx
@@ -186,27 +193,44 @@ class RAGMixin:
                         raise TypeError("Retrieval gateway returned an invalid result")
                     gateway_results.append(gateway_result)
             except Exception as exc:
-                agent_state.status = GoalStatus.FAILED
-                agent_state.error_message = "Required retrieval failed"
-                agent_state.context["rag_retrieval_status"] = "failed"
-                failure_event = {
-                    "type": "knowledge_retrieval_failed",
-                    "collections_searched": search_collections,
-                    "requested_strategy_id": requested_strategy,
-                    "status": "failed",
-                    "citations": [],
-                    "resolved_strategy_ids": [],
-                    "retrieval_legs": [],
-                    "strategy_trace": [],
-                }
-                agent_state.events.append(failure_event)
-                await self._emit(failure_event)
-                self._logger.warning(
-                    "required_rag_retrieval_failed",
-                    error_type=type(exc).__name__,
-                    strategy=requested_strategy,
-                )
-                raise RetrievalEntryPointError("Required retrieval failed") from exc
+                # Degrade only an *ambient fallback* retrieval that failed while a
+                # gateway was present (a strategy/data issue). A structurally missing
+                # gateway still fails closed even for the fallback — a collection-backed
+                # run must never silently answer ungrounded when retrieval is unwired.
+                if not collections_explicit and gateway is not None:
+                    # Ambient fallback retrieval failed — degrade to best-effort
+                    # (empty grounding) so the goal proceeds; it never asked for RAG.
+                    self._logger.warning(
+                        "fallback_rag_retrieval_degraded",
+                        error_type=type(exc).__name__,
+                        strategy=requested_strategy,
+                    )
+                    agent_state.context["rag_retrieval_status"] = "degraded"
+                    # Keep results aligned with collections for the strict zip below.
+                    gateway_results = []
+                    search_collections = []
+                else:
+                    agent_state.status = GoalStatus.FAILED
+                    agent_state.error_message = "Required retrieval failed"
+                    agent_state.context["rag_retrieval_status"] = "failed"
+                    failure_event = {
+                        "type": "knowledge_retrieval_failed",
+                        "collections_searched": search_collections,
+                        "requested_strategy_id": requested_strategy,
+                        "status": "failed",
+                        "citations": [],
+                        "resolved_strategy_ids": [],
+                        "retrieval_legs": [],
+                        "strategy_trace": [],
+                    }
+                    agent_state.events.append(failure_event)
+                    await self._emit(failure_event)
+                    self._logger.warning(
+                        "required_rag_retrieval_failed",
+                        error_type=type(exc).__name__,
+                        strategy=requested_strategy,
+                    )
+                    raise RetrievalEntryPointError("Required retrieval failed") from exc
 
             knowledge_citations = [
                 {

@@ -50,7 +50,7 @@ def _ocr_result() -> dict[str, Any]:
     }
 
 
-async def test_kb_convergence_rpa_and_ocr_e2e(app: Any, client: Any) -> None:
+async def test_kb_convergence_rpa_and_ocr_e2e(app: Any, client: Any, monkeypatch: Any) -> None:
     kb = app.state.knowledge_store
     assert kb._db is not None, "e2e must run against the DB-backed KnowledgeStore"
 
@@ -72,8 +72,11 @@ async def test_kb_convergence_rpa_and_ocr_e2e(app: Any, client: Any) -> None:
 
     # The app has no API keys in e2e → wire a deterministic FakeProvider embedder
     # so the HTTP ingest paths can embed (matches the collection's fake dim).
+    # monkeypatch auto-restores app.state.embedder after this test — without it the
+    # fake embedder leaks into later e2e tests in the shared session app (it ran
+    # before test_org_mission_hitl and broke its goal's hybrid retrieval).
     fake = FakeProvider(embed_dim=_EMBED_DIM)
-    app.state.embedder = fake
+    monkeypatch.setattr(app.state, "embedder", fake, raising=False)
 
     # ── RPA→KB via the REAL RPAExecutor path (httpx socket fetch stubbed) ──
     with patch(

@@ -40,7 +40,8 @@ class ApprovalRequest(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    goal_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    # 64 not 32: an org mission-HITL goal_id is a 36-char dashed UUID (migration 0118).
+    goal_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     action: Mapped[str] = mapped_column(Text, nullable=False)
     risk_level: Mapped[str] = mapped_column(String(20), nullable=False, default="medium")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
