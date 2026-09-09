@@ -1,0 +1,246 @@
+<title>AgentVerse Hardening Scorecard</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --bg:#f4f6f8; --panel:#ffffff; --panel-2:#eef1f5; --line:#d8dee7;
+    --ink:#141a24; --ink-2:#4a5568; --ink-3:#7a8699;
+    --accent:#0891b2; --accent-ink:#0e7490;
+    --strong:#0f9d6b; --mid:#c07a12; --weak:#d1495b;
+    --strong-bg:#0f9d6b1a; --mid-bg:#c07a121a; --weak-bg:#d1495b1a;
+    --seg-off:#dde3ec;
+    --shadow:0 1px 2px rgba(20,26,36,.05),0 8px 24px rgba(20,26,36,.06);
+  }
+  :root:not([data-theme="light"]){ @media (prefers-color-scheme:dark){
+    --bg:#0b0e14; --panel:#121722; --panel-2:#0f141d; --line:#232c3a;
+    --ink:#e8edf5; --ink-2:#9fb0c6; --ink-3:#69788f;
+    --accent:#22d3ee; --accent-ink:#67e8f9;
+    --strong:#34d399; --mid:#fbbf24; --weak:#fb7185;
+    --strong-bg:#34d39918; --mid-bg:#fbbf2416; --weak-bg:#fb718518;
+    --seg-off:#212a38;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+  }}
+  :root[data-theme="dark"]{
+    --bg:#0b0e14; --panel:#121722; --panel-2:#0f141d; --line:#232c3a;
+    --ink:#e8edf5; --ink-2:#9fb0c6; --ink-3:#69788f;
+    --accent:#22d3ee; --accent-ink:#67e8f9;
+    --strong:#34d399; --mid:#fbbf24; --weak:#fb7185;
+    --strong-bg:#34d39918; --mid-bg:#fbbf2416; --weak-bg:#fb718518;
+    --seg-off:#212a38;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+    line-height:1.5;-webkit-font-smoothing:antialiased;}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums;}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 24px 72px;}
+
+  /* header */
+  .eyebrow{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.22em;
+    text-transform:uppercase;color:var(--accent-ink);margin:0 0 10px;}
+  h1{font-size:clamp(28px,4vw,42px);font-weight:700;letter-spacing:-.02em;
+    text-wrap:balance;margin:0 0 8px;line-height:1.08;}
+  .lede{color:var(--ink-2);font-size:15.5px;max-width:64ch;margin:0;}
+  .lede b{color:var(--ink);font-weight:600;}
+
+  /* summary strip */
+  .summary{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:28px 0 8px;}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:16px 18px;box-shadow:var(--shadow);}
+  .stat .k{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--ink-3);margin:0 0 8px;}
+  .stat .v{font-family:"IBM Plex Mono",monospace;font-size:30px;font-weight:600;
+    letter-spacing:-.02em;line-height:1;}
+  .stat .v small{font-size:15px;color:var(--ink-3);font-weight:400;}
+
+  /* distribution */
+  .dist{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:16px 18px;margin:14px 0 30px;box-shadow:var(--shadow);
+    display:flex;align-items:center;gap:20px;flex-wrap:wrap;}
+  .dist .bar{flex:1;min-width:220px;height:12px;border-radius:6px;overflow:hidden;
+    display:flex;border:1px solid var(--line);}
+  .dist .bar span{display:block;height:100%;}
+  .dist .keys{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-2);}
+  .dist .keys i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:baseline;}
+
+  /* section label */
+  .band-h{display:flex;align-items:baseline;gap:12px;margin:30px 2px 12px;}
+  .band-h h2{font-size:14px;font-weight:600;letter-spacing:.02em;margin:0;color:var(--ink);}
+  .band-h .rng{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--ink-3);}
+  .band-h .rule{flex:1;height:1px;background:var(--line);}
+
+  /* feature rows */
+  .rows{display:flex;flex-direction:column;gap:10px;}
+  .row{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    display:grid;grid-template-columns:1fr 132px;gap:6px 20px;padding:16px 18px;
+    box-shadow:var(--shadow);border-left-width:3px;}
+  .row.s-strong{border-left-color:var(--strong);}
+  .row.s-mid{border-left-color:var(--mid);}
+  .row.s-weak{border-left-color:var(--weak);}
+  .r-name{font-size:16px;font-weight:600;letter-spacing:-.01em;margin:0;display:flex;align-items:center;gap:9px;flex-wrap:wrap;}
+  .tag{font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.04em;
+    text-transform:uppercase;padding:2px 7px;border-radius:5px;border:1px solid var(--line);
+    color:var(--ink-3);background:var(--panel-2);font-weight:500;}
+  .tag.fixed{color:var(--strong);border-color:var(--strong);background:var(--strong-bg);}
+  .r-state{grid-column:1;color:var(--ink-2);font-size:13.5px;margin:7px 0 0;}
+  .r-path{grid-column:1;font-size:13.5px;margin:9px 0 0;color:var(--ink);
+    padding-left:15px;border-left:2px solid var(--accent);}
+  .r-path b{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--accent-ink);font-weight:600;display:block;margin-bottom:2px;}
+
+  /* score meter (right column, spans rows) */
+  .r-score{grid-column:2;grid-row:1 / span 3;display:flex;flex-direction:column;
+    align-items:flex-end;justify-content:center;gap:9px;}
+  .r-num{font-family:"IBM Plex Mono",monospace;font-weight:600;font-size:34px;
+    line-height:1;letter-spacing:-.02em;}
+  .r-num small{font-size:15px;color:var(--ink-3);font-weight:400;}
+  .meter{display:flex;gap:3px;width:100%;justify-content:flex-end;}
+  .meter i{flex:1;max-width:9px;height:22px;border-radius:2px;background:var(--seg-off);}
+  .s-strong .r-num,.s-strong .meter i.on{color:var(--strong);}
+  .s-mid .r-num,.s-mid .meter i.on{color:var(--mid);}
+  .s-weak .r-num,.s-weak .meter i.on{color:var(--weak);}
+  .meter i.on{background:currentColor;}
+
+  /* pending section */
+  .pending{margin-top:38px;background:var(--panel);border:1px solid var(--line);
+    border-radius:14px;padding:8px 4px;box-shadow:var(--shadow);}
+  .pending ol{margin:0;padding:6px 20px 6px 44px;}
+  .pending li{padding:10px 0;border-bottom:1px solid var(--line);font-size:14px;color:var(--ink);}
+  .pending li:last-child{border-bottom:0;}
+  .pending li b{color:var(--ink);font-weight:600;}
+  .pending li span{color:var(--ink-2);}
+  .pending li .pill{font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.05em;
+    text-transform:uppercase;padding:2px 7px;border-radius:5px;margin-left:8px;
+    border:1px solid var(--line);color:var(--ink-3);background:var(--panel-2);}
+  .pill.blocked{color:var(--weak);border-color:var(--weak);background:var(--weak-bg);}
+
+  .foot{margin-top:30px;color:var(--ink-3);font-size:12.5px;line-height:1.6;
+    border-top:1px solid var(--line);padding-top:16px;}
+  .foot code{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--ink-2);}
+
+  @media (max-width:640px){
+    .summary{grid-template-columns:repeat(2,1fr);}
+    .row{grid-template-columns:1fr;}
+    .r-score{grid-column:1;grid-row:auto;flex-direction:row;align-items:center;
+      justify-content:flex-start;gap:14px;margin-top:4px;}
+    .meter{width:160px;}
+    .r-path{grid-column:1;}
+  }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">AgentVerse · platform hardening</p>
+  <h1>Hardening Scorecard</h1>
+  <p class="lede">Depth of each capability on the <b>live, wired path</b> — implemented, reachable, tested, and polished — scored 1–10, each with the specific work to reach <b>10/10</b>. Scores of 8–9 were driven end-to-end this session; 5–7 lean on code-verified plan findings plus spot checks.</p>
+
+  <div class="summary" id="summary"></div>
+
+  <div class="dist">
+    <div class="bar" id="distbar"></div>
+    <div class="keys">
+      <span><i style="background:var(--strong)"></i>Strong · 8–10</span>
+      <span><i style="background:var(--mid)"></i>Developing · 6–7.9</span>
+      <span><i style="background:var(--weak)"></i>Weak · &lt;6</span>
+    </div>
+  </div>
+
+  <div id="board"></div>
+
+  <div class="pending">
+    <ol id="pending"></ol>
+  </div>
+
+  <p class="foot">
+    <b style="color:var(--ink-2)">Method.</b> Depth = does it actually run on the wired path (not just exist in the tree), is it covered by a behavioural/e2e test, and is the UX polished. Every 10/10 target in the plan of record ends in at least one <code>e2e_full</code> test against real Postgres + Redis with the SSRF guard on. Fixed-this-session items are tagged <span class="tag fixed">fixed</span>. Not a security attestation.
+  </p>
+</div>
+
+<script>
+const F = [
+  ["Goal loop",9,"strong",["core"],"Plan→execute→verify→replan is real and wired; now actually executing since the Celery worker was put under supervision this session.","Chaos / fault-injection e2e across replicas; checkpoint-resume proven in CI; speculative execution + plan cache.",1],
+  ["AI Organization OS",8,"strong",["core"],"Compose, command gateway, mission-execute team formation, live SSE and the agent constellation all work end-to-end (was ~5 — 500s everywhere).","Build the missing sub-endpoints (artifacts, gateway, model-analytics, org-memory) or remove them; one e2e for org → team → task → result.",1],
+  ["Coordination / agent teams",8,"strong",[],"Durable event-sourced sessions with optimistic concurrency; both session APIs share state; 56 test files across the adapters.","Protocol-selection-by-measured-fit; one e2e per adapter (auction / swarm / moa / magentic / camel / generative) driven to a terminal state.",0],
+  ["Governance · RBAC · scopes",8,"strong",[],"RLS enforced at the DB; API-key scope durability fixed; SSE moved to short-lived tokens; policy engine + budget real.","Wire PermissionMatrix (P0-12) into the executor; a behavioural cross-scope isolation e2e per scope type (tenant / agent / collection / tool).",1],
+  ["Reliability · QoS",8,"strong",[],"Circuit breakers, bulkheads, dedup, rollback + compensating actions are real and fault-injection tested.","Rollback/compensation e2e under injected failure; per-plan queue isolation proven so noisy-neighbour can't cross tiers.",0],
+  ["Jervis console (frontend)",8,"strong",["frontend"],"Blank-page outage fixed, real-time wired, Obsidian-style constellation, tuned motion; genuinely polished.","Full-stack Playwright e2e (login → goal → live SSE → approve HITL → complete); loading/empty/error state + test on every live view.",1],
+  ["Agent patterns",7,"mid",[],"Plan-execute, ReAct, reflection, consensus real; supervisor/debate run via workflow_mode but the in-graph nodes are log-only stubs (D-2); 30 advanced adapters shadow-logged only (D-1).","Make StrategyRunner live (drop the inert tier), turn supervisor/debate graph nodes real, and add an e2e that proves each pattern engages.",0],
+  ["Workflow · triggers · scheduling",7,"mid",[],"Wired onto Celery this effort — real steps, persisted runs, no more 500s on trigger/run.","Honor the stored timezone, catch up every missed fire, enforce DSL retries/timeout/on_failure, and make every TriggerType fire-or-reject (2.W-*).",0],
+  ["Ingestion",7,"mid",[],"Real binary parsers (pdf/docx/whisper) wired; the 13-stage pipeline publishes knowledge.updated.","Real embedding-boundary semantic chunking, OCR called from the parse stage, real tokenizer for counts, audio/video transcription (ING-9…13).",0],
+  ["RAG patterns",7,"mid",[],"Basic/hybrid/CRAG/multi-hop/web/graph auto-selectable; fusion/self-RAG/FLARE/agentic explicit-only.","Fix RAFT (built with providers={} → always raises, D-8), wire RAPTOR tree-build (D-7), make all 18 strategies auto-selectable + a golden-set e2e.",0],
+  ["Retrieval strategies",7,"mid",[],"Vector, FTS, trigram, BM25, RRF, parent-child, sentence-window, HyDE, multi-query all reachable.","Cross-encoder rerank + ColBERT on the main gateway path; probability-calibrated scores; a golden set per strategy.",0],
+  ["Guardrails",7,"mid",[],"Enforcer wired (P0-1), tool-name / HITL / fail-closed layering fixed (SAFE-1…4).","Persist rules across restart, get the encoded/unicode/homoglyph corpus green, self-tune thresholds via simulate(), hold a guardrail latency SLO.",0],
+  ["Observability",7,"mid",[],"Structured logs, metrics, traces, runtime-decision traces, audit correlation are real.","Delete the dead duplicate emitters (D-21), make SLO + cost-breakdown durable (in-memory today), queryable per-node RAG/decision traces, incident runbook e2e.",0],
+  ["Evals",7,"mid",[],"Goal / retrieval / tool-relevance / safety / grounding / SLA / cost evals + judge models run.","Online eval sampling in production, an eval suite that gates deploys, and feed-forward from evals into the improvement loop.",0],
+  ["Chunking strategies",7,"mid",[],"Strategy dispatch wired to the real chunker map; token-aware / heading / AST / table / sentence-window real.","Real embedding-similarity semantic chunking (ING-10); the remaining strategies implemented or aliased in the open — never silently → fixed-size.",0],
+  ["Agent memory",6,"mid",[],"Execution + long-term memory write and recall; episodic/procedural present.","Scope recall by agent/collection/source (tenant-only today), inject canonical reflexion recall in the loop (D-17), retire the memory_v2 stub (D-19), add a TTL purge job.",0],
+  ["Embeddings",6,"mid",[],"Provider abstraction + text embeddings real; router/orchestrator present but advisory.","Make model selection physical (it's discarded today, D-10), stop filling failed batch items with zero vectors (D-12), real multimodal embeds (D-11), a drift job.",0],
+  ["Multi-AI model router",6,"mid",[],"Per-role model selection (planner/executor/verifier/judge) + cost-aware routing real.","Actually fire the provider circuit-breaker/failover (record_* has zero callers, D-13); wire vision/audio model selection (D-14); prove cost/latency routing.",0],
+  ["Hallucination handling",6,"mid",[],"Retrieval grounding is a hard gate (P0-4); verifier + CRAG + HITL fallback real.","Wire the NLI claim-decomposition pipeline (D-4) and AttributionVerifier (D-5), add one confidence gate, e2e-prove a fabricated identifier is blocked.",0],
+  ["Voice & realtime",6,"mid",[],"STT, TTS, streaming pipeline, intent routing, multi-provider are real.","Enforce consent + retention (missing despite governance claims, D-24); a speech→intent→agent→speech streaming e2e with fake STT/TTS providers.",0],
+  ["Knowledge graph",5,"weak",[],"Nodes/edges + GraphRAG retrieval exist, but the graph is populated only by manual REST.","Wire ingestion → KG auto-population (ingestion_hook imports symbols that don't exist, D-15); fix the multi-hop reasoner ↔ store mismatch (D-16); hybrid graph+vector answer e2e with citations.",0],
+  ["Civilization",5,"weak",["experimental"],"Full subsystem exists but is gated off by default; the console now degrades gracefully instead of erroring.","Stabilize + test reputation / constitution / A2A behind the flag, then enable-by-default once proven, with a societal-loop e2e.",1],
+];
+
+const PENDING = [
+  ["Deeper mypy tiers","re-enable attr-defined / union-attr / no-any-return app-wide — surfaces the next layer of latent bugs.",""],
+  ["RAG / embeddings / router disconnects","RAFT, RAPTOR, embedding orchestration + zero-vector, model-router breaker — “advertised but inert”.",""],
+  ["Knowledge-graph auto-population","document ingestion feeds the graph nothing today — highest single-feature leverage.",""],
+  ["Ingestion & chunking depth","real semantic chunking, OCR-in-pipeline, real tokenizer, audio/video (ING-9…13).",""],
+  ["Workflow / trigger Phase-2","timezone, missed-fire catch-up, DSL enforcement, full TriggerType coverage.",""],
+  ["Guardrail persistence + voice consent","rules must survive restart; encoded-injection corpus; consent/retention for voice.",""],
+  ["Full-stack Playwright e2e","the mocked UI suite is exactly why the console blank-page outage shipped.",""],
+  ["civilization_tick beat throttle","it fires many times/second and floods the worker — needs a schedule review.","ops"],
+  ["External-credential triggers · k6 load tier","10 trigger types need real third-party creds; nightly load run.","blocked"],
+];
+
+const el = (t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e;};
+const scores = F.map(f=>f[1]);
+const mean = (scores.reduce((a,b)=>a+b,0)/scores.length);
+const strong = scores.filter(s=>s>=8).length, mid = scores.filter(s=>s>=6&&s<8).length, weak = scores.filter(s=>s<6).length;
+
+// summary tiles
+const S=[["Capabilities",F.length,""],["Mean depth",mean.toFixed(1),"/10"],["At 8+",strong,"/"+F.length],["Open workstreams",PENDING.length,""]];
+const sum=document.getElementById('summary');
+S.forEach(([k,v,u])=>{const s=el('div','stat');s.append(el('p','k',k),el('p','v',v+(u?` <small>${u}</small>`:'')));sum.append(s);});
+
+// distribution bar
+const db=document.getElementById('distbar');
+[["--strong",strong],["--mid",mid],["--weak",weak]].forEach(([c,n])=>{
+  const s=document.createElement('span');s.style.background=`var(${c})`;s.style.width=(100*n/F.length)+'%';db.append(s);
+});
+
+// board grouped by band
+const board=document.getElementById('board');
+const bands=[["Strong","8–10",f=>f[1]>=8],["Developing","6–7.9",f=>f[1]>=6&&f[1]<8],["Weak — highest leverage","below 6",f=>f[1]<6]];
+bands.forEach(([label,rng,pred])=>{
+  const items=F.filter(pred).sort((a,b)=>b[1]-a[1]);
+  if(!items.length)return;
+  const h=el('div','band-h');h.append(el('h2',null,label),el('span','rng',rng),el('div','rule'));
+  board.append(h);
+  const rows=el('div','rows');
+  items.forEach(([name,score,cls,tags,state,path,fixed])=>{
+    const r=el('div','row s-'+cls);
+    const nm=el('p','r-name',name);
+    (tags||[]).forEach(t=>nm.append(el('span','tag',t)));
+    if(fixed)nm.append(el('span','tag fixed','fixed'));
+    r.append(nm);
+    const sc=el('div','r-score');
+    sc.append(el('div','r-num',`${score}<small>/10</small>`));
+    const m=el('div','meter');
+    for(let i=1;i<=10;i++){const seg=document.createElement('i');if(i<=Math.round(score))seg.className='on';m.append(seg);}
+    sc.append(m); r.append(sc);
+    r.append(el('p','r-state',state));
+    r.append(el('p','r-path',`<b>To 10/10</b>${path}`));
+    rows.append(r);
+  });
+  board.append(rows);
+});
+
+// pending
+const pl=document.getElementById('pending');
+PENDING.forEach(([t,d,pill])=>{
+  const li=document.createElement('li');
+  li.innerHTML=`<b>${t}</b> — <span>${d}</span>`+(pill?`<span class="pill ${pill}">${pill}</span>`:'');
+  pl.append(li);
+});
+</script>
