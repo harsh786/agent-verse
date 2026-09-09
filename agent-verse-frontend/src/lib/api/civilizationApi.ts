@@ -111,11 +111,16 @@ export interface CivilizationMember {
 
 const BASE = '/civilizations';
 
+// Civilization is an opt-in experimental subsystem; when disabled the backend
+// returns 503 by design. Silence the generic "Server error" toast on the
+// list/get reads so the page can render its own "feature disabled" state.
+const GATED = { silenceServerErrorToast: true };
+
 export const civilizationApi = {
-  list: () => apiFetch<Civilization[]>(BASE),
+  list: () => apiFetch<Civilization[]>(BASE, {}, GATED),
   create: (name: string, constitution?: CivilizationConstitution) =>
     apiFetch<Civilization>(BASE, { method: 'POST', body: JSON.stringify({ name, constitution: constitution ?? {} }) }),
-  get: (id: string) => apiFetch<Civilization>(`${BASE}/${id}`),
+  get: (id: string) => apiFetch<Civilization>(`${BASE}/${id}`, {}, GATED),
   updateConstitution: (id: string, constitution: CivilizationConstitution) =>
     apiFetch<{ updated: boolean }>(`${BASE}/${id}/constitution`, { method: 'PUT', body: JSON.stringify({ constitution }) }),
   submitGoal: (id: string, goal: string, priority?: string) =>

@@ -36,9 +36,19 @@ export const setApiKey = (key: string): void => {
   }
 };
 
+/** Extra, non-fetch options for {@link request}. Kept separate from RequestInit
+ *  so callers opt in explicitly and existing 2-arg call sites are unaffected. */
+export interface RequestMeta {
+  /** Suppress the automatic "Server error" toast on a 5xx. Use for endpoints
+   *  behind a feature flag (they return 503 by design) where the caller renders
+   *  its own informational state instead. */
+  silenceServerErrorToast?: boolean;
+}
+
 async function request<T>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  meta: RequestMeta = {}
 ): Promise<T> {
   const { ssoMode, accessToken } = useAuthStore.getState();
   const apiKey = getApiKey();
@@ -65,14 +75,18 @@ async function request<T>(
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: { message: res.statusText } }));
-    const message = body?.error?.message ?? res.statusText;
+    // Prefer our envelope's error.message, then FastAPI's `detail`, then the raw status
+    // text — so a toast/ApiError carries the real reason, not "Service Unavailable".
+    const message = body?.error?.message ?? body?.detail ?? res.statusText;
     if (res.status === 401) {
       const { logout } = useAuthStore.getState();
       logout();
       toast({ kind: 'error', message: 'Session expired — please sign in again.' });
       throw new ApiError(401, message, body);
     }
-    if (res.status >= 500) toast({ kind: 'error', message: `Server error: ${message}` });
+    if (res.status >= 500 && !meta.silenceServerErrorToast) {
+      toast({ kind: 'error', message: `Server error: ${message}` });
+    }
     throw new ApiError(res.status, message, body);
   }
   if (res.status === 204) return undefined as T;

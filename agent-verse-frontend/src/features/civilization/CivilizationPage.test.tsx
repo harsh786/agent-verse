@@ -199,4 +199,30 @@ describe('CivilizationPage', () => {
     expect(typeof result.connected).toBe('boolean');
     expect(Array.isArray(result.events)).toBe(true);
   });
+
+  it('shows a "feature disabled" state (not a scary error) when the backend gates civilization off with 503', async () => {
+    const { civilizationApi } = await import('../../lib/api/civilizationApi');
+    const { ApiError } = await import('@/lib/api/client');
+    vi.mocked(civilizationApi.list).mockRejectedValueOnce(
+      new ApiError(503, 'Agent Civilization feature is not enabled. Set CIVILIZATION_ENABLED=true.'),
+    );
+    renderPage(); // list view — calls list()
+    await waitFor(() => {
+      expect(screen.getByText(/turned off/i)).toBeInTheDocument();
+    }, { timeout: 3000 });
+    expect(screen.getByText(/CIVILIZATION_ENABLED=true/)).toBeInTheDocument();
+    // The alarming generic-failure copy must NOT appear for a deliberate feature gate.
+    expect(screen.queryByText(/Is the backend running\?/i)).not.toBeInTheDocument();
+  });
+
+  it('still shows the generic failure state for a non-503 error', async () => {
+    const { civilizationApi } = await import('../../lib/api/civilizationApi');
+    const { ApiError } = await import('@/lib/api/client');
+    vi.mocked(civilizationApi.list).mockRejectedValueOnce(new ApiError(500, 'boom'));
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByText(/Is the backend running\?/i)).toBeInTheDocument();
+    }, { timeout: 3000 });
+    expect(screen.queryByText(/turned off/i)).not.toBeInTheDocument();
+  });
 });

@@ -18,7 +18,7 @@ import {
   Wifi, WifiOff, Zap, Users, X,
 } from 'lucide-react';
 import { civilizationApi } from '../../lib/api/civilizationApi';
-import { apiFetch } from '@/lib/api/client';
+import { apiFetch, ApiError } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { useCivilizationStream } from '../../lib/sse/useCivilizationStream';
 import { StatusOrb } from '@/components/ui/StatusOrb';
@@ -103,7 +103,30 @@ function CivilizationList() {
           </div>
         )}
 
-        {error && (
+        {/* 503 == the Civilization subsystem is an experimental, opt-in feature that
+            the backend has gated off (CIVILIZATION_ENABLED=false). The backend is
+            healthy — show an informational "disabled" state, not a scary error. */}
+        {error && error instanceof ApiError && error.status === 503 && (
+          <div className="flex items-center justify-center h-64">
+            <div
+              className="rounded-2xl p-8 text-center max-w-md"
+              style={{ background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.2)' }}
+            >
+              <Globe className="h-10 w-10 text-indigo-400 mx-auto mb-4 opacity-80" />
+              <p className="text-base font-semibold text-slate-200">Civilizations are turned off</p>
+              <p className="text-sm text-slate-400 mt-2 leading-relaxed">
+                Multi-Agent Civilization is an experimental subsystem. An operator can
+                enable it by setting{' '}
+                <code className="px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 font-mono text-xs">
+                  CIVILIZATION_ENABLED=true
+                </code>{' '}
+                on the backend and restarting.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {error && !(error instanceof ApiError && error.status === 503) && (
           <div className="flex items-center justify-center h-64">
             <div
               className="rounded-2xl p-6 text-center max-w-sm"
