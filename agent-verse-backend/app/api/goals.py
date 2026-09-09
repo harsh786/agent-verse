@@ -313,10 +313,13 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
                 "mode": "supervisor",
                 "success": result.success,
                 "synthesized_result": result.synthesized_result,
-                "sub_goal_ids": [task.task_id for task in result.tasks],
+                # Real persisted goal ids (skip any sub-task that never got to
+                # submit a goal), so a client can correlate results to goals.
+                "sub_goal_ids": [t.goal_id for t in result.tasks if t.goal_id],
                 "sub_tasks": [
                     {
                         "task_id": t.task_id,
+                        "goal_id": t.goal_id,
                         "goal": t.goal,
                         "status": t.status,
                         "result": t.result,

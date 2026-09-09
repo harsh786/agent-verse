@@ -23,6 +23,9 @@ class SubAgentTask:
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     goal: str = ""
     agent_id: str | None = None
+    # The real goal id created for this sub-task by GoalService.submit_goal, so
+    # callers can correlate the synthesized result back to the persisted goal.
+    goal_id: str = ""
     status: str = "pending"  # pending | running | complete | failed
     result: str = ""
     error: str = ""
@@ -111,6 +114,14 @@ class SupervisorAgent:
                         agent_id=task.agent_id,
                     )
                     goal_id = sub["goal_id"]
+                    task.goal_id = str(goal_id)
+                    await emit(
+                        {
+                            "type": "supervisor_task_goal_created",
+                            "task_id": task.task_id,
+                            "goal_id": task.goal_id,
+                        }
+                    )
 
                     # Wait for completion
                     async with asyncio.timeout(self._timeout):

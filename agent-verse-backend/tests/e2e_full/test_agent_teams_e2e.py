@@ -144,10 +144,22 @@ async def test_supervisor_forms_team_and_persists_subagent_results(
     # tenant, in a terminal state -- not merely an in-memory dataclass on the response.
     listing = await team_client.get("/goals")
     assert listing.status_code == 200
-    by_text = {g["goal"]: g for g in listing.json()["goals"]}
+    goals = listing.json()["goals"]
+    by_text = {g["goal"]: g for g in goals}
     for sub_goal in (SUBTASK_A, SUBTASK_B):
         assert sub_goal in by_text, f"sub-agent goal not persisted/retrievable: {sub_goal!r}"
         assert by_text[sub_goal]["status"] == "complete"
+
+    # The response's sub_goal_ids are the REAL persisted goal ids (not the
+    # in-memory task_id), so a client can correlate a result to its goal by id.
+    by_id = {str(g.get("id") or g.get("goal_id")): g for g in goals}
+    for sub_goal_id in body["sub_goal_ids"]:
+        assert sub_goal_id, "empty sub_goal_id in response"
+        assert str(sub_goal_id) in by_id, (
+            f"sub_goal_id {sub_goal_id!r} does not correspond to a persisted goal"
+        )
+    # Each sub_task carries its real goal_id, matching sub_goal_ids by identity.
+    assert {t["goal_id"] for t in body["sub_tasks"]} == set(body["sub_goal_ids"])
 
     # Negative assertion: an unrelated tenant cannot see this team's persisted work --
     # the feature must FAIL this test if tenant scoping on the goals list regresses.
