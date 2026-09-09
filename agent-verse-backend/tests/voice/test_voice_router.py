@@ -52,8 +52,9 @@ async def client() -> AsyncClient:  # type: ignore[misc]
 @pytest.mark.asyncio
 async def test_voice_status_ok(client: AsyncClient) -> None:
     """Status endpoint returns correct schema."""
+    from unittest.mock import AsyncMock, MagicMock
+
     from app.voice.providers import override_stt, override_tts, reset_providers
-    from unittest.mock import MagicMock, AsyncMock
     mock_stt = MagicMock()
     mock_stt.provider_name = "faster_whisper"
     mock_stt.supports_streaming = False
@@ -212,6 +213,7 @@ async def test_alerts_stream_endpoint_exists(client: AsyncClient) -> None:
     """Alerts stream route is registered and returns SSE or 200."""
     # The route exists — just verify it doesn't 404
     import asyncio
+
     from app.voice.alerts import VoiceAlertManager
     mock_mgr = MagicMock(spec=VoiceAlertManager)
     q: asyncio.Queue = asyncio.Queue()
@@ -219,9 +221,16 @@ async def test_alerts_stream_endpoint_exists(client: AsyncClient) -> None:
     mock_mgr.unsubscribe = MagicMock()
     mock_mgr.start = AsyncMock()
     with patch("app.voice.alerts.VoiceAlertManager", return_value=mock_mgr):
-        # Use a timeout to avoid hanging on the infinite stream
+        # Open the stream and read ONLY the response headers, then close — never
+        # read the infinite SSE body. Bound with asyncio.wait_for because httpx's
+        # own timeout does not interrupt an in-process ASGI stream, which is what
+        # made a plain client.get() hang forever here.
+        async def _status() -> int:
+            async with client.stream("GET", "/v1/voice/alerts/stream") as resp:
+                return resp.status_code
+
         try:
-            resp = await client.get("/v1/voice/alerts/stream", timeout=1.0)
-            assert resp.status_code != 404
-        except Exception:
-            pass  # ReadTimeout is expected for infinite stream — not 404
+            status = await asyncio.wait_for(_status(), timeout=2.0)
+        except TimeoutError:
+            return  # the route exists and is streaming — that's not a 404
+        assert status != 404
