@@ -1134,6 +1134,10 @@ class OrgService:
         # Optional caller-supplied TenantContext (richer plan tier).
         # When omitted a PROFESSIONAL-tier context is synthesised from tenant_id.
         tenant_ctx: Any | None = None,
+        # The request's app.state (lifespan-wired services). Threaded by the API
+        # caller so this uses the DB/Redis-backed GoalService / LLM provider
+        # instead of the module-level app.main.app singleton's unwired fallbacks.
+        app_state: Any = None,
     ) -> tuple[OrgMission, dict[str, Any]]:
         """Create an OrgMission and immediately dispatch it to the AgentGraph.
 
@@ -1194,12 +1198,10 @@ class OrgService:
             try:
                 from app.org.meta_orchestrator import MetaOrchestrator
 
-                # Lazily resolve LLM provider from app.state (best-effort)
+                # Resolve LLM provider from the request's wired app.state.
                 _llm_provider: Any | None = None
                 try:
-                    from app.main import app as _app  # type: ignore[attr-defined]
-
-                    _llm_provider = getattr(getattr(_app, "state", None), "planner_provider", None)
+                    _llm_provider = getattr(app_state, "planner_provider", None)
                 except Exception:
                     pass
 
@@ -1264,9 +1266,7 @@ class OrgService:
 
             # ── Step 4: Dispatch to GoalService → AgentGraph (Celery) ─────────
             try:
-                from app.main import app as _app  # type: ignore[attr-defined]
-
-                goal_service = getattr(getattr(_app, "state", None), "goal_service", None)
+                goal_service = getattr(app_state, "goal_service", None)
             except Exception:
                 goal_service = None
 

@@ -438,6 +438,7 @@ class OrgMCPServer:
                     priority=priority,
                     source="mcp",
                     tenant_ctx=tc,
+                    app_state=self._app_state,
                 )
                 await session.commit()
                 span.set_attribute("mission_id", str(mission.id))

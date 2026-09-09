@@ -1015,9 +1015,8 @@ async def mission_stream(
 
             # Subscribe to Redis pub/sub for this mission's events
             # (Falls back to polling if Redis pub/sub unavailable)
-            from app.main import app as _app
 
-            redis = getattr(_app.state, "redis", None)
+            redis = getattr(request.app.state, "_redis", None)
 
             if redis:
                 async with redis.pubsub() as ps:
@@ -1115,9 +1114,8 @@ async def org_graphify_stream(
 
     async def _stream() -> AsyncGenerator[str, None]:
         try:
-            from app.main import app as _app
 
-            redis = getattr(_app.state, "redis", None)
+            redis = getattr(request.app.state, "_redis", None)
 
             yield f"data: {json.dumps({'type': 'connected', 'job_id': job_id})}\n\n"
 
@@ -1180,9 +1178,8 @@ async def _run_graphify_job(org_id: str, tenant_id: str, job_id: str, request: R
         span.set_attribute("tenant_id", tenant_id)
         span.set_attribute("job_id", job_id)
 
-        from app.main import app as _app
 
-        redis = getattr(_app.state, "redis", None)
+        redis = getattr(request.app.state, "_redis", None)
         channel = f"graphify:{job_id}:events"
 
         async def _emit(payload: dict) -> None:  # type: ignore[type-arg]
@@ -1396,9 +1393,8 @@ async def org_emergency_stop(
         span.set_attribute("tenant_id", tenant_id)
         span.set_attribute("org_id", org_id)
 
-        from app.main import app as _app
 
-        redis = getattr(_app.state, "redis", None)
+        redis = getattr(request.app.state, "_redis", None)
         stop_key = f"emergency_stop:{tenant_id}:{org_id}"
         if redis:
             await redis.set(stop_key, "1", ex=86400)  # auto-expire after 24h if not cleared
@@ -1443,9 +1439,8 @@ async def org_emergency_resume(
         span.set_attribute("tenant_id", tenant_id)
         span.set_attribute("org_id", org_id)
 
-        from app.main import app as _app
 
-        redis = getattr(_app.state, "redis", None)
+        redis = getattr(request.app.state, "_redis", None)
         stop_key = f"emergency_stop:{tenant_id}:{org_id}"
         if redis:
             await redis.delete(stop_key)
@@ -1605,7 +1600,9 @@ async def org_universal_command(
         # Route to agent loop (fire-and-forget) when not high-risk
         if not high_risk:
             asyncio.get_event_loop().create_task(
-                _route_command_to_agent(command_id, org_id, tenant_id, body.command)
+                _route_command_to_agent(
+                    command_id, org_id, tenant_id, body.command, request.app.state
+                )
             )
 
         _log.info(
@@ -1634,16 +1631,20 @@ async def org_universal_command(
 
 
 async def _route_command_to_agent(
-    command_id: str, org_id: str, tenant_id: str, command: str
+    command_id: str, org_id: str, tenant_id: str, command: str, app_state: Any = None
 ) -> None:
-    """Route an accepted UCG command to the agent goal loop."""
+    """Route an accepted UCG command to the agent goal loop.
+
+    ``app_state`` is the request's ``app.state`` (threaded by the caller) so this
+    fire-and-forget task uses the lifespan-wired, DB/Redis-backed GoalService
+    instead of the module-level app.main.app singleton (whose state carries
+    unwired in-memory fallbacks).
+    """
     import structlog as _sl
 
     _log = _sl.get_logger(__name__)
     try:
-        from app.main import app as _app
-
-        goal_service = getattr(_app.state, "goal_service", None)
+        goal_service = getattr(app_state, "goal_service", None)
         if goal_service and hasattr(goal_service, "submit_goal"):
             await goal_service.submit_goal(
                 tenant_id=tenant_id,
@@ -2471,12 +2472,11 @@ async def org_mcp_websocket(
     # Resolve tenant_id from X-Tenant-Id header or default
     tenant_id = websocket.headers.get("x-tenant-id", "system")
 
-    # Attach app.state for live service injection
+    # Attach the request's app.state (lifespan-wired services) for live service
+    # injection — not the module-level app.main.app singleton.
     _app_state = None
     try:
-        from app.main import app as _av_app  # type: ignore[attr-defined]
-
-        _app_state = getattr(_av_app, "state", None)
+        _app_state = getattr(websocket.app, "state", None)
     except Exception:
         pass
 
@@ -2645,6 +2645,7 @@ async def org_create_mission_execute(
         metadata=body.metadata,
         source="api",
         tenant_ctx=tenant_ctx,
+        app_state=request.app.state,
     )
 
     return {
