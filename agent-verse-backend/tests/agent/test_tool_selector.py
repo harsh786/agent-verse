@@ -1,7 +1,9 @@
 """Tests for Phase 2 Group A — ToolSelector."""
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-from app.agent.tool_selector import ToolSelector, ToolSelection, _needs_rpa
+
+import pytest
+
+from app.agent.tool_selector import ToolSelection, ToolSelector, _needs_rpa
 
 
 class _FakeToolRef:

@@ -6,7 +6,6 @@ import base64
 
 import pytest
 
-
 # ── PDF PARSER ────────────────────────────────────────────────────────────────
 
 def test_pdf_parser_with_text():
@@ -45,7 +44,7 @@ def test_pdf_parser_chunks_contain_source_name():
 
 
 def test_pdf_parse_result_full_text():
-    from app.ingestion.parsers.pdf_parser import PDFParser, PDFPage, PDFParseResult
+    from app.ingestion.parsers.pdf_parser import PDFPage, PDFParser, PDFParseResult
 
     result = PDFParseResult(
         source_name="test.pdf",
@@ -61,8 +60,9 @@ def test_pdf_parse_result_full_text():
 # ── AUDIO PARSER ──────────────────────────────────────────────────────────────
 
 async def test_audio_parser_fallback_no_key():
-    from app.ingestion.parsers.audio_parser import AudioParser
     from unittest.mock import AsyncMock, patch
+
+    from app.ingestion.parsers.audio_parser import AudioParser
 
     parser = AudioParser()
     with patch.object(parser, "_transcribe_with_whisper", AsyncMock(side_effect=Exception("No key"))):
@@ -119,8 +119,9 @@ def test_audio_parser_segment_chunking_splits_correctly():
 # ── VISION PARSER ─────────────────────────────────────────────────────────────
 
 async def test_vision_parser_fallback_no_key():
-    from app.ingestion.parsers.vision_parser import VisionParser
     from unittest.mock import AsyncMock, patch
+
+    from app.ingestion.parsers.vision_parser import VisionParser
 
     # 1x1 white PNG
     tiny_png = base64.b64decode(
@@ -242,8 +243,8 @@ def test_model_orchestrator_tier_low():
 
 
 def test_ai_router_model_selection():
-    from app.ai_router.router import AIRouter, ai_router
     from app.ai_router.models import TaskType
+    from app.ai_router.router import AIRouter, ai_router
 
     result = ai_router.select_model(TaskType.PLANNING, "t1")
     # May be None if no models configured in registry, both are valid
@@ -253,9 +254,9 @@ def test_ai_router_model_selection():
 
 
 def test_ai_router_cheapest_routing():
-    from app.ai_router.router import AIRouter
-    from app.ai_router.models import TaskType, RoutingMode, ModelRoutePolicy
+    from app.ai_router.models import ModelRoutePolicy, RoutingMode, TaskType
     from app.ai_router.registry import model_registry
+    from app.ai_router.router import AIRouter
 
     router = AIRouter()
     # Set a cheapest policy for test tenant
@@ -302,8 +303,8 @@ def test_model_router_model_for_goal_downgrade():
 
 
 def test_multi_model_orchestrator_budget_downgrade():
+    from app.agent.pattern_config import Complexity, GoalProperties, PatternConfig, RiskLevel
     from app.ai_router.model_orchestrator import ModelOrchestrator
-    from app.agent.pattern_config import PatternConfig, GoalProperties, Complexity, RiskLevel
 
     orchestrator = ModelOrchestrator()
     config = PatternConfig(
@@ -324,8 +325,8 @@ def test_multi_model_orchestrator_budget_downgrade():
 
 
 def test_multi_model_orchestrator_medium_budget_downgrade():
+    from app.agent.pattern_config import Complexity, GoalProperties, PatternConfig, RiskLevel
     from app.ai_router.model_orchestrator import ModelOrchestrator
-    from app.agent.pattern_config import PatternConfig, GoalProperties, Complexity, RiskLevel
 
     orchestrator = ModelOrchestrator()
     config = PatternConfig(

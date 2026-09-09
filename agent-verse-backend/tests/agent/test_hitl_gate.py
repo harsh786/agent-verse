@@ -3,7 +3,6 @@ import os
 from unittest.mock import patch
 
 
-
 def _agent_source() -> str:
     """Read combined source of graph.py and all node mixin files."""
     import pathlib

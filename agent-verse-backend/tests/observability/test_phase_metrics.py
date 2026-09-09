@@ -2,7 +2,7 @@
 
 
 def test_plan_duration_histogram_exists():
-    from app.observability.metrics import PLAN_DURATION, VERIFY_DURATION, QUEUE_WAIT_DURATION
+    from app.observability.metrics import PLAN_DURATION, QUEUE_WAIT_DURATION, VERIFY_DURATION
     assert PLAN_DURATION is not None
     assert VERIFY_DURATION is not None
     assert QUEUE_WAIT_DURATION is not None
@@ -25,7 +25,7 @@ def test_record_queue_wait():
 
 def test_record_plan_duration_clamps_iteration():
     """Iterations above 15 should be clamped to '15' label."""
-    from app.observability.metrics import record_plan_duration, PLAN_DURATION
+    from app.observability.metrics import PLAN_DURATION, record_plan_duration
     # Should not raise with large iteration value
     record_plan_duration(99, 0.1)
 

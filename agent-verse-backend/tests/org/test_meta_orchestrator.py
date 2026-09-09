@@ -1,8 +1,9 @@
 """Tests for MetaOrchestrator — app/org/meta_orchestrator.py"""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from app.org.meta_orchestrator import MetaOrchestrator, OrchestratorDecision
 

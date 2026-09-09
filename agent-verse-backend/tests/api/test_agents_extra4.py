@@ -18,7 +18,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.agents import AgentStore, router as agents_router
+from app.api.agents import AgentStore
+from app.api.agents import router as agents_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
@@ -196,7 +197,7 @@ def test_agent_store_update_async_not_found() -> None:
 def test_save_and_load_snapshots_no_db() -> None:
     """Lines 28-83: _save_snapshot_to_db and _load_snapshots_from_db with db=None."""
     async def _run():
-        from app.api.agents import _save_snapshot_to_db, _load_snapshots_from_db
+        from app.api.agents import _load_snapshots_from_db, _save_snapshot_to_db
         snap = {"snapshot_id": "s1", "agent_id": "a1", "version": 1, "name": "Test"}
         # With db=None, should be no-op
         await _save_snapshot_to_db(snap, None, "tenant-1")
@@ -1037,6 +1038,7 @@ def test_exchange_token_no_service() -> None:
 def test_exchange_token_success_with_jwt() -> None:
     """Lines 1183-1199: JWT is issued and returned with expiry."""
     import time
+
     from jose import jwt
 
     # Create a real JWT token with exp claim

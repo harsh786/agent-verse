@@ -11,9 +11,9 @@ from fastapi.testclient import TestClient
 from app.api.civilization import (
     _civilization_not_found,
     _get_db,
+    _nullctx,
     _require_feature_enabled,
     _require_tenant,
-    _nullctx,
     router,
 )
 from app.tenancy.context import PlanTier, TenantContext

@@ -1,7 +1,10 @@
 """ABTestingEngine must persist results to DB."""
 from __future__ import annotations
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from app.optimization.ab_testing import ABTestingEngine, ExperimentType
 
 

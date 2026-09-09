@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ── SSE EVENTS ────────────────────────────────────────────────────────────────
 
 def test_all_9_sse_event_types_defined():
@@ -147,9 +146,9 @@ def test_runtime_sse_emitter_embedding_strategy():
 
 def test_orchestration_metrics_exist():
     from app.observability.metrics import (
+        orchestration_pattern_selected_total,
         orchestration_profile_built_total,
         orchestration_profile_latency_ms,
-        orchestration_pattern_selected_total,
         orchestration_rag_strategy_total,
         orchestration_readiness_gate_blocked_total,
     )
@@ -250,7 +249,7 @@ def test_tracer_nested_spans():
 # ── COST BREAKDOWN ────────────────────────────────────────────────────────────
 
 def test_cost_breakdown_records():
-    from app.observability.cost_breakdown import record_role_cost, get_breakdown
+    from app.observability.cost_breakdown import get_breakdown, record_role_cost
     record_role_cost(
         goal_id="g_cost_test",
         role="planner",
@@ -297,7 +296,11 @@ def test_cost_breakdown_to_dict():
 
 
 def test_finalize_breakdown_removes_from_registry():
-    from app.observability.cost_breakdown import record_role_cost, finalize_breakdown, _goal_breakdowns
+    from app.observability.cost_breakdown import (
+        _goal_breakdowns,
+        finalize_breakdown,
+        record_role_cost,
+    )
     record_role_cost("g_final", "planner", "gpt-4o", 10, 5, 0.001)
     result = finalize_breakdown("g_final")
     assert result["goal_id"] == "g_final"

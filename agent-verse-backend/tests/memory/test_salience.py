@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+
 from app.memory.salience import SalienceScorer, rank_memories
 
 

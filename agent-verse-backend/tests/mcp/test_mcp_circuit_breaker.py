@@ -4,9 +4,9 @@ from __future__ import annotations
 import builtins
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 import respx
-import httpx
 
 from app.mcp.client import CircuitBreakerOpenError, MCPClient
 from app.mcp.registry import MCPRegistry, MCPServerConfig

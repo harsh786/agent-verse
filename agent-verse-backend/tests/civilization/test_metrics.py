@@ -10,8 +10,8 @@ import pytest
 
 import app.civilization.metrics as metrics_mod
 from app.civilization.metrics import (
-    _NullMetric,
     _get,
+    _NullMetric,
     civ_agents_active,
     civ_budget_spent_usd,
     civ_debates_total,
@@ -25,7 +25,6 @@ from app.civilization.metrics import (
     record_learning_outcome,
     record_spawn,
 )
-
 
 # ── _NullMetric ───────────────────────────────────────────────────────────────
 

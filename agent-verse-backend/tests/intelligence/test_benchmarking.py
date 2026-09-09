@@ -1,9 +1,11 @@
 """Tests for agent performance benchmarking."""
 from __future__ import annotations
+
 import pytest
-from app.intelligence.benchmarking import BenchmarkStore, AgentBenchmark
+
+from app.intelligence.benchmarking import AgentBenchmark, BenchmarkStore
 from app.intelligence.eval import EvalScorecard
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 CTX = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k1")
 
@@ -85,6 +87,7 @@ def test_cli_module_exists():
 
 def test_stuck_goal_task_exists():
     import inspect
+
     from app.scaling import tasks
     src = inspect.getsource(tasks)
     assert "detect_stuck_goals" in src or "stuck_goal" in src, \

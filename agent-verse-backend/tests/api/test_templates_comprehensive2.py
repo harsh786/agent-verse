@@ -10,7 +10,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app.api.templates as tmpl_module
-from app.api.templates import _TemplateStore, router as templates_router
+from app.api.templates import _TemplateStore
+from app.api.templates import router as templates_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 

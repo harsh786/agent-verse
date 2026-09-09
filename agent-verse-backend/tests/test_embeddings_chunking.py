@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ── SENTENCE-TRANSFORMERS EMBEDDING ──────────────────────────────────────────
 
 def test_colbert_encoder_loads() -> None:
@@ -20,7 +19,7 @@ def test_colbert_encoder_loads() -> None:
 
 
 def test_cross_encoder_available() -> None:
-    from app.rag.cross_encoder import is_cross_encoder_available, cross_encode
+    from app.rag.cross_encoder import cross_encode, is_cross_encoder_available
 
     # Whether available or not, must not raise
     avail = is_cross_encoder_available()
@@ -143,8 +142,8 @@ def test_get_chunker_for_strategy() -> None:
 # ── EMBEDDING POLICY SELECTOR ─────────────────────────────────────────────────
 
 def test_embedding_policy_for_content_types() -> None:
-    from app.ingestion.embedding_policy_selector import EmbeddingPolicySelector, EmbeddingPolicy
     from app.ingestion.content_classifier import ContentType
+    from app.ingestion.embedding_policy_selector import EmbeddingPolicy, EmbeddingPolicySelector
 
     selector = EmbeddingPolicySelector()
 
@@ -156,8 +155,8 @@ def test_embedding_policy_for_content_types() -> None:
 
 
 def test_embedding_policy_hnsw_for_large_collection() -> None:
-    from app.ingestion.embedding_policy_selector import EmbeddingPolicySelector
     from app.ingestion.content_classifier import ContentType
+    from app.ingestion.embedding_policy_selector import EmbeddingPolicySelector
 
     selector = EmbeddingPolicySelector()
     policy = selector.select(ContentType.TEXT, collection_size=50000)

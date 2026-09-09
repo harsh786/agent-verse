@@ -8,17 +8,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.governance.audit_v2 import (
-    WAL_KEY,
+    _PII_KEYS,
     WAL_DEAD_LETTER,
+    WAL_KEY,
     AuditEvent,
     AuditFlusher,
     AuditWriter,
     HashChainVerifier,
-    _PII_KEYS,
     _redact_pii,
     audit_admin_action,
 )
-
 
 # ── _redact_pii ────────────────────────────────────────────────────────────────
 

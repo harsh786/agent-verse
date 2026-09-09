@@ -12,9 +12,9 @@ from __future__ import annotations
 import pytest
 
 from app.reliability.circuit_breaker import CircuitBreaker, CircuitState
-from app.reliability.rollback import RollbackEngine
 from app.reliability.dedup import DeduplicationCache
 from app.reliability.result_processor import ResultProcessor
+from app.reliability.rollback import RollbackEngine
 from app.tenancy.context import PlanTier, TenantContext
 
 _CTX = TenantContext(tenant_id="tid-a", plan=PlanTier.PROFESSIONAL, api_key_id="kid-1")

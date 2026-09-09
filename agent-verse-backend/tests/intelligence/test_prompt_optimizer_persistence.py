@@ -1,8 +1,10 @@
 """Tests for PromptOptimizer DB/Redis persistence."""
 import asyncio
 import logging
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from app.intelligence.prompt_optimizer import PromptOptimizer, PromptVariant
 
 

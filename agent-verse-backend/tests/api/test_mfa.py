@@ -6,8 +6,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.mfa import _generate_recovery_codes, _get_mfa_state, _hash_recovery_code
-from app.api.mfa import _mfa_store, _rate_limits, _used_totp_codes
+from app.api.mfa import (
+    _generate_recovery_codes,
+    _get_mfa_state,
+    _hash_recovery_code,
+    _mfa_store,
+    _rate_limits,
+    _used_totp_codes,
+)
 from app.api.mfa import router as mfa_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware

@@ -30,7 +30,6 @@ from app.intelligence.guardrail_engine import (
     RecursiveArgScanner,
 )
 
-
 # ---------------------------------------------------------------------------
 # 1. test_injection_detection_catches_direct_override
 # ---------------------------------------------------------------------------

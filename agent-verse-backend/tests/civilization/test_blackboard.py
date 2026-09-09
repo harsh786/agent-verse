@@ -1,8 +1,9 @@
 """Unit tests for Blackboard (optimistic concurrency + conflict detection)."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.civilization.blackboard import Blackboard, BlackboardConflictError
 

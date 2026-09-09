@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import pytest
-from app.auth.agent_credentials import AgentCredentialStore, is_agent_key, generate_agent_api_key
-from app.auth.goal_tokens import mint_goal_token, verify_goal_token
+
+from app.auth.agent_credentials import AgentCredentialStore, generate_agent_api_key, is_agent_key
 from app.auth.agent_manifest import build_manifest, sign_manifest, verify_manifest
 from app.auth.delegation import DelegationChain, DelegationLink
+from app.auth.goal_tokens import mint_goal_token, verify_goal_token
 
 
 class TestAgentCredentials:

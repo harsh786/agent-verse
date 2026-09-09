@@ -1,8 +1,8 @@
 """Conftest for API tests — ensures the Python SDK is importable."""
 from __future__ import annotations
 
-import sys
 import os
+import sys
 
 # The agentverse SDK lives in Archived/agent-verse-sdk-python.
 # Insert it at the front so `import agentverse` resolves to the SDK, not the

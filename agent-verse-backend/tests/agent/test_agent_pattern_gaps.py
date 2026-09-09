@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import pytest
-from app.agent.patterns.self_refine import SelfRefinePattern
+
+from app.agent.patterns import ALL_PATTERNS
 from app.agent.patterns.base import PatternState
 from app.agent.patterns.peer_review import PeerReviewPattern
 from app.agent.patterns.self_consistency import SelfConsistencyPattern
+from app.agent.patterns.self_refine import SelfRefinePattern
 from app.agent.patterns.tree_of_thoughts import TreeOfThoughtsPattern
-from app.agent.patterns import ALL_PATTERNS
 
 
 def test_self_refine_pattern_has_node_reference():

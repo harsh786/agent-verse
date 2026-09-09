@@ -952,7 +952,8 @@ async def test_execute_step_cost_tracker_records_usage() -> None:
     mock_cost_tracker.record_llm_usage = AsyncMock()
 
     # Use a provider that returns usage info
-    from app.providers.base import CompletionRequest as _CR, CompletionResponse as _CResp
+    from app.providers.base import CompletionRequest as _CR
+    from app.providers.base import CompletionResponse as _CResp
 
     class _UsageProvider:
         async def complete(self, req: _CR) -> _CResp:

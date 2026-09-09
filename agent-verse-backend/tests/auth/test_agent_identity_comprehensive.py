@@ -6,8 +6,8 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from jose import jwt as jose_jwt
 
 from app.auth.agent_identity import (
@@ -20,7 +20,6 @@ from app.auth.agent_identity import (
     issue_agent_token,
     verify_agent_token,
 )
-
 
 # ---------------------------------------------------------------------------
 # generate_agent_keypair

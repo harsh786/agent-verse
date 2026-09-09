@@ -1,12 +1,12 @@
 """Tests for Phase 2 intelligence upgrades."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from app.agent.structured_plan import StructuredPlan, StructuredStep
-from app.agent.prompts import CHAIN_OF_THOUGHT_SYSTEM, REFLECTION_SYSTEM
+import pytest
 
+from app.agent.prompts import CHAIN_OF_THOUGHT_SYSTEM, REFLECTION_SYSTEM
+from app.agent.structured_plan import StructuredPlan, StructuredStep
 
 # ---------------------------------------------------------------------------
 # 2.1 Prompts
@@ -58,10 +58,11 @@ def test_execution_waves_serial_when_all_chained():
 async def test_node_execute_emits_parallel_start_event():
     """_node_execute must emit steps_parallel_start when wave has >1 step."""
     import json
+
     from app.agent.graph import AgentGraph
     from app.agent.state import AgentState
     from app.providers.fake import FakeProvider
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     emitted_events: list[dict] = []
 
@@ -104,11 +105,11 @@ async def test_node_execute_emits_parallel_start_event():
 def test_model_router_wired_to_graph():
     """AgentGraph has _model_router attribute that can be set."""
     from app.agent.graph import AgentGraph
+    from app.intelligence.guardrails import GuardrailChecker
     from app.providers.fake import FakeProvider
     from app.reliability.dedup import DeduplicationCache
     from app.reliability.result_processor import ResultProcessor
     from app.reliability.rollback import RollbackEngine
-    from app.intelligence.guardrails import GuardrailChecker
 
     fake = FakeProvider(responses=["done"])
     graph = AgentGraph(
@@ -151,10 +152,10 @@ def test_model_router_falls_back_to_fallback_model():
 async def test_node_plan_uses_planning_model():
     """_node_plan uses model_router.model_for('planning') in CompletionRequest."""
     from app.agent.graph import AgentGraph
+    from app.agent.model_router import ModelRouter, ModelRouterConfig
     from app.agent.state import AgentState
     from app.providers.fake import FakeProvider
-    from app.tenancy.context import TenantContext, PlanTier
-    from app.agent.model_router import ModelRouter, ModelRouterConfig
+    from app.tenancy.context import PlanTier, TenantContext
 
     captured_requests: list = []
 
@@ -201,7 +202,7 @@ async def test_node_think_produces_safe_reasoning_evidence():
     from app.agent.graph import AgentGraph
     from app.agent.state import AgentState
     from app.providers.fake import FakeProvider
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     thinking_text = "INTENT: I need to check X then do Y"
     fake = FakeProvider(responses=[thinking_text])
@@ -224,7 +225,7 @@ async def test_node_plan_uses_safe_deliberation_directive():
     from app.agent.graph import AgentGraph
     from app.agent.state import AgentState
     from app.providers.fake import FakeProvider
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     captured_messages: list = []
 
@@ -268,7 +269,7 @@ async def test_node_reflect_sets_verification_feedback():
     from app.agent.graph import AgentGraph
     from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
     from app.providers.fake import FakeProvider
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     reflection = "FAILED_STEP: call github.search\nROOT_CAUSE: API key wrong\nFIX: use env var"
     fake = FakeProvider(responses=[reflection])
@@ -316,7 +317,7 @@ async def test_node_plan_injects_agent_system_prompt():
     from app.agent.graph import AgentGraph
     from app.agent.state import AgentState
     from app.providers.fake import FakeProvider
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     captured_messages: list = []
 
@@ -355,10 +356,10 @@ async def test_execute_step_with_cache_hits_cache():
     """_execute_step_with_cache returns cached result and emits cache_hit."""
     from app.agent.graph import AgentGraph
     from app.agent.state import AgentState
-    from app.providers.fake import FakeProvider
     from app.providers.base import EmbedRequest, EmbedResponse
+    from app.providers.fake import FakeProvider
     from app.rag.semantic_cache import SemanticCache
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     emitted: list[dict] = []
     llm_calls: list = []
@@ -408,8 +409,8 @@ async def test_execute_step_with_cache_hits_cache():
 @pytest.mark.asyncio
 async def test_fake_provider_stream_complete():
     """FakeProvider streams word-by-word."""
-    from app.providers.fake import FakeProvider
     from app.providers.base import CompletionRequest, Message
+    from app.providers.fake import FakeProvider
 
     provider = FakeProvider(responses=["hello world from streaming"])
     req = CompletionRequest(
@@ -427,7 +428,8 @@ async def test_fake_provider_stream_complete():
 @pytest.mark.asyncio
 async def test_goals_token_stream_endpoint_exists():
     """GET /goals/{id}/stream/tokens endpoint exists and returns 200 or 404."""
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
     app = create_app()
     async with AsyncClient(

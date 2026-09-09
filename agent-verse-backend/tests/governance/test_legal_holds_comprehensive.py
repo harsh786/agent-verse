@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.governance.legal_holds import LegalHoldManager, _CACHE_KEY, _CACHE_TTL
+from app.governance.legal_holds import _CACHE_KEY, _CACHE_TTL, LegalHoldManager
 
 
 def _make_legal_hold_manager(redis=None, db=None) -> LegalHoldManager:

@@ -8,7 +8,6 @@ import pytest
 import app.perception.browser_agent as ba_module
 from app.perception.browser_agent import BrowserAction, BrowserAgent, BrowserResult
 
-
 # ── BrowserAction dataclass ───────────────────────────────────────────────────
 
 

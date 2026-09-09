@@ -9,15 +9,14 @@ from fastapi import FastAPI, Request, Response
 from starlette.testclient import TestClient
 
 from app.auth.scope_enforcement import (
+    _ALL_SCOPES,
     ENDPOINT_SCOPES,
     EXEMPT_PATH_PREFIXES,
     ROLE_SCOPES,
     ABACEvaluator,
     RoleResolver,
     ScopeEnforcementMiddleware,
-    _ALL_SCOPES,
 )
-
 
 # ---------------------------------------------------------------------------
 # ENDPOINT_SCOPES registry
@@ -430,6 +429,7 @@ async def test_dispatch_no_tenant_context_passes_through():
 async def test_dispatch_no_roles_passes_through():
     """Keys with no role assignments are legacy — pass through without scope check."""
     from httpx import ASGITransport, AsyncClient
+
     from app.tenancy.context import PlanTier, TenantContext
 
     fast_app = FastAPI()
@@ -457,6 +457,7 @@ async def test_dispatch_no_roles_passes_through():
 async def test_dispatch_scope_denied_returns_403():
     """A key with viewer role should be denied access to goals:write (POST /goals)."""
     from httpx import ASGITransport, AsyncClient
+
     from app.tenancy.context import PlanTier, TenantContext
 
     fast_app = FastAPI()
@@ -486,6 +487,7 @@ async def test_dispatch_scope_denied_returns_403():
 async def test_dispatch_scope_granted_returns_200():
     """A key with operator role should be allowed to POST /goals."""
     from httpx import ASGITransport, AsyncClient
+
     from app.tenancy.context import PlanTier, TenantContext
 
     fast_app = FastAPI()
@@ -511,6 +513,7 @@ async def test_dispatch_scope_granted_returns_200():
 async def test_dispatch_ip_blocked_returns_403():
     """A request from a blocked IP should return 403 IP_NOT_ALLOWED."""
     from httpx import ASGITransport, AsyncClient
+
     from app.tenancy.context import PlanTier, TenantContext
 
     fast_app = FastAPI()

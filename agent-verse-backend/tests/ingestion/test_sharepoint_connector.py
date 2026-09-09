@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from app.ingestion.connectors.sharepoint_connector import SharePointConnector
 
 
@@ -36,8 +37,9 @@ class TestSharePointConnector:
     @pytest.mark.asyncio
     async def test_get_access_token_raises_on_bad_creds(self) -> None:
         """Test that bad credentials cause an httpx error (not silent failure)."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
         import httpx
-        from unittest.mock import AsyncMock, patch, MagicMock
 
         mock_resp = MagicMock()
         mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(

@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # RPASessionStore (session.py) — Redis-backed paths
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -42,6 +41,7 @@ async def test_session_store_redis_save_sadd_expire() -> None:
     """Lines 74-75: _redis_save calls sadd and expire on the tenant index."""
     import json
     from dataclasses import asdict
+
     from app.rpa.session import RPAManagedSession
 
     redis = _make_mock_redis()
@@ -74,6 +74,7 @@ async def test_session_store_redis_load_returns_session_when_found() -> None:
     """Line 81: _redis_load returns RPAManagedSession when found in Redis."""
     import json
     from dataclasses import asdict
+
     from app.rpa.session import RPAManagedSession
 
     session = RPAManagedSession(tenant_id="t1")
@@ -105,6 +106,7 @@ async def test_session_store_get_with_redis_returns_correct_tenant() -> None:
     """Lines 102-104: get() with Redis returns session if tenant matches."""
     import json
     from dataclasses import asdict
+
     from app.rpa.session import RPAManagedSession
 
     session = RPAManagedSession(tenant_id="t1")
@@ -137,6 +139,7 @@ async def test_session_store_list_active_with_redis() -> None:
     """Lines 115-122: list_active() with Redis lists active sessions."""
     import json
     from dataclasses import asdict
+
     from app.rpa.session import RPAManagedSession
 
     s1 = RPAManagedSession(tenant_id="t1", status="active")
@@ -177,6 +180,7 @@ async def test_session_store_close_with_redis_saves_closed() -> None:
     """Lines 137-140: close() with Redis saves the closed session."""
     import json
     from dataclasses import asdict
+
     from app.rpa.session import RPAManagedSession
 
     session = RPAManagedSession(tenant_id="t1")
@@ -194,6 +198,7 @@ async def test_session_store_close_redis_exception_fallback() -> None:
     """Lines 140-141: Redis error in close() falls through to in-memory."""
     import json
     from dataclasses import asdict
+
     from app.rpa.session import RPAManagedSession
 
     session = RPAManagedSession(tenant_id="t1")
@@ -303,6 +308,7 @@ async def test_browser_session_manager_list_active_from_redis_no_redis() -> None
 async def test_browser_session_manager_list_active_from_redis_success() -> None:
     """Lines 239-251: list_active_from_redis with Redis → scans keys and parses."""
     import json
+
     from app.rpa.session_manager import BrowserSession, BrowserSessionManager
 
     mock_redis = AsyncMock()

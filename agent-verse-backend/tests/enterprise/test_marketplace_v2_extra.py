@@ -14,12 +14,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.enterprise.marketplace_v2 import (
+    _BUILTIN_TEMPLATES,
     CRITICAL_SCOPES,
     HIGH_RISK_SCOPES,
     PREAPPROVED_SCOPES,
     MarketplaceV2,
     TemplateSecurityReviewer,
-    _BUILTIN_TEMPLATES,
 )
 from app.tenancy.context import PlanTier, TenantContext
 

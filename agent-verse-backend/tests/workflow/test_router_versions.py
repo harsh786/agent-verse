@@ -9,8 +9,9 @@ from fastapi.testclient import TestClient
 
 def make_app(service: MagicMock) -> "TestClient":
     from fastapi import FastAPI, Request
+
+    from app.tenancy.context import PlanLimits, PlanTier, TenantContext
     from app.workflow.router_versions import router
-    from app.tenancy.context import TenantContext, PlanTier, PlanLimits
 
     app = FastAPI()
 
@@ -101,8 +102,9 @@ def test_list_versions(client: "TestClient") -> None:
 
 def test_list_versions_service_unavailable() -> None:
     from fastapi import FastAPI, Request
+
+    from app.tenancy.context import PlanLimits, PlanTier, TenantContext
     from app.workflow.router_versions import router
-    from app.tenancy.context import TenantContext, PlanTier, PlanLimits
 
     app = FastAPI()
 

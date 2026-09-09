@@ -1,7 +1,8 @@
 """Test checkpointer resolution priority and RedisSaver wiring."""
 import logging
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 def test_resolve_checkpointer_uses_app_state_first():
@@ -11,8 +12,9 @@ def test_resolve_checkpointer_uses_app_state_first():
     methods (``aget_tuple`` etc.). A sync-only saver is intentionally rejected —
     see ``test_resolve_checkpointer_rejects_sync_only_prewired_saver``.
     """
-    from app.services.goal_service import _resolve_checkpointer
     from langgraph.checkpoint.base import BaseCheckpointSaver
+
+    from app.services.goal_service import _resolve_checkpointer
 
     class _AsyncFakeSaver(BaseCheckpointSaver):
         def get_tuple(self, config):
@@ -50,9 +52,10 @@ def test_resolve_checkpointer_uses_app_state_first():
 
 def test_resolve_checkpointer_rejects_sync_only_prewired_saver():
     """A sync-only pre-wired saver is rejected (it would crash the async graph)."""
-    from app.services.goal_service import _resolve_checkpointer
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.checkpoint.memory import MemorySaver
+
+    from app.services.goal_service import _resolve_checkpointer
 
     class _SyncOnlySaver(BaseCheckpointSaver):
         def get_tuple(self, config):
@@ -77,8 +80,9 @@ def test_resolve_checkpointer_rejects_sync_only_prewired_saver():
 
 def test_resolve_checkpointer_logs_warning_on_memory_fallback(caplog, capsys):
     """When no Redis is available, a warning is logged about durability loss."""
-    from app.services.goal_service import _resolve_checkpointer
     from langgraph.checkpoint.memory import MemorySaver
+
+    from app.services.goal_service import _resolve_checkpointer
 
     app_state = MagicMock()
     app_state.langgraph_checkpointer = None
@@ -114,6 +118,7 @@ def test_resolve_checkpointer_prefers_redis_over_memory():
 def test_memory_saver_warning_contains_impact(capsys):
     """MemorySaver warning must include LOST or RESTART so operators notice."""
     import io
+
     from app.services.goal_service import _resolve_checkpointer
 
     app_state = MagicMock()

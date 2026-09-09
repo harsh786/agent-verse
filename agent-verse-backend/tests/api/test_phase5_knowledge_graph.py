@@ -2,10 +2,11 @@
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
 from app.api.knowledge_graph import router as kg_router
-from app.knowledge_graph.store import KnowledgeGraphStore
 from app.knowledge_graph.extractor import EntityExtractor
-from app.knowledge_graph.models import NodeType, EdgeType
+from app.knowledge_graph.models import EdgeType, NodeType
+from app.knowledge_graph.store import KnowledgeGraphStore
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 

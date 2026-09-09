@@ -5,7 +5,12 @@ import pytest
 
 from app.execution_environment.envelope import build_envelope
 from app.execution_environment.models import ExecutionEnvironmentPolicy
-from app.execution_environment.policy import PolicyDecision, evaluate_policy, _MAX_MEMORY_MB, _MAX_WALL_CLOCK_SECONDS
+from app.execution_environment.policy import (
+    _MAX_MEMORY_MB,
+    _MAX_WALL_CLOCK_SECONDS,
+    PolicyDecision,
+    evaluate_policy,
+)
 
 
 def test_policy_allows_well_formed_envelope() -> None:

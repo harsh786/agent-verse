@@ -1,15 +1,15 @@
 """Tests for critical wiring gaps - guardrails in graph, AI router in goal service."""
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Test 1: AI Router integration
 # ---------------------------------------------------------------------------
 
 def test_ai_router_model_selection():
-    from app.ai_router.router import ai_router
     from app.ai_router.models import TaskType
+    from app.ai_router.router import ai_router
 
     model = ai_router.select_model(TaskType.PLANNING, "test-tenant-wire")
     assert model is not None
@@ -17,8 +17,8 @@ def test_ai_router_model_selection():
 
 
 def test_ai_router_embedding_selection():
-    from app.ai_router.router import ai_router
     from app.ai_router.models import TaskType
+    from app.ai_router.router import ai_router
 
     model = ai_router.select_model(TaskType.EMBEDDING, "test-tenant-emb")
     assert model is not None
@@ -27,8 +27,8 @@ def test_ai_router_embedding_selection():
 
 
 def test_ai_router_vision_constraint():
-    from app.ai_router.router import ai_router
     from app.ai_router.models import TaskType
+    from app.ai_router.router import ai_router
 
     model = ai_router.select_model(TaskType.EXECUTION, "test-vision-wire", require_vision=True)
     assert model is not None
@@ -41,9 +41,10 @@ def test_ai_router_vision_constraint():
 
 @pytest.mark.asyncio
 async def test_guardrails_blocks_pii_in_tool_args():
-    from app.guardrails_v2.engine import GuardrailsEngine
-    from app.guardrails_v2.models import GuardrailRule, GuardrailLayer, GuardrailAction
     import uuid
+
+    from app.guardrails_v2.engine import GuardrailsEngine
+    from app.guardrails_v2.models import GuardrailAction, GuardrailLayer, GuardrailRule
 
     engine = GuardrailsEngine()
     rule = GuardrailRule(
@@ -67,9 +68,10 @@ async def test_guardrails_blocks_pii_in_tool_args():
 
 @pytest.mark.asyncio
 async def test_guardrails_passes_clean_tool_args():
-    from app.guardrails_v2.engine import GuardrailsEngine
-    from app.guardrails_v2.models import GuardrailRule, GuardrailLayer, GuardrailAction
     import uuid
+
+    from app.guardrails_v2.engine import GuardrailsEngine
+    from app.guardrails_v2.models import GuardrailAction, GuardrailLayer, GuardrailRule
 
     engine = GuardrailsEngine()
     rule = GuardrailRule(
@@ -92,9 +94,10 @@ async def test_guardrails_passes_clean_tool_args():
 
 @pytest.mark.asyncio
 async def test_guardrails_redacts_pii_in_output():
-    from app.guardrails_v2.engine import GuardrailsEngine
-    from app.guardrails_v2.models import GuardrailRule, GuardrailLayer, GuardrailAction
     import uuid
+
+    from app.guardrails_v2.engine import GuardrailsEngine
+    from app.guardrails_v2.models import GuardrailAction, GuardrailLayer, GuardrailRule
 
     engine = GuardrailsEngine()
     rule = GuardrailRule(
@@ -123,8 +126,8 @@ async def test_guardrails_redacts_pii_in_output():
 
 def test_ai_router_selection_stored_in_execution_context():
     """Verify AI Router selection is captured in execution context."""
-    from app.ai_router.router import ai_router
     from app.ai_router.models import TaskType
+    from app.ai_router.router import ai_router
 
     selections: dict[str, str] = {}
     for task_type, role in [(TaskType.PLANNING, "planner"), (TaskType.EXECUTION, "executor")]:
@@ -138,9 +141,9 @@ def test_ai_router_selection_stored_in_execution_context():
 
 def test_ai_router_health_tracking_affects_selection():
     """Circuit open providers should not be selected."""
+    from app.ai_router.models import TaskType
     from app.ai_router.registry import ModelRegistry
     from app.ai_router.router import AIRouter
-    from app.ai_router.models import TaskType
 
     registry = ModelRegistry()
     router = AIRouter()
@@ -181,8 +184,9 @@ def test_graph_module_imports_guardrails_flag():
 
 def test_goal_service_select_models_for_tenant():
     """_select_models_for_tenant should return provider/model_id strings."""
-    from app.services.goal_service import GoalService
     from unittest.mock import MagicMock
+
+    from app.services.goal_service import GoalService
 
     svc = GoalService.__new__(GoalService)
     mock_tenant = MagicMock()

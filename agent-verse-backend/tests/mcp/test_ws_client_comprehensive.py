@@ -5,11 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.mcp.ws_client import MCPWebSocketClient, _RECONNECT_BASE, _RECONNECT_MAX
+import pytest
 
+from app.mcp.ws_client import _RECONNECT_BASE, _RECONNECT_MAX, MCPWebSocketClient
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

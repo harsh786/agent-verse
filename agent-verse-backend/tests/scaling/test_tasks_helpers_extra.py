@@ -26,7 +26,6 @@ import pytest
 
 from app.scaling import tasks
 
-
 # ── _build_worker_graph_capability ───────────────────────────────────────────
 
 

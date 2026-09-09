@@ -1,11 +1,20 @@
 """GuardrailEnforcer tests — no tool call bypasses guardrails."""
 from __future__ import annotations
+
 import pytest
-from app.security_runtime.guardrail_enforcer import GuardrailEnforcer, EnforcementResult
+
 from app.orchestration.runtime_profile import (
-    GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-    ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig, RiskLevel,
+    AgentPatternConfig,
+    EvalConfig,
+    GoalProperties,
+    GoalRuntimeProfile,
+    MemoryCacheConfig,
+    ModelPlanConfig,
+    RAGStrategyConfig,
+    RiskLevel,
+    SecurityConfig,
 )
+from app.security_runtime.guardrail_enforcer import EnforcementResult, GuardrailEnforcer
 
 
 def _make_profile(risk=RiskLevel.LOW, compliance=None):
@@ -55,8 +64,8 @@ async def test_clean_output_passes():
 
 
 def test_regulated_bundle_on_gdpr():
-    from app.security_runtime.guardrail_profile import GuardrailProfileSelector, GuardrailBundle
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.security_runtime.guardrail_profile import GuardrailBundle, GuardrailProfileSelector
+    from app.tenancy.context import PlanTier, TenantContext
     selector = GuardrailProfileSelector()
     profile = _make_profile(compliance=["gdpr"])
     bundle = selector.select(profile, tenant_ctx=TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1"))
@@ -66,7 +75,7 @@ def test_regulated_bundle_on_gdpr():
 
 def test_exfiltration_guard_for_critical():
     from app.security_runtime.guardrail_profile import GuardrailProfileSelector
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     selector = GuardrailProfileSelector()
     profile = _make_profile(RiskLevel.CRITICAL)
     config = selector.select(profile, tenant_ctx=TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k1"))
@@ -75,7 +84,7 @@ def test_exfiltration_guard_for_critical():
 
 def test_guardrail_config_has_scanners():
     from app.security_runtime.guardrail_profile import GuardrailProfileSelector
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     selector = GuardrailProfileSelector()
     config = selector.select(_make_profile(RiskLevel.HIGH), tenant_ctx=TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1"))
     assert len(config.enabled_scanners) > 0

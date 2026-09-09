@@ -22,7 +22,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ===========================================================================
 # _monotonic
 # ===========================================================================
@@ -629,8 +628,9 @@ def test_check_mcp_health_no_redis_scan_results(monkeypatch: pytest.MonkeyPatch)
 def test_check_mcp_health_with_parse_error_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """check_mcp_health with a key that fails MCPServerConfig parsing uses parse_error path."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    from app.scaling.tasks import check_mcp_health
     from collections.abc import AsyncIterator
+
+    from app.scaling.tasks import check_mcp_health
 
     async def _scan_one_key(match: str, count: int) -> AsyncIterator[str]:
         yield "mcp:servers:t1:srv1"
@@ -690,6 +690,7 @@ def test_check_mcp_health_fallback_with_valid_server(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     import json
     from collections.abc import AsyncIterator
+
     from app.scaling.tasks import check_mcp_health
 
     # _run() will fail because MCPServerConfig is hard to mock in async context
@@ -775,6 +776,7 @@ def test_fire_due_schedules_skips_paused_schedules(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
     import json
+
     from app.scaling.tasks import fire_due_schedules
 
     paused_schedule = {
@@ -801,8 +803,9 @@ def test_fire_due_schedules_interval_due_dispatches_goal(monkeypatch: pytest.Mon
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
     import json
+    from datetime import UTC, datetime, timedelta
+
     from app.scaling.tasks import fire_due_schedules
-    from datetime import datetime, UTC, timedelta
 
     # Set last_fired_at to 2 hours ago (well past interval)
     two_hours_ago = (datetime.now(UTC) - timedelta(hours=2)).replace(tzinfo=None).isoformat()
@@ -853,8 +856,9 @@ def test_fire_due_schedules_interval_due_dispatches_goal(monkeypatch: pytest.Mon
 
 @pytest.mark.asyncio
 async def test_update_db_schedule_last_fired_at_with_mocked_db() -> None:
+    from datetime import UTC, datetime
+
     from app.scaling.tasks import _update_db_schedule_last_fired_at
-    from datetime import datetime, UTC
 
     mock_execute = AsyncMock()
     mock_session = AsyncMock()
@@ -886,8 +890,9 @@ async def test_update_db_schedule_last_fired_at_with_mocked_db() -> None:
 @pytest.mark.asyncio
 async def test_update_db_schedule_last_fired_at_raises_on_db_error() -> None:
     """DB errors propagate from _update_db_schedule_last_fired_at."""
+    from datetime import UTC, datetime
+
     from app.scaling.tasks import _update_db_schedule_last_fired_at
-    from datetime import datetime, UTC
 
     with patch("app.db.session.get_session_factory", side_effect=Exception("no db")):
         with pytest.raises(Exception):
@@ -901,8 +906,9 @@ async def test_update_db_schedule_last_fired_at_raises_on_db_error() -> None:
 def test_check_mcp_health_httpx_health_check_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Covers the MCPServerConfig parsing + httpx health check path."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    from app.scaling.tasks import check_mcp_health
     from collections.abc import AsyncIterator
+
+    from app.scaling.tasks import check_mcp_health
 
     async def _scan_keys(match: str, count: int) -> AsyncIterator[str]:
         yield "mcp:servers:t1:srv1"
@@ -941,8 +947,9 @@ def test_check_mcp_health_httpx_health_check_path(monkeypatch: pytest.MonkeyPatc
 def test_check_mcp_health_httpx_error_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Covers the httpx error handling path in check_mcp_health."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    from app.scaling.tasks import check_mcp_health
     from collections.abc import AsyncIterator
+
+    from app.scaling.tasks import check_mcp_health
 
     async def _scan_keys(match: str, count: int) -> AsyncIterator[str]:
         yield "mcp:servers:t1:srv2"
@@ -979,8 +986,9 @@ def test_check_mcp_health_httpx_error_path(monkeypatch: pytest.MonkeyPatch) -> N
 def test_record_queue_depths_retry_on_redis_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """When Redis fails in record_queue_depths, self.retry is raised."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    from app.scaling.tasks import record_queue_depths
     import celery.exceptions
+
+    from app.scaling.tasks import record_queue_depths
 
     with patch("redis.from_url", side_effect=RuntimeError("redis down")):
         with pytest.raises((celery.exceptions.Retry, RuntimeError)):
@@ -996,10 +1004,11 @@ def test_fire_due_schedules_cron_due_dispatches_goal(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
     import json
-    from app.scaling.tasks import fire_due_schedules
 
     # Cron that fires every minute — always due since last_fired_at is old
-    from datetime import datetime, UTC, timedelta
+    from datetime import UTC, datetime, timedelta
+
+    from app.scaling.tasks import fire_due_schedules
     old_time = (datetime.now(UTC) - timedelta(hours=1)).replace(tzinfo=None).isoformat()
 
     cron_schedule = {
@@ -1039,8 +1048,9 @@ def test_fire_due_schedules_once_schedule_due_fires(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
     import json
+    from datetime import UTC, datetime, timedelta
+
     from app.scaling.tasks import fire_due_schedules
-    from datetime import datetime, UTC, timedelta
 
     # Fire time in the past (should have fired)
     past_time = (datetime.now(UTC) - timedelta(hours=1)).replace(tzinfo=None).isoformat()
@@ -1113,6 +1123,7 @@ def test_setup_sigterm_registers_handler_without_error() -> None:
 def test_setup_sigterm_handler_raises_system_exit() -> None:
     """The SIGTERM handler raises SystemExit(0) when triggered."""
     import signal as _sig
+
     from app.scaling.tasks import _setup_sigterm
 
     _setup_sigterm()
@@ -1221,8 +1232,9 @@ def test_run_goal_dlq_skips_missing_payload_from_stale_beat_entry() -> None:
 @pytest.mark.asyncio
 async def test_update_goal_dlq_with_mocked_db() -> None:
     """_update_goal_dlq updates goal status using SQLAlchemy."""
-    from app.scaling.tasks import _update_goal_dlq
     from unittest.mock import AsyncMock
+
+    from app.scaling.tasks import _update_goal_dlq
 
     mock_execute = AsyncMock()
     mock_session = AsyncMock()
@@ -1293,8 +1305,9 @@ def test_record_queue_depths_records_depths_with_mocked_redis(
 
 @pytest.mark.asyncio
 async def test_find_and_fail_stuck_goals_with_mocked_db() -> None:
-    from app.scaling.tasks import _find_and_fail_stuck_goals
     from unittest.mock import AsyncMock
+
+    from app.scaling.tasks import _find_and_fail_stuck_goals
 
     mock_result = MagicMock()
     mock_result.fetchall.return_value = [("id-1",), ("id-2",)]
@@ -1359,8 +1372,9 @@ async def test_find_and_fail_stuck_goals_handles_db_error() -> None:
 
 @pytest.mark.asyncio
 async def test_delete_expired_records_with_mocked_db() -> None:
-    from app.scaling.tasks import _delete_expired_records
     from unittest.mock import AsyncMock
+
+    from app.scaling.tasks import _delete_expired_records
 
     mock_exec_result = MagicMock()
     mock_exec_result.rowcount = 3
@@ -1472,8 +1486,9 @@ async def test_load_db_schedules_handles_db_error() -> None:
 @pytest.mark.asyncio
 async def test_run_with_signals_completes_when_agent_succeeds() -> None:
     """When agent finishes quickly, _run_with_signals returns the result."""
-    from app.scaling.tasks import _run_with_signals
     from unittest.mock import AsyncMock
+
+    from app.scaling.tasks import _run_with_signals
 
     mock_state = MagicMock()
     mock_state.status = MagicMock()
@@ -1524,9 +1539,10 @@ async def test_run_with_signals_forwards_initial_context() -> None:
 @pytest.mark.asyncio
 async def test_run_with_signals_raises_goal_cancelled_error_on_cancel() -> None:
     """When goal is cancelled, GoalCancelledError is raised."""
-    from app.scaling.tasks import _run_with_signals
     from unittest.mock import AsyncMock
+
     from app.reliability.goal_lifecycle import GoalCancelledError
+    from app.scaling.tasks import _run_with_signals
 
     mock_state = MagicMock()
     mock_state.status.value = "complete"
@@ -1565,8 +1581,9 @@ async def test_run_with_signals_raises_goal_cancelled_error_on_cancel() -> None:
 def test_check_mcp_health_per_key_error_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """When r.get() raises per-key, the error is logged and skipped."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    from app.scaling.tasks import check_mcp_health
     from collections.abc import AsyncIterator
+
+    from app.scaling.tasks import check_mcp_health
 
     async def _scan_keys(match: str, count: int) -> AsyncIterator[str]:
         yield "mcp:servers:t1:srv1"
@@ -1601,8 +1618,9 @@ def test_check_mcp_health_fallback_no_redis_url(monkeypatch: pytest.MonkeyPatch)
 def test_check_mcp_health_fallback_json_parse_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """_fallback skips keys with invalid JSON."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    from app.scaling.tasks import check_mcp_health
     from collections.abc import AsyncIterator
+
+    from app.scaling.tasks import check_mcp_health
 
     # Force fallback by raising in _run()
     async def _scan_keys_run(match: str, count: int) -> AsyncIterator[str]:
@@ -1635,8 +1653,9 @@ def test_check_mcp_health_fallback_various_data_types(monkeypatch: pytest.Monkey
     """_fallback skips keys with None, non-dict data, and empty URL."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     import json
-    from app.scaling.tasks import check_mcp_health
     from collections.abc import AsyncIterator
+
+    from app.scaling.tasks import check_mcp_health
 
     async def _scan_keys_run(match: str, count: int) -> AsyncIterator[str]:
         raise RuntimeError("force fallback")
@@ -1681,8 +1700,9 @@ def test_check_mcp_health_fallback_httpx_error_path(monkeypatch: pytest.MonkeyPa
     """_fallback handles httpx connection errors per-server (lines 1138-1139)."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     import json
-    from app.scaling.tasks import check_mcp_health
     from collections.abc import AsyncIterator
+
+    from app.scaling.tasks import check_mcp_health
 
     async def _scan_keys_run(match: str, count: int) -> AsyncIterator[str]:
         raise RuntimeError("force fallback")
@@ -1729,8 +1749,9 @@ def test_check_mcp_health_fallback_httpx_error_path(monkeypatch: pytest.MonkeyPa
 @pytest.mark.asyncio
 async def test_expire_db_approvals_with_mocked_db() -> None:
     """_expire_db_approvals updates expired requests."""
-    from app.scaling.tasks import _expire_db_approvals
     from unittest.mock import AsyncMock
+
+    from app.scaling.tasks import _expire_db_approvals
 
     mock_result = MagicMock()
     mock_result.fetchall.return_value = [("req-1",), ("req-2",)]
@@ -1811,6 +1832,7 @@ def test_fire_due_schedules_exception_in_schedule_processing(monkeypatch: pytest
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
     import json
+
     from app.scaling.tasks import fire_due_schedules
 
     # r.get() raises RuntimeError → triggers inner per-key exception handler
@@ -1866,8 +1888,9 @@ def test_fire_due_schedules_invalid_cron_expression_is_skipped(
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
     import json
+    from datetime import UTC, datetime, timedelta
+
     from app.scaling.tasks import fire_due_schedules
-    from datetime import datetime, UTC, timedelta
 
     old_time = (datetime.now(UTC) - timedelta(hours=1)).replace(tzinfo=None).isoformat()
     bad_cron_schedule = {
@@ -1898,6 +1921,7 @@ def test_fire_due_schedules_schedule_with_secret_fields_sanitized(
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
     import json
+
     from app.scaling.tasks import fire_due_schedules
 
     schedule_with_secret = {

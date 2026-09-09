@@ -10,7 +10,6 @@ from app.agent.debate import AgentProposal, DebateOrchestrator, DebateResult
 from app.providers.fake import FakeProvider
 from app.tenancy.context import PlanTier, TenantContext
 
-
 # ── Dataclass smoke tests ─────────────────────────────────────────────────────
 
 def test_agent_proposal_defaults() -> None:

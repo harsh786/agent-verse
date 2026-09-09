@@ -196,6 +196,7 @@ def test_fully_autonomous_with_eval_suite_passes():
 def test_nl_creation_enforces_agent_limit():
     """NL creation must use list_async (DB-backed) for limit check."""
     import inspect
+
     from app.api import agents
     src = inspect.getsource(agents)
     # Both create_agent_nl and create_agent should call list_async

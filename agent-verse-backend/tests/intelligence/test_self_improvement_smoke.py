@@ -3,10 +3,12 @@
 This verifies the write paths work end-to-end using fake DB factories,
 so it runs without a real Postgres container.
 """
-import pytest
 import json
 from unittest.mock import AsyncMock, MagicMock
-from app.tenancy.context import TenantContext, PlanTier
+
+import pytest
+
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _tenant(suffix: str = "001") -> TenantContext:
@@ -68,7 +70,7 @@ async def test_execution_memory_writes_to_db():
 @pytest.mark.asyncio
 async def test_long_term_memory_writes_to_db():
     """LongTermMemoryStore.store_async must INSERT into long_term_memory table."""
-    from app.memory.long_term import LongTermMemoryStore, LongTermMemory
+    from app.memory.long_term import LongTermMemory, LongTermMemoryStore
     store = LongTermMemoryStore()
     tenant = _tenant("002")
     db, captured = _make_capturing_db("long_term_memory")
@@ -93,8 +95,8 @@ async def test_long_term_memory_writes_to_db():
 @pytest.mark.asyncio
 async def test_eval_runner_writes_to_evaluations():
     """EvalRunner.score_and_persist must INSERT into evaluations with scores JSON."""
-    from app.intelligence.eval_runner import EvalRunner
     from app.agent.state import AgentState, GoalStatus
+    from app.intelligence.eval_runner import EvalRunner
     runner = EvalRunner()
     tenant = _tenant("003")
     db, captured = _make_capturing_db("evaluations")
@@ -122,7 +124,7 @@ async def test_eval_runner_writes_to_evaluations():
 @pytest.mark.asyncio
 async def test_self_optimizer_writes_to_suggestions_table():
     """SelfOptimizer.persist_suggestion must INSERT into self_optimization_suggestions."""
-    from app.intelligence.self_optimization import SelfOptimizer, OptimizationSuggestion
+    from app.intelligence.self_optimization import OptimizationSuggestion, SelfOptimizer
     opt = SelfOptimizer()
     tenant = _tenant("004")
     db, captured = _make_capturing_db("self_optimization_suggestions")

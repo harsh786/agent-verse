@@ -21,9 +21,10 @@ def _template(slug: str = "kyc-automation") -> dict:
 
 def make_app(store: MagicMock) -> "TestClient":
     from fastapi import FastAPI, Request
-    from app.workflow.router_templates import router
-    from app.tenancy.context import TenantContext, PlanTier, PlanLimits
+
+    from app.tenancy.context import PlanLimits, PlanTier, TenantContext
     from app.workflow.dsl import WorkflowDefinition
+    from app.workflow.router_templates import router
 
     app = FastAPI()
 

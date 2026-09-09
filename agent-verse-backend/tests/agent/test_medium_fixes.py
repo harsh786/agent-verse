@@ -9,6 +9,7 @@ from tests._paths import MIGRATIONS_DIR, require_frontend, require_sdk_python
 def test_beat_schedule_uses_correct_task_name():
     """Celery beat must use the actual registered task name for stuck-goal detection."""
     import inspect
+
     from app.scaling import celery_app as ca
     src = inspect.getsource(ca)
     # Should reference the real task name
@@ -45,6 +46,7 @@ def test_goal_record_has_error_message_field():
 def test_document_parser_uses_get_running_loop():
     """document_parser.py must not use deprecated get_event_loop()."""
     import inspect
+
     from app.tools import document_parser
     src = inspect.getsource(document_parser)
     assert "get_event_loop()" not in src, \
@@ -54,6 +56,7 @@ def test_document_parser_uses_get_running_loop():
 def test_shell_tool_uses_get_running_loop():
     """shell_tool.py must not use deprecated get_event_loop()."""
     import inspect
+
     from app.tools import shell_tool
     src = inspect.getsource(shell_tool)
     assert "get_event_loop()" not in src, \
@@ -63,6 +66,7 @@ def test_shell_tool_uses_get_running_loop():
 def test_shell_tool_validates_working_dir():
     """shell_tool.py must validate working_dir to prevent path traversal."""
     import inspect
+
     from app.tools import shell_tool
     src = inspect.getsource(shell_tool)
     assert "_validate_working_dir" in src or "SAFE_ROOTS" in src, \

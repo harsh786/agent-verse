@@ -16,7 +16,6 @@ from app.civilization.models import (
     SpawnVerdict,
 )
 
-
 # ── Enums ─────────────────────────────────────────────────────────────────────
 
 

@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import pytest
-from app.org.quality_gates import QualityGateSystem, GateResult
+
+from app.org.quality_gates import GateResult, QualityGateSystem
 
 
 @pytest.mark.asyncio

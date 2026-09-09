@@ -1,9 +1,11 @@
 """Verify existing AIRouter source features work correctly."""
 from __future__ import annotations
+
 import pytest
-from app.ai_router.router import AIRouter, ai_router
+
+from app.ai_router.models import ModelCapability, RoutePolicy, RoutingMode, TaskType
 from app.ai_router.registry import model_registry
-from app.ai_router.models import TaskType, RoutingMode, RoutePolicy, ModelCapability
+from app.ai_router.router import AIRouter, ai_router
 
 
 @pytest.fixture

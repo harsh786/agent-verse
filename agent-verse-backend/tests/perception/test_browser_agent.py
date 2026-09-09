@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.perception.browser_agent import BrowserAgent, BrowserAction, BrowserResult
+from app.perception.browser_agent import BrowserAction, BrowserAgent, BrowserResult
 
 
 def test_browser_agent_reports_availability() -> None:

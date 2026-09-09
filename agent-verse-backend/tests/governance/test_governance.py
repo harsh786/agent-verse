@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.governance.permissions import ActionLevel, PermissionMatrix, PermissionRule
-from app.governance.policies import Policy, PolicyEngine, PolicyResult
 from app.governance.audit import AuditEvent, AuditLog
 from app.governance.cost import BudgetConfig, CostController
 from app.governance.hitl import ApprovalRequest, ApprovalStatus, HITLGateway
+from app.governance.permissions import ActionLevel, PermissionMatrix, PermissionRule
+from app.governance.policies import Policy, PolicyEngine, PolicyResult
 from app.tenancy.context import PlanTier, TenantContext
 
 _CTX = TenantContext(tenant_id="tid-a", plan=PlanTier.PROFESSIONAL, api_key_id="kid-1")

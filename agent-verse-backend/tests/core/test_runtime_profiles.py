@@ -1,6 +1,8 @@
 """Tests for runtime_profiles registry."""
 from __future__ import annotations
+
 import pytest
+
 from app.core.runtime_profiles import RuntimeProfilesRegistry, get_runtime_profiles_registry
 
 

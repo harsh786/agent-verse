@@ -20,7 +20,6 @@ from app.mcp.tool_intelligence import (
     get_resolver,
 )
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 JIRA_SEARCH_SCHEMA = {

@@ -3,6 +3,7 @@
 
 def test_no_invalid_interval_syntax():
     import inspect
+
     from app.analytics import aggregator
     src = inspect.getsource(aggregator)
     # The broken pattern: INTERVAL ':days days' (parameterized interval string)
@@ -12,6 +13,7 @@ def test_no_invalid_interval_syntax():
 
 def test_interval_uses_multiplication():
     import inspect
+
     from app.analytics import aggregator
     src = inspect.getsource(aggregator)
     # Correct pattern: (:days * INTERVAL '1 day')

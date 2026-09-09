@@ -14,25 +14,27 @@ This test file provides comprehensive coverage for:
 - Multimodal intelligence
 - Embedding platform
 """
-import pytest
 import base64
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from app.tenancy.context import PlanTier, TenantContext
-from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
+
+from app.api.agent_runtime import router as runtime_router
+from app.api.ai_ops import router as ai_ops_router
+from app.api.embeddings import router as embeddings_router
+from app.api.guardrails_v2 import router as g2_router
+from app.api.knowledge_graph import router as kg_router
+from app.api.memory_v2 import router as memory_v2_router
 
 # All phase routers
 from app.api.model_registry import router as models_router
-from app.api.embeddings import router as embeddings_router
 from app.api.multimodal import router as multimodal_router
-from app.api.knowledge_graph import router as kg_router
 from app.api.rag_platform import router as rag_router
-from app.api.agent_runtime import router as runtime_router
-from app.api.guardrails_v2 import router as g2_router
-from app.api.trust_governance import router as trust_router
-from app.api.ai_ops import router as ai_ops_router
-from app.api.memory_v2 import router as memory_v2_router
 from app.api.skills_runtime import router as skills_router
+from app.api.trust_governance import router as trust_router
+from app.tenancy.context import PlanTier, TenantContext
+from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
 # Tenant fixtures
 _TENANT_A = TenantContext(tenant_id="isolation-test-tenant-a", plan=PlanTier.PROFESSIONAL, api_key_id="ka")

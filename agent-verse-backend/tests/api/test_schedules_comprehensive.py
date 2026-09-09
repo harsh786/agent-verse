@@ -11,10 +11,12 @@ from fastapi.testclient import TestClient
 
 from app.api.agents import AgentStore
 from app.api.schedules import (
-    router as schedules_router,
+    events_router,
     nl_router,
     webhooks_router,
-    events_router,
+)
+from app.api.schedules import (
+    router as schedules_router,
 )
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware

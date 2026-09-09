@@ -1,9 +1,10 @@
 """Tests for CivilizationOrchestrator — runtime loop, goal dispatch, debate, tick."""
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from app.civilization.orchestrator import CivilizationOrchestrator
+import pytest
+
 from app.civilization.models import Constitution
+from app.civilization.orchestrator import CivilizationOrchestrator
 
 
 def _make_orchestrator(**kwargs) -> CivilizationOrchestrator:

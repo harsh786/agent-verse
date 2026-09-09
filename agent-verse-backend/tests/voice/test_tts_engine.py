@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import io
-import pytest
+
 import numpy as np
+import pytest
 import soundfile as sf
 
 
@@ -56,8 +57,9 @@ async def test_tts_provider_singleton():
 @pytest.mark.asyncio
 async def test_override_tts_for_testing():
     """override_tts() allows injecting a mock provider."""
-    from app.voice.providers import override_tts, get_tts, reset_providers
     from unittest.mock import AsyncMock, MagicMock
+
+    from app.voice.providers import get_tts, override_tts, reset_providers
 
     mock_wav = _make_mock_wav()
     mock = MagicMock()
@@ -139,10 +141,10 @@ async def test_tts_fallback_chain():
 def test_tts_provider_interfaces():
     """All TTS provider classes implement TTSProvider protocol."""
     from app.voice.providers.base import TTSProvider
+    from app.voice.providers.tts.azure_tts import AzureTTS
     from app.voice.providers.tts.browser_fallback import BrowserFallbackTTS
     from app.voice.providers.tts.elevenlabs import ElevenLabsTTS
     from app.voice.providers.tts.openai_tts import OpenAITTS
-    from app.voice.providers.tts.azure_tts import AzureTTS
 
     for cls in [BrowserFallbackTTS, ElevenLabsTTS, OpenAITTS, AzureTTS]:
         p = cls()

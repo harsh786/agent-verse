@@ -73,6 +73,7 @@ async def test_build_greeting_wywa():
 async def test_build_greeting_time_of_day_morning(monkeypatch):
     """Greeting says 'morning' for AM hours."""
     import datetime as _dt
+
     from app.voice import greeting as gmod
 
     class _FakeDatetime(_dt.datetime):
@@ -89,6 +90,7 @@ async def test_build_greeting_time_of_day_morning(monkeypatch):
 async def test_build_greeting_time_of_day_evening(monkeypatch):
     """Greeting says 'evening' for PM hours."""
     import datetime as _dt
+
     from app.voice import greeting as gmod
 
     class _FakeDatetime(_dt.datetime):

@@ -1,7 +1,8 @@
 """Verify full RPA→LTM→recall loop works across simulated goal runs."""
 import pytest
+
 from app.memory.long_term import LongTermMemoryStore
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _tenant() -> TenantContext:

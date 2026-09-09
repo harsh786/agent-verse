@@ -15,10 +15,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 # ── SourceConfig / RawDocument / IngestionJob ────────────────────────────────
 
@@ -88,6 +88,7 @@ def test_base_connector_cannot_instantiate():
 
 def test_base_connector_abstract_methods():
     import inspect
+
     from app.ingestion.base_connector import BaseConnector
     abstract = {
         name for name, method in inspect.getmembers(BaseConnector)
@@ -118,8 +119,8 @@ def test_connection_health_defaults():
 # ── ConnectorRegistry ─────────────────────────────────────────────────────────
 
 def test_registry_register_and_lookup():
-    from app.ingestion.connector_registry import register, get_connector, _REGISTRY
     from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+    from app.ingestion.connector_registry import _REGISTRY, get_connector, register
 
     @register("test_source_xyz")
     class TestConnector(BaseConnector):
@@ -142,7 +143,7 @@ def test_registry_unknown_source_raises():
 
 
 def test_registry_load_all_connectors():
-    from app.ingestion.connector_registry import load_all_connectors, list_registered
+    from app.ingestion.connector_registry import list_registered, load_all_connectors
     load_all_connectors()
     registered = list_registered()
     # All 8 connectors we built should be registered
@@ -151,16 +152,16 @@ def test_registry_load_all_connectors():
 
 
 def test_registry_all_implement_baseconnector():
-    from app.ingestion.connector_registry import load_all_connectors, _REGISTRY
     from app.ingestion.base_connector import BaseConnector
+    from app.ingestion.connector_registry import _REGISTRY, load_all_connectors
     load_all_connectors()
     for name, cls in _REGISTRY.items():
         assert issubclass(cls, BaseConnector), f"{name} does not extend BaseConnector"
 
 
 def test_registry_feature_flag_disabled():
-    from app.ingestion.connector_registry import register, get_connector, _REGISTRY
     from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+    from app.ingestion.connector_registry import _REGISTRY, get_connector, register
 
     @register("flagged_connector_test", feature_flag="test_flag_disabled")
     class FlaggedConnector(BaseConnector):
@@ -489,9 +490,10 @@ def test_pdf_connector():
 
 @pytest.mark.asyncio
 async def test_s3_connector_validate_no_boto3():
+    import sys
+
     from app.ingestion.connectors.s3_connector import S3Connector
     from app.ingestion.source_config import SourceConfig, SourceFamily
-    import sys
     # Simulate boto3 not installed
     with patch.dict(sys.modules, {"boto3": None}):
         c = S3Connector()
@@ -692,8 +694,8 @@ async def test_knowledge_ingest_tool_no_pipeline():
 
 @pytest.mark.asyncio
 async def test_knowledge_ingest_tool_raw_text():
-    from app.tools.knowledge_ingest_tool import KnowledgeIngestTool
     from app.ingestion.pipeline import IngestionPipeline
+    from app.tools.knowledge_ingest_tool import KnowledgeIngestTool
 
     pipeline = IngestionPipeline(dry_run=True)
     tool = KnowledgeIngestTool()
@@ -711,8 +713,8 @@ async def test_knowledge_ingest_tool_raw_text():
 
 @pytest.mark.asyncio
 async def test_knowledge_ingest_tool_empty_content():
-    from app.tools.knowledge_ingest_tool import KnowledgeIngestTool
     from app.ingestion.pipeline import IngestionPipeline
+    from app.tools.knowledge_ingest_tool import KnowledgeIngestTool
     pipeline = IngestionPipeline()
     tool = KnowledgeIngestTool()
     result = await tool.execute("   ", pipeline=pipeline)

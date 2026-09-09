@@ -5,12 +5,11 @@ import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from app.civilization.bus import CivilizationBus, _nullctx
+import pytest
 
+from app.civilization.bus import CivilizationBus, _nullctx
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

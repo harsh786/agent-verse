@@ -4,18 +4,18 @@ subprocess fallback, Docker path (mocked), and get_interpreter factory.
 from __future__ import annotations
 
 import os
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from app.tools.code_interpreter import (
-    CodeInterpreter,
-    CodeResult,
     _DOCKER_IMAGES,
     _FILE_EXTENSIONS,
     _LANGUAGE_COMMANDS,
+    CodeInterpreter,
+    CodeResult,
     get_interpreter,
 )
-
 
 # ── 1. CodeResult dataclass ───────────────────────────────────────────────────
 

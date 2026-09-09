@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # WebSearchTool
 # ---------------------------------------------------------------------------
@@ -352,6 +351,7 @@ def test_document_parser_pdf_unavailable_graceful():
 def test_docker_sandbox_uses_volumes():
     """code_interpreter._execute_docker must use volumes= and not files=."""
     import inspect
+
     from app.tools import code_interpreter
 
     src = inspect.getsource(code_interpreter)
@@ -362,6 +362,7 @@ def test_docker_sandbox_uses_volumes():
 def test_subprocess_guard_in_source():
     """_execute_subprocess_fallback must check AGENTVERSE_ALLOW_SUBPROCESS_EXEC."""
     import inspect
+
     from app.tools import code_interpreter
 
     src = inspect.getsource(code_interpreter)

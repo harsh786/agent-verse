@@ -2,16 +2,16 @@
 from __future__ import annotations
 
 import time
+
 import pytest
 
 from app.triggers.condition.evaluator import (
     CELEvaluator,
-    TemplateRenderer,
-    CounterThresholdEvaluator,
-    WindowAggregateEvaluator,
     CompoundTriggerEvaluator,
+    CounterThresholdEvaluator,
+    TemplateRenderer,
+    WindowAggregateEvaluator,
 )
-
 
 # ── CELEvaluator ──────────────────────────────────────────────────────────────
 

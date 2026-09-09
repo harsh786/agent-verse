@@ -8,7 +8,6 @@ import pytest
 
 from app.rpa.executor import RPAExecutor, RPAResult
 
-
 # ── RPAResult dataclass ───────────────────────────────────────────────────────
 
 

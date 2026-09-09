@@ -19,7 +19,6 @@ import pytest
 
 from app.rpa.executor import RPAExecutor, RPAResult
 
-
 # ── Mock playwright helpers ─────────────────────────────────────────────────
 
 

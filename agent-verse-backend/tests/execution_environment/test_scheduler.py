@@ -25,7 +25,6 @@ from app.execution_environment.scheduler import (
     RunnerUnavailableError,
 )
 
-
 # ── FakeRunner tests ──────────────────────────────────────────────────────────
 
 
@@ -155,8 +154,8 @@ async def test_scheduler_dispatches_to_fake_runner() -> None:
 
 async def test_scheduler_fail_closed_when_runner_unavailable() -> None:
     """An unhealthy runner MUST raise RunnerUnavailableError (never silent fallback)."""
-    from app.execution_environment.runner_client import BaseRunner
     from app.execution_environment.health import RunnerHealthCheck
+    from app.execution_environment.runner_client import BaseRunner
 
     class UnhealthyFakeRunner(FakeRunner):
         @property

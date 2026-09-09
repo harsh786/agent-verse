@@ -186,11 +186,11 @@ async def test_permission_matrix_deny_blocks_execution() -> None:
 
 async def test_policy_engine_deny_blocks_agent_execution() -> None:
     """PolicyEngine deny policy blocks tool execution in the agent."""
-    from app.governance.policies import PolicyEngine, Policy
     from app.agent.graph import AgentGraph
     from app.agent.state import GoalStatus
+    from app.governance.policies import Policy, PolicyEngine
     from app.providers.fake import FakeProvider
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T2 = TenantContext(tenant_id="policy-agent-t1", plan=PlanTier.ENTERPRISE, api_key_id="pat1")
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from app.tools.code_interpreter import CodeInterpreter, get_interpreter
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from app.rag.contextual_enricher import ContextualChunkEnricher
 from app.rag.late_chunker import LateChunker
 
@@ -76,7 +77,7 @@ class TestLateChunker:
 
     @pytest.mark.asyncio
     async def test_chunk_and_embed_standard(self) -> None:
-        from unittest.mock import patch, AsyncMock
+        from unittest.mock import AsyncMock, patch
 
         chunks = ["chunk one", "chunk two"]
         with patch("app.providers.base.embed_texts", new=AsyncMock(return_value=[[0.1, 0.2], [0.3, 0.4]])):

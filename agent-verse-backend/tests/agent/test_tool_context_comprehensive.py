@@ -5,7 +5,6 @@ import pytest
 
 from app.agent.tool_context import ToolContext, ToolRef
 
-
 # ── ToolRef ───────────────────────────────────────────────────────────────────
 
 def test_tool_ref_construction() -> None:

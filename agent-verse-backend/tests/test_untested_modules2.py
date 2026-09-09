@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 #  ai_ops.models
 # ─────────────────────────────────────────────────────────────────────────────
@@ -74,7 +73,7 @@ class TestAiOpsModels:
         assert result.scores["accuracy"] == 0.95
 
     def test_drift_alert_required_fields(self) -> None:
-        from app.ai_ops.models import DriftAlert, DriftType, AlertSeverity
+        from app.ai_ops.models import AlertSeverity, DriftAlert, DriftType
         alert = DriftAlert(
             alert_id="a1",
             tenant_id="t1",
@@ -190,7 +189,7 @@ class TestMultimodalModels:
         assert job.filename == "image.png"
 
     def test_asset_ingestion_job_status_transitions(self) -> None:
-        from app.multimodal.models import AssetIngestionJob, Modality, ExtractedSpan
+        from app.multimodal.models import AssetIngestionJob, ExtractedSpan, Modality
         job = AssetIngestionJob(
             job_id="j3", tenant_id="t3", asset_type=Modality.TEXT,
         )
@@ -288,6 +287,7 @@ class TestBootstrapServices:
     def test_build_services_signature(self) -> None:
         """build_services must accept app and settings parameters."""
         import inspect
+
         from app.bootstrap.services import build_services
         sig = inspect.signature(build_services)
         params = list(sig.parameters.keys())

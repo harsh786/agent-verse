@@ -2,8 +2,9 @@
 Coverage gate: every UC listed in domain docs must map to ≥1 content record.
 """
 import re
-import pytest
 from pathlib import Path
+
+import pytest
 
 BACKEND_ROOT = Path(__file__).parent.parent.parent  # agent-verse-backend
 

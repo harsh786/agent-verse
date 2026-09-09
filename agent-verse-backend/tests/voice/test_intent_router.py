@@ -7,8 +7,8 @@ D-4: Voice-driven approval → OrgService.record_decision()
 from __future__ import annotations
 
 import pytest
-from app.voice.intent_router import classify_intent, VoiceIntent
 
+from app.voice.intent_router import VoiceIntent, classify_intent
 
 # ── D-3: Intent classification ─────────────────────────────────────────────────
 

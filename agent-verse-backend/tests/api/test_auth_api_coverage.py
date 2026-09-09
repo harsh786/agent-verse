@@ -16,7 +16,6 @@ import pytest
 import respx
 from httpx import ASGITransport, AsyncClient
 
-
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -285,8 +284,9 @@ async def test_refresh_token_success():
 
 @pytest.mark.asyncio
 async def test_refresh_token_failure():
-    from app.api.auth import refresh_token
     from fastapi import HTTPException
+
+    from app.api.auth import refresh_token
 
     with respx.mock(assert_all_called=False, assert_all_mocked=False) as mock:
         mock.post(_REFRESH_URL).mock(return_value=httpx.Response(401, text="expired"))
@@ -307,8 +307,9 @@ async def test_refresh_token_failure():
 @pytest.mark.asyncio
 async def test_refresh_token_prod_no_secret():
     """Production raises 503 when KEYCLOAK_CLIENT_SECRET not configured."""
-    from app.api.auth import refresh_token
     from fastapi import HTTPException
+
+    from app.api.auth import refresh_token
 
     mock_request = MagicMock()
     mock_request.app.state._rate_limiter_redis = None
@@ -359,8 +360,9 @@ async def test_refresh_token_dev_secret_fallback():
 
 @pytest.mark.asyncio
 async def test_userinfo_sso_disabled_returns_400():
-    from app.api.auth import get_userinfo
     from fastapi import HTTPException
+
+    from app.api.auth import get_userinfo
 
     mock_request = MagicMock()
     mock_request.headers = {"Authorization": "Bearer sometoken"}
@@ -373,8 +375,9 @@ async def test_userinfo_sso_disabled_returns_400():
 
 @pytest.mark.asyncio
 async def test_userinfo_missing_bearer_sso_enabled_returns_401():
-    from app.api.auth import get_userinfo
     from fastapi import HTTPException
+
+    from app.api.auth import get_userinfo
 
     mock_request = MagicMock()
     mock_request.headers = {}  # no Authorization header
@@ -387,8 +390,9 @@ async def test_userinfo_missing_bearer_sso_enabled_returns_401():
 
 @pytest.mark.asyncio
 async def test_userinfo_invalid_token_returns_401():
-    from app.api.auth import get_userinfo
     from fastapi import HTTPException
+
+    from app.api.auth import get_userinfo
 
     mock_request = MagicMock()
     mock_request.headers = {"Authorization": "Bearer badtoken"}

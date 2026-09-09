@@ -1,11 +1,14 @@
 """Real parser implementations with graceful fallbacks."""
 from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from app.ingestion.parsers.pdf_parser import PDFParser, PDFParseResult
+
 from app.ingestion.parsers.audio_parser import AudioParser, AudioParseResult, AudioSegment
-from app.ingestion.parsers.vision_parser import VisionParser, VisionParseResult
 from app.ingestion.parsers.docx_parser import DOCXParser, DOCXParseResult
-from unittest.mock import AsyncMock, patch, MagicMock
+from app.ingestion.parsers.pdf_parser import PDFParser, PDFParseResult
+from app.ingestion.parsers.vision_parser import VisionParser, VisionParseResult
 
 
 def test_pdf_parser_parse_text():

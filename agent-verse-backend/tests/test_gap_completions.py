@@ -28,8 +28,9 @@ async def test_citation_verifier_no_provider():
 
 @pytest.mark.asyncio
 async def test_memory_consolidation():
+    from datetime import datetime, timedelta, timezone
+
     from app.memory_v2.consolidation import MemoryConsolidator
-    from datetime import datetime, timezone, timedelta
 
     consolidator = MemoryConsolidator()
     old_date = (datetime.now(timezone.utc) - timedelta(days=35)).isoformat()
@@ -57,9 +58,10 @@ async def test_memory_consolidation():
 
 
 def test_kg_community_detection():
-    from app.knowledge_graph.store import KnowledgeGraphStore
-    from app.knowledge_graph.models import GraphNode, GraphEdge, NodeType, EdgeType
     import uuid
+
+    from app.knowledge_graph.models import EdgeType, GraphEdge, GraphNode, NodeType
+    from app.knowledge_graph.store import KnowledgeGraphStore
 
     store = KnowledgeGraphStore()
     tid = "community-test-tenant"
@@ -90,9 +92,10 @@ def test_kg_community_detection():
 
 
 def test_kg_export():
-    from app.knowledge_graph.store import KnowledgeGraphStore
-    from app.knowledge_graph.models import GraphNode, NodeType
     import uuid
+
+    from app.knowledge_graph.models import GraphNode, NodeType
+    from app.knowledge_graph.store import KnowledgeGraphStore
 
     store = KnowledgeGraphStore()
     tid = "export-test-tenant"
@@ -110,7 +113,7 @@ def test_kg_export():
 
 
 def test_skill_update_increments_version():
-    from app.api.skills_runtime import _tenant_skills, _skill_versions
+    from app.api.skills_runtime import _skill_versions, _tenant_skills
 
     # Pre-populate a skill
     skill_id = "test-version-skill"

@@ -1,7 +1,8 @@
 """Regression tests for 0C.4 reliability correctness."""
 import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 class TestRollbackAwaited:
@@ -30,7 +31,7 @@ class TestRollbackAwaited:
         tool_call.arguments = {"summary": "test"}
         tool_call.result = {"id": "JIRA-1"}
 
-        from app.tenancy.context import TenantContext, PlanTier
+        from app.tenancy.context import PlanTier, TenantContext
         T = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1", roles=())
 
         await engine.rollback_all_async([tool_call], tenant_ctx=T)
@@ -40,8 +41,9 @@ class TestRollbackAwaited:
 
     def test_inverse_fn_returns_awaitable(self):
         """H14: get_inverse_fn must return an awaitable coroutine, not a sync wrapper."""
-        from app.reliability.tool_inverses import get_inverse_fn
         import inspect
+
+        from app.reliability.tool_inverses import get_inverse_fn
 
         # Any registered inverse must be a coroutine function
         inverse = get_inverse_fn("create_jira_issue")
@@ -56,6 +58,7 @@ class TestCircuitBreakerWallClock:
     def test_circuit_breaker_uses_time_time_not_monotonic(self):
         """H16: RedisCircuitBreaker must store time.time() not time.monotonic()."""
         import inspect
+
         from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
         source = inspect.getsource(RedisCircuitBreaker)
 
@@ -68,6 +71,7 @@ class TestCircuitBreakerWallClock:
     async def test_circuit_breaker_recovery_works_cross_process(self):
         """H16: A breaker opened by process A must recover after reset_timeout."""
         import time
+
         from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
 
         mock_redis = AsyncMock()
@@ -99,6 +103,7 @@ class TestAuditChainSeeding:
     def test_audit_writer_has_chain_initialization(self):
         """H15: AuditWriter must have chain initialization from DB."""
         import inspect
+
         from app.governance.audit_v2 import AuditWriter
         source = inspect.getsource(AuditWriter)
 
@@ -109,6 +114,7 @@ class TestAuditChainSeeding:
     def test_audit_hash_includes_tool_name(self):
         """H15: Audit hash must include tool_name in the hash input."""
         import inspect
+
         from app.governance.audit_v2 import AuditWriter
         source = inspect.getsource(AuditWriter)
 

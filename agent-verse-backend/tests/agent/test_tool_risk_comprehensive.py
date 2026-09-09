@@ -5,7 +5,6 @@ import pytest
 
 from app.agent.tool_risk import _name_tokens, classify_tool_risk
 
-
 # ── _name_tokens ──────────────────────────────────────────────────────────────
 
 def test_name_tokens_snake_case() -> None:

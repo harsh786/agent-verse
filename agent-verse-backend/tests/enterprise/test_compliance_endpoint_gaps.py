@@ -18,6 +18,8 @@ from app.api.enterprise import (
     compliance_router,
     intelligence_router,
     marketplace_router,
+)
+from app.api.enterprise import (
     router as enterprise_router,
 )
 from app.enterprise.compliance import ComplianceController

@@ -4,14 +4,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import pytest
-from fastapi.testclient import TestClient
-from fastapi import FastAPI
 from types import SimpleNamespace
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from app.api.channels.ingestion import router
 from app.triggers.channels.gateway import ChannelIngestionGateway, NLIntentClassifier
-
 
 # ── NLIntentClassifier ────────────────────────────────────────────────────────
 
@@ -52,9 +52,10 @@ async def test_gateway_no_store_returns_empty():
 
 @pytest.mark.asyncio
 async def test_gateway_routes_slack():
-    from app.triggers.store import ScheduleStore
-    from app.triggers.models import TriggerSpec, TriggerType
     from unittest.mock import AsyncMock
+
+    from app.triggers.models import TriggerSpec, TriggerType
+    from app.triggers.store import ScheduleStore
     store = ScheduleStore()
     tc = SimpleNamespace(tenant_id="t1", plan="free", api_key="k")
     spec = TriggerSpec(trigger_type=TriggerType.CHAT_COMMAND)
@@ -68,9 +69,10 @@ async def test_gateway_routes_slack():
 
 @pytest.mark.asyncio
 async def test_gateway_routes_email():
-    from app.triggers.store import ScheduleStore
-    from app.triggers.models import TriggerSpec, TriggerType
     from unittest.mock import AsyncMock
+
+    from app.triggers.models import TriggerSpec, TriggerType
+    from app.triggers.store import ScheduleStore
     store = ScheduleStore()
     tc = SimpleNamespace(tenant_id="t1", plan="free", api_key="k")
     spec = TriggerSpec(trigger_type=TriggerType.EMAIL_INTENT)

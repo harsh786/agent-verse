@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import pytest
-from app.state_runtime.reflexion_store import ReflexionStore
+
 from app.agent.state import AgentState, GoalStatus
-from app.tenancy.context import TenantContext, PlanTier
+from app.state_runtime.reflexion_store import ReflexionStore
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture
@@ -86,7 +87,7 @@ def test_reflexion_lessons_injected_into_prompt_context():
                  source_goal_id="g0", failure_class="auth_failure")
     lessons = store.recall(tenant_id="t1", limit=3)
     lesson_texts = [l["lesson"] for l in lessons]
-    from app.context.prompt_builder import PromptContextBundle, PromptBuilder
+    from app.context.prompt_builder import PromptBuilder, PromptContextBundle
     bundle = PromptContextBundle(
         goal_context="update user prefs", knowledge_chunks=[], citations=[],
         session_memory=[], reflexion_lessons=lesson_texts,
@@ -97,7 +98,7 @@ def test_reflexion_lessons_injected_into_prompt_context():
 
 
 def test_get_reflexion_wirer_singleton():
-    from app.agent.reflexion_wirer import get_reflexion_wirer, ReflexionWirer
+    from app.agent.reflexion_wirer import ReflexionWirer, get_reflexion_wirer
     wirer = get_reflexion_wirer()
     assert wirer is not None
     assert isinstance(wirer, ReflexionWirer)

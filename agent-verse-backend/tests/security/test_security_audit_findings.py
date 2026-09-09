@@ -24,7 +24,6 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-
 # ---------------------------------------------------------------------------
 # Shared app fixture
 # ---------------------------------------------------------------------------
@@ -299,6 +298,7 @@ def test_mfa_enrollment_response_contains_secret_not_logged():
     """The enrollment endpoint returns the secret in the response body;
     verify the MFA module does NOT log it via the module logger."""
     import logging as _logging
+
     from app.api import mfa as mfa_module
 
     # Check that no logging.info/debug/warning calls in begin_enrollment
@@ -362,6 +362,7 @@ def test_goal_submission_validates_empty_goal(client):
 def test_goal_pydantic_model_rejects_empty_string():
     """GoalRequest.goal field must have min_length=1 enforced at model level."""
     from pydantic import ValidationError
+
     from app.api.goals import GoalRequest
 
     with pytest.raises(ValidationError):
@@ -371,6 +372,7 @@ def test_goal_pydantic_model_rejects_empty_string():
 def test_goal_pydantic_model_rejects_oversized_payload():
     """GoalRequest.goal must enforce max_length=10_000."""
     from pydantic import ValidationError
+
     from app.api.goals import GoalRequest
 
     with pytest.raises(ValidationError):

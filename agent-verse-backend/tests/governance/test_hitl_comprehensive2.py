@@ -12,7 +12,7 @@ from app.governance.hitl import (
     HITLGateway,
     _AwaitableBool,
 )
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _ctx(tenant_id: str = "t1") -> TenantContext:

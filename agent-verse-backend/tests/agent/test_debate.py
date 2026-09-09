@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import pytest
-from app.agent.debate import DebateOrchestrator, AgentProposal
+
+from app.agent.debate import AgentProposal, DebateOrchestrator
 
 
 def test_agent_proposal() -> None:
@@ -30,7 +31,8 @@ async def test_debate_single_round() -> None:
 
 @pytest.mark.asyncio
 async def test_batch_goals_endpoint() -> None:
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
 
     app = create_app()

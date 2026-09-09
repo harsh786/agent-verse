@@ -7,7 +7,6 @@ import pytest
 
 from app.auth.cache_warmer import warm_permission_cache
 
-
 # ---------------------------------------------------------------------------
 # Early-return cases
 # ---------------------------------------------------------------------------

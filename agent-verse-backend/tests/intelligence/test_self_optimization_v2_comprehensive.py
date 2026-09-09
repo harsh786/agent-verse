@@ -30,7 +30,6 @@ from app.intelligence.self_optimizer_v2 import (
     TenantOptimizationState,
 )
 
-
 # ---------------------------------------------------------------------------
 # Constants — Fix 4 & domain metrics
 # ---------------------------------------------------------------------------

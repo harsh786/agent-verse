@@ -15,7 +15,6 @@ from app.intelligence.self_optimizer_v2 import (
     TenantOptimizationState,
 )
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_redis(data: dict | None = None) -> AsyncMock:

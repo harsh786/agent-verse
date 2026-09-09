@@ -6,9 +6,9 @@ BUG 3: PII detections must be written to the audit trail.
 """
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 
 # ─── BUG 1: Semantic cache uses Redis-backed async API ───────────────────────
 
@@ -47,6 +47,7 @@ async def test_semantic_cache_set_uses_redis():
 async def test_semantic_cache_get_returns_redis_value():
     """SemanticCache.get() must return the cached response from Redis."""
     import json
+
     from app.rag.semantic_cache import SemanticCache
 
     # New API: store_async → L1 → get returns from L1
@@ -210,6 +211,7 @@ def _agent_source() -> str:
 def test_graph_uses_semantic_cache_async_api():
     """graph.py must use await cache.get() and await cache.set_async(), not lookup()."""
     import inspect
+
     from app.agent import graph
 
     src = _agent_source()
@@ -231,6 +233,7 @@ def test_graph_uses_semantic_cache_async_api():
 def test_pii_audit_logged():
     """PII detections must be logged to the audit trail."""
     import inspect
+
     from app.agent import graph
 
     src = _agent_source()

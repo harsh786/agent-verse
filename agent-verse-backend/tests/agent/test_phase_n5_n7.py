@@ -1,7 +1,9 @@
 """Phase N5-N7: ABTesting wiring + SSE events + action dispatch."""
 from __future__ import annotations
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 def test_ab_testing_engine_has_record_result_async():

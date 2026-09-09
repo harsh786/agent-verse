@@ -11,7 +11,6 @@ from app.core.errors import ConflictError, NotFoundError
 from app.services.tenant_service import TenantService, _generate_raw_key, _hash_key
 from app.tenancy.context import PlanTier, TenantContext
 
-
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------

@@ -15,7 +15,6 @@ import datetime
 import inspect
 from unittest.mock import MagicMock, patch
 
-
 # ── discover_and_tick_civilizations ───────────────────────────────────────────
 
 
@@ -291,6 +290,7 @@ def test_scheduled_goal_kwargs_without_agent_id() -> None:
 
 def test_run_async_executes_coroutine() -> None:
     import asyncio
+
     from app.scaling.tasks import _run_async
 
     async def _coro():
@@ -315,8 +315,9 @@ def test_monotonic_returns_float() -> None:
 
 
 def test_record_goal_duration_metric_does_not_raise() -> None:
-    from app.scaling.tasks import _record_goal_duration_metric
     import time
+
+    from app.scaling.tasks import _record_goal_duration_metric
 
     # Should not raise; if metrics module fails it warns
     with patch("app.scaling.tasks._monotonic", return_value=time.monotonic() + 1.0):

@@ -15,7 +15,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.collab import _CollabPubSub, router as collab_router
+from app.api.collab import _CollabPubSub
+from app.api.collab import router as collab_router
 from app.collab.store import CollaborationStore, VersionConflictError
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import TenantMiddleware
@@ -538,6 +539,7 @@ def test_delegate_task() -> None:
 def test_collab_websocket_protocol_header_auth() -> None:
     """Lines 367+: auth via sec-websocket-protocol base64 token."""
     import base64
+
     from starlette.testclient import TestClient as StarletteClient
 
     store = FakeCollabStore()
@@ -840,7 +842,9 @@ async def test_ensure_started_restarts_done_task() -> None:
 def test_collab_ws_presence_join_broadcast() -> None:
     """Lines 398-401: presence_join broadcasts to pre-existing connections."""
     import threading
+
     from starlette.testclient import TestClient as StarletteClient
+
     import app.api.collab as collab_module
 
     store = FakeCollabStore()
@@ -896,6 +900,7 @@ def test_collab_ws_presence_join_broadcast() -> None:
 def test_collab_ws_broadcast_to_others() -> None:
     """Lines 433-436, 438: operation broadcast to other connected WebSockets."""
     import threading
+
     from starlette.testclient import TestClient as StarletteClient
 
     store = FakeCollabStore()
@@ -1014,8 +1019,9 @@ async def test_resolve_ws_tenant_invalid_base64() -> None:
     
     Uses __8= which decodes to bytes \\xff\\xfe (invalid UTF-8).
     """
-    from app.api.collab import _resolve_ws_tenant
     import base64
+
+    from app.api.collab import _resolve_ws_tenant
 
     # \\xff\\xfe encodes to __8= in urlsafe base64, which can't be .decode()'d as UTF-8
     invalid_utf8_b64 = base64.urlsafe_b64encode(b"\xff\xfe").rstrip(b"=").decode()
@@ -1057,8 +1063,9 @@ def test_store_lazy_creation_coverage() -> None:
 
 def test_require_tenant_raises_401() -> None:
     """Line 214: _require_tenant raises HTTPException when no tenant on state."""
-    from app.api.collab import _require_tenant
     from fastapi import HTTPException
+
+    from app.api.collab import _require_tenant
 
     # Create a mock request with no tenant on state
     req = MagicMock()
@@ -1144,8 +1151,9 @@ async def test_collab_websocket_presence_join_to_existing() -> None:
 @pytest.mark.asyncio
 async def test_collab_websocket_broadcast_and_presence_leave() -> None:
     """Lines 433-436, 438, 459-462: broadcast to other WS + presence_leave broadcast."""
-    import app.api.collab as collab_mod
     from starlette.websockets import WebSocketDisconnect
+
+    import app.api.collab as collab_mod
 
     store = FakeCollabStore()
     tenant_ctx = _T_A

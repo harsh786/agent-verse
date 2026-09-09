@@ -1,10 +1,12 @@
 # tests/agent/test_graph_persistence_wiring.py
 """graph.py must call correct SelfOptimizerV2 API and persist tool outcomes/scorecards."""
 from __future__ import annotations
-import inspect
-import pytest
-from app.agent.graph import AgentGraph
 
+import inspect
+
+import pytest
+
+from app.agent.graph import AgentGraph
 
 
 def _agent_source() -> str:

@@ -1,21 +1,21 @@
 """Unit tests for Phase 0 trigger infrastructure modules."""
 from __future__ import annotations
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.triggers.models import TriggerSpec, TriggerType
+import pytest
+
+from app.triggers.bulkhead import PLAN_CONCURRENCY, TriggerBulkhead
+from app.triggers.circuit_breaker import CircuitBreakerRegistry, TriggerCircuitBreaker
 from app.triggers.dedup import derive_idempotency_key
-from app.triggers.rate_limiter import TriggerRateLimiter, effective_rate_cap
-from app.triggers.circuit_breaker import TriggerCircuitBreaker, CircuitBreakerRegistry
-from app.triggers.bulkhead import TriggerBulkhead, PLAN_CONCURRENCY
-from app.triggers.quota import TriggerQuotaEnforcer, TriggerQuotaExceeded
-from app.triggers.rbac import check_permission, TriggerPermissionDenied
-from app.triggers.events import TriggerEvent, SimulatedTriggerResult
-from app.triggers.simulation import get_sample_payload, TriggerChaosHarness
 from app.triggers.dispatcher import TriggerDispatcher
-
+from app.triggers.events import SimulatedTriggerResult, TriggerEvent
+from app.triggers.models import TriggerSpec, TriggerType
+from app.triggers.quota import TriggerQuotaEnforcer, TriggerQuotaExceeded
+from app.triggers.rate_limiter import TriggerRateLimiter, effective_rate_cap
+from app.triggers.rbac import TriggerPermissionDenied, check_permission
+from app.triggers.simulation import TriggerChaosHarness, get_sample_payload
 
 # ── TriggerType ───────────────────────────────────────────────────────────────
 

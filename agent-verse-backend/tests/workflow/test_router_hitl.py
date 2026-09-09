@@ -23,8 +23,9 @@ def _req(request_id: str = "req-1") -> WorkflowHITLRequest:
 
 def make_app(gateway: MagicMock) -> "TestClient":
     from fastapi import FastAPI, Request
+
+    from app.tenancy.context import PlanLimits, PlanTier, TenantContext
     from app.workflow.router_hitl import router
-    from app.tenancy.context import TenantContext, PlanTier, PlanLimits
 
     app = FastAPI()
 

@@ -1,8 +1,9 @@
 """Coverage for app/db/session.py — session factory and DB dependency."""
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
 
 
 class TestMakeEngine:
@@ -109,9 +110,8 @@ class TestGetDbSession:
 
     @pytest.mark.asyncio
     async def test_get_db_session_rolls_back_on_error(self):
-        from app.db.session import get_db_session
-
         import app.db.session as sess_mod
+        from app.db.session import get_db_session
         original = sess_mod._session_factory
 
         mock_session = AsyncMock()
@@ -137,9 +137,8 @@ class TestGetDbSession:
 class TestGetDb:
     @pytest.mark.asyncio
     async def test_get_db_yields_session(self):
-        from app.db.session import get_db
-
         import app.db.session as sess_mod
+        from app.db.session import get_db
         original = sess_mod._session_factory
 
         mock_session = AsyncMock()

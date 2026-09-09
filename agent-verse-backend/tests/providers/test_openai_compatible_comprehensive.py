@@ -14,7 +14,6 @@ import pytest
 
 from app.providers.base import CompletionRequest, EmbedRequest, Message, ToolDefinition
 
-
 # ---------------------------------------------------------------------------
 # Helpers: build mock openai module and mock response objects
 # ---------------------------------------------------------------------------
@@ -95,12 +94,14 @@ def test_constructor_stores_default_model() -> None:
 def test_constructor_raises_import_error_when_openai_missing() -> None:
     with patch.dict(sys.modules, {"openai": None}):  # type: ignore[dict-item]
         import importlib
+
         import app.providers.openai_compatible as _mod
         importlib.reload(_mod)
         with pytest.raises(ImportError, match="openai"):
             _mod.OpenAICompatibleProvider(api_key="key")
     # Restore
     import importlib
+
     import app.providers.openai_compatible as _mod2
     importlib.reload(_mod2)
 

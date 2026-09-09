@@ -740,8 +740,9 @@ async def test_iam_list_users_with_pagination():
 
 @pytest.mark.asyncio
 async def test_cloudwatch_list_alarms_with_filter():
-    from app.mcp.servers.aws_cloudwatch_server import call_tool
     from datetime import datetime, timezone
+
+    from app.mcp.servers.aws_cloudwatch_server import call_tool
 
     mock_cw = MagicMock()
     mock_cw.describe_alarms.return_value = {
@@ -754,8 +755,9 @@ async def test_cloudwatch_list_alarms_with_filter():
 
 @pytest.mark.asyncio
 async def test_cloudwatch_get_metric_data_with_dimensions():
-    from app.mcp.servers.aws_cloudwatch_server import call_tool
     from datetime import datetime, timezone
+
+    from app.mcp.servers.aws_cloudwatch_server import call_tool
 
     mock_cw = MagicMock()
     mock_cw.get_metric_statistics.return_value = {

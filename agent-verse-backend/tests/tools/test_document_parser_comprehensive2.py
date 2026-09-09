@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import io
 import json
-import pytest
 from unittest.mock import MagicMock, patch
 
-from app.tools.document_parser import DocumentParserTool, ParsedDocument, _MAX_CHARS
+import pytest
 
+from app.tools.document_parser import _MAX_CHARS, DocumentParserTool, ParsedDocument
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

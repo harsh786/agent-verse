@@ -1,9 +1,9 @@
 """Tests for P0 governance fixes."""
 import pytest
-from app.governance.pricing import estimate_cost
-from app.governance.hitl import HITLGateway, ApprovalStatus
-from app.tenancy.context import TenantContext, PlanTier
 
+from app.governance.hitl import ApprovalStatus, HITLGateway
+from app.governance.pricing import estimate_cost
+from app.tenancy.context import PlanTier, TenantContext
 
 CTX = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")
 

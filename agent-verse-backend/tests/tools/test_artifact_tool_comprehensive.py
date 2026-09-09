@@ -1,11 +1,11 @@
 """Comprehensive tests for ArtifactTool — execute with/without store, to_tool_def."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from app.tools.artifact_tool import ArtifactTool
+import pytest
 
+from app.tools.artifact_tool import ArtifactTool
 
 # ── 1. execute without store ──────────────────────────────────────────────────
 

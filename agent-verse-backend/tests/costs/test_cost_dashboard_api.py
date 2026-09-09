@@ -10,13 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.intelligence.cost_tracker import CostAnomaly, CostTracker, calculate_cost
 from app.api.costs import (
     _anomaly_id,
-    _sigma_to_severity,
     _anomaly_type_label,
+    _sigma_to_severity,
 )
-
+from app.intelligence.cost_tracker import CostAnomaly, CostTracker, calculate_cost
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -78,6 +77,7 @@ def test_sql_interval_not_literal():
     The fixed form uses INTERVAL '1 day' * :days (arithmetic on an interval).
     """
     import inspect
+
     from app.intelligence import cost_tracker
     source = inspect.getsource(cost_tracker)
     # Must NOT contain the broken pattern
@@ -161,8 +161,8 @@ def test_anomaly_id_is_deterministic():
 @pytest.mark.asyncio
 async def test_get_anomalies_returns_severity_and_message():
     """/costs/anomalies endpoint must return severity, message, cost_delta_usd."""
-    from fastapi.testclient import TestClient
     from fastapi import FastAPI
+    from fastapi.testclient import TestClient
 
     app = FastAPI()
     app.include_router(__import__("app.api.costs", fromlist=["router"]).router)
@@ -304,6 +304,7 @@ async def test_get_projected_monthly_cost_no_db():
 def test_pricing_estimate_cost_emits_deprecation_warning():
     """governance.pricing.estimate_cost must emit DeprecationWarning."""
     import warnings
+
     from app.governance import pricing
 
     with warnings.catch_warnings(record=True) as w:
@@ -318,6 +319,7 @@ def test_pricing_estimate_cost_emits_deprecation_warning():
 def test_calculate_cost_matches_pricing_for_known_model():
     """calculate_cost and the deprecated estimate_cost agree for GPT-4o-mini."""
     import warnings
+
     from app.governance import pricing
 
     with warnings.catch_warnings(record=True):

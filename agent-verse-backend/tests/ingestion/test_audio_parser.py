@@ -1,10 +1,15 @@
 # tests/ingestion/test_audio_parser.py
 """Audio parser must transcribe audio using Whisper API and chunk by timestamps."""
 from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+
 from app.ingestion.parsers.audio_parser import (
-    AudioParser, AudioParseResult, AudioSegment,
+    AudioParser,
+    AudioParseResult,
+    AudioSegment,
 )
 
 

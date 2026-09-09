@@ -1,5 +1,6 @@
 """Test SSE bridge sends sentinel on terminal events (FIX H9/H10)."""
 import asyncio
+
 import pytest
 
 

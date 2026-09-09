@@ -34,9 +34,9 @@ def test_zapier_verify_fails_closed_in_production():
 
 def test_oauth_state_expiry():
     """Expired OAuth state tokens are rejected."""
-    import time
     import importlib.util
     import os as _os
+    import time
 
     # Load oauth.py directly to bypass app.mcp package __init__.py which imports
     # registry.py (pre-existing SyntaxError from duplicate docstring outside our scope).

@@ -16,7 +16,8 @@ def test_goals_dlq_queue_in_worker_queues():
 
 def test_keycloak_realm_file_exists():
     """Keycloak realm-export.json must exist for docker-compose to start."""
-    import os, json
+    import json
+    import os
     realm_path = os.path.join(
         os.path.dirname(__file__), "../../infra/keycloak/realm-export.json"
     )
@@ -40,6 +41,7 @@ def test_otel_collector_config_exists():
 def test_fire_due_schedules_continues_on_error():
     """fire_due_schedules must use continue not raise on per-schedule errors."""
     import inspect
+
     from app.scaling import tasks
     src = inspect.getsource(tasks)
     # Find the problematic pattern

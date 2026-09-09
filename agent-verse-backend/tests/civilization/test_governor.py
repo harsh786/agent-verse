@@ -1,13 +1,14 @@
 """Tests for Governor — central authority for the civilization."""
 import json
-import pytest
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
-from app.civilization.models import Constitution, SpawnDecision, SpawnVerdict
-from app.civilization.governor import Governor
 
+import pytest
+
+from app.civilization.governor import Governor
+from app.civilization.models import Constitution, SpawnDecision, SpawnVerdict
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -59,7 +60,7 @@ def _make_governor(**kwargs) -> Governor:
 
 def _make_tenant_ctx():
     """Build a minimal TenantContext for tests."""
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     return TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
 
 
@@ -975,7 +976,7 @@ async def test_governor_audit_spawn_called_on_deny():
 
 @pytest.mark.asyncio
 async def test_governor_spawn_agent_raises_on_denied_verdict():
-    from app.civilization.models import SpawnVerdict, SpawnDecision
+    from app.civilization.models import SpawnDecision, SpawnVerdict
     g = _make_governor()
     denied_verdict = SpawnVerdict(
         decision=SpawnDecision.DENIED,
@@ -994,7 +995,7 @@ async def test_governor_spawn_agent_raises_on_denied_verdict():
 
 @pytest.mark.asyncio
 async def test_governor_spawn_agent_creates_record_without_agent_store():
-    from app.civilization.models import SpawnVerdict, SpawnDecision
+    from app.civilization.models import SpawnDecision, SpawnVerdict
     g = _make_governor()
     g._find_idle_matching = AsyncMock(return_value=None)
     g._register_civilization_member = AsyncMock()

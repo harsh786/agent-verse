@@ -13,7 +13,6 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-
 # ── create_app basic tests ────────────────────────────────────────────────────
 
 def test_create_app_returns_fastapi_instance():
@@ -476,8 +475,8 @@ async def test_fake_redis_pipeline_simulation():
 
 def test_resolve_provider_returns_fake_in_dev_no_keys():
     """FakeProvider returned when no API keys and environment=development."""
-    from app.main import _resolve_provider_for_app
     from app.core.config import Settings
+    from app.main import _resolve_provider_for_app
     from app.providers.fake import FakeProvider
 
     env = {k: v for k, v in os.environ.items()
@@ -495,8 +494,8 @@ def test_resolve_provider_returns_fake_in_dev_no_keys():
 
 def test_resolve_provider_raises_in_prod_no_keys():
     """RuntimeError raised in production with no LLM provider keys."""
-    from app.main import _resolve_provider_for_app
     from app.core.config import Settings
+    from app.main import _resolve_provider_for_app
 
     env = {k: v for k, v in os.environ.items()
            if k not in {"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}}
@@ -514,8 +513,8 @@ def test_resolve_provider_raises_in_prod_no_keys():
 
 def test_resolve_provider_anthropic_key():
     """Returns AnthropicProvider when ANTHROPIC_API_KEY is set."""
-    from app.main import _resolve_provider_for_app
     from app.core.config import Settings
+    from app.main import _resolve_provider_for_app
 
     mock_provider = MagicMock()
     mock_anthropic_mod = MagicMock()
@@ -533,8 +532,8 @@ def test_resolve_provider_anthropic_key():
 
 def test_resolve_provider_openai_fallback():
     """Returns OpenAI provider when ANTHROPIC_API_KEY absent but OPENAI_API_KEY present."""
-    from app.main import _resolve_provider_for_app
     from app.core.config import Settings
+    from app.main import _resolve_provider_for_app
     from app.providers.fake import FakeProvider
 
     # Make Anthropic fail to simulate "installed but key present" path
@@ -561,9 +560,10 @@ def test_resolve_provider_openai_fallback():
 @pytest.mark.asyncio
 async def test_platform_error_handler_returns_json():
     """PlatformError is caught and serialized to JSON by the error handler."""
-    from app.main import _register_error_handlers
-    from app.core.errors import PlatformError
     from fastapi import FastAPI
+
+    from app.core.errors import PlatformError
+    from app.main import _register_error_handlers
 
     # Create a minimal app with just the error handlers registered
     mini_app = FastAPI()

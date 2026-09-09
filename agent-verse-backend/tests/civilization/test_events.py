@@ -11,7 +11,6 @@ import pytest
 
 from app.civilization.events import CivEventType, emit_event, get_events_since
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 

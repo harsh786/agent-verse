@@ -1,8 +1,9 @@
 """FILE_DROP, ALERTMANAGER, DATADOG, PAGERDUTY trigger handlers."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 async def test_build_goal_kwargs_for_alert_alertmanager() -> None:

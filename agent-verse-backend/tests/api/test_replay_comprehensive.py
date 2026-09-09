@@ -11,7 +11,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.replay import router as replay_router, _require_tenant, _get_db
+from app.api.replay import _get_db, _require_tenant
+from app.api.replay import router as replay_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import TenantMiddleware
 

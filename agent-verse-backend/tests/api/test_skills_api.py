@@ -33,8 +33,8 @@ class TestSkillsAPI:
         assert len(delete_paths) > 0
 
     def test_platform_skill_to_response(self):
-        from app.api.skills import _platform_skill_to_response
         from app.agent.skill_selector import PLATFORM_SKILLS
+        from app.api.skills import _platform_skill_to_response
         for skill in PLATFORM_SKILLS:
             result = _platform_skill_to_response(skill)
             assert "id" in result
@@ -42,8 +42,8 @@ class TestSkillsAPI:
             assert result["is_platform"] is True
 
     def test_platform_skill_to_response_has_all_fields(self):
-        from app.api.skills import _platform_skill_to_response
         from app.agent.skill_selector import PLATFORM_SKILLS
+        from app.api.skills import _platform_skill_to_response
         required_fields = {
             "id", "name", "description", "trigger_hints",
             "instructions", "allowed_tools", "token_estimate",

@@ -12,7 +12,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.artifacts import router
 
-
 # ── Test app helpers ──────────────────────────────────────────────────────────
 
 

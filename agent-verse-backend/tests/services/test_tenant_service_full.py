@@ -1,8 +1,9 @@
 """Full coverage for TenantService — covers all branches and execution paths."""
 from __future__ import annotations
 
-import pytest
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from app.core.errors import ConflictError, NotFoundError
 from app.services.tenant_service import TenantService

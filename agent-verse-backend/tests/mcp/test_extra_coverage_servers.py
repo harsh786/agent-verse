@@ -1585,9 +1585,9 @@ _GDRIVE = {"GOOGLE_ACCESS_TOKEN": "gdrive-tok"}
 
 @pytest.mark.asyncio
 async def test_drive_download_file():
-    from app.mcp.servers.google_drive_server import call_tool
-
     import base64
+
+    from app.mcp.servers.google_drive_server import call_tool
     mc = mk_client()
     mc.get.return_value.content = b"file content here"
     mc.get.return_value.headers = MagicMock()
@@ -1780,9 +1780,9 @@ async def test_k8s_restart_deployment():
 
 @pytest.mark.asyncio
 async def test_k8s_apply_manifest():
-    from app.mcp.servers.kubernetes_server import call_tool
-
     import json
+
+    from app.mcp.servers.kubernetes_server import call_tool
     manifest = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "my-config", "namespace": "default"}, "data": {"key": "value"}}
     mc = mk_client(post=make_resp(data=manifest))
     with patch.dict("os.environ", _K8S), patch("httpx.AsyncClient") as Cls:

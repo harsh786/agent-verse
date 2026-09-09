@@ -8,14 +8,14 @@ from fastapi.testclient import TestClient
 
 from app.workflow.dsl import WorkflowDefinition
 
-
 # ── Minimal FastAPI test app ───────────────────────────────────────────────────
 
 
 def make_app(service: MagicMock) -> "TestClient":
     from fastapi import FastAPI, Request
+
+    from app.tenancy.context import PlanLimits, PlanTier, TenantContext
     from app.workflow.router import router
-    from app.tenancy.context import TenantContext, PlanTier, PlanLimits
 
     app = FastAPI()
 

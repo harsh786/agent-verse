@@ -21,14 +21,13 @@ import pytest
 from app.auth.ip_allowlist import IPAllowlistCache, is_ip_allowed
 from app.auth.permission_cache import PermissionCache
 from app.auth.scope_enforcement import (
-    ABACEvaluator,
     ENDPOINT_SCOPES,
     ROLE_SCOPES,
+    ABACEvaluator,
     ScopeEnforcementMiddleware,
 )
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.domain_role_templates import DOMAIN_ROLE_TEMPLATES
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers

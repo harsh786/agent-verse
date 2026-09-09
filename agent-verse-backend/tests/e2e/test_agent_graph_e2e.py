@@ -9,7 +9,7 @@ from app.enterprise.compliance import ComplianceController
 from app.enterprise.marketplace import Marketplace
 from app.governance.audit import AuditLog
 from app.governance.cost import BudgetConfig, CostController
-from app.governance.hitl import HITLGateway, ApprovalStatus
+from app.governance.hitl import ApprovalStatus, HITLGateway
 from app.governance.permissions import ActionLevel, PermissionMatrix, PermissionRule
 from app.governance.policies import Policy, PolicyEngine
 from app.intelligence.eval import EvalScorecard

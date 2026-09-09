@@ -16,7 +16,7 @@ from app.core.errors import NotFoundError
 from app.governance.audit import AuditLog
 from app.governance.hitl import HITLGateway
 from app.services.goal_service import GoalService
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _ctx(tenant_id: str = "t1") -> TenantContext:

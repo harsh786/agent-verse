@@ -2,10 +2,16 @@
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
 from app.api.guardrails_v2 import router as g2_router
 from app.api.trust_governance import router as trust_router
 from app.guardrails_v2.engine import GuardrailsEngine
-from app.guardrails_v2.models import GuardrailRule, GuardrailLayer, GuardrailAction, ComplianceBundle
+from app.guardrails_v2.models import (
+    ComplianceBundle,
+    GuardrailAction,
+    GuardrailLayer,
+    GuardrailRule,
+)
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 

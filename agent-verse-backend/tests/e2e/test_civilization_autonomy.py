@@ -414,7 +414,7 @@ async def test_spawn_approved_within_limits_is_audited() -> None:
 @pytest.mark.asyncio
 async def test_metrics_module_records_spawn() -> None:
     """Civilization metrics module records spawn events without raising."""
-    from app.civilization.metrics import record_spawn, record_learning_outcome
+    from app.civilization.metrics import record_learning_outcome, record_spawn
 
     # Should not raise even when prometheus_client is unavailable
     record_spawn(tenant_id="t1", civilization_id="c1", decision="approved")

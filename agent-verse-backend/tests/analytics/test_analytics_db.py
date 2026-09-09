@@ -10,7 +10,6 @@ import pytest
 
 from app.analytics.aggregator import GoalAnalyticsAggregator, ToolMetrics
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 

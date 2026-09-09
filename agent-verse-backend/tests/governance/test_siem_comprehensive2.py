@@ -7,12 +7,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.governance.siem_adapters import (
+    SIEM_ADAPTER_MAP,
     CEFAdapter,
     DatadogAdapter,
     ElasticsearchAdapter,
     LEEFAdapter,
     NullSIEMAdapter,
-    SIEM_ADAPTER_MAP,
     SIEMAdapter,
     SIEMConfig,
     SIEMType,

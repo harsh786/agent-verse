@@ -24,7 +24,6 @@ import pytest
 from app.execution_environment.envelope import build_envelope, sign_envelope
 from app.execution_environment.worker_entrypoint import _build_provider, _set_resource_limits
 
-
 # ── _build_provider ───────────────────────────────────────────────────────────
 
 

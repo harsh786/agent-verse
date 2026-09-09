@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.intelligence.eval_runner import EvalRunner
 from app.agent.state import AgentState, GoalStatus
-from app.tenancy.context import TenantContext, PlanTier
+from app.intelligence.eval_runner import EvalRunner
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _ctx() -> TenantContext:
@@ -97,8 +97,8 @@ def test_safety_score_no_events_attribute():
 
 def test_sla_score_uses_iteration_proxy_when_no_timing():
     """When started_at is 0, SLA uses iteration count as proxy."""
-    from app.intelligence.eval_runner import EvalRunner
     from app.agent.state import AgentState, GoalStatus
+    from app.intelligence.eval_runner import EvalRunner
 
     runner = EvalRunner()
     state = AgentState(
@@ -118,8 +118,8 @@ def test_sla_score_uses_iteration_proxy_when_no_timing():
 
 def test_sla_score_defaults_to_1_when_single_iteration_no_timing():
     """With 0 started_at and 1 iteration, SLA defaults to 1.0."""
-    from app.intelligence.eval_runner import EvalRunner
     from app.agent.state import AgentState, GoalStatus
+    from app.intelligence.eval_runner import EvalRunner
 
     runner = EvalRunner()
     state = AgentState(
@@ -137,8 +137,8 @@ def test_sla_score_defaults_to_1_when_single_iteration_no_timing():
 
 def test_scorecard_includes_sla_dimension():
     """All 7 dimensions present in scorecard (including tool_relevance)."""
-    from app.intelligence.eval_runner import EvalRunner
     from app.agent.state import AgentState, GoalStatus
+    from app.intelligence.eval_runner import EvalRunner
 
     runner = EvalRunner()
     state = AgentState(

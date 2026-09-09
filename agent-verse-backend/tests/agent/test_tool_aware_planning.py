@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 
-
 def _agent_source() -> str:
     """Read combined source of graph.py and all node mixin files."""
     import pathlib

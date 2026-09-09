@@ -159,10 +159,12 @@ async def test_dispatch_builtin_error_key_produces_failure():
 
 @pytest.mark.asyncio
 async def test_jira_server_call_tool_uses_credentials_over_env_vars():
-    from app.mcp.servers.jira_server import call_tool
     import base64
+
     import httpx
     import respx
+
+    from app.mcp.servers.jira_server import call_tool
 
     resp_data = {
         "issues": [
@@ -203,12 +205,14 @@ async def test_jira_server_call_tool_uses_credentials_over_env_vars():
 
 @pytest.mark.asyncio
 async def test_jira_server_call_tool_falls_back_to_env_when_no_credentials():
-    from app.mcp.servers.jira_server import call_tool
     import base64
-    import httpx
     import os
-    import respx
     from unittest.mock import patch
+
+    import httpx
+    import respx
+
+    from app.mcp.servers.jira_server import call_tool
 
     base = "https://envjira.atlassian.net"
     with respx.mock:

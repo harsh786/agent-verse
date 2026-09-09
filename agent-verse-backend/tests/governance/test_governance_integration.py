@@ -1,9 +1,11 @@
 """Governance: audit v3, HITL, compliance bundles, RBAC, cost hard stop."""
 from __future__ import annotations
+
 import pytest
-from app.tenancy.context import TenantContext, PlanTier
-from app.lifecycle.retention_policy import RetentionPolicy, DataCategory, RetentionTier
+
 from app.lifecycle.export_policy import ExportPolicy
+from app.lifecycle.retention_policy import DataCategory, RetentionPolicy, RetentionTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def test_audit_v3_records_tool_call():
@@ -43,11 +45,17 @@ def test_compliance_bundle_soc2():
 
 
 def test_governance_selector_regulated_for_gdpr():
-    from app.security_runtime.governance_profile import GovernanceProfileSelector, GovernanceBundle
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
+    from app.security_runtime.governance_profile import GovernanceBundle, GovernanceProfileSelector
     profile = GoalRuntimeProfile(
         goal_id="g1", tenant_id="t1",
         properties=GoalProperties(raw_goal="test"),

@@ -1,9 +1,11 @@
 """Tests for AgentManifest SDK class."""
 from __future__ import annotations
-import pytest
-from unittest.mock import patch, MagicMock
-from app.sdk.manifest import AgentManifest, ConnectorRequirement, PolicySpec
 
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from app.sdk.manifest import AgentManifest, ConnectorRequirement, PolicySpec
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 

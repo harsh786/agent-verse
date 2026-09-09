@@ -5,9 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.perception.page_analyzer import PageAnalysis, PageAnalyzer
 from app.perception.browser_agent import BrowserResult
-
+from app.perception.page_analyzer import PageAnalysis, PageAnalyzer
 
 # ── PageAnalysis.to_context_block ─────────────────────────────────────────────
 

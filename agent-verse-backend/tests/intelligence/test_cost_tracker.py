@@ -18,7 +18,6 @@ from app.intelligence.cost_tracker import (
 )
 from app.providers.base import CompletionResponse, TokenUsage
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

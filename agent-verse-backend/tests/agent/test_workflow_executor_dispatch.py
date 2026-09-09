@@ -57,8 +57,8 @@ class TestWorkflowExecutorDispatch:
     def test_workflow_nodes_importable(self):
         from app.agent.workflow_nodes import (
             execute_decision_node,
-            execute_loop_node,
             execute_delay_node,
+            execute_loop_node,
             execute_rag_node,
             execute_skill_node,
         )
@@ -83,6 +83,7 @@ class TestWorkflowExecutorDispatch:
     def test_executor_imports_node_functions(self):
         """Verify the 5 node functions are imported at module level."""
         import inspect
+
         from app.agent import workflow_executor
         source = inspect.getsource(workflow_executor)
         for fn in [

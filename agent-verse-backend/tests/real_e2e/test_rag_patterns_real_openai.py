@@ -19,6 +19,7 @@ Run:
 from __future__ import annotations
 
 import os
+
 import pytest
 from dotenv import load_dotenv
 
@@ -104,7 +105,7 @@ def make_provider():
 
 def make_tenant():
     """Return a test TenantContext with enterprise plan."""
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     return TenantContext(
         tenant_id="real-e2e-rag",
         plan=PlanTier.ENTERPRISE,
@@ -119,8 +120,8 @@ def make_store_with_docs(collection_id: str) -> tuple:
     Uses empty embeddings (vector score = 0.0), so retrieval is
     driven entirely by trigram + BM25 — no external embedding model needed.
     """
-    from app.rag.store import KnowledgeStore
     from app.rag.models import Chunk, KnowledgeCollection
+    from app.rag.store import KnowledgeStore
 
     tenant = make_tenant()
     store = KnowledgeStore()
@@ -774,16 +775,16 @@ def test_all_patterns_have_required_metadata():
       - state (RAGPatternState.IMPLEMENTED)
       - is_compatible() callable
     """
-    from app.rag.agentic.patterns.fusion import FusionRAGPattern
-    from app.rag.agentic.patterns.corrective import CorrectiveRAGPattern
     from app.rag.agentic.patterns.adaptive import AdaptiveRAGPattern
-    from app.rag.agentic.patterns.flare import FLAREPattern
-    from app.rag.agentic.patterns.self_rag import SelfRAGPattern
-    from app.rag.agentic.patterns.raptor import RAPTORPattern
-    from app.rag.agentic.patterns.speculative import SpeculativeRAGPattern
-    from app.rag.agentic.patterns.colbert import ColBERTPattern
     from app.rag.agentic.patterns.agentic_chunking import AgenticChunkingPattern
     from app.rag.agentic.patterns.base import RAGPatternState
+    from app.rag.agentic.patterns.colbert import ColBERTPattern
+    from app.rag.agentic.patterns.corrective import CorrectiveRAGPattern
+    from app.rag.agentic.patterns.flare import FLAREPattern
+    from app.rag.agentic.patterns.fusion import FusionRAGPattern
+    from app.rag.agentic.patterns.raptor import RAPTORPattern
+    from app.rag.agentic.patterns.self_rag import SelfRAGPattern
+    from app.rag.agentic.patterns.speculative import SpeculativeRAGPattern
 
     patterns = [
         FusionRAGPattern(),
@@ -857,8 +858,8 @@ async def test_fusion_then_colbert_pipeline():
     Query: fraud detection mechanisms in payment systems.
     Expected: fraud detection doc (chunk-9) surfaces after ColBERT reranking.
     """
-    from app.rag.agentic.patterns.fusion import FusionRAGPattern
     from app.rag.agentic.patterns.colbert import ColBERTPattern
+    from app.rag.agentic.patterns.fusion import FusionRAGPattern
 
     session = _StubSession(PAYMENT_CHUNKS)
     query = "fraud detection mechanisms velocity checks device fingerprinting"

@@ -1,9 +1,12 @@
 """Tests for /insights endpoints."""
 from __future__ import annotations
-import pytest
+
 from unittest.mock import AsyncMock
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
 from app.api.insights import router as insights_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware

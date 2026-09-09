@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import pytest
-from app.tool_runtime.tool_trust_store import ToolTrustStore
-from app.tool_runtime.tool_score import ToolScorer
+
 from app.tool_runtime.tool_ranker import ToolRanker
+from app.tool_runtime.tool_score import ToolScorer
+from app.tool_runtime.tool_trust_store import ToolTrustStore
 
 
 def _make_scorer() -> tuple[ToolTrustStore, ToolScorer]:

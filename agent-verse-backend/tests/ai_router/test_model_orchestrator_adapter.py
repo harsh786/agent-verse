@@ -1,6 +1,7 @@
 # tests/ai_router/test_model_orchestrator_adapter.py
 """ModelOrchestratorAdapter wired into graph as model_router."""
 from __future__ import annotations
+
 import pytest
 
 
@@ -16,7 +17,7 @@ def test_adapter_returns_models_for_all_task_types():
 
 def test_adapter_budget_downgrade():
     """When budget > 90%, adapter must return low-tier models."""
-    from app.ai_router.model_orchestrator import ModelOrchestratorAdapter, ModelOrchestrator
+    from app.ai_router.model_orchestrator import ModelOrchestrator, ModelOrchestratorAdapter
     adapter = ModelOrchestratorAdapter(default_tier="high")
 
     # Simulate a runtime profile that allows downgrade
@@ -50,8 +51,9 @@ def test_adapter_model_for_goal_alias():
 
 def test_adapter_used_as_model_router():
     """ModelOrchestratorAdapter must satisfy the model_router interface used by graph.py."""
-    from app.ai_router.model_orchestrator import ModelOrchestratorAdapter
     import inspect
+
+    from app.ai_router.model_orchestrator import ModelOrchestratorAdapter
     adapter = ModelOrchestratorAdapter()
     # Must have the methods graph.py calls
     assert hasattr(adapter, "model_for")
@@ -65,6 +67,7 @@ def test_adapter_used_as_model_router():
 def test_adapter_wired_in_goal_service():
     """goal_service must use ModelOrchestratorAdapter as model_router."""
     import inspect
+
     from app.services import goal_service as gs
     src = inspect.getsource(gs)
     assert "ModelOrchestratorAdapter" in src, \

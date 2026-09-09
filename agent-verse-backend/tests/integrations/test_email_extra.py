@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ── approval_sender._sign and _verify ─────────────────────────────────────────
 
 class TestApprovalSenderSign:
@@ -118,6 +117,7 @@ class TestSendApprovalEmailSmtpError:
 
             with patch("aiosmtplib.send", mock_aiosmtp.send):
                 import importlib
+
                 import app.integrations.email.approval_sender as mod
                 # Directly patch aiosmtplib in the module
                 with patch.object(mod, "__builtins__", mod.__builtins__):
@@ -226,8 +226,9 @@ class TestCheckAndProcessEmailsHappyPath:
             "IMAP_SSL": "true",
         }):
             with patch.dict(sys.modules, {"aioimaplib": mock_aioimaplib}):
-                from app.integrations.email import imap_listener
                 import importlib
+
+                from app.integrations.email import imap_listener
                 importlib.reload(imap_listener)
                 result = await imap_listener.check_and_process_emails(
                     mock_goal_service, MagicMock()
@@ -255,8 +256,9 @@ class TestCheckAndProcessEmailsHappyPath:
             "IMAP_SSL": "false",
         }):
             with patch.dict(sys.modules, {"aioimaplib": mock_aioimaplib}):
-                from app.integrations.email import imap_listener
                 import importlib
+
+                from app.integrations.email import imap_listener
                 importlib.reload(imap_listener)
                 result = await imap_listener.check_and_process_emails(
                     MagicMock(), MagicMock()
@@ -275,8 +277,9 @@ class TestCheckAndProcessEmailsHappyPath:
             "IMAP_USER": "u@example.com",
         }):
             with patch.dict(sys.modules, {"aioimaplib": mock_aioimaplib}):
-                from app.integrations.email import imap_listener
                 import importlib
+
+                from app.integrations.email import imap_listener
                 importlib.reload(imap_listener)
                 result = await imap_listener.check_and_process_emails(
                     MagicMock(), MagicMock()

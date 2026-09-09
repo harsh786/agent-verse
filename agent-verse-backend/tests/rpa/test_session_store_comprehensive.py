@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.rpa.session import RPAManagedSession, RPASession, RPASessionStore
 from app.rpa.artifacts import (
     RPAArtifact,
     RPAArtifactStore,
@@ -15,7 +14,7 @@ from app.rpa.artifacts import (
     _safe_name,
     get_artifact_store,
 )
-
+from app.rpa.session import RPAManagedSession, RPASession, RPASessionStore
 
 # ── RPASession ────────────────────────────────────────────────────────────────
 

@@ -1,8 +1,9 @@
 """Tests for system_session RLS bypass in app/db/rls.py."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 

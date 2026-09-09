@@ -13,7 +13,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.agents import AgentStore, router as agents_router
+from app.api.agents import AgentStore
+from app.api.agents import router as agents_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 

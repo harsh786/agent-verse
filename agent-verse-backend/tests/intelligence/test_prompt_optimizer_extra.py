@@ -15,7 +15,6 @@ import pytest
 
 from app.intelligence.prompt_optimizer import PromptOptimizer, PromptVariant
 
-
 # ── add_variant paths ─────────────────────────────────────────────────────────
 
 class TestAddVariant:

@@ -1,22 +1,30 @@
 # tests/api/test_orchestration_api.py
 """API: runtime-profile + eval-scorecard endpoints + ReadinessGate in goal submission."""
 from __future__ import annotations
+
 import os
+
 import pytest
 
 
 async def test_readiness_gate_blocks_goal_when_unavailable():
     """ReadinessGate.check() must return ready=False when LLM provider is down."""
-    from app.runtime_readiness.readiness_gate import ReadinessGate
     from app.runtime_readiness.dependency_health import DependencyHealth, DepStatus
+    from app.runtime_readiness.readiness_gate import ReadinessGate
     health = DependencyHealth(
         postgres=DepStatus.HEALTHY, redis=DepStatus.HEALTHY,
         embedder=DepStatus.HEALTHY, llm_provider=DepStatus.UNAVAILABLE,
     )
     gate = ReadinessGate(health)
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
     profile = GoalRuntimeProfile(
         goal_id="g1", tenant_id="t1",
@@ -31,12 +39,18 @@ async def test_readiness_gate_blocks_goal_when_unavailable():
 
 
 def test_readiness_gate_all_healthy():
-    from app.runtime_readiness.readiness_gate import ReadinessGate
     from app.runtime_readiness.dependency_health import DependencyHealth
+    from app.runtime_readiness.readiness_gate import ReadinessGate
     gate = ReadinessGate(DependencyHealth.all_healthy())
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
     profile = GoalRuntimeProfile(
         goal_id="g1", tenant_id="t1",

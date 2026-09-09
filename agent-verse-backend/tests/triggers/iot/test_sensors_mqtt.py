@@ -2,16 +2,21 @@
 from __future__ import annotations
 
 import json
-import pytest
-from unittest.mock import AsyncMock
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import pytest
+
+from app.triggers.iot.geofence import (
+    GeofenceRegion,
+    GeofenceTriggerEvaluator,
+    LatLng,
+    haversine_meters,
+)
 from app.triggers.iot.mqtt import MQTTTriggerConsumer
-from app.triggers.iot.geofence import GeofenceTriggerEvaluator, GeofenceRegion, LatLng, haversine_meters
 from app.triggers.iot.sensor import SensorThresholdEvaluator, convert_to_base
-from app.triggers.store import ScheduleStore
 from app.triggers.models import TriggerSpec, TriggerType
-
+from app.triggers.store import ScheduleStore
 
 # ── MQTT ──────────────────────────────────────────────────────────────────────
 

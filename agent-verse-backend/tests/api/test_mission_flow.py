@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def make_org_id() -> str:
@@ -170,7 +169,7 @@ class TestQualityGateIntegration:
 
     @pytest.mark.asyncio
     async def test_valid_json_gets_high_gate2_score(self):
-        from app.org.quality_gates import QualityGateSystem, GateResult
+        from app.org.quality_gates import GateResult, QualityGateSystem
         qg = QualityGateSystem()
         result = await qg.evaluate('{"key": "value", "analysis": "complete"}', {"output_type": "json"})
         gate2 = next((g for g in result.gates if g.gate_id == 2), None)
@@ -179,7 +178,7 @@ class TestQualityGateIntegration:
 
     @pytest.mark.asyncio
     async def test_pii_in_output_fails_gate5(self):
-        from app.org.quality_gates import QualityGateSystem, GateResult
+        from app.org.quality_gates import GateResult, QualityGateSystem
         qg = QualityGateSystem()
         result = await qg.evaluate("User SSN: 123-45-6789", {})
         gate5 = next((g for g in result.gates if g.gate_id == 5), None)
@@ -193,7 +192,7 @@ class TestSelfImprovementIntegration:
     """PART 24 + PART 47: Improvement proposals advance through phases."""
 
     def test_proposal_created_and_advances(self):
-        from app.org.self_improvement import OrgSelfImprovementEngine, ImprovementCyclePhase
+        from app.org.self_improvement import ImprovementCyclePhase, OrgSelfImprovementEngine
         engine = OrgSelfImprovementEngine()
         proposal = engine.create_proposal(
             area="model_routing",
@@ -207,7 +206,7 @@ class TestSelfImprovementIntegration:
         assert phase == ImprovementCyclePhase.ANALYZE.value
 
     def test_review_phase_requires_approver(self):
-        from app.org.self_improvement import OrgSelfImprovementEngine, ImprovementCyclePhase
+        from app.org.self_improvement import ImprovementCyclePhase, OrgSelfImprovementEngine
         engine = OrgSelfImprovementEngine()
         proposal = engine.create_proposal(
             area="cost_optimization",
@@ -223,7 +222,7 @@ class TestSelfImprovementIntegration:
         assert phase == ImprovementCyclePhase.EVALUATE.value
 
     def test_proposal_rollback_resets_to_observe(self):
-        from app.org.self_improvement import OrgSelfImprovementEngine, ImprovementCyclePhase
+        from app.org.self_improvement import ImprovementCyclePhase, OrgSelfImprovementEngine
         engine = OrgSelfImprovementEngine()
         proposal = engine.create_proposal(
             area="workflow_patterns",
@@ -249,9 +248,9 @@ class TestCompleteMissionFlow:
         Scenario 1 abbreviated: goal → refine → teams → decision → simulate
         """
         from app.org.goal_refinement import GoalRefinementPipeline
-        from app.org.team_formation import TeamFormationEngine
-        from app.org.meta_orchestrator import MetaOrchestrator
         from app.org.loop_detector import OrgSimulationEngine
+        from app.org.meta_orchestrator import MetaOrchestrator
+        from app.org.team_formation import TeamFormationEngine
 
         goal = "Launch our product in Germany: market research, legal compliance, marketing"
         org_id = make_org_id()

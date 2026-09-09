@@ -1,8 +1,9 @@
 """Regression tests for C3 (maintenance RLS), C5 (engine leak), H12 (lock release)."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 def _make_mock_session(execute_return: object = None) -> MagicMock:
@@ -147,6 +148,7 @@ class TestEngineLeakFix:
     def test_run_goal_does_not_call_make_session_factory(self) -> None:
         """C5: _make_session_factory must not be called directly inside run_goal."""
         import inspect
+
         from app.scaling import tasks
 
         source = inspect.getsource(tasks)
@@ -170,6 +172,7 @@ class TestEngineLeakFix:
     def test_run_goal_imports_get_session_factory(self) -> None:
         """C5: run_goal should rely on get_session_factory, not _make_session_factory."""
         import inspect
+
         from app.scaling import tasks
 
         source = inspect.getsource(tasks)
@@ -216,6 +219,7 @@ class TestLockReleaseFix:
     def test_run_goal_uses_sync_lock(self) -> None:
         """H12: run_goal must use _SyncGoalLock (or single asyncio.run) instead of async Redis lock."""
         import inspect
+
         from app.scaling import tasks
 
         source = inspect.getsource(tasks)

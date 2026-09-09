@@ -7,12 +7,12 @@ import json
 import pytest
 
 from app.chat.stream import (
-    stream_qa_response,
-    stream_goal_progress,
-    stream_clarify,
-    stream_hitl,
-    stream_schedule_created,
     stream_artifact_created,
+    stream_clarify,
+    stream_goal_progress,
+    stream_hitl,
+    stream_qa_response,
+    stream_schedule_created,
 )
 
 

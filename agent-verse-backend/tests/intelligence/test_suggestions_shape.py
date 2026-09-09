@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
@@ -220,6 +219,7 @@ def test_experiment_status_running_passthrough():
 def test_experiment_no_wrong_column_names():
     """The SELECT query must NOT reference non-existent columns."""
     import inspect
+
     from app.intelligence import self_optimizer_v2
 
     source = inspect.getsource(self_optimizer_v2.SelfOptimizerV2.list_experiments)
@@ -235,6 +235,7 @@ def test_experiment_no_wrong_column_names():
 def test_experiment_uses_correct_column_names():
     """The SELECT query must reference the correct DB column names."""
     import inspect
+
     from app.intelligence import self_optimizer_v2
 
     source = inspect.getsource(self_optimizer_v2.SelfOptimizerV2.list_experiments)

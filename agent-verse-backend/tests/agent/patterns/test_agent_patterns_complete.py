@@ -1,11 +1,13 @@
 # tests/agent/patterns/test_agent_patterns_complete.py
 """All 5 agent patterns must be IMPLEMENTED with working execute() methods."""
 from __future__ import annotations
-import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
-from app.providers.fake import FakeProvider
-from app.agent.patterns.base import PatternState
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from app.agent.patterns.base import PatternState
+from app.providers.fake import FakeProvider
 
 # ── Self-Refine ───────────────────────────────────────────────────────────────
 
@@ -216,7 +218,7 @@ def test_tree_of_thoughts_state_is_implemented():
 
 
 async def test_tree_of_thoughts_generates_thoughts():
-    from app.agent.patterns.tree_of_thoughts import TreeOfThoughtsPattern, ThoughtNode
+    from app.agent.patterns.tree_of_thoughts import ThoughtNode, TreeOfThoughtsPattern
     responses = [
         # Thought generation (3 thoughts)
         "Thought 1: Start by listing all factors",

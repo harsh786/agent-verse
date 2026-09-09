@@ -3,7 +3,6 @@ social media, AI/search, scheduling, finance, and developer tools.
 """
 from __future__ import annotations
 
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _assert_tool_structure(tool: dict) -> None:
@@ -68,7 +67,7 @@ def test_rippling_server_structure() -> None:
 
 
 def test_hr_support_servers() -> None:
-    from app.mcp.servers import bamboohr_server, zendesk_server, freshdesk_server
+    from app.mcp.servers import bamboohr_server, freshdesk_server, zendesk_server
     for s in [bamboohr_server, zendesk_server, freshdesk_server]:
         assert hasattr(s, "TOOL_DEFINITIONS") and len(s.TOOL_DEFINITIONS) >= 5
 
@@ -271,7 +270,7 @@ def test_firecrawl_server_tools() -> None:
 
 
 def test_ai_search_servers() -> None:
-    from app.mcp.servers import perplexity_server, tavily_server, firecrawl_server
+    from app.mcp.servers import firecrawl_server, perplexity_server, tavily_server
     for s in [perplexity_server, tavily_server, firecrawl_server]:
         assert hasattr(s, "TOOL_DEFINITIONS") and len(s.TOOL_DEFINITIONS) >= 2
 
@@ -330,7 +329,7 @@ def test_pandadoc_server_structure() -> None:
 
 
 def test_scheduling_servers() -> None:
-    from app.mcp.servers import zoom_server, calendly_server, docusign_server
+    from app.mcp.servers import calendly_server, docusign_server, zoom_server
     for s in [zoom_server, calendly_server, docusign_server]:
         assert hasattr(s, "TOOL_DEFINITIONS") and len(s.TOOL_DEFINITIONS) >= 4
 

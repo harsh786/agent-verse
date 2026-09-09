@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # URL builders (require settings mock)
 # ---------------------------------------------------------------------------
@@ -245,6 +244,7 @@ async def test_validate_jwt_success():
 
 async def test_validate_jwt_expired_raises_value_error():
     from jose import ExpiredSignatureError
+
     from app.auth.keycloak import validate_jwt
 
     with (
@@ -258,6 +258,7 @@ async def test_validate_jwt_expired_raises_value_error():
 
 async def test_validate_jwt_invalid_raises_value_error():
     from jose import JWTError
+
     from app.auth.keycloak import validate_jwt
 
     with (

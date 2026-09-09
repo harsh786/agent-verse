@@ -9,7 +9,6 @@ from app.collab.agent_collab import (
     ConsensusResult,
 )
 
-
 # ── CollabRound dataclass ─────────────────────────────────────────────────────
 
 def test_collab_round_auto_round_id() -> None:

@@ -1,6 +1,8 @@
 """Tests for HITLGateway startup restore."""
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
+
 from app.governance.hitl import HITLGateway
 
 

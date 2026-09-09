@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.perception.page_analyzer import PageAnalyzer, PageAnalysis
+from app.perception.page_analyzer import PageAnalysis, PageAnalyzer
 
 
 @pytest.mark.asyncio

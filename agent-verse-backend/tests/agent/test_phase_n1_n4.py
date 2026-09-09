@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from app.providers.fake import FakeProvider
-from app.tenancy.context import TenantContext, PlanTier
+
 from app.agent.state import AgentState, GoalStatus
+from app.providers.fake import FakeProvider
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture
@@ -137,8 +138,14 @@ def test_score_cost_reads_from_context_not_attribute(tenant_ctx: TenantContext) 
     """score_cost must read from state.context['total_cost_usd'] not getattr."""
     from app.evals.model_score import ModelScorer
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
     state = AgentState(goal="test", tenant_ctx=tenant_ctx, goal_id="g1")
     state.context["total_cost_usd"] = 0.05  # 5 cents, budget is 10 cents
@@ -165,8 +172,14 @@ def test_score_cost_neutral_when_no_cost(tenant_ctx: TenantContext) -> None:
     """score_cost must return neutral when no cost data."""
     from app.evals.model_score import ModelScorer
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
     state = AgentState(goal="test", tenant_ctx=tenant_ctx, goal_id="g1")
     # No cost in context

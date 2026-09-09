@@ -15,7 +15,6 @@ import pytest
 
 from app.providers.base import CompletionRequest, EmbedRequest, Message
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

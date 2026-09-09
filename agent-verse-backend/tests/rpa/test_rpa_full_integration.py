@@ -2,19 +2,19 @@
 from __future__ import annotations
 
 import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.rpa.executor import RPAExecutor, RPAResult
-from app.rpa.session_manager import BrowserSessionManager, BrowserSession
+import pytest
 
+from app.rpa.executor import RPAExecutor, RPAResult
+from app.rpa.session_manager import BrowserSession, BrowserSessionManager
 
 # ── Gap 1: RPA tools visible to agent ─────────────────────────────────────────
 
 def test_rpa_tools_importable_as_tool_refs():
     """RPA tools can be converted to ToolRef objects for ToolContext."""
-    from app.rpa.tools import RPA_TOOLS
     from app.agent.tool_context import ToolRef
+    from app.rpa.tools import RPA_TOOLS
 
     tool_refs = [
         ToolRef(
@@ -38,11 +38,11 @@ def test_rpa_tools_importable_as_tool_refs():
 def test_rpa_executor_attribute_on_agent_graph():
     """AgentGraph has _rpa_executor attribute for RPA dispatch."""
     from app.agent.graph import AgentGraph
+    from app.intelligence.guardrails import GuardrailChecker
     from app.providers.fake import FakeProvider
     from app.reliability.dedup import DeduplicationCache
     from app.reliability.result_processor import ResultProcessor
     from app.reliability.rollback import RollbackEngine
-    from app.intelligence.guardrails import GuardrailChecker
 
     fake = FakeProvider(responses=["done"])
     graph = AgentGraph(
@@ -209,7 +209,7 @@ async def test_all_5_tools_execute_without_playwright():
 async def test_build_tool_context_includes_rpa_tools():
     """GoalService._build_tool_context always includes RPA tools."""
     from app.services.goal_service import GoalService
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     svc = GoalService()
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")

@@ -8,7 +8,6 @@ import pytest
 
 from app.providers.base import CompletionRequest, EmbedRequest, Message, ToolDefinition
 
-
 # ---------------------------------------------------------------------------
 # Helper: build a realistic mock anthropic response
 # ---------------------------------------------------------------------------
@@ -631,6 +630,7 @@ def test_import_error_when_anthropic_not_installed() -> None:
     try:
         # Force reimport of the provider module to hit the import guard
         import importlib
+
         import app.providers.anthropic_provider as _mod
         importlib.reload(_mod)
         with pytest.raises(ImportError, match="anthropic"):
@@ -642,6 +642,7 @@ def test_import_error_when_anthropic_not_installed() -> None:
             sys.modules["anthropic"] = saved
         # Reload the real module to restore state
         import importlib
+
         import app.providers.anthropic_provider as _mod2
         importlib.reload(_mod2)
 

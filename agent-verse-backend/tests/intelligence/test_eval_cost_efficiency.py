@@ -1,9 +1,9 @@
 """Tests for cost-aware efficiency scoring."""
 import pytest
-from app.intelligence.eval_runner import EvalRunner
-from app.agent.state import AgentState, GoalStatus
-from app.tenancy.context import TenantContext, PlanTier
 
+from app.agent.state import AgentState, GoalStatus
+from app.intelligence.eval_runner import EvalRunner
+from app.tenancy.context import PlanTier, TenantContext
 
 CTX = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")
 

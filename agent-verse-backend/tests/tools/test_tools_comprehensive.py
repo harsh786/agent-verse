@@ -227,8 +227,9 @@ class TestFileOpsClass:
 
     @pytest.mark.asyncio
     async def test_delete_file(self):
-        from app.tools.file_ops import FileOps
         import pathlib
+
+        from app.tools.file_ops import FileOps
 
         ops = FileOps(self.tenant_id)
         await ops.write("to_delete.txt", "bye")
@@ -247,8 +248,9 @@ class TestFileOpsClass:
     @pytest.mark.asyncio
     async def test_delete_directory(self):
         """delete() on a directory uses shutil.rmtree."""
-        from app.tools.file_ops import FileOps
         import pathlib
+
+        from app.tools.file_ops import FileOps
 
         ops = FileOps(self.tenant_id)
         subdir = ops._workspace / "subdir"
@@ -331,7 +333,7 @@ class TestFileOpsWrappers:
 
     @pytest.mark.asyncio
     async def test_file_write_returns_bytes_written(self):
-        from app.tools.file_ops import file_write, file_delete
+        from app.tools.file_ops import file_delete, file_write
 
         result = await file_write("bytes_test.txt", "hello bytes", tenant_id=self.tid)
         assert result["success"] is True
@@ -340,7 +342,7 @@ class TestFileOpsWrappers:
 
     @pytest.mark.asyncio
     async def test_file_list_returns_entries_with_metadata(self):
-        from app.tools.file_ops import file_write, file_list, file_delete
+        from app.tools.file_ops import file_delete, file_list, file_write
 
         await file_write("list_meta.txt", "x", tenant_id=self.tid)
         result = await file_list(".", tenant_id=self.tid)
@@ -486,6 +488,7 @@ class TestEmailToolSend:
     async def test_send_smtp_error_propagates(self):
         """aiosmtplib errors bubble up (not caught inside send())."""
         import aiosmtplib
+
         from app.tools.email_tool import EmailTool
 
         tool = EmailTool(smtp_config=self._smtp_config())

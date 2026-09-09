@@ -28,7 +28,8 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from app.api.connectors import _require_tenant, router as connectors_router
+from app.api.connectors import _require_tenant
+from app.api.connectors import router as connectors_router
 from app.mcp.oauth import OAuthToken
 from app.mcp.registry import MCPRegistry, MCPServerConfig
 from app.tenancy.context import PlanTier, TenantContext
@@ -799,8 +800,8 @@ def test_test_connector_with_db_factory_persists_snapshot() -> None:
 def test_get_connector_health_history_with_db() -> None:
     """health history with DB session (lines 449-473)."""
     # Mock rows (status, latency_ms, error, checked_at)
-    from types import SimpleNamespace
     from datetime import UTC, datetime
+    from types import SimpleNamespace
 
     now = datetime.now(UTC)
     fake_row = SimpleNamespace(

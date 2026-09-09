@@ -29,7 +29,6 @@ from app.governance.hitl import HITLGateway
 from app.services.goal_service import GoalRecord, GoalService, _resolve_checkpointer
 from app.tenancy.context import PlanTier, TenantContext
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _ctx(tenant_id: str = "t1") -> TenantContext:
@@ -121,6 +120,7 @@ class TestResolveCheckpointer:
     def test_exception_in_base_checkpointer_isinstance(self, monkeypatch):
         """Lines 120-121: exception propagated from BaseCheckpointSaver import."""
         import sys
+
         from langgraph.checkpoint.memory import MemorySaver
         monkeypatch.delenv("REDIS_URL", raising=False)
         app_state = MagicMock()

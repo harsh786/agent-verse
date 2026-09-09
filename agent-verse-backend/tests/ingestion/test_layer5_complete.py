@@ -1,12 +1,14 @@
 # tests/ingestion/test_layer5_complete.py
 """All 8 Layer 5 files must exist and have standard interface."""
 from __future__ import annotations
+
 import pytest
-from app.ingestion.embedding_policy_selector import EmbeddingPolicySelector, EmbeddingPolicy
-from app.ingestion.modality_pipeline import ModalityPipeline, ModalityPipelineResult
-from app.ingestion.provenance_builder import ProvenanceBuilder, IngestionProvenance
-from app.ingestion.quality_checks import QualityChecker, QualityCheckResult
+
 from app.ingestion.content_classifier import ContentType
+from app.ingestion.embedding_policy_selector import EmbeddingPolicy, EmbeddingPolicySelector
+from app.ingestion.modality_pipeline import ModalityPipeline, ModalityPipelineResult
+from app.ingestion.provenance_builder import IngestionProvenance, ProvenanceBuilder
+from app.ingestion.quality_checks import QualityChecker, QualityCheckResult
 
 
 def test_all_layer5_files_importable():

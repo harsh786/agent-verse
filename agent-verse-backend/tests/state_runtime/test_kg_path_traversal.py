@@ -1,8 +1,10 @@
 """Graph RAG path traversal must return real edges, not hardcoded '?' placeholders."""
 from __future__ import annotations
+
 import pytest
+
+from app.knowledge_graph.models import EdgeType, GraphEdge, GraphNode, NodeType
 from app.knowledge_graph.store import KnowledgeGraphStore
-from app.knowledge_graph.models import GraphNode, GraphEdge, NodeType, EdgeType
 from app.state_runtime.kg_query_engine import KGQueryEngine
 
 

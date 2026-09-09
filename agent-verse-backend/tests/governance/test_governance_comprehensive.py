@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-
 # ── HITL GATEWAY ──────────────────────────────────────────────────────────────
 
 def test_hitl_gateway_request_approval():
     from app.governance.hitl import HITLGateway
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
     gateway = HITLGateway()  # In-memory mode; no Redis
@@ -25,8 +24,8 @@ def test_hitl_gateway_request_approval():
 
 
 def test_hitl_gateway_pending_requests():
-    from app.governance.hitl import HITLGateway, ApprovalStatus
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.governance.hitl import ApprovalStatus, HITLGateway
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
     gateway = HITLGateway()
@@ -43,8 +42,8 @@ def test_hitl_gateway_pending_requests():
 
 
 def test_hitl_gateway_approve_resolves():
-    from app.governance.hitl import HITLGateway, ApprovalStatus
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.governance.hitl import ApprovalStatus, HITLGateway
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx = TenantContext(tenant_id="t_approve", plan=PlanTier.ENTERPRISE, api_key_id="k1")
     gateway = HITLGateway()
@@ -64,8 +63,8 @@ def test_hitl_gateway_approve_resolves():
 
 
 async def test_hitl_gateway_reject_resolves():
-    from app.governance.hitl import HITLGateway, ApprovalStatus
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.governance.hitl import ApprovalStatus, HITLGateway
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx = TenantContext(tenant_id="t_reject", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
     gateway = HITLGateway()
@@ -88,7 +87,7 @@ async def test_hitl_gateway_reject_resolves():
 def test_hitl_gateway_step_description_alias():
     """step_description kwarg must be accepted as alias for action."""
     from app.governance.hitl import HITLGateway
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx = TenantContext(tenant_id="t_alias", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
     gateway = HITLGateway()
@@ -106,9 +105,9 @@ def test_hitl_gateway_step_description_alias():
 # ── AUDIT TRAIL ───────────────────────────────────────────────────────────────
 
 def test_audit_log_records_events():
-    from app.governance.audit import AuditLog, AuditEvent
+    from app.governance.audit import AuditEvent, AuditLog
     from app.governance.permissions import ActionLevel
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx = TenantContext(tenant_id="t_audit", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
     log = AuditLog()
@@ -126,9 +125,9 @@ def test_audit_log_records_events():
 
 
 def test_audit_log_filters_by_tool():
-    from app.governance.audit import AuditLog, AuditEvent
+    from app.governance.audit import AuditEvent, AuditLog
     from app.governance.permissions import ActionLevel
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx = TenantContext(tenant_id="t_filter", plan=PlanTier.ENTERPRISE, api_key_id="k1")
     log = AuditLog()
@@ -142,9 +141,9 @@ def test_audit_log_filters_by_tool():
 
 
 def test_audit_log_tenant_isolation():
-    from app.governance.audit import AuditLog, AuditEvent
+    from app.governance.audit import AuditEvent, AuditLog
     from app.governance.permissions import ActionLevel
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx_a = TenantContext(tenant_id="tenant_a", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
     ctx_b = TenantContext(tenant_id="tenant_b", plan=PlanTier.PROFESSIONAL, api_key_id="k2")
@@ -162,8 +161,8 @@ def test_audit_log_tenant_isolation():
 # ── PERMISSION MATRIX ─────────────────────────────────────────────────────────
 
 def test_permission_matrix_default_allow_log():
-    from app.governance.permissions import PermissionMatrix, ActionLevel
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.governance.permissions import ActionLevel, PermissionMatrix
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx = TenantContext(tenant_id="t_perm", plan=PlanTier.FREE, api_key_id="k1")
     matrix = PermissionMatrix()
@@ -173,8 +172,8 @@ def test_permission_matrix_default_allow_log():
 
 
 def test_permission_matrix_deny_blocks():
-    from app.governance.permissions import PermissionMatrix, PermissionRule, ActionLevel
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.governance.permissions import ActionLevel, PermissionMatrix, PermissionRule
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx = TenantContext(tenant_id="t_deny", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
     matrix = PermissionMatrix()
@@ -184,8 +183,8 @@ def test_permission_matrix_deny_blocks():
 
 
 def test_permission_matrix_approval_level():
-    from app.governance.permissions import PermissionMatrix, PermissionRule, ActionLevel
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.governance.permissions import ActionLevel, PermissionMatrix, PermissionRule
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx = TenantContext(tenant_id="t_approval", plan=PlanTier.ENTERPRISE, api_key_id="k1")
     matrix = PermissionMatrix()
@@ -226,21 +225,21 @@ def test_guardrail_checker_safe_goal():
 # ── PLAN TIER LIMITS ──────────────────────────────────────────────────────────
 
 def test_plan_tier_free():
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")
     assert ctx.plan == PlanTier.FREE
 
 
 def test_plan_tier_enterprise():
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k1")
     assert ctx.plan == PlanTier.ENTERPRISE
 
 
 def test_all_plan_tiers_have_limits():
-    from app.tenancy.context import PlanTier, PLAN_LIMITS
+    from app.tenancy.context import PLAN_LIMITS, PlanTier
 
     for tier in PlanTier:
         assert tier in PLAN_LIMITS
@@ -252,12 +251,18 @@ def test_all_plan_tiers_have_limits():
 # ── GOVERNANCE PROFILE ────────────────────────────────────────────────────────
 
 def test_governance_profile_selector_enterprise():
-    from app.security_runtime.governance_profile import GovernanceProfileSelector, GovernanceBundle
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.security_runtime.governance_profile import GovernanceBundle, GovernanceProfileSelector
+    from app.tenancy.context import PlanTier, TenantContext
 
     selector = GovernanceProfileSelector()
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k1")
@@ -280,12 +285,18 @@ def test_governance_profile_selector_enterprise():
 
 
 def test_governance_profile_selector_compliance_tags():
-    from app.security_runtime.governance_profile import GovernanceProfileSelector, GovernanceBundle
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.security_runtime.governance_profile import GovernanceBundle, GovernanceProfileSelector
+    from app.tenancy.context import PlanTier, TenantContext
 
     selector = GovernanceProfileSelector()
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
@@ -309,12 +320,18 @@ def test_governance_profile_selector_compliance_tags():
 # ── POLICY BUNDLE ─────────────────────────────────────────────────────────────
 
 def test_policy_bundle_for_regulated_tenant():
-    from app.security_runtime.policy_bundle_selector import PolicyBundleSelector
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.security_runtime.policy_bundle_selector import PolicyBundleSelector
+    from app.tenancy.context import PlanTier, TenantContext
 
     selector = PolicyBundleSelector()
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k1")

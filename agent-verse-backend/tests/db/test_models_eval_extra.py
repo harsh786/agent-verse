@@ -32,10 +32,11 @@ class TestEvalSuiteModel:
         assert len(suite.tasks) == 1
 
     def test_default_id_generated(self):
-        from app.db.models.eval import EvalSuite
         # The default factory is a lambda that returns uuid4().hex
         # We verify it by directly calling it
         import uuid
+
+        from app.db.models.eval import EvalSuite
         id1 = uuid.uuid4().hex
         id2 = uuid.uuid4().hex
         assert id1 != id2
@@ -79,8 +80,9 @@ class TestEvalSuiteRunResultModel:
         assert result.total_tasks == 10
 
     def test_default_id_generated(self):
-        from app.db.models.eval import EvalSuiteRunResult
         import uuid
+
+        from app.db.models.eval import EvalSuiteRunResult
         id1 = uuid.uuid4().hex
         id2 = uuid.uuid4().hex
         assert id1 != id2
@@ -92,7 +94,7 @@ class TestEvalSuiteRunResultModel:
         assert hasattr(eval_module, "EvalSuiteRunResult")
 
     def test_base_class(self):
-        from app.db.models.eval import EvalSuite, EvalSuiteRunResult
         from app.db.models import Base
+        from app.db.models.eval import EvalSuite, EvalSuiteRunResult
         assert issubclass(EvalSuite, Base)
         assert issubclass(EvalSuiteRunResult, Base)

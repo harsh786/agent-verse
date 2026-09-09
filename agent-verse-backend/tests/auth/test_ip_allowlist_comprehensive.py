@@ -7,7 +7,6 @@ import pytest
 
 from app.auth.ip_allowlist import IPAllowlistCache, is_ip_allowed
 
-
 # ---------------------------------------------------------------------------
 # is_ip_allowed — pure function
 # ---------------------------------------------------------------------------

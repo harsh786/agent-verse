@@ -17,7 +17,7 @@ from app.governance.policies import (
     evaluate_with_domain_failsafe,
     start_policy_subscriber,
 )
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _ctx(tenant_id: str = "t1") -> TenantContext:

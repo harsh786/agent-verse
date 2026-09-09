@@ -1,6 +1,7 @@
 """Production-readiness tests for critical and high-severity fixes."""
-import pytest
 import os
+
+import pytest
 
 from tests._paths import BACKEND_ROOT, INFRA_DIR
 
@@ -62,6 +63,7 @@ def test_worker_has_llm_key_guidance():
 def test_oauth_redirect_uri_not_hardcoded():
     """OAuth callback must not hardcode localhost:8000 as redirect URI."""
     import inspect
+
     from app.api import connectors
     src = inspect.getsource(connectors)
     # Should not have a hardcoded default localhost in the function signature
@@ -72,6 +74,7 @@ def test_oauth_redirect_uri_not_hardcoded():
 def test_sse_bridge_handles_missing_goal_record():
     """Celery event bridge must create stub record when goal not yet in _goals."""
     import inspect
+
     from app.services import goal_service
     src = inspect.getsource(goal_service)
     assert "stub" in src.lower() or "GoalRecord" in src and "bridge" in src.lower(), \
@@ -81,6 +84,7 @@ def test_sse_bridge_handles_missing_goal_record():
 def test_agent_max_iterations_applied():
     """_make_agent_loop_for_tenant must apply max_iterations from agent config."""
     import inspect
+
     from app.services import goal_service
     src = inspect.getsource(goal_service)
     assert "max_iterations" in src, \

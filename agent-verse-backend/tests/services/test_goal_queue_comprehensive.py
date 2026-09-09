@@ -2,21 +2,23 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
-import pytest
 
+import pytest
 
 # ── GoalTaskQueue protocol ────────────────────────────────────────────────────
 
 class TestGoalTaskQueueProtocol:
     def test_protocol_has_enqueue_goal(self) -> None:
-        from app.services.goal_queue import GoalTaskQueue
         import inspect
+
+        from app.services.goal_queue import GoalTaskQueue
         # Protocol methods should be visible
         assert hasattr(GoalTaskQueue, "enqueue_goal")
 
     def test_protocol_satisfied_by_concrete_impl(self) -> None:
-        from app.services.goal_queue import CeleryGoalTaskQueue, GoalTaskQueue
         import typing
+
+        from app.services.goal_queue import CeleryGoalTaskQueue, GoalTaskQueue
         # CeleryGoalTaskQueue should satisfy the protocol
         obj = CeleryGoalTaskQueue()
         assert hasattr(obj, "enqueue_goal")

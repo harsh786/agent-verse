@@ -19,8 +19,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.goals import router as goals_router
 from app.api.enterprise import router as enterprise_router
+from app.api.goals import router as goals_router
 from app.api.rpa import router as rpa_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
@@ -140,6 +140,7 @@ def test_workflow_mode_multi_agent_with_agent_ids() -> None:
 def test_spawn_tool_registered_when_civilization_id_set() -> None:
     """AgentGraph should enable civilization_spawn when civilization_id in initial_context."""
     from unittest.mock import MagicMock
+
     from app.agent.graph import AgentGraph
 
     mock_provider = MagicMock()

@@ -9,8 +9,7 @@ import pytest
 
 from app.governance.audit import AuditEvent, AuditLog
 from app.governance.permissions import ActionLevel
-from app.tenancy.context import TenantContext, PlanTier
-
+from app.tenancy.context import PlanTier, TenantContext
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

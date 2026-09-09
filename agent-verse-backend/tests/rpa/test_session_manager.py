@@ -9,7 +9,6 @@ import pytest
 
 from app.rpa.session_manager import BrowserSession, BrowserSessionManager
 
-
 # ── BrowserSession unit tests ─────────────────────────────────────────────────
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from app.org.approval_chain import ApprovalChain, ApprovalChainRegistry, ApprovalRequest
 
 

@@ -13,7 +13,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ── _FakeRedis extended interface ─────────────────────────────────────────────
 
 
@@ -144,8 +143,8 @@ async def test_fake_redis_key_expires_on_get(fake_redis) -> None:
 
 def test_resolve_provider_anthropic_exception_falls_through() -> None:
     """Covers lines 151-152: Anthropic init raises → falls through to OpenAI."""
-    from app.main import _resolve_provider_for_app
     from app.core.config import Settings
+    from app.main import _resolve_provider_for_app
     from app.providers.fake import FakeProvider
 
     mock_anthropic_mod = MagicMock()
@@ -165,8 +164,8 @@ def test_resolve_provider_anthropic_exception_falls_through() -> None:
 
 def test_resolve_provider_openai_exception_falls_through() -> None:
     """Covers lines 158-159: OpenAI init raises → falls through to FakeProvider."""
-    from app.main import _resolve_provider_for_app
     from app.core.config import Settings
+    from app.main import _resolve_provider_for_app
     from app.providers.fake import FakeProvider
 
     mock_openai_mod = MagicMock()
@@ -186,8 +185,8 @@ def test_resolve_provider_openai_exception_falls_through() -> None:
 
 def test_resolve_provider_no_keys_returns_fake() -> None:
     """No API keys → FakeProvider (dev mode only)."""
-    from app.main import _resolve_provider_for_app
     from app.core.config import Settings
+    from app.main import _resolve_provider_for_app
     from app.providers.fake import FakeProvider
 
     env_overrides = {
@@ -204,8 +203,8 @@ def test_resolve_provider_no_keys_returns_fake() -> None:
 
 def test_resolve_provider_production_no_keys_raises() -> None:
     """In production with no keys, must raise RuntimeError."""
-    from app.main import _resolve_provider_for_app
     from app.core.config import Settings
+    from app.main import _resolve_provider_for_app
 
     env_overrides = {
         "ANTHROPIC_API_KEY": "",

@@ -70,8 +70,9 @@ async def test_two_approvals_completes_when_two_required():
 
 
 def test_approval_email_sender_importable():
-    from app.integrations.email.approval_sender import send_approval_email
     import asyncio
+
+    from app.integrations.email.approval_sender import send_approval_email
     assert asyncio.iscoroutinefunction(send_approval_email)
 
 
@@ -87,6 +88,7 @@ def test_approval_email_signs_links():
 
 def test_rejection_note_injector_importable():
     import inspect
+
     from app.services import goal_service
     src = inspect.getsource(goal_service)
     assert "_subscribe_hitl_rejections" in src or "hitl_rejection" in src, \
@@ -115,6 +117,7 @@ def test_approval_request_is_string_compatible():
 def test_approval_request_await_returns_self():
     """await gateway.request_approval(...) must return the ApprovalRequest."""
     import asyncio
+
     from app.governance.hitl import ApprovalRequest
 
     gw = HITLGateway()

@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import pytest
-from app.observability.alert_router import AlertRouter, AlertRule
-from app.observability.slo_tracker import SLOTracker, SLODefinition
-from app.evals.attribution_verifier import AttributionVerifier
+
 from app.ai_router.complexity_scorer import QueryComplexityScorer
 from app.ai_router.shadow_router import ShadowRouter, ShadowRoutingConfig
-
+from app.evals.attribution_verifier import AttributionVerifier
+from app.observability.alert_router import AlertRouter, AlertRule
+from app.observability.slo_tracker import SLODefinition, SLOTracker
 
 # ---------------------------------------------------------------------------
 # AlertRouter

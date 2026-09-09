@@ -12,7 +12,6 @@ import pytest
 
 from app.providers.fake import FakeProvider
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers / Fixtures
 # ─────────────────────────────────────────────────────────────────────────────
@@ -29,7 +28,7 @@ def _make_agent_state(
     context: dict | None = None,
 ):
     from app.agent.state import AgentState, GoalStatus
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="test-key")
     state = AgentState(goal=goal, goal_id=goal_id, tenant_ctx=ctx)
     state.status = GoalStatus(status)
@@ -48,9 +47,14 @@ def _make_profile(
     rag_strategy: str = "hybrid_rag",
 ):
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig,
-        RAGStrategyConfig, ModelPlanConfig, SecurityConfig, MemoryCacheConfig,
+        AgentPatternConfig,
         EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
     props = GoalProperties(raw_goal="test goal")
     return GoalRuntimeProfile(
@@ -67,7 +71,7 @@ def _make_profile(
 
 
 def _tenant_ctx(tenant_id: str = "t1"):
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     return TenantContext(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="test-key")
 
 
@@ -160,8 +164,8 @@ class TestSelfImprovementEngine:
         assert engine is not None
 
     def test_no_actions_when_score_above_threshold(self) -> None:
-        from app.evals.self_improvement_engine import SelfImprovementEngine
         from app.evals.runtime_scorecard import ScorecardResult
+        from app.evals.self_improvement_engine import SelfImprovementEngine
         engine = SelfImprovementEngine()
         scorecard = ScorecardResult(
             goal_id="g1",
@@ -177,8 +181,8 @@ class TestSelfImprovementEngine:
         assert actions == []
 
     def test_rag_strategy_action_on_low_rag(self) -> None:
-        from app.evals.self_improvement_engine import SelfImprovementEngine, ImprovementAction
         from app.evals.runtime_scorecard import ScorecardResult
+        from app.evals.self_improvement_engine import ImprovementAction, SelfImprovementEngine
         engine = SelfImprovementEngine()
         scorecard = ScorecardResult(
             goal_id="g1",
@@ -192,8 +196,8 @@ class TestSelfImprovementEngine:
         assert ImprovementAction.UPDATE_RAG_STRATEGY in action_types
 
     def test_blacklist_tool_on_critically_low_tool_rate(self) -> None:
-        from app.evals.self_improvement_engine import SelfImprovementEngine, ImprovementAction
         from app.evals.runtime_scorecard import ScorecardResult
+        from app.evals.self_improvement_engine import ImprovementAction, SelfImprovementEngine
         engine = SelfImprovementEngine()
         scorecard = ScorecardResult(
             goal_id="g1",
@@ -207,8 +211,8 @@ class TestSelfImprovementEngine:
         assert ImprovementAction.BLACKLIST_TOOL_PATTERN in action_types
 
     def test_regression_case_on_very_low_score(self) -> None:
-        from app.evals.self_improvement_engine import SelfImprovementEngine, ImprovementAction
         from app.evals.runtime_scorecard import ScorecardResult
+        from app.evals.self_improvement_engine import ImprovementAction, SelfImprovementEngine
         engine = SelfImprovementEngine()
         scorecard = ScorecardResult(
             goal_id="g1",
@@ -222,8 +226,8 @@ class TestSelfImprovementEngine:
         assert ImprovementAction.CREATE_REGRESSION_CASE in action_types
 
     def test_reflexion_lesson_stored_with_feedback(self) -> None:
-        from app.evals.self_improvement_engine import SelfImprovementEngine, ImprovementAction
         from app.evals.runtime_scorecard import ScorecardResult
+        from app.evals.self_improvement_engine import ImprovementAction, SelfImprovementEngine
         engine = SelfImprovementEngine()
         scorecard = ScorecardResult(
             goal_id="g1",
@@ -241,8 +245,8 @@ class TestSelfImprovementEngine:
         assert ImprovementAction.STORE_REFLEXION_LESSON in action_types
 
     def test_model_routing_action_on_low_cost(self) -> None:
-        from app.evals.self_improvement_engine import SelfImprovementEngine, ImprovementAction
         from app.evals.runtime_scorecard import ScorecardResult
+        from app.evals.self_improvement_engine import ImprovementAction, SelfImprovementEngine
         engine = SelfImprovementEngine()
         scorecard = ScorecardResult(
             goal_id="g1",
@@ -369,9 +373,9 @@ class TestEvalRunner:
             assert dim in scorecard.scores
 
     def test_score_safety_deny_events(self) -> None:
-        from app.intelligence.eval_runner import EvalRunner
         from app.agent.state import AgentState
-        from app.tenancy.context import TenantContext, PlanTier
+        from app.intelligence.eval_runner import EvalRunner
+        from app.tenancy.context import PlanTier, TenantContext
         runner = EvalRunner()
         ctx = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="test-key")
         state = AgentState(goal="test", goal_id="g1", tenant_ctx=ctx)
@@ -413,16 +417,16 @@ class TestEvalRunner:
         assert scorecard.scores["coherence"] >= 0.0
 
     def test_tool_relevance_no_tool_calls(self) -> None:
-        from app.intelligence.eval_runner import EvalRunner
         from app.agent.state import StepResult
+        from app.intelligence.eval_runner import EvalRunner
         runner = EvalRunner()
         steps = [StepResult(description="step1")]
         score = runner._score_tool_relevance(steps, iterations=1)
         assert score == 0.7
 
     def test_tool_relevance_with_failed_calls(self) -> None:
-        from app.intelligence.eval_runner import EvalRunner
         from app.agent.state import StepResult
+        from app.intelligence.eval_runner import EvalRunner
         runner = EvalRunner()
         steps = [StepResult(
             description="step",

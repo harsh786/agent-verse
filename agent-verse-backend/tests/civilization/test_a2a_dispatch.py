@@ -10,7 +10,6 @@ import pytest
 
 from app.civilization.a2a_dispatch import _sign_payload, dispatch_internal_task
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 

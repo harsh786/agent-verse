@@ -772,6 +772,7 @@ def test_ingest_url_short_content_fallback_chunk() -> None:
 def test_ingest_chunks_from_source_helper() -> None:
     """Lines 803-831: _ingest_chunks_from_source embeds and ingests chunks."""
     import asyncio
+
     from app.api.knowledge import _ingest_chunks_from_source
 
     store = KnowledgeStore()
@@ -799,6 +800,7 @@ def test_ingest_chunks_from_source_helper() -> None:
 def test_ingest_chunks_from_source_embedder_exception() -> None:
     """A structured source embedder failure is fail-closed."""
     import asyncio
+
     from app.api.knowledge import _ingest_chunks_from_source
 
     store = KnowledgeStore()
@@ -824,6 +826,7 @@ def test_ingest_chunks_from_source_embedder_exception() -> None:
 def test_ingest_chunks_no_embedder() -> None:
     """A structured source without an embedder is fail-closed."""
     import asyncio
+
     from app.api.knowledge import _ingest_chunks_from_source
 
     store = KnowledgeStore()

@@ -1,9 +1,9 @@
 """Phase 17: LLM-as-judge eval tests."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # LLMJudge — provider-backed scoring

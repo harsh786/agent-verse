@@ -1,13 +1,14 @@
 """Tests verifying all TRUE MOCK fixes are real implementations."""
-import pytest
 import os
+
+import pytest
 
 
 def test_meta_agent_planner_uses_real_provider_when_available(monkeypatch):
     """MetaAgentPlanner should use real provider when API key is set."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-placeholder")
-    from app.main import _resolve_provider_for_app
     from app.core.config import Settings
+    from app.main import _resolve_provider_for_app
     provider = _resolve_provider_for_app(Settings(_env_file=None))
     assert "FakeProvider" not in type(provider).__name__ or not os.getenv("ANTHROPIC_API_KEY")
 
@@ -16,8 +17,8 @@ def test_meta_agent_planner_warns_without_provider(monkeypatch):
     """When no API key, FakeProvider is used but a warning is logged."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    from app.main import _resolve_provider_for_app
     from app.core.config import Settings
+    from app.main import _resolve_provider_for_app
     provider = _resolve_provider_for_app(Settings(_env_file=None))
     # Should be FakeProvider (logged warning)
     assert provider is not None
@@ -26,7 +27,8 @@ def test_meta_agent_planner_warns_without_provider(monkeypatch):
 def test_embed_texts_returns_empty_list_without_provider():
     """embed_texts() returns empty embeddings, not random vectors, when no provider."""
     import asyncio
-    from app.providers.base import embed_texts, EmbedRequest
+
+    from app.providers.base import EmbedRequest, embed_texts
     result = asyncio.run(embed_texts(["test text"], provider=None))
     # Either returns empty list or single empty embedding
     assert isinstance(result, list)
@@ -38,8 +40,9 @@ def test_embed_texts_returns_empty_list_without_provider():
 def test_smart_context_fetch_returns_empty_without_embedder():
     """smart_context_fetch returns '' without embedder, not random-vector noise."""
     import asyncio
+
     from app.pipeline.steps import smart_context_fetch
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")
     result = asyncio.run(
@@ -55,6 +58,7 @@ def test_smart_context_fetch_returns_empty_without_embedder():
 def test_simulation_runner_not_duplicate():
     """SimulationRunner class is defined only once."""
     import inspect
+
     import app.enterprise.simulation as sim_mod
     source = inspect.getsource(sim_mod)
     count = source.count("class SimulationRunner")

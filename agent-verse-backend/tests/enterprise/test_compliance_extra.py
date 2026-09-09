@@ -1,8 +1,9 @@
 """Extra coverage for app/enterprise/compliance.py — ComplianceController methods."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from app.enterprise.compliance import ComplianceController, DataExportRequest
 from app.tenancy.context import PlanTier, TenantContext

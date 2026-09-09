@@ -1,7 +1,8 @@
 """Tests for P2 governance fixes."""
 import pytest
-from app.governance.hitl import HITLGateway, ApprovalStatus
-from app.tenancy.context import TenantContext, PlanTier
+
+from app.governance.hitl import ApprovalStatus, HITLGateway
+from app.tenancy.context import PlanTier, TenantContext
 
 CTX = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k1")
 
@@ -99,7 +100,8 @@ def test_time_window_policy_allows_within_hours():
 
 @pytest.mark.asyncio
 async def test_delegation_endpoint_requires_auth():
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:

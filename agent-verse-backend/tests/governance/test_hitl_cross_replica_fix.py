@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import asyncio
-
-import pytest
 from unittest.mock import AsyncMock
 
+import pytest
+
 from app.governance.hitl import ApprovalStatus, HITLGateway
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 T = TenantContext(tenant_id="hitl-t1", plan=PlanTier.ENTERPRISE, api_key_id="k1", roles=())
 

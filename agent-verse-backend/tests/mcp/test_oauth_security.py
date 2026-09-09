@@ -1,12 +1,12 @@
 """Tests that OAuth security fixes work correctly."""
 from __future__ import annotations
 
+import httpx
 import pytest
 import respx
-import httpx
 
 from app.mcp.oauth import OAuthFlowManager, OAuthToken
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 T = TenantContext(tenant_id="oauth-sec-t1", plan=PlanTier.PROFESSIONAL, api_key_id="os1")
 

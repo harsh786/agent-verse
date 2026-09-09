@@ -1,6 +1,8 @@
 """Tests that parallel step execution actually uses asyncio.gather."""
 import asyncio
+
 import pytest
+
 from app.agent.structured_plan import StructuredPlan, StructuredStep
 
 
@@ -31,11 +33,11 @@ def test_execution_waves_all_sequential():
 @pytest.mark.asyncio
 async def test_graph_has_enable_cot_attribute():
     from app.agent.graph import AgentGraph
+    from app.intelligence.guardrails import GuardrailChecker
     from app.providers.fake import FakeProvider
     from app.reliability.dedup import DeduplicationCache
     from app.reliability.result_processor import ResultProcessor
     from app.reliability.rollback import RollbackEngine
-    from app.intelligence.guardrails import GuardrailChecker
 
     fake = FakeProvider(responses=["done"])
     graph = AgentGraph(
@@ -50,11 +52,11 @@ async def test_graph_has_enable_cot_attribute():
 @pytest.mark.asyncio
 async def test_graph_has_enable_reflection_attribute():
     from app.agent.graph import AgentGraph
+    from app.intelligence.guardrails import GuardrailChecker
     from app.providers.fake import FakeProvider
     from app.reliability.dedup import DeduplicationCache
     from app.reliability.result_processor import ResultProcessor
     from app.reliability.rollback import RollbackEngine
-    from app.intelligence.guardrails import GuardrailChecker
 
     fake = FakeProvider(responses=["done"])
     graph = AgentGraph(

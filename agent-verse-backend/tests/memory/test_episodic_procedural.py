@@ -2,13 +2,14 @@
 """Episodic and Procedural memory — production-grade DB-backed."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
-from app.tenancy.context import TenantContext, PlanTier
-from app.memory.episodic import EpisodicMemoryStore, Episode
+from app.memory.episodic import Episode, EpisodicMemoryStore
 from app.memory.procedural import ProceduralMemoryStore, Skill
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture

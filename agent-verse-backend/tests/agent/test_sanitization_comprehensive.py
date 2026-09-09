@@ -12,7 +12,6 @@ from app.agent.sanitization import (
     sanitize_tool_raw_output,
 )
 
-
 # ── redact_sensitive_text ────────────────────────────────────────────────────
 
 def test_redact_api_key() -> None:

@@ -1,6 +1,7 @@
 # tests/test_phase6_wiring.py
 """Phase 6: Dead code wiring and consistency fixes."""
 from __future__ import annotations
+
 import pytest
 
 
@@ -42,6 +43,7 @@ def test_redis_dedup_cache_importable():
 async def test_redis_dedup_no_redis_no_crash():
     """RedisDeduplicationCache must not crash when Redis is unavailable."""
     from unittest.mock import AsyncMock
+
     from app.reliability.dedup import RedisDeduplicationCache
     mock_redis = AsyncMock()
     mock_redis.get = AsyncMock(side_effect=Exception("no redis"))

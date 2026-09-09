@@ -5,7 +5,8 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from app.agent.supervisor import SupervisorAgent, SubAgentTask, SupervisionResult
+
+from app.agent.supervisor import SubAgentTask, SupervisionResult, SupervisorAgent
 
 
 def test_sub_agent_task_defaults() -> None:

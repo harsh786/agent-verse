@@ -10,10 +10,9 @@ Covers:
 from __future__ import annotations
 
 import os
-
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # H3: IP must not be spoofable via X-Forwarded-For without a trusted proxy

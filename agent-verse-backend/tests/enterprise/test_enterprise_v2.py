@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # generate_api_key — NIST compliance
@@ -215,6 +215,7 @@ async def test_gdpr_export_async_no_truncation() -> None:
     Validates the fix to compliance.py request_data_export().
     """
     import inspect
+
     from app.enterprise.compliance import ComplianceController
 
     src = inspect.getsource(ComplianceController.request_data_export)
@@ -296,6 +297,7 @@ async def test_scim_bearer_auth_required() -> None:
     Amendment 8.2: SCIM endpoints must reject requests without Bearer token.
     """
     from fastapi import HTTPException
+
     from app.auth.scim_handler import require_scim_auth
 
     mock_request = MagicMock()
@@ -312,6 +314,7 @@ async def test_scim_bearer_auth_required() -> None:
 async def test_scim_bearer_auth_invalid_token() -> None:
     """Invalid/unknown token must return 401."""
     from fastapi import HTTPException
+
     from app.auth.scim_handler import require_scim_auth
 
     mock_db = AsyncMock()
@@ -335,6 +338,7 @@ async def test_scim_bearer_auth_invalid_token() -> None:
 async def test_scim_create_user_blocked_when_disabled() -> None:
     """SCIM user creation blocked when allow_user_create=False."""
     from fastapi import HTTPException
+
     from app.auth.scim_handler import SCIMHandler
 
     mock_db = AsyncMock()

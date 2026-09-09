@@ -1,10 +1,11 @@
 """Tests for Phase 3 Track D (consensus verifier) and Track E (calibration)."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from app.agent.consensus import ConsensusVerifier, requires_consensus, VerifierVote
+import pytest
+
+from app.agent.consensus import ConsensusVerifier, VerifierVote, requires_consensus
 
 
 class TestRequiresConsensus:

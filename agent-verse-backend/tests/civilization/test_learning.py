@@ -9,12 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.civilization.learning import (
-    LearningPipeline,
-    _FakeScoringState,
     _PROMOTION_SCORE_THRESHOLD,
     _REJECTION_SCORE_THRESHOLD,
+    LearningPipeline,
+    _FakeScoringState,
 )
-
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -67,7 +66,7 @@ def _make_pipeline(**kwargs) -> LearningPipeline:
 @pytest.mark.asyncio
 async def test_submit_candidate_returns_id():
     pipeline = _make_pipeline()
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
     cid = await pipeline.submit_candidate(
         agent_id="a1",
@@ -182,6 +181,7 @@ def test_promotion_and_rejection_thresholds():
 
 def test_civilization_tick_task_exists():
     import inspect
+
     from app.scaling import tasks
     src = inspect.getsource(tasks)
     assert "civilization_tick" in src
@@ -190,7 +190,7 @@ def test_civilization_tick_task_exists():
 
 def test_learning_candidates_never_promote_when_rejected():
     """This is a CRITICAL property: rejected must NEVER reach LTM regardless of any bug."""
-    from app.civilization.learning import _REJECTION_SCORE_THRESHOLD, _PROMOTION_SCORE_THRESHOLD
+    from app.civilization.learning import _PROMOTION_SCORE_THRESHOLD, _REJECTION_SCORE_THRESHOLD
     # These are the safety thresholds; ensure rejection threshold is ALWAYS below promotion
     assert _REJECTION_SCORE_THRESHOLD < _PROMOTION_SCORE_THRESHOLD, \
         "CRITICAL: rejection threshold must be lower than promotion threshold"
@@ -205,7 +205,7 @@ async def test_submit_candidate_with_db():
     session = _FakeSession()
     pipeline = _make_pipeline(db=lambda: session)
 
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
     cid = await pipeline.submit_candidate(
         agent_id="a1",
@@ -223,7 +223,7 @@ async def test_submit_candidate_db_exception_still_returns_id():
     session = _FakeSession(raise_on="DB insert failed")
     pipeline = _make_pipeline(db=lambda: session)
 
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
     cid = await pipeline.submit_candidate(
         agent_id="a1",
@@ -239,7 +239,7 @@ async def test_submit_candidate_publishes_to_bus():
     mock_bus.publish = AsyncMock()
     pipeline = _make_pipeline(bus=mock_bus)
 
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
     await pipeline.submit_candidate(
         agent_id="a1",
@@ -465,7 +465,7 @@ def test_fake_scoring_state_init():
 @pytest.mark.asyncio
 async def test_submit_candidate_returns_id():
     pipeline = _make_pipeline()
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
     cid = await pipeline.submit_candidate(
         agent_id="a1",
@@ -580,6 +580,7 @@ def test_promotion_and_rejection_thresholds():
 
 def test_civilization_tick_task_exists():
     import inspect
+
     from app.scaling import tasks
     src = inspect.getsource(tasks)
     assert "civilization_tick" in src
@@ -588,7 +589,7 @@ def test_civilization_tick_task_exists():
 
 def test_learning_candidates_never_promote_when_rejected():
     """This is a CRITICAL property: rejected must NEVER reach LTM regardless of any bug."""
-    from app.civilization.learning import _REJECTION_SCORE_THRESHOLD, _PROMOTION_SCORE_THRESHOLD
+    from app.civilization.learning import _PROMOTION_SCORE_THRESHOLD, _REJECTION_SCORE_THRESHOLD
     # These are the safety thresholds; ensure rejection threshold is ALWAYS below promotion
     assert _REJECTION_SCORE_THRESHOLD < _PROMOTION_SCORE_THRESHOLD, \
         "CRITICAL: rejection threshold must be lower than promotion threshold"

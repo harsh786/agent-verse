@@ -13,7 +13,6 @@ from app.tools.email_tool import (
     email_send,
 )
 
-
 # ---------------------------------------------------------------------------
 # _validate_email
 # ---------------------------------------------------------------------------
@@ -500,16 +499,17 @@ async def test_email_send_with_tls(monkeypatch):
 @pytest.mark.asyncio
 async def test_email_send_missing_aiosmtplib():
     """Returns error dict when aiosmtplib is not installed."""
-    import sys
     import importlib
+    import sys
 
     # Temporarily hide aiosmtplib
     real_module = sys.modules.get("aiosmtplib")
     sys.modules["aiosmtplib"] = None  # type: ignore[assignment]
     try:
         # Reload to pick up missing import
-        import app.tools.email_tool as et_mod
         import importlib
+
+        import app.tools.email_tool as et_mod
         # We can't easily re-run ImportError here since module is cached,
         # but we can test the ImportError path by mocking the import
         with patch.dict("sys.modules", {"aiosmtplib": None}):

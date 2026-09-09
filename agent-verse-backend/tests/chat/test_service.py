@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.chat.service import ChatService
 from app.chat.intent import Intent
-
+from app.chat.service import ChatService
 
 TENANT = "tenant_abc"
 TENANT2 = "tenant_xyz"

@@ -3,8 +3,10 @@ NoOpTracer, NoOpSpanContext, get_recent_spans.
 """
 from __future__ import annotations
 
+from unittest.mock import MagicMock, call, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, call
+
 import app.observability.tracing as tracing_module
 from app.observability.tracing import (
     _NoOpSpanContext,
@@ -13,7 +15,6 @@ from app.observability.tracing import (
     get_recent_spans,
     get_tracer,
 )
-
 
 # ── 1. _NoOpTracer ────────────────────────────────────────────────────────────
 

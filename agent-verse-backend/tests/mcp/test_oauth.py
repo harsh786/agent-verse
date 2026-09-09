@@ -1,9 +1,9 @@
 """Tests for OAuthFlowManager."""
 from __future__ import annotations
 
+import httpx
 import pytest
 import respx
-import httpx
 
 from app.mcp.oauth import OAuthFlowManager, OAuthToken
 from app.tenancy.context import PlanTier, TenantContext

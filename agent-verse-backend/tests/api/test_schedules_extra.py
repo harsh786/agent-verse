@@ -9,12 +9,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.schedules import (
-    events_router,
-    nl_router,
-    router as schedules_router,
-    webhooks_router,
     _record_to_dict,
     _spec_to_dict,
+    events_router,
+    nl_router,
+    webhooks_router,
+)
+from app.api.schedules import (
+    router as schedules_router,
 )
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware

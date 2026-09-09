@@ -5,7 +5,6 @@ import pytest
 
 from app.agent.tool_risk import classify_tool_risk
 
-
 # ── destructive ───────────────────────────────────────────────────────────────
 
 def test_jira_delete_issue_is_destructive() -> None:

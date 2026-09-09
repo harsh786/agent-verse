@@ -13,7 +13,6 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import create_app
 
-
 # ── Shared test app ────────────────────────────────────────────────────────────
 
 
@@ -22,6 +21,7 @@ def real_app():
     """A fully wired app instance shared across tests in this module."""
     import dataclasses
     import os
+
     from app.providers.fake import FakeProvider
 
     # Ensure A2A_TENANT_ID is set so the a2a endpoint works in tests
@@ -36,6 +36,7 @@ def real_app():
     gw = getattr(app.state, "retrieval_gateway", None)
     if gw is not None and hasattr(gw, "dependencies"):
         import dataclasses
+
         from app.rag.gateway import RetrievalGateway
         new_deps = dataclasses.replace(gw.dependencies, embedder=fake)
         app.state.retrieval_gateway = RetrievalGateway(new_deps)
@@ -46,6 +47,7 @@ def real_app():
 async def client_and_key(real_app):
     """Creates a tenant, returns (AsyncClient, api_key)."""
     import dataclasses
+
     from app.providers.fake import FakeProvider
     from app.rag.gateway import RetrievalGateway
     transport = ASGITransport(app=real_app)

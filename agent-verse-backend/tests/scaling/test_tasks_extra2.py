@@ -1,8 +1,8 @@
 """Extra coverage for app/scaling/tasks.py — utility functions and task helpers."""
 from __future__ import annotations
 
-import hashlib
 import datetime
+import hashlib
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -103,6 +103,7 @@ class TestRunAsync:
 
     def test_closes_loop_after_run(self):
         import asyncio
+
         from app.scaling.tasks import _run_async
 
         async def sample():

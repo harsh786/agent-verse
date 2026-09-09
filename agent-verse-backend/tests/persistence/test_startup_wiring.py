@@ -1,8 +1,10 @@
 # tests/persistence/test_startup_wiring.py
 """Startup wiring must be correct — no wildcard no-ops, lazy hydration works."""
 from __future__ import annotations
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 def test_knowledge_graph_store_has_hydrated_tenants_set():
@@ -16,6 +18,7 @@ def test_knowledge_graph_store_has_hydrated_tenants_set():
 def test_reflexion_store_accepts_db_factory():
     """ReflexionStore.__init__ must accept db_factory."""
     import inspect
+
     from app.state_runtime.reflexion_store import ReflexionStore
     sig = inspect.signature(ReflexionStore.__init__)
     assert "db_factory" in sig.parameters
@@ -30,6 +33,7 @@ def test_reflexion_store_has_hydrated_tenants_set():
 def test_ab_testing_engine_accepts_db_factory():
     """ABTestingEngine.__init__ must accept db_factory."""
     import inspect
+
     from app.optimization.ab_testing import ABTestingEngine
     sig = inspect.signature(ABTestingEngine.__init__)
     assert "db_factory" in sig.parameters
@@ -63,8 +67,9 @@ async def test_orchestration_persistence_wildcard_loads_all():
 
 def test_kg_lazy_hydration_triggers_on_first_miss():
     """query_nodes() for unknown tenant must schedule DB load."""
-    from app.knowledge_graph.store import KnowledgeGraphStore
     import asyncio
+
+    from app.knowledge_graph.store import KnowledgeGraphStore
 
     store = KnowledgeGraphStore()
     store._db = MagicMock()  # simulate DB being wired

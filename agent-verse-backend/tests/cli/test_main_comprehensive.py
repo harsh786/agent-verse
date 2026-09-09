@@ -246,8 +246,9 @@ def test_api_key_from_env():
 
 
 def test_api_key_missing_env_exits():
-    from app.cli.main import _api_key
     import typer
+
+    from app.cli.main import _api_key
     env_clean = {k: v for k, v in os.environ.items() if k != "AGENTVERSE_API_KEY"}
     with (
         patch.dict("os.environ", env_clean, clear=True),

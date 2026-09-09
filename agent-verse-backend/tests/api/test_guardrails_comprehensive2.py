@@ -13,6 +13,8 @@ from fastapi.testclient import TestClient
 from app.api.guardrails import (
     _configs_store,
     _violations_store,
+)
+from app.api.guardrails import (
     router as guardrails_router,
 )
 from app.tenancy.context import PlanTier, TenantContext

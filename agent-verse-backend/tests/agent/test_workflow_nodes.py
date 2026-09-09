@@ -1,6 +1,7 @@
 """Tests for Phase 9 workflow node executors."""
-import pytest
 import asyncio
+
+import pytest
 
 
 class TestDecisionNode:
@@ -81,8 +82,9 @@ class TestDelayNode:
 
     @pytest.mark.asyncio
     async def test_delay_capped_at_300_non_prod(self):
-        from app.agent.workflow_nodes import execute_delay_node
         import os
+
+        from app.agent.workflow_nodes import execute_delay_node
         os.environ.pop("ENVIRONMENT", None)  # non-production
         result = await execute_delay_node({"seconds": 0.001}, {})
         assert result["delayed_seconds"] <= 300
@@ -135,6 +137,7 @@ class TestSandboxGuard:
     def test_production_guard_in_code_interpreter(self):
         """CodeInterpreter must refuse subprocess in production."""
         import inspect
+
         from app.tools.code_interpreter import CodeInterpreter
         source = inspect.getsource(CodeInterpreter)
         assert "production" in source.lower() and "subprocess" in source.lower() or \

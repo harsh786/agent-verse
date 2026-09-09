@@ -316,8 +316,9 @@ async def test_postgres_returns_error_when_url_missing(monkeypatch: pytest.Monke
 
 
 def test_postgres_get_tools_returns_fallback_without_asyncpg() -> None:
-    from app.mcp.servers import postgres_server
     import sys
+
+    from app.mcp.servers import postgres_server
 
     with patch.dict(sys.modules, {"asyncpg": None}):
         # Force reimport isn't needed; just test the logic
@@ -350,6 +351,7 @@ def test_registry_wiring_returns_builtin_configs() -> None:
 @pytest.mark.asyncio
 async def test_github_get_file_decodes_base64() -> None:
     import base64
+
     from app.mcp.servers import github_server
 
     content_bytes = base64.b64encode(b"print('hello')").decode()

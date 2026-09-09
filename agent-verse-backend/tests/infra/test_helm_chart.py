@@ -1,7 +1,7 @@
 """Tests that Helm chart templates are valid YAML."""
-import pytest
 from pathlib import Path
 
+import pytest
 
 HELM_DIR = Path(__file__).parents[2] / "helm" / "agentverse"
 

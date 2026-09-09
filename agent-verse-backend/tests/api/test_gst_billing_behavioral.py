@@ -51,8 +51,8 @@ async def test_gst_invoice_persisted_to_db():
     def fake_db():
         return fake_session
 
-    from app.api.gst_billing import generate_gst_invoice, GSTInvoiceRequest
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.api.gst_billing import GSTInvoiceRequest, generate_gst_invoice
+    from app.tenancy.context import PlanTier, TenantContext
     request = MagicMock()
     request.state.tenant = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")
     request.app.state.db_session_factory = fake_db

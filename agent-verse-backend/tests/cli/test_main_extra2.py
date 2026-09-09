@@ -534,6 +534,7 @@ def test_run_tests_failure_propagates():
 def test_stream_goal_events():
     """Test _stream_goal processes various SSE event types."""
     import io
+
     from app.cli.main import _stream_goal
 
     events = [

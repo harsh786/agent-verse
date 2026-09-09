@@ -12,7 +12,6 @@ import pytest
 
 from app.providers.fake import FakeProvider
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -38,8 +37,8 @@ class TestSelfRefinePattern:
         assert p._max_iterations == 5
 
     def test_state_is_implemented(self) -> None:
-        from app.agent.patterns.self_refine import SelfRefinePattern
         from app.agent.patterns.base import PatternState
+        from app.agent.patterns.self_refine import SelfRefinePattern
         p = SelfRefinePattern()
         assert p.state == PatternState.IMPLEMENTED
 
@@ -96,8 +95,8 @@ class TestReflexionPattern:
         assert p.pattern_id == "reflexion"
 
     def test_state_is_implemented(self) -> None:
-        from app.agent.patterns.reflexion import ReflexionPattern
         from app.agent.patterns.base import PatternState
+        from app.agent.patterns.reflexion import ReflexionPattern
         assert ReflexionPattern().state == PatternState.IMPLEMENTED
 
     def test_node_name(self) -> None:
@@ -154,8 +153,8 @@ class TestPeerReviewPattern:
         assert p._threshold == 0.7
 
     def test_state_is_implemented(self) -> None:
-        from app.agent.patterns.peer_review import PeerReviewPattern
         from app.agent.patterns.base import PatternState
+        from app.agent.patterns.peer_review import PeerReviewPattern
         assert PeerReviewPattern().state == PatternState.IMPLEMENTED
 
     async def test_execute_returns_peer_review_result(self) -> None:
@@ -211,8 +210,8 @@ class TestSelfConsistencyPattern:
         assert p._n == 3
 
     def test_state_is_implemented(self) -> None:
-        from app.agent.patterns.self_consistency import SelfConsistencyPattern
         from app.agent.patterns.base import PatternState
+        from app.agent.patterns.self_consistency import SelfConsistencyPattern
         assert SelfConsistencyPattern().state == PatternState.IMPLEMENTED
 
     async def test_execute_returns_majority_vote(self) -> None:
@@ -255,8 +254,8 @@ class TestTreeOfThoughtsPattern:
         assert p._n == 3
 
     def test_state_is_implemented(self) -> None:
-        from app.agent.patterns.tree_of_thoughts import TreeOfThoughtsPattern
         from app.agent.patterns.base import PatternState
+        from app.agent.patterns.tree_of_thoughts import TreeOfThoughtsPattern
         assert TreeOfThoughtsPattern().state == PatternState.IMPLEMENTED
 
     async def test_execute_returns_string(self) -> None:
@@ -291,8 +290,8 @@ class TestReActPattern:
         assert ReActPattern().pattern_id == "react"
 
     def test_state_is_implemented(self) -> None:
-        from app.agent.patterns.react import ReActPattern
         from app.agent.patterns.base import PatternState
+        from app.agent.patterns.react import ReActPattern
         assert ReActPattern().state == PatternState.IMPLEMENTED
 
     def test_node_name(self) -> None:
@@ -318,8 +317,8 @@ class TestPlanExecutePattern:
         assert PlanExecutePattern().pattern_id == "plan_execute"
 
     def test_state_is_implemented(self) -> None:
-        from app.agent.patterns.plan_execute import PlanExecutePattern
         from app.agent.patterns.base import PatternState
+        from app.agent.patterns.plan_execute import PlanExecutePattern
         assert PlanExecutePattern().state == PatternState.IMPLEMENTED
 
     def test_node_name(self) -> None:
@@ -337,8 +336,8 @@ class TestDebatePattern:
         assert DebatePattern().pattern_id == "debate"
 
     def test_state_is_implemented(self) -> None:
-        from app.agent.patterns.debate import DebatePattern
         from app.agent.patterns.base import PatternState
+        from app.agent.patterns.debate import DebatePattern
         assert DebatePattern().state == PatternState.IMPLEMENTED
 
     def test_node_name(self) -> None:
@@ -356,8 +355,8 @@ class TestSupervisorPattern:
         assert SupervisorPattern().pattern_id == "supervisor"
 
     def test_state_is_implemented(self) -> None:
-        from app.agent.patterns.supervisor import SupervisorPattern
         from app.agent.patterns.base import PatternState
+        from app.agent.patterns.supervisor import SupervisorPattern
         assert SupervisorPattern().state == PatternState.IMPLEMENTED
 
     def test_node_name(self) -> None:
@@ -513,7 +512,7 @@ class TestPatternSelector:
         assert config.strategy == "colbert"
 
     def test_select_rag_strategy_expert_returns_raptor(self) -> None:
-        from app.orchestration.runtime_profile import GoalProperties, Complexity
+        from app.orchestration.runtime_profile import Complexity, GoalProperties
         selector = self._make_selector()
         props = GoalProperties(
             raw_goal="Expert analysis",
@@ -523,7 +522,7 @@ class TestPatternSelector:
         assert config.strategy == "raptor"
 
     def test_select_agent_patterns_expert_adds_reflection(self) -> None:
-        from app.orchestration.runtime_profile import GoalProperties, Complexity
+        from app.orchestration.runtime_profile import Complexity, GoalProperties
         selector = self._make_selector()
         props = GoalProperties(
             raw_goal="Solve a hard problem",

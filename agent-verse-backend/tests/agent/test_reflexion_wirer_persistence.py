@@ -1,12 +1,15 @@
 # tests/agent/test_reflexion_wirer_persistence.py
 """ReflexionWirer must persist lessons to DB, not just in-memory."""
 from __future__ import annotations
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from app.agent.reflexion_wirer import ReflexionWirer
-from app.state_runtime.reflexion_store import ReflexionStore
 from app.agent.state import AgentState, GoalStatus
-from app.tenancy.context import TenantContext, PlanTier
+from app.state_runtime.reflexion_store import ReflexionStore
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture
@@ -73,8 +76,8 @@ def test_failure_classification():
 
 def test_get_reflexion_wirer_wires_db_factory():
     """get_reflexion_wirer(db_factory=...) must inject DB factory into singleton."""
-    from app.agent.reflexion_wirer import get_reflexion_wirer
     import app.agent.reflexion_wirer as _m
+    from app.agent.reflexion_wirer import get_reflexion_wirer
     _m._default_reflexion_wirer = None  # reset singleton for test
     mock_db = MagicMock()
     wirer = get_reflexion_wirer(db_factory=mock_db)

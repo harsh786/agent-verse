@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import io
-import pytest
+
 import numpy as np
+import pytest
 import soundfile as sf
 
 
@@ -56,8 +57,8 @@ async def test_stt_provider_singleton():
 @pytest.mark.asyncio
 async def test_faster_whisper_provider_interface():
     """FasterWhisperSTT implements STTProvider protocol."""
-    from app.voice.providers.stt.faster_whisper import FasterWhisperSTT
     from app.voice.providers.base import STTProvider
+    from app.voice.providers.stt.faster_whisper import FasterWhisperSTT
     p = FasterWhisperSTT()
     assert isinstance(p, STTProvider)
     assert p.provider_name == 'faster_whisper'
@@ -69,8 +70,8 @@ async def test_faster_whisper_provider_interface():
 @pytest.mark.asyncio
 async def test_whisper_api_provider_interface():
     """WhisperAPISTT implements STTProvider protocol."""
-    from app.voice.providers.stt.whisper_api import WhisperAPISTT
     from app.voice.providers.base import STTProvider
+    from app.voice.providers.stt.whisper_api import WhisperAPISTT
     p = WhisperAPISTT()
     assert isinstance(p, STTProvider)
     assert p.provider_name == 'whisper_api'
@@ -79,8 +80,8 @@ async def test_whisper_api_provider_interface():
 @pytest.mark.asyncio
 async def test_assemblyai_provider_interface():
     """AssemblyAISTT implements STTProvider protocol."""
-    from app.voice.providers.stt.assemblyai import AssemblyAISTT
     from app.voice.providers.base import STTProvider
+    from app.voice.providers.stt.assemblyai import AssemblyAISTT
     p = AssemblyAISTT()
     assert isinstance(p, STTProvider)
     assert p.provider_name == 'assemblyai'
@@ -89,8 +90,9 @@ async def test_assemblyai_provider_interface():
 @pytest.mark.asyncio
 async def test_override_stt_for_testing():
     """override_stt() allows injecting a mock provider."""
-    from app.voice.providers import override_stt, get_stt, reset_providers
     from unittest.mock import AsyncMock, MagicMock
+
+    from app.voice.providers import get_stt, override_stt, reset_providers
     from app.voice.providers.base import TranscriptResult
 
     mock_provider = MagicMock()

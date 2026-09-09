@@ -9,8 +9,8 @@ from fastapi.testclient import TestClient
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.goals import router as goals_router
-from app.tenancy.context import PlanTier, TenantContext
 from app.intelligence.eval import EvalScorecard
+from app.tenancy.context import PlanTier, TenantContext
 
 _TENANT = TenantContext(
     tenant_id="eval-tenant", plan=PlanTier.PROFESSIONAL, api_key_id="k"

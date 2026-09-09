@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.governance.cost import BudgetConfig, CostController, RedisCostController
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _ctx(tenant_id: str = "t1") -> TenantContext:

@@ -21,7 +21,6 @@ from app.rag_platform.reranker_contract import (
     RerankerProtocol,
 )
 
-
 # ── RetrievalLeg ──────────────────────────────────────────────────────────────
 
 class TestRetrievalLeg:

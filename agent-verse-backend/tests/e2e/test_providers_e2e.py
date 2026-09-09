@@ -5,10 +5,9 @@ import math
 
 import pytest
 
-from app.providers.base import Message, CompletionRequest, EmbedRequest, embed_texts
+from app.providers.base import CompletionRequest, EmbedRequest, Message, embed_texts
 from app.providers.fake import FakeProvider
 from app.providers.vault import CredentialVault, get_vault
-
 
 # ── embed_texts helper ────────────────────────────────────────────────────────
 

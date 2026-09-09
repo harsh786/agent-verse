@@ -1,10 +1,12 @@
 """ModelOrchestrator end-to-end: classify→assemble→select pipeline."""
 from __future__ import annotations
+
 import pytest
+
 from app.agent.goal_classifier import goal_classifier
 from app.agent.pattern_assembler import pattern_assembler
+from app.agent.pattern_config import Complexity, GoalProperties, RiskLevel
 from app.ai_router.model_orchestrator import ModelOrchestrator
-from app.agent.pattern_config import Complexity, RiskLevel, GoalProperties
 
 
 @pytest.fixture
@@ -37,7 +39,7 @@ def test_critical_goal_gets_high_quality_models(orchestrator):
 
 
 def test_pattern_config_hints_respected(orchestrator):
-    from app.agent.pattern_config import PatternConfig, GoalProperties
+    from app.agent.pattern_config import GoalProperties, PatternConfig
     cfg = PatternConfig(
         model_planner="gpt-4o-mini", model_executor="gpt-4o-mini", model_verifier="gpt-4o",
         goal_properties=GoalProperties(complexity=Complexity.EXPERT),
@@ -48,7 +50,7 @@ def test_pattern_config_hints_respected(orchestrator):
 
 
 def test_budget_downgrade_reduces_tier(orchestrator):
-    from app.agent.pattern_config import PatternConfig, GoalProperties, Complexity
+    from app.agent.pattern_config import Complexity, GoalProperties, PatternConfig
     cfg = PatternConfig(goal_properties=GoalProperties(complexity=Complexity.EXPERT))
     full = orchestrator.select_models(cfg, budget_spent_ratio=0.0)
     degraded = orchestrator.select_models(cfg, budget_spent_ratio=0.85)
@@ -85,7 +87,7 @@ def test_provider_failover_on_circuit_open():
 
 
 def test_latency_class_realtime_for_realtime_goal(orchestrator):
-    from app.agent.pattern_config import PatternConfig, GoalProperties, Complexity, RiskLevel
+    from app.agent.pattern_config import Complexity, GoalProperties, PatternConfig, RiskLevel
     cfg = PatternConfig(goal_properties=GoalProperties(
         complexity=Complexity.SIMPLE, risk=RiskLevel.LOW, time_sensitivity="realtime"
     ))

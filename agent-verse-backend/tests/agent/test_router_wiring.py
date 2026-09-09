@@ -1,8 +1,9 @@
 """Tests for Phase 3 (AgentRouter wiring) and Phase 6 (WorkflowDAG engine)."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 def test_routing_decision_has_mode_and_candidates():

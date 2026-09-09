@@ -11,7 +11,7 @@ import pytest
 
 
 def _tenant_ctx(tenant_id: str = "tenant1"):  # type: ignore[return]
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     return TenantContext(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="test-key")
 
 
@@ -33,7 +33,7 @@ class TestEpisodicMemoryStore:
         assert result == []
 
     async def test_recall_in_memory_keyword_match(self) -> None:
-        from app.memory.episodic import EpisodicMemoryStore, Episode
+        from app.memory.episodic import Episode, EpisodicMemoryStore
         store = EpisodicMemoryStore()
         # Seed in-memory cache directly
         store._cache["t1"] = [
@@ -63,7 +63,7 @@ class TestEpisodicMemoryStore:
         assert result[0].goal_id == "g1"
 
     async def test_recall_with_outcome_filter(self) -> None:
-        from app.memory.episodic import EpisodicMemoryStore, Episode
+        from app.memory.episodic import Episode, EpisodicMemoryStore
         store = EpisodicMemoryStore()
         store._cache["t1"] = [
             Episode("e1", "t1", "g1", "run tests", "ran", "failed", "fix imports"),
@@ -73,7 +73,7 @@ class TestEpisodicMemoryStore:
         assert all(e.outcome == "success" for e in result)
 
     async def test_recall_limit(self) -> None:
-        from app.memory.episodic import EpisodicMemoryStore, Episode
+        from app.memory.episodic import Episode, EpisodicMemoryStore
         store = EpisodicMemoryStore()
         store._cache["t1"] = [
             Episode(f"e{i}", "t1", f"g{i}", "run tests", "ran", "success", "", 0.9)
@@ -88,7 +88,7 @@ class TestEpisodicMemoryStore:
         assert store.format_for_context([]) == ""
 
     def test_format_for_context_with_episodes(self) -> None:
-        from app.memory.episodic import EpisodicMemoryStore, Episode
+        from app.memory.episodic import Episode, EpisodicMemoryStore
         store = EpisodicMemoryStore()
         ep = Episode("e1", "t1", "g1", "build thing", "did stuff", "success", "lesson1")
         result = store.format_for_context([ep])
@@ -103,7 +103,7 @@ class TestEpisodicMemoryStore:
         assert "success" in snippet
 
     async def test_recall_different_tenants_isolated(self) -> None:
-        from app.memory.episodic import EpisodicMemoryStore, Episode
+        from app.memory.episodic import Episode, EpisodicMemoryStore
         store = EpisodicMemoryStore()
         store._cache["t1"] = [Episode("e1", "t1", "g1", "task A", "run", "success", "")]
         store._cache["t2"] = []
@@ -126,9 +126,9 @@ class TestProceduralMemoryStore:
         assert result == []
 
     async def test_learn_adds_skill_to_cache(self) -> None:
-        from app.memory.procedural import ProceduralMemoryStore
         from app.agent.state import AgentState, GoalStatus, StepResult
-        from app.tenancy.context import TenantContext, PlanTier
+        from app.memory.procedural import ProceduralMemoryStore
+        from app.tenancy.context import PlanTier, TenantContext
         store = ProceduralMemoryStore()
         ctx = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="test-key")
         state = AgentState(goal="Fix JIRA-123 bug", goal_id="g1", tenant_ctx=ctx)
@@ -145,9 +145,9 @@ class TestProceduralMemoryStore:
         assert result[0].domain == "jira"
 
     async def test_learn_no_tools_skips(self) -> None:
-        from app.memory.procedural import ProceduralMemoryStore
         from app.agent.state import AgentState, GoalStatus
-        from app.tenancy.context import TenantContext, PlanTier
+        from app.memory.procedural import ProceduralMemoryStore
+        from app.tenancy.context import PlanTier, TenantContext
         store = ProceduralMemoryStore()
         ctx = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="test-key")
         state = AgentState(goal="Do nothing with tools", goal_id="g1", tenant_ctx=ctx)
@@ -197,7 +197,7 @@ class TestLongTermMemoryStore:
         assert store._memories == {}
 
     def test_store_and_recall(self) -> None:
-        from app.memory.long_term import LongTermMemoryStore, LongTermMemory
+        from app.memory.long_term import LongTermMemory, LongTermMemoryStore
         store = LongTermMemoryStore()
         ctx = _tenant_ctx("tenant1")
         memory = LongTermMemory(
@@ -219,7 +219,7 @@ class TestLongTermMemoryStore:
         assert result == []
 
     def test_recall_with_memory_type_filter(self) -> None:
-        from app.memory.long_term import LongTermMemoryStore, LongTermMemory
+        from app.memory.long_term import LongTermMemory, LongTermMemoryStore
         store = LongTermMemoryStore()
         ctx = _tenant_ctx("tenant1")
         store.store(
@@ -232,7 +232,7 @@ class TestLongTermMemoryStore:
         assert all(m.memory_type == "tool_preference" for m in results)
 
     def test_delete_memory(self) -> None:
-        from app.memory.long_term import LongTermMemoryStore, LongTermMemory
+        from app.memory.long_term import LongTermMemory, LongTermMemoryStore
         store = LongTermMemoryStore()
         ctx = _tenant_ctx("tenant1")
         mem = LongTermMemory("content", "g1", "domain_fact")
@@ -247,7 +247,7 @@ class TestLongTermMemoryStore:
         assert store.delete(memory_id="nonexistent", tenant_ctx=_tenant_ctx("tenant1")) is False
 
     def test_list_all(self) -> None:
-        from app.memory.long_term import LongTermMemoryStore, LongTermMemory
+        from app.memory.long_term import LongTermMemory, LongTermMemoryStore
         store = LongTermMemoryStore()
         ctx = _tenant_ctx("tenant1")
         for i in range(3):
@@ -270,7 +270,7 @@ class TestLongTermMemoryStore:
         assert "Deploy app" in all_mems[0].content
 
     async def test_recall_async_falls_back_to_memory(self) -> None:
-        from app.memory.long_term import LongTermMemoryStore, LongTermMemory
+        from app.memory.long_term import LongTermMemory, LongTermMemoryStore
         store = LongTermMemoryStore()
         ctx = _tenant_ctx("tenant1")
         mem = LongTermMemory("Python tip", "g1", "tool_preference")
@@ -279,7 +279,7 @@ class TestLongTermMemoryStore:
         assert len(result) >= 1
 
     async def test_store_async_no_db(self) -> None:
-        from app.memory.long_term import LongTermMemoryStore, LongTermMemory
+        from app.memory.long_term import LongTermMemory, LongTermMemoryStore
         store = LongTermMemoryStore()
         ctx = _tenant_ctx("tenant1")
         mem = LongTermMemory("Async test content", "g1", "domain_fact")

@@ -8,8 +8,8 @@ Key strategies:
 """
 from __future__ import annotations
 
-import sys
 import os
+import sys
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -147,6 +147,7 @@ async def test_lambda_boto3_missing():
 @pytest.mark.asyncio
 async def test_lambda_invoke_with_payload():
     import json
+
     from app.mcp.servers.aws_lambda_server import call_tool
 
     mock_lam = MagicMock()

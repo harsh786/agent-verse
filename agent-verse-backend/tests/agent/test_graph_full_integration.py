@@ -2,12 +2,14 @@
 """graph.py must wire all new components: StateContext, ContextPipeline, GuardrailEnforcer,
 RuntimeScorecard, SelfImprovementEngine, ReflexionWirer, SSE events."""
 from __future__ import annotations
+
 import pytest
-from app.providers.fake import FakeProvider
+
 from app.agent.graph import AgentGraph
-from app.agent.pattern_config import PatternConfig, GoalProperties, RiskLevel, Complexity
-from app.tenancy.context import TenantContext, PlanTier
+from app.agent.pattern_config import Complexity, GoalProperties, PatternConfig, RiskLevel
 from app.agent.state import AgentState, GoalStatus
+from app.providers.fake import FakeProvider
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture
@@ -64,8 +66,14 @@ def test_scorecard_computed_on_complete_state(tenant_ctx):
     """After a goal completes, RuntimeScorecard must produce a result."""
     from app.evals.runtime_scorecard import RuntimeScorecard
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
     state = AgentState(goal="list tickets", tenant_ctx=tenant_ctx, goal_id="g1")
     state.status = GoalStatus.COMPLETE
@@ -90,10 +98,16 @@ def test_scorecard_computed_on_complete_state(tenant_ctx):
 def test_self_improvement_actions_after_failed_state(tenant_ctx):
     """SelfImprovementEngine must return actions for a failed goal."""
     from app.evals.runtime_scorecard import RuntimeScorecard, ScorecardResult
-    from app.evals.self_improvement_engine import SelfImprovementEngine, ImprovementAction
+    from app.evals.self_improvement_engine import ImprovementAction, SelfImprovementEngine
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
     state = AgentState(goal="delete prod db", tenant_ctx=tenant_ctx, goal_id="g1")
     state.status = GoalStatus.FAILED
@@ -137,13 +151,19 @@ def test_reflexion_wirer_stores_lesson_on_failure(tenant_ctx):
 
 def test_readiness_gate_called_before_goal_execution():
     """ReadinessGate must be checkable before goal execution."""
-    from app.runtime_readiness.readiness_gate import ReadinessGate
     from app.runtime_readiness.dependency_health import DependencyHealth, DepStatus
+    from app.runtime_readiness.readiness_gate import ReadinessGate
     health = DependencyHealth.all_healthy()
     gate = ReadinessGate(health)
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
     profile = GoalRuntimeProfile(
         goal_id="g1", tenant_id="t1",
@@ -160,9 +180,9 @@ def test_readiness_gate_called_before_goal_execution():
 
 def test_tool_ranker_ranks_by_trust_score():
     """ToolRanker must use ToolTrustStore scores in ranking."""
-    from app.tool_runtime.tool_trust_store import ToolTrustStore
-    from app.tool_runtime.tool_score import ToolScorer
     from app.tool_runtime.tool_ranker import ToolRanker
+    from app.tool_runtime.tool_score import ToolScorer
+    from app.tool_runtime.tool_trust_store import ToolTrustStore
     store = ToolTrustStore()
     for _ in range(5):
         store.record_outcome("reliable_tool", success=True, latency_ms=100)

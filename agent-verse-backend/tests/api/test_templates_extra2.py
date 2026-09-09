@@ -24,8 +24,10 @@ from fastapi.testclient import TestClient
 
 import app.api.templates as tmpl_module
 from app.api.templates import (
-    _TemplateStore,
     _require_tenant,
+    _TemplateStore,
+)
+from app.api.templates import (
     router as templates_router,
 )
 from app.tenancy.context import PlanTier, TenantContext

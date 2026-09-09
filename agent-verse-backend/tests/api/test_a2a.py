@@ -5,7 +5,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.a2a import _tasks, router as a2a_router
+from app.api.a2a import _tasks
+from app.api.a2a import router as a2a_router
 
 
 def _make_app() -> FastAPI:

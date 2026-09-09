@@ -4,12 +4,11 @@ from __future__ import annotations
 import pytest
 
 from app.agent.model_router import (
+    _PROVIDER_DEFAULTS,
     ModelRouter,
     ModelRouterConfig,
-    _PROVIDER_DEFAULTS,
     get_router_for_tenant,
 )
-
 
 # ── ModelRouterConfig ────────────────────────────────────────────────────────
 

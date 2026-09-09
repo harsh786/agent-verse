@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import pytest
-from app.tenancy.context import TenantContext, PlanTier
+
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture
@@ -83,18 +84,18 @@ def test_guardrail_unknown_tool_blocked_with_registry() -> None:
 # ── PROFILE-BASED GUARDRAIL ENFORCER ─────────────────────────────────────────
 
 async def test_guardrail_enforcer_uses_tenant_plan(tenant_ctx: TenantContext) -> None:
-    from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile,
-        GoalProperties,
         AgentPatternConfig,
-        RAGStrategyConfig,
-        ModelPlanConfig,
-        SecurityConfig,
-        MemoryCacheConfig,
         EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
         RiskLevel,
+        SecurityConfig,
     )
+    from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
 
     enforcer = GuardrailEnforcer()
     profile = GoalRuntimeProfile(
@@ -118,18 +119,18 @@ async def test_guardrail_enforcer_uses_tenant_plan(tenant_ctx: TenantContext) ->
 
 
 async def test_guardrail_enforcer_catches_injection_in_args() -> None:
-    from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile,
-        GoalProperties,
         AgentPatternConfig,
-        RAGStrategyConfig,
-        ModelPlanConfig,
-        SecurityConfig,
-        MemoryCacheConfig,
         EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
         RiskLevel,
+        SecurityConfig,
     )
+    from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
 
     enforcer = GuardrailEnforcer()
     profile = GoalRuntimeProfile(
@@ -154,18 +155,18 @@ async def test_guardrail_enforcer_catches_injection_in_args() -> None:
 # ── GUARDRAIL PROFILE SELECTOR ────────────────────────────────────────────────
 
 def test_guardrail_profile_strict_for_high_risk(tenant_ctx: TenantContext) -> None:
-    from app.security_runtime.guardrail_profile import GuardrailProfileSelector
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile,
-        GoalProperties,
         AgentPatternConfig,
-        RAGStrategyConfig,
-        ModelPlanConfig,
-        SecurityConfig,
-        MemoryCacheConfig,
         EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
         RiskLevel,
+        SecurityConfig,
     )
+    from app.security_runtime.guardrail_profile import GuardrailProfileSelector
 
     selector = GuardrailProfileSelector()
     profile = GoalRuntimeProfile(
@@ -209,8 +210,8 @@ def test_identity_resolver_agent_scope(tenant_ctx: TenantContext) -> None:
 
 def test_action_safety_read_operation_is_safe() -> None:
     from app.security_runtime.action_safety_profile import (
-        ActionSafetyProfileSelector,
         ActionSafetyLevel,
+        ActionSafetyProfileSelector,
     )
 
     selector = ActionSafetyProfileSelector()
@@ -221,8 +222,8 @@ def test_action_safety_read_operation_is_safe() -> None:
 
 def test_action_safety_destructive_requires_hitl() -> None:
     from app.security_runtime.action_safety_profile import (
-        ActionSafetyProfileSelector,
         ActionSafetyLevel,
+        ActionSafetyProfileSelector,
     )
 
     selector = ActionSafetyProfileSelector()

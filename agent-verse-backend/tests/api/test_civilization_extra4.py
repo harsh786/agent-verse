@@ -755,6 +755,7 @@ def test_stream_civilization_with_catchup_events() -> None:
 def test_nullctx_helper() -> None:
     """Lines 836-842: _nullctx passes value through as async context manager."""
     import asyncio
+
     from app.api.civilization import _nullctx
 
     async def _run():
@@ -837,8 +838,9 @@ def test_build_orchestrator_with_full_app_state() -> None:
 
 def test_require_tenant_direct_function() -> None:
     """Line 38: _require_tenant raises 401 when request.state.tenant is None."""
-    from app.api.civilization import _require_tenant
     from fastapi import HTTPException
+
+    from app.api.civilization import _require_tenant
 
     mock_req = MagicMock()
     # MagicMock().state returns a MagicMock which doesn't have "tenant" attribute by default

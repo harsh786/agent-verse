@@ -5,7 +5,6 @@ import pytest
 
 from app.agent.tool_calls import ToolCall, extract_tool_call
 
-
 # ── ToolCall dataclass ─────────────────────────────────────────────────────────
 
 def test_tool_call_construction() -> None:

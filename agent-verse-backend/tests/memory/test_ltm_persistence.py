@@ -1,7 +1,9 @@
 """Tests for LongTermMemory DB persistence via extract_from_goal_async."""
-import pytest
 from unittest.mock import AsyncMock
-from app.memory.long_term import LongTermMemoryStore, LongTermMemory
+
+import pytest
+
+from app.memory.long_term import LongTermMemory, LongTermMemoryStore
 from app.tenancy.context import PlanTier, TenantContext
 
 T = TenantContext(tenant_id="ltm-t1", plan=PlanTier.ENTERPRISE, api_key_id="k")

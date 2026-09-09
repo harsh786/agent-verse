@@ -10,7 +10,6 @@ import os
 
 import pytest
 
-
 # ── Flag-off: existing behaviour unchanged ────────────────────────────────────
 
 
@@ -125,8 +124,8 @@ async def test_goal_service_does_not_use_isolation_when_flag_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """GoalService._run_agent_loop falls through to in-process execution when flag off."""
-    from unittest.mock import AsyncMock, MagicMock, patch
     import os
+    from unittest.mock import AsyncMock, MagicMock, patch
 
     # Ensure isolation flag is off
     os.environ.pop("ISOLATED_AGENT_EXECUTION", None)
@@ -151,9 +150,10 @@ async def test_goal_service_does_not_use_isolation_when_flag_off(
     monkeypatch.setattr(svc, "_build_tool_context", AsyncMock(return_value=None))
 
     # Insert a dummy goal record
-    from app.services.goal_service import GoalRecord
-    from app.agent.state import GoalStatus
     from datetime import UTC, datetime
+
+    from app.agent.state import GoalStatus
+    from app.services.goal_service import GoalRecord
     record = GoalRecord(
         goal_id="g1",
         goal_text="test",

@@ -5,7 +5,6 @@ import pytest
 
 from app.governance.pricing import estimate_cost, format_cost
 
-
 # ---------------------------------------------------------------------------
 # Cost comparisons
 # ---------------------------------------------------------------------------

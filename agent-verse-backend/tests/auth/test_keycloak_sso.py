@@ -1,5 +1,6 @@
 """Tests for SSO JIT tenant provisioning."""
 import pytest
+
 from app.services.tenant_service import TenantService
 
 

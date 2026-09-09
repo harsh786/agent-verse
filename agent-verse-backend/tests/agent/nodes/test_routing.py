@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.providers.fake import FakeProvider  # type: ignore[import]
 from app.agent.graph import AgentGraph
 from app.agent.state import AgentState, GoalStatus
+from app.providers.fake import FakeProvider  # type: ignore[import]
 from app.tenancy.context import TenantContext
 
 

@@ -1,13 +1,14 @@
 """Comprehensive persistence tests — verify all stores are DB-backed."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from app.governance.hitl import HITLGateway, ApprovalStatus
+import pytest
+
 from app.governance.audit import AuditLog
+from app.governance.hitl import ApprovalStatus, HITLGateway
 from app.memory.long_term import LongTermMemoryStore
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 CTX = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")
 

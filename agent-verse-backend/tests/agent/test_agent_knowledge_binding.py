@@ -10,9 +10,9 @@ Validates that:
 """
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 
 
 def _agent_source() -> str:
@@ -44,6 +44,7 @@ def test_agentgraph_has_agent_collection_ids_attr():
 def test_graph_rag_comment_removed():
     """Graph must not skip KnowledgeStore with 'no collection_id available' comment."""
     import inspect
+
     from app.agent import graph
 
     src = _agent_source()
@@ -55,6 +56,7 @@ def test_graph_rag_comment_removed():
 def test_permissions_endpoint_reads_db():
     """Permissions GET/PUT must query agent_permissions table, not only in-memory dict."""
     import inspect
+
     from app.api import agents
 
     src = inspect.getsource(agents)
@@ -66,6 +68,7 @@ def test_permissions_endpoint_reads_db():
 def test_readiness_check_queries_registry():
     """Readiness check must query MCP registry for connector verification."""
     import inspect
+
     from app.api import agents
 
     src = inspect.getsource(agents)
@@ -77,6 +80,7 @@ def test_readiness_check_queries_registry():
 def test_export_includes_tools():
     """Agent export must include connector tools array."""
     import inspect
+
     from app.api import agents
 
     src = inspect.getsource(agents)

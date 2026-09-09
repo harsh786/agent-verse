@@ -1,8 +1,10 @@
 """Phase 3+4 tests: Embedding Platform + Multimodal Intelligence."""
 import base64
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
 from app.api.embeddings import router as embeddings_router
 from app.api.multimodal import router as multimodal_router
 from app.tenancy.context import PlanTier, TenantContext
