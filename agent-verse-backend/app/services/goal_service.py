@@ -2010,7 +2010,7 @@ class GoalService:
 
                 class _WrappedAgent:
                     async def run(
-                        self_inner: _WrappedAgent,
+                        self: _WrappedAgent,
                         goal: str,
                         tenant_ctx: TenantContext,
                         event_callback: Any = None,

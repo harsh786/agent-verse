@@ -409,7 +409,7 @@ class ExecutorMixin:
                             out = await self._execute_step_with_cache(desc, agent_state, tenant_ctx)
                         else:
                             out = await self._execute_step(desc, agent_state, tenant_ctx)
-                        async with _state_lock:
+                        async with _state_lock:  # noqa: B023  # closure runs + is awaited within the same wave iteration that defines _state_lock (gather() below completes before the next wave), so the late-binding this rule warns about never happens here
                             sr.output = out
                             sr.status = StepStatus.COMPLETE
                         await self._emit({"type": "step_complete", "step": desc, "output": out})
@@ -436,14 +436,14 @@ class ExecutorMixin:
                         except Exception:
                             pass
                     except PermissionError as exc:
-                        async with _state_lock:
+                        async with _state_lock:  # noqa: B023  # closure runs + is awaited within the same wave iteration that defines _state_lock (gather() below completes before the next wave), so the late-binding this rule warns about never happens here
                             agent_state.status = GoalStatus.FAILED
                             agent_state.error_message = str(exc)
                             sr.status = StepStatus.FAILED
                             sr.error = str(exc)
                         raise
                     except Exception as exc:
-                        async with _state_lock:
+                        async with _state_lock:  # noqa: B023  # closure runs + is awaited within the same wave iteration that defines _state_lock (gather() below completes before the next wave), so the late-binding this rule warns about never happens here
                             sr.status = StepStatus.FAILED
                             sr.error = str(exc)
                         raise
