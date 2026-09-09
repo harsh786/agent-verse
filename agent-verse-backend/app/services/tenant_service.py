@@ -267,7 +267,7 @@ class TenantService:
 
         # ── Populate Redis cache ───────────────────────────────────────────
         if self._redis is not None:
-            try:
+            with suppress(Exception):  # caching is best-effort
                 await self._redis.setex(
                     cache_key,
                     300,
@@ -280,8 +280,6 @@ class TenantService:
                         }
                     ),
                 )
-            except Exception:
-                pass  # caching is best-effort
 
         return ctx
 
@@ -484,13 +482,11 @@ class TenantService:
                         },
                     )
                     # Store sso_sub if the column exists
-                    try:
+                    with suppress(Exception):  # sso_sub column may not exist yet
                         await session.execute(
                             text("UPDATE tenants SET sso_sub = :sub WHERE id = :id"),
                             {"sub": sso_sub, "id": tenant_id},
                         )
-                    except Exception:
-                        pass  # sso_sub column may not exist yet
 
                     # Create initial API key
                     key_hash = _hash_key(api_key)

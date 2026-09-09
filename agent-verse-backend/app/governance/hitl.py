@@ -499,10 +499,8 @@ class HITLGateway:
                             tenant_id=_tenant_id,
                             auto_rejected=True,
                         )
-                        try:
+                        with contextlib.suppress(RuntimeError):  # no running loop — skip notification
                             _aio.ensure_future(_coro)  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
-                        except RuntimeError:
-                            pass  # no running loop — skip notification
                     except Exception:
                         pass
         return expired

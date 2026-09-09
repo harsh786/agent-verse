@@ -39,11 +39,9 @@ def _setup_sigterm() -> None:
         )
         raise SystemExit(0)
 
-    try:
+    # OSError: not in main thread; ValueError: invalid signal — both safe to ignore
+    with contextlib.suppress(OSError, ValueError):
         _signal.signal(_signal.SIGTERM, _handler)
-    except (OSError, ValueError):
-        # OSError: not in main thread; ValueError: invalid signal — both safe to ignore
-        pass
 
 
 _setup_sigterm()
@@ -4240,14 +4238,12 @@ def process_feedback_batch(self: Any) -> dict[str, Any]:  # type: ignore[misc]
 
 
 # Register beat schedule for feedback processing
-try:
+with contextlib.suppress(Exception):
     celery_app.conf.beat_schedule["process-feedback-daily"] = {
         "task": "agentverse.maintenance.process_feedback_batch",
         "schedule": 86400.0,  # Every 24 hours
         "options": {"queue": "maintenance"},
     }
-except Exception:
-    pass
 
 
 # ---------------------------------------------------------------------------

@@ -945,10 +945,8 @@ class GoalService:
 
         # Apply model override to the model router before building the graph
         if _model_override and _model_router is not None:
-            try:
+            with suppress(Exception):  # Model router may not support override — use default
                 _model_router = _model_router.with_override(_model_override)  # copy-on-write
-            except Exception:
-                pass  # Model router may not support override — use default
 
         # ── Phase 22: Wire per-connector circuit breakers ─────────────────────────
         from app.reliability.circuit_breaker import CircuitBreaker
@@ -3335,10 +3333,8 @@ class GoalService:
         """
         # ── Try local record first ─────────────────────────────────────────────
         local_record: GoalRecord | None = None
-        try:
+        with suppress(Exception):  # goal is on another replica — cross-replica path below
             local_record = self._get_record(goal_id, tenant_ctx)
-        except Exception:
-            pass  # goal is on another replica — cross-replica path below
 
         # ── Cross-replica path: subscribe via Redis pub/sub ────────────────────
         if local_record is None:

@@ -199,7 +199,6 @@ known-first-party = ["app"]
 "app/ai_router/shadow_router.py" = ["RUF003"]
 "app/api/costs.py" = ["RUF001"]
 "app/collab/agent_collab.py" = ["RUF002"]
-"app/db/migrations/versions/0055_guardrails.py" = ["RUF003"]
 "app/gateway/notification_router.py" = ["RUF002", "RUF003"]
 "app/guardrails_v2/engine.py" = ["RUF001"]
 "app/guardrails_v2/toxicity.py" = ["RUF002"]
@@ -223,6 +222,15 @@ known-first-party = ["app"]
 # initialized module during a circular import. Reordering to put all imports
 # first would reintroduce that circular-import failure.
 "app/services/goal_service.py" = ["E402"]
+# Alembic migrations are deployed DDL history — CLAUDE.md/HANDOFF.md convention
+# is "never edit a deployed migration; add a new one." These two files trip a
+# cosmetic-only rule that isn't already covered by an existing inline noqa
+# (a long DDL string literal; a try/except-pass around an idempotent ALTER
+# TABLE) — scoped to just these files/codes so it doesn't make every other
+# migration's pre-existing per-line `# noqa: E501` comments show as unused.
+"app/db/migrations/versions/0031_audit_immutability.py" = ["E501"]
+"app/db/migrations/versions/0058_cost_optimization.py" = ["SIM105"]
+"app/db/migrations/versions/0055_guardrails.py" = ["RUF003"]
 
 [tool.mypy]
 python_version = "3.12"

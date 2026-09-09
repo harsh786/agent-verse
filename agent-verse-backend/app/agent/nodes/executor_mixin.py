@@ -2179,14 +2179,12 @@ class ExecutorMixin:
             and _cache_embedding is not None
             and not _is_error_output
         ):
-            try:
+            with contextlib.suppress(Exception):  # write failures must never block execution
                 await self._semantic_cache.store_async(
                     embedding=_cache_embedding,
                     query=step,
                     response=raw_output,
                     tenant_id=tenant_ctx.tenant_id,
                 )
-            except Exception:
-                pass  # write failures must never block execution
 
         return raw_output

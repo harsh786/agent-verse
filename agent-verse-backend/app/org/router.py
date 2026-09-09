@@ -2574,10 +2574,8 @@ async def org_mcp_websocket(
     # Attach the request's app.state (lifespan-wired services) for live service
     # injection — not the module-level app.main.app singleton.
     _app_state = None
-    try:
+    with contextlib.suppress(Exception):
         _app_state = getattr(websocket.app, "state", None)
-    except Exception:
-        pass
 
     mcp_server = OrgMCPServer(
         org_id=org_id,

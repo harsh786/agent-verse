@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import secrets
 from datetime import datetime
@@ -206,10 +207,9 @@ async def rotate_key(
     )
 
     if body.revoke_old:
-        try:
+        # Best-effort: don't fail the rotation if revocation errors
+        with contextlib.suppress(Exception):
             await svc.revoke_api_key(tenant_id=ctx.tenant_id, key_id=key_id)
-        except Exception:
-            pass  # Best-effort: don't fail the rotation if revocation errors
 
     return JSONResponse(
         {"new_key": new_key, "old_key_id": key_id, "old_revoked": body.revoke_old},
