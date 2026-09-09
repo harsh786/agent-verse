@@ -1,11 +1,15 @@
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useMemo, useState } from "react";
 import type { JSX } from "react";
 import type { SimulationNodeDatum, SimulationLinkDatum } from "d3-force";
+import type { Selection } from "d3-selection";
 
+/** Node type is an open string so callers can pass any backend node-type taxonomy
+ *  (e.g. the tenant knowledge graph's 10 NodeType values) — unknown types fall
+ *  back to a neutral color rather than being rejected. */
 export interface KnowledgeNode extends SimulationNodeDatum {
   id: string;
   label: string;
-  type: "document" | "concept" | "entity";
+  type: string;
 }
 
 export interface KnowledgeEdge extends SimulationLinkDatum<KnowledgeNode> {
@@ -22,21 +26,49 @@ interface KnowledgeGraphProps {
   data: KnowledgeGraphData;
   width?: number;
   height?: number;
+  /** Extra color overrides/additions, merged over the built-in defaults. */
+  colors?: Record<string, string>;
+  /** Called (in addition to the built-in detail panel) when a node is clicked. */
+  onNodeClick?: (node: KnowledgeNode) => void;
+  /** Node id to focus — connected nodes/edges stay at full opacity, the rest dim.
+   *  Pass `null`/`undefined` to clear focus. */
+  focusNodeId?: string | null;
 }
 
-const NODE_COLORS: Record<KnowledgeNode["type"], string> = {
+const DEFAULT_NODE_COLORS: Record<string, string> = {
   document: "#3b82f6",
+  chunk: "#0ea5e9",
   concept: "#22c55e",
   entity: "#f59e0b",
+  goal: "#a855f7",
+  tool: "#ef4444",
+  memory: "#14b8a6",
+  artifact: "#eab308",
+  agent: "#ec4899",
+  workflow: "#6366f1",
 };
+
+const FALLBACK_COLOR = "#64748b";
 
 export function KnowledgeGraph({
   data,
   width = 600,
   height = 400,
+  colors,
+  onNodeClick,
+  focusNodeId = null,
 }: KnowledgeGraphProps): JSX.Element {
   const svgRef = useRef<SVGSVGElement>(null);
   const [selected, setSelected] = useState<KnowledgeNode | null>(null);
+  const nodeSelectionRef = useRef<Selection<SVGCircleElement, KnowledgeNode, SVGGElement, unknown> | null>(null);
+  const linkSelectionRef = useRef<Selection<SVGLineElement, KnowledgeEdge, SVGGElement, unknown> | null>(null);
+  const NODE_COLORS = useMemo(() => ({ ...DEFAULT_NODE_COLORS, ...colors }), [colors]);
+
+  // Keep a live ref to onNodeClick so the simulation-building effect below doesn't
+  // need it as a dependency — re-running it on every render would restart the
+  // force layout whenever the parent passes a fresh callback identity.
+  const onNodeClickRef = useRef(onNodeClick);
+  useEffect(() => { onNodeClickRef.current = onNodeClick; }, [onNodeClick]);
 
   useEffect(() => {
     if (!data || !svgRef.current) return;
@@ -67,6 +99,7 @@ export function KnowledgeGraph({
         .attr("stroke", "hsl(214.3 31.8% 70%)")
         .attr("stroke-width", 1.5)
         .attr("stroke-opacity", 0.6);
+      linkSelectionRef.current = linkEl;
 
       const nodeEl = nodeGroup
         .selectAll<SVGCircleElement, KnowledgeNode>("circle")
@@ -74,13 +107,15 @@ export function KnowledgeGraph({
         .enter()
         .append("circle")
         .attr("r", 8)
-        .attr("fill", (d) => NODE_COLORS[d.type] ?? "#64748b")
+        .attr("fill", (d) => NODE_COLORS[d.type] ?? FALLBACK_COLOR)
         .attr("cursor", "pointer")
         .attr("stroke", "white")
         .attr("stroke-width", 1.5)
         .on("click", (_event, d) => {
           setSelected(d);
+          onNodeClickRef.current?.(d);
         });
+      nodeSelectionRef.current = nodeEl;
 
       const labelEl = nodeGroup
         .selectAll<SVGTextElement, KnowledgeNode>("text")
@@ -125,7 +160,37 @@ export function KnowledgeGraph({
     return () => {
       if (rafId !== null) cancelAnimationFrame(rafId);
     };
-  }, [data, width, height]);
+  }, [data, width, height, NODE_COLORS]);
+
+  // Focus dimming: applied as a separate effect (not folded into the simulation
+  // build above) so hovering/selecting a node doesn't restart the force layout —
+  // it just fades non-connected nodes/edges via opacity.
+  useEffect(() => {
+    const nodeSel = nodeSelectionRef.current;
+    const linkSel = linkSelectionRef.current;
+    if (!nodeSel || !linkSel) return;
+
+    if (!focusNodeId) {
+      nodeSel.attr("opacity", 1);
+      linkSel.attr("stroke-opacity", 0.6);
+      return;
+    }
+
+    const connected = new Set<string>([focusNodeId]);
+    for (const e of data.edges) {
+      const s = typeof e.source === "object" ? (e.source as KnowledgeNode).id : e.source;
+      const t = typeof e.target === "object" ? (e.target as KnowledgeNode).id : e.target;
+      if (s === focusNodeId && t) connected.add(String(t));
+      if (t === focusNodeId && s) connected.add(String(s));
+    }
+
+    nodeSel.attr("opacity", (d) => (connected.has(d.id) ? 1 : 0.15));
+    linkSel.attr("stroke-opacity", (d) => {
+      const s = typeof d.source === "object" ? (d.source as KnowledgeNode).id : d.source;
+      const t = typeof d.target === "object" ? (d.target as KnowledgeNode).id : d.target;
+      return s === focusNodeId || t === focusNodeId ? 0.9 : 0.08;
+    });
+  }, [focusNodeId, data]);
 
   return (
     <div className="relative">
@@ -137,13 +202,13 @@ export function KnowledgeGraph({
         viewBox={`0 0 ${width} ${height}`}
         aria-label="Knowledge graph visualization"
       />
-      {/* Legend */}
-      <div className="flex gap-4 mt-2 text-xs text-muted-foreground">
-        {(Object.entries(NODE_COLORS) as [KnowledgeNode["type"], string][]).map(([type, color]) => (
+      {/* Legend — only the types actually present in this graph */}
+      <div className="flex flex-wrap gap-3 mt-2 text-xs text-muted-foreground">
+        {[...new Set(data.nodes.map((n) => n.type))].sort().map((type) => (
           <span key={type} className="flex items-center gap-1">
             <span
               className="inline-block w-2.5 h-2.5 rounded-full"
-              style={{ background: color }}
+              style={{ background: NODE_COLORS[type] ?? FALLBACK_COLOR }}
             />
             {type}
           </span>

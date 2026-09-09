@@ -1076,6 +1076,81 @@ export const memoryApi = {
   listExecution: () => request<Array<{ goal_text: string; success: boolean; recorded_at: string }>>("/memory/execution"),
 };
 
+// ── Knowledge Graph (tenant KG — app/api/knowledge_graph.py) ──────────────────
+
+/** One of the backend's `NodeType` enum values (app/knowledge_graph/models.py). */
+export type KGNodeType =
+  | "document" | "chunk" | "entity" | "concept" | "goal"
+  | "tool" | "memory" | "artifact" | "agent" | "workflow";
+
+/** One of the backend's `EdgeType` enum values. */
+export type KGEdgeType =
+  | "mentions" | "supports" | "contradicts" | "caused_by" | "depends_on"
+  | "used_tool" | "produced_artifact" | "similar_to" | "parent_of" | "references";
+
+/** Node shape as returned by GET /knowledge-graph/export (summary fields only). */
+export interface KGNode {
+  node_id: string;
+  node_type: KGNodeType;
+  label: string;
+  confidence: number;
+  source_id?: string | null;
+}
+
+/** Edge shape as returned by GET /knowledge-graph/export. */
+export interface KGEdge {
+  edge_id: string;
+  edge_type: KGEdgeType;
+  source: string;
+  target: string;
+  confidence: number;
+}
+
+export interface KGGraph {
+  tenant_id: string;
+  exported_at: string;
+  nodes: KGNode[];
+  edges: KGEdge[];
+  stats: { nodes: number; edges: number };
+  format: string;
+}
+
+export interface KGStats {
+  total_nodes: number;
+  total_edges: number;
+  node_types: Record<string, number>;
+  avg_confidence: number;
+}
+
+/** Full node detail (content/metadata) plus its incident edges — GET /knowledge-graph/nodes/{id}. */
+export interface KGNodeDetail {
+  node: {
+    node_id: string;
+    node_type: KGNodeType;
+    label: string;
+    content: string;
+    confidence: number;
+    source_id: string | null;
+    metadata: Record<string, unknown>;
+  };
+  edges: Array<{
+    edge_id: string;
+    edge_type: KGEdgeType;
+    source_node_id: string;
+    target_node_id: string;
+    label: string;
+    confidence: number;
+    evidence: string;
+  }>;
+}
+
+export const knowledgeGraphApi = {
+  /** Full node+edge export for the tenant — the data source for the graph view. */
+  getGraph: () => request<KGGraph>("/knowledge-graph/export"),
+  getStats: () => request<KGStats>("/knowledge-graph/stats"),
+  getNode: (nodeId: string) => request<KGNodeDetail>(`/knowledge-graph/nodes/${nodeId}`),
+};
+
 // ── Artifacts ──────────────────────────────────────────────────────────────────
 
 export interface Artifact {
