@@ -1074,7 +1074,7 @@ def test_require_tenant_raises_401() -> None:
 
     try:
         _require_tenant(req2)
-        assert False, "Should have raised HTTPException"
+        raise AssertionError("Should have raised HTTPException")
     except HTTPException as e:
         assert e.status_code == 401
 

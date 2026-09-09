@@ -37,7 +37,7 @@ def test_wrong_master_key_cannot_decrypt() -> None:
     vault1 = _vault("key-a")
     vault2 = _vault("key-b")
     ciphertext = vault1.encrypt("my-secret")
-    with pytest.raises(Exception):  # noqa: B017 — testing Fernet's own error type
+    with pytest.raises(Exception):
         vault2.decrypt(ciphertext)
 
 
@@ -45,7 +45,7 @@ def test_tampered_ciphertext_raises() -> None:
     vault = _vault()
     ciphertext = vault.encrypt("hello")
     tampered = ciphertext[:-4] + "XXXX"
-    with pytest.raises(Exception):  # noqa: B017 — testing Fernet's own error type
+    with pytest.raises(Exception):
         vault.decrypt(tampered)
 
 

@@ -488,7 +488,7 @@ async def test_stream_complete_yields_text_chunks() -> None:
             try:
                 return next(self._items)
             except StopIteration:
-                raise StopAsyncIteration
+                raise StopAsyncIteration from None
 
     with patch("anthropic.AsyncAnthropic") as mock_cls:
         mock_client = MagicMock()

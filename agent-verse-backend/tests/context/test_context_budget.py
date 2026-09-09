@@ -16,7 +16,7 @@ from app.context.rerank_policy import predict_chunk_value
 
 def test_budget_measures_tokens_with_real_tokenizer_not_char_div_4() -> None:
     # CJK + punctuation-dense content: real token count diverges sharply from len//4.
-    content = "日本語のテキスト、句読点。記号！？（括弧）" * 25  # noqa: RUF001
+    content = "日本語のテキスト、句読点。記号！？（括弧）" * 25
     chunk = {"content": content, "score": 0.9}
 
     budget = ContextBudget(max_tokens=1_000_000)

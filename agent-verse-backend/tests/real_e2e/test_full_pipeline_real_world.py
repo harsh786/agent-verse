@@ -34,7 +34,7 @@ pytestmark = [pytest.mark.slow, pytest.mark.real_openai]
 # Shared tenant context
 # ---------------------------------------------------------------------------
 
-from app.tenancy.context import PlanTier, TenantContext  # noqa: E402
+from app.tenancy.context import PlanTier, TenantContext
 
 TENANT = TenantContext(
     tenant_id="e2e-pipeline-real-world",

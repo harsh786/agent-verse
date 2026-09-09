@@ -256,7 +256,7 @@ def test_api_key_missing_env_exits():
         # typer.Exit is not a SystemExit; catch BaseException
         try:
             _api_key()
-            assert False, "Should have raised"
+            raise AssertionError("Should have raised")
         except (SystemExit, typer.Exit, BaseException):
             pass  # expected — AGENTVERSE_API_KEY not set
 
