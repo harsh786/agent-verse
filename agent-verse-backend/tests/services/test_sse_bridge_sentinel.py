@@ -52,8 +52,8 @@ def test_bridge_sends_sentinel_for_terminal_events():
     """_subscribe_celery_goal_events must send _SENTINEL after terminal events."""
     import pathlib
     src = pathlib.Path("app/services/goal_service.py").read_text()
-    assert "_TERMINAL_BRIDGE" in src, (
-        "_subscribe_celery_goal_events must define _TERMINAL_BRIDGE sentinel set"
+    assert "_terminal_bridge" in src, (
+        "_subscribe_celery_goal_events must define _terminal_bridge sentinel set"
     )
     assert "q.put_nowait(_SENTINEL)" in src, (
         "Bridge must call q.put_nowait(_SENTINEL) on terminal events"

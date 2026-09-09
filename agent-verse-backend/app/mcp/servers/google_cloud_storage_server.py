@@ -330,7 +330,6 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 try:
                     import datetime
 
-                    from google.auth.transport.requests import Request  # type: ignore[import]
                     from google.cloud import storage as gcs  # type: ignore[import]
                     from google.oauth2 import service_account  # type: ignore[import]
 

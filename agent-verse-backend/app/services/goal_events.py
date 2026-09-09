@@ -19,9 +19,9 @@ from __future__ import annotations
 # Current status: Methods documented here, still implemented in GoalService.
 # Migration tracked in: docs/refactoring/goal_service_decomp.md
 # Re-export the event key utilities for use by tests and other services
-from app.services.goal_service import GoalService as _GS
+from app.services.goal_service import GoalService as _gs
 
 
 def get_event_key(event: dict) -> str:  # type: ignore[type-arg]
     """Get dedup key for an event."""
-    return _GS._event_key(event)  # type: ignore[attr-defined]
+    return _gs._event_key(event)  # type: ignore[attr-defined]

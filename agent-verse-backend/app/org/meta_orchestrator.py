@@ -392,12 +392,12 @@ class MetaOrchestrator:
             tenant_id=tenant_id,
         )
         # Normalise topologies to the test-expected set
-        _TOPOLOGY_NORMALISE = {
+        _topology_normalise = {
             "parallel": "map_reduce",
             "sequential": "pipeline",
             "swarm": "hierarchical",  # high-risk goals use hierarchical approval structure
         }
-        normalised_topology = _TOPOLOGY_NORMALISE.get(plan.topology, plan.topology)
+        normalised_topology = _topology_normalise.get(plan.topology, plan.topology)
         departments = list(plan.departments) if plan.departments else []
         return OrchestratorDecision(
             plan=plan,

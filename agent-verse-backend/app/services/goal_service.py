@@ -166,11 +166,11 @@ def _resolve_checkpointer(app_state: Any) -> Any:
         # langgraph-checkpoint-redis versions; validate the return value is a real
         # BaseCheckpointSaver before using it, otherwise fall through to sync saver.
         try:
-            from langgraph.checkpoint.base import BaseCheckpointSaver as _BCS
+            from langgraph.checkpoint.base import BaseCheckpointSaver as _bcs
             from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 
             _saver = AsyncRedisSaver.from_conn_string(redis_url)
-            if not isinstance(_saver, _BCS):
+            if not isinstance(_saver, _bcs):
                 raise TypeError(
                     f"AsyncRedisSaver.from_conn_string returned {type(_saver).__name__}, "
                     "not a BaseCheckpointSaver — needs async with pattern"
@@ -193,16 +193,16 @@ def _resolve_checkpointer(app_state: Any) -> Any:
         # async saver absent) invisible to MemorySaver-based tests. Reject such a
         # saver and fall through to MemorySaver instead of shipping a broken one.
         try:
-            from langgraph.checkpoint.base import BaseCheckpointSaver as _BCS2
+            from langgraph.checkpoint.base import BaseCheckpointSaver as _bcs2
             from langgraph.checkpoint.redis import RedisSaver
 
             _saver2 = RedisSaver.from_conn_string(redis_url)
-            if not isinstance(_saver2, _BCS2):
+            if not isinstance(_saver2, _bcs2):
                 raise TypeError(
                     f"RedisSaver.from_conn_string returned {type(_saver2).__name__}, "
                     "not a BaseCheckpointSaver"
                 )
-            if type(_saver2).aget_tuple is _BCS2.aget_tuple:
+            if type(_saver2).aget_tuple is _bcs2.aget_tuple:
                 raise TypeError(
                     "sync RedisSaver does not implement the async checkpoint API "
                     "(aget_tuple); it is unusable by the async agent graph"
@@ -535,26 +535,26 @@ class GoalService:
                                         with suppress(Exception):
                                             record.subscribers.remove(q)
                                     # Send end-of-stream sentinel on terminal events
-                                    _TERMINAL_BRIDGE = {
+                                    _terminal_bridge = {
                                         "goal_complete",
                                         "worker_complete",
                                         "goal_failed",
                                         "worker_failed",
                                         "goal_cancelled",
                                     }
-                                    if event_type in _TERMINAL_BRIDGE:
+                                    if event_type in _terminal_bridge:
                                         for q in list(record.subscribers):
                                             with suppress(Exception):
                                                 q.put_nowait(_SENTINEL)
                                         # Update record status
-                                        from app.agent.state import GoalStatus as _GS
+                                        from app.agent.state import GoalStatus as _gs
 
                                         if event_type in {"goal_complete", "worker_complete"}:
-                                            record.status = _GS.COMPLETE
+                                            record.status = _gs.COMPLETE
                                         elif event_type in {"goal_failed", "worker_failed"}:
-                                            record.status = _GS.FAILED
+                                            record.status = _gs.FAILED
                                         elif event_type == "goal_cancelled":
-                                            record.status = _GS.CANCELLED
+                                            record.status = _gs.CANCELLED
                         except Exception as exc:
                             self._logger.warning("celery_event_bridge_parse_failed", error=str(exc))
             except Exception as exc:
@@ -1670,8 +1670,8 @@ class GoalService:
         if record is None:
             return
         sanitized_event = sanitize_event(event)
-        _EPHEMERAL_EVENT_TYPES = {"token_chunk", "heartbeat"}
-        _is_ephemeral = sanitized_event.get("type") in _EPHEMERAL_EVENT_TYPES
+        _ephemeral_event_types = {"token_chunk", "heartbeat"}
+        _is_ephemeral = sanitized_event.get("type") in _ephemeral_event_types
         if not _is_ephemeral:
             record.events.append(sanitized_event)
             await self._persist_event(goal_id, sanitized_event, record, tenant_ctx)
@@ -2111,9 +2111,9 @@ class GoalService:
                     if _gf2().isolated_execution_required:
                         record = self._goals.get(goal_id)
                         if record is not None:
-                            from app.agent.state import GoalStatus as _GS
+                            from app.agent.state import GoalStatus as _gs
 
-                            record.status = _GS.FAILED
+                            record.status = _gs.FAILED
                             record.error_message = str(_iso_import_exc)
                         await self._dispatch_event(
                             goal_id,
@@ -2608,9 +2608,9 @@ class GoalService:
                                 _all_agents = await _all_agents
                             if _all_agents:
                                 # Use router scoring to pick the best agent
-                                from app.agent.router import AgentRouter as _AR
+                                from app.agent.router import AgentRouter as _ar
 
-                                _fallback_router = _AR(agent_store=agent_store)
+                                _fallback_router = _ar(agent_store=agent_store)
                                 _fallback_agents = [
                                     a if isinstance(a, dict) else a.__dict__ for a in _all_agents
                                 ]
@@ -3108,15 +3108,15 @@ class GoalService:
         state = getattr(record, "agent_state", None)
         if state is None:
             # Reconstruct minimal state from record data
-            from app.agent.state import AgentState as _AS
-            from app.agent.state import GoalStatus as _GS
+            from app.agent.state import AgentState as _as
+            from app.agent.state import GoalStatus as _gs
 
             try:
-                goal_status = _GS(record.status.value)
+                goal_status = _gs(record.status.value)
             except (ValueError, AttributeError):
-                goal_status = _GS.COMPLETE
+                goal_status = _gs.COMPLETE
 
-            state = _AS(
+            state = _as(
                 goal_id=goal_id,
                 goal=record.goal_text,
                 tenant_ctx=tenant_ctx,

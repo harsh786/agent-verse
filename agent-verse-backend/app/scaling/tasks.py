@@ -531,12 +531,12 @@ def run_goal(
     except Exception:
         pass
 
-    from app.tenancy.context import PlanTier as _PT
+    from app.tenancy.context import PlanTier as _pt
 
     try:
-        plan = _PT(_plan_str)
+        plan = _pt(_plan_str)
     except ValueError:
-        plan = _PT.PROFESSIONAL
+        plan = _pt.PROFESSIONAL
 
     tenant_ctx = TenantContext(
         tenant_id=tenant_id,
@@ -1259,10 +1259,10 @@ def run_goal(
 
             if _use_isolation:
                 # Build and dispatch an ExecutionEnvelope instead of running in-process
-                _RunnerUnavail: type | None = None
+                _RunnerUnavail: type | None = None  # noqa: N806  # holds a class (exception type) for isinstance checks below
                 try:
                     from app.execution_environment.envelope import build_envelope as _build_env
-                    from app.execution_environment.models import RunnerType as _RT
+                    from app.execution_environment.models import RunnerType as _runner_type_cls
                     from app.execution_environment.scheduler import (
                         ExecutionEnvironmentScheduler as _Scheduler,
                     )
@@ -1272,11 +1272,11 @@ def run_goal(
 
                     _iso_flags = _rt  # reuse already-fetched flags (G-44)
                     if _iso_flags.isolated_execution_kubernetes_runner:
-                        _iso_runner_type = _RT.KUBERNETES
+                        _iso_runner_type = _runner_type_cls.KUBERNETES
                     elif _iso_flags.isolated_execution_local_runner:
-                        _iso_runner_type = _RT.LOCAL
+                        _iso_runner_type = _runner_type_cls.LOCAL
                     else:
-                        _iso_runner_type = _RT.FAKE
+                        _iso_runner_type = _runner_type_cls.FAKE
 
                     # Build feature flags snapshot for the envelope (G-28)
                     _iso_feature_flags = {

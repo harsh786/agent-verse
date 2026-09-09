@@ -91,7 +91,7 @@ class FeatureFlagService:
 
     def enable_phase(self, phase: int) -> list[str]:
         """Enable all flags for a deployment phase. Returns enabled flags."""
-        PHASE_FLAGS = {
+        phase_flags = {
             0: [],  # nothing (deploy with flag=OFF)
             1: ["org_os_enabled"],  # internal testing
             2: ["org_os_enabled", "team_formation_enabled", "meta_orchestrator_enabled"],
@@ -123,7 +123,7 @@ class FeatureFlagService:
                 "gateway_teams_enabled",
             ],
         }
-        flags = PHASE_FLAGS.get(phase, [])
+        flags = phase_flags.get(phase, [])
         for flag in flags:
             self.enable(flag)
         _log.info("feature_flag.phase_enabled", phase=phase, flags=flags)

@@ -68,6 +68,6 @@ class AzureTTS:
         voice_id: str | None = None,
     ) -> AsyncGenerator[bytes, None]:
         wav = await self.synthesize(text, language=language, voice_id=voice_id)
-        CHUNK = 4800 * 2
-        for pos in range(0, len(wav), CHUNK):
-            yield wav[pos : pos + CHUNK]
+        chunk = 4800 * 2
+        for pos in range(0, len(wav), chunk):
+            yield wav[pos : pos + chunk]

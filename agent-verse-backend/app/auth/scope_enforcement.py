@@ -279,7 +279,7 @@ def _get_client_ip(request: Request) -> str:
     trusted_proxies = {p.strip() for p in trusted_proxies_raw.split(",") if p.strip()}
 
     # RFC-1918 private ranges + loopback — always trusted as local reverse proxies
-    _ALWAYS_TRUSTED_NETWORKS = [
+    _always_trusted_networks = [
         _ip.ip_network("127.0.0.0/8"),  # loopback
         _ip.ip_network("10.0.0.0/8"),  # RFC-1918 private
         _ip.ip_network("172.16.0.0/12"),  # RFC-1918 private
@@ -300,7 +300,7 @@ def _get_client_ip(request: Request) -> str:
             return True
         try:
             addr = _ip.ip_address(host)
-            return any(addr in net for net in _ALWAYS_TRUSTED_NETWORKS)
+            return any(addr in net for net in _always_trusted_networks)
         except ValueError:
             return False
 

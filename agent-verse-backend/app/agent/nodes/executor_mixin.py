@@ -170,24 +170,24 @@ class ExecutorMixin:
         # Build StructuredPlan for wave-based parallel execution (Fix 1 + Fix 3)
         import asyncio as _asyncio
 
-        from app.agent.structured_plan import StructuredPlan as _SP
-        from app.agent.structured_plan import StructuredStep as _SS
+        from app.agent.structured_plan import StructuredPlan as _sp
+        from app.agent.structured_plan import StructuredStep as _ss
 
-        _structured: _SP | None = None
+        _structured: _sp | None = None
         for _entry in plan:
             try:
                 _parsed = json.loads(_entry)
                 if isinstance(_parsed, dict) and "steps" in _parsed:
-                    _structured = _SP.from_llm_response(_entry)
+                    _structured = _sp.from_llm_response(_entry)
                     break
             except Exception:
                 pass
 
         if _structured is None:
             # Plain string steps — treat as sequential (each depends on the previous)
-            _structured = _SP(
+            _structured = _sp(
                 steps=[
-                    _SS(id=f"s{i}", description=sd, depends_on=[f"s{i - 1}"] if i > 0 else [])
+                    _ss(id=f"s{i}", description=sd, depends_on=[f"s{i - 1}"] if i > 0 else [])
                     for i, sd in enumerate(plan)
                 ]
             )
@@ -1656,7 +1656,7 @@ class ExecutorMixin:
                             # V5: Placeholder argument guard — prevent LLM-generated
                             # placeholder values (e.g. "your_organization/your_repository")
                             # from reaching real MCP servers.
-                            _PLACEHOLDER_PATTERNS = (
+                            _placeholder_patterns = (
                                 "your_organization",
                                 "your_repository",
                                 "your_org",
@@ -1678,7 +1678,7 @@ class ExecutorMixin:
                                 f"{k}={v!r}"
                                 for k, v in (tool_call.arguments or {}).items()
                                 if isinstance(v, str)
-                                and any(p in v.lower() for p in _PLACEHOLDER_PATTERNS)
+                                and any(p in v.lower() for p in _placeholder_patterns)
                             ]
                             if _ph_hits:
                                 _ph_msg = (

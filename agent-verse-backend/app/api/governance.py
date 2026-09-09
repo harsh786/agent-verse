@@ -879,9 +879,9 @@ async def emergency_stop(request: Request) -> dict:
             from app.governance.audit import AuditEvent
             from app.governance.permissions import ActionLevel
             from app.tenancy.context import PlanTier
-            from app.tenancy.context import TenantContext as _TC
+            from app.tenancy.context import TenantContext as _tc
 
-            _audit_ctx = _TC(
+            _audit_ctx = _tc(
                 tenant_id=ctx.tenant_id,
                 plan=PlanTier.FREE,
                 api_key_id=getattr(ctx, "api_key_id", ""),

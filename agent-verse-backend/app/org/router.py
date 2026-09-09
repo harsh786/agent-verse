@@ -926,9 +926,9 @@ async def list_org_approvals(
         tenant_id = service._tenant_id
         try:
             from app.tenancy.context import PlanTier
-            from app.tenancy.context import TenantContext as _TC
+            from app.tenancy.context import TenantContext as _tc
 
-            _tenant_ctx = _TC(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="org_approvals")
+            _tenant_ctx = _tc(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="org_approvals")
             pending = hitl_gateway.list_pending(tenant_ctx=_tenant_ctx)
         except Exception:
             pending = []

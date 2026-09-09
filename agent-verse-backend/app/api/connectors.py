@@ -1462,7 +1462,7 @@ async def import_openapi_connector(request: Request, body: OpenAPIImportRequest)
     )
 
     # Normalise auth_type to a known Literal (default to bearer for unknown types)
-    _VALID_AUTH_TYPES = {
+    _valid_auth_types = {
         "bearer",
         "api_key",
         "oauth_ac",
@@ -1473,7 +1473,7 @@ async def import_openapi_connector(request: Request, body: OpenAPIImportRequest)
         "mtls",
         "hmac",
     }
-    safe_auth_type: Any = body.auth_type if body.auth_type in _VALID_AUTH_TYPES else "bearer"
+    safe_auth_type: Any = body.auth_type if body.auth_type in _valid_auth_types else "bearer"
 
     connector_name = body.name or (spec.get("info", {}).get("title") or "Imported API")
     connector_desc = body.description or f"Auto-imported from OpenAPI spec ({len(tools)} endpoints)"

@@ -36,11 +36,13 @@ class CapabilityRegistry:
 
 
 def build_default_capability_registry() -> CapabilityRegistry:
-    T = CapabilityKind.TOOL
-    M = CapabilityKind.MODEL
-    R = CapabilityKind.RETRIEVER
-    E = CapabilityKind.EMBEDDER
-    G = CapabilityKind.GUARDRAIL
+    # Single-letter legend for the big positional-argument fixture table below —
+    # intentional shorthand so each CapabilityProfile row stays scannable/aligned.
+    T = CapabilityKind.TOOL  # noqa: N806
+    M = CapabilityKind.MODEL  # noqa: N806
+    R = CapabilityKind.RETRIEVER  # noqa: N806
+    E = CapabilityKind.EMBEDDER  # noqa: N806
+    G = CapabilityKind.GUARDRAIL  # noqa: N806
     entries = [
         CapabilityProfile(
             "tool:web_search",
