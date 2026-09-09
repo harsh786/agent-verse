@@ -196,9 +196,9 @@ Per the user: everything must be **analyzed → built generically → implemente
 - WS-0 BK6: ✅ DONE 13fcf398 (deleted orphan ImprovementActionExecutor; safety gate default-off kept; mypy 0, tier 20989)
 - WS-3 HITL flawless: ✅ DONE 1682720d (org-mission + workflow HITL were BROKEN, now real; goal+agent real; new integration+e2e tests; mypy 0, tier 20857). Residual WS-3b: org task-level approve endpoint doesn't resolve the paired HITLGateway request.
 - WS-7 Org frontend AWE: ✅ DONE 1f692319/bea0daef/12e08caf
-- WS-1 Civilization throttle: 🔄 IN FLIGHT (backend)
-- WS-11a real KG graph + trace: ✅ DONE 560d52e6/b02e8823/2444253e. WS-11b (honesty/polish): 🔄 IN FLIGHT (frontend). WS-11c (Obsidian Bases/Maps/Timeline real analogs): queued after 11b.
-- WS-2/4/5/6/8/9/10/12/13/14/15: TODO (all recon-detailed)
+- WS-1 Civilization throttle: ✅ DONE 34608add (Redis run-lock + min-interval guard around tick; civ_tick_skipped_total metric; 4 unit tests; 18 bare-pass triaged = all legit; mypy 0)
+- WS-11a real KG graph + trace: ✅ DONE 560d52e6/b02e8823/2444253e. WS-11b (honesty/polish): ✅ DONE 73a68acc (Obsidian Bases/Maps/Timeline honest preview states; prior session left the file uncompilable — completed + tested). WS-11c (real analogs): queued.
+- WS-2/4/5/6/8/9/10/12/13/14/15: TODO (all recon-detailed). Execution model (user): PARALLEL via isolated worktrees, disjoint trees, merged as each lands; WS-8 before WS-15.
 - WS-1 Civilization throttle: TODO
 - WS-2 Org de-fake: TODO
 - WS-3 HITL flawless: TODO
