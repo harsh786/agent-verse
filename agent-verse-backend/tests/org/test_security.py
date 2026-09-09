@@ -17,8 +17,6 @@ Tests:
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-
 
 # ── Test 1: Cross-tenant isolation ────────────────────────────────────────────
 
@@ -94,8 +92,9 @@ class TestPrivilegeEscalation:
     """Worker agents cannot approve their own high-risk actions."""
 
     def test_agent_cannot_approve(self):
-        from app.org.rbac import OrgRBACGuard
         from fastapi import HTTPException
+
+        from app.org.rbac import OrgRBACGuard
         guard = OrgRBACGuard()
         with pytest.raises(HTTPException) as exc_info:
             guard.require("agent", "approve", raise_on_fail=True)
@@ -108,8 +107,9 @@ class TestPrivilegeEscalation:
         assert result is True
 
     def test_dept_admin_cannot_do_admin(self):
-        from app.org.rbac import OrgRBACGuard
         from fastapi import HTTPException
+
+        from app.org.rbac import OrgRBACGuard
         guard = OrgRBACGuard()
         # dept_admin has "change_settings" but not "admin"
         with pytest.raises(HTTPException):
@@ -152,7 +152,7 @@ class TestGoalInjection:
     def test_meta_orchestrator_goal_sanitization(self):
         """MetaOrchestrator should not execute obvious injection payloads."""
         from app.org.meta_orchestrator import MetaOrchestrator
-        orch = MetaOrchestrator()
+        MetaOrchestrator()
         # Very long goals should not crash
         long_goal = "A" * 10_000
         assert len(long_goal) > 0   # just verify no crash during init
@@ -177,7 +177,7 @@ class TestMemoryPoisoning:
 
     @pytest.mark.asyncio
     async def test_low_confidence_lesson_rejected(self):
-        from app.org.org_learning import OrgLearningPipeline, OrgLesson, LearningCategory
+        from app.org.org_learning import LearningCategory, OrgLearningPipeline, OrgLesson
         pipeline = OrgLearningPipeline()
         lesson = OrgLesson(
             lesson_id="test-lesson",
@@ -193,7 +193,7 @@ class TestMemoryPoisoning:
 
     @pytest.mark.asyncio
     async def test_pii_lesson_blocked(self):
-        from app.org.org_learning import OrgLearningPipeline, OrgLesson, LearningCategory
+        from app.org.org_learning import LearningCategory, OrgLearningPipeline, OrgLesson
         pipeline = OrgLearningPipeline()
         lesson = OrgLesson(
             lesson_id="pii-lesson",
@@ -210,12 +210,15 @@ class TestMemoryPoisoning:
 
     @pytest.mark.asyncio
     async def test_high_confidence_lesson_promoted(self):
-        from app.org.org_learning import OrgLearningPipeline, OrgLesson, LearningCategory
+        from app.org.org_learning import LearningCategory, OrgLearningPipeline, OrgLesson
         pipeline = OrgLearningPipeline()
         lesson = OrgLesson(
             lesson_id="good-lesson",
             category=LearningCategory.MODEL_ROUTING,
-            content="Engineering team consistently outperforms with coding model profile for backend tasks",
+            content=(
+                "Engineering team consistently outperforms with coding model "
+                "profile for backend tasks"
+            ),
             source_mission_id="m3",
             source_outcome="completed",
             confidence=0.90,
@@ -325,10 +328,10 @@ class TestGDPRCompliance:
             org_id="org1",
             tenant_id="t1",
         )
-        await mem.deprecate(entry.id, reason="GDPR deletion request")
-        results = await mem.retrieve("PII content", "hr", "org1", "t1")
-        ids = [r.id for r in results]
-        assert entry.id not in ids
+        await mem.deprecate(dept_id="hr", entry_id=entry.entry_id, reason="GDPR deletion request")
+        results = await mem.retrieve(dept_id="hr", query="PII content")
+        ids = [r.entry_id for r in results]
+        assert entry.entry_id not in ids
 
 
 # ── Test 12: RLS table coverage ───────────────────────────────────────────────

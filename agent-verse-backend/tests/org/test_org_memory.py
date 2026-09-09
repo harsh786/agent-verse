@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock
 
-from app.memory.dept_memory import DepartmentMemory, MemoryEntry
+from app.memory.dept_memory import DepartmentMemory
 
 
 @pytest.mark.asyncio
@@ -18,14 +17,12 @@ async def test_dept_memory_add_and_retrieve():
         org_id="org1",
         tenant_id="t1",
     )
-    assert entry.id
+    assert entry.entry_id
     assert entry.confidence >= 0.70
 
     results = await mem.retrieve(
         query="Who is our ideal customer?",
         dept_id="marketing",
-        org_id="org1",
-        tenant_id="t1",
     )
     assert len(results) >= 1
     assert any("ICP" in r.content or "mid-market" in r.content for r in results)
@@ -58,9 +55,11 @@ async def test_dept_memory_deprecate():
         org_id="org1",
         tenant_id="t1",
     )
-    await mem.deprecate(entry.id, reason="Stack migrated to FastAPI")
-    results = await mem.retrieve("What is the tech stack?", "engineering", "org1", "t1")
-    assert not any(r.id == entry.id for r in results)
+    await mem.deprecate(
+        dept_id="engineering", entry_id=entry.entry_id, reason="Stack migrated to FastAPI"
+    )
+    results = await mem.retrieve(dept_id="engineering", query="What is the tech stack?")
+    assert not any(r.entry_id == entry.entry_id for r in results)
 
 
 @pytest.mark.asyncio

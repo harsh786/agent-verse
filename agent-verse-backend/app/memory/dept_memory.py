@@ -29,6 +29,10 @@ from opentelemetry import trace
 _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
+# Minimum confidence required to promote a memory into the department tier.
+# Mirrors app.org.org_learning.OrgLearningLoop.MIN_CONFIDENCE_FOR_PROMOTION.
+MIN_CONFIDENCE_FOR_PROMOTION = 0.70
+
 
 @dataclass
 class MemoryEntry:
@@ -117,7 +121,17 @@ class DepartmentMemory:
         confidence: float = 0.9,
         tags: list[str] | None = None,
     ) -> MemoryEntry:
-        """Add a new memory entry to the department store."""
+        """Add a new memory entry to the department store.
+
+        Raises:
+            ValueError: if confidence is below MIN_CONFIDENCE_FOR_PROMOTION — low
+                confidence facts must not be promoted into durable department memory.
+        """
+        if confidence < MIN_CONFIDENCE_FOR_PROMOTION:
+            raise ValueError(
+                f"confidence {confidence:.2f} is below the promotion threshold "
+                f"of {MIN_CONFIDENCE_FOR_PROMOTION:.2f}"
+            )
         with _tracer.start_as_current_span("dept_memory.add") as span:
             span.set_attribute("dept_id", dept_id)
             span.set_attribute("source", source)
