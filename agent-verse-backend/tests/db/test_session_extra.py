@@ -42,21 +42,31 @@ class TestMakeSessionFactory:
 
 class TestGetSessionFactory:
     def test_get_session_factory_lazy_singleton(self):
-        """get_session_factory() creates and caches the factory."""
+        """get_session_factory() builds the factory once and caches it.
+
+        get_session_factory tracks its own engine (for dispose_task_engine) and
+        builds the sessionmaker inline rather than delegating to
+        _make_session_factory, so patch the actual seams it uses.
+        """
         import app.db.session as sess_mod
-        # Reset the singleton
-        original = sess_mod._session_factory
+        # Reset the singletons this call populates.
+        original_factory = sess_mod._session_factory
+        original_engine = sess_mod._engine
         sess_mod._session_factory = None
         try:
-            with patch("app.db.session._make_session_factory") as mock_factory:
-                mock_factory.return_value = MagicMock()
+            with patch("app.db.session._make_engine") as mock_engine, \
+                 patch("app.db.session.async_sessionmaker") as mock_sessionmaker:
+                mock_engine.return_value = MagicMock()
+                sentinel = MagicMock()
+                mock_sessionmaker.return_value = sentinel
                 result1 = sess_mod.get_session_factory()
                 result2 = sess_mod.get_session_factory()
-            # Should be called once and return same object
-            mock_factory.assert_called_once()
-            assert result1 is result2
+            # Built exactly once (lazy), cached, same object both times.
+            mock_sessionmaker.assert_called_once()
+            assert result1 is result2 is sentinel
         finally:
-            sess_mod._session_factory = original
+            sess_mod._session_factory = original_factory
+            sess_mod._engine = original_engine
 
     def test_get_session_factory_reuses_existing(self):
         import app.db.session as sess_mod
