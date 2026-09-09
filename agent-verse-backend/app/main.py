@@ -951,6 +951,20 @@ def create_app(
                 )
                 logger.info("multimodal_job_store_redis_backed")
 
+                # Flush the API-key permission cache on startup. A previous process
+                # may have cached an empty/partial scope set for a key before its
+                # roles were rehydrated from the DB; that stale entry would survive
+                # this restart in Redis and wrongly 403 a valid key (even blocking
+                # re-login) until its TTL lapsed. Clearing it forces every key to
+                # re-resolve scopes from the DB source of truth.
+                try:
+                    from app.auth.permission_cache import PermissionCache
+
+                    _perm_cleared = await PermissionCache(redis_for_runtime).clear_all()
+                    logger.info("permission_cache_flushed_on_startup", removed=_perm_cleared)
+                except Exception as _perm_exc:
+                    logger.warning("permission_cache_flush_failed", error=str(_perm_exc))
+
             # Wire DB session factory into services so they persist to PostgreSQL.
             from app.db.session import get_session_factory
 

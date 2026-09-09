@@ -133,15 +133,49 @@ async def test_set_stores_sorted_list():
     assert stored == sorted(["z:read", "a:write"])
 
 
-async def test_set_stores_empty_scope_set():
+async def test_set_never_caches_empty_scope_set():
+    """Regression: an empty resolution must NOT be cached. It is almost always
+    transient (a key's roles not yet rehydrated after a restart); caching it for
+    5 minutes shadowed the real DB scopes and 403'd valid keys — even blocking
+    re-login — until the TTL lapsed. Empty must instead drop any stale entry.
+    """
     redis_mock = AsyncMock()
     redis_mock.setex = AsyncMock()
+    redis_mock.delete = AsyncMock()
     cache = PermissionCache(redis=redis_mock)
 
     await cache.set("t1", "key-1", set())
-    call_args = redis_mock.setex.call_args[0]
-    stored = json.loads(call_args[2])
-    assert stored == []
+
+    redis_mock.setex.assert_not_awaited()
+    redis_mock.delete.assert_awaited_once_with("perm:t1:key-1")
+
+
+async def test_clear_all_scans_and_deletes_every_permission_entry():
+    redis_mock = AsyncMock()
+    redis_mock.scan = AsyncMock(side_effect=[
+        (7, [b"perm:t1:k1", b"perm:t2:k2"]),
+        (0, [b"perm:t3:k3"]),
+    ])
+    redis_mock.delete = AsyncMock(side_effect=[2, 1])
+    cache = PermissionCache(redis=redis_mock)
+
+    removed = await cache.clear_all()
+
+    assert removed == 3
+    assert redis_mock.scan.call_count == 2
+    # Uses the global prefix, not a per-tenant pattern.
+    assert redis_mock.scan.call_args_list[0][1]["match"] == "perm:*"
+
+
+async def test_clear_all_no_entries():
+    redis_mock = AsyncMock()
+    redis_mock.scan = AsyncMock(return_value=(0, []))
+    redis_mock.delete = AsyncMock()
+    cache = PermissionCache(redis=redis_mock)
+
+    removed = await cache.clear_all()
+    assert removed == 0
+    redis_mock.delete.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
