@@ -125,10 +125,11 @@ export function useRunSSE({
     };
 
     const controller = connect();
+    const eventSource = eventSourceRef.current;
 
     return () => {
       controller?.abort();
-      eventSourceRef.current?.close();
+      eventSource?.close();
       setIsConnected(false);
     };
   }, [runId, enabled, baseUrl, apiKey]);
