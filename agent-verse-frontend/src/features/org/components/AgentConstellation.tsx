@@ -7,6 +7,9 @@ import { motion, useReducedMotion } from 'framer-motion';
 import { AgentNeuralNode } from '@/components/neural/AgentNeuralNode';
 import { ParticleCanvas, type ParticleCanvasRef } from '@/components/canvas/ParticleCanvas';
 import { useConstellationLayout } from '@/hooks/useConstellationLayout';
+import { AgentSpawnNode } from './AgentSpawnNode';
+import { TaskHandoffLine, TaskHandoffLabel } from './TaskHandoffBeam';
+import { useTaskHandoffAnimations, HANDOFF_ANIMATION_MS } from '../hooks/useTaskHandoffAnimations';
 import { cn } from '@/lib/utils';
 import type { OrgMission } from '../types';
 
@@ -25,7 +28,7 @@ const CANVAS_W = 600;
 const CANVAS_H = 480;
 
 export function AgentConstellation({
-  missions, agents = [], communicatingPairs = [],
+  orgId, missions, agents = [], communicatingPairs = [],
   onAgentSelect, onMissionSelect, selectedAgentId, className,
 }: AgentConstellationProps) {
   const reduce    = useReducedMotion();
@@ -62,6 +65,14 @@ export function AgentConstellation({
   }, [communicatingPairs.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const hubPos = positions.get('__hub__') ?? { x: CANVAS_W / 2, y: CANVAS_H / 2 };
+
+  // WS-7 item 2 — task-handoff animation. Driven by real task completions
+  // (see useTaskHandoffAnimations / computeTaskHandoffs), never a timer.
+  const handoffs = useTaskHandoffAnimations(orgId);
+  const resolvedHandoffs = handoffs
+    .map(h => ({ h, from: positions.get(h.fromAgentId), to: positions.get(h.toAgentId) }))
+    .filter((r): r is { h: typeof handoffs[number]; from: { x: number; y: number }; to: { x: number; y: number } } =>
+      !!r.from && !!r.to);
 
   return (
     <div
@@ -131,7 +142,21 @@ export function AgentConstellation({
             </line>
           );
         })}
+
+        {/* Task-handoff beams — WS-7 item 2: a real task just completed and
+            handed off to a teammate with in-flight work in the same mission. */}
+        {resolvedHandoffs.map(({ h, from, to }) => (
+          <TaskHandoffLine key={h.id} from={from} to={to} durationMs={HANDOFF_ANIMATION_MS} />
+        ))}
       </svg>
+
+      {/* Task-handoff labels — HTML overlay, travels alongside the beam above. */}
+      {resolvedHandoffs.map(({ h, from, to }) => (
+        <TaskHandoffLabel
+          key={h.id} from={from} to={to} label={h.label}
+          durationMs={HANDOFF_ANIMATION_MS} reduce={!!reduce}
+        />
+      ))}
 
       {/* Hub node */}
       <div className="absolute" style={{ left: hubPos.x - 28, top: hubPos.y - 28 }}>
@@ -146,13 +171,19 @@ export function AgentConstellation({
         </motion.div>
       </div>
 
-      {/* Agent nodes */}
-      {agents.map(agent => {
+      {/* Agent nodes — WS-7 item 1: a node mounts (and animates in + bursts)
+          only the first time its id appears, i.e. only on a real
+          org.agent.activated-family SSE event flowing into `agents`. */}
+      {agents.map((agent, i) => {
         const pos = positions.get(agent.id);
         if (!pos) return null;
         return (
-          <div
+          <AgentSpawnNode
             key={agent.id}
+            pos={pos}
+            reduce={!!reduce}
+            delay={Math.min(i, 8) * 0.04}
+            onSpawn={p => canvasRef.current?.emitBurst(p, '#00D4FF', 10)}
             className="absolute"
             style={{ left: pos.x - 22, top: pos.y - 22 }}
           >
@@ -165,7 +196,7 @@ export function AgentConstellation({
               onClick={onAgentSelect}
               size="md"
             />
-          </div>
+          </AgentSpawnNode>
         );
       })}
 
@@ -174,15 +205,18 @@ export function AgentConstellation({
         const pos = positions.get(`mission-${m.id}`);
         if (!pos) return null;
         return (
-          <button
+          <motion.button
             key={m.id}
             className="absolute rounded-lg px-2 py-1 bg-[#0A0F1A] border border-[#6366F1]/30 text-[9px] text-[#6366F1] font-medium max-w-[80px] truncate hover:border-[#6366F1]/60 transition-colors"
             style={{ left: pos.x - 40, top: pos.y - 12, boxShadow: '0 0 8px rgba(99,102,241,0.20)' }}
+            whileHover={reduce ? undefined : { scale: 1.08, y: -1 }}
+            whileTap={reduce ? undefined : { scale: 0.96 }}
+            transition={{ type: 'spring', stiffness: 600, damping: 35 }}
             onClick={() => onMissionSelect?.(m.id)}
             aria-label={`Mission: ${m.title}`}
           >
             {m.title.slice(0, 20)}
-          </button>
+          </motion.button>
         );
       })}
 

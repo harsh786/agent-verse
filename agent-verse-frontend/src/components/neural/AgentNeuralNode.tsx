@@ -76,10 +76,16 @@ export function AgentNeuralNode({
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00D4FF]',
         className,
       )}
-      animate={isLive && !reduce
-        ? { scale: [1, 1.06, 1] }
-        : { scale: 1 }}
-      transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+      // WS-7 item 3 — "bots alive": a working agent breathes noticeably;
+      // an idle one still gets the faintest life (a slow, subtle drift) so
+      // the constellation never reads as frozen/dead — reduced-motion
+      // collapses both to a static node.
+      animate={reduce
+        ? { scale: 1 }
+        : isLive
+          ? { scale: [1, 1.06, 1] }
+          : { scale: [1, 1.015, 1], opacity: [0.92, 1, 0.92] }}
+      transition={{ duration: isLive ? 3 : 6, repeat: Infinity, ease: 'easeInOut' }}
       whileHover={{ scale: 1.08, transition: { type: 'spring', stiffness: 600, damping: 35 } }}
       whileTap={{   scale: 0.93, transition: { type: 'spring', stiffness: 800, damping: 40 } }}
       aria-label={`Agent ${label}: ${state}`}
