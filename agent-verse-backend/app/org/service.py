@@ -1455,6 +1455,55 @@ class OrgService:
                     mission.assigned_team_id = uuid.UUID(resolved_team_id)
                     dispatch_result["team_id"] = resolved_team_id
 
+                    # Spawn a live node in the agent constellation for each team
+                    # member (org.agent.activated → the neural-state bridge), and
+                    # announce the formed team with its roster so the graph can draw
+                    # communication beams between members.
+                    roles = list(getattr(team_manifest, "roles", []) or [])
+                    mission_slug = str(mission.id)[:8]
+                    # Distinct node id per (mission, member) so each mission's squad
+                    # shows as its own agents in the constellation rather than
+                    # collapsing onto the generic agent-1/agent-2 ids.
+                    viz_agent_ids = [f"{mission_slug}-{aid}" for aid in agent_ids]
+                    for idx, viz_agent_id in enumerate(viz_agent_ids):
+                        role_label = ""
+                        if idx < len(roles):
+                            role_obj = roles[idx]
+                            role_label = str(
+                                getattr(role_obj, "title", None)
+                                or getattr(role_obj, "name", None)
+                                or getattr(role_obj, "role", None)
+                                or role_obj
+                            )[:60]
+                        await self._emit_event(
+                            mission.org_id,
+                            "agent.activated",
+                            title=f"Agent {viz_agent_id} joined the team",
+                            entity_type="agent",
+                            entity_id=viz_agent_id,
+                            payload={
+                                "agent_id": viz_agent_id,
+                                "team_id": resolved_team_id,
+                                "mission_id": str(mission.id),
+                                "role": role_label or f"Agent {idx + 1}",
+                            },
+                            source="orchestrator",
+                        )
+                    await self._emit_event(
+                        mission.org_id,
+                        "team.formed",
+                        title=f"Team formed for '{mission.title}'",
+                        entity_type="team",
+                        entity_id=resolved_team_id,
+                        payload={
+                            "team_id": resolved_team_id,
+                            "mission_id": str(mission.id),
+                            "agent_ids": viz_agent_ids,
+                            "topology": orch_plan.topology,
+                        },
+                        source="orchestrator",
+                    )
+
                 span.set_attribute("topology", orch_plan.topology)
                 span.set_attribute("dept_count", len(orch_plan.departments))
 
