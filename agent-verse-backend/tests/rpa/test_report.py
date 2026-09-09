@@ -109,7 +109,9 @@ async def test_run_scrape_report_orchestrates_executor_sequence() -> None:
         def __init__(self) -> None:
             self.calls: list[str] = []
 
-        async def execute(self, *, tool_name, arguments, session_id, tenant_id, goal_id):
+        async def execute(
+            self, *, tool_name, arguments, session_id, tenant_id, goal_id, allow_http_fetch=False
+        ):
             self.calls.append(tool_name)
             if tool_name == "rpa_extract_text":
                 return RPAResult(success=True, output="Scraped body: revenue 1.2M", artifact_name="extract")

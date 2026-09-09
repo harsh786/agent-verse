@@ -3,14 +3,14 @@
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api.knowledge import RpaUrlIngestRequest
-from app.rag.store import KnowledgeStore
 from app.rag.models import KnowledgeCollection
-
+from app.rag.store import KnowledgeStore
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -19,8 +19,8 @@ from app.rag.models import KnowledgeCollection
 def _make_app():
     """Build a minimal test app with the knowledge router."""
     from fastapi import FastAPI
+
     from app.api.knowledge import router
-    from app.tenancy.middleware import TenantMiddleware
 
     app = FastAPI()
 
@@ -42,16 +42,38 @@ def _make_app():
 
 def _make_client():
     app = _make_app()
+    # A real in-memory KnowledgeStore + collection so exists_by_hash / retrieval
+    # behave as in production (WS-13 routes through the store's dedup).
+    from app.tenancy.context import PlanTier, TenantContext
+
     _store = KnowledgeStore()
-    col = KnowledgeCollection(name="test-collection", collection_id="col-1")
-    _store._data[("test-tenant", "col-1")] = MagicMock(
-        collection=col, chunks=[], spec_set=["collection", "chunks"]
+    _ctx = TenantContext(tenant_id="test-tenant", api_key_id="key-1", plan=PlanTier.FREE)
+    _store.create_collection(
+        KnowledgeCollection(name="test-collection", collection_id="col-1"),
+        tenant_ctx=_ctx,
     )
-    _store.list_collections = lambda tenant_ctx: [col]
     app.state.knowledge_store = _store
-    app.state.embedder = None
+    app.state.embedder = object()  # truthy; _embed_texts_or_http is stubbed in tests
     app.state.llm_provider = None
+    # WS-13: no browser installed in CI → executor uses the real httpx fallback,
+    # which the tests mock. Force the browser-less path deterministically.
+    from app.rpa.executor import RPAExecutor
+
+    _executor = RPAExecutor()
+    _executor._playwright_available = False
+    app.state.rpa_executor = _executor
     return TestClient(app, raise_server_exceptions=False)
+
+
+def _mock_httpx_client(html: str):
+    """Patch httpx.AsyncClient to return ``html`` for any GET (the executor path)."""
+    mock_response = MagicMock()
+    mock_response.text = html
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    mock_ctx.get = AsyncMock(return_value=mock_response)
+    return patch("httpx.AsyncClient", MagicMock(return_value=mock_ctx))
 
 
 # ---------------------------------------------------------------------------
@@ -97,51 +119,30 @@ class TestRpaUrlIngest:
         assert resp.status_code == 400
         assert "http" in resp.json()["detail"]
 
-    @patch("app.api.knowledge._PLAYWRIGHT_AVAILABLE", False)
-    def test_httpx_fallback_when_playwright_unavailable(self):
-        """When Playwright is not installed, falls back to httpx + regex strip."""
-        import httpx
+    def test_scrapes_via_rpa_executor_no_browser(self):
+        """WS-13: browser-less path returns REAL page text via the RPA executor."""
         client = _make_client()
-
-        mock_response = MagicMock()
-        mock_response.text = "<html><body><h1>Test page</h1><p>Some content here</p></body></html>"
-        mock_response.raise_for_status = MagicMock()
-
-        with patch("httpx.AsyncClient") as mock_httpx:
-            mock_ctx = AsyncMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
-            mock_ctx.__aexit__ = AsyncMock(return_value=False)
-            mock_ctx.get = AsyncMock(return_value=mock_response)
-            mock_httpx.return_value = mock_ctx
-
+        html = "<html><body><h1>Test page</h1><p>Some content here</p></body></html>"
+        with _mock_httpx_client(html):
             resp = client.post(
                 "/knowledge/ingest/rpa-url",
                 json={"collection_id": "col-1", "urls": ["https://example.com"]},
             )
-
-        # Should succeed (201) even without Playwright
-        assert resp.status_code == 201
+        assert resp.status_code == 201, resp.text
         body = resp.json()
-        assert body["playwright_available"] is False
+        # The scraper is now the ONE RPA executor (no second playwright block).
+        assert body["scraper"] == "rpa-executor"
         assert body["urls_processed"] == 1
-        assert body["total_chunks_ingested"] >= 0
+        assert body["urls_succeeded"] == 1
+        assert body["total_chunks_ingested"] >= 1
+        assert body["results"][0]["chunks_ingested"] >= 1
+        assert body["results"][0].get("content_hash")
 
     def test_successful_ingest_response_shape(self):
         """Response must contain expected fields for frontend consumption."""
         client = _make_client()
-
-        mock_response = MagicMock()
-        mock_response.text = "Hello World. This is a test page with content to ingest."
-        mock_response.raise_for_status = MagicMock()
-
-        with patch("app.api.knowledge._PLAYWRIGHT_AVAILABLE", False), \
-             patch("httpx.AsyncClient") as mock_httpx:
-            mock_ctx = AsyncMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
-            mock_ctx.__aexit__ = AsyncMock(return_value=False)
-            mock_ctx.get = AsyncMock(return_value=mock_response)
-            mock_httpx.return_value = mock_ctx
-
+        html = "<html><body>Hello World. This is a test page with content to ingest.</body></html>"
+        with _mock_httpx_client(html):
             resp = client.post(
                 "/knowledge/ingest/rpa-url",
                 json={
@@ -155,15 +156,16 @@ class TestRpaUrlIngest:
         assert resp.status_code == 201
         body = resp.json()
 
-        # Check all required response fields
-        assert "collection_id" in body
-        assert "urls_processed" in body
-        assert "urls_succeeded" in body
-        assert "total_chunks_ingested" in body
-        assert "playwright_available" in body
-        assert "results" in body
+        for field in (
+            "collection_id",
+            "urls_processed",
+            "urls_succeeded",
+            "total_chunks_ingested",
+            "scraper",
+            "results",
+        ):
+            assert field in body
 
-        # Check per-URL results
         assert len(body["results"]) == 2
         for result in body["results"]:
             assert "url" in result
@@ -174,24 +176,23 @@ class TestRpaUrlIngest:
         """Batch ingestion processes all URLs and returns per-URL results."""
         client = _make_client()
 
-        call_count = 0
+        counter = {"n": 0}
 
         async def mock_get(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
+            counter["n"] += 1
             m = MagicMock()
-            m.text = f"Content for URL {call_count}. This has enough text to create chunks."
-            m.raise_for_status = MagicMock()
+            m.text = (
+                f"<html><body>Content for URL {counter['n']}. "
+                "Enough text to chunk.</body></html>"
+            )
             return m
 
-        with patch("app.api.knowledge._PLAYWRIGHT_AVAILABLE", False), \
-             patch("httpx.AsyncClient") as mock_httpx:
-            mock_ctx = AsyncMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
-            mock_ctx.__aexit__ = AsyncMock(return_value=False)
-            mock_ctx.get = mock_get
-            mock_httpx.return_value = mock_ctx
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_ctx.get = mock_get
 
+        with patch("httpx.AsyncClient", MagicMock(return_value=mock_ctx)):
             resp = client.post(
                 "/knowledge/ingest/rpa-url",
                 json={
@@ -217,14 +218,12 @@ class TestRpaUrlIngest:
             import httpx
             raise httpx.ConnectError("Connection refused")
 
-        with patch("app.api.knowledge._PLAYWRIGHT_AVAILABLE", False), \
-             patch("httpx.AsyncClient") as mock_httpx:
-            mock_ctx = AsyncMock()
-            mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
-            mock_ctx.__aexit__ = AsyncMock(return_value=False)
-            mock_ctx.get = mock_get
-            mock_httpx.return_value = mock_ctx
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_ctx.get = mock_get
 
+        with patch("httpx.AsyncClient", MagicMock(return_value=mock_ctx)):
             resp = client.post(
                 "/knowledge/ingest/rpa-url",
                 json={"collection_id": "col-1", "urls": ["https://nonexistent.example.com"]},
@@ -237,6 +236,39 @@ class TestRpaUrlIngest:
         result = body["results"][0]
         assert result["success"] is False
         assert "error" in result
+
+    def test_cross_source_dedup_on_readd(self):
+        """WS-13: re-scraping the SAME content dedups against the one store."""
+        client = _make_client()
+        html = "<html><body>Deduplicated knowledge content for WS-13 convergence.</body></html>"
+        with _mock_httpx_client(html):
+            first = client.post(
+                "/knowledge/ingest/rpa-url",
+                json={"collection_id": "col-1", "urls": ["https://example.com/dup"]},
+            )
+            second = client.post(
+                "/knowledge/ingest/rpa-url",
+                json={"collection_id": "col-1", "urls": ["https://example.com/dup"]},
+            )
+        assert first.status_code == 201 and second.status_code == 201
+        assert first.json()["results"][0]["deduplicated"] is False
+        assert first.json()["total_chunks_ingested"] >= 1
+        second_result = second.json()["results"][0]
+        assert second_result["deduplicated"] is True
+        assert second_result["chunks_ingested"] == 0
+
+    def test_ssrf_target_blocked(self):
+        """Internal/metadata targets are rejected before any fetch."""
+        client = _make_client()
+        resp = client.post(
+            "/knowledge/ingest/rpa-url",
+            json={"collection_id": "col-1", "urls": ["http://169.254.169.254/latest/meta-data/"]},
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["urls_succeeded"] == 0
+        assert body["results"][0]["success"] is False
+        assert "blocked" in body["results"][0]["error"].lower()
 
 
 # ---------------------------------------------------------------------------

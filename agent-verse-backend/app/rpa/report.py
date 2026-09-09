@@ -171,13 +171,16 @@ async def run_scrape_report(
     selectors: list[str] | None = None,
     session_id: str | None = None,
     title: str | None = None,
+    allow_http_fetch: bool = False,
 ) -> tuple[ScrapeReport, list[RPAResult]]:
     """Run a scrape sequence via an ``RPAExecutor`` and assemble a report.
 
     Sequence (all sharing one session so page state persists): open the URL →
     extract text (per selector, or the whole page) → screenshot. Works with the
     real Playwright executor and with the simulation fallback (no browser), so
-    it always yields a report. Returns ``(report, raw_results)``.
+    it always yields a report. ``allow_http_fetch`` opts into the WS-13 real-HTTP
+    fallback (browser-less REAL page text) for the KB scrape path. Returns
+    ``(report, raw_results)``.
     """
     sid = session_id or uuid.uuid4().hex
     results: list[RPAResult] = []
@@ -189,6 +192,7 @@ async def run_scrape_report(
             session_id=sid,
             tenant_id=tenant_id,
             goal_id=goal_id,
+            allow_http_fetch=allow_http_fetch,
         )
     )
     for sel in selectors or [None]:  # type: ignore[list-item]
@@ -200,6 +204,7 @@ async def run_scrape_report(
                 session_id=sid,
                 tenant_id=tenant_id,
                 goal_id=goal_id,
+                allow_http_fetch=allow_http_fetch,
             )
         )
     results.append(
@@ -209,6 +214,7 @@ async def run_scrape_report(
             session_id=sid,
             tenant_id=tenant_id,
             goal_id=goal_id,
+            allow_http_fetch=allow_http_fetch,
         )
     )
 
