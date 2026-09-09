@@ -3,15 +3,16 @@ from __future__ import annotations
 
 import pytest
 
-
 # ── ExcelParser ───────────────────────────────────────────────────────────────
 
 class TestExcelParser:
     def test_parse_with_openpyxl(self):
         """If openpyxl is available, parse a minimal in-memory workbook."""
         try:
-            import openpyxl
             import io
+
+            import openpyxl
+
             from app.ingestion.parsers.excel_parser import ExcelParser
 
             wb = openpyxl.Workbook()
@@ -142,9 +143,11 @@ The learning rate is 0.01.
 class TestParquetParser:
     def test_parse_with_pyarrow(self):
         try:
+            import io
+
             import pyarrow as pa
             import pyarrow.parquet as pq
-            import io
+
             from app.ingestion.parsers.parquet_parser import ParquetParser
 
             table = pa.table({"id": [1, 2, 3], "name": ["Alice", "Bob", "Carol"], "score": [0.9, 0.7, 0.8]})
@@ -167,8 +170,10 @@ class TestParquetParser:
 class TestAvroParser:
     def test_parse_with_fastavro(self):
         try:
-            import fastavro
             import io
+
+            import fastavro
+
             from app.ingestion.parsers.avro_parser import AvroParser
 
             schema = {

@@ -15,10 +15,8 @@ from typing import Any
 
 import pytest
 
-from app.rag.agentic.patterns.agentic_chunking import AgenticChunkingPattern
 from app.rag.agentic.patterns.raptor import RAPTORPattern
 from app.rag.contracts import RAGExecutionRequest, RAGStrategy
-from app.rag.engine import RetrievalResult
 from app.rag.gateway import (
     RetrievalExecutionContext,
     RetrievalRuntimeDependencies,

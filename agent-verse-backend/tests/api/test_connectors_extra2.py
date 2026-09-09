@@ -21,15 +21,15 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from app.api.connectors import _require_tenant, router as connectors_router
-from app.mcp.oauth import OAuthToken
+from app.api.connectors import _require_tenant
+from app.api.connectors import router as connectors_router
 from app.mcp.registry import MCPRegistry, MCPServerConfig
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
@@ -84,13 +84,13 @@ class _MockSession:
         self._many = many or []
         self.added: list = []
 
-    async def execute(self, *args: Any, **kwargs: Any) -> "_MockSession":
+    async def execute(self, *args: Any, **kwargs: Any) -> _MockSession:
         return self
 
     def fetchall(self) -> list:
         return self._many
 
-    def scalars(self) -> "_MockSession":
+    def scalars(self) -> _MockSession:
         return self
 
     def all(self) -> list:
@@ -115,7 +115,7 @@ class _MockSession:
 
         return _txn()
 
-    async def __aenter__(self) -> "_MockSession":
+    async def __aenter__(self) -> _MockSession:
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -799,8 +799,8 @@ def test_test_connector_with_db_factory_persists_snapshot() -> None:
 def test_get_connector_health_history_with_db() -> None:
     """health history with DB session (lines 449-473)."""
     # Mock rows (status, latency_ms, error, checked_at)
-    from types import SimpleNamespace
     from datetime import UTC, datetime
+    from types import SimpleNamespace
 
     now = datetime.now(UTC)
     fake_row = SimpleNamespace(
@@ -811,16 +811,16 @@ def test_get_connector_health_history_with_db() -> None:
     )
 
     class _HealthSession:
-        async def execute(self, *a: Any, **kw: Any) -> "_HealthSession":
+        async def execute(self, *a: Any, **kw: Any) -> _HealthSession:
             return self
 
-        def scalars(self) -> "_HealthSession":
+        def scalars(self) -> _HealthSession:
             return self
 
         def all(self) -> list:
             return [fake_row]
 
-        async def __aenter__(self) -> "_HealthSession":
+        async def __aenter__(self) -> _HealthSession:
             return self
 
         async def __aexit__(self, *a: Any) -> None:
@@ -879,7 +879,7 @@ def test_import_openapi_connector_with_db_persists_tools() -> None:
     registry = _make_registry()
 
     class _PersistSession:
-        async def execute(self, *a: Any, **kw: Any) -> "_PersistSession":
+        async def execute(self, *a: Any, **kw: Any) -> _PersistSession:
             return self
 
         async def commit(self) -> None:
@@ -894,7 +894,7 @@ def test_import_openapi_connector_with_db_persists_tools() -> None:
 
             return _txn()
 
-        async def __aenter__(self) -> "_PersistSession":
+        async def __aenter__(self) -> _PersistSession:
             return self
 
         async def __aexit__(self, *a: Any) -> None:

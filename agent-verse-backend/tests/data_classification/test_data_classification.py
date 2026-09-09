@@ -1,9 +1,11 @@
 """DataClassifier must classify text before it enters prompts or tools."""
 from __future__ import annotations
+
 import pytest
+
 from app.data_classification.classifier import DataClassifier
-from app.data_classification.schema import DataClass, DataClassification
 from app.data_classification.redaction import Redactor
+from app.data_classification.schema import DataClass
 
 
 @pytest.fixture

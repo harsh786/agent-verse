@@ -63,7 +63,8 @@ class LearningPipeline:
                     await session.execute(
                         text("""
                         INSERT INTO civilization_learnings
-                            (id, civilization_id, tenant_id, candidate, source_agent_id, status, created_at)
+                            (id, civilization_id, tenant_id, candidate, source_agent_id,
+                             status, created_at)
                         VALUES (:id, :cid, :tid, :candidate, :agent, 'candidate', NOW())
                     """),
                         {

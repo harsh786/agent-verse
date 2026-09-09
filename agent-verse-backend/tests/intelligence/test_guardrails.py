@@ -1,8 +1,6 @@
 """Tests for enhanced GuardrailChecker."""
 from __future__ import annotations
 
-import pytest
-
 from app.intelligence.guardrails import GuardrailChecker
 
 

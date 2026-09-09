@@ -12,6 +12,7 @@ Rules:
 from __future__ import annotations
 
 import os
+
 import pytest
 
 LIVE_TEST = os.getenv("LIVE_TEST", "false").lower() == "true"

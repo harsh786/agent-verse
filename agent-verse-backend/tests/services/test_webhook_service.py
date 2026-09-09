@@ -1,8 +1,10 @@
 """Tests for outbound webhook delivery service."""
 from __future__ import annotations
+
+import httpx
 import pytest
 import respx
-import httpx
+
 from app.services.webhook_service import OutboundWebhookService
 
 

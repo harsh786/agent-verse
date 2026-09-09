@@ -1,12 +1,11 @@
 """Tests for app/services/notification_service.py — 8 tests using respx."""
 from __future__ import annotations
 
+import httpx
 import pytest
 import respx
-import httpx
 
 from app.services.notification_service import NotificationChannel, NotificationService
-
 
 # ---------------------------------------------------------------------------
 # Helpers

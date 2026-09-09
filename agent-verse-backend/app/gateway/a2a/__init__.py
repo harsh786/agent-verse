@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-import structlog
 from opentelemetry import trace
 
 from app.observability.logging import get_logger

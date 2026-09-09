@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from app.mcp.capability_search import CapabilitySearch, ToolMatch
 from app.tenancy.context import PlanTier, TenantContext
 
@@ -93,7 +91,6 @@ def test_cosine_empty_vector_returns_zero() -> None:
 
 
 def test_cosine_similar_vectors() -> None:
-    import math
 
     v = [1.0, 1.0, 0.0]
     w = [1.0, 0.5, 0.0]

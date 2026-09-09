@@ -1,14 +1,21 @@
 """SecurityRuntime: GuardrailProfileSelector, GovernanceProfileSelector, PolicyBundleSelector."""
 from __future__ import annotations
-import pytest
-from app.security_runtime.guardrail_profile import GuardrailProfileSelector, GuardrailBundle
-from app.security_runtime.governance_profile import GovernanceProfileSelector, GovernanceBundle
-from app.security_runtime.policy_bundle_selector import PolicyBundleSelector
+
 from app.orchestration.runtime_profile import (
-    GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-    ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig, RiskLevel,
+    AgentPatternConfig,
+    EvalConfig,
+    GoalProperties,
+    GoalRuntimeProfile,
+    MemoryCacheConfig,
+    ModelPlanConfig,
+    RAGStrategyConfig,
+    RiskLevel,
+    SecurityConfig,
 )
-from app.tenancy.context import TenantContext, PlanTier
+from app.security_runtime.governance_profile import GovernanceBundle, GovernanceProfileSelector
+from app.security_runtime.guardrail_profile import GuardrailBundle, GuardrailProfileSelector
+from app.security_runtime.policy_bundle_selector import PolicyBundleSelector
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _make_profile(risk: RiskLevel = RiskLevel.LOW, compliance: list[str] | None = None) -> GoalRuntimeProfile:
@@ -89,12 +96,18 @@ def test_policy_bundle_free_plan_denies_shell():
 
 
 def test_unknown_dep_status_warns_but_passes():
-    from app.runtime_readiness.dependency_health import DependencyHealth, DepStatus
-    from app.runtime_readiness.readiness_gate import ReadinessGate
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
+    from app.runtime_readiness.dependency_health import DependencyHealth
+    from app.runtime_readiness.readiness_gate import ReadinessGate
     # UNKNOWN health should generate warning but not block
     health = DependencyHealth()  # all UNKNOWN by default
     gate = ReadinessGate(health)
@@ -111,12 +124,18 @@ def test_unknown_dep_status_warns_but_passes():
 
 
 def test_developer_bundle_reduces_scanning():
-    from app.security_runtime.guardrail_profile import GuardrailProfileSelector, GuardrailBundle
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.security_runtime.guardrail_profile import GuardrailBundle, GuardrailProfileSelector
+    from app.tenancy.context import PlanTier, TenantContext
     profile = GoalRuntimeProfile(
         goal_id="g1", tenant_id="t1",
         properties=GoalProperties(raw_goal="test"),
@@ -132,12 +151,18 @@ def test_developer_bundle_reduces_scanning():
 
 
 def test_rpa_bundle_scans_exfil():
-    from app.security_runtime.guardrail_profile import GuardrailProfileSelector, GuardrailBundle
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.security_runtime.guardrail_profile import GuardrailBundle, GuardrailProfileSelector
+    from app.tenancy.context import PlanTier, TenantContext
     profile = GoalRuntimeProfile(
         goal_id="g1", tenant_id="t1",
         properties=GoalProperties(raw_goal="test"),

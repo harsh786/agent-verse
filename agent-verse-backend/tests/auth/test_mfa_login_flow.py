@@ -1,6 +1,7 @@
 """Test MFA end-to-end login gating."""
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 def test_mfa_complete_endpoint_exists():
@@ -21,8 +22,9 @@ def test_mfa_complete_request_model():
 @pytest.mark.asyncio
 async def test_mfa_complete_rejects_expired_token():
     """Expired or invalid pending_token must return 401."""
-    from app.auth.mfa import complete_mfa_login, MFACompleteRequest
     from fastapi import HTTPException
+
+    from app.auth.mfa import MFACompleteRequest, complete_mfa_login
 
     # Redis returns None for expired token
     mock_redis = MagicMock()
@@ -45,13 +47,15 @@ async def test_mfa_complete_rejects_expired_token():
 async def test_mfa_complete_rejects_wrong_code():
     """Wrong TOTP code after valid pending token must return 401."""
     try:
-        import pyotp
         import base64
+
+        import pyotp
     except ImportError:
         pytest.skip("pyotp not installed")
 
-    from app.auth.mfa import complete_mfa_login, MFACompleteRequest
     from fastapi import HTTPException
+
+    from app.auth.mfa import MFACompleteRequest, complete_mfa_login
 
     # Valid pending token
     mock_redis = MagicMock()

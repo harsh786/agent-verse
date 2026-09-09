@@ -10,13 +10,24 @@ All endpoints:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import uuid4
 
 import structlog
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -925,10 +936,11 @@ async def list_org_approvals(
         # Build minimal TenantContext for list_pending
         tenant_id = service._tenant_id
         try:
-            from app.tenancy.context import PlanTier
-            from app.tenancy.context import TenantContext as _TC
+            from app.tenancy.context import PlanTier, TenantContext
 
-            _tenant_ctx = _TC(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="org_approvals")
+            _tenant_ctx = TenantContext(
+                tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="org_approvals"
+            )
             pending = hitl_gateway.list_pending(tenant_ctx=_tenant_ctx)
         except Exception:
             pending = []
@@ -2530,10 +2542,6 @@ async def org_dept_memory_add(
 # Clients: Claude Desktop, Cursor, any JSON-RPC 2.0 / MCP client.
 # Auth: "Authorization: Bearer <api_key>" header or ?api_key= query param.
 
-import contextlib
-
-from fastapi import WebSocket, WebSocketDisconnect
-
 
 @router.websocket("/{org_id}/mcp")
 async def org_mcp_websocket(
@@ -2567,10 +2575,8 @@ async def org_mcp_websocket(
     # Attach the request's app.state (lifespan-wired services) for live service
     # injection — not the module-level app.main.app singleton.
     _app_state = None
-    try:
+    with contextlib.suppress(Exception):
         _app_state = getattr(websocket.app, "state", None)
-    except Exception:
-        pass
 
     mcp_server = OrgMCPServer(
         org_id=org_id,

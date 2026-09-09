@@ -1,12 +1,12 @@
 """Comprehensive tests for app/governance/cost.py — targeting 90%+ coverage."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.governance.cost import BudgetConfig, CostController, RedisCostController
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _ctx(tenant_id: str = "t1") -> TenantContext:

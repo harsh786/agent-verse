@@ -6,6 +6,7 @@ Covers:
 """
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
 from app.api.tenants import router as tenants_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware

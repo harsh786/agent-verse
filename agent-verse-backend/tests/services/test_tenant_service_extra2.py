@@ -3,14 +3,12 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.core.errors import ConflictError, NotFoundError
 from app.services.tenant_service import TenantService, _generate_raw_key, _hash_key
-from app.tenancy.context import PlanTier, TenantContext
-
 
 # ---------------------------------------------------------------------------
 # Utilities

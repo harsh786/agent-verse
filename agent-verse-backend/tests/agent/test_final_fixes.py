@@ -11,8 +11,6 @@ H-6  AgentRouter uses pre-wired instance
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-
 
 # ── H-2: SSRF protection ──────────────────────────────────────────────────────
 
@@ -40,6 +38,7 @@ def test_http_tool_blocks_aws_metadata():
 def test_http_tool_uses_ipaddress_module():
     """http_tool.py must use ipaddress module for comprehensive SSRF protection."""
     import inspect
+
     from app.tools import http_tool
     src = inspect.getsource(http_tool)
     assert "ipaddress" in src, "http_tool.py must use Python's ipaddress module"
@@ -50,6 +49,7 @@ def test_http_tool_uses_ipaddress_module():
 def test_safe_eval_condition_blocks_traversal():
     """eval() must not allow __subclasses__ or other dangerous traversals."""
     import inspect
+
     from app.agent import structured_plan
     src = inspect.getsource(structured_plan)
     # The module must use safe eval approach
@@ -143,6 +143,7 @@ async def test_goal_service_has_celery_event_bridge():
 def test_execution_memory_on_app_state():
     """ExecutionMemory must be on app.state for agent graph to use it."""
     import inspect
+
     from app import main
     src = inspect.getsource(main)
     assert "exec_memory" in src or "ExecutionMemory" in src, \
@@ -152,6 +153,7 @@ def test_execution_memory_on_app_state():
 def test_execution_memory_imported_in_main():
     """main.py must import ExecutionMemory."""
     import inspect
+
     from app import main
     src = inspect.getsource(main)
     assert "ExecutionMemory" in src, "main.py must import and instantiate ExecutionMemory"
@@ -162,6 +164,7 @@ def test_execution_memory_imported_in_main():
 def test_agent_config_loaded_in_make_agent_loop():
     """_make_agent_loop_for_tenant must load agent config from agent store."""
     import inspect
+
     from app.services import goal_service
     src = inspect.getsource(goal_service)
     # The function must read from agent_store, not use empty _agent_config = {}
@@ -172,6 +175,7 @@ def test_agent_config_loaded_in_make_agent_loop():
 def test_make_agent_loop_accepts_agent_id():
     """_make_agent_loop_for_tenant must accept an agent_id parameter."""
     import inspect
+
     from app.services.goal_service import GoalService
     sig = inspect.signature(GoalService._make_agent_loop_for_tenant)
     assert "agent_id" in sig.parameters, \
@@ -183,6 +187,7 @@ def test_make_agent_loop_accepts_agent_id():
 def test_submit_goal_uses_app_state_router():
     """submit_goal must use pre-wired agent_router from app.state."""
     import inspect
+
     from app.services import goal_service
     src = inspect.getsource(goal_service)
     assert "agent_router" in src, \

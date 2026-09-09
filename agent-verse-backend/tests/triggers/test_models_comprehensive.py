@@ -5,7 +5,6 @@ import pytest
 
 from app.triggers.models import TriggerSpec, TriggerType
 
-
 # ── TriggerType enum ──────────────────────────────────────────────────────────
 
 def test_trigger_type_all_values() -> None:

@@ -182,7 +182,7 @@ class SupervisorAgent:
         """Use LLM to decompose goal into independent sub-tasks."""
         from app.providers.base import CompletionRequest, Message
 
-        DECOMPOSE_PROMPT = (
+        decompose_prompt = (
             "You are a goal decomposer. Break this complex goal into 2-6 independent sub-tasks.\n"
             "Each sub-task should be self-contained and achievable by a single agent.\n\n"
             "Goal: {goal}\n\n"
@@ -191,7 +191,7 @@ class SupervisorAgent:
         )
 
         req = CompletionRequest(
-            messages=[Message(role="user", content=DECOMPOSE_PROMPT.format(goal=goal))],
+            messages=[Message(role="user", content=decompose_prompt.format(goal=goal))],
             model=getattr(self._planner, "_default_model", "claude-opus-4-8"),
         )
         try:

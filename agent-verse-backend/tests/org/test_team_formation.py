@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.org.team_formation import TeamFormationEngine, TeamManifest, RoleMapper
-
+from app.org.team_formation import RoleMapper, TeamFormationEngine, TeamManifest
 
 # ── Happy path ─────────────────────────────────────────────────────────────────
 

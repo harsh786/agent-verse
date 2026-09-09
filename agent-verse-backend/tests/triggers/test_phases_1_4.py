@@ -1,17 +1,17 @@
 """Tests for Phase 1-4 trigger infrastructure modules."""
 from __future__ import annotations
 
-import pytest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
-from app.triggers.store import ScheduleStore
-from app.triggers.consumers.chain import ChainTriggerConsumer
+import pytest
+
 from app.triggers.channels.gateway import ChannelIngestionGateway, NLIntentClassifier
-from app.triggers.webhooks.verifier import WebhookSignatureVerifier
 from app.triggers.condition.evaluator import CELEvaluator, TemplateRenderer
+from app.triggers.consumers.chain import ChainTriggerConsumer
 from app.triggers.models import TriggerSpec, TriggerType
-
+from app.triggers.store import ScheduleStore
+from app.triggers.webhooks.verifier import WebhookSignatureVerifier
 
 # ── TriggerStore.find_by_type ──────────────────────────────────────────────────
 
@@ -128,8 +128,8 @@ async def test_chain_consumer_respects_depth_limit():
 
 @pytest.mark.asyncio
 async def test_webhook_verifier_valid():
-    import hmac as _hmac
     import hashlib
+    import hmac as _hmac
     secret = "test-secret"
     payload = b'{"event": "push"}'
     expected = _hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()

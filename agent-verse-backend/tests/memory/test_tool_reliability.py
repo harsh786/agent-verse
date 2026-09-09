@@ -1,6 +1,6 @@
 """Tests for P2.3 tool reliability memory."""
+
 import pytest
-from unittest.mock import AsyncMock
 
 
 @pytest.mark.asyncio

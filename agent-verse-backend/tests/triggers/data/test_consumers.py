@@ -1,18 +1,19 @@
 """Tests for data consumers — DBRowChange, S3Event, APIPoller, RSSPoller."""
 from __future__ import annotations
 
-import pytest
-from unittest.mock import AsyncMock
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 from app.triggers.data.consumers import (
-    DBRowChangeConsumer,
-    S3EventConsumer,
     APIPoller,
+    DBRowChangeConsumer,
     RSSPoller,
+    S3EventConsumer,
 )
-from app.triggers.store import ScheduleStore
 from app.triggers.models import TriggerSpec, TriggerType
+from app.triggers.store import ScheduleStore
 
 
 def make_store_and_tc(trigger_type, **kwargs):

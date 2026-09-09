@@ -308,7 +308,8 @@ class GuardrailsEngine:
             except ValueError:
                 continue
             for idx, spec in enumerate(COMPLIANCE_BUNDLES.get(bundle, [])):
-                rule = _rule_from_spec(tenant_id, f"gr-bundle:{tenant_id}:{bundle.value}:{idx}", spec)
+                rule_id = f"gr-bundle:{tenant_id}:{bundle.value}:{idx}"
+                rule = _rule_from_spec(tenant_id, rule_id, spec)
                 if rule.rule_id in existing_ids:
                     continue
                 self.add_rule(rule)

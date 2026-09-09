@@ -12,12 +12,10 @@ import pytest
 
 from app.intelligence.cost_tracker import (
     MODEL_PRICING,
-    CostAnomaly,
     CostTracker,
     calculate_cost,
 )
 from app.providers.base import CompletionResponse, TokenUsage
-
 
 # ---------------------------------------------------------------------------
 # Helpers

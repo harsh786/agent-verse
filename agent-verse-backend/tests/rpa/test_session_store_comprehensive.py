@@ -3,11 +3,8 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
-import pytest
-
-from app.rpa.session import RPAManagedSession, RPASession, RPASessionStore
 from app.rpa.artifacts import (
     RPAArtifact,
     RPAArtifactStore,
@@ -15,13 +12,12 @@ from app.rpa.artifacts import (
     _safe_name,
     get_artifact_store,
 )
-
+from app.rpa.session import RPAManagedSession, RPASession, RPASessionStore
 
 # ── RPASession ────────────────────────────────────────────────────────────────
 
 
 def test_rpa_session_defaults() -> None:
-    from datetime import UTC
 
     s = RPASession(session_id="sid", tenant_id="t1", goal_id="g1")
     assert s.status == "created"

@@ -106,7 +106,7 @@ class StateContextBuilder:
         if mc.reflexion_enabled and self._reflexion is not None:
             try:
                 lessons = self._reflexion.recall(tenant_id=tenant_ctx.tenant_id, limit=3)
-                ctx.reflexion_lessons = [l["lesson"] for l in lessons]
+                ctx.reflexion_lessons = [entry["lesson"] for entry in lessons]
             except Exception:
                 ctx.degradation_notes.append("reflexion_store recall failed")
 

@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.agents import AgentStore, _load_snapshots_from_db, _save_snapshot_to_db
 from app.api.agents import router as agents_router
-from app.intelligence.meta_agent import MetaAgentConfig
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 

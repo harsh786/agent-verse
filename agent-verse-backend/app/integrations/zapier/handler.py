@@ -22,9 +22,8 @@ def get_zapier_secret() -> str:
 def verify_zapier_secret(secret_header: str) -> bool:
     expected = get_zapier_secret()
     if not expected:
-        if os.getenv("ENVIRONMENT", "development") == "production":
-            return False  # Fail-closed in production
-        return True  # Allow in development only
+        # Fail-closed in production, allow in development only
+        return os.getenv("ENVIRONMENT", "development") != "production"
     return hmac.compare_digest(expected, secret_header)
 
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
-import pytest
-from app.lifecycle.retention_policy import RetentionPolicy, DataCategory, RetentionTier
+
 from app.lifecycle.deletion_orchestrator import DeletionOrchestrator
-from app.lifecycle.legal_hold_policy import LegalHoldPolicy
 from app.lifecycle.export_policy import ExportPolicy
+from app.lifecycle.legal_hold_policy import LegalHoldPolicy
+from app.lifecycle.retention_policy import DataCategory, RetentionPolicy, RetentionTier
 
 
 def test_retention_default_for_goals():

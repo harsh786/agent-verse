@@ -14,7 +14,6 @@ import pytest
 
 from app.providers.base import CompletionRequest, EmbedRequest, Message, ToolDefinition
 
-
 # ---------------------------------------------------------------------------
 # Helpers: build mock openai module and mock response objects
 # ---------------------------------------------------------------------------
@@ -95,12 +94,14 @@ def test_constructor_stores_default_model() -> None:
 def test_constructor_raises_import_error_when_openai_missing() -> None:
     with patch.dict(sys.modules, {"openai": None}):  # type: ignore[dict-item]
         import importlib
+
         import app.providers.openai_compatible as _mod
         importlib.reload(_mod)
         with pytest.raises(ImportError, match="openai"):
             _mod.OpenAICompatibleProvider(api_key="key")
     # Restore
     import importlib
+
     import app.providers.openai_compatible as _mod2
     importlib.reload(_mod2)
 
@@ -531,11 +532,11 @@ class _AsyncIterator:
     def __init__(self, items: list) -> None:
         self._items = iter(items)
 
-    def __aiter__(self) -> "_AsyncIterator":
+    def __aiter__(self) -> _AsyncIterator:
         return self
 
     async def __anext__(self) -> object:
         try:
             return next(self._items)
         except StopIteration:
-            raise StopAsyncIteration
+            raise StopAsyncIteration from None

@@ -1,8 +1,6 @@
 """Tests for ExecutionEnvelope contracts and HMAC signing."""
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from app.execution_environment.envelope import (
@@ -11,8 +9,6 @@ from app.execution_environment.envelope import (
     verify_envelope,
 )
 from app.execution_environment.models import (
-    ExecutionEnvelope,
-    ExecutionEnvironmentPolicy,
     RunnerType,
 )
 

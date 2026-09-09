@@ -1,13 +1,14 @@
 """Test builder preview hosting endpoints."""
-import pytest
-from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, MagicMock
+
+from fastapi.testclient import TestClient
 
 
 def test_builder_preview_returns_html():
     """GET /builder/preview/{id} must return HTML, not JSON."""
-    from app.api.builder import router
     from fastapi import FastAPI
+
+    from app.api.builder import router
     app = FastAPI()
     app.include_router(router)
     # Mock artifact store returning no artifacts
@@ -22,8 +23,9 @@ def test_builder_preview_returns_html():
 
 def test_builder_preview_building_message_when_no_artifacts():
     """Must show 'Building' status when no index.html artifact found."""
-    from app.api.builder import router
     from fastapi import FastAPI
+
+    from app.api.builder import router
     app = FastAPI()
     app.include_router(router)
     app.state.artifact_store = MagicMock()
@@ -37,8 +39,9 @@ def test_builder_preview_building_message_when_no_artifacts():
 
 def test_builder_preview_serves_index_html_when_available():
     """Must serve actual index.html content when artifact exists."""
-    from app.api.builder import router
     from fastapi import FastAPI
+
+    from app.api.builder import router
     app = FastAPI()
     app.include_router(router)
     mock_store = MagicMock()
@@ -56,8 +59,9 @@ def test_builder_preview_serves_index_html_when_available():
 
 def test_builder_project_preview_url_format():
     """Created project must have a /builder/preview/ URL."""
-    from app.api.builder import router
     from fastapi import FastAPI
+
+    from app.api.builder import router
     app = FastAPI()
     app.include_router(router)
     app.state.goal_service = None
@@ -82,9 +86,10 @@ def test_builder_project_preview_url_format():
 
 def test_builder_preview_handles_missing_list_artifacts():
     """Preview must not crash if artifact_store.list_artifacts raises AttributeError."""
-    from app.api.builder import router
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+
+    from app.api.builder import router
     app = FastAPI()
     app.include_router(router)
     # Store without list_artifacts method

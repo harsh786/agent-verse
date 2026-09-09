@@ -11,6 +11,7 @@ infrastructure. It delegates to existing services where possible:
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast
@@ -1761,7 +1762,7 @@ class OrgService:
             "deliverable": goal_result,
             "generated_at": datetime.now(UTC).isoformat(),
         }
-        mission.outputs = list(mission.outputs or []) + [report]
+        mission.outputs = [*list(mission.outputs or []), report]
         new_meta = dict(mission.extra_data or {})
         new_meta["result"] = report
         mission.extra_data = new_meta
@@ -1892,10 +1893,8 @@ class OrgService:
 
                 # Resolve LLM provider from the request's wired app.state.
                 _llm_provider: Any | None = None
-                try:
+                with contextlib.suppress(Exception):
                     _llm_provider = getattr(app_state, "planner_provider", None)
-                except Exception:
-                    pass
 
                 orchestrator = MetaOrchestrator(llm_provider=_llm_provider)
                 orch_plan = await orchestrator.plan_mission(

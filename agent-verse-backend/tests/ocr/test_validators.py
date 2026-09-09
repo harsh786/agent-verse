@@ -1,5 +1,5 @@
 """Tests for OCR field validators."""
-import pytest
+
 from app.ocr.validators import (
     mask_aadhaar,
     normalize_date,
@@ -7,7 +7,6 @@ from app.ocr.validators import (
     validate_gstin,
     validate_pan,
 )
-
 
 # ── PAN ──────────────────────────────────────────────────────────────────────
 

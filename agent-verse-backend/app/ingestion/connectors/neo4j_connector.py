@@ -75,10 +75,9 @@ class Neo4jConnector(BaseConnector):
                 cypher = f"MATCH (n) RETURN n LIMIT {batch_size}"
 
         def _run_query():
-            with GraphDatabase.driver(neo4j_uri, auth=auth) as driver:
-                with driver.session() as session:
-                    result = session.run(cypher)
-                    return [dict(record) for record in result]
+            with GraphDatabase.driver(neo4j_uri, auth=auth) as driver, driver.session() as session:
+                result = session.run(cypher)
+                return [dict(record) for record in result]
 
         loop = asyncio.get_event_loop()
         records = await loop.run_in_executor(None, _run_query)

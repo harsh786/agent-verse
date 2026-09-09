@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import pytest
-from app.embedding.orchestrator import EmbeddingOrchestrator, EmbeddingSelectionResult
-from app.embedding.model_registry import EmbeddingModelRegistry, EmbeddingModelSpec
+
 from app.embedding.dimension_policy import DimensionPolicy
+from app.embedding.model_registry import EmbeddingModelRegistry
+from app.embedding.orchestrator import EmbeddingOrchestrator, EmbeddingSelectionResult
 from app.embedding.reembedding_policy import ReembeddingPolicy, ReembeddingTrigger
 from app.ingestion.content_classifier import ContentType
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture

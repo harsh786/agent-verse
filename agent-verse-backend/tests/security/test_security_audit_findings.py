@@ -24,7 +24,6 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-
 # ---------------------------------------------------------------------------
 # Shared app fixture
 # ---------------------------------------------------------------------------
@@ -185,7 +184,6 @@ def test_admin_key_comparison_is_constant_time():
 
 def test_admin_endpoint_rejects_wrong_key(client, monkeypatch):
     """Admin endpoints must return 401 for an incorrect key value."""
-    import os
     monkeypatch.setenv("PLATFORM_ADMIN_KEY", "correct-secret-key-xyz")
     response = client.get(
         "/admin/tenants",
@@ -196,7 +194,6 @@ def test_admin_endpoint_rejects_wrong_key(client, monkeypatch):
 
 def test_admin_endpoint_rejects_empty_key(client, monkeypatch):
     """Admin endpoints must return 401 when X-Admin-Key header is absent."""
-    import os
     monkeypatch.setenv("PLATFORM_ADMIN_KEY", "some-secret")
     response = client.get("/admin/tenants")
     assert response.status_code == 401
@@ -298,7 +295,7 @@ def test_mfa_enrollment_does_not_log_secret(client, caplog):
 def test_mfa_enrollment_response_contains_secret_not_logged():
     """The enrollment endpoint returns the secret in the response body;
     verify the MFA module does NOT log it via the module logger."""
-    import logging as _logging
+
     from app.api import mfa as mfa_module
 
     # Check that no logging.info/debug/warning calls in begin_enrollment
@@ -362,6 +359,7 @@ def test_goal_submission_validates_empty_goal(client):
 def test_goal_pydantic_model_rejects_empty_string():
     """GoalRequest.goal field must have min_length=1 enforced at model level."""
     from pydantic import ValidationError
+
     from app.api.goals import GoalRequest
 
     with pytest.raises(ValidationError):
@@ -371,6 +369,7 @@ def test_goal_pydantic_model_rejects_empty_string():
 def test_goal_pydantic_model_rejects_oversized_payload():
     """GoalRequest.goal must enforce max_length=10_000."""
     from pydantic import ValidationError
+
     from app.api.goals import GoalRequest
 
     with pytest.raises(ValidationError):

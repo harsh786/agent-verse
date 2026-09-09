@@ -241,7 +241,7 @@ class WebhookDeliverySystem:
         )
 
         # Schedule async retry
-        asyncio.create_task(self._delayed_retry(delivery, delay))
+        asyncio.create_task(self._delayed_retry(delivery, delay))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
         return False
 
     async def _delayed_retry(self, delivery: WebhookDelivery, delay_seconds: int) -> None:

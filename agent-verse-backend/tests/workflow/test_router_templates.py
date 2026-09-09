@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from app.workflow.template_store import SystemTemplate, SystemTemplateStore
+from app.workflow.template_store import SystemTemplate
 
 
 def _template(slug: str = "kyc-automation") -> dict:
@@ -19,11 +19,11 @@ def _template(slug: str = "kyc-automation") -> dict:
     }
 
 
-def make_app(store: MagicMock) -> "TestClient":
+def make_app(store: MagicMock) -> TestClient:
     from fastapi import FastAPI, Request
+
+    from app.tenancy.context import PlanLimits, PlanTier, TenantContext
     from app.workflow.router_templates import router
-    from app.tenancy.context import TenantContext, PlanTier, PlanLimits
-    from app.workflow.dsl import WorkflowDefinition
 
     app = FastAPI()
 
@@ -74,14 +74,14 @@ def template_store() -> MagicMock:
 
 
 @pytest.fixture
-def client(template_store: MagicMock) -> "TestClient":
+def client(template_store: MagicMock) -> TestClient:
     return make_app(template_store)
 
 
 # ── List templates ────────────────────────────────────────────────────────────
 
 
-def test_list_templates(client: "TestClient") -> None:
+def test_list_templates(client: TestClient) -> None:
     resp = client.get("/api/v1/workflow-templates")
     assert resp.status_code == 200
     data = resp.json()
@@ -89,12 +89,12 @@ def test_list_templates(client: "TestClient") -> None:
     assert data["total"] == 1
 
 
-def test_list_templates_by_category(client: "TestClient") -> None:
+def test_list_templates_by_category(client: TestClient) -> None:
     resp = client.get("/api/v1/workflow-templates?category=Financial+Services")
     assert resp.status_code == 200
 
 
-def test_list_templates_pagination(client: "TestClient") -> None:
+def test_list_templates_pagination(client: TestClient) -> None:
     resp = client.get("/api/v1/workflow-templates?page=1&per_page=10")
     assert resp.status_code == 200
     data = resp.json()
@@ -105,7 +105,7 @@ def test_list_templates_pagination(client: "TestClient") -> None:
 # ── Categories ────────────────────────────────────────────────────────────────
 
 
-def test_list_categories(client: "TestClient") -> None:
+def test_list_categories(client: TestClient) -> None:
     resp = client.get("/api/v1/workflow-templates/categories")
     assert resp.status_code == 200
     data = resp.json()
@@ -118,7 +118,7 @@ def test_list_categories(client: "TestClient") -> None:
 # ── Get template ──────────────────────────────────────────────────────────────
 
 
-def test_get_template(client: "TestClient") -> None:
+def test_get_template(client: TestClient) -> None:
     resp = client.get("/api/v1/workflow-templates/kyc-automation")
     assert resp.status_code == 200
     data = resp.json()
@@ -126,7 +126,7 @@ def test_get_template(client: "TestClient") -> None:
     assert data["category"] == "Financial Services"
 
 
-def test_get_template_not_found(client: "TestClient", template_store: MagicMock) -> None:
+def test_get_template_not_found(client: TestClient, template_store: MagicMock) -> None:
     from app.workflow.template_store import TemplateNotFoundError
     template_store.get.side_effect = TemplateNotFoundError("not found")
     resp = client.get("/api/v1/workflow-templates/bad-slug")
@@ -136,7 +136,7 @@ def test_get_template_not_found(client: "TestClient", template_store: MagicMock)
 # ── Preview run ───────────────────────────────────────────────────────────────
 
 
-def test_preview_run(client: "TestClient") -> None:
+def test_preview_run(client: TestClient) -> None:
     resp = client.get("/api/v1/workflow-templates/kyc-automation/preview-run")
     assert resp.status_code == 200
     data = resp.json()
@@ -145,7 +145,7 @@ def test_preview_run(client: "TestClient") -> None:
     assert "step_count" in data
 
 
-def test_preview_run_not_found(client: "TestClient", template_store: MagicMock) -> None:
+def test_preview_run_not_found(client: TestClient, template_store: MagicMock) -> None:
     from app.workflow.template_store import TemplateNotFoundError
     template_store.get.side_effect = TemplateNotFoundError("not found")
     resp = client.get("/api/v1/workflow-templates/bad/preview-run")
@@ -155,7 +155,7 @@ def test_preview_run_not_found(client: "TestClient", template_store: MagicMock) 
 # ── Fork template ─────────────────────────────────────────────────────────────
 
 
-def test_fork_template(client: "TestClient") -> None:
+def test_fork_template(client: TestClient) -> None:
     resp = client.post("/api/v1/workflow-templates/kyc-automation/fork", json={})
     assert resp.status_code == 201
     data = resp.json()
@@ -163,14 +163,14 @@ def test_fork_template(client: "TestClient") -> None:
     assert data["forked_from"] == "kyc-automation"
 
 
-def test_fork_template_with_name_override(client: "TestClient") -> None:
+def test_fork_template_with_name_override(client: TestClient) -> None:
     resp = client.post("/api/v1/workflow-templates/kyc-automation/fork", json={
         "name": "My Custom KYC"
     })
     assert resp.status_code == 201
 
 
-def test_fork_template_not_found(client: "TestClient", template_store: MagicMock) -> None:
+def test_fork_template_not_found(client: TestClient, template_store: MagicMock) -> None:
     from app.workflow.template_store import TemplateNotFoundError
     template_store.fork.side_effect = TemplateNotFoundError("not found")
     resp = client.post("/api/v1/workflow-templates/bad/fork", json={})
@@ -180,7 +180,7 @@ def test_fork_template_not_found(client: "TestClient", template_store: MagicMock
 # ── Search ────────────────────────────────────────────────────────────────────
 
 
-def test_search_templates(client: "TestClient") -> None:
+def test_search_templates(client: TestClient) -> None:
     resp = client.get("/api/v1/workflow-templates/search?q=kyc")
     assert resp.status_code == 200
     data = resp.json()

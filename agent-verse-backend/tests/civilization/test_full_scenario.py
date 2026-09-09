@@ -23,7 +23,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -62,7 +61,7 @@ async def test_full_autonomous_scenario() -> None:
     from app.civilization.blackboard import Blackboard
     from app.civilization.bus import CivilizationBus
     from app.civilization.constitution import evaluate_spawn
-    from app.civilization.models import Constitution, SpawnContext, SpawnDecision
+    from app.civilization.models import SpawnContext, SpawnDecision
     from app.civilization.orchestrator import CivilizationOrchestrator
 
     civ_id = f"civ-full-{uuid.uuid4().hex[:8]}"

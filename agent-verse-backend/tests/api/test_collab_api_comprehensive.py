@@ -1,17 +1,14 @@
 """Comprehensive tests for app/collab API — supplements test_collab.py."""
 from __future__ import annotations
 
-import base64
-import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.collab import router as collab_router
-from app.collab.store import CollaborationStore, VersionConflictError
+from app.collab.store import VersionConflictError
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import TenantMiddleware
 
@@ -66,7 +63,7 @@ class FakeCollabStore:
         ops = self.operations[key]
         if expected_version is not None and len(ops) != expected_version:
             raise VersionConflictError(
-                f"conflict", current_version=len(ops), expected_version=expected_version
+                "conflict", current_version=len(ops), expected_version=expected_version
             )
         op = {"operation_id": f"op-{len(ops)+1}", "session_id": session_id,
               "tenant_id": tenant_ctx.tenant_id, "version": len(ops) + 1,
@@ -456,7 +453,7 @@ async def test_pub_sub_track_leave_noop_without_redis_url() -> None:
 
 
 async def test_pub_sub_get_participant_count_local_fallback() -> None:
-    from app.api.collab import _CollabPubSub, _ws_connections
+    from app.api.collab import _CollabPubSub
 
     ps = _CollabPubSub()
     count = await ps.get_participant_count("no-such-session")

@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import pytest
-from app.triggers.rbac import check_permission, TriggerPermissionDenied, TRIGGER_PERMISSION_MATRIX
 
+from app.triggers.rbac import TRIGGER_PERMISSION_MATRIX, TriggerPermissionDenied, check_permission
 
 # ── RBAC Matrix Tests (5 roles × 8 operations = 40 cases) ────────────────────
 
@@ -128,9 +128,10 @@ def test_cel_blocked_attribute_not_accessible():
 
 def test_store_tenant_isolation():
     """Triggers from tenant A must not be visible to tenant B."""
-    from app.triggers.store import ScheduleStore
-    from app.triggers.models import TriggerSpec, TriggerType
     from types import SimpleNamespace
+
+    from app.triggers.models import TriggerSpec, TriggerType
+    from app.triggers.store import ScheduleStore
 
     store = ScheduleStore()
     tc_a = SimpleNamespace(tenant_id="tenant-a", plan="free", api_key="k")
@@ -150,9 +151,10 @@ def test_store_tenant_isolation():
 
 def test_find_by_type_tenant_isolation():
     """find_by_type must only return triggers for the specified tenant."""
-    from app.triggers.store import ScheduleStore
-    from app.triggers.models import TriggerSpec, TriggerType
     from types import SimpleNamespace
+
+    from app.triggers.models import TriggerSpec, TriggerType
+    from app.triggers.store import ScheduleStore
 
     store = ScheduleStore()
     tc_a = SimpleNamespace(tenant_id="tenant-x", plan="free", api_key="k")
@@ -173,6 +175,7 @@ def test_find_by_type_tenant_isolation():
 def test_webhook_verifier_timing_safe():
     """Signature comparison must use hmac.compare_digest (timing-safe)."""
     import inspect
+
     from app.triggers.webhooks.verifier import WebhookSignatureVerifier
     source = inspect.getsource(WebhookSignatureVerifier.verify)
     # Verify compare_digest is used (not ==)
@@ -183,10 +186,13 @@ def test_webhook_verifier_timing_safe():
 
 import pytest
 
+
 @pytest.mark.asyncio
 async def test_webhook_verifier_rejects_wrong_secret():
+    import hashlib
+    import hmac
+
     from app.triggers.webhooks.verifier import WebhookSignatureVerifier
-    import hmac, hashlib
     secret = "correct-secret"
     payload = b'{"event": "push"}'
     sig = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
@@ -197,8 +203,10 @@ async def test_webhook_verifier_rejects_wrong_secret():
 
 @pytest.mark.asyncio
 async def test_webhook_verifier_rejects_empty_payload():
+    import hashlib
+    import hmac
+
     from app.triggers.webhooks.verifier import WebhookSignatureVerifier
-    import hmac, hashlib
     secret = "secret"
     sig = hmac.new(secret.encode(), b"original", hashlib.sha256).hexdigest()
     v = WebhookSignatureVerifier()

@@ -1,15 +1,13 @@
 # tests/agent/test_phase_n11_n13.py
 """Phase N11-N13: chunkers + granular flags + advanced RAG dispatch."""
 from __future__ import annotations
-import pytest
-
 
 # ── N11: Chunker dispatch ────────────────────────────────────────────────────
 
 def test_ingestion_orchestrator_dispatches_ast_chunker_for_code():
     """Code content must use AST chunker, not paragraph split."""
-    from app.ingestion.orchestrator import IngestionOrchestrator
     from app.ingestion.content_classifier import ContentType
+    from app.ingestion.orchestrator import IngestionOrchestrator
     orch = IngestionOrchestrator()
     code = "def foo():\n    return 1\n\ndef bar():\n    return 2"
     chunks = orch._chunk(code, ContentType.CODE)
@@ -22,8 +20,8 @@ def test_ingestion_orchestrator_dispatches_ast_chunker_for_code():
 
 def test_ingestion_orchestrator_dispatches_semantic_chunker_for_text():
     """Text content must use semantic chunker."""
-    from app.ingestion.orchestrator import IngestionOrchestrator
     from app.ingestion.content_classifier import ContentType
+    from app.ingestion.orchestrator import IngestionOrchestrator
     orch = IngestionOrchestrator()
     text = "This is paragraph one.\n\nThis is paragraph two.\n\nThis is paragraph three."
     chunks = orch._chunk(text, ContentType.TEXT)
@@ -81,6 +79,7 @@ def test_get_runtime_flags_reads_env_vars():
     """get_runtime_flags must read ENABLE_RUNTIME_SCORECARD env var."""
     import os
     import unittest.mock as _um
+
     from app.core.runtime_flags import get_runtime_flags
     get_runtime_flags.cache_clear()
     with _um.patch.dict(os.environ, {"ENABLE_RUNTIME_SCORECARD": "true"}):
@@ -95,7 +94,7 @@ def test_get_runtime_flags_reads_env_vars():
 def test_active_rag_strategy_can_be_non_hybrid():
     """Agent context can hold non-hybrid rag strategy."""
     from app.agent.state import AgentState
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
     state = AgentState(goal="test", tenant_ctx=ctx, goal_id="g1")
     state.context["_active_rag_strategy"] = "fusion_rag"
@@ -105,8 +104,10 @@ def test_active_rag_strategy_can_be_non_hybrid():
 async def test_retrieve_fusion_fires_from_engine():
     """retrieve(strategy='fusion') must fire retrieve_fusion()."""
     from unittest.mock import AsyncMock, patch
+
     from sqlalchemy.ext.asyncio import AsyncSession
-    from app.rag.engine import retrieve, RetrievalResult
+
+    from app.rag.engine import RetrievalResult, retrieve
 
     session = AsyncMock(spec=AsyncSession)
     fake_results = [RetrievalResult("c1", "fusion result", 0.9, {}, ["vector"])]

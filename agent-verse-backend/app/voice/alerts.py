@@ -71,7 +71,7 @@ class VoiceAlertManager:
     async def start(self) -> None:
         """Start the pub/sub listener loop."""
         self._running = True
-        asyncio.create_task(self._listen_loop())
+        asyncio.create_task(self._listen_loop())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
         log.info("voice.alerts.manager_started")
 
     async def stop(self) -> None:

@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
-from app.agent.consensus import ConsensusVerifier, requires_consensus, VerifierVote
+from app.agent.consensus import ConsensusVerifier, requires_consensus
 
 
 class TestRequiresConsensus:
@@ -81,7 +80,6 @@ class TestConsensusVerifier:
     @pytest.mark.asyncio
     async def test_fail_closed_on_provider_error(self) -> None:
         """A verifier that throws an exception counts as a failure vote."""
-        from app.providers.fake import FakeProvider
 
         class BoomProvider:
             async def complete(self, req: object) -> object:

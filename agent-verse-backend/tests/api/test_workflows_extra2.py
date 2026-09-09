@@ -22,10 +22,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.api.workflows import (
-    _WorkflowStore,
     _orm_to_dict,
     _require_tenant,
     _workflow_to_out,
+    _WorkflowStore,
+)
+from app.api.workflows import (
     router as workflows_router,
 )
 from app.tenancy.context import PlanTier, TenantContext
@@ -67,10 +69,10 @@ class _MockSession:
         self.added: list = []
         self.deleted: list = []
 
-    async def execute(self, *args: Any, **kwargs: Any) -> "_MockSession":
+    async def execute(self, *args: Any, **kwargs: Any) -> _MockSession:
         return self
 
-    def scalars(self) -> "_MockSession":
+    def scalars(self) -> _MockSession:
         return self
 
     def all(self) -> list:
@@ -98,7 +100,7 @@ class _MockSession:
 
         return _txn()
 
-    async def __aenter__(self) -> "_MockSession":
+    async def __aenter__(self) -> _MockSession:
         return self
 
     async def __aexit__(self, *args: Any) -> None:

@@ -5,7 +5,6 @@ import pytest
 
 from app.observability.health import HealthCheck, HealthRegistry
 
-
 # ── 1. HealthCheck dataclass ─────────────────────────────────────────────────
 
 def test_health_check_fields():

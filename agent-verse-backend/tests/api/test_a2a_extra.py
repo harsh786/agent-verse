@@ -3,14 +3,21 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.a2a import _verify_hmac, _persist_task, _update_task_status, _get_task, _send_callback, router as a2a_router, _tasks
+from app.api.a2a import (
+    _get_task,
+    _persist_task,
+    _send_callback,
+    _tasks,
+    _update_task_status,
+    _verify_hmac,
+)
+from app.api.a2a import router as a2a_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 

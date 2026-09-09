@@ -1,11 +1,11 @@
 """Phase 2: AI Router and Model Registry tests."""
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+from app.ai_router.models import ModelCapability, ModelRoutePolicy, RoutingMode, TaskType
+from app.ai_router.registry import model_registry
+from app.ai_router.router import ai_router
 from app.api.model_registry import router as models_router
-from app.ai_router.registry import model_registry, ModelRegistry
-from app.ai_router.models import TaskType, RoutingMode, ModelRoutePolicy, ModelCapability
-from app.ai_router.router import AIRouter, ai_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 

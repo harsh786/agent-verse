@@ -6,9 +6,8 @@ Covers compliance, simulation, red-team, marketplace, intelligence, SAML, SCIM.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -16,8 +15,10 @@ from app.api.enterprise import (
     compliance_router,
     intelligence_router,
     marketplace_router,
-    router as enterprise_router,
     scim_router,
+)
+from app.api.enterprise import (
+    router as enterprise_router,
 )
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware

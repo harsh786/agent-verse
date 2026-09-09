@@ -5,6 +5,7 @@ Supports Slack-compatible and generic JSON webhook payloads.
 
 from __future__ import annotations
 
+import contextlib
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -104,10 +105,8 @@ class AlertRouter:
                 self._cooldowns[rule.name] = now
                 fired.append(alert)
                 if rule.webhook_url:
-                    try:
+                    with contextlib.suppress(Exception):  # must not crash the calling path
                         await self.send_alert(alert, rule.webhook_url)
-                    except Exception:
-                        pass  # alert routing must not crash the calling path
         return fired
 
     async def send_alert(self, alert: FiredAlert, webhook_url: str) -> None:

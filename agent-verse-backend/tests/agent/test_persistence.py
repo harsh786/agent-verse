@@ -1,11 +1,15 @@
 """Tests for GoalPersistenceEngine — agent retry and persistence logic."""
 from __future__ import annotations
-import asyncio
+
 from types import SimpleNamespace
 
 import pytest
+
 from app.agent.persistence import (
-    GoalPersistenceEngine, PersistenceConfig, RetryStrategy, AttemptRecord
+    AttemptRecord,
+    GoalPersistenceEngine,
+    PersistenceConfig,
+    RetryStrategy,
 )
 from app.orchestration.runtime_profile import default_pattern_limits
 

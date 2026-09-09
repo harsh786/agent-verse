@@ -4,9 +4,10 @@ _RPAArtifactStoreFallback, _safe_path_component, _safe_name, get_artifact_store.
 from __future__ import annotations
 
 import os
-import pytest
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from app.rpa.artifacts import (
     MinIOArtifactStore,
@@ -15,7 +16,6 @@ from app.rpa.artifacts import (
     _safe_path_component,
     get_artifact_store,
 )
-
 
 # ── 1. RPAArtifact dataclass ─────────────────────────────────────────────────
 

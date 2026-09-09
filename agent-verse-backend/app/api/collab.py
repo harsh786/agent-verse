@@ -590,7 +590,13 @@ async def get_session_insights(request: Request, session_id: str) -> dict[str, A
                 max_tokens=800,
             )
         )
-        raw = resp.content.strip().lstrip("```json").lstrip("```").rstrip("```")
+        raw = (
+            resp.content.strip()
+            .removeprefix("```json")
+            .removeprefix("```")
+            .removesuffix("```")
+            .strip()
+        )
         data = json.loads(raw)
     except Exception:
         data = {
@@ -846,7 +852,5 @@ async def yjs_crdt_sync(websocket: WebSocket, room_id: str) -> None:
         redis_task.cancel()
         await _crdt_manager.leave(room_id, websocket)
         _crdt_log.debug("crdt_client_left room_id=%s", room_id)
-        import contextlib
-
         with contextlib.suppress(Exception):
             await websocket.close()

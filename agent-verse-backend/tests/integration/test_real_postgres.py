@@ -28,8 +28,8 @@ DATABASE_URL = os.getenv(
 def _sync_db_reachable() -> bool:
     async def _check() -> bool:
         try:
-            from sqlalchemy.ext.asyncio import create_async_engine
             from sqlalchemy import text
+            from sqlalchemy.ext.asyncio import create_async_engine
 
             engine = create_async_engine(DATABASE_URL, pool_timeout=5)
             async with engine.connect() as conn:
@@ -55,7 +55,7 @@ pytestmark = pytest.mark.skipif(
 @pytest_asyncio.fixture
 async def db_factory():
     """Real async SQLAlchemy session factory connected to local Docker Postgres."""
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     engine = create_async_engine(DATABASE_URL, echo=False)
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -65,7 +65,7 @@ async def db_factory():
 
 @pytest.fixture
 def tenant_ctx():
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     return TenantContext(
         tenant_id=f"test-{uuid.uuid4().hex[:8]}",
@@ -83,7 +83,8 @@ async def db_tenant_ctx(db_factory):
     up via cascade on tenant delete.
     """
     from sqlalchemy import text
-    from app.tenancy.context import TenantContext, PlanTier
+
+    from app.tenancy.context import PlanTier, TenantContext
 
     tid = f"integ-{uuid.uuid4().hex[:12]}"
     async with db_factory() as session, session.begin():
@@ -126,8 +127,9 @@ async def db_tenant_ctx(db_factory):
 @pytest.mark.asyncio
 async def test_ltm_store_async_writes_to_db(db_factory, tenant_ctx):
     """store_async() inserts a row into long_term_memory table."""
-    from app.memory.long_term import LongTermMemory, LongTermMemoryStore
     from sqlalchemy import text
+
+    from app.memory.long_term import LongTermMemory, LongTermMemoryStore
 
     store = LongTermMemoryStore()
     memory = LongTermMemory(
@@ -214,8 +216,8 @@ async def test_ltm_delete_removes_from_in_memory(db_factory, tenant_ctx):
 @pytest.mark.asyncio
 async def test_ltm_embedding_column_exists():
     """Verify the embedding column was added to long_term_memory."""
-    from sqlalchemy.ext.asyncio import create_async_engine
     from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
 
     engine = create_async_engine(DATABASE_URL)
     async with engine.connect() as conn:
@@ -404,6 +406,7 @@ async def test_audit_log_query_db_filters_by_tool_name(db_factory, tenant_ctx):
 def test_openapi_path_count_above_100():
     """OpenAPI schema has 100+ registered paths."""
     from fastapi.openapi.utils import get_openapi
+
     from app.main import create_app
 
     app = create_app()
@@ -415,6 +418,7 @@ def test_openapi_path_count_above_100():
 def test_openapi_has_role_endpoints():
     """Role management endpoints are registered in OpenAPI schema."""
     from fastapi.openapi.utils import get_openapi
+
     from app.main import create_app
 
     app = create_app()
@@ -428,6 +432,7 @@ def test_openapi_has_role_endpoints():
 def test_openapi_has_analytics_endpoints():
     """Analytics endpoints are registered in OpenAPI schema."""
     from fastapi.openapi.utils import get_openapi
+
     from app.main import create_app
 
     app = create_app()
@@ -441,6 +446,7 @@ def test_openapi_has_analytics_endpoints():
 def test_openapi_has_audit_endpoint_with_pagination_params():
     """/governance/audit endpoint now supports offset, start_time, end_time."""
     from fastapi.openapi.utils import get_openapi
+
     from app.main import create_app
 
     app = create_app()

@@ -1917,7 +1917,7 @@ async def _get_scim_handler(request: Request) -> SCIMHandler:  # noqa: F821
 
 @scim_router.get("/Users")
 async def scim_list_users(
-    request: Request, startIndex: int = 1, count: int = 100
+    request: Request, startIndex: int = 1, count: int = 100  # noqa: N803  # SCIM RFC 7644 mandates this exact query param name
 ) -> dict[str, Any]:
     handler = await _get_scim_handler(request)
     return await handler.list_users(start_index=startIndex, count=count)

@@ -204,8 +204,13 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
 
     elif tool_name == "monday_create_item":
         query = """
-        mutation CreateItem($boardId: ID!, $groupId: String, $itemName: String!, $columnValues: JSON) {
-          create_item(board_id: $boardId, group_id: $groupId, item_name: $itemName, column_values: $columnValues) {
+        mutation CreateItem(
+          $boardId: ID!, $groupId: String, $itemName: String!, $columnValues: JSON
+        ) {
+          create_item(
+            board_id: $boardId, group_id: $groupId, item_name: $itemName,
+            column_values: $columnValues
+          ) {
             id
             name
             created_at
@@ -228,7 +233,9 @@ async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[st
     elif tool_name == "monday_update_item":
         query = """
         mutation UpdateItem($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
-          change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $columnValues) {
+          change_multiple_column_values(
+            board_id: $boardId, item_id: $itemId, column_values: $columnValues
+          ) {
             id
             name
           }

@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.mcp.registry import MCPRegistry, MCPServerConfig, ServerStatus
-from app.mcp.catalog import CONNECTOR_CATALOG, ConnectorSpec
 from app.mcp.a2a import AgentCard
+from app.mcp.catalog import CONNECTOR_CATALOG
+from app.mcp.registry import MCPRegistry, MCPServerConfig, ServerStatus
 from app.tenancy.context import PlanTier, TenantContext
 
 _CTX_A = TenantContext(tenant_id="tid-a", plan=PlanTier.PROFESSIONAL, api_key_id="k1")

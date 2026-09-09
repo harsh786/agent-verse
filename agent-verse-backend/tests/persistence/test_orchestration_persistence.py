@@ -3,20 +3,20 @@ from __future__ import annotations
 
 import pytest
 
-from app.evals.runtime_scorecard import RuntimeScorecard, ScorecardResult
 from app.agent.state import AgentState, GoalStatus
+from app.evals.runtime_scorecard import RuntimeScorecard, ScorecardResult
 from app.orchestration.runtime_profile import (
-    GoalRuntimeProfile,
-    GoalProperties,
     AgentPatternConfig,
-    RAGStrategyConfig,
-    ModelPlanConfig,
-    SecurityConfig,
-    MemoryCacheConfig,
     EvalConfig,
+    GoalProperties,
+    GoalRuntimeProfile,
+    MemoryCacheConfig,
+    ModelPlanConfig,
+    RAGStrategyConfig,
+    SecurityConfig,
 )
-from app.tenancy.context import TenantContext, PlanTier
 from app.services.orchestration_persistence import OrchestrationPersistence
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture

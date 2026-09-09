@@ -1,10 +1,7 @@
 """Comprehensive tests for app/agent/tool_calls.py — targets 90%+ statement coverage."""
 from __future__ import annotations
 
-import pytest
-
 from app.agent.tool_calls import ToolCall, extract_tool_call
-
 
 # ── ToolCall dataclass ─────────────────────────────────────────────────────────
 

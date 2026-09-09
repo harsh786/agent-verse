@@ -21,8 +21,8 @@ async def test_openai_provider_has_stream_complete():
 @pytest.mark.asyncio
 async def test_fake_provider_stream_yields_tokens():
     """FakeProvider.stream_complete yields at least 3 tokens."""
-    from app.providers.fake import FakeProvider
     from app.providers.base import CompletionRequest, Message
+    from app.providers.fake import FakeProvider
 
     provider = FakeProvider(responses=["step one step two step three"])
     req = CompletionRequest(
@@ -35,7 +35,8 @@ async def test_fake_provider_stream_yields_tokens():
 @pytest.mark.asyncio
 async def test_anthropic_provider_stream_complete_yields_tokens():
     """AnthropicProvider.stream_complete yields tokens from the streaming API."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
+
     from app.providers.anthropic_provider import AnthropicProvider
     from app.providers.base import CompletionRequest, Message
 
@@ -76,8 +77,8 @@ async def test_anthropic_provider_stream_complete_yields_tokens():
 @pytest.mark.asyncio
 async def test_base_provider_stream_complete_default():
     """LLMProvider default stream_complete yields the full response as one chunk."""
-    from app.providers.fake import FakeProvider
     from app.providers.base import CompletionRequest, Message
+    from app.providers.fake import FakeProvider
 
     # FakeProvider already has stream_complete override, test via a plain base call
     provider = FakeProvider(responses=["full response text"])

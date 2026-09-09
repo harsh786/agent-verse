@@ -3,9 +3,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 from app.governance.policies import (
     REGULATED_DOMAINS,
@@ -13,11 +11,10 @@ from app.governance.policies import (
     Policy,
     PolicyEngine,
     PolicyResult,
-    PolicyVersionManager,
     evaluate_with_domain_failsafe,
     start_policy_subscriber,
 )
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _ctx(tenant_id: str = "t1") -> TenantContext:

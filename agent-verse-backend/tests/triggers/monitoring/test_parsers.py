@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 from app.triggers.monitoring.parsers import (
-    parse_grafana_alert,
-    parse_cloudwatch_alarm,
-    parse_sentry_webhook,
-    parse_pagerduty_webhook,
-    parse_datadog_webhook,
     LogPatternMatcher,
+    parse_cloudwatch_alarm,
+    parse_datadog_webhook,
+    parse_grafana_alert,
+    parse_pagerduty_webhook,
+    parse_sentry_webhook,
 )
-
 
 # ── Grafana ───────────────────────────────────────────────────────────────────
 

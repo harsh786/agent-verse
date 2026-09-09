@@ -5,10 +5,9 @@ get_eval, list_goals, get_metrics, handle_approval, subscribe_events, get_events
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -16,7 +15,7 @@ from app.core.errors import NotFoundError
 from app.governance.audit import AuditLog
 from app.governance.hitl import HITLGateway
 from app.services.goal_service import GoalService
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _ctx(tenant_id: str = "t1") -> TenantContext:

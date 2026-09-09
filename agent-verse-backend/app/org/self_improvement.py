@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, ClassVar
 
 import structlog
 from opentelemetry import trace
@@ -64,7 +64,7 @@ class OrgRecoveryHierarchy:
     """
 
     MAX_RETRIES = 3
-    BASE_BACKOFF_SECONDS = [1, 5, 30, 300, 1800]  # 1s, 5s, 30s, 5m, 30m
+    BASE_BACKOFF_SECONDS: ClassVar[list[int]] = [1, 5, 30, 300, 1800]  # 1s, 5s, 30s, 5m, 30m
 
     def get_recovery_action(
         self,
@@ -264,9 +264,10 @@ class OrgLearningSystem:
         status_order = {"pending": 0, "validated": 1, "promoted": 2, "quarantined": -1}
         min_order = status_order.get(min_status, 0)
         return [
-            l
-            for l in self._lessons.values()
-            if l.category == category and status_order.get(l.status, -1) >= min_order
+            lesson
+            for lesson in self._lessons.values()
+            if lesson.category == category
+            and status_order.get(lesson.status, -1) >= min_order
         ]
 
     @staticmethod
@@ -328,7 +329,7 @@ class OrgSelfImprovementEngine:
     - cost_optimization: model + token selection
     """
 
-    IMPROVABLE_AREAS = [
+    IMPROVABLE_AREAS: ClassVar[list[str]] = [
         "model_routing",
         "team_composition",
         "workflow_patterns",

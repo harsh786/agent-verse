@@ -1,13 +1,11 @@
 """Tests for HITL persistence additions — 5 tests."""
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
 
 import pytest
 
-from app.governance.hitl import ApprovalRequest, ApprovalStatus, HITLGateway
+from app.governance.hitl import ApprovalStatus, HITLGateway
 from app.tenancy.context import TenantContext
 
 

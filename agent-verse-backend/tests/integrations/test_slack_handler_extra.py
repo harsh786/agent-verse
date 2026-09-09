@@ -1,7 +1,6 @@
 """Extra coverage for app/integrations/slack/handler.py."""
 from __future__ import annotations
 
-import os
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 

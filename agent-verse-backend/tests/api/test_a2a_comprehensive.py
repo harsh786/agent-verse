@@ -16,6 +16,8 @@ from app.api.a2a import (
     _tasks,
     _update_task_status,
     _verify_hmac,
+)
+from app.api.a2a import (
     router as a2a_router,
 )
 
@@ -97,7 +99,6 @@ async def test_send_callback_noop_empty_url() -> None:
 
 
 async def test_send_callback_http_error_is_swallowed(respx_mock) -> None:
-    import respx
     import httpx
 
     respx_mock.post("https://callback.example.com/done").mock(

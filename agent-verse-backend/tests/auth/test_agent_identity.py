@@ -12,7 +12,6 @@ Tests:
 
 from __future__ import annotations
 
-import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -31,7 +30,6 @@ from app.auth.agent_identity import (
 from app.services.tenant_service import TenantService
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
-
 
 # ---------------------------------------------------------------------------
 # Helpers

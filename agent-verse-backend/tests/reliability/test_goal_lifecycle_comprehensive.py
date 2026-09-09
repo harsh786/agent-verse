@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.reliability.goal_lifecycle import (
-    GoalCancelledError,
     _CANCEL_FLAG,
-    _PAUSE_FLAG,
     _FLAG_TTL,
+    _PAUSE_FLAG,
+    GoalCancelledError,
     check_pause_cancel,
     clear_signals,
     is_cancelled_sync,
@@ -19,7 +19,6 @@ from app.reliability.goal_lifecycle import (
     signal_pause,
     signal_resume,
 )
-
 
 # ── signal_pause ──────────────────────────────────────────────────────────────
 
@@ -209,7 +208,6 @@ class TestCheckPauseCancel:
         # This test verifies the code path by observing the behavior with mocks
         # The exact flow: not_cancelled → paused → loop: not_paused → cancelled → raises
         # Due to asyncio.sleep in the loop, we mock it
-        import app.reliability.goal_lifecycle as glc_module
         original_sleep = asyncio.sleep
 
         async def fast_sleep(t: float) -> None:

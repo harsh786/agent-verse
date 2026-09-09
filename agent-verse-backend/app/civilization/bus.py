@@ -97,7 +97,7 @@ class CivilizationBus:
             # Subscribe to all topics via pattern
             channels = [self._channel(t) for t in _VALID_TOPICS]
 
-        async with _nullctx(self._redis) as r:
+        async with _NullCtx(self._redis) as r:
             pubsub = r.pubsub() if hasattr(r, "pubsub") else self._redis.pubsub()
             await pubsub.subscribe(*channels)
             try:
@@ -222,7 +222,7 @@ class CivilizationBus:
             logger.warning("civ_bus_event_emit_failed", error=str(exc))
 
 
-class _nullctx:
+class _NullCtx:
     """Null async context manager to handle redis clients directly."""
 
     def __init__(self, value: Any) -> None:

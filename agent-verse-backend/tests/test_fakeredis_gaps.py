@@ -227,8 +227,8 @@ async def test_lua_1key_success(fake_redis):
 @pytest.mark.asyncio
 async def test_platform_error_handler_returns_json():
     """The PlatformError exception handler returns a JSONResponse with the error dict."""
-    from app.main import _register_error_handlers
     from app.core.errors import PlatformError, Severity
+    from app.main import _register_error_handlers
 
     app = FastAPI()
     _register_error_handlers(app)
@@ -256,8 +256,8 @@ async def test_platform_error_handler_returns_json():
 @pytest.mark.asyncio
 async def test_platform_error_handler_critical_severity_logs():
     """Critical severity platform errors are logged at error level."""
-    from app.main import _register_error_handlers
     from app.core.errors import PlatformError, Severity
+    from app.main import _register_error_handlers
 
     app = FastAPI()
     _register_error_handlers(app)
@@ -322,8 +322,8 @@ async def test_unhandled_error_handler_logs_real_cause():
 
 def test_register_error_handlers_registers_both_handlers():
     """_register_error_handlers registers handlers for PlatformError and Exception."""
-    from app.main import _register_error_handlers
     from app.core.errors import PlatformError
+    from app.main import _register_error_handlers
 
     app = FastAPI()
     _register_error_handlers(app)

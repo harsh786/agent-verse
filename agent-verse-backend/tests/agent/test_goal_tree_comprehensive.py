@@ -4,8 +4,6 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from app.agent.goal_tree import (
     DecompositionResult,
     _synthesize_goal_tree_results,
@@ -13,7 +11,7 @@ from app.agent.goal_tree import (
     execute_goal_tree,
     execute_sub_goal,
 )
-from app.agent.state import AgentState, GoalStatus, SubGoal
+from app.agent.state import GoalStatus, SubGoal
 from app.providers.fake import FakeProvider
 from app.tenancy.context import PlanTier, TenantContext
 

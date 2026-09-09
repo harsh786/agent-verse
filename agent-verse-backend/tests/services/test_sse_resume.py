@@ -37,6 +37,7 @@ class TestEventStoreSince:
 class TestGoalServiceSubscribeEventsSinceSequence:
     def test_subscribe_events_accepts_since_sequence(self):
         import inspect
+
         from app.services.goal_service import GoalService
         sig = inspect.signature(GoalService.subscribe_events)
         assert "since_sequence" in sig.parameters, \
@@ -44,6 +45,7 @@ class TestGoalServiceSubscribeEventsSinceSequence:
 
     def test_subscribe_events_since_sequence_defaults_to_zero(self):
         import inspect
+
         from app.services.goal_service import GoalService
         sig = inspect.signature(GoalService.subscribe_events)
         param = sig.parameters["since_sequence"]
@@ -55,6 +57,7 @@ class TestSSEEndpointLastEventId:
     def test_goals_api_reads_last_event_id(self):
         """SSE endpoint must parse Last-Event-ID header."""
         import inspect
+
         from app.api import goals as goals_module
         source = inspect.getsource(goals_module)
         assert "Last-Event-ID" in source or "last_event_id" in source.lower(), \
@@ -63,6 +66,7 @@ class TestSSEEndpointLastEventId:
     def test_sse_emits_id_lines(self):
         """SSE response must include id: lines for resume."""
         import inspect
+
         from app.api import goals as goals_module
         source = inspect.getsource(goals_module)
         assert (

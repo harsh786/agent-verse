@@ -4,11 +4,10 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import FastAPI, HTTPException
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
 
 from app.auth.scim_handler import (
     SCIM_ERROR_SCHEMA,
@@ -19,7 +18,6 @@ from app.auth.scim_handler import (
     _scim_error,
     require_scim_auth,
 )
-
 
 # ---------------------------------------------------------------------------
 # _scim_error helper

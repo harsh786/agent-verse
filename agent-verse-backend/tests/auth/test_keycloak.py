@@ -1,8 +1,10 @@
 """Tests for Keycloak SSO integration."""
 from __future__ import annotations
+
 import os
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 
 def test_sso_disabled_by_default():
@@ -57,6 +59,7 @@ async def test_validate_jwt_raises_without_jose():
     """validate_jwt raises ImportError when python-jose not installed."""
     with patch.dict("sys.modules", {"jose": None}):
         from importlib import reload
+
         import app.auth.keycloak as kc_mod
         reload(kc_mod)
         try:
@@ -68,7 +71,8 @@ async def test_validate_jwt_raises_without_jose():
 @pytest.mark.asyncio
 async def test_get_sso_config_disabled():
     """GET /auth/config returns sso_enabled: false when SSO off."""
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -83,7 +87,8 @@ async def test_get_sso_config_disabled():
 @pytest.mark.asyncio
 async def test_auth_login_redirects():
     """GET /auth/login returns a redirect to Keycloak."""
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
     app = create_app()
     async with AsyncClient(

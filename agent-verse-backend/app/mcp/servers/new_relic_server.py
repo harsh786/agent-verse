@@ -227,7 +227,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
             elif tool_name == "newrelic_get_entity":
                 query = """
-                query SearchEntities($name: String, $entityType: EntitySearchQueryBuilderType, $tags: [TaggingTagInput]) {
+                query SearchEntities(
+                  $name: String, $entityType: EntitySearchQueryBuilderType, $tags: [TaggingTagInput]
+                ) {
                   actor {
                     entitySearch(queryBuilder: {name: $name, type: $entityType, tags: $tags}) {
                       results {

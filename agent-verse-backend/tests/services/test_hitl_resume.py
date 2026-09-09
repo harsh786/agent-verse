@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from app.agent.state import GoalStatus
-from app.services.goal_service import GoalRecord, GoalService, _GOAL_PAUSE_EVENTS
+from app.services.goal_service import _GOAL_PAUSE_EVENTS, GoalRecord, GoalService
 from app.tenancy.context import PlanTier, TenantContext
 
 _CTX = TenantContext(tenant_id="tid-hitl", plan=PlanTier.PROFESSIONAL, api_key_id="kid-hitl")

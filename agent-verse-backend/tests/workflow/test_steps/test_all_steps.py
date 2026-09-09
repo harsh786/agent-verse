@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from app.workflow.context import ContextResolver
 from app.workflow.dsl import StepDefinition
 
@@ -103,8 +104,8 @@ async def test_wait_step_test_mode():
 
 @pytest.mark.asyncio
 async def test_conditional_step_true_branch():
-    from app.workflow.steps.conditional_step import ConditionalStepNode
     from app.workflow.dsl import ConditionalBranch
+    from app.workflow.steps.conditional_step import ConditionalStepNode
     step = StepDefinition(
         id="c1", type="conditional",
         branches=[
@@ -121,8 +122,8 @@ async def test_conditional_step_true_branch():
 
 @pytest.mark.asyncio
 async def test_conditional_step_default_branch():
-    from app.workflow.steps.conditional_step import ConditionalStepNode
     from app.workflow.dsl import ConditionalBranch
+    from app.workflow.steps.conditional_step import ConditionalStepNode
     step = StepDefinition(
         id="c2", type="conditional",
         branches=[
@@ -156,8 +157,8 @@ async def test_emit_event_step_no_redis():
 
 @pytest.mark.asyncio
 async def test_http_step_ssrf_blocked():
-    from app.workflow.steps.http_step import HTTPStepNode
     from app.workflow.security import SSRFBlockedError
+    from app.workflow.steps.http_step import HTTPStepNode
     step = StepDefinition(id="h1", type="http", url="http://169.254.169.254/", method="GET")
     ctx = ContextResolver()
     node = HTTPStepNode(step, ctx)

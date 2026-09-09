@@ -207,7 +207,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 query = """
                 query ($businessId: ID!) {
                   business(id: $businessId) {
-                    accounts { edges { node { id name normalBalanceType subtype { name value } balance { raw } } } }
+                    accounts {
+                      edges {
+                        node {
+                          id name normalBalanceType subtype { name value } balance { raw }
+                        }
+                      }
+                    }
                   }
                 }
                 """

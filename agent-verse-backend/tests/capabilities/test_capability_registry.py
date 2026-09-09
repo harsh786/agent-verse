@@ -1,6 +1,8 @@
 """CapabilityRegistry — orchestration selects by declared capability."""
 from __future__ import annotations
+
 import pytest
+
 from app.capabilities.registry import CapabilityRegistry, build_default_capability_registry
 from app.capabilities.resolver import CapabilityResolver
 from app.capabilities.schema import CapabilityKind, RiskLevel

@@ -65,7 +65,7 @@ class LLMQueryTransformer:
 
     def _parse_lines(self, text: str) -> list[str]:
         """Extract non-empty, non-boilerplate lines from LLM output."""
-        lines = [l.strip() for l in text.splitlines()]
+        lines = [line.strip() for line in text.splitlines()]
         cleaned: list[str] = []
         for line in lines:
             # Strip leading list markers: "1.", "-", "*", "–"

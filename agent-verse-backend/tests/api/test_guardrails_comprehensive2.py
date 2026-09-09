@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.guardrails import (
     _configs_store,
     _violations_store,
+)
+from app.api.guardrails import (
     router as guardrails_router,
 )
 from app.tenancy.context import PlanTier, TenantContext

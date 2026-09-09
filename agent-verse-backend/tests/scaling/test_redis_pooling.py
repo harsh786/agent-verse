@@ -14,8 +14,8 @@ def test_get_redis_pool_returns_same_instance():
 
 def test_embedding_dim_migration_uses_1536():
     """Migration 0028 must create vector(1536) not vector(768)."""
-    import inspect
     import importlib
+    import inspect
 
     try:
         m = importlib.import_module(

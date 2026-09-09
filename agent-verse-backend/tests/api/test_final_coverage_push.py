@@ -16,10 +16,9 @@ import asyncio
 import hashlib
 import hmac
 import json
-import os
 import time
 import uuid
-from typing import Any
+from datetime import UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,7 +27,6 @@ from fastapi.testclient import TestClient
 
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
-
 
 # ---------------------------------------------------------------------------
 # Shared test tenant / key
@@ -51,7 +49,8 @@ async def _async_resolver(key: str) -> TenantContext | None:
 # ===========================================================================
 
 def _make_agents_app(store=None, meta_agent=None, schedule_store=None) -> FastAPI:
-    from app.api.agents import AgentStore, router as agents_router
+    from app.api.agents import AgentStore
+    from app.api.agents import router as agents_router
 
     app = FastAPI()
     app.add_middleware(TenantMiddleware, key_resolver=_async_resolver)
@@ -146,7 +145,7 @@ class TestAgentsExtra:
 
     # lines 909–910 — list_agent_versions returns in-memory snapshots
     def test_list_agent_versions_inmemory(self) -> None:
-        from app.api.agents import AgentStore, _AGENT_SNAPSHOTS
+        from app.api.agents import _AGENT_SNAPSHOTS, AgentStore
 
         store = AgentStore()  # no DB
         ctx = TenantContext(tenant_id="t-final-push", plan=PlanTier.ENTERPRISE, api_key_id="k-fp")
@@ -278,7 +277,7 @@ class TestCollabPubSubListener:
                 task = asyncio.create_task(ps._listener_loop())
                 try:
                     await asyncio.wait_for(task, timeout=2.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                except (TimeoutError, asyncio.CancelledError, Exception):
                     pass
         assert call_count[0] >= 1
 
@@ -318,14 +317,14 @@ class TestCollabPubSubListener:
             task = asyncio.create_task(ps._listener_loop())
             try:
                 await asyncio.wait_for(task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+            except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
         _ws_connections.pop(session_id, None)
 
     @pytest.mark.asyncio
     async def test_listener_loop_skips_own_replica_messages(self) -> None:
         """Line 144: skips messages with rid == _REPLICA_ID."""
-        from app.api.collab import _CollabPubSub, _REPLICA_ID
+        from app.api.collab import _REPLICA_ID, _CollabPubSub
 
         ps = _CollabPubSub()
         ps._redis_url = "redis://localhost:6379/0"
@@ -352,7 +351,7 @@ class TestCollabPubSubListener:
             task = asyncio.create_task(ps._listener_loop())
             try:
                 await asyncio.wait_for(task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+            except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
 
     @pytest.mark.asyncio
@@ -393,11 +392,11 @@ class TestCollabPubSubListener:
             task = asyncio.create_task(ps._listener_loop())
             try:
                 await asyncio.wait_for(processed.wait(), timeout=2.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             try:
                 await asyncio.wait_for(task, timeout=0.5)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+            except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
             # The broadcast attempt was made (send_text was called on dead_ws)
             dead_ws.send_text.assert_called_once()
@@ -408,7 +407,9 @@ class TestCollabPubSubListener:
 def test_collab_ws_presence_join_exception() -> None:
     """Lines 400–401: exception in presence_join broadcast is swallowed."""
     from starlette.testclient import TestClient as StarletteClient
-    from app.api.collab import _ws_connections, router as collab_router
+
+    from app.api.collab import _ws_connections
+    from app.api.collab import router as collab_router
     from app.collab.store import CollaborationStore
 
     app = FastAPI()
@@ -453,7 +454,9 @@ def test_collab_ws_presence_join_exception() -> None:
 def test_collab_ws_dead_connection_cleanup_during_broadcast() -> None:
     """Lines 435–438: dead WS connections are cleaned up during message broadcast."""
     from starlette.testclient import TestClient as StarletteClient
-    from app.api.collab import _ws_connections, router as collab_router
+
+    from app.api.collab import _ws_connections
+    from app.api.collab import router as collab_router
     from app.collab.store import CollaborationStore
 
     app = FastAPI()
@@ -494,7 +497,9 @@ def test_collab_ws_dead_connection_cleanup_during_broadcast() -> None:
 def test_collab_ws_presence_leave_exception() -> None:
     """Lines 461–462: exception in presence_leave broadcast is swallowed."""
     from starlette.testclient import TestClient as StarletteClient
-    from app.api.collab import _ws_connections, router as collab_router
+
+    from app.api.collab import _ws_connections
+    from app.api.collab import router as collab_router
     from app.collab.store import CollaborationStore
 
     app = FastAPI()
@@ -747,8 +752,8 @@ class TestConnectorsExtra:
         app = _make_connectors_app(registry=mock_registry)
         client = TestClient(app, raise_server_exceptions=False)
 
-        import respx
         import httpx as _httpx
+        import respx
 
         with respx.mock:
             respx.get("http://127.0.0.1:19999/health").mock(
@@ -780,8 +785,9 @@ class TestConnectorsExtra:
 
     # lines 480–482 — _default_redirect_uri uses frontend_url from settings
     def test_default_redirect_uri_uses_frontend_url(self) -> None:
-        from app.api.connectors import _default_redirect_uri
         from types import SimpleNamespace
+
+        from app.api.connectors import _default_redirect_uri
 
         class FakeRequest:
             class app:
@@ -895,6 +901,7 @@ class TestMCPClientExtra:
     @pytest.mark.asyncio
     async def test_call_tool_http_status_error(self) -> None:
         import httpx
+
         from app.mcp.client import MCPClient
         from app.mcp.registry import MCPServerConfig
 
@@ -1072,7 +1079,7 @@ class TestGuardrailsExtra:
 
     # lines 93–98 — _check_test_rate raises 429 when limit exceeded
     def test_check_test_rate_limit_exceeded(self) -> None:
-        from app.api.guardrails import _check_test_rate, _test_rate, _TEST_LIMIT
+        from app.api.guardrails import _TEST_LIMIT, _check_test_rate, _test_rate
 
         tenant_id = "rate-limit-test-tenant"
         # Seed the rate counter at the limit
@@ -1139,8 +1146,9 @@ class TestGuardrailsExtra:
 # ===========================================================================
 
 def _make_integrations_app(goal_service=None, hitl_gateway=None) -> FastAPI:
-    from app.api.integrations import router as integrations_router
     from types import SimpleNamespace
+
+    from app.api.integrations import router as integrations_router
 
     app = FastAPI()
     app.include_router(integrations_router)
@@ -1438,7 +1446,7 @@ class TestPoliciesExtra:
                 )
                 try:
                     await asyncio.wait_for(task, timeout=2.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                except (TimeoutError, asyncio.CancelledError, Exception):
                     pass
         assert call_count[0] >= 1
 
@@ -1480,7 +1488,7 @@ class TestPoliciesExtra:
             )
             try:
                 await asyncio.wait_for(task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+            except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
 
         engine.reload_from_db.assert_called_once_with(None, tenant_id="t1")
@@ -1496,7 +1504,7 @@ class TestAuditExtra:
     # line 71 — _db_record: returns early when no DB
     @pytest.mark.asyncio
     async def test_db_record_no_db_returns_early(self) -> None:
-        from app.governance.audit import AuditEvent, AuditLog, ActionLevel
+        from app.governance.audit import ActionLevel, AuditEvent, AuditLog
 
         audit = AuditLog()  # no DB
         event = AuditEvent(
@@ -1509,7 +1517,7 @@ class TestAuditExtra:
     @pytest.mark.asyncio
     async def test_db_record_with_db_logs_on_error(self) -> None:
         """Lines 93-95: DB record either adds row or logs exception gracefully."""
-        from app.governance.audit import AuditEvent, AuditLog, ActionLevel
+        from app.governance.audit import ActionLevel, AuditEvent, AuditLog
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -1535,7 +1543,7 @@ class TestAuditExtra:
     # lines 225–254 — sync_from_db with rows
     @pytest.mark.asyncio
     async def test_sync_from_db_with_rows(self) -> None:
-        from app.governance.audit import AuditLog, ActionLevel
+        from app.governance.audit import AuditLog
 
         mock_row = MagicMock()
         mock_row.id = "evt-1"
@@ -1569,8 +1577,9 @@ class TestAuditExtra:
     # lines 156–160 — query_db with time filters → hits start/end time params
     @pytest.mark.asyncio
     async def test_query_db_with_time_filters(self) -> None:
+        from datetime import datetime
+
         from app.governance.audit import AuditLog
-        from datetime import datetime, timezone
 
         mock_result = MagicMock()
         mock_result.fetchall = MagicMock(return_value=[])
@@ -1584,7 +1593,7 @@ class TestAuditExtra:
             return mock_session
 
         audit = AuditLog(db_session_factory=_db)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         # Patch sqlalchemy_rls_context where it's actually used
         mock_ctx = MagicMock()
@@ -1611,7 +1620,7 @@ class TestEvalSuiteExtra:
     # lines 353–375 — run_with_llm_judge: DB persist
     @pytest.mark.asyncio
     async def test_run_with_llm_judge_persists_to_db(self) -> None:
-        from app.intelligence.eval_suite import EvalSuiteRunner, GoldenTask
+        from app.intelligence.eval_suite import EvalSuiteRunner
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -1720,7 +1729,8 @@ class TestEvalSuiteExtra:
 # ===========================================================================
 
 def _make_schedules_app(schedule_store=None) -> FastAPI:
-    from app.api.schedules import router as schedules_router, events_router
+    from app.api.schedules import events_router
+    from app.api.schedules import router as schedules_router
     from app.triggers.store import ScheduleStore
 
     app = FastAPI()
@@ -1804,8 +1814,9 @@ class TestCivilizationExtra:
 
 class TestCivilizationWave3:
     def _make_civ_app_with_features(self, db_factory=None) -> FastAPI:
-        from app.api.civilization import router as civ_router
         from types import SimpleNamespace
+
+        from app.api.civilization import router as civ_router
 
         app = FastAPI()
         app.add_middleware(TenantMiddleware, key_resolver=_async_resolver)
@@ -1908,8 +1919,9 @@ class TestSchedulesWave3:
     @pytest.mark.asyncio
     async def test_events_stream_generator_heartbeat(self) -> None:
         """Lines 314-346: events_stream generator yields heartbeat when no Redis."""
-        from app.api.schedules import events_stream
         from starlette.requests import Request as StarletteRequest
+
+        from app.api.schedules import events_stream
 
         call_count = [0]
 
@@ -1991,6 +2003,7 @@ class TestMCPClientWave3:
     async def test_call_tool_http_error_with_cb_record_exception(self) -> None:
         """Lines 460-461, 468-469."""
         import httpx
+
         from app.mcp.client import MCPClient
         from app.mcp.registry import MCPServerConfig
 
@@ -2185,7 +2198,7 @@ class TestAgentsWave3:
 
     def test_rollback_agent_with_snapshot(self) -> None:
         """Line 957."""
-        from app.api.agents import AgentStore, _AGENT_SNAPSHOTS
+        from app.api.agents import _AGENT_SNAPSHOTS, AgentStore
 
         store = AgentStore()
         store._data[("t-final-push", "rb-ag1")] = {
@@ -2260,6 +2273,7 @@ class TestMCPClientWave4:
     async def test_call_tool_http_error_correct_cb_key(self) -> None:
         """Lines 460-461: HTTPStatusError with CB record_failure (correct key)."""
         import httpx
+
         from app.mcp.client import MCPClient
         from app.mcp.registry import MCPServerConfig
 
@@ -2321,9 +2335,9 @@ class TestMCPClientWave4:
     @pytest.mark.asyncio
     async def test_call_tool_update_stats_exception_swallowed(self) -> None:
         """Lines 450-451, 468-469, 489-490: _update_tool_stats exception swallowed."""
+
         from app.mcp.client import MCPClient
         from app.mcp.registry import MCPServerConfig
-        import httpx
 
         cfg = MCPServerConfig(server_id="srv-stats-fail", name="StatsFail",
                               url="http://example.com", auth_type="none", auth_config={})
@@ -2523,8 +2537,9 @@ class TestAgentsWave4:
     @pytest.mark.asyncio
     async def test_load_snapshots_from_db_success(self) -> None:
         """Lines 67, 75, 76: _load_snapshots_from_db returns parsed rows."""
-        from app.api.agents import _load_snapshots_from_db
         import json
+
+        from app.api.agents import _load_snapshots_from_db
 
         snapshot_data = {"snapshot_id": "s1", "agent_id": "a1", "version": 1}
         mock_rows = [(json.dumps(snapshot_data),)]
@@ -2562,7 +2577,7 @@ class TestAgentsWave4:
 
     def test_snapshot_agent_second_version(self) -> None:
         """Line 926: snapshot_agent with existing snapshots increments version."""
-        from app.api.agents import AgentStore, _AGENT_SNAPSHOTS
+        from app.api.agents import _AGENT_SNAPSHOTS, AgentStore
 
         store = AgentStore()
         store._data[("t-final-push", "snap-ag3")] = {
@@ -2591,8 +2606,9 @@ class TestSchedulesWave5:
     @pytest.mark.asyncio
     async def test_events_stream_covers_break_and_sleep(self) -> None:
         """Lines 340-344: complete generator including disconnect (342) and sleep (344)."""
-        from app.api.schedules import events_stream
         from starlette.requests import Request as StarletteRequest
+
+        from app.api.schedules import events_stream
 
         call_count = [0]
 
@@ -2629,8 +2645,9 @@ class TestSchedulesWave5:
     @pytest.mark.asyncio
     async def test_events_stream_redis_pubsub_path(self) -> None:
         """Lines 320-337: events_stream with Redis pubsub."""
-        from app.api.schedules import events_stream
         from starlette.requests import Request as StarletteRequest
+
+        from app.api.schedules import events_stream
 
         call_count = [0]
 
@@ -2714,7 +2731,7 @@ class TestHITLWave5:
     @pytest.mark.asyncio
     async def test_db_persist_approval_no_db_returns(self) -> None:
         """Line 193: _db_persist_approval_request returns early when no DB."""
-        from app.governance.hitl import HITLGateway, ApprovalRequest, ApprovalStatus
+        from app.governance.hitl import ApprovalRequest, ApprovalStatus, HITLGateway
 
         gw = HITLGateway()  # no DB
         req = ApprovalRequest(
@@ -2727,7 +2744,7 @@ class TestHITLWave5:
     @pytest.mark.asyncio
     async def test_db_persist_approval_exception_logged(self) -> None:
         """Line 197: DB exception in _db_persist_approval_request → logged."""
-        from app.governance.hitl import HITLGateway, ApprovalRequest, ApprovalStatus
+        from app.governance.hitl import ApprovalRequest, ApprovalStatus, HITLGateway
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -3025,7 +3042,7 @@ class TestGuardrailsWave6:
 
     def test_check_test_rate_window_resets(self) -> None:
         """Line 93: _check_test_rate resets count when window has expired."""
-        from app.api.guardrails import _check_test_rate, _test_rate, _TEST_WINDOW
+        from app.api.guardrails import _TEST_WINDOW, _check_test_rate, _test_rate
 
         tenant_id = "window-reset-tenant"
         # Seed with old window_start that has expired
@@ -3114,7 +3131,7 @@ class TestConnectorsWave6:
     async def test_resolve_auth_value_no_resolver(self) -> None:
         """Line 129: _resolve_auth_value returns empty string when secret_resolver is None."""
         from app.api.connectors import _resolve_auth_value
-        from app.providers.vault import connector_secret_ref, store_connector_secret
+        from app.providers.vault import connector_secret_ref
 
         ref = connector_secret_ref("srv-noresolver", "key")
         # Don't store the secret - resolve_connector_secret_ref returns None
@@ -3153,9 +3170,10 @@ class TestConnectorsWave6:
 
     def test_check_connector_auth_failed_403(self) -> None:
         """Lines 395-398: test_connector with 403 response sets auth_failed status."""
-        from app.mcp.registry import MCPServerConfig
-        import respx
         import httpx as _httpx
+        import respx
+
+        from app.mcp.registry import MCPServerConfig
 
         server_id = "auth-fail-v6"
         cfg = MCPServerConfig(
@@ -3285,7 +3303,7 @@ class TestConnectorsWave7:
 
     def test_update_connector_secret_fail_503(self) -> None:
         """Lines 336-337: update_connector secret storage fails → 503."""
-        from app.mcp.registry import MCPServerConfig, MCPServerConfig as ExistingCfg
+        from app.mcp.registry import MCPServerConfig as ExistingCfg
         from app.providers.vault import connector_secret_ref
 
         existing_cfg = ExistingCfg(
@@ -3381,7 +3399,7 @@ class TestQuickWinsWave8:
             task = asyncio.create_task(ps._listener_loop())
             try:
                 await asyncio.wait_for(task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+            except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
 
     # templates.py line 75 — _TemplateStore.set_db
@@ -3419,7 +3437,7 @@ class TestQuickWinsWave8:
     # permissions.py line 100 — PermissionMatrix.list_rules returns rules
     def test_permissions_matrix_list_rules(self) -> None:
         """Line 100: PermissionMatrix.list_rules returns rules for tenant."""
-        from app.governance.permissions import PermissionMatrix, PermissionRule, ActionLevel
+        from app.governance.permissions import ActionLevel, PermissionMatrix, PermissionRule
 
         matrix = PermissionMatrix()
         ctx = _CTX

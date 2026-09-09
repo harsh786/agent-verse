@@ -261,7 +261,7 @@ class TestOrgRouterAuth:
 class TestOrgRouterCreate:
     """POST /v1/org — create organization."""
 
-    async def test_create_org_returns_201(self, client: AsyncClient, mock_service: MagicMock) -> None:  # noqa: E501
+    async def test_create_org_returns_201(self, client: AsyncClient, mock_service: MagicMock) -> None:
         r = await client.post("/v1/org", json={
             "name": "Acme AI Corp",
             "industry": "technology",
@@ -279,7 +279,7 @@ class TestOrgRouterCreate:
         # RFC 7807 or FastAPI validation error
         assert r.status_code == 422
 
-    async def test_create_org_response_has_required_fields(self, client: AsyncClient, mock_service: MagicMock) -> None:  # noqa: E501
+    async def test_create_org_response_has_required_fields(self, client: AsyncClient, mock_service: MagicMock) -> None:
         r = await client.post("/v1/org", json={"name": "Test"})
         data = r.json()
         required = ["id", "name", "status", "autonomy_level", "created_at"]
@@ -290,14 +290,14 @@ class TestOrgRouterCreate:
 class TestOrgRouterList:
     """GET /v1/org — list organizations."""
 
-    async def test_list_returns_200_with_data(self, client: AsyncClient, mock_service: MagicMock) -> None:  # noqa: E501
+    async def test_list_returns_200_with_data(self, client: AsyncClient, mock_service: MagicMock) -> None:
         r = await client.get("/v1/org")
         assert r.status_code == 200
         data = r.json()
         assert "data" in data
         assert isinstance(data["data"], list)
 
-    async def test_list_returns_cursor_pagination_fields(self, client: AsyncClient, mock_service: MagicMock) -> None:  # noqa: E501
+    async def test_list_returns_cursor_pagination_fields(self, client: AsyncClient, mock_service: MagicMock) -> None:
         r = await client.get("/v1/org?limit=10")
         data = r.json()
         assert "data" in data
@@ -308,12 +308,12 @@ class TestOrgRouterList:
 class TestOrgRouterGet:
     """GET /v1/org/{org_id} — get single organization."""
 
-    async def test_get_existing_org_returns_200(self, client: AsyncClient, mock_service: MagicMock) -> None:  # noqa: E501
+    async def test_get_existing_org_returns_200(self, client: AsyncClient, mock_service: MagicMock) -> None:
         r = await client.get(f"/v1/org/{ORG_ID}")
         assert r.status_code == 200
         assert r.json()["id"] == ORG_ID
 
-    async def test_get_nonexistent_org_returns_404(self, client: AsyncClient, mock_service: MagicMock) -> None:  # noqa: E501
+    async def test_get_nonexistent_org_returns_404(self, client: AsyncClient, mock_service: MagicMock) -> None:
         mock_service.get_organization = AsyncMock(return_value=None)
         r = await client.get("/v1/org/nonexistent-org-id")
         assert r.status_code == 404
@@ -324,7 +324,7 @@ class TestOrgRouterGet:
 class TestOrgRouterMissions:
     """Mission endpoints."""
 
-    async def test_create_mission_returns_201(self, client: AsyncClient, mock_service: MagicMock) -> None:  # noqa: E501
+    async def test_create_mission_returns_201(self, client: AsyncClient, mock_service: MagicMock) -> None:
         r = await client.post(f"/v1/org/{ORG_ID}/missions", json={
             "org_id": ORG_ID,
             "title": "Research AI market trends",
@@ -335,12 +335,12 @@ class TestOrgRouterMissions:
         assert data["title"] == "Test Mission"
         assert "id" in data
 
-    async def test_list_missions_returns_200(self, client: AsyncClient, mock_service: MagicMock) -> None:  # noqa: E501
+    async def test_list_missions_returns_200(self, client: AsyncClient, mock_service: MagicMock) -> None:
         r = await client.get(f"/v1/org/{ORG_ID}/missions")
         assert r.status_code == 200
         assert "data" in r.json()
 
-    async def test_mission_status_update_returns_200(self, client: AsyncClient, mock_service: MagicMock) -> None:  # noqa: E501
+    async def test_mission_status_update_returns_200(self, client: AsyncClient, mock_service: MagicMock) -> None:
         r = await client.post(
             f"/v1/org/{ORG_ID}/missions/{MISSION_ID}/status",
             json={"status": "active"},
@@ -358,7 +358,7 @@ class TestOrgRouterHealth:
         assert "active_missions" in data
         assert "health" in data
 
-    async def test_health_has_task_counts(self, client: AsyncClient, mock_service: MagicMock) -> None:  # noqa: E501
+    async def test_health_has_task_counts(self, client: AsyncClient, mock_service: MagicMock) -> None:
         r = await client.get(f"/v1/org/{ORG_ID}/health")
         assert r.status_code == 200
         assert r.json()["active_missions"] >= 0
@@ -367,7 +367,7 @@ class TestOrgRouterHealth:
 class TestOrgRouterDepartments:
     """Department endpoints."""
 
-    async def test_create_department_returns_201(self, client: AsyncClient, mock_service: MagicMock) -> None:  # noqa: E501
+    async def test_create_department_returns_201(self, client: AsyncClient, mock_service: MagicMock) -> None:
         r = await client.post(f"/v1/org/{ORG_ID}/departments", json={
             "org_id": ORG_ID,
             "name": "Engineering",
@@ -376,7 +376,7 @@ class TestOrgRouterDepartments:
         assert r.status_code == 201
         assert r.json()["name"] == "Engineering"
 
-    async def test_list_departments_returns_200(self, client: AsyncClient, mock_service: MagicMock) -> None:  # noqa: E501
+    async def test_list_departments_returns_200(self, client: AsyncClient, mock_service: MagicMock) -> None:
         r = await client.get(f"/v1/org/{ORG_ID}/departments")
         assert r.status_code == 200
 
@@ -388,7 +388,7 @@ class TestOrgRouterDepartments:
 class TestOrgAPIContract:
     """Verify API responses match what the frontend expects."""
 
-    async def test_org_response_has_all_required_fields(self, client: AsyncClient, mock_service: MagicMock) -> None:  # noqa: E501
+    async def test_org_response_has_all_required_fields(self, client: AsyncClient, mock_service: MagicMock) -> None:
         r = await client.post("/v1/org", json={"name": "Contract Test"})
         data = r.json()
         required_fields = [
@@ -398,7 +398,7 @@ class TestOrgAPIContract:
         for field in required_fields:
             assert field in data, f"Contract broken: missing '{field}'"
 
-    async def test_mission_response_has_all_required_fields(self, client: AsyncClient, mock_service: MagicMock) -> None:  # noqa: E501
+    async def test_mission_response_has_all_required_fields(self, client: AsyncClient, mock_service: MagicMock) -> None:
         r = await client.post(f"/v1/org/{ORG_ID}/missions", json={
             "org_id": ORG_ID,
             "title": "Contract mission", "priority": "medium",
@@ -407,7 +407,7 @@ class TestOrgAPIContract:
         for field in ["id", "org_id", "title", "status", "priority", "created_at"]:
             assert field in data, f"Mission contract broken: missing '{field}'"
 
-    async def test_list_response_always_has_cursor_pagination(self, client: AsyncClient, mock_service: MagicMock) -> None:  # noqa: E501
+    async def test_list_response_always_has_cursor_pagination(self, client: AsyncClient, mock_service: MagicMock) -> None:
         r = await client.get("/v1/org")
         data = r.json()
         for field in ["data", "cursor", "hasMore"]:

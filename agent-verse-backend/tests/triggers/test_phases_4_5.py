@@ -1,31 +1,31 @@
 """Tests for Phase 4 (typed webhook parsers + rotation) and Phase 5 (IoT/geofence)."""
 from __future__ import annotations
 
-import hmac
 import hashlib
+import hmac
 import json
-import pytest
 from unittest.mock import AsyncMock
 
+import pytest
+
+from app.triggers.iot.geofence import (
+    GeofenceRegion,
+    GeofenceTriggerEvaluator,
+    LatLng,
+    haversine_meters,
+    point_in_polygon,
+)
+from app.triggers.iot.mqtt import MQTTTriggerConsumer
 from app.triggers.webhooks.parsers import (
     GitHubWebhookPayload,
-    StripeWebhookPayload,
     JiraWebhookPayload,
-    SlackEventPayload,
-    PagerDutyWebhookPayload,
     LinearWebhookPayload,
+    PagerDutyWebhookPayload,
+    SlackEventPayload,
+    StripeWebhookPayload,
 )
 from app.triggers.webhooks.rotation import WebhookSecretRotation
 from app.triggers.webhooks.verifier import WebhookSignatureVerifier
-from app.triggers.iot.geofence import (
-    GeofenceTriggerEvaluator,
-    GeofenceRegion,
-    LatLng,
-    point_in_polygon,
-    haversine_meters,
-)
-from app.triggers.iot.mqtt import MQTTTriggerConsumer
-
 
 # ── GitHub Webhook Parser ─────────────────────────────────────────────────────
 
@@ -283,9 +283,10 @@ async def test_geofence_dispatcher_called():
     mock_dispatcher = AsyncMock()
     mock_dispatcher.dispatch = AsyncMock(return_value={"goal_created": True})
 
-    from app.triggers.store import ScheduleStore
-    from app.triggers.models import TriggerSpec, TriggerType
     from types import SimpleNamespace
+
+    from app.triggers.models import TriggerSpec, TriggerType
+    from app.triggers.store import ScheduleStore
 
     store = ScheduleStore()
     tc = SimpleNamespace(tenant_id="t1", plan="free", api_key="k")
@@ -337,9 +338,10 @@ async def test_mqtt_handle_message_fires_trigger():
     mock_dispatcher = AsyncMock()
     mock_dispatcher.dispatch = AsyncMock(return_value={"goal_created": True})
 
-    from app.triggers.store import ScheduleStore
-    from app.triggers.models import TriggerSpec, TriggerType
     from types import SimpleNamespace
+
+    from app.triggers.models import TriggerSpec, TriggerType
+    from app.triggers.store import ScheduleStore
 
     store = ScheduleStore()
     tc = SimpleNamespace(tenant_id="t1", plan="free", api_key="k")

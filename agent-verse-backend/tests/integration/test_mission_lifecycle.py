@@ -7,8 +7,6 @@ Marked with pytest.mark.integration per project convention.
 from __future__ import annotations
 
 import uuid
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -173,6 +171,7 @@ class TestHITLApprovalFlow:
         self, gateway: HITLGateway, tenant: TenantContext
     ) -> None:
         from datetime import UTC, datetime, timedelta
+
         from app.governance.hitl import ApprovalRequest
 
         req = ApprovalRequest(
@@ -245,7 +244,7 @@ class TestApprovalChainEngineIntegration:
 
     @pytest.mark.asyncio
     async def test_create_and_retrieve_approval_request(self) -> None:
-        from app.org.approval_chain import ApprovalChainEngine, CHAINS_BY_ID
+        from app.org.approval_chain import CHAINS_BY_ID, ApprovalChainEngine
 
         engine = ApprovalChainEngine()
         chain = CHAINS_BY_ID["prod_deploy"]
@@ -268,7 +267,7 @@ class TestApprovalChainEngineIntegration:
 
     @pytest.mark.asyncio
     async def test_record_approval_and_check_complete(self) -> None:
-        from app.org.approval_chain import ApprovalChainEngine, CHAINS_BY_ID
+        from app.org.approval_chain import CHAINS_BY_ID, ApprovalChainEngine
 
         engine = ApprovalChainEngine()
         chain = CHAINS_BY_ID["legal_agreement"]  # strategy="any", needs 1 of [legal_counsel, legal_specialist]
@@ -288,7 +287,7 @@ class TestApprovalChainEngineIntegration:
 
     @pytest.mark.asyncio
     async def test_rejection_closes_request(self) -> None:
-        from app.org.approval_chain import ApprovalChainEngine, CHAINS_BY_ID
+        from app.org.approval_chain import CHAINS_BY_ID, ApprovalChainEngine
 
         engine = ApprovalChainEngine()
         chain = CHAINS_BY_ID["budget_override"]
@@ -306,7 +305,7 @@ class TestApprovalChainEngineIntegration:
 
     @pytest.mark.asyncio
     async def test_list_pending_returns_only_unresolved(self) -> None:
-        from app.org.approval_chain import ApprovalChainEngine, CHAINS_BY_ID
+        from app.org.approval_chain import CHAINS_BY_ID, ApprovalChainEngine
 
         engine = ApprovalChainEngine()
         chain = CHAINS_BY_ID["budget_override"]

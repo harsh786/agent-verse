@@ -24,8 +24,10 @@ from fastapi.testclient import TestClient
 
 import app.api.templates as tmpl_module
 from app.api.templates import (
-    _TemplateStore,
     _require_tenant,
+    _TemplateStore,
+)
+from app.api.templates import (
     router as templates_router,
 )
 from app.tenancy.context import PlanTier, TenantContext
@@ -69,10 +71,10 @@ class _MockSession:
         self.added: list = []
         self.deleted: list = []
 
-    async def execute(self, *args: Any, **kwargs: Any) -> "_MockSession":
+    async def execute(self, *args: Any, **kwargs: Any) -> _MockSession:
         return self
 
-    def scalars(self) -> "_MockSession":
+    def scalars(self) -> _MockSession:
         return self
 
     def all(self) -> list:
@@ -100,7 +102,7 @@ class _MockSession:
 
         return _txn()
 
-    async def __aenter__(self) -> "_MockSession":
+    async def __aenter__(self) -> _MockSession:
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -338,7 +340,7 @@ async def test_increment_use_count_db_exception_silenced() -> None:
         async def commit(self) -> None:
             pass
 
-        async def __aenter__(self) -> "_ErrSession":
+        async def __aenter__(self) -> _ErrSession:
             return self
 
         async def __aexit__(self, *a: Any) -> None:

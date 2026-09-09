@@ -85,7 +85,7 @@ def celery_worker(app: Any, tmp_path_factory: Any) -> Iterator[dict[str, Any]]:
         "-n",
         "ws4e2e@%h",
     ]
-    log_file = open(log_path, "w")  # noqa: SIM115 — closed in finally
+    log_file = open(log_path, "w")
     proc = subprocess.Popen(
         cmd,
         cwd=str(_BACKEND_ROOT),

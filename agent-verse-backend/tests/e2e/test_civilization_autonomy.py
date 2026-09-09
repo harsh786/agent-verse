@@ -22,13 +22,9 @@ import pytest
 @pytest.mark.asyncio
 async def test_civilization_autonomous_spawn_and_learn() -> None:
     """Full autonomous scenario: goal → spawns → blackboard → learning."""
-    from app.civilization.blackboard import Blackboard
-    from app.civilization.bus import CivilizationBus
     from app.civilization.constitution import evaluate_spawn
-    from app.civilization.learning import LearningPipeline
     from app.civilization.models import Constitution, SpawnContext
     from app.civilization.orchestrator import CivilizationOrchestrator
-    from app.civilization.society import Society
     from app.tenancy.context import PlanTier, TenantContext
 
     civ_id = uuid.uuid4().hex
@@ -414,7 +410,7 @@ async def test_spawn_approved_within_limits_is_audited() -> None:
 @pytest.mark.asyncio
 async def test_metrics_module_records_spawn() -> None:
     """Civilization metrics module records spawn events without raising."""
-    from app.civilization.metrics import record_spawn, record_learning_outcome
+    from app.civilization.metrics import record_learning_outcome, record_spawn
 
     # Should not raise even when prometheus_client is unavailable
     record_spawn(tenant_id="t1", civilization_id="c1", decision="approved")

@@ -15,7 +15,7 @@ import io
 import time
 import uuid
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -28,7 +28,7 @@ class GDriveConnector:
     """Thin wrapper around the Google Drive REST API v3."""
 
     _DRIVE_API = "https://www.googleapis.com/drive/v3"
-    _EXPORT_MIME: dict[str, str] = {
+    _EXPORT_MIME: ClassVar[dict[str, str]] = {
         "application/vnd.google-apps.document": "text/plain",
         "application/vnd.google-apps.spreadsheet": "text/csv",
         "application/vnd.google-apps.presentation": "text/plain",

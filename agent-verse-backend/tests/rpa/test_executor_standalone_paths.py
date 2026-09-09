@@ -9,16 +9,13 @@ to raise executor.py coverage above 95%.
 """
 from __future__ import annotations
 
-import os
 import sys
-import tempfile
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.rpa.executor import RPAExecutor, RPAResult
-
+from app.rpa.executor import RPAExecutor
 
 # ── Mock playwright helpers ─────────────────────────────────────────────────
 
@@ -505,18 +502,17 @@ async def test_pw_download_file_success_no_artifact_store(tmp_path) -> None:
     page.expect_download = MagicMock(return_value=_make_download_cm(download))
 
     # Patch tempfile.NamedTemporaryFile to return our real file path
-    with _inject(page):
-        with patch("tempfile.NamedTemporaryFile") as mock_tmp_factory:
-            mock_file = MagicMock()
-            mock_file.name = str(real_file)
-            mock_file.__enter__ = MagicMock(return_value=mock_file)
-            mock_file.__exit__ = MagicMock(return_value=None)
-            mock_tmp_factory.return_value = mock_file
-            result = await ex._execute_playwright_standalone(
-                tool_name="rpa_download_file",
-                arguments={"selector": "#dl-btn"},
-                goal_id="g1",
-            )
+    with _inject(page), patch("tempfile.NamedTemporaryFile") as mock_tmp_factory:
+        mock_file = MagicMock()
+        mock_file.name = str(real_file)
+        mock_file.__enter__ = MagicMock(return_value=mock_file)
+        mock_file.__exit__ = MagicMock(return_value=None)
+        mock_tmp_factory.return_value = mock_file
+        result = await ex._execute_playwright_standalone(
+            tool_name="rpa_download_file",
+            arguments={"selector": "#dl-btn"},
+            goal_id="g1",
+        )
     assert result.success is True
     assert "downloaded_file.pdf" in result.output
     assert "bytes" in result.output
@@ -537,20 +533,19 @@ async def test_pw_download_file_with_artifact_store(tmp_path) -> None:
     download.save_as = AsyncMock()
     page.expect_download = MagicMock(return_value=_make_download_cm(download))
 
-    with _inject(page):
-        with patch("tempfile.NamedTemporaryFile") as mock_tmp_factory:
-            mock_file = MagicMock()
-            mock_file.name = str(real_file)
-            mock_file.__enter__ = MagicMock(return_value=mock_file)
-            mock_file.__exit__ = MagicMock(return_value=None)
-            mock_tmp_factory.return_value = mock_file
-            # Patch os.unlink so we can prove the finally block runs
-            with patch("os.unlink") as mock_unlink:
-                result = await ex._execute_playwright_standalone(
-                    tool_name="rpa_download_file",
-                    arguments={"selector": "#dl-btn"},
-                    goal_id="g1",
-                )
+    with _inject(page), patch("tempfile.NamedTemporaryFile") as mock_tmp_factory:
+        mock_file = MagicMock()
+        mock_file.name = str(real_file)
+        mock_file.__enter__ = MagicMock(return_value=mock_file)
+        mock_file.__exit__ = MagicMock(return_value=None)
+        mock_tmp_factory.return_value = mock_file
+        # Patch os.unlink so we can prove the finally block runs
+        with patch("os.unlink") as mock_unlink:
+            result = await ex._execute_playwright_standalone(
+                tool_name="rpa_download_file",
+                arguments={"selector": "#dl-btn"},
+                goal_id="g1",
+            )
     assert result.success is True
     assert result.artifact_url == "s3://bucket/downloaded_file.pdf"
     store.store_bytes.assert_awaited_once()
@@ -577,19 +572,18 @@ async def test_pw_download_file_artifact_store_failure_falls_back_to_tmp_path(
     download.save_as = AsyncMock()
     page.expect_download = MagicMock(return_value=_make_download_cm(download))
 
-    with _inject(page):
-        with patch("tempfile.NamedTemporaryFile") as mock_tmp_factory:
-            mock_file = MagicMock()
-            mock_file.name = str(real_file)
-            mock_file.__enter__ = MagicMock(return_value=mock_file)
-            mock_file.__exit__ = MagicMock(return_value=None)
-            mock_tmp_factory.return_value = mock_file
-            with patch("os.unlink"):  # avoid real unlink so getsize below works
-                result = await ex._execute_playwright_standalone(
-                    tool_name="rpa_download_file",
-                    arguments={"selector": "#dl-btn"},
-                    goal_id="g1",
-                )
+    with _inject(page), patch("tempfile.NamedTemporaryFile") as mock_tmp_factory:
+        mock_file = MagicMock()
+        mock_file.name = str(real_file)
+        mock_file.__enter__ = MagicMock(return_value=mock_file)
+        mock_file.__exit__ = MagicMock(return_value=None)
+        mock_tmp_factory.return_value = mock_file
+        with patch("os.unlink"):  # avoid real unlink so getsize below works
+            result = await ex._execute_playwright_standalone(
+                tool_name="rpa_download_file",
+                arguments={"selector": "#dl-btn"},
+                goal_id="g1",
+            )
     assert result.success is True
     # artifact_url fell back to tmp_path because store_bytes raised
     assert result.artifact_url == str(real_file)

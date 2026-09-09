@@ -1,5 +1,7 @@
 import asyncio
+
 import pytest
+
 from app.reliability.bulkhead import BulkheadRegistry
 
 

@@ -104,7 +104,7 @@ class BrowserSessionManager:
                 )
                 if oldest_key:
                     old_session = self._sessions.pop(oldest_key)
-                    asyncio.create_task(old_session.close())
+                    asyncio.create_task(old_session.close())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                     logger.info(
                         "browser_session_evicted",
                         session_id=oldest_key[0],

@@ -198,9 +198,7 @@ async def test_check_gdpr_non_eu_region():
         stmt_str = str(stmt)
         if "enterprise_contracts" in stmt_str:
             mock_result.fetchone.return_value = None
-        elif "gdpr_export_jobs" in stmt_str:
-            mock_result.scalar.return_value = 0
-        elif "consent_records" in stmt_str:
+        elif "gdpr_export_jobs" in stmt_str or "consent_records" in stmt_str:
             mock_result.scalar.return_value = 0
         elif "data_region" in stmt_str:
             mock_result.fetchone.return_value = ("us-east-1",)

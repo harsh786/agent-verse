@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 from app.tenancy.context import TenantContext
 
@@ -73,7 +73,7 @@ class AgentRouter:
         return {w.lower() for w in re.findall(r"[a-z0-9]+", text.lower())}
 
     # Systems whose names appear explicitly in goal text — used for anti-affinity.
-    _SYSTEM_NAMES: dict[str, list[str]] = {
+    _SYSTEM_NAMES: ClassVar[dict[str, list[str]]] = {
         "jira": [
             "jira",
             "ticket",
@@ -165,7 +165,7 @@ class AgentRouter:
         goal_tokens = self._tokenize(goal)
 
         # Domain keyword → connector name mapping for semantic matching
-        DOMAIN_KEYWORDS: dict[str, list[str]] = {
+        domain_keywords: dict[str, list[str]] = {
             "jira": [
                 "jira",
                 "ticket",
@@ -221,7 +221,7 @@ class AgentRouter:
                 continue
 
             # Semantic: goal keywords matching domain keywords for this connector
-            domain_kws = DOMAIN_KEYWORDS.get(core, [])
+            domain_kws = domain_keywords.get(core, [])
             kw_hit = any(kw in goal_lower for kw in domain_kws)
             if kw_hit:
                 total_score += 0.8

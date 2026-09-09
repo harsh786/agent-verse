@@ -6,34 +6,34 @@ import time
 
 import pytest
 
-from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
-from app.orchestration.runtime_profile import (
-    Complexity,
-    RiskLevel,
-    TimeSensitivity,
-    KnowledgeState,
-    GoalRuntimeProfile,
-    GoalProperties,
-    AgentPatternConfig,
-    RAGStrategyConfig,
-    ModelPlanConfig,
-    SecurityConfig,
-    MemoryCacheConfig,
-    EvalConfig,
-)
-from app.orchestration.strategy_registry import build_default_registry
-from app.security_runtime.guardrail_profile import GuardrailProfileSelector, GuardrailBundle
-from app.security_runtime.governance_profile import GovernanceProfileSelector
-from app.plan_runtime.plan_verifier import PlanVerifier
-from app.runtime_readiness.readiness_gate import ReadinessGate
-from app.runtime_readiness.dependency_health import DependencyHealth, DepStatus
+from app.capabilities.registry import build_default_capability_registry
 from app.data_classification.classifier import DataClassifier
 from app.data_classification.schema import DataClass
-from app.capabilities.registry import build_default_capability_registry
 from app.evals.runtime_scorecard import RuntimeScorecard
-from app.recovery.failure_classifier import FailureClassifier, FailureClass
 from app.orchestration.decision_trace import DecisionTrace
-from app.tenancy.context import TenantContext, PlanTier
+from app.orchestration.runtime_profile import (
+    AgentPatternConfig,
+    Complexity,
+    EvalConfig,
+    GoalProperties,
+    GoalRuntimeProfile,
+    KnowledgeState,
+    MemoryCacheConfig,
+    ModelPlanConfig,
+    RAGStrategyConfig,
+    RiskLevel,
+    SecurityConfig,
+    TimeSensitivity,
+)
+from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
+from app.orchestration.strategy_registry import build_default_registry
+from app.plan_runtime.plan_verifier import PlanVerifier
+from app.recovery.failure_classifier import FailureClass, FailureClassifier
+from app.runtime_readiness.dependency_health import DependencyHealth, DepStatus
+from app.runtime_readiness.readiness_gate import ReadinessGate
+from app.security_runtime.governance_profile import GovernanceProfileSelector
+from app.security_runtime.guardrail_profile import GuardrailBundle, GuardrailProfileSelector
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture
@@ -479,9 +479,16 @@ async def test_ac_guardrail_profile_correct_for_critical(builder, tenant_ctx):
 def test_ac_plan_verifier_flags_critical_operation():
     """AC §5.6 — PlanVerifier flags destructive operations as critical."""
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig,
-        RAGStrategyConfig, ModelPlanConfig, SecurityConfig,
-        MemoryCacheConfig, EvalConfig, Complexity, RiskLevel,
+        AgentPatternConfig,
+        Complexity,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        RiskLevel,
+        SecurityConfig,
     )
 
     props = GoalProperties(
@@ -512,9 +519,15 @@ def test_ac_plan_verifier_flags_critical_operation():
 def test_ac_readiness_gate_blocks_when_postgres_down():
     """AC §5.7 — ReadinessGate returns ready=False when postgres is unavailable."""
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig,
-        RAGStrategyConfig, ModelPlanConfig, SecurityConfig,
-        MemoryCacheConfig, EvalConfig, Complexity, RiskLevel,
+        AgentPatternConfig,
+        Complexity,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
 
     health = DependencyHealth(
@@ -544,9 +557,15 @@ def test_ac_readiness_gate_blocks_when_postgres_down():
 def test_ac_readiness_gate_ready_all_healthy():
     """AC §5.7b — ReadinessGate returns ready=True when all deps healthy."""
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig,
-        RAGStrategyConfig, ModelPlanConfig, SecurityConfig,
-        MemoryCacheConfig, EvalConfig, Complexity,
+        AgentPatternConfig,
+        Complexity,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
 
     health = DependencyHealth.all_healthy()
@@ -672,10 +691,11 @@ async def test_ac_strategy_registry_contains_all_required_strategies(registry):
 
 async def test_archetype5b_empty_kb_retriever_never_silent():
     """Spec §3.4 AC: Empty KB must return structured result, not silent empty string."""
-    from app.rag.agentic.retriever_tool import RetrieverTool, RetrievalResult
     from unittest.mock import AsyncMock
+
+    from app.rag.agentic.retriever_tool import RetrievalResult, RetrieverTool
     from app.rag.contracts import RAGExecutionResult, RAGStrategy
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     # RetrieverTool now requires a retrieval_gateway. Provide a mock that returns
     # an empty result to verify the tool returns a structured RetrievalResult.
@@ -743,9 +763,9 @@ async def test_archetype8b_financial_irreversibility(builder):
 
 def test_archetype10b_failed_goal_creates_regression_candidate():
     """Failed goal must create regression candidate for self-improvement."""
+    from app.agent.state import AgentState, GoalStatus
     from app.evals.regression_gate import RegressionGate
     from app.evals.runtime_scorecard import RuntimeScorecard
-    from app.agent.state import AgentState, GoalStatus
 
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
     state = AgentState(goal="delete prod db", tenant_ctx=ctx, goal_id="g_fail")
@@ -772,9 +792,9 @@ def test_archetype10b_failed_goal_creates_regression_candidate():
 
 def test_archetype10c_successful_goal_no_regression():
     """Successful goal must NOT create regression candidate."""
+    from app.agent.state import AgentState, GoalStatus
     from app.evals.regression_gate import RegressionGate
     from app.evals.runtime_scorecard import RuntimeScorecard
-    from app.agent.state import AgentState, GoalStatus
 
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
     state = AgentState(goal="list tickets", tenant_ctx=ctx, goal_id="g_ok")
@@ -820,7 +840,7 @@ async def test_acceptance_high_risk_always_hitl_consensus_rollback(builder):
 
 def test_acceptance_strategy_registry_has_all_documented_patterns():
     """Spec §5 AC: Every pattern from architecture docs in StrategyRegistry."""
-    from app.orchestration.strategy_registry import build_default_registry, StrategyCategory
+    from app.orchestration.strategy_registry import StrategyCategory, build_default_registry
     registry = build_default_registry()
     assert len(registry.list_all()) >= 60
     agent_ids = {s.strategy_id for s in registry.list_by_category(StrategyCategory.AGENT)}

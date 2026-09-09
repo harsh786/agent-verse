@@ -1,8 +1,6 @@
 # tests/agent/test_phase_n8_n10.py
 """Phase N8-N10: OutputContract + executor/verifier contexts + ToolReliability."""
 from __future__ import annotations
-import pytest
-
 
 # ── N8: OutputContractBuilder ─────────────────────────────────────────────────
 
@@ -85,6 +83,7 @@ def test_executor_context_distinct_from_planner():
 def test_tool_reliability_store_constructor_param():
     """AgentGraph must accept tool_reliability_store as constructor param."""
     import inspect
+
     from app.agent.graph import AgentGraph
     sig = inspect.signature(AgentGraph.__init__)
     assert "tool_reliability_store" in sig.parameters
@@ -93,7 +92,7 @@ def test_tool_reliability_store_constructor_param():
 async def test_tool_reliability_store_get_unreliable():
     """get_unreliable_tools must return tools below threshold."""
     from app.memory.tool_reliability import ToolReliabilityStore
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
     store = ToolReliabilityStore()
     # Record a series of failures

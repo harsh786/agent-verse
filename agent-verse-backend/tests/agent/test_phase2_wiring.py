@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import pytest
+
+from app.agent.state import AgentState
 from app.providers.fake import FakeProvider
-from app.tenancy.context import TenantContext, PlanTier
-from app.agent.state import AgentState, GoalStatus
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture

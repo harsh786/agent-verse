@@ -1,8 +1,9 @@
 """Tests verifying all 8 civilization backend gaps are fixed."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 @pytest.mark.asyncio
@@ -10,7 +11,7 @@ async def test_governor_calls_audit_log_on_spawn():
     """AuditLog.record() must be called for every spawn attempt."""
     from app.civilization.governor import Governor
     from app.civilization.models import Constitution
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     mock_audit = AsyncMock()
     mock_audit.record = AsyncMock()
@@ -76,8 +77,8 @@ async def test_governor_emits_pause_event_on_breach():
 @pytest.mark.asyncio
 async def test_orchestrator_tick_syncs_reputation():
     """orchestrator.tick() must sync reputation from evaluations."""
-    from app.civilization.orchestrator import CivilizationOrchestrator
     from app.civilization.models import Constitution
+    from app.civilization.orchestrator import CivilizationOrchestrator
 
     mock_society = AsyncMock()
     mock_society.get_metrics = AsyncMock(return_value={"active_members": 2})
@@ -132,6 +133,7 @@ async def test_orchestrator_trigger_debate_with_real_orchestrator():
 def test_throttle_action_sets_spawn_rate():
     """throttle control action must update spawn_rate_limit_per_min in constitution."""
     import inspect
+
     from app.api import civilization
     src = inspect.getsource(civilization)
     assert "spawn_rate_limit_per_min" in src, \
@@ -141,6 +143,7 @@ def test_throttle_action_sets_spawn_rate():
 def test_parent_goal_id_in_execution_context():
     """spawned goals must include parent_goal_id for cost rollup."""
     import inspect
+
     from app.civilization import orchestrator
     src = inspect.getsource(orchestrator)
     assert "parent_goal_id" in src, \

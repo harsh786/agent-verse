@@ -157,14 +157,12 @@ class CivilizationOrchestrator:
         # — first, enrich execution_context with blackboard knowledge
         blackboard_context: list[dict] = []
         if self._blackboard is not None:
-            try:
+            with contextlib.suppress(Exception):
                 blackboard_context = await self._blackboard.query(
                     topic=None,  # all topics
                     min_confidence=0.65,
                     limit=5,
                 )
-            except Exception:
-                pass
 
         result_goal_id = goal_id
         if self._goal_service is not None:

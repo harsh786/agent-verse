@@ -1,22 +1,20 @@
 """Comprehensive tests for app/services/goal_queue.py — targeting 90%+ coverage."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
-import pytest
-
+from unittest.mock import MagicMock, patch
 
 # ── GoalTaskQueue protocol ────────────────────────────────────────────────────
 
 class TestGoalTaskQueueProtocol:
     def test_protocol_has_enqueue_goal(self) -> None:
+
         from app.services.goal_queue import GoalTaskQueue
-        import inspect
         # Protocol methods should be visible
         assert hasattr(GoalTaskQueue, "enqueue_goal")
 
     def test_protocol_satisfied_by_concrete_impl(self) -> None:
-        from app.services.goal_queue import CeleryGoalTaskQueue, GoalTaskQueue
-        import typing
+
+        from app.services.goal_queue import CeleryGoalTaskQueue
         # CeleryGoalTaskQueue should satisfy the protocol
         obj = CeleryGoalTaskQueue()
         assert hasattr(obj, "enqueue_goal")
@@ -61,20 +59,19 @@ class TestCeleryGoalTaskQueue:
         mock_task = MagicMock()
         mock_task.apply_async = MagicMock(return_value=mock_result)
 
-        with patch("app.scaling.tasks.run_goal", mock_task):
-            with patch(
-                "app.scaling.celery_app.PLAN_QUEUE_MAP",
-                {"enterprise": "goals.enterprise"},
-            ):
-                queue = CeleryGoalTaskQueue()
-                task_id = queue.enqueue_goal(
-                    goal_id="g2",
-                    tenant_id="t1",
-                    goal_text="Scale infrastructure",
-                    priority="high",
-                    dry_run=False,
-                    plan="enterprise",
-                )
+        with patch("app.scaling.tasks.run_goal", mock_task), patch(
+            "app.scaling.celery_app.PLAN_QUEUE_MAP",
+            {"enterprise": "goals.enterprise"},
+        ):
+            queue = CeleryGoalTaskQueue()
+            task_id = queue.enqueue_goal(
+                goal_id="g2",
+                tenant_id="t1",
+                goal_text="Scale infrastructure",
+                priority="high",
+                dry_run=False,
+                plan="enterprise",
+            )
 
         assert task_id == "enterprise-task-id"
         call_kwargs = mock_task.apply_async.call_args[1]

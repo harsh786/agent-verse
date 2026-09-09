@@ -9,8 +9,7 @@ Key strategies:
 """
 from __future__ import annotations
 
-import os
-import sys
+from datetime import UTC
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -121,11 +120,10 @@ def test_mongodb_get_tools_motor_missing():
 
 def test_cloudwatch_cw_client_body():
     """Cover _cw_client() function body by calling it with boto3.client mocked."""
-    with patch.dict("os.environ", _AWS_ENV):
-        with patch("boto3.client") as mock_boto_client:
-            mock_boto_client.return_value = MagicMock()
-            from app.mcp.servers.aws_cloudwatch_server import _cw_client
-            result = _cw_client()
+    with patch.dict("os.environ", _AWS_ENV), patch("boto3.client") as mock_boto_client:
+        mock_boto_client.return_value = MagicMock()
+        from app.mcp.servers.aws_cloudwatch_server import _cw_client
+        result = _cw_client()
     assert result is not None
     mock_boto_client.assert_called_once_with(
         "cloudwatch",
@@ -137,21 +135,19 @@ def test_cloudwatch_cw_client_body():
 
 def test_cloudwatch_logs_client_body():
     """Cover _logs_client() function body."""
-    with patch.dict("os.environ", _AWS_ENV):
-        with patch("boto3.client") as mock_boto_client:
-            mock_boto_client.return_value = MagicMock()
-            from app.mcp.servers.aws_cloudwatch_server import _logs_client
-            result = _logs_client()
+    with patch.dict("os.environ", _AWS_ENV), patch("boto3.client") as mock_boto_client:
+        mock_boto_client.return_value = MagicMock()
+        from app.mcp.servers.aws_cloudwatch_server import _logs_client
+        result = _logs_client()
     assert result is not None
 
 
 def test_iam_client_body():
     """Cover _client() function body in aws_iam_server."""
-    with patch.dict("os.environ", _AWS_ENV):
-        with patch("boto3.client") as mock_boto_client:
-            mock_boto_client.return_value = MagicMock()
-            from app.mcp.servers.aws_iam_server import _client
-            result = _client()
+    with patch.dict("os.environ", _AWS_ENV), patch("boto3.client") as mock_boto_client:
+        mock_boto_client.return_value = MagicMock()
+        from app.mcp.servers.aws_iam_server import _client
+        result = _client()
     assert result is not None
 
 
@@ -740,8 +736,8 @@ async def test_iam_list_users_with_pagination():
 
 @pytest.mark.asyncio
 async def test_cloudwatch_list_alarms_with_filter():
+
     from app.mcp.servers.aws_cloudwatch_server import call_tool
-    from datetime import datetime, timezone
 
     mock_cw = MagicMock()
     mock_cw.describe_alarms.return_value = {
@@ -754,12 +750,13 @@ async def test_cloudwatch_list_alarms_with_filter():
 
 @pytest.mark.asyncio
 async def test_cloudwatch_get_metric_data_with_dimensions():
+    from datetime import datetime
+
     from app.mcp.servers.aws_cloudwatch_server import call_tool
-    from datetime import datetime, timezone
 
     mock_cw = MagicMock()
     mock_cw.get_metric_statistics.return_value = {
-        "Datapoints": [{"Timestamp": datetime(2024, 1, 1, tzinfo=timezone.utc), "Average": 30.0, "Unit": "Percent"}],
+        "Datapoints": [{"Timestamp": datetime(2024, 1, 1, tzinfo=UTC), "Average": 30.0, "Unit": "Percent"}],
         "Label": "CPUUtilization",
     }
     with patch.dict("os.environ", _AWS_ENV), patch("app.mcp.servers.aws_cloudwatch_server._cw_client", return_value=mock_cw):

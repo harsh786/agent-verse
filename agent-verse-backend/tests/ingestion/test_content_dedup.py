@@ -1,7 +1,7 @@
 """Tests for ContentDeduplicator in quality_checks."""
 from __future__ import annotations
 
-from app.ingestion.quality_checks import ContentDeduplicator, QualityChecker
+from app.ingestion.quality_checks import ContentDeduplicator
 
 
 class TestContentDeduplicator:

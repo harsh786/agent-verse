@@ -170,24 +170,25 @@ class ExecutorMixin:
         # Build StructuredPlan for wave-based parallel execution (Fix 1 + Fix 3)
         import asyncio as _asyncio
 
-        from app.agent.structured_plan import StructuredPlan as _SP
-        from app.agent.structured_plan import StructuredStep as _SS
+        from app.agent.structured_plan import StructuredPlan, StructuredStep
 
-        _structured: _SP | None = None
+        _structured: StructuredPlan | None = None
         for _entry in plan:
             try:
                 _parsed = json.loads(_entry)
                 if isinstance(_parsed, dict) and "steps" in _parsed:
-                    _structured = _SP.from_llm_response(_entry)
+                    _structured = StructuredPlan.from_llm_response(_entry)
                     break
             except Exception:
                 pass
 
         if _structured is None:
             # Plain string steps — treat as sequential (each depends on the previous)
-            _structured = _SP(
+            _structured = StructuredPlan(
                 steps=[
-                    _SS(id=f"s{i}", description=sd, depends_on=[f"s{i - 1}"] if i > 0 else [])
+                    StructuredStep(
+                        id=f"s{i}", description=sd, depends_on=[f"s{i - 1}"] if i > 0 else []
+                    )
                     for i, sd in enumerate(plan)
                 ]
             )
@@ -256,7 +257,8 @@ class ExecutorMixin:
                                     or '"projects": []' in cached_resp
                                     or cached_resp.strip() in ("{}", "[]", "")
                                     or len(cached_resp.strip()) < 10
-                                    or _is_llm_reasoning  # Never serve stale LLM text as tool result
+                                    # Never serve stale LLM text as tool result
+                                    or _is_llm_reasoning
                                 )
                                 if not _is_empty:
                                     _batch_cache_results[desc] = cached_resp
@@ -343,7 +345,7 @@ class ExecutorMixin:
                         _step_lat = float(agent_state.context.get("last_step_latency_ms", 200.0))
                         import asyncio as _tp_asyncio
 
-                        _tp_asyncio.ensure_future(
+                        _tp_asyncio.ensure_future(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                             _orch_persist.persist_tool_outcome(
                                 tool_name=_tool_nm,
                                 success=bool(_step_ok),
@@ -358,7 +360,7 @@ class ExecutorMixin:
                     try:
                         import asyncio as _asyncio_cb
 
-                        _asyncio_cb.create_task(
+                        _asyncio_cb.create_task(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                             self._step_callback(
                                 "step_completed",
                                 {
@@ -408,7 +410,7 @@ class ExecutorMixin:
                             out = await self._execute_step_with_cache(desc, agent_state, tenant_ctx)
                         else:
                             out = await self._execute_step(desc, agent_state, tenant_ctx)
-                        async with _state_lock:
+                        async with _state_lock:  # noqa: B023  # closure runs + is awaited within the same wave iteration that defines _state_lock (gather() below completes before the next wave), so the late-binding this rule warns about never happens here
                             sr.output = out
                             sr.status = StepStatus.COMPLETE
                         await self._emit({"type": "step_complete", "step": desc, "output": out})
@@ -424,7 +426,7 @@ class ExecutorMixin:
                                 _step_ok_wave = bool(out and "error" not in out.lower()[:50])
                                 import asyncio as _wp_asyncio
 
-                                _wp_asyncio.ensure_future(
+                                _wp_asyncio.ensure_future(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                                     _orch_persist_wave.persist_tool_outcome(
                                         tool_name=_tool_nm_wave,
                                         success=_step_ok_wave,
@@ -435,14 +437,14 @@ class ExecutorMixin:
                         except Exception:
                             pass
                     except PermissionError as exc:
-                        async with _state_lock:
+                        async with _state_lock:  # noqa: B023  # closure runs + is awaited within the same wave iteration that defines _state_lock (gather() below completes before the next wave), so the late-binding this rule warns about never happens here
                             agent_state.status = GoalStatus.FAILED
                             agent_state.error_message = str(exc)
                             sr.status = StepStatus.FAILED
                             sr.error = str(exc)
                         raise
                     except Exception as exc:
-                        async with _state_lock:
+                        async with _state_lock:  # noqa: B023  # closure runs + is awaited within the same wave iteration that defines _state_lock (gather() below completes before the next wave), so the late-binding this rule warns about never happens here
                             sr.status = StepStatus.FAILED
                             sr.error = str(exc)
                         raise
@@ -1656,7 +1658,7 @@ class ExecutorMixin:
                             # V5: Placeholder argument guard — prevent LLM-generated
                             # placeholder values (e.g. "your_organization/your_repository")
                             # from reaching real MCP servers.
-                            _PLACEHOLDER_PATTERNS = (
+                            _placeholder_patterns = (
                                 "your_organization",
                                 "your_repository",
                                 "your_org",
@@ -1678,7 +1680,7 @@ class ExecutorMixin:
                                 f"{k}={v!r}"
                                 for k, v in (tool_call.arguments or {}).items()
                                 if isinstance(v, str)
-                                and any(p in v.lower() for p in _PLACEHOLDER_PATTERNS)
+                                and any(p in v.lower() for p in _placeholder_patterns)
                             ]
                             if _ph_hits:
                                 _ph_msg = (
@@ -2179,14 +2181,12 @@ class ExecutorMixin:
             and _cache_embedding is not None
             and not _is_error_output
         ):
-            try:
+            with contextlib.suppress(Exception):  # write failures must never block execution
                 await self._semantic_cache.store_async(
                     embedding=_cache_embedding,
                     query=step,
                     response=raw_output,
                     tenant_id=tenant_ctx.tenant_id,
                 )
-            except Exception:
-                pass  # write failures must never block execution
 
         return raw_output

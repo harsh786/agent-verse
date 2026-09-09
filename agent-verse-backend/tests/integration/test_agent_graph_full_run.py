@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -15,18 +14,14 @@ from app.agent.graph import AgentGraph
 from app.agent.state import GoalStatus
 from app.governance.audit import AuditLog
 from app.governance.cost import BudgetConfig, CostController
-from app.governance.hitl import ApprovalStatus, HITLGateway
+from app.governance.hitl import HITLGateway
 from app.governance.permissions import ActionLevel, PermissionMatrix, PermissionRule
-from app.governance.policies import PolicyEngine
 from app.intelligence.eval_runner import EvalRunner
 from app.intelligence.guardrails import GuardrailChecker
 from app.memory.execution import ExecutionMemory
-from app.memory.long_term import LongTermMemoryStore
 from app.providers.fake import FakeProvider
 from app.reliability.circuit_breaker import CircuitBreaker, CircuitState
 from app.reliability.dedup import DeduplicationCache
-from app.reliability.result_processor import ResultProcessor
-from app.reliability.rollback import RollbackEngine
 from app.tenancy.context import PlanTier, TenantContext
 
 pytestmark = pytest.mark.integration
@@ -555,7 +550,6 @@ async def test_tool_reliability_store_records() -> None:
 
 async def test_circuit_breaker_half_open_after_cooldown() -> None:
     """CircuitBreaker transitions OPEN→HALF_OPEN after cooldown."""
-    import time
 
     cb = CircuitBreaker(failure_threshold=1, cooldown_seconds=0.01)
     cb.record_failure()

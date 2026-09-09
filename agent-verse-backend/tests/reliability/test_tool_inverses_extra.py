@@ -6,12 +6,11 @@ Covers: async 2-arg inverse functions, sync wrapper with running loop,
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.reliability.tool_inverses import (
-    _INVERSE_REGISTRY,
     _inverse_confluence_create_page,
     _inverse_github_create_issue,
     _inverse_jira_create_issue,

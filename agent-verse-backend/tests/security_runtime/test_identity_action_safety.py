@@ -1,11 +1,15 @@
 """Layer 1: identity resolution and action safety profiles."""
 from __future__ import annotations
+
 import pytest
-from app.security_runtime.identity_profile import IdentityProfile, IdentityScope, IdentityResolver
+
 from app.security_runtime.action_safety_profile import (
-    ActionSafetyProfile, ActionSafetyLevel, ActionSafetyProfileSelector,
+    ActionSafetyLevel,
+    ActionSafetyProfile,
+    ActionSafetyProfileSelector,
 )
-from app.tenancy.context import TenantContext, PlanTier
+from app.security_runtime.identity_profile import IdentityProfile, IdentityResolver, IdentityScope
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture

@@ -346,7 +346,6 @@ def test_ingest_file_no_embedder_uses_empty_embedding() -> None:
 
 def test_ingest_file_embedder_raises_exception() -> None:
     """Lines 443-447: Embedder exception → empty embedding, still ingests."""
-    from app.providers.base import EmbedResponse
     embedder = AsyncMock()
     embedder.embed = AsyncMock(side_effect=Exception("Embedder down"))
     client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
@@ -427,7 +426,6 @@ def test_ingest_repo_background_clone_failure() -> None:
                 tenant_ctx=_CTX,
             )
 
-    import asyncio
     asyncio.run(_run())
 
 
@@ -772,6 +770,7 @@ def test_ingest_url_short_content_fallback_chunk() -> None:
 def test_ingest_chunks_from_source_helper() -> None:
     """Lines 803-831: _ingest_chunks_from_source embeds and ingests chunks."""
     import asyncio
+
     from app.api.knowledge import _ingest_chunks_from_source
 
     store = KnowledgeStore()
@@ -799,6 +798,7 @@ def test_ingest_chunks_from_source_helper() -> None:
 def test_ingest_chunks_from_source_embedder_exception() -> None:
     """A structured source embedder failure is fail-closed."""
     import asyncio
+
     from app.api.knowledge import _ingest_chunks_from_source
 
     store = KnowledgeStore()
@@ -824,6 +824,7 @@ def test_ingest_chunks_from_source_embedder_exception() -> None:
 def test_ingest_chunks_no_embedder() -> None:
     """A structured source without an embedder is fail-closed."""
     import asyncio
+
     from app.api.knowledge import _ingest_chunks_from_source
 
     store = KnowledgeStore()

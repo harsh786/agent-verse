@@ -7,25 +7,22 @@ with 503/500 instead of crashing.
 """
 from __future__ import annotations
 
-import json
-
 import pytest
 from fastapi.testclient import TestClient
-
 
 # ── App factory helpers ────────────────────────────────────────────────────────
 
 def _make_app_enabled():
-    from app.main import create_app
     from app.core.config import Settings
+    from app.main import create_app
 
     settings = Settings(civilization_enabled=True)
     return create_app(settings=settings)
 
 
 def _make_app_disabled():
-    from app.main import create_app
     from app.core.config import Settings
+    from app.main import create_app
 
     settings = Settings(civilization_enabled=False)
     return create_app(settings=settings)

@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from app.intelligence.meta_agent import MetaAgentConfig, MetaAgentPlanner
 from app.providers.fake import FakeProvider
 from app.tenancy.context import PlanTier, TenantContext

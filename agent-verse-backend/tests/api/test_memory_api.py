@@ -5,8 +5,6 @@ running server and are immune to async-task side-effects from other tests.
 """
 from __future__ import annotations
 
-import pytest
-
 
 def _get_knowledge_routes() -> list[str]:
     """Directly inspect the knowledge router without creating a full app."""

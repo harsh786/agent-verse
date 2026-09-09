@@ -24,7 +24,7 @@ _log = get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
 
-class RateLimitExceeded(Exception):
+class RateLimitExceededError(Exception):
     """Raised when a channel command exceeds rate limits."""
 
     def __init__(self, limit: int, window_seconds: int, retry_after: int) -> None:
@@ -86,7 +86,7 @@ class ChannelRateLimiter:
         """
         Check rate limits and increment counter.
         Returns: {"allowed": bool, "remaining": int, "reset_at": int}
-        Raises: RateLimitExceeded if limit exceeded.
+        Raises: RateLimitExceededError if limit exceeded.
         """
         with _tracer.start_as_current_span("rate_limiter.check") as span:
             span.set_attribute("channel", channel)
@@ -104,7 +104,7 @@ class ChannelRateLimiter:
                 result = self._check_memory(key, limit, window)
 
             if not result["allowed"]:
-                raise RateLimitExceeded(limit, window, result["retry_after"])
+                raise RateLimitExceededError(limit, window, result["retry_after"])
 
             # Apply action-level limit if specified
             if action and action in ACTION_LIMITS:
@@ -117,7 +117,7 @@ class ChannelRateLimiter:
                 else:
                     aresult = self._check_memory(akey, action_cfg["limit"], action_cfg["window"])
                 if not aresult["allowed"]:
-                    raise RateLimitExceeded(
+                    raise RateLimitExceededError(
                         action_cfg["limit"], action_cfg["window"], aresult["retry_after"]
                     )
 

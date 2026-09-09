@@ -1,6 +1,6 @@
 """Tests for ArtifactTool and related infrastructure."""
+
 import pytest
-import asyncio
 
 from tests._paths import INFRA_DIR, MIGRATIONS_DIR
 
@@ -75,6 +75,7 @@ def test_helm_backup_cronjob_exists():
 
 def test_purge_expired_artifacts_task_exists():
     import inspect
+
     from app.scaling import tasks
     src = inspect.getsource(tasks)
     assert "purge_expired_artifacts" in src, "purge_expired_artifacts task must exist"
@@ -82,6 +83,7 @@ def test_purge_expired_artifacts_task_exists():
 
 def test_router_has_db_history_scoring():
     import inspect
+
     from app.agent import router
     src = inspect.getsource(router)
     assert "evaluations" in src or "avg_score" in src, \
@@ -90,6 +92,7 @@ def test_router_has_db_history_scoring():
 
 def test_mcp_client_updates_tool_stats():
     import inspect
+
     from app.mcp import client
     src = inspect.getsource(client)
     assert "_update_tool_stats" in src or "tool_capabilities" in src, \

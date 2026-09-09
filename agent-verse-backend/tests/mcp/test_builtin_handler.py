@@ -19,7 +19,7 @@ def _restore_builtin_registry():
 
 def test_builtin_handler_survives_registry_round_trip():
     """Built-in handler must be recoverable after Redis serialization."""
-    from app.mcp.registry import MCPRegistry, _BUILTIN_HANDLER_REGISTRY
+    from app.mcp.registry import MCPRegistry
 
     def my_handler(tool, args):
         return {"result": "ok"}

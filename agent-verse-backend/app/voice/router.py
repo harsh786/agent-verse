@@ -198,15 +198,16 @@ async def voice_greeting(
                     from app.db.rls import sqlalchemy_rls_context
                     from app.org.service import OrgService
 
-                    async with sf() as session, session.begin():
-                        async with sqlalchemy_rls_context(session, tenant_id):
-                            org = await OrgService(
-                                session=session, tenant_id=tenant_id
-                            ).get_organization(org_id)
-                            if org:
-                                eff_lang = jurisdiction_to_language(
-                                    getattr(org, "jurisdiction", None)
-                                )
+                    async with (
+                        sf() as session,
+                        session.begin(),
+                        sqlalchemy_rls_context(session, tenant_id),
+                    ):
+                        org = await OrgService(
+                            session=session, tenant_id=tenant_id
+                        ).get_organization(org_id)
+                        if org:
+                            eff_lang = jurisdiction_to_language(getattr(org, "jurisdiction", None))
             except Exception:
                 pass
 
@@ -318,13 +319,16 @@ async def voice_stream(
             from app.db.rls import sqlalchemy_rls_context
             from app.org.service import OrgService
 
-            async with sf() as session, session.begin():
-                async with sqlalchemy_rls_context(session, tenant_id):
-                    org = await OrgService(
-                        session=session, tenant_id=tenant_id
-                    ).get_organization(org_id)
-                    if org:
-                        language = jurisdiction_to_language(getattr(org, "jurisdiction", None))
+            async with (
+                sf() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                org = await OrgService(session=session, tenant_id=tenant_id).get_organization(
+                    org_id
+                )
+                if org:
+                    language = jurisdiction_to_language(getattr(org, "jurisdiction", None))
     except Exception:
         pass
 
@@ -355,9 +359,12 @@ async def _fetch_org_health(app: Any, org_id: str, tenant_id: str) -> dict:
         from app.db.rls import sqlalchemy_rls_context
         from app.org.service import OrgService
 
-        async with sf() as session, session.begin():
-            async with sqlalchemy_rls_context(session, tenant_id):
-                return await OrgService(session=session, tenant_id=tenant_id).get_org_health(org_id)
+        async with (
+            sf() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            return await OrgService(session=session, tenant_id=tenant_id).get_org_health(org_id)
     except Exception as exc:
         log.warning("voice.health_fetch_failed", error=str(exc))
         return _fallback_health(org_id)

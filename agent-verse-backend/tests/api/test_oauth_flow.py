@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
-import respx
 import httpx as _httpx
+import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

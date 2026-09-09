@@ -14,13 +14,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ── imap_listener: configuration helpers ────────────────────────────────────
 
 class TestImapListenerIsEnabled:
     def test_disabled_by_default(self):
         with patch.dict(os.environ, {}, clear=True):
             import importlib
+
             import app.integrations.email.imap_listener as mod
             importlib.reload(mod)
             assert mod._is_enabled() is False
@@ -28,6 +28,7 @@ class TestImapListenerIsEnabled:
     def test_enabled_via_true(self):
         with patch.dict(os.environ, {"IMAP_ENABLED": "true"}):
             import importlib
+
             import app.integrations.email.imap_listener as mod
             importlib.reload(mod)
             assert mod._is_enabled() is True
@@ -35,6 +36,7 @@ class TestImapListenerIsEnabled:
     def test_enabled_via_1(self):
         with patch.dict(os.environ, {"IMAP_ENABLED": "1"}):
             import importlib
+
             import app.integrations.email.imap_listener as mod
             importlib.reload(mod)
             assert mod._is_enabled() is True
@@ -42,6 +44,7 @@ class TestImapListenerIsEnabled:
     def test_enabled_via_yes(self):
         with patch.dict(os.environ, {"IMAP_ENABLED": "yes"}):
             import importlib
+
             import app.integrations.email.imap_listener as mod
             importlib.reload(mod)
             assert mod._is_enabled() is True
@@ -49,6 +52,7 @@ class TestImapListenerIsEnabled:
     def test_disabled_via_false(self):
         with patch.dict(os.environ, {"IMAP_ENABLED": "false"}):
             import importlib
+
             import app.integrations.email.imap_listener as mod
             importlib.reload(mod)
             assert mod._is_enabled() is False
@@ -61,6 +65,7 @@ class TestImapListenerGetConfig:
                              "IMAP_PASSWORD", "IMAP_SSL", "IMAP_MAILBOX"}}
         with patch.dict(os.environ, env, clear=True):
             import importlib
+
             import app.integrations.email.imap_listener as mod
             importlib.reload(mod)
             cfg = mod._get_config()
@@ -80,6 +85,7 @@ class TestImapListenerGetConfig:
         }
         with patch.dict(os.environ, env):
             import importlib
+
             import app.integrations.email.imap_listener as mod
             importlib.reload(mod)
             cfg = mod._get_config()
@@ -92,6 +98,7 @@ class TestImapListenerGetConfig:
     def test_ssl_false_via_zero(self):
         with patch.dict(os.environ, {"IMAP_SSL": "0"}):
             import importlib
+
             import app.integrations.email.imap_listener as mod
             importlib.reload(mod)
             cfg = mod._get_config()
@@ -126,6 +133,7 @@ class TestCheckAndProcessEmails:
         env = {"IMAP_ENABLED": "true", "IMAP_HOST": "", "IMAP_USER": "u@x.com"}
         with patch.dict(os.environ, env):
             import importlib
+
             import app.integrations.email.imap_listener as mod
             importlib.reload(mod)
             result = await mod.check_and_process_emails(MagicMock(), MagicMock())
@@ -136,6 +144,7 @@ class TestCheckAndProcessEmails:
         env = {"IMAP_ENABLED": "true", "IMAP_HOST": "imap.x.com", "IMAP_USER": ""}
         with patch.dict(os.environ, env):
             import importlib
+
             import app.integrations.email.imap_listener as mod
             importlib.reload(mod)
             result = await mod.check_and_process_emails(MagicMock(), MagicMock())
@@ -149,6 +158,7 @@ class TestCheckAndProcessEmails:
             sys.modules["aioimaplib"] = None  # type: ignore
             try:
                 import importlib
+
                 import app.integrations.email.imap_listener as mod
                 importlib.reload(mod)
                 result = await mod.check_and_process_emails(MagicMock(), MagicMock())
@@ -176,6 +186,7 @@ class TestCheckAndProcessEmails:
             sys.modules["aioimaplib"] = mock_imap_module  # type: ignore
             try:
                 import importlib
+
                 import app.integrations.email.imap_listener as mod
                 importlib.reload(mod)
                 result = await mod.check_and_process_emails(MagicMock(), MagicMock())
@@ -210,6 +221,7 @@ class TestCheckAndProcessEmails:
             sys.modules["aioimaplib"] = mock_imap_module  # type: ignore
             try:
                 import importlib
+
                 import app.integrations.email.imap_listener as mod
                 importlib.reload(mod)
                 result = await mod.check_and_process_emails(MagicMock(), MagicMock())
@@ -244,6 +256,7 @@ class TestCheckAndProcessEmails:
             sys.modules["aioimaplib"] = mock_imap_module  # type: ignore
             try:
                 import importlib
+
                 import app.integrations.email.imap_listener as mod
                 importlib.reload(mod)
                 result = await mod.check_and_process_emails(MagicMock(), MagicMock())
@@ -289,6 +302,7 @@ class TestCheckAndProcessEmails:
             sys.modules["aioimaplib"] = mock_imap_module  # type: ignore
             try:
                 import importlib
+
                 import app.integrations.email.imap_listener as mod
                 importlib.reload(mod)
                 result = await mod.check_and_process_emails(
@@ -343,6 +357,7 @@ class TestCheckAndProcessEmails:
             sys.modules["aioimaplib"] = mock_imap_module  # type: ignore
             try:
                 import importlib
+
                 import app.integrations.email.imap_listener as mod
                 importlib.reload(mod)
                 result = await mod.check_and_process_emails(
@@ -382,6 +397,7 @@ class TestCheckAndProcessEmails:
             sys.modules["aioimaplib"] = mock_imap_module  # type: ignore
             try:
                 import importlib
+
                 import app.integrations.email.imap_listener as mod
                 importlib.reload(mod)
                 result = await mod.check_and_process_emails(
@@ -429,6 +445,7 @@ class TestCheckAndProcessEmails:
             sys.modules["aioimaplib"] = mock_imap_module  # type: ignore
             try:
                 import importlib
+
                 import app.integrations.email.imap_listener as mod
                 importlib.reload(mod)
                 result = await mod.check_and_process_emails(
@@ -468,6 +485,7 @@ class TestCheckAndProcessEmails:
             sys.modules["aioimaplib"] = mock_imap_module  # type: ignore
             try:
                 import importlib
+
                 import app.integrations.email.imap_listener as mod
                 importlib.reload(mod)
                 await mod.check_and_process_emails(MagicMock(), MagicMock())
@@ -536,6 +554,7 @@ class TestSendApprovalEmail:
         sys.modules["aiosmtplib"] = mock_aiosmtplib  # type: ignore
         try:
             import importlib
+
             import app.integrations.email.approval_sender as mod
             importlib.reload(mod)
             result = await mod.send_approval_email(
@@ -563,6 +582,7 @@ class TestSendApprovalEmail:
         sys.modules["aiosmtplib"] = None  # type: ignore
         try:
             import importlib
+
             import app.integrations.email.approval_sender as mod
             importlib.reload(mod)
             result = await mod.send_approval_email(
@@ -590,6 +610,7 @@ class TestSendApprovalEmail:
         sys.modules["aiosmtplib"] = mock_aiosmtplib  # type: ignore
         try:
             import importlib
+
             import app.integrations.email.approval_sender as mod
             importlib.reload(mod)
             result = await mod.send_approval_email(
@@ -622,6 +643,7 @@ class TestSendApprovalEmail:
         sys.modules["aiosmtplib"] = mock_aiosmtplib  # type: ignore
         try:
             import importlib
+
             import app.integrations.email.approval_sender as mod
             importlib.reload(mod)
             await mod.send_approval_email(
@@ -669,6 +691,7 @@ class TestSendApprovalEmail:
         sys.modules["aiosmtplib"] = mock_aiosmtplib  # type: ignore
         try:
             import importlib
+
             import app.integrations.email.approval_sender as mod
             importlib.reload(mod)
             await mod.send_approval_email(

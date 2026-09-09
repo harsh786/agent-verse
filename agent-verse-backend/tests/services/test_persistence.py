@@ -1,8 +1,6 @@
 """Tests for persistence adapter (no real DB needed — tests graceful no-op behavior)."""
 from __future__ import annotations
 
-import pytest
-
 from app.services.persistence import persist_audit_event, persist_goal, persist_goal_status
 
 
@@ -52,7 +50,7 @@ async def test_persist_goal_handles_broken_factory_gracefully() -> None:
     @asynccontextmanager  # type: ignore[arg-type]
     async def _broken_factory():  # type: ignore[return]
         raise RuntimeError("DB not available")
-        yield  # noqa: unreachable — required for asynccontextmanager
+        yield  # unreachable, required for asynccontextmanager
 
     # Should not propagate the RuntimeError
     await persist_goal(
@@ -73,7 +71,7 @@ async def test_persist_goal_status_handles_broken_factory_gracefully() -> None:
     @asynccontextmanager  # type: ignore[arg-type]
     async def _broken_factory():  # type: ignore[return]
         raise RuntimeError("DB not available")
-        yield  # noqa: unreachable
+        yield  # unreachable, required to make this an async generator
 
     await persist_goal_status(
         goal_id="g2",
@@ -91,7 +89,7 @@ async def test_persist_audit_event_handles_broken_factory_gracefully() -> None:
     @asynccontextmanager  # type: ignore[arg-type]
     async def _broken_factory():  # type: ignore[return]
         raise RuntimeError("DB not available")
-        yield  # noqa: unreachable
+        yield  # unreachable, required to make this an async generator
 
     await persist_audit_event(
         goal_id="g2",

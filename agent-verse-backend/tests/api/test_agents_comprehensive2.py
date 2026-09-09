@@ -5,15 +5,14 @@ Targets: 65% → 80%+ coverage on app/api/agents.py
 
 from __future__ import annotations
 
-import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.agents import AgentStore, router as agents_router
+from app.api.agents import AgentStore
+from app.api.agents import router as agents_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 

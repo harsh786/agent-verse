@@ -2,18 +2,19 @@
 from __future__ import annotations
 
 import pytest
+
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
-from app.tenancy.context import TenantContext, PlanTier
 from app.orchestration.runtime_profile import (
-    GoalRuntimeProfile,
-    GoalProperties,
     AgentPatternConfig,
-    RAGStrategyConfig,
-    ModelPlanConfig,
-    SecurityConfig,
-    MemoryCacheConfig,
     EvalConfig,
+    GoalProperties,
+    GoalRuntimeProfile,
+    MemoryCacheConfig,
+    ModelPlanConfig,
+    RAGStrategyConfig,
+    SecurityConfig,
 )
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture
@@ -130,8 +131,8 @@ def test_scorecard_failed_goal_has_zero_success(tenant_ctx: TenantContext) -> No
 # ── SELF-IMPROVEMENT ENGINE ───────────────────────────────────────────────────
 
 def test_self_improvement_decides_prompt_action(tenant_ctx: TenantContext) -> None:
-    from app.evals.self_improvement_engine import SelfImprovementEngine, ImprovementAction
     from app.evals.runtime_scorecard import ScorecardResult
+    from app.evals.self_improvement_engine import ImprovementAction, SelfImprovementEngine
 
     engine = SelfImprovementEngine()
     result = ScorecardResult(
@@ -156,8 +157,8 @@ def test_self_improvement_decides_prompt_action(tenant_ctx: TenantContext) -> No
 
 
 def test_self_improvement_blacklists_on_low_tool_rate(tenant_ctx: TenantContext) -> None:
-    from app.evals.self_improvement_engine import SelfImprovementEngine, ImprovementAction
     from app.evals.runtime_scorecard import ScorecardResult
+    from app.evals.self_improvement_engine import ImprovementAction, SelfImprovementEngine
 
     engine = SelfImprovementEngine()
     result = ScorecardResult(
@@ -181,8 +182,8 @@ def test_self_improvement_blacklists_on_low_tool_rate(tenant_ctx: TenantContext)
 
 
 def test_self_improvement_creates_regression_case(tenant_ctx: TenantContext) -> None:
-    from app.evals.self_improvement_engine import SelfImprovementEngine, ImprovementAction
     from app.evals.runtime_scorecard import ScorecardResult
+    from app.evals.self_improvement_engine import ImprovementAction, SelfImprovementEngine
 
     engine = SelfImprovementEngine()
     result = ScorecardResult(

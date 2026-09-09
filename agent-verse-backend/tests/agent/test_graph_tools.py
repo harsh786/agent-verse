@@ -1,15 +1,13 @@
 """Tests for Tasks 1-5 — structured tools, RAG embedding, recall_async, coherence scoring."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
 from app.agent.graph import AgentGraph
 from app.agent.state import GoalStatus, StepResult, StepStatus
 from app.agent.tool_context import ToolContext, ToolRef
 from app.intelligence.eval_runner import EvalRunner
-from app.memory.long_term import LongTermMemory, LongTermMemoryStore
+from app.memory.long_term import LongTermMemoryStore
 from app.providers.fake import FakeProvider
 from app.tenancy.context import PlanTier, TenantContext
 

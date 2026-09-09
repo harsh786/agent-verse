@@ -1,10 +1,7 @@
 """Comprehensive tests for domain_role_templates.py — all domains, role fields."""
 from __future__ import annotations
 
-import pytest
-
 from app.tenancy.domain_role_templates import DOMAIN_ROLE_TEMPLATES
-
 
 # ── 1. Top-level structure ────────────────────────────────────────────────────
 

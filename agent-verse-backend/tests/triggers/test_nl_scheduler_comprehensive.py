@@ -6,9 +6,8 @@ import json
 import pytest
 
 from app.providers.fake import FakeProvider
-from app.triggers.models import TriggerSpec, TriggerType
+from app.triggers.models import TriggerType
 from app.triggers.nl_scheduler import NLScheduler, _parse_single
-
 
 # ── _parse_single helper ──────────────────────────────────────────────────────
 

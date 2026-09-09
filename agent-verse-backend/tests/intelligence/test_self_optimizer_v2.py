@@ -12,17 +12,17 @@ Covers:
 from __future__ import annotations
 
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+import pytest
+
 from app.intelligence.self_optimizer_v2 import (
-    SelfOptimizerV2,
-    TenantOptimizationState,
     DEFAULT_MIN_GOALS,
     DOMAIN_METRICS,
+    SelfOptimizerV2,
+    TenantOptimizationState,
 )
-
 
 # ---------------------------------------------------------------------------
 # TenantOptimizationState — tenant isolation

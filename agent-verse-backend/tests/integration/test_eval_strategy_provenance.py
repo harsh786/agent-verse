@@ -37,39 +37,38 @@ async def test_eval_provenance_is_idempotent_and_tenant_isolated() -> None:
     other_tenant_id = f"eval-{uuid.uuid4().hex[:11]}"
     goal_id = uuid.uuid4().hex
     try:
-        async with factory() as session, session.begin():
-            async with system_session(session):
+        async with factory() as session, session.begin(), system_session(session):
+            await session.execute(
+                text(
+                    "DO $$ BEGIN "
+                    "IF NOT EXISTS (SELECT 1 FROM pg_roles "
+                    "WHERE rolname='agentverse_rls_test') THEN "
+                    "CREATE ROLE agentverse_rls_test NOLOGIN; "
+                    "END IF; END $$"
+                )
+            )
+            await session.execute(text("GRANT USAGE ON SCHEMA public TO agentverse_rls_test"))
+            await session.execute(
+                text("GRANT SELECT ON evaluations TO agentverse_rls_test")
+            )
+            for current in (tenant_id, other_tenant_id):
                 await session.execute(
                     text(
-                        "DO $$ BEGIN "
-                        "IF NOT EXISTS (SELECT 1 FROM pg_roles "
-                        "WHERE rolname='agentverse_rls_test') THEN "
-                        "CREATE ROLE agentverse_rls_test NOLOGIN; "
-                        "END IF; END $$"
-                    )
-                )
-                await session.execute(text("GRANT USAGE ON SCHEMA public TO agentverse_rls_test"))
-                await session.execute(
-                    text("GRANT SELECT ON evaluations TO agentverse_rls_test")
-                )
-                for current in (tenant_id, other_tenant_id):
-                    await session.execute(
-                        text(
-                            "INSERT INTO tenants (id, name, email, plan_tier, is_active) "
-                            "VALUES (:id, 'Eval Test', :email, 'free', true)"
-                        ),
-                        {"id": current, "email": f"{current}@example.test"},
-                    )
-                await session.execute(
-                    text(
-                        "INSERT INTO goals "
-                        "(id, tenant_id, goal_text, status, priority, autonomy_mode, "
-                        "workflow_mode, execution_context, dry_run, iterations) "
-                        "VALUES (:id, :tenant, 'evaluate', 'completed', 'normal', "
-                        "'bounded-autonomous', 'single_agent', '{}', false, 1)"
+                        "INSERT INTO tenants (id, name, email, plan_tier, is_active) "
+                        "VALUES (:id, 'Eval Test', :email, 'free', true)"
                     ),
-                    {"id": goal_id, "tenant": tenant_id},
+                    {"id": current, "email": f"{current}@example.test"},
                 )
+            await session.execute(
+                text(
+                    "INSERT INTO goals "
+                    "(id, tenant_id, goal_text, status, priority, autonomy_mode, "
+                    "workflow_mode, execution_context, dry_run, iterations) "
+                    "VALUES (:id, :tenant, 'evaluate', 'completed', 'normal', "
+                    "'bounded-autonomous', 'single_agent', '{}', false, 1)"
+                ),
+                {"id": goal_id, "tenant": tenant_id},
+            )
 
         tenant = TenantContext(
             tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="eval-key"
@@ -127,16 +126,15 @@ async def test_eval_provenance_is_idempotent_and_tenant_isolated() -> None:
         with pytest.raises(PermissionError, match="tenant"):
             await runner.score_and_persist(state, wrong_tenant, db=factory)
     finally:
-        async with factory() as session, session.begin():
-            async with system_session(session):
-                await session.execute(
-                    text("DELETE FROM evaluations WHERE goal_id=:goal"), {"goal": goal_id}
-                )
-                await session.execute(
-                    text("DELETE FROM goals WHERE id=:goal"), {"goal": goal_id}
-                )
-                await session.execute(
-                    text("DELETE FROM tenants WHERE id IN (:one, :two)"),
-                    {"one": tenant_id, "two": other_tenant_id},
-                )
+        async with factory() as session, session.begin(), system_session(session):
+            await session.execute(
+                text("DELETE FROM evaluations WHERE goal_id=:goal"), {"goal": goal_id}
+            )
+            await session.execute(
+                text("DELETE FROM goals WHERE id=:goal"), {"goal": goal_id}
+            )
+            await session.execute(
+                text("DELETE FROM tenants WHERE id IN (:one, :two)"),
+                {"one": tenant_id, "two": other_tenant_id},
+            )
         await engine.dispose()

@@ -90,7 +90,7 @@ def _db_factory():
 
 
 def _tenant():
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     return TenantContext(
         tenant_id=TENANT_ID,
         plan=PlanTier.PROFESSIONAL,
@@ -148,7 +148,7 @@ def _jira(method: str, path: str, **kw) -> dict:
 
 async def test_b1_postgres_ingest_real_embeddings_vector_search():
     """Ingest 12 docs with real OpenAI embeddings → real pgvector cosine search."""
-    from app.rag.store import KnowledgeStore, KnowledgeCollection, Chunk
+    from app.rag.store import Chunk, KnowledgeCollection, KnowledgeStore
 
     store = KnowledgeStore(db_session_factory=_db_factory())
     tenant = _tenant()
@@ -218,8 +218,8 @@ async def test_b1_postgres_hybrid_bm25_vector_rrf():
 async def test_b2_agent_graph_with_real_db_knowledge_store():
     """Full AgentGraph + DB-backed KnowledgeStore querying real Postgres."""
     from app.agent.graph import AgentGraph
-    from app.rag.store import KnowledgeStore
     from app.memory.execution import ExecutionMemory
+    from app.rag.store import KnowledgeStore
 
     p = _provider()
     store = KnowledgeStore(db_session_factory=_db_factory())
@@ -250,6 +250,7 @@ async def test_b2_agent_with_redis_checkpointing():
     """
     import redis as _redis
     from langgraph.checkpoint.memory import MemorySaver
+
     from app.agent.graph import AgentGraph
 
     # 1. Prove Redis is live — real R/W
@@ -258,7 +259,7 @@ async def test_b2_agent_with_redis_checkpointing():
     r.set(test_key, "live_ok", ex=30)
     assert r.get(test_key) == "live_ok", "Redis R/W failed"
     r.delete(test_key)
-    print(f"\n✅ Redis R/W confirmed")
+    print("\n✅ Redis R/W confirmed")
 
     # 2. Run AgentGraph with in-memory checkpointer (MemorySaver)
     p = _provider()
@@ -283,8 +284,8 @@ async def test_b2_agent_with_redis_checkpointing():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _retriever():
-    from app.rag.store import KnowledgeStore
     from app.rag.agentic.retriever_tool import RetrieverTool
+    from app.rag.store import KnowledgeStore
     store = KnowledgeStore(db_session_factory=_db_factory())
     return RetrieverTool(
         knowledge_store=store,
@@ -320,8 +321,8 @@ async def test_b3_fusion_rag_real_postgres():
 async def test_b3_corrective_rag_real():
     """CorrectiveRAG: confidence-based retrieval + re-fetch with real RetrieverTool."""
     from app.rag.agentic.patterns.corrective import CorrectiveRAGPattern
-    from app.rag.store import KnowledgeStore
     from app.rag.agentic.retriever_tool import RetrieverTool
+    from app.rag.store import KnowledgeStore
 
     store = KnowledgeStore(db_session_factory=_db_factory())
     tenant = _tenant()
@@ -580,8 +581,8 @@ def test_b4_jira_create_comment_and_verify():
 async def test_b5_full_pipeline_agent_real_kb_payment_query():
     """Agent goal → pgvector KB retrieval → LLM answer. All real."""
     from app.agent.graph import AgentGraph
-    from app.rag.store import KnowledgeStore
     from app.memory.execution import ExecutionMemory
+    from app.rag.store import KnowledgeStore
 
     p = _provider()
     graph = AgentGraph(
@@ -723,8 +724,9 @@ async def test_b5_tree_of_thoughts_real_openai():
 
 async def test_zzz_cleanup():
     """Delete test KB collection from Postgres. Always runs last."""
-    from app.db.session import get_session_factory
     from sqlalchemy import text
+
+    from app.db.session import get_session_factory
     factory = get_session_factory()
     try:
         async with factory() as session:

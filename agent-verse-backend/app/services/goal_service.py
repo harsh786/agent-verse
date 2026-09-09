@@ -166,18 +166,18 @@ def _resolve_checkpointer(app_state: Any) -> Any:
         # langgraph-checkpoint-redis versions; validate the return value is a real
         # BaseCheckpointSaver before using it, otherwise fall through to sync saver.
         try:
-            from langgraph.checkpoint.base import BaseCheckpointSaver as _BCS
+            from langgraph.checkpoint.base import BaseCheckpointSaver
             from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 
             _saver = AsyncRedisSaver.from_conn_string(redis_url)
-            if not isinstance(_saver, _BCS):
+            if not isinstance(_saver, BaseCheckpointSaver):
                 raise TypeError(
                     f"AsyncRedisSaver.from_conn_string returned {type(_saver).__name__}, "
                     "not a BaseCheckpointSaver — needs async with pattern"
                 )
             try:
                 _loop = asyncio.get_running_loop()
-                _loop.create_task(_saver.setup())
+                _loop.create_task(_saver.setup())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
             except RuntimeError:
                 pass
             _svc_logger.info("checkpointer_redis_async_wired")
@@ -193,16 +193,16 @@ def _resolve_checkpointer(app_state: Any) -> Any:
         # async saver absent) invisible to MemorySaver-based tests. Reject such a
         # saver and fall through to MemorySaver instead of shipping a broken one.
         try:
-            from langgraph.checkpoint.base import BaseCheckpointSaver as _BCS2
+            from langgraph.checkpoint.base import BaseCheckpointSaver
             from langgraph.checkpoint.redis import RedisSaver
 
             _saver2 = RedisSaver.from_conn_string(redis_url)
-            if not isinstance(_saver2, _BCS2):
+            if not isinstance(_saver2, BaseCheckpointSaver):
                 raise TypeError(
                     f"RedisSaver.from_conn_string returned {type(_saver2).__name__}, "
                     "not a BaseCheckpointSaver"
                 )
-            if type(_saver2).aget_tuple is _BCS2.aget_tuple:
+            if type(_saver2).aget_tuple is BaseCheckpointSaver.aget_tuple:
                 raise TypeError(
                     "sync RedisSaver does not implement the async checkpoint API "
                     "(aget_tuple); it is unusable by the async agent graph"
@@ -404,7 +404,7 @@ class GoalService:
         """Start the HITL rejection note subscriber as a background asyncio task."""
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(
+            loop.create_task(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 self._subscribe_hitl_rejections(redis_url),
                 name="hitl-rejection-subscriber",
             )
@@ -535,26 +535,24 @@ class GoalService:
                                         with suppress(Exception):
                                             record.subscribers.remove(q)
                                     # Send end-of-stream sentinel on terminal events
-                                    _TERMINAL_BRIDGE = {
+                                    _terminal_bridge = {
                                         "goal_complete",
                                         "worker_complete",
                                         "goal_failed",
                                         "worker_failed",
                                         "goal_cancelled",
                                     }
-                                    if event_type in _TERMINAL_BRIDGE:
+                                    if event_type in _terminal_bridge:
                                         for q in list(record.subscribers):
                                             with suppress(Exception):
                                                 q.put_nowait(_SENTINEL)
                                         # Update record status
-                                        from app.agent.state import GoalStatus as _GS
-
                                         if event_type in {"goal_complete", "worker_complete"}:
-                                            record.status = _GS.COMPLETE
+                                            record.status = GoalStatus.COMPLETE
                                         elif event_type in {"goal_failed", "worker_failed"}:
-                                            record.status = _GS.FAILED
+                                            record.status = GoalStatus.FAILED
                                         elif event_type == "goal_cancelled":
-                                            record.status = _GS.CANCELLED
+                                            record.status = GoalStatus.CANCELLED
                         except Exception as exc:
                             self._logger.warning("celery_event_bridge_parse_failed", error=str(exc))
             except Exception as exc:
@@ -945,10 +943,8 @@ class GoalService:
 
         # Apply model override to the model router before building the graph
         if _model_override and _model_router is not None:
-            try:
+            with suppress(Exception):  # Model router may not support override — use default
                 _model_router = _model_router.with_override(_model_override)  # copy-on-write
-            except Exception:
-                pass  # Model router may not support override — use default
 
         # ── Phase 22: Wire per-connector circuit breakers ─────────────────────────
         from app.reliability.circuit_breaker import CircuitBreaker
@@ -1670,8 +1666,8 @@ class GoalService:
         if record is None:
             return
         sanitized_event = sanitize_event(event)
-        _EPHEMERAL_EVENT_TYPES = {"token_chunk", "heartbeat"}
-        _is_ephemeral = sanitized_event.get("type") in _EPHEMERAL_EVENT_TYPES
+        _ephemeral_event_types = {"token_chunk", "heartbeat"}
+        _is_ephemeral = sanitized_event.get("type") in _ephemeral_event_types
         if not _is_ephemeral:
             record.events.append(sanitized_event)
             await self._persist_event(goal_id, sanitized_event, record, tenant_ctx)
@@ -2014,7 +2010,7 @@ class GoalService:
 
                 class _WrappedAgent:
                     async def run(
-                        self_inner: _WrappedAgent,
+                        self: _WrappedAgent,
                         goal: str,
                         tenant_ctx: TenantContext,
                         event_callback: Any = None,
@@ -2111,9 +2107,7 @@ class GoalService:
                     if _gf2().isolated_execution_required:
                         record = self._goals.get(goal_id)
                         if record is not None:
-                            from app.agent.state import GoalStatus as _GS
-
-                            record.status = _GS.FAILED
+                            record.status = GoalStatus.FAILED
                             record.error_message = str(_iso_import_exc)
                         await self._dispatch_event(
                             goal_id,
@@ -2156,11 +2150,14 @@ class GoalService:
                         _agent_collection_ids = list(_agent_rec.get("allowed_collection_ids", []))
             loop._agent_collection_ids = _agent_collection_ids
             # Detect FakeProvider so get_goal() can surface a warning to callers
-            if hasattr(loop, "_planner") and type(loop._planner).__name__ == "FakeProvider":
-                if record is not None:
-                    record.execution_context["provider_warning"] = (
-                        "No real LLM provider configured. Results are simulated."
-                    )
+            if (
+                hasattr(loop, "_planner")
+                and type(loop._planner).__name__ == "FakeProvider"
+                and record is not None
+            ):
+                record.execution_context["provider_warning"] = (
+                    "No real LLM provider configured. Results are simulated."
+                )
 
             # Guarantee tool_context is always available: fall back to building
             # a basic context (RPA tools) when the caller didn't pass one.
@@ -2608,9 +2605,9 @@ class GoalService:
                                 _all_agents = await _all_agents
                             if _all_agents:
                                 # Use router scoring to pick the best agent
-                                from app.agent.router import AgentRouter as _AR
+                                from app.agent.router import AgentRouter
 
-                                _fallback_router = _AR(agent_store=agent_store)
+                                _fallback_router = AgentRouter(agent_store=agent_store)
                                 _fallback_agents = [
                                     a if isinstance(a, dict) else a.__dict__ for a in _all_agents
                                 ]
@@ -2733,7 +2730,7 @@ class GoalService:
             now = time.monotonic()
             if now - self._last_eviction_time > _EVICTION_INTERVAL_SECONDS:
                 self._last_eviction_time = now
-                asyncio.create_task(self._evict_async())
+                asyncio.create_task(self._evict_async())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
 
             # Fix 6: record that a new goal has been started.
             record_goal_started(tenant_id=tenant_ctx.tenant_id, priority=priority)
@@ -2974,10 +2971,18 @@ class GoalService:
                         SELECT
                           COUNT(*) FILTER (WHERE status IN ('complete','completed')) AS completed,
                           COUNT(*) FILTER (WHERE status IN ('failed','error')) AS failed,
-                          COUNT(*) FILTER (WHERE status IN ('planning','executing','waiting_human')) AS active,  # noqa: E501
+                          COUNT(*) FILTER (
+                            WHERE status IN ('planning','executing','waiting_human')
+                          ) AS active,
                           COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
-                          COUNT(*) FILTER (WHERE status IN ('complete','completed') AND created_at::date = CURRENT_DATE) AS completed_today,  # noqa: E501
-                          AVG(EXTRACT(EPOCH FROM (completed_at - created_at))*1000) FILTER (WHERE status IN ('complete','completed') AND completed_at IS NOT NULL) AS avg_latency_ms,  # noqa: E501
+                          COUNT(*) FILTER (
+                            WHERE status IN ('complete','completed')
+                              AND created_at::date = CURRENT_DATE
+                          ) AS completed_today,
+                          AVG(EXTRACT(EPOCH FROM (completed_at - created_at))*1000) FILTER (
+                            WHERE status IN ('complete','completed')
+                              AND completed_at IS NOT NULL
+                          ) AS avg_latency_ms,
                           COUNT(*) FILTER (WHERE created_at::date = CURRENT_DATE) AS submitted_today
                         FROM goals WHERE tenant_id = :tid
                     """),
@@ -3108,15 +3113,12 @@ class GoalService:
         state = getattr(record, "agent_state", None)
         if state is None:
             # Reconstruct minimal state from record data
-            from app.agent.state import AgentState as _AS
-            from app.agent.state import GoalStatus as _GS
-
             try:
-                goal_status = _GS(record.status.value)
+                goal_status = GoalStatus(record.status.value)
             except (ValueError, AttributeError):
-                goal_status = _GS.COMPLETE
+                goal_status = GoalStatus.COMPLETE
 
-            state = _AS(
+            state = AgentState(
                 goal_id=goal_id,
                 goal=record.goal_text,
                 tenant_ctx=tenant_ctx,
@@ -3256,7 +3258,7 @@ class GoalService:
                         if evt is not None:
                             evt.set()
 
-                _asyncio.create_task(_resume_graph())
+                _asyncio.create_task(_resume_graph())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 record.status = GoalStatus.EXECUTING
                 # C4 fix: clear Redis pause flag on checkpoint-based resume path too
                 try:
@@ -3264,7 +3266,7 @@ class GoalService:
 
                     _redis_cp = getattr(self, "_redis", None)
                     if _redis_cp is not None:
-                        _asyncio.ensure_future(_signal_resume_cp(goal_id, _redis_cp))
+                        _asyncio.ensure_future(_signal_resume_cp(goal_id, _redis_cp))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 except Exception:
                     pass
                 await self._dispatch_event(
@@ -3290,7 +3292,7 @@ class GoalService:
             if _redis is not None:
                 import asyncio as _c4_asyncio
 
-                _c4_asyncio.ensure_future(_signal_resume(goal_id, _redis))
+                _c4_asyncio.ensure_future(_signal_resume(goal_id, _redis))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
         except Exception:
             pass
         await self._dispatch_event(goal_id, {"type": "goal_resumed"}, tenant_ctx=tenant_ctx)
@@ -3335,10 +3337,8 @@ class GoalService:
         """
         # ── Try local record first ─────────────────────────────────────────────
         local_record: GoalRecord | None = None
-        try:
+        with suppress(Exception):  # goal is on another replica — cross-replica path below
             local_record = self._get_record(goal_id, tenant_ctx)
-        except Exception:
-            pass  # goal is on another replica — cross-replica path below
 
         # ── Cross-replica path: subscribe via Redis pub/sub ────────────────────
         if local_record is None:

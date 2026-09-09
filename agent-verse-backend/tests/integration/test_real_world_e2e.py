@@ -23,10 +23,10 @@ pytestmark = pytest.mark.integration
 
 async def test_simple_goal_with_real_openai():
     """A simple analytical goal must complete with real OpenAI."""
-    from app.providers.openai_compatible import OpenAICompatibleProvider
     from app.agent.graph import AgentGraph
     from app.agent.state import GoalStatus
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.providers.openai_compatible import OpenAICompatibleProvider
+    from app.tenancy.context import PlanTier, TenantContext
 
     provider = OpenAICompatibleProvider(
         api_key=OPENAI_KEY,
@@ -57,8 +57,8 @@ async def test_simple_goal_with_real_openai():
 
 async def test_real_openai_embedding():
     """OpenAI embedding must return a non-empty vector."""
-    from app.providers.openai_compatible import OpenAICompatibleProvider
     from app.providers.base import EmbedRequest
+    from app.providers.openai_compatible import OpenAICompatibleProvider
 
     provider = OpenAICompatibleProvider(
         api_key=OPENAI_KEY,
@@ -73,11 +73,11 @@ async def test_real_openai_embedding():
 
 async def test_knowledge_base_with_real_embeddings():
     """KB must store and retrieve documents using real embeddings."""
-    from app.providers.openai_compatible import OpenAICompatibleProvider
-    from app.rag.store import KnowledgeStore
-    from app.rag.models import KnowledgeCollection, Chunk
-    from app.tenancy.context import TenantContext, PlanTier
     from app.providers.base import EmbedRequest
+    from app.providers.openai_compatible import OpenAICompatibleProvider
+    from app.rag.models import Chunk, KnowledgeCollection
+    from app.rag.store import KnowledgeStore
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx = TenantContext(
         tenant_id="emb_test_t1",
@@ -132,8 +132,8 @@ async def test_knowledge_base_with_real_embeddings():
 async def test_real_world_pattern_selector_routes_correctly():
     """PatternSelector must route expert analytical goals to raptor."""
     from app.orchestration.pattern_selector import PatternSelector
+    from app.orchestration.runtime_profile import Complexity, Domain, GoalProperties
     from app.orchestration.strategy_registry import build_default_registry
-    from app.orchestration.runtime_profile import GoalProperties, Complexity, Domain
 
     reg = build_default_registry()
     sel = PatternSelector(registry=reg)
@@ -159,9 +159,9 @@ async def test_real_world_pattern_selector_routes_correctly():
 
 async def test_episodic_memory_stores_and_recalls():
     """Episodic memory must store and recall episodes in-memory."""
-    from app.memory.episodic import EpisodicMemoryStore
     from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.memory.episodic import EpisodicMemoryStore
+    from app.tenancy.context import PlanTier, TenantContext
 
     ctx = TenantContext(
         tenant_id="ep_test_t1",
@@ -219,17 +219,17 @@ async def test_bm25_outperforms_pure_vector_for_keyword_queries():
 
 async def test_self_improvement_dispatch_updates_optimizer():
     """SelfImprovementEngine must decide UPDATE_PROMPT_VARIANT when goal_success is low."""
-    from app.evals.self_improvement_engine import SelfImprovementEngine, ImprovementAction
     from app.evals.runtime_scorecard import ScorecardResult
+    from app.evals.self_improvement_engine import ImprovementAction, SelfImprovementEngine
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile,
-        GoalProperties,
         AgentPatternConfig,
-        RAGStrategyConfig,
-        ModelPlanConfig,
-        SecurityConfig,
-        MemoryCacheConfig,
         EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
 
     engine = SelfImprovementEngine()
@@ -270,8 +270,8 @@ async def test_self_improvement_dispatch_updates_optimizer():
 
 async def test_openai_completion_returns_text():
     """Real OpenAI completion must return non-empty content."""
-    from app.providers.openai_compatible import OpenAICompatibleProvider
     from app.providers.base import CompletionRequest, Message
+    from app.providers.openai_compatible import OpenAICompatibleProvider
 
     provider = OpenAICompatibleProvider(
         api_key=OPENAI_KEY,

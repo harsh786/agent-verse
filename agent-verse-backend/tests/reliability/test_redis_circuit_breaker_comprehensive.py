@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
-import pytest
-
-from app.reliability.circuit_breaker import CircuitBreaker, CircuitState
+from app.reliability.circuit_breaker import CircuitState
 from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
 
 

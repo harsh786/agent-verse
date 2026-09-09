@@ -1,17 +1,18 @@
 """Tests for advanced consumers — GraphQL subscriptions, WebSocket messages, price thresholds."""
 from __future__ import annotations
 
-import pytest
-from unittest.mock import AsyncMock
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 from app.triggers.advanced.consumers import (
     GraphQLSubscriptionConsumer,
-    WebSocketMessageConsumer,
     PriceThresholdPoller,
+    WebSocketMessageConsumer,
 )
-from app.triggers.store import ScheduleStore
 from app.triggers.models import TriggerSpec, TriggerType
+from app.triggers.store import ScheduleStore
 
 
 def make_store(trigger_type, **kwargs):

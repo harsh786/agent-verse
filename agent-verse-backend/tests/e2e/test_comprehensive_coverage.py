@@ -7,24 +7,28 @@ goal service full lifecycle, tenant service full lifecycle, audit log DB.
 from __future__ import annotations
 
 import asyncio
-import pytest
-from unittest.mock import MagicMock, patch
+from datetime import UTC
+from typing import Any
+from unittest.mock import patch
 
+import pytest
 
 # ── 1. CLI Tests ──────────────────────────────────────────────────────────────
 
 
 def test_cli_app_is_typer_app():
     """CLI module loads without error."""
-    from app.cli.main import app as cli_app
     import typer
+
+    from app.cli.main import app as cli_app
     assert isinstance(cli_app, typer.Typer)
 
 
 def test_cli_stream_goal_handles_connection_error():
     """_stream_goal gracefully handles network failures."""
-    from app.cli.main import _stream_goal
     import httpx
+
+    from app.cli.main import _stream_goal
 
     with patch("httpx.Client") as mock_client:
         mock_client.return_value.__enter__.return_value.stream.side_effect = (
@@ -56,6 +60,7 @@ def test_cli_commands_exist():
 def test_cli_base_url_from_env():
     """_base_url reads AGENTVERSE_URL from environment."""
     import os
+
     from app.cli.main import _base_url
 
     original = os.environ.get("AGENTVERSE_URL")
@@ -72,7 +77,9 @@ def test_cli_base_url_from_env():
 def test_cli_api_key_missing_exits():
     """_api_key raises typer.Exit(1) when AGENTVERSE_API_KEY not set."""
     import os
+
     import typer
+
     from app.cli.main import _api_key
 
     original = os.environ.pop("AGENTVERSE_API_KEY", None)
@@ -87,6 +94,7 @@ def test_cli_api_key_missing_exits():
 def test_cli_api_key_from_env():
     """_api_key returns key when AGENTVERSE_API_KEY is set."""
     import os
+
     from app.cli.main import _api_key
 
     os.environ["AGENTVERSE_API_KEY"] = "test-cli-key-123"
@@ -197,8 +205,9 @@ def test_fire_due_schedules_task_returns_status():
 
 def test_sqlalchemy_rls_context_is_callable():
     """sqlalchemy_rls_context is a callable async context manager factory."""
-    from app.db.rls import sqlalchemy_rls_context
     import inspect
+
+    from app.db.rls import sqlalchemy_rls_context
 
     assert callable(sqlalchemy_rls_context)
     # It should be an async context manager (decorated with asynccontextmanager)
@@ -214,7 +223,7 @@ def test_rls_context_is_callable():
 
 def test_db_session_module_imports_cleanly():
     """db/session.py imports without error and all callables are present."""
-    from app.db.session import get_session_factory, get_db_session, get_db
+    from app.db.session import get_db, get_db_session, get_session_factory
 
     assert callable(get_session_factory)
     assert callable(get_db_session)
@@ -223,8 +232,9 @@ def test_db_session_module_imports_cleanly():
 
 def test_make_session_factory_creates_factory():
     """_make_session_factory returns an async_sessionmaker."""
-    from app.db.session import _make_session_factory
     from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.db.session import _make_session_factory
 
     factory = _make_session_factory(
         "postgresql+asyncpg://test:test@localhost/test"
@@ -234,8 +244,9 @@ def test_make_session_factory_creates_factory():
 
 def test_make_engine_uses_provided_url():
     """_make_engine returns an AsyncEngine for the provided URL."""
-    from app.db.session import _make_engine
     from sqlalchemy.ext.asyncio import AsyncEngine
+
+    from app.db.session import _make_engine
 
     engine = _make_engine("postgresql+asyncpg://user:pw@localhost/testdb")
     assert isinstance(engine, AsyncEngine)
@@ -246,8 +257,8 @@ def test_make_engine_uses_provided_url():
 
 def test_configure_tracing_noop_when_no_endpoint():
     """configure_tracing is a no-op when OTLP endpoint is not set."""
-    from app.observability.tracing import configure_tracing
     from app.main import create_app
+    from app.observability.tracing import configure_tracing
 
     app = create_app()
     # With no OTEL_EXPORTER_OTLP_ENDPOINT, this is a no-op — no exception
@@ -257,9 +268,9 @@ def test_configure_tracing_noop_when_no_endpoint():
 @pytest.mark.filterwarnings("ignore")
 def test_configure_tracing_with_endpoint():
     """configure_tracing wires OTel when endpoint is configured."""
-    from app.observability.tracing import configure_tracing
-    from app.main import create_app
     from app.core.config import Settings
+    from app.main import create_app
+    from app.observability.tracing import configure_tracing
 
     # Use the correct field name: otel_exporter_otlp_endpoint
     settings = Settings(otel_exporter_otlp_endpoint="http://localhost:4317")
@@ -274,7 +285,7 @@ def test_configure_tracing_with_endpoint():
 
 async def test_browser_agent_availability_flag():
     """BrowserAgent.available reflects the _PLAYWRIGHT_AVAILABLE flag."""
-    from app.perception.browser_agent import BrowserAgent, _PLAYWRIGHT_AVAILABLE
+    from app.perception.browser_agent import _PLAYWRIGHT_AVAILABLE, BrowserAgent
 
     agent = BrowserAgent()
     assert agent.available == _PLAYWRIGHT_AVAILABLE
@@ -329,7 +340,7 @@ async def test_browser_agent_analyze_screenshot_no_vision_support():
 async def test_browser_agent_run_action_dispatch():
     """run_action dispatches to the correct method based on action_type."""
     import app.perception.browser_agent as ba
-    from app.perception.browser_agent import BrowserAgent, BrowserAction
+    from app.perception.browser_agent import BrowserAction, BrowserAgent
 
     orig = ba._PLAYWRIGHT_AVAILABLE
     ba._PLAYWRIGHT_AVAILABLE = False
@@ -360,21 +371,21 @@ async def test_browser_agent_run_action_dispatch():
 
 async def test_all_pipeline_steps_work_without_services():
     """All pipeline steps return expected defaults when no services are injected."""
-    from app.pipeline.steps import (
-        cost_check,
-        governance_check,
-        dedup_check,
-        circuit_breaker_check,
-        hitl_gate,
-        record_usage,
-        exec_memory_lookup,
-        record_rollback_point,
-        result_processor_step,
-        stream_step_event,
-        smart_context_fetch,
-    )
     from app.governance.permissions import ActionLevel
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.pipeline.steps import (
+        circuit_breaker_check,
+        cost_check,
+        dedup_check,
+        exec_memory_lookup,
+        governance_check,
+        hitl_gate,
+        record_rollback_point,
+        record_usage,
+        result_processor_step,
+        smart_context_fetch,
+        stream_step_event,
+    )
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="pipe-t1", plan=PlanTier.FREE, api_key_id="pk1"
@@ -396,27 +407,27 @@ async def test_all_pipeline_steps_work_without_services():
 
 async def test_pipeline_steps_with_all_services():
     """Pipeline steps properly delegate to real service objects."""
+    from app.governance.audit import AuditLog
+    from app.governance.cost import BudgetConfig, CostController
+    from app.governance.hitl import HITLGateway
+    from app.governance.permissions import ActionLevel, PermissionMatrix
+    from app.memory.execution import ExecutionMemory
     from app.pipeline.steps import (
-        cost_check,
-        governance_check,
-        dedup_check,
         circuit_breaker_check,
-        hitl_gate,
+        cost_check,
+        dedup_check,
         exec_memory_lookup,
-        result_processor_step,
+        governance_check,
+        hitl_gate,
         record_rollback_point,
         record_usage,
+        result_processor_step,
     )
-    from app.governance.cost import CostController, BudgetConfig
-    from app.governance.permissions import PermissionMatrix, ActionLevel
-    from app.governance.hitl import HITLGateway
-    from app.governance.audit import AuditLog
     from app.reliability.circuit_breaker import CircuitBreaker
     from app.reliability.dedup import DeduplicationCache
     from app.reliability.result_processor import ResultProcessor
     from app.reliability.rollback import RollbackEngine
-    from app.memory.execution import ExecutionMemory
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="pipe-svc-t1", plan=PlanTier.PROFESSIONAL, api_key_id="pk2"
@@ -486,7 +497,7 @@ async def test_pipeline_steps_with_all_services():
 async def test_smart_context_fetch_with_knowledge_store():
     """smart_context_fetch now uses retrieval_gateway; skip gracefully when None."""
     from app.pipeline.steps import smart_context_fetch
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="pipe-ks-t1", plan=PlanTier.FREE, api_key_id="pks1"
@@ -550,8 +561,8 @@ def test_anthropic_provider_raises_import_error_if_missing():
 
 async def test_fake_provider_cycles_responses():
     """FakeProvider cycles through responses deterministically."""
-    from app.providers.fake import FakeProvider
     from app.providers.base import CompletionRequest, Message
+    from app.providers.fake import FakeProvider
 
     p = FakeProvider(responses=["r1", "r2", "r3"])
     req = CompletionRequest(
@@ -569,8 +580,8 @@ async def test_fake_provider_cycles_responses():
 
 async def test_fake_provider_embed():
     """FakeProvider returns embeddings with the configured dimension."""
-    from app.providers.fake import FakeProvider
     from app.providers.base import EmbedRequest
+    from app.providers.fake import FakeProvider
 
     p = FakeProvider(responses=[], embed_dim=768)
     req = EmbedRequest(texts=["hello", "world"])
@@ -581,8 +592,8 @@ async def test_fake_provider_embed():
 
 async def test_fake_provider_call_history():
     """FakeProvider records every call in call_history."""
-    from app.providers.fake import FakeProvider
     from app.providers.base import CompletionRequest, Message
+    from app.providers.fake import FakeProvider
 
     p = FakeProvider(responses=["ok"])
     req = CompletionRequest(
@@ -598,9 +609,9 @@ async def test_fake_provider_call_history():
 
 async def test_knowledge_store_hybrid_search_db_fallback_on_error():
     """hybrid_search_db falls back to in-memory when DB is unavailable."""
+    from app.rag.models import Chunk, KnowledgeCollection
     from app.rag.store import KnowledgeStore
-    from app.rag.models import KnowledgeCollection, Chunk
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="rag-db-t2", plan=PlanTier.PROFESSIONAL, api_key_id="rk2"
@@ -628,9 +639,9 @@ async def test_knowledge_store_hybrid_search_db_fallback_on_error():
 
 async def test_knowledge_store_create_collection_db_task():
     """create_collection_async is fail-closed: DB errors propagate, cache stays clean."""
-    from app.rag.store import KnowledgeStore
     from app.rag.models import KnowledgeCollection
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.rag.store import KnowledgeStore
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="rag-db-t3", plan=PlanTier.FREE, api_key_id="rk3"
@@ -669,9 +680,9 @@ async def test_knowledge_store_sync_from_db_noop_without_factory():
 
 async def test_schedule_store_db_create_fires_task():
     """ScheduleStore works in-memory even when DB factory raises."""
-    from app.triggers.store import ScheduleStore
+    from app.tenancy.context import PlanTier, TenantContext
     from app.triggers.models import TriggerSpec, TriggerType
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.triggers.store import ScheduleStore
 
     T = TenantContext(
         tenant_id="sched-db-t1", plan=PlanTier.FREE, api_key_id="sk1"
@@ -698,9 +709,9 @@ async def test_schedule_store_db_create_fires_task():
 
 async def test_schedule_store_pause_resume_delete():
     """ScheduleStore pause/resume/delete work correctly."""
-    from app.triggers.store import ScheduleStore
+    from app.tenancy.context import PlanTier, TenantContext
     from app.triggers.models import TriggerSpec, TriggerType
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.triggers.store import ScheduleStore
 
     T = TenantContext(
         tenant_id="sched-pr-t1", plan=PlanTier.PROFESSIONAL, api_key_id="spr1"
@@ -721,9 +732,9 @@ async def test_schedule_store_pause_resume_delete():
 
 async def test_schedule_store_list_all():
     """ScheduleStore.list_all returns only the current tenant's schedules."""
-    from app.triggers.store import ScheduleStore
+    from app.tenancy.context import PlanTier, TenantContext
     from app.triggers.models import TriggerSpec, TriggerType
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.triggers.store import ScheduleStore
 
     T_A = TenantContext(tenant_id="sched-la-a", plan=PlanTier.FREE, api_key_id="sla1")
     T_B = TenantContext(tenant_id="sched-la-b", plan=PlanTier.FREE, api_key_id="slb1")
@@ -749,8 +760,8 @@ async def test_schedule_store_sync_from_db_noop():
 
 async def test_schedule_store_pause_nonexistent_returns_false():
     """Pausing a non-existent schedule returns False."""
+    from app.tenancy.context import PlanTier, TenantContext
     from app.triggers.store import ScheduleStore
-    from app.tenancy.context import TenantContext, PlanTier
 
     T = TenantContext(tenant_id="sched-ne-t1", plan=PlanTier.FREE, api_key_id="sne1")
     store = ScheduleStore()
@@ -765,7 +776,7 @@ async def test_schedule_store_pause_nonexistent_returns_false():
 async def test_goal_service_submit_and_get_dry_run():
     """GoalService submit + get works for dry_run goals."""
     from app.services.goal_service import GoalService
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="gs-t1", plan=PlanTier.PROFESSIONAL, api_key_id="gsk1"
@@ -785,9 +796,9 @@ async def test_goal_service_submit_and_get_dry_run():
 
 async def test_goal_service_tenant_isolation():
     """GoalService enforces strict tenant isolation — cross-tenant access raises."""
-    from app.services.goal_service import GoalService
     from app.core.errors import NotFoundError
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.services.goal_service import GoalService
+    from app.tenancy.context import PlanTier, TenantContext
 
     T_A = TenantContext(
         tenant_id="gs-iso-a", plan=PlanTier.FREE, api_key_id="gsa"
@@ -808,7 +819,7 @@ async def test_goal_service_tenant_isolation():
 async def test_goal_service_cancel():
     """GoalService.cancel_goal transitions status to cancelled."""
     from app.services.goal_service import GoalService
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="gs-cancel-t1", plan=PlanTier.FREE, api_key_id="gsc1"
@@ -825,7 +836,7 @@ async def test_goal_service_cancel():
 async def test_goal_service_get_events():
     """GoalService.get_events returns the events snapshot."""
     from app.services.goal_service import GoalService
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="gs-ev-t1", plan=PlanTier.FREE, api_key_id="gsev1"
@@ -842,7 +853,7 @@ async def test_goal_service_get_events():
 async def test_goal_service_audit_entries():
     """GoalService.get_audit_entries returns a list."""
     from app.services.goal_service import GoalService
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="gs-audit-t1", plan=PlanTier.FREE, api_key_id="gsa1"
@@ -859,7 +870,7 @@ async def test_goal_service_audit_entries():
 async def test_goal_service_handle_approval():
     """GoalService.handle_approval returns request_id in response."""
     from app.services.goal_service import GoalService
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="gs-hitl-t1", plan=PlanTier.PROFESSIONAL, api_key_id="gsh1"
@@ -886,7 +897,7 @@ async def test_goal_service_handle_approval():
 async def test_goal_service_handle_rejection():
     """GoalService.handle_approval handles reject action."""
     from app.services.goal_service import GoalService
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="gs-hitl-rej", plan=PlanTier.PROFESSIONAL, api_key_id="gshr1"
@@ -911,7 +922,7 @@ async def test_goal_service_handle_rejection():
 async def test_goal_service_handle_unknown_action():
     """GoalService.handle_approval with unknown action returns accepted=False."""
     from app.services.goal_service import GoalService
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="gs-hitl-unk", plan=PlanTier.FREE, api_key_id="gshu1"
@@ -936,7 +947,7 @@ async def test_goal_service_handle_unknown_action():
 async def test_goal_service_subscribe_events_terminal():
     """subscribe_events yields immediately for terminal (dry_run) goals."""
     from app.services.goal_service import GoalService
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="gs-sse-t1", plan=PlanTier.FREE, api_key_id="gss1"
@@ -957,7 +968,7 @@ async def test_goal_service_subscribe_events_terminal():
 async def test_goal_service_db_persist_no_crash():
     """GoalService works in-memory even when DB factory raises."""
     from app.services.goal_service import GoalService
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="gs-db-t1", plan=PlanTier.FREE, api_key_id="gsd1"
@@ -994,8 +1005,8 @@ async def test_goal_service_sync_from_db_noop():
 
 async def test_tenant_service_duplicate_email_raises():
     """TenantService raises ConflictError on duplicate email."""
-    from app.services.tenant_service import TenantService
     from app.core.errors import ConflictError
+    from app.services.tenant_service import TenantService
 
     svc = TenantService()
     await svc.create_tenant(name="First", email="dup@test.com")
@@ -1005,8 +1016,8 @@ async def test_tenant_service_duplicate_email_raises():
 
 async def test_tenant_service_case_insensitive_email():
     """Email duplicate detection is case-insensitive."""
-    from app.services.tenant_service import TenantService
     from app.core.errors import ConflictError
+    from app.services.tenant_service import TenantService
 
     svc = TenantService()
     await svc.create_tenant(name="Corp", email="Case@test.com")
@@ -1028,15 +1039,16 @@ async def test_tenant_service_get_tenant():
 
 async def test_tenant_service_key_expiry():
     """Expired API keys are rejected by resolve_api_key."""
+    from datetime import datetime, timedelta
+
     from app.services.tenant_service import TenantService
-    from datetime import datetime, timezone, timedelta
 
     svc = TenantService()
     result = await svc.create_tenant(name="Expiry", email="expiry_cov@test.com")
     tenant_id = result["tenant_id"]
 
     # Create a key that expired 1 hour ago
-    expired_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    expired_at = datetime.now(UTC) - timedelta(hours=1)
     key_result = await svc.create_api_key(
         tenant_id=tenant_id, name="expired", scopes=[], expires_at=expired_at
     )
@@ -1049,15 +1061,16 @@ async def test_tenant_service_key_expiry():
 
 async def test_tenant_service_valid_key_resolves():
     """Valid non-expired API keys are resolved correctly."""
+    from datetime import datetime, timedelta
+
     from app.services.tenant_service import TenantService
-    from datetime import datetime, timezone, timedelta
 
     svc = TenantService()
     result = await svc.create_tenant(name="ValidKey", email="validkey_cov@test.com")
     tenant_id = result["tenant_id"]
 
     # Create a key that expires in the future
-    future_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    future_at = datetime.now(UTC) + timedelta(hours=24)
     key_result = await svc.create_api_key(
         tenant_id=tenant_id, name="future", scopes=[], expires_at=future_at
     )
@@ -1098,8 +1111,8 @@ async def test_tenant_service_sync_from_db_noop():
 
 async def test_tenant_service_revoke_wrong_tenant_raises():
     """Revoking another tenant's key raises NotFoundError."""
-    from app.services.tenant_service import TenantService
     from app.core.errors import NotFoundError
+    from app.services.tenant_service import TenantService
 
     svc = TenantService()
     r1 = await svc.create_tenant(name="T1", email="t1r_cov@test.com")
@@ -1145,9 +1158,9 @@ async def test_tenant_service_initial_key_resolves():
 
 def test_audit_log_query_by_goal_and_tool():
     """AuditLog supports filtering by goal_id and tool_name."""
-    from app.governance.audit import AuditLog, AuditEvent
+    from app.governance.audit import AuditEvent, AuditLog
     from app.governance.permissions import ActionLevel
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="audit-cov-t1", plan=PlanTier.FREE, api_key_id="ac1"
@@ -1200,9 +1213,9 @@ async def test_audit_log_db_sync_noop_with_tenant_id():
 
 def test_audit_log_tenant_isolation_in_query():
     """AuditLog entries are strictly isolated per tenant."""
-    from app.governance.audit import AuditLog, AuditEvent
+    from app.governance.audit import AuditEvent, AuditLog
     from app.governance.permissions import ActionLevel
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T_A = TenantContext(
         tenant_id="audit-iso-a", plan=PlanTier.FREE, api_key_id="aia"
@@ -1252,9 +1265,9 @@ def test_audit_log_event_id_is_unique():
 
 async def test_audit_log_db_factory_fires_task():
     """AuditLog with a DB factory fires background task (which may fail gracefully)."""
-    from app.governance.audit import AuditLog, AuditEvent
+    from app.governance.audit import AuditEvent, AuditLog
     from app.governance.permissions import ActionLevel
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     T = TenantContext(
         tenant_id="audit-db-t1", plan=PlanTier.FREE, api_key_id="adb1"

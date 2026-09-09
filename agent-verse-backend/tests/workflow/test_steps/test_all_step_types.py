@@ -7,7 +7,9 @@ import pytest
 
 from app.workflow.context import ContextResolver
 from app.workflow.dsl import (
-    ConditionalBranch, HITLAction, StepDefinition, WorkflowDefinition,
+    ConditionalBranch,
+    HITLAction,
+    StepDefinition,
 )
 from app.workflow.state import WorkflowRunStatus
 
@@ -95,9 +97,10 @@ async def test_llm_step_resolves_template() -> None:
 
 @pytest.mark.asyncio
 async def test_http_step_success() -> None:
-    from app.workflow.steps.http_step import HTTPStepNode
     import httpx
+
     from app.workflow.security import SSRFGuard
+    from app.workflow.steps.http_step import HTTPStepNode
     step = StepDefinition(id="h1", type="http", url="https://httpbin.org/get", method="GET")
     mock_response = MagicMock(spec=httpx.Response)
     mock_response.status_code = 200
@@ -123,8 +126,8 @@ async def test_http_step_success() -> None:
 
 @pytest.mark.asyncio
 async def test_http_step_ssrf_blocked() -> None:
-    from app.workflow.steps.http_step import HTTPStepNode
     from app.workflow.security import SSRFBlockedError
+    from app.workflow.steps.http_step import HTTPStepNode
     step = StepDefinition(id="h1", type="http", url="http://169.254.169.254/metadata")
     node = HTTPStepNode(step, _ctx())
     state = _state()

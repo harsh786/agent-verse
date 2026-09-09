@@ -1,9 +1,7 @@
 """Tests for goal-tree decomposition and sub-agent spawning."""
 from __future__ import annotations
 
-import pytest
-
-from app.agent.goal_tree import DecompositionResult, decompose_goal, execute_goal_tree
+from app.agent.goal_tree import decompose_goal, execute_goal_tree
 from app.agent.graph import AgentGraph
 from app.agent.state import GoalStatus
 from app.providers.fake import FakeProvider

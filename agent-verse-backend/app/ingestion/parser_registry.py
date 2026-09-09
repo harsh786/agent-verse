@@ -174,9 +174,10 @@ class ParserRegistry:
         Returns a single string of extracted text.
         Falls back to UTF-8 decode if parser raises.
         """
-        from app.ingestion.content_classifier import ContentType as CT
+        from app.ingestion.content_classifier import ContentType
 
-        ct = content_type if isinstance(content_type, CT) else CT.TEXT  # fixed: was CT.PLAIN_TEXT
+        # fixed: was ContentType.PLAIN_TEXT
+        ct = content_type if isinstance(content_type, ContentType) else ContentType.TEXT
         parser = self._parsers.get(ct, TextParser())
 
         # Most parsers take str, but pipeline gives bytes

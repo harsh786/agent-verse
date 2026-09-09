@@ -13,10 +13,9 @@ Covers:
 from __future__ import annotations
 
 import hashlib
-import json
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # generate_api_key — NIST compliance
@@ -95,9 +94,7 @@ def _make_checker_with_mock(
 
         if "enterprise_contracts" in q:
             signed = False
-            if contract_type_param == "baa" and baa_signed:
-                signed = True
-            elif contract_type_param == "dpa" and dpa_signed:
+            if (contract_type_param == "baa" and baa_signed) or (contract_type_param == "dpa" and dpa_signed):
                 signed = True
             if signed:
                 mock_result.fetchone = lambda: ("signed", "2026-01-01", "Test User")
@@ -215,6 +212,7 @@ async def test_gdpr_export_async_no_truncation() -> None:
     Validates the fix to compliance.py request_data_export().
     """
     import inspect
+
     from app.enterprise.compliance import ComplianceController
 
     src = inspect.getsource(ComplianceController.request_data_export)
@@ -296,6 +294,7 @@ async def test_scim_bearer_auth_required() -> None:
     Amendment 8.2: SCIM endpoints must reject requests without Bearer token.
     """
     from fastapi import HTTPException
+
     from app.auth.scim_handler import require_scim_auth
 
     mock_request = MagicMock()
@@ -312,6 +311,7 @@ async def test_scim_bearer_auth_required() -> None:
 async def test_scim_bearer_auth_invalid_token() -> None:
     """Invalid/unknown token must return 401."""
     from fastapi import HTTPException
+
     from app.auth.scim_handler import require_scim_auth
 
     mock_db = AsyncMock()
@@ -335,6 +335,7 @@ async def test_scim_bearer_auth_invalid_token() -> None:
 async def test_scim_create_user_blocked_when_disabled() -> None:
     """SCIM user creation blocked when allow_user_create=False."""
     from fastapi import HTTPException
+
     from app.auth.scim_handler import SCIMHandler
 
     mock_db = AsyncMock()
@@ -430,9 +431,7 @@ async def test_enterprise_contracts_crud() -> None:
                 mock_result.fetchone = lambda: ("signed", "2026-06-28", "Jane")
             else:
                 mock_result.fetchone = lambda: None
-        elif "gdpr_export_jobs" in q:
-            mock_result.scalar = lambda: 0
-        elif "consent_records" in q:
+        elif "gdpr_export_jobs" in q or "consent_records" in q:
             mock_result.scalar = lambda: 0
         elif "data_region" in q:
             mock_result.fetchone = lambda: ("eu-west-1",)

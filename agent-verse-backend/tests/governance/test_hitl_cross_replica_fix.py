@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import asyncio
-
-import pytest
 from unittest.mock import AsyncMock
 
+import pytest
+
 from app.governance.hitl import ApprovalStatus, HITLGateway
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 T = TenantContext(tenant_id="hitl-t1", plan=PlanTier.ENTERPRISE, api_key_id="k1", roles=())
 
@@ -45,7 +45,6 @@ class TestWaitForApprovalCrossReplica:
     @pytest.mark.asyncio
     async def test_wait_unblocks_from_redis_result(self) -> None:
         """Approval from another replica (Redis BLPOP) unblocks the waiter."""
-        import json
 
         gateway_replica_a = HITLGateway(timeout_seconds=5.0)
         gateway_replica_b = HITLGateway(timeout_seconds=5.0)

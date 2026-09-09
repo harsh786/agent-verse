@@ -86,7 +86,7 @@ def make_graph(**kwargs):
     )
 
 
-def _result_text(state) -> str:  # noqa: ANN001
+def _result_text(state) -> str:
     """Collect the agent's output text from completed steps.
 
     Falls back to verification_feedback → cited_answer → error_message so
@@ -105,7 +105,7 @@ def _result_text(state) -> str:  # noqa: ANN001
     return text
 
 
-async def _run(graph, goal: str) -> object:  # noqa: ANN001
+async def _run(graph, goal: str) -> object:
     """Execute graph.run() with an asyncio timeout guard."""
     return await asyncio.wait_for(
         graph.run(goal=goal, tenant_ctx=_tenant()),

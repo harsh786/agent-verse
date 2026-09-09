@@ -10,7 +10,6 @@ import os
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -63,9 +62,9 @@ async def test_github_list_repos():
 
 @pytest.mark.asyncio
 async def test_github_get_file():
-    from app.mcp.servers.github_server import call_tool
-
     import base64
+
+    from app.mcp.servers.github_server import call_tool
 
     content_b64 = base64.b64encode(b"print('hello')").decode()
     data = {"path": "main.py", "sha": "abc123", "size": 14, "content": content_b64 + "\n", "encoding": "base64"}
@@ -241,9 +240,9 @@ async def test_gitlab_create_merge_request():
 
 @pytest.mark.asyncio
 async def test_gitlab_get_file():
-    from app.mcp.servers.gitlab_server import call_tool
-
     import base64
+
+    from app.mcp.servers.gitlab_server import call_tool
 
     content_b64 = base64.b64encode(b"content").decode()
     data = {"file_path": "README.md", "ref": "main", "content": content_b64, "encoding": "base64", "size": 7}

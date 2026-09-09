@@ -1,9 +1,7 @@
 """Tests for BrowserAgent (no real browser needed — tests graceful degradation)."""
 from __future__ import annotations
 
-import pytest
-
-from app.perception.browser_agent import BrowserAgent, BrowserAction, BrowserResult
+from app.perception.browser_agent import BrowserAction, BrowserAgent
 
 
 def test_browser_agent_reports_availability() -> None:
@@ -14,7 +12,7 @@ def test_browser_agent_reports_availability() -> None:
 
 async def test_screenshot_without_playwright_returns_error() -> None:
     """When Playwright is not installed, screenshot returns graceful error."""
-    import app.perception.browser_agent as ba  # noqa: PLC0415
+    import app.perception.browser_agent as ba
 
     original = ba._PLAYWRIGHT_AVAILABLE
     ba._PLAYWRIGHT_AVAILABLE = False
@@ -28,7 +26,7 @@ async def test_screenshot_without_playwright_returns_error() -> None:
 
 
 async def test_extract_text_without_playwright_returns_error() -> None:
-    import app.perception.browser_agent as ba  # noqa: PLC0415
+    import app.perception.browser_agent as ba
 
     original = ba._PLAYWRIGHT_AVAILABLE
     ba._PLAYWRIGHT_AVAILABLE = False
@@ -41,7 +39,7 @@ async def test_extract_text_without_playwright_returns_error() -> None:
 
 
 async def test_run_action_unknown_type() -> None:
-    import app.perception.browser_agent as ba  # noqa: PLC0415
+    import app.perception.browser_agent as ba
 
     original = ba._PLAYWRIGHT_AVAILABLE
     ba._PLAYWRIGHT_AVAILABLE = False
@@ -61,7 +59,7 @@ async def test_analyze_screenshot_without_vision_provider() -> None:
 
 async def test_run_action_screenshot_dispatches() -> None:
     """navigate and screenshot action types both call take_screenshot."""
-    import app.perception.browser_agent as ba  # noqa: PLC0415
+    import app.perception.browser_agent as ba
 
     original = ba._PLAYWRIGHT_AVAILABLE
     ba._PLAYWRIGHT_AVAILABLE = False
@@ -78,7 +76,7 @@ async def test_run_action_screenshot_dispatches() -> None:
 
 
 async def test_run_action_click_dispatches() -> None:
-    import app.perception.browser_agent as ba  # noqa: PLC0415
+    import app.perception.browser_agent as ba
 
     original = ba._PLAYWRIGHT_AVAILABLE
     ba._PLAYWRIGHT_AVAILABLE = False
@@ -94,7 +92,7 @@ async def test_run_action_click_dispatches() -> None:
 
 
 async def test_run_action_fill_dispatches() -> None:
-    import app.perception.browser_agent as ba  # noqa: PLC0415
+    import app.perception.browser_agent as ba
 
     original = ba._PLAYWRIGHT_AVAILABLE
     ba._PLAYWRIGHT_AVAILABLE = False

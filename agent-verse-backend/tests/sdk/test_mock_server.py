@@ -1,9 +1,11 @@
 """Tests for MockMCPServer."""
 from __future__ import annotations
-import json
-import pytest
-from app.sdk.mock_server import MockMCPServer
 
+import json
+
+import pytest
+
+from app.sdk.mock_server import MockMCPServer
 
 # ── Test 1: tools/list returns registered tools ───────────────────────────────
 

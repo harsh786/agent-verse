@@ -11,10 +11,9 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # BUG 3 helpers
@@ -119,9 +118,7 @@ async def test_execution_memory_record_async_noop_without_db():
 
 def test_graph_calls_extract_from_goal_async():
     """graph.py must call extract_from_goal_async not the sync version."""
-    import inspect
 
-    from app.agent import graph
 
     src = _agent_source()
     assert "extract_from_goal_async" in src, (
@@ -131,9 +128,7 @@ def test_graph_calls_extract_from_goal_async():
 
 def test_graph_calls_score_and_persist():
     """graph.py must call score_and_persist not score_async."""
-    import inspect
 
-    from app.agent import graph
 
     src = _agent_source()
     assert "score_and_persist" in src, (
@@ -143,9 +138,7 @@ def test_graph_calls_score_and_persist():
 
 def test_graph_calls_recall_async_for_exec_memory():
     """graph.py must call recall_async (DB-backed) for execution memory retrieval."""
-    import inspect
 
-    from app.agent import graph
 
     src = _agent_source()
     assert "recall_async" in src, (

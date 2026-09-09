@@ -1,11 +1,7 @@
 """Extra coverage for app/triggers/store.py — supplements test_store_full.py."""
 from __future__ import annotations
 
-import asyncio
 import json
-from typing import Any
-
-import pytest
 
 from app.tenancy.context import PlanTier, TenantContext
 from app.triggers.models import TriggerSpec, TriggerType

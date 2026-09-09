@@ -83,7 +83,7 @@ class CommandDeduplicator:
                 if is_new:
                     self._memory[key] = command_id
                     # Schedule cleanup (fire and forget)
-                    asyncio.create_task(self._expire_key(key))
+                    asyncio.create_task(self._expire_key(key))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
 
             if not is_new:
                 _log.debug("dedup.duplicate_skipped", channel=channel, actor=actor_id)

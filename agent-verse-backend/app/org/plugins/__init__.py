@@ -15,8 +15,8 @@ Usage:
 
 from __future__ import annotations
 
-from enum import Enum, StrEnum
-from typing import Any
+from enum import StrEnum
+from typing import Any, ClassVar
 
 import structlog
 
@@ -39,7 +39,7 @@ class AgentVersePlugin:
     name: str
     version: str = "1.0.0"
     description: str = ""
-    permissions: list[str] = []
+    permissions: ClassVar[list[str]] = []
     audit: bool = True
     sandbox: str = "restricted"  # restricted | isolated | trusted
 
@@ -79,7 +79,7 @@ class ToolPlugin(AgentVersePlugin):
 
     plugin_type = PluginType.TOOL
 
-    schema: dict[str, Any] = {}
+    schema: ClassVar[dict[str, Any]] = {}
     risk_level: str = "medium"
 
     async def execute(self, inputs: dict, context: dict) -> dict[str, Any]:

@@ -1,10 +1,9 @@
 """Tests for Phase 10 security guardrails."""
-import pytest
 
 
 class TestRedTeamCorpus:
     def test_corpus_importable(self):
-        from app.enterprise.red_team_corpus import RED_TEAM_CORPUS, CORPUS_VERSION
+        from app.enterprise.red_team_corpus import RED_TEAM_CORPUS
 
         assert len(RED_TEAM_CORPUS) >= 15
 
@@ -58,7 +57,7 @@ class TestExfilGuard:
         assert blocked is False
 
     def test_blocks_large_payload(self):
-        from app.agent.exfil_guard import check_tool_args_for_exfil, _MAX_SAFE_PAYLOAD
+        from app.agent.exfil_guard import _MAX_SAFE_PAYLOAD, check_tool_args_for_exfil
 
         blocked, reason = check_tool_args_for_exfil(
             "post_webhook",

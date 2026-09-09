@@ -11,8 +11,8 @@ Verifies:
 from __future__ import annotations
 
 import os
-import pytest
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Helper
@@ -32,20 +32,20 @@ def _assert_tool_schema(tools: list[dict], server_name: str) -> None:
 
 def test_database_servers_importable():
     from app.mcp.servers import (
-        mysql_server,
-        mongodb_server,
-        redis_server,
-        snowflake_server,
-        elasticsearch_server,
-        supabase_server,
-        pinecone_server,
-        sentry_server,
-        new_relic_server,
-        mixpanel_server,
         amplitude_server,
-        prometheus_server,
-        splunk_server,
+        elasticsearch_server,
         loggly_server,
+        mixpanel_server,
+        mongodb_server,
+        mysql_server,
+        new_relic_server,
+        pinecone_server,
+        prometheus_server,
+        redis_server,
+        sentry_server,
+        snowflake_server,
+        splunk_server,
+        supabase_server,
     )
     for s in [
         mysql_server,
@@ -73,10 +73,20 @@ def test_database_servers_importable():
 
 def test_all_servers_have_valid_tool_schemas():
     from app.mcp.servers import (
-        mysql_server, mongodb_server, redis_server, snowflake_server,
-        elasticsearch_server, supabase_server, pinecone_server,
-        sentry_server, new_relic_server, mixpanel_server, amplitude_server,
-        prometheus_server, splunk_server, loggly_server,
+        amplitude_server,
+        elasticsearch_server,
+        loggly_server,
+        mixpanel_server,
+        mongodb_server,
+        mysql_server,
+        new_relic_server,
+        pinecone_server,
+        prometheus_server,
+        redis_server,
+        sentry_server,
+        snowflake_server,
+        splunk_server,
+        supabase_server,
     )
     for s in [
         mysql_server, mongodb_server, redis_server, snowflake_server,

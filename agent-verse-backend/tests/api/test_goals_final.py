@@ -331,8 +331,9 @@ async def test_goals_stream_endpoint_exists() -> None:
 
 def test_require_tenant_unit_with_none_raises() -> None:
     """Line 64: _require_tenant raises 401 when request.state has no tenant."""
-    from fastapi import HTTPException
     from unittest.mock import MagicMock
+
+    from fastapi import HTTPException
 
     from app.api.goals import _require_tenant
 

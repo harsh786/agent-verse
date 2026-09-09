@@ -1,5 +1,4 @@
 """Tests for per-plan autoscale desired-worker gauge."""
-import pytest
 
 
 class TestAutoscaleGauge:

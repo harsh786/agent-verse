@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.api.governance import router as governance_router
 from app.governance.audit import AuditEvent, AuditLog
-from app.governance.cost import BudgetConfig, CostController
+from app.governance.cost import CostController
 from app.governance.hitl import HITLGateway
 from app.governance.permissions import ActionLevel
 from app.governance.policies import PolicyEngine

@@ -335,20 +335,22 @@ class ApprovalChainEngine:
 
             for chain in APPROVAL_CHAINS:
                 pattern_words = chain.trigger_pattern.lower().split()
-                if all(w in action_lower for w in pattern_words):
-                    # Fire the chain when the action's risk is at least as high
-                    # as the org's tolerance for autonomous action — i.e. a
-                    # high-risk action is gated even for medium-tolerance orgs.
-                    if _RISK_ORDER.get(chain.risk_threshold, 0) >= _RISK_ORDER.get(risk, 0):
-                        # Check autonomy level
-                        if org_autonomy <= 4:
-                            span.set_attribute("matched_chain", chain.id)
-                            _log.info(
-                                "approval_chain.matched",
-                                action=action,
-                                chain=chain.id,
-                            )
-                            return chain
+                # Fire the chain when the action's risk is at least as high
+                # as the org's tolerance for autonomous action — i.e. a
+                # high-risk action is gated even for medium-tolerance orgs.
+                # (Also requires autonomy level to be checked.)
+                if (
+                    all(w in action_lower for w in pattern_words)
+                    and _RISK_ORDER.get(chain.risk_threshold, 0) >= _RISK_ORDER.get(risk, 0)
+                    and org_autonomy <= 4
+                ):
+                    span.set_attribute("matched_chain", chain.id)
+                    _log.info(
+                        "approval_chain.matched",
+                        action=action,
+                        chain=chain.id,
+                    )
+                    return chain
 
             span.set_attribute("matched_chain", "none")
             return None

@@ -1,7 +1,8 @@
 """Tests for Redis-backed distributed bulkhead (RedisBulkhead + RedisBulkheadRegistry)."""
 import asyncio
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 
 @pytest.mark.asyncio
@@ -104,7 +105,7 @@ async def test_redis_bulkhead_fail_open_when_redis_unavailable():
 @pytest.mark.asyncio
 async def test_redis_bulkhead_registry_uses_redis_when_available():
     """RedisBulkheadRegistry.get_bulkhead() returns RedisBulkhead when Redis set."""
-    from app.reliability.bulkhead import RedisBulkheadRegistry, RedisBulkhead
+    from app.reliability.bulkhead import RedisBulkhead, RedisBulkheadRegistry
 
     mock_redis = AsyncMock()
     registry = RedisBulkheadRegistry(redis=mock_redis, default_max_concurrent=10)
@@ -125,6 +126,7 @@ async def test_redis_bulkhead_registry_falls_back_to_semaphore():
 def test_agentgraph_accepts_bulkhead_registry():
     """AgentGraph.__init__ must accept bulkhead_registry parameter."""
     import inspect
+
     from app.agent.graph import AgentGraph
 
     sig = inspect.signature(AgentGraph.__init__)

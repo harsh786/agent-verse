@@ -132,7 +132,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
 
             elif tool_name == "bitly_expand_url":
-                bitlink_id = arguments["bitlink_id"].lstrip("https://").lstrip("http://")
+                bitlink_id = arguments["bitlink_id"].removeprefix("https://").removeprefix("http://")
                 r = await c.post(
                     f"{BITLY_BASE}/expand",
                     headers=hdrs,
@@ -147,7 +147,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
 
             elif tool_name == "bitly_get_click_metrics":
-                bitlink_id = arguments["bitlink_id"].lstrip("https://").lstrip("http://")
+                bitlink_id = arguments["bitlink_id"].removeprefix("https://").removeprefix("http://")
                 r = await c.get(
                     f"{BITLY_BASE}/bitlinks/{bitlink_id}/clicks",
                     headers=hdrs,
@@ -207,7 +207,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
 
             elif tool_name == "bitly_get_bitlink_info":
-                bitlink_id = arguments["bitlink_id"].lstrip("https://").lstrip("http://")
+                bitlink_id = arguments["bitlink_id"].removeprefix("https://").removeprefix("http://")
                 r = await c.get(
                     f"{BITLY_BASE}/bitlinks/{bitlink_id}",
                     headers=hdrs,

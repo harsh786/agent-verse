@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import base64
 
-import pytest
-
 from app.perception.multimodal import ImageAttachment, PerceptionInput, resize_image_b64
 
 

@@ -1,7 +1,9 @@
 """Behavioral tests for marketplace monetization."""
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-from app.api.marketplace_monetization import PricingRequest, OnboardAuthorRequest
+
+import pytest
+
+from app.api.marketplace_monetization import PricingRequest
 
 
 def test_pricing_request_validates_revenue_share():
@@ -47,7 +49,7 @@ async def test_set_price_writes_to_db():
         return fake_session
 
     from app.api.marketplace_monetization import set_template_price
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
 
     request = MagicMock()
     request.state.tenant = TenantContext(

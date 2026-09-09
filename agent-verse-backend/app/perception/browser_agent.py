@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 
 _PLAYWRIGHT_AVAILABLE = False
 try:
-    from playwright.async_api import Browser, Page, async_playwright
+    from playwright.async_api import async_playwright
 
     _PLAYWRIGHT_AVAILABLE = True
 except ImportError:

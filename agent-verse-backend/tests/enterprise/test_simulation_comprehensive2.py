@@ -12,10 +12,6 @@ Covers the lines not yet exercised:
 """
 from __future__ import annotations
 
-import asyncio
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 
 from app.enterprise.simulation import MockMCPClient, SimulationRun, SimulationRunner

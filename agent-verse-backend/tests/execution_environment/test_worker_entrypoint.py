@@ -16,14 +16,10 @@ from __future__ import annotations
 import base64
 import json
 import os
-from io import StringIO
 from unittest.mock import patch
 
-import pytest
-
-from app.execution_environment.envelope import build_envelope, sign_envelope
+from app.execution_environment.envelope import build_envelope
 from app.execution_environment.worker_entrypoint import _build_provider, _set_resource_limits
-
 
 # ── _build_provider ───────────────────────────────────────────────────────────
 
@@ -73,8 +69,6 @@ def test_set_resource_limits_does_not_raise_on_import_error() -> None:
 
 def _run_main_with_env(extra_env: dict) -> tuple[list[dict], int]:
     """Run main() with injected env vars, capture stdout events."""
-    import io
-    from contextlib import redirect_stdout
 
     from app.execution_environment import worker_entrypoint as we
 

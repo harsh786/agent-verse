@@ -5,16 +5,14 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 import httpx
 
 from app.services.webhook_service import (
-    OutboundWebhookService,
-    WebhookDelivery,
     _DELIVERY_TTL_SECONDS,
     _MAX_DELIVERIES,
+    OutboundWebhookService,
+    WebhookDelivery,
 )
-
 
 # ── WebhookDelivery ───────────────────────────────────────────────────────────
 

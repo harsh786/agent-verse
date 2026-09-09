@@ -16,7 +16,6 @@ from app.intelligence.cost_tracker import (
     calculate_cost,
 )
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_redis(data: dict | None = None) -> AsyncMock:

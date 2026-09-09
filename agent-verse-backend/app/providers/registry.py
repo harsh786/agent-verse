@@ -150,7 +150,7 @@ def _detect_providers() -> list[ProviderConfig]:
         )
 
     # Simple OpenAI-compatible providers
-    _SIMPLE_PROVIDERS = [
+    _simple_providers = [
         ("mistral", "MISTRAL_API_KEY", "mistral-large-latest", "Mistral AI"),
         ("deepseek", "DEEPSEEK_API_KEY", "deepseek-chat", "DeepSeek"),
         ("perplexity", "PERPLEXITY_API_KEY", "llama-3.1-sonar-large-128k-online", "Perplexity"),
@@ -167,7 +167,7 @@ def _detect_providers() -> list[ProviderConfig]:
         ("huggingface", "HF_API_KEY", "meta-llama/Llama-3.1-70B-Instruct", "HuggingFace"),
         ("sambanova", "SAMBANOVA_API_KEY", "Meta-Llama-3.1-70B-Instruct", "SambaNova"),
     ]
-    for provider_type, env_key, default_model, display_name in _SIMPLE_PROVIDERS:
+    for provider_type, env_key, default_model, display_name in _simple_providers:
         if os.getenv(env_key):
             providers.append(
                 ProviderConfig(
@@ -220,7 +220,7 @@ def resolve_provider(
     logger.warning("no_llm_provider_configured_using_fake")
     from app.providers.fake import FakeProvider
 
-    _FAKE_RESPONSES = [
+    _fake_responses = [
         # Planner call 1 — returns a valid JSON plan
         '{"steps": ["Analyse the goal and gather relevant context", "Research and compile key findings", "Synthesise results and identify patterns", "Draft comprehensive answer with evidence", "Review and refine the final output"]}',  # noqa: E501
         # Executor call 1 — execution result
@@ -241,7 +241,7 @@ def resolve_provider(
         '{"success": true, "feedback": "Complete and comprehensive response. Goal fully achieved.", "complete": true}',  # noqa: E501
     ]
 
-    return FakeProvider(responses=_FAKE_RESPONSES)
+    return FakeProvider(responses=_fake_responses)
 
 
 def _instantiate_provider(cfg: ProviderConfig) -> Any | None:

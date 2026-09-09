@@ -39,11 +39,9 @@ def _setup_sigterm() -> None:
         )
         raise SystemExit(0)
 
-    try:
+    # OSError: not in main thread; ValueError: invalid signal — both safe to ignore
+    with contextlib.suppress(OSError, ValueError):
         _signal.signal(_signal.SIGTERM, _handler)
-    except (OSError, ValueError):
-        # OSError: not in main thread; ValueError: invalid signal — both safe to ignore
-        pass
 
 
 _setup_sigterm()
@@ -531,12 +529,12 @@ def run_goal(
     except Exception:
         pass
 
-    from app.tenancy.context import PlanTier as _PT
+    from app.tenancy.context import PlanTier
 
     try:
-        plan = _PT(_plan_str)
+        plan = PlanTier(_plan_str)
     except ValueError:
-        plan = _PT.PROFESSIONAL
+        plan = PlanTier.PROFESSIONAL
 
     tenant_ctx = TenantContext(
         tenant_id=tenant_id,
@@ -1259,10 +1257,10 @@ def run_goal(
 
             if _use_isolation:
                 # Build and dispatch an ExecutionEnvelope instead of running in-process
-                _RunnerUnavail: type | None = None
+                _RunnerUnavail: type | None = None  # noqa: N806  # holds a class (exception type) for isinstance checks below
                 try:
                     from app.execution_environment.envelope import build_envelope as _build_env
-                    from app.execution_environment.models import RunnerType as _RT
+                    from app.execution_environment.models import RunnerType
                     from app.execution_environment.scheduler import (
                         ExecutionEnvironmentScheduler as _Scheduler,
                     )
@@ -1272,11 +1270,11 @@ def run_goal(
 
                     _iso_flags = _rt  # reuse already-fetched flags (G-44)
                     if _iso_flags.isolated_execution_kubernetes_runner:
-                        _iso_runner_type = _RT.KUBERNETES
+                        _iso_runner_type = RunnerType.KUBERNETES
                     elif _iso_flags.isolated_execution_local_runner:
-                        _iso_runner_type = _RT.LOCAL
+                        _iso_runner_type = RunnerType.LOCAL
                     else:
-                        _iso_runner_type = _RT.FAKE
+                        _iso_runner_type = RunnerType.FAKE
 
                     # Build feature flags snapshot for the envelope (G-28)
                     _iso_feature_flags = {
@@ -4240,14 +4238,12 @@ def process_feedback_batch(self: Any) -> dict[str, Any]:  # type: ignore[misc]
 
 
 # Register beat schedule for feedback processing
-try:
+with contextlib.suppress(Exception):
     celery_app.conf.beat_schedule["process-feedback-daily"] = {
         "task": "agentverse.maintenance.process_feedback_batch",
         "schedule": 86400.0,  # Every 24 hours
         "options": {"queue": "maintenance"},
     }
-except Exception:
-    pass
 
 
 # ---------------------------------------------------------------------------
@@ -4407,10 +4403,13 @@ def org_brain_loop() -> dict[str, int]:
                         from app.db.rls import sqlalchemy_rls_context
                         from app.org.service import OrgService
 
-                        async with db_factory() as s2, s2.begin():
-                            async with sqlalchemy_rls_context(s2, str(tenant_id)):
-                                svc = OrgService(s2, str(tenant_id))
-                                health = await svc.get_org_health(str(org_id))
+                        async with (
+                            db_factory() as s2,
+                            s2.begin(),
+                            sqlalchemy_rls_context(s2, str(tenant_id)),
+                        ):
+                            svc = OrgService(s2, str(tenant_id))
+                            health = await svc.get_org_health(str(org_id))
                         blocked = health.get("task_counts", {}).get("blocked", 0)
                         failed = health.get("task_counts", {}).get("failed", 0)
                         if blocked > 3 or failed > 0:

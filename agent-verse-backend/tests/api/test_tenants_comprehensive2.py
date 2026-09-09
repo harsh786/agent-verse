@@ -6,14 +6,13 @@ Targets: 53% → 80%+ coverage on app/api/tenants.py
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.tenants import router as tenants_router
-from app.core.errors import ConflictError, NotFoundError, PlatformError
+from app.core.errors import ConflictError
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 

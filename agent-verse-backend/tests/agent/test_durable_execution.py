@@ -1,7 +1,7 @@
 """Tests for P0.1: Durable Execution Kernel."""
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
 
 
 def test_resolve_checkpointer_uses_redis_when_available(monkeypatch):
@@ -53,7 +53,7 @@ def test_resolve_checkpointer_warns_on_memory_saver(monkeypatch, capsys):
 
 @pytest.mark.asyncio
 async def test_signal_pause_sets_redis_flag():
-    from app.reliability.goal_lifecycle import signal_pause, _PAUSE_FLAG, _CANCEL_FLAG
+    from app.reliability.goal_lifecycle import signal_pause
     mock_redis = AsyncMock()
     mock_redis.set = AsyncMock()
     mock_redis.publish = AsyncMock()
@@ -99,7 +99,7 @@ def test_is_paused_sync_returns_false_when_no_flag():
 
 @pytest.mark.asyncio
 async def test_check_pause_cancel_raises_on_cancel():
-    from app.reliability.goal_lifecycle import check_pause_cancel, GoalCancelledError
+    from app.reliability.goal_lifecycle import GoalCancelledError, check_pause_cancel
     mock_redis = MagicMock()
     mock_redis.get = MagicMock(return_value="1")  # cancelled flag set
 
@@ -109,8 +109,13 @@ async def test_check_pause_cancel_raises_on_cancel():
 
 def test_goal_lifecycle_module_importable():
     from app.reliability.goal_lifecycle import (
-        signal_pause, signal_cancel, signal_resume, clear_signals,
-        is_paused_sync, is_cancelled_sync, check_pause_cancel, GoalCancelledError
+        check_pause_cancel,
+        clear_signals,
+        is_cancelled_sync,
+        is_paused_sync,
+        signal_cancel,
+        signal_pause,
+        signal_resume,
     )
     assert all(callable(f) for f in [signal_pause, signal_cancel, signal_resume,
                                       clear_signals, is_paused_sync, is_cancelled_sync,
@@ -120,6 +125,7 @@ def test_goal_lifecycle_module_importable():
 def test_sigterm_handler_registered():
     """tasks.py must register a SIGTERM handler."""
     import inspect
+
     from app.scaling import tasks
     src = inspect.getsource(tasks)
     assert "SIGTERM" in src or "signal.signal" in src or "_setup_sigterm" in src, \

@@ -1,11 +1,6 @@
 """Extra coverage for app/api/enterprise.py — compliance, simulation, red-team, marketplace."""
 from __future__ import annotations
 
-import json
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -13,6 +8,8 @@ from app.api.enterprise import (
     compliance_router,
     intelligence_router,
     marketplace_router,
+)
+from app.api.enterprise import (
     router as enterprise_router,
 )
 from app.enterprise.compliance import ComplianceController

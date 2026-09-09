@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import structlog
 from opentelemetry import trace
@@ -123,7 +123,7 @@ class ContextEngine:
       9  org_policies          — always compressed, always last
     """
 
-    CONTEXT_STRATEGIES: dict[str, ContextStrategy] = {
+    CONTEXT_STRATEGIES: ClassVar[dict[str, ContextStrategy]] = {
         "quick": ContextStrategy(max_tokens=2_000, compression="aggressive"),
         "standard": ContextStrategy(max_tokens=6_000, compression="moderate"),
         "deep": ContextStrategy(max_tokens=12_000, compression="light"),
@@ -131,7 +131,7 @@ class ContextEngine:
         "code": ContextStrategy(max_tokens=8_000, compression="semantic_only"),
     }
 
-    PRIORITY_SOURCES: list[str] = [
+    PRIORITY_SOURCES: ClassVar[list[str]] = [
         "task_instructions",
         "mission_requirements",
         "recent_decisions",

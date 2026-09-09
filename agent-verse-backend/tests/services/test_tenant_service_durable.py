@@ -1,6 +1,7 @@
 """Tests for Phase 1c — durable TenantService with Redis cache."""
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 
 class TestTenantServiceCachedLookup:
@@ -185,8 +186,9 @@ class TestAdminRouter:
         """Admin endpoints must reject invalid X-Admin-Key with 401."""
         import os
 
-        from app.api.admin import _require_admin
         from fastapi import HTTPException
+
+        from app.api.admin import _require_admin
 
         os.environ["PLATFORM_ADMIN_KEY"] = "secret-key"
         try:
@@ -200,8 +202,9 @@ class TestAdminRouter:
         """Admin endpoints must return 503 when PLATFORM_ADMIN_KEY is not set."""
         import os
 
-        from app.api.admin import _require_admin
         from fastapi import HTTPException
+
+        from app.api.admin import _require_admin
 
         os.environ.pop("PLATFORM_ADMIN_KEY", None)
         with pytest.raises(HTTPException) as exc:

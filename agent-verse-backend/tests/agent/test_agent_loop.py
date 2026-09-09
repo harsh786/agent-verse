@@ -6,15 +6,10 @@ No real LLM calls — all responses are scripted.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
-
-from app.agent.state import AgentState, GoalStatus, StepStatus
 from app.agent.loop import AgentLoop
+from app.agent.state import AgentState, GoalStatus, StepStatus
 from app.providers.fake import FakeProvider
 from app.tenancy.context import PlanTier, TenantContext
-
 
 _CTX = TenantContext(tenant_id="tid-test", plan=PlanTier.PROFESSIONAL, api_key_id="kid-1")
 

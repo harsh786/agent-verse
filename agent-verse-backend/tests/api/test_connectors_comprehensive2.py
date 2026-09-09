@@ -6,14 +6,13 @@ Targets: 69% → 85%+ coverage on app/api/connectors.py
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.connectors import router as connectors_router
-from app.mcp.registry import MCPRegistry, MCPServerConfig
+from app.mcp.registry import MCPRegistry
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 

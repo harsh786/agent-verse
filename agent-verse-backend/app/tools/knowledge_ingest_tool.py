@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from typing import Any
+from typing import Any, ClassVar
 
 _log = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ class KnowledgeIngestTool:
         "Ingest a URL or raw text content into the knowledge store for future "
         "retrieval by agents. Returns job status and chunk count."
     )
-    parameters = {
+    parameters: ClassVar[dict[str, Any]] = {
         "type": "object",
         "required": ["content_or_url"],
         "properties": {

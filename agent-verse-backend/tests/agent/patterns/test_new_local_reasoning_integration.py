@@ -16,7 +16,6 @@ from app.orchestration.strategy_runner import (
     StrategyRunOutput,
 )
 
-
 STRATEGIES = tuple(LOCAL_REASONING_LIMITS)
 
 

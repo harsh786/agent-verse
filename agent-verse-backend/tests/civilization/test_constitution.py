@@ -1,8 +1,7 @@
 """Tests for Constitution — pure policy evaluator, zero I/O."""
-import pytest
-from app.civilization.models import Constitution, SpawnContext, BreachContext
-from app.civilization.constitution import evaluate_spawn, evaluate_breach
-from app.civilization.models import SpawnDecision
+
+from app.civilization.constitution import evaluate_breach, evaluate_spawn
+from app.civilization.models import BreachContext, Constitution, SpawnContext, SpawnDecision
 
 
 def _default_constitution(**kwargs) -> Constitution:

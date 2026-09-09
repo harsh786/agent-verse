@@ -2,8 +2,6 @@
 
 import json
 
-import pytest
-
 from app.agent.schemas import (
     PlannerPlan,
     VerifierVerdict,

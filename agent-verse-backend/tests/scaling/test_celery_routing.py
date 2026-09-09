@@ -5,8 +5,6 @@ from __future__ import annotations
 
 def test_worker_checkpointer_none_without_redis(monkeypatch: object) -> None:
     """Worker starts safely without REDIS_URL — _WORKER_CHECKPOINTER stays None."""
-    import importlib
-    import sys
 
     # Remove cached module so the signal is not already connected from a
     # prior import; re-import with no REDIS_URL set.
@@ -42,7 +40,6 @@ def test_setup_worker_checkpointer_is_callable() -> None:
 
 def test_agent_graph_receives_checkpointer_kwarg(monkeypatch: object) -> None:
     """AgentGraph construction in run_goal passes checkpointer= kwarg."""
-    import types
 
     from app.scaling import tasks
 
@@ -52,7 +49,7 @@ def test_agent_graph_receives_checkpointer_kwarg(monkeypatch: object) -> None:
         def __init__(self, **kwargs: object) -> None:
             captured.append(kwargs.get("checkpointer", "MISSING"))
 
-        def run(self, *a: object, **kw: object) -> None:  # noqa: ANN001
+        def run(self, *a: object, **kw: object) -> None:
             pass
 
     monkeypatch.setattr(

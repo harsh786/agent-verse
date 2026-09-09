@@ -285,8 +285,9 @@ def test_websocket_rejects_query_string_api_key() -> None:
 async def test_websocket_presence_events() -> None:
     """Verify presence session creation via the full app stack."""
     pytest.importorskip("httpx")
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
-    from httpx import AsyncClient, ASGITransport
 
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:

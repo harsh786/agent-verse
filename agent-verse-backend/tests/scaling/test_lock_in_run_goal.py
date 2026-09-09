@@ -1,6 +1,5 @@
 """Tests that the distributed lock is properly acquired in run_goal."""
-import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import MagicMock, patch
 
 
 def test_run_goal_skips_when_lock_not_acquired():
@@ -41,6 +40,7 @@ def test_distributed_lock_exists():
 def test_distributed_lock_acquire_release_interface():
     """GoalExecutionLock has acquire and release coroutine methods."""
     import inspect
+
     from app.reliability.distributed_lock import GoalExecutionLock
     assert inspect.iscoroutinefunction(GoalExecutionLock.acquire)
     assert inspect.iscoroutinefunction(GoalExecutionLock.release)

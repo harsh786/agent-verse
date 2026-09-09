@@ -1,9 +1,9 @@
 """Verify SelfOptimizer and PromptOptimizer are wired and functional."""
-import pytest
-from app.intelligence.self_optimization import SelfOptimizer, OptimizationSuggestion
-from app.intelligence.prompt_optimizer import PromptOptimizer
+
 from app.intelligence.eval import EvalScorecard
-from app.tenancy.context import TenantContext, PlanTier
+from app.intelligence.prompt_optimizer import PromptOptimizer
+from app.intelligence.self_optimization import SelfOptimizer
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _tenant() -> TenantContext:
@@ -114,9 +114,10 @@ def test_prompt_optimizer_record_result_and_maybe_promote():
 def test_agentgraph_accepts_self_optimizer_and_prompt_optimizer():
     """AgentGraph must accept both optimizers as settable attributes."""
     from unittest.mock import MagicMock
+
     from app.agent.graph import AgentGraph
-    from app.intelligence.self_optimization import SelfOptimizer
     from app.intelligence.prompt_optimizer import PromptOptimizer
+    from app.intelligence.self_optimization import SelfOptimizer
 
     fake_provider = MagicMock()
     graph = AgentGraph(
