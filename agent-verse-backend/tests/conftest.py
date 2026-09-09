@@ -63,8 +63,15 @@ def _keep_scaling_tasks_bound():
     import importlib
     import sys
 
+    # Ensure app.scaling.tasks is loaded (and thus bound as an attribute of the
+    # app.scaling package) before every test. A prior test may have deleted the
+    # app.scaling package from sys.modules; if it is then re-imported fresh
+    # without tasks (e.g. a test that only imports app.scaling.celery_app), the
+    # package loses its `tasks` attribute and monkeypatch.setattr(
+    # "app.scaling.tasks.X") fails with AttributeError. Importing here is a cheap
+    # cached lookup once loaded, and closes that gap regardless of ordering.
     scaling = sys.modules.get("app.scaling")
-    if scaling is not None and not hasattr(scaling, "tasks"):
+    if scaling is None or not hasattr(scaling, "tasks"):
         with contextlib.suppress(Exception):
             importlib.import_module("app.scaling.tasks")
     yield
