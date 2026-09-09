@@ -522,6 +522,7 @@ async def suggest_schedule(request: Request, body: SuggestScheduleRequest) -> di
                     Message(role="system", content=system_prompt),
                     Message(role="user", content=user_msg),
                 ],
+                model="",
                 max_tokens=600,
             )
         )

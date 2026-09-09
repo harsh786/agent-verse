@@ -360,8 +360,11 @@ async def guardrail_stats(
         by_layer[v.get("layer", "unknown")] += 1
         category_counts[v.get("violation_type", "unknown")] += 1
 
+    categories: list[dict[str, Any]] = [
+        {"category": k, "count": c} for k, c in category_counts.items()
+    ]
     top_categories = sorted(
-        [{"category": k, "count": c} for k, c in category_counts.items()],
+        categories,
         key=lambda x: x["count"],
         reverse=True,
     )[:10]

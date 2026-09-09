@@ -306,7 +306,9 @@ async def simulate_trigger(
         result = await dispatcher.dispatch(spec, sample, tenant_ctx, simulation=True)
         import dataclasses
 
-        return dataclasses.asdict(result) if dataclasses.is_dataclass(result) else vars(result)
+        if dataclasses.is_dataclass(result) and not isinstance(result, type):
+            return dataclasses.asdict(result)
+        return vars(result)
 
     return {
         "trigger_type": spec.trigger_type.value,
