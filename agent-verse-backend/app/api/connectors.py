@@ -1675,17 +1675,18 @@ async def missing_capabilities(request: Request, goal: str = Query(...)) -> dict
     goal_lower = goal.lower()
     for spec in CONNECTOR_CATALOG:
         name_words = spec.name.lower().replace("-", " ").replace("_", " ")
-        if name_words in goal_lower or spec.name.lower() in goal_lower:
-            if spec.name not in available_names:
-                suggestions.append(
-                    {
-                        "connector": spec.name,
-                        "category": "integration",
-                        "install_hint": (
-                            f"Register the {spec.name} connector to enable this capability"
-                        ),
-                    }
-                )
+        if (
+            name_words in goal_lower or spec.name.lower() in goal_lower
+        ) and spec.name not in available_names:
+            suggestions.append(
+                {
+                    "connector": spec.name,
+                    "category": "integration",
+                    "install_hint": (
+                        f"Register the {spec.name} connector to enable this capability"
+                    ),
+                }
+            )
 
     return {
         "goal": goal,

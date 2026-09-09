@@ -2154,11 +2154,14 @@ class GoalService:
                         _agent_collection_ids = list(_agent_rec.get("allowed_collection_ids", []))
             loop._agent_collection_ids = _agent_collection_ids
             # Detect FakeProvider so get_goal() can surface a warning to callers
-            if hasattr(loop, "_planner") and type(loop._planner).__name__ == "FakeProvider":
-                if record is not None:
-                    record.execution_context["provider_warning"] = (
-                        "No real LLM provider configured. Results are simulated."
-                    )
+            if (
+                hasattr(loop, "_planner")
+                and type(loop._planner).__name__ == "FakeProvider"
+                and record is not None
+            ):
+                record.execution_context["provider_warning"] = (
+                    "No real LLM provider configured. Results are simulated."
+                )
 
             # Guarantee tool_context is always available: fall back to building
             # a basic context (RPA tools) when the caller didn't pass one.

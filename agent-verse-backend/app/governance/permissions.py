@@ -111,9 +111,12 @@ class PermissionMatrix:
         rule = self._resolve_rule(tool_name, tenant_ctx=tenant_ctx)
         if rule is None:
             return self._DEFAULT
-        if scope_value is not None and rule.scope_pattern is not None:
-            if not fnmatch.fnmatch(scope_value, rule.scope_pattern):
-                return ActionLevel.DENY
+        if (
+            scope_value is not None
+            and rule.scope_pattern is not None
+            and not fnmatch.fnmatch(scope_value, rule.scope_pattern)
+        ):
+            return ActionLevel.DENY
         return rule.level
 
     def check_with_limits(

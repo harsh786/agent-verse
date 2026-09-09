@@ -491,17 +491,20 @@ class SimulationRunner:
         # Step 3 — add keyword-inferred steps when no matching mock tool covers them
         tool_names_lower = {t.lower() for t in mock_tools}
 
-        if any(kw in goal_lower for kw in ("test", "verify", "check", "validate")):
-            if not any("test" in t or "verify" in t for t in tool_names_lower):
-                steps.append({"description": "Run verification checks", "tool": None})
+        if any(kw in goal_lower for kw in ("test", "verify", "check", "validate")) and not any(
+            "test" in t or "verify" in t for t in tool_names_lower
+        ):
+            steps.append({"description": "Run verification checks", "tool": None})
 
-        if any(kw in goal_lower for kw in ("report", "summary", "document")):
-            if not any("confluence" in t or "doc" in t for t in tool_names_lower):
-                steps.append({"description": "Generate summary report", "tool": None})
+        if any(kw in goal_lower for kw in ("report", "summary", "document")) and not any(
+            "confluence" in t or "doc" in t for t in tool_names_lower
+        ):
+            steps.append({"description": "Generate summary report", "tool": None})
 
-        if any(kw in goal_lower for kw in ("notify", "alert", "message", "ping")):
-            if not any("slack" in t or "email" in t for t in tool_names_lower):
-                steps.append({"description": "Send notification", "tool": None})
+        if any(kw in goal_lower for kw in ("notify", "alert", "message", "ping")) and not any(
+            "slack" in t or "email" in t for t in tool_names_lower
+        ):
+            steps.append({"description": "Send notification", "tool": None})
 
         # Step 4 — always end with a verification step
         steps.append({"description": "Verify goal completion", "tool": None})
