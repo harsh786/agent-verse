@@ -29,7 +29,10 @@ from app.rag.catalogue import (
 from app.rag.contracts import (
     DIRECT_CORE_RAG_STRATEGIES,
     AgenticRAGRuntimeAdapter,
+    ColBERTRAGRuntimeAdapter,
     FLARERAGRuntimeAdapter,
+    ModularRAGRuntimeAdapter,
+    RAFTRAGRuntimeAdapter,
     RAGCitation,
     RAGExecutionRequest,
     RAGExecutionResult,
@@ -68,6 +71,16 @@ _REASONING_ADAPTER_FACTORIES: Mapping[RAGStrategy, Callable[[], RAGRuntimeAdapte
             RAGStrategy.SPECULATIVE: SpeculativeRAGRuntimeAdapter,
             RAGStrategy.FLARE: FLARERAGRuntimeAdapter,
             RAGStrategy.AGENTIC: AgenticRAGRuntimeAdapter,
+            # D-6: COLBERT/RAFT/MODULAR are certified via RAG_CAPABILITY_CATALOGUE
+            # and dispatchable directly for explicit requests (RetrievalGateway
+            # .execute -> capability.adapter.execute), but were previously absent
+            # from this table — so an adaptive selection of any of them raised
+            # "adaptive selected an undispatchable strategy" instead of running.
+            # Wiring them here makes the auto-select branches in adaptive.py
+            # actually reach a working execution path.
+            RAGStrategy.MODULAR: ModularRAGRuntimeAdapter,
+            RAGStrategy.COLBERT: ColBERTRAGRuntimeAdapter,
+            RAGStrategy.RAFT: RAFTRAGRuntimeAdapter,
         }
     )
 )
