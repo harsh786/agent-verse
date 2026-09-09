@@ -42,6 +42,8 @@ import { ApprovalCenter }         from './ApprovalCenter';
 import { LoginGreetingPlayer }   from '@/components/voice/LoginGreetingPlayer';
 import { useVoiceAlerts }        from '@/lib/voice/useVoiceAlerts';
 import { useOrgRealtimeManager } from './OrgRealtimeManager';
+import { useOrgNeuralState } from './hooks/useOrgNeuralState';
+import { AgentConstellation } from './components/AgentConstellation';
 import { useOrganization, useOrgHealth, useMissions } from './hooks/useOrg';
 import type { OrgMission }       from './types';
 
@@ -51,10 +53,15 @@ export function OrgPage() {
   // D-6: Proactive voice alerts — plays TTS audio when mission fails/approval needed
   useVoiceAlerts({ enabled: !!orgId });
 
+  // Live agent constellation state — accumulates agent/team events into the
+  // force-graph's node/edge model so bots spawn and light up as work happens.
+  const neural = useOrgNeuralState(orgId ?? null);
+
   // Live org event stream — missions forming, teams assembling, agents activating,
-  // approvals — pushed over SSE and invalidated into the query cache so the whole
-  // console updates in real time (this is what makes "things move" on screen).
-  useOrgRealtimeManager(orgId);
+  // approvals — pushed over SSE. It invalidates the query cache so the whole
+  // console updates in real time, AND feeds the constellation (onEvent) so new
+  // agents animate into the graph as they spawn.
+  useOrgRealtimeManager(orgId, { onEvent: neural.applyEvent });
 
   // JARVIS boot screen — play the full cinematic boot ONCE per browser session
   // (it's a delight the first time, a 3s tax on every subsequent org visit), and
@@ -88,6 +95,7 @@ export function OrgPage() {
   const [showCommands, setShowCommands]       = useState(false);
   const [showObsidian, setShowObsidian]       = useState(false);
   const [showApprovals, setShowApprovals]     = useState(false);
+  const [showConstellation, setShowConstellation] = useState(true);
 
   const { data: org, isLoading: orgLoading, refetch } = useOrganization(orgId ?? null);
   const { data: health }    = useOrgHealth(orgId ?? null);
@@ -347,6 +355,62 @@ export function OrgPage() {
             className="flex-1 flex flex-col overflow-hidden border-r border-[#1E2535]"
             aria-label="Missions panel"
           >
+            {/* Live agent constellation — Obsidian-style force graph where each
+                team member spawns a node and lights up as it works. */}
+            <section className="border-b border-[#1E2535] shrink-0" aria-label="Live agent network">
+              <div className="flex items-center justify-between px-4 pt-3 pb-1">
+                <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#00D4FF]/70 flex items-center gap-1.5">
+                  <Network className="h-2.5 w-2.5" aria-hidden />
+                  Live Agent Network
+                  {neural.agents.length > 0 && (
+                    <span className="text-[#475569] normal-case tracking-normal">
+                      · {neural.agents.length} agent{neural.agents.length !== 1 ? 's' : ''} active
+                    </span>
+                  )}
+                </p>
+                <button
+                  onClick={() => setShowConstellation(v => !v)}
+                  className="text-[10px] text-[#475569] hover:text-[#94A3B8] transition-colors min-h-[32px] px-2"
+                  aria-expanded={showConstellation}
+                  aria-label={showConstellation ? 'Hide agent network' : 'Show agent network'}
+                >
+                  {showConstellation ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              <AnimatePresence initial={false}>
+                {showConstellation && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
+                    className="overflow-hidden"
+                  >
+                    <div className="flex items-center justify-center p-3 overflow-auto">
+                      <AgentConstellation
+                        orgId={orgId}
+                        missions={activeMissions}
+                        agents={neural.agents.map(a => ({
+                          id: a.id,
+                          label: a.label,
+                          role: a.role,
+                          status:
+                            a.state === 'executing' || a.state === 'communicating'
+                              ? 'active'
+                              : a.state === 'error' || a.state === 'blocked'
+                                ? 'error'
+                                : 'idle',
+                          goalCount: a.goalCount,
+                        }))}
+                        communicatingPairs={neural.communicatingPairs}
+                        className="max-w-full"
+                      />
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </section>
+
             {/* Filter tabs */}
             <StatusFilterBar value={statusFilter} onChange={setStatusFilter} />
 
