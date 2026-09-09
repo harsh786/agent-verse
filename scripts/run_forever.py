@@ -5,22 +5,29 @@ This is a small supervisor daemon. It does two things for as long as it lives:
 
   1. Holds macOS power assertions so the machine never idle-sleeps out from
      under the service (reuses the IOKit / caffeinate logic in keep_awake.py).
-  2. Runs a service command and restarts it every time it exits - crash, OOM,
-     kill, clean exit, anything - with capped exponential backoff so a command
-     that dies instantly doesn't spin the CPU.
+  2. Runs the AgentVerse runtime and restarts each part every time it exits -
+     crash, OOM, kill, clean exit, anything - with capped exponential backoff so
+     a process that dies instantly doesn't spin the CPU.
 
-By default the supervised command is the AgentVerse backend:
+By default it supervises the FULL runtime, each part independently:
 
-    uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+    api    : uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+    worker : uv run celery -A app.scaling.celery_app:celery_app worker -Q <all queues>
+    beat   : uv run celery -A app.scaling.celery_app:celery_app beat
 
-...launched from agent-verse-backend/. Override it with a trailing `-- <cmd>`.
+The worker is not optional in practice: the API only *enqueues* goals/workflows;
+without a worker draining the Celery queues every submitted goal sticks in
+PLANNING forever, and without beat nothing time-based (schedules, HITL expiry,
+maintenance) ever fires. All three launch from agent-verse-backend/.
 
-    ./run_forever.py                       # foreground: awake + backend, restart forever
-    ./run_forever.py -- uv run celery -A app.scaling.celery_app worker
+    ./run_forever.py                       # foreground: awake + api+worker+beat, forever
+    ./run_forever.py --no-beat             # api + worker only (no periodic tasks)
+    ./run_forever.py --no-worker           # api only (goals will NOT execute)
+    ./run_forever.py -- uv run celery ...  # override: supervise exactly this one cmd
     ./run_forever.py --port 9000           # backend on a different port
     ./run_forever.py start                 # background (detached), logs to a file
-    ./run_forever.py status                # is it up? what's the child pid?
-    ./run_forever.py stop                  # stop supervisor + child, release awake
+    ./run_forever.py status                # is it up? what's the supervisor pid?
+    ./run_forever.py stop                  # stop supervisor + children, release awake
     ./run_forever.py restart               # stop then start
     ./run_forever.py install               # LaunchAgent: start at login, survive logout
     ./run_forever.py uninstall             # remove the LaunchAgent
@@ -39,7 +46,9 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # Reuse the awake backend (IOKit assertions + caffeinate fallback) from the
@@ -105,47 +114,153 @@ def default_command(args: argparse.Namespace) -> list[str]:
     ]
 
 
-def resolve_command(args: argparse.Namespace) -> tuple[list[str], Path]:
-    """Return (command, working_dir). Trailing `-- cmd` overrides the default."""
+# All Celery queues the worker must drain for the platform to actually *do* work.
+# The API enqueues goals/workflows here; without a worker consuming them every
+# submitted goal sticks in PLANNING forever (the queue just grows in Redis).
+_CELERY_QUEUES = (
+    "goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,"
+    "schedules,maintenance,"
+    "workflows.run,workflows.free,workflows.starter,workflows.professional,"
+    "workflows.enterprise,workflows.maintenance"
+)
+
+
+def worker_command() -> list[str]:
+    """Celery worker draining every goal/workflow/schedule/maintenance queue."""
+    return [
+        "uv", "run", "celery", "-A", "app.scaling.celery_app:celery_app", "worker",
+        "-Q", _CELERY_QUEUES,
+        "--concurrency", "2", "--loglevel", "info", "-n", "worker@%h",
+    ]
+
+
+def beat_command() -> list[str]:
+    """Celery beat — fires the periodic schedule (due triggers, HITL expiry,
+    maintenance, memory consolidation). Without it, nothing time-based runs."""
+    return [
+        "uv", "run", "celery", "-A", "app.scaling.celery_app:celery_app", "beat",
+        "--loglevel", "info",
+    ]
+
+
+@dataclass
+class _Service:
+    """One supervised child process (API, worker, or beat)."""
+
+    name: str
+    command: list[str]
+    cwd: Path
+    child: subprocess.Popen[bytes] | None = field(default=None)
+
+
+@dataclass
+class _RunState:
+    """Shared supervision state across the per-service threads."""
+
+    stopping: bool = False
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+def resolve_services(args: argparse.Namespace) -> list[_Service]:
+    """Return the services to supervise.
+
+    A trailing ``-- <cmd>`` overrides everything and supervises exactly that one
+    command (worker/beat are not added). Otherwise the default runtime is the API
+    plus the Celery worker and beat — the full stack needed for goals to execute
+    and schedules to fire — each toggleable with ``--no-worker`` / ``--no-beat``.
+    """
     if args.command:
-        return args.command, Path(args.cwd or REPO_ROOT)
-    return default_command(args), Path(args.cwd or BACKEND_DIR)
+        return [_Service("service", list(args.command), Path(args.cwd or REPO_ROOT))]
+    cwd = Path(args.cwd or BACKEND_DIR)
+    services = [_Service("api", default_command(args), cwd)]
+    if getattr(args, "worker", True):
+        services.append(_Service("worker", worker_command(), cwd))
+    if getattr(args, "beat", True):
+        services.append(_Service("beat", beat_command(), cwd))
+    return services
 
 
 # --------------------------------------------------------------------------- #
 # the supervisor loop
 # --------------------------------------------------------------------------- #
+def _supervise_one(service: _Service, awake: object, state: _RunState) -> None:
+    """Keep one service alive forever: spawn -> wait -> restart with backoff.
+
+    This is the original single-child loop, now run in its own thread per service
+    so the API, worker, and beat are each supervised independently — one crashing
+    or restarting never takes the others down.
+    """
+    backoff = BACKOFF_START
+    while not state.stopping:
+        started = time.monotonic()
+        try:
+            child = subprocess.Popen(
+                service.command,
+                cwd=str(service.cwd),
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            log(f"[{service.name}] failed to launch: {exc}")
+            if state.stopping:
+                break
+            _interruptible_sleep(backoff, lambda: state.stopping)
+            backoff = min(backoff * 2, BACKOFF_MAX)
+            continue
+
+        with state.lock:
+            service.child = child
+        log(f"[{service.name}] started (child pid {child.pid})")
+        rc = _wait_child(child, ensure_awake=awake, stopping=lambda: state.stopping)
+        with state.lock:
+            service.child = None
+        uptime = time.monotonic() - started
+
+        if state.stopping:
+            log(f"[{service.name}] exited (rc={rc}) during shutdown")
+            break
+
+        if uptime >= HEALTHY_UPTIME:
+            backoff = BACKOFF_START  # it was stable; recover quickly
+        log(
+            f"[{service.name}] exited (rc={rc}, up {uptime:.0f}s); "
+            f"restarting in {backoff:.0f}s"
+        )
+        _interruptible_sleep(backoff, lambda: state.stopping)
+        backoff = min(backoff * 2, BACKOFF_MAX)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     existing = read_pid_file()
     if existing and existing != os.getpid() and not args.force:
         log(f"supervisor already running as pid {existing} (use --force to run anyway)")
         return 1
 
-    command, workdir = resolve_command(args)
-    if not workdir.is_dir():
-        log(f"working dir does not exist: {workdir}")
-        return 1
+    services = resolve_services(args)
+    for service in services:
+        if not service.cwd.is_dir():
+            log(f"working dir does not exist: {service.cwd}")
+            return 1
 
-    stopping = False
-    child: subprocess.Popen[bytes] | None = None
+    state = _RunState()
 
     def handle_signal(signum: int, _frame: object) -> None:
-        nonlocal stopping
-        stopping = True
-        log(f"received {signal.Signals(signum).name}; shutting down service")
-        # Break out of a backoff sleep and terminate the child promptly.
-        if child is not None and child.poll() is None:
-            _terminate(child)
+        state.stopping = True
+        log(f"received {signal.Signals(signum).name}; shutting down services")
+        # Break out of backoff sleeps and terminate every live child promptly.
+        with state.lock:
+            for service in services:
+                if service.child is not None and service.child.poll() is None:
+                    _terminate(service.child)
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGHUP, handle_signal)
 
     write_pid_file()
-    backoff = BACKOFF_START
-    printable = " ".join(command)
-    log(f"supervisor pid {os.getpid()} in {workdir}")
-    log(f"service command: {printable}")
+    log(f"supervisor pid {os.getpid()}")
+    for service in services:
+        log(f"service [{service.name}]: {' '.join(service.command)} (cwd {service.cwd})")
 
     try:
         with make_backend("run_forever: keep AgentVerse service alive") as awake:
@@ -155,40 +270,28 @@ def cmd_run(args: argparse.Namespace) -> int:
             awake.acquire(kinds)
             log(f"holding awake: {', '.join(awake.held)}")
 
-            while not stopping:
-                started = time.monotonic()
-                try:
-                    child = subprocess.Popen(
-                        command,
-                        cwd=str(workdir),
-                        stdin=subprocess.DEVNULL,
-                        start_new_session=True,
-                    )
-                except OSError as exc:
-                    log(f"failed to launch service: {exc}")
-                    if stopping:
-                        break
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, BACKOFF_MAX)
-                    continue
-
-                log(f"service started (child pid {child.pid})")
-                rc = _wait_child(child, ensure_awake=awake, stopping=lambda: stopping)
-                child = None
-                uptime = time.monotonic() - started
-
-                if stopping:
-                    log(f"service exited (rc={rc}) during shutdown")
-                    break
-
-                if uptime >= HEALTHY_UPTIME:
-                    backoff = BACKOFF_START  # it was stable; recover quickly
-                log(
-                    f"service exited (rc={rc}, up {uptime:.0f}s); "
-                    f"restarting in {backoff:.0f}s"
+            threads = [
+                threading.Thread(
+                    target=_supervise_one,
+                    args=(service, awake, state),
+                    name=f"supervise-{service.name}",
+                    daemon=True,
                 )
-                _interruptible_sleep(backoff, lambda: stopping)
-                backoff = min(backoff * 2, BACKOFF_MAX)
+                for service in services
+            ]
+            for thread in threads:
+                thread.start()
+
+            # Main thread stays alive keeping the caffeinate fallback healthy until
+            # a signal sets stopping; the per-service threads own their children.
+            while not state.stopping:
+                ensure = getattr(awake, "ensure_alive", None)
+                if ensure is not None and ensure():
+                    log("caffeinate died; restarted it")
+                time.sleep(1)
+
+            for thread in threads:
+                thread.join(timeout=15)
     finally:
         if read_pid_file() == os.getpid():
             PID_FILE.unlink(missing_ok=True)
@@ -240,6 +343,10 @@ def _forwarded_run_args(args: argparse.Namespace) -> list[str]:
     forwarded = ["run", "--force", "--host", args.host, "--port", str(args.port)]
     if args.display:
         forwarded.append("--display")
+    if not getattr(args, "worker", True):
+        forwarded.append("--no-worker")
+    if not getattr(args, "beat", True):
+        forwarded.append("--no-beat")
     if args.cwd:
         forwarded += ["--cwd", args.cwd]
     if args.command:
@@ -425,9 +532,22 @@ def build_parser() -> argparse.ArgumentParser:
             help="also keep the display awake (screen never sleeps)",
         )
         p.add_argument(
+            "--no-worker",
+            dest="worker",
+            action="store_false",
+            help="do not run the Celery worker (goals will not execute)",
+        )
+        p.add_argument(
+            "--no-beat",
+            dest="beat",
+            action="store_false",
+            help="do not run Celery beat (scheduled/periodic tasks will not fire)",
+        )
+        p.set_defaults(worker=True, beat=True)
+        p.add_argument(
             "command",
             nargs=argparse.REMAINDER,
-            help="optional `-- <cmd...>` to supervise instead of the backend",
+            help="optional `-- <cmd...>` to supervise instead of the full stack",
         )
 
     run = sub.add_parser("run", help="foreground: hold awake + supervise (default)")
