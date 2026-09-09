@@ -30,11 +30,32 @@ def _get_dispatcher(request: Request) -> Any:
     return getattr(request.app.state, "trigger_dispatcher", None)
 
 
-async def _emit_chat_event(request: Request, channel_type: str, body: dict, tenant_id: str) -> None:
+def _channel_verified(request: Request, channel_type: str, *, slack_ok: bool = False) -> bool:
+    """Whether an inbound channel request is authenticated well enough to fire
+    triggers. Fail-closed: conversational triggers publish ONLY for a verified
+    request, so a spoofed webhook (e.g. a forged X-Tenant-ID) cannot fire a
+    victim tenant's triggers.
+
+    * slack — HMAC signature verified (``slack_ok``, computed by the endpoint).
+    * others — a per-channel shared secret in ``app.state.channel_webhook_secrets``
+      must match the ``X-Webhook-Secret`` header. No secret configured → not
+      verified (the channel's triggers stay dormant until an operator sets one).
+    """
+    if channel_type == "slack":
+        return slack_ok
+    secrets = getattr(request.app.state, "channel_webhook_secrets", None) or {}
+    expected = str(secrets.get(channel_type, "") or "")
+    provided = request.headers.get("X-Webhook-Secret", "")
+    return bool(expected) and bool(provided) and hmac.compare_digest(provided, expected)
+
+
+async def _emit_chat_event(
+    request: Request, channel_type: str, body: dict, tenant_id: str, *, verified: bool
+) -> None:
     """Publish a normalized conversational event onto the EVENT bus so Family C
-    (chat/email/sms/voice/form) triggers can fire."""
+    (chat/email/sms/voice/form) triggers can fire — only for a verified request."""
     redis = getattr(request.app.state, "trigger_event_redis", None)
-    if redis is None or not tenant_id:
+    if redis is None or not tenant_id or not verified:
         return
     try:
         from app.triggers.consumers.conversational import (
@@ -95,6 +116,7 @@ async def slack_events(
 
     # Signature verification
     signing_secret = getattr(request.app.state, "slack_signing_secret", "")
+    slack_verified = False
     if signing_secret and x_slack_signature:
         sig_basestring = f"v0:{x_slack_request_timestamp}:{body_bytes.decode()}"
         computed = (
@@ -103,6 +125,7 @@ async def slack_events(
         )
         if not hmac.compare_digest(computed, x_slack_signature):
             raise HTTPException(status_code=401, detail="Invalid Slack signature")
+        slack_verified = True
 
     team_id = body.get("team_id", "")
     db = getattr(request.app.state, "db", None)
@@ -115,7 +138,13 @@ async def slack_events(
         _log.warning("slack_event_unknown_team team_id=%s", team_id)
 
     if tenant_id:
-        await _emit_chat_event(request, "slack", body, tenant_id)
+        await _emit_chat_event(
+            request,
+            "slack",
+            body,
+            tenant_id,
+            verified=_channel_verified(request, "slack", slack_ok=slack_verified),
+        )
     return {"ok": True}
 
 
@@ -135,7 +164,9 @@ async def teams_events(request: Request) -> dict:
     if gateway and tenant_id:
         await gateway.ingest("teams", body, tenant_id=tenant_id)
     if tenant_id:
-        await _emit_chat_event(request, "teams", body, tenant_id)
+        await _emit_chat_event(
+            request, "teams", body, tenant_id, verified=_channel_verified(request, "teams")
+        )
     return {"type": "message", "text": "Received"}
 
 
@@ -155,7 +186,9 @@ async def discord_events(request: Request) -> dict:
     if gateway and tenant_id:
         await gateway.ingest("discord", body, tenant_id=tenant_id)
     if tenant_id:
-        await _emit_chat_event(request, "discord", body, tenant_id)
+        await _emit_chat_event(
+            request, "discord", body, tenant_id, verified=_channel_verified(request, "discord")
+        )
     return {"type": 5}
 
 
@@ -180,7 +213,9 @@ async def email_inbound(request: Request) -> dict:
     if gateway and tenant_id:
         await gateway.ingest("email", body, tenant_id=tenant_id)
     if tenant_id:
-        await _emit_chat_event(request, "email", body, tenant_id)
+        await _emit_chat_event(
+            request, "email", body, tenant_id, verified=_channel_verified(request, "email")
+        )
     return {"status": "ok"}
 
 
@@ -205,7 +240,9 @@ async def sms_inbound(request: Request) -> str:
     if gateway and tenant_id:
         await gateway.ingest("sms", body, tenant_id=tenant_id)
     if tenant_id:
-        await _emit_chat_event(request, "sms", body, tenant_id)
+        await _emit_chat_event(
+            request, "sms", body, tenant_id, verified=_channel_verified(request, "sms")
+        )
     return '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
 
 
@@ -222,7 +259,9 @@ async def voice_transcript(request: Request) -> dict:
     gateway = _get_gateway(request)
     if gateway:
         await gateway.ingest("voice", body, tenant_id=tenant_id)
-    await _emit_chat_event(request, "voice", body, tenant_id)
+    await _emit_chat_event(
+        request, "voice", body, tenant_id, verified=_channel_verified(request, "voice")
+    )
     return {"status": "ok"}
 
 
@@ -243,7 +282,9 @@ async def form_submission(form_id: str, request: Request) -> dict:
     gateway = _get_gateway(request)
     if gateway:
         await gateway.ingest("form", body, tenant_id=tenant_id)
-    await _emit_chat_event(request, "form", body, tenant_id)
+    await _emit_chat_event(
+        request, "form", body, tenant_id, verified=_channel_verified(request, "form")
+    )
     return {"status": "ok"}
 
 
