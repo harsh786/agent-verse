@@ -197,7 +197,7 @@ def test_oauth_start_non_oauth_auth_type_returns_400():
 
 def test_scope_extraction_from_step():
     """_extract_scope_value correctly extracts repo names and JIRA project keys."""
-    from app.agent.graph import _extract_scope_value
+    from app.agent.nodes._helpers import _extract_scope_value
 
     assert _extract_scope_value("push to acme/my-repo") == "acme/my-repo"
     assert _extract_scope_value("create PR on org/backend-service") == "org/backend-service"

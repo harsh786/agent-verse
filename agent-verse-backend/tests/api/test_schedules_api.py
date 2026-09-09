@@ -367,8 +367,15 @@ def test_fire_due_schedules_dispatches_agent_bound_goal(monkeypatch: MonkeyPatch
         def get(self, key: str) -> str | None:
             return redis_store.get(key)
 
-        def set(self, key: str, value: str) -> None:
+        # Accept the beat-guard lock kwargs (ex=, nx=) and the plain 2-arg form
+        # used by mark_schedule_fired; the real redis client takes both.
+        def set(self, key: str, value: str, **_kw: Any) -> bool:
             redis_store[key] = value
+            return True
+
+        def delete(self, *keys: str) -> None:
+            for k in keys:
+                redis_store.pop(k, None)
 
     def fake_apply_async(*args: Any, **kwargs: Any) -> SimpleNamespace:
         dispatched.append({"args": args, "kwargs": kwargs})
@@ -381,25 +388,23 @@ def test_fire_due_schedules_dispatches_agent_bound_goal(monkeypatch: MonkeyPatch
         "redis",
         SimpleNamespace(from_url=lambda *args, **kwargs: FakeRedis()),
     )
-    monkeypatch.setattr(tasks.run_goal, "apply_async", fake_apply_async)
+    # WT-9: scheduled fires now route through the governed run_scheduled_goal
+    # task (which hands off to the TriggerDispatcher for dedup/rate/condition
+    # parity) rather than enqueuing run_goal directly. The dispatch still carries
+    # the schedule's tenant, template, and agent binding.
+    monkeypatch.setattr(tasks.run_scheduled_goal, "apply_async", fake_apply_async)
 
     result = tasks.fire_due_schedules()
 
     assert result["schedules_fired"] == 1
-    goal_id = dispatched[0]["kwargs"]["kwargs"]["goal_id"]
-    assert dispatched[0]["kwargs"] == {
-        "kwargs": {
-            "goal_id": goal_id,
-            "goal_text": "Run daily report",
-            "goal_template": "Run daily report",
-            "tenant_id": _CTX.tenant_id,
-            "agent_id": "agent-abc",
-        },
-        "queue": "schedules",
-    }
-    assert goal_id.startswith("sched_")
-    assert len(goal_id) <= 32
-    assert ":" not in goal_id
+    call_kwargs = dispatched[0]["kwargs"]["kwargs"]
+    assert dispatched[0]["kwargs"]["queue"] == "schedules"
+    assert call_kwargs["schedule_id"] == "schedule:tid-sched:sched-1"
+    assert call_kwargs["tenant_id"] == _CTX.tenant_id
+    assert call_kwargs["goal_template"] == "Run daily report"
+    assert call_kwargs["agent_id"] == "agent-abc"
+    # A stable per-fire instance id makes duplicate beat ticks idempotent.
+    assert call_kwargs["fire_instance_id"]
 
 
 def test_nl_schedule_compound_returns_multiple() -> None:

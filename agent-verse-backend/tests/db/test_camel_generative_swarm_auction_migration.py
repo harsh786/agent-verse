@@ -5,8 +5,8 @@ from app.db.models.coordination import COORDINATION_TABLES
 
 def test_program09_migration_is_linear_reversible_and_forces_rls() -> None:
     source = Path("app/db/migrations/versions/0102_camel_generative_swarm_auction.py").read_text()
-    assert 'revision = "0102_camel_generative_swarm_auction"' in source
-    assert 'down_revision = "0101_magentic_moa"' in source
+    assert 'revision = "0102"' in source
+    assert 'down_revision = "0101"' in source
     for table in (
         "camel_dialogue_state",
         "generative_agent_state",
