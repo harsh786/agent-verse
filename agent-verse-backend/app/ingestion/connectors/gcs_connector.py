@@ -43,9 +43,8 @@ class GCSConnector(BaseConnector):
             import tempfile
 
             if isinstance(creds_json, dict):
-                tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-                json.dump(creds_json, tmp)
-                tmp.close()
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+                    json.dump(creds_json, tmp)
                 client = storage.Client.from_service_account_json(tmp.name)
                 os.unlink(tmp.name)
             else:
@@ -87,9 +86,8 @@ class GCSConnector(BaseConnector):
         prefix = config.connection_config.get("prefix", "")
 
         if isinstance(creds_json, dict):
-            tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-            json.dump(creds_json, tmp)
-            tmp.close()
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+                json.dump(creds_json, tmp)
             client = storage.Client.from_service_account_json(tmp.name)
             os.unlink(tmp.name)
         else:

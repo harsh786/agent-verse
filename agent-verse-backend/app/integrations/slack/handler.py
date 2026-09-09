@@ -37,9 +37,8 @@ def verify_slack_signature(
 ) -> bool:
     """Verify Slack request signature. Returns False when no secret configured."""
     if not signing_secret:
-        if os.getenv("ENVIRONMENT", "development") == "production":
-            return False  # Fail-closed in production
-        return True  # Allow in development only
+        # Fail-closed in production, allow in development only
+        return os.getenv("ENVIRONMENT", "development") != "production"
 
     # Reject stale requests (> 5 minutes old)
     try:
