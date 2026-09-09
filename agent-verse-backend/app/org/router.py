@@ -985,16 +985,17 @@ async def approve_org_request(
     if hitl_gateway is None:
         raise HTTPException(status_code=503, detail="HITL gateway not available")
 
-    tenant_id = service._tenant_id
-    try:
-        await hitl_gateway.resolve(
-            request_id=approval_id,
-            action="approve",
-            approver=body.approver,
-            note=body.note,
-            tenant_id=tenant_id,
-        )
-    except Exception as exc:
+    from app.tenancy.context import PlanTier, TenantContext
+
+    tenant_ctx = TenantContext(
+        tenant_id=service._tenant_id, plan=PlanTier.FREE, api_key_id="org_approvals"
+    )
+    # HITLGateway exposes approve/reject (not a `resolve` method); approve()
+    # returns a truthy _AwaitableBool only when the request exists and is pending.
+    ok = await hitl_gateway.approve(
+        approval_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
+    )
+    if not ok:
         raise HTTPException(
             status_code=404,
             detail={
@@ -1004,7 +1005,7 @@ async def approve_org_request(
                 "detail": f"Approval '{approval_id}' not found or already resolved",
                 "request_id": x_request_id,
             },
-        ) from exc
+        )
 
     return {"status": "approved", "approval_id": approval_id, "approver": body.approver}
 
@@ -1031,16 +1032,18 @@ async def reject_org_request(
     if hitl_gateway is None:
         raise HTTPException(status_code=503, detail="HITL gateway not available")
 
-    tenant_id = service._tenant_id
-    try:
-        await hitl_gateway.resolve(
-            request_id=approval_id,
-            action="reject",
-            approver=body.approver,
-            note=body.note or "Rejected via org approval center",
-            tenant_id=tenant_id,
-        )
-    except Exception as exc:
+    from app.tenancy.context import PlanTier, TenantContext
+
+    tenant_ctx = TenantContext(
+        tenant_id=service._tenant_id, plan=PlanTier.FREE, api_key_id="org_approvals"
+    )
+    ok = await hitl_gateway.reject(
+        approval_id,
+        approver=body.approver,
+        note=body.note or "Rejected via org approval center",
+        tenant_ctx=tenant_ctx,
+    )
+    if not ok:
         raise HTTPException(
             status_code=404,
             detail={
@@ -1050,7 +1053,7 @@ async def reject_org_request(
                 "detail": f"Approval '{approval_id}' not found or already resolved",
                 "request_id": x_request_id,
             },
-        ) from exc
+        )
 
     return {"status": "rejected", "approval_id": approval_id, "approver": body.approver}
 
