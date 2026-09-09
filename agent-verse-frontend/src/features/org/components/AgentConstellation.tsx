@@ -79,15 +79,35 @@ export function AgentConstellation({
         </defs>
         <rect width={CANVAS_W} height={CANVAS_H} fill="url(#constellation-grid)" />
 
-        {/* Edge lines */}
+        {/* Edge lines — a static link, plus a flowing dashed overlay for agents
+            that are actively working, so you can see tasks streaming out to each
+            bot along its edge (hub → agent direction). */}
         {agents.map(a => {
           const aPos = positions.get(a.id);
           if (!aPos) return null;
+          const working = a.status === 'active';
           return (
-            <line key={`edge-${a.id}`}
-              x1={hubPos.x} y1={hubPos.y} x2={aPos.x} y2={aPos.y}
-              stroke="rgba(255,255,255,0.06)" strokeWidth={1}
-            />
+            <g key={`edge-${a.id}`}>
+              <line
+                x1={hubPos.x} y1={hubPos.y} x2={aPos.x} y2={aPos.y}
+                stroke="rgba(255,255,255,0.06)" strokeWidth={1}
+              />
+              {working && !reduce && (
+                <line
+                  x1={hubPos.x} y1={hubPos.y} x2={aPos.x} y2={aPos.y}
+                  stroke="#00D4FF" strokeWidth={1.5} strokeOpacity={0.55}
+                  strokeDasharray="2 11" strokeLinecap="round"
+                  style={{ filter: 'drop-shadow(0 0 3px rgba(0,212,255,0.9))' }}
+                >
+                  {/* Decreasing dashoffset marches the dashes from the hub toward
+                      the agent — reads as work/tasks flowing to the bot. */}
+                  <animate
+                    attributeName="stroke-dashoffset"
+                    from="26" to="0" dur="0.9s" repeatCount="indefinite"
+                  />
+                </line>
+              )}
+            </g>
           );
         })}
 
@@ -99,9 +119,16 @@ export function AgentConstellation({
           return (
             <line key={`beam-${i}`}
               x1={sPos.x} y1={sPos.y} x2={tPos.x} y2={tPos.y}
-              stroke="#A855F7" strokeWidth={1.5} strokeOpacity={0.5}
+              stroke="#A855F7" strokeWidth={1.5} strokeOpacity={0.55}
+              strokeDasharray="3 9" strokeLinecap="round"
               style={{ filter: 'drop-shadow(0 0 4px #A855F7)' }}
-            />
+            >
+              {/* Flowing dashes = an active message/handoff between two agents. */}
+              <animate
+                attributeName="stroke-dashoffset"
+                from="0" to="24" dur="1.1s" repeatCount="indefinite"
+              />
+            </line>
           );
         })}
       </svg>
