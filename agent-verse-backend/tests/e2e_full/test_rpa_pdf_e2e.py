@@ -42,3 +42,16 @@ async def test_rpa_report_returns_real_pdf(tenant_client: Any) -> None:
     assert len(pdf) > 500
     # A stored artifact reference is exposed for later retrieval.
     assert body["artifact_name"].endswith(".pdf")
+
+
+async def test_rpa_report_blocks_ssrf_targets(tenant_client: Any) -> None:
+    """The report endpoint fetches the URL server-side, so internal/metadata
+    targets must be rejected before any navigation (SSRF guard)."""
+    for url in (
+        "http://169.254.169.254/latest/meta-data/",
+        "http://localhost:8000/admin",
+        "http://127.0.0.1/",
+    ):
+        resp = await tenant_client.post("/rpa/report", json={"url": url})
+        assert resp.status_code == 400, f"expected 400 for {url}, got {resp.status_code}"
+        assert "blocked url" in resp.text.lower()
