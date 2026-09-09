@@ -202,14 +202,11 @@ Per the user: everything must be **analyzed → built generically → implemente
 - WS-6 OCR universal: ✅ DONE 114412a1 (OcrEngine.extract_any any-format→image→OCR + honest degradation metadata; 97 ocr tests)
 - WS-11c + WS-11/13 frontend: ✅ DONE 34a1ca08 (Obsidian Bases/Maps/Timeline→real org+KG data, KB source filter, OcrPage→KB save; typecheck 0, vitest 59/59)
 - WS-12 ingestion/KB foundation: ✅ DONE 7b5b19d6 (exists_by_hash dead-dedup fix, registered connectors + honest delta_reingest, video branch, provenance, zero-vector guard; 438 tests, e2e PASS). Provides exists_by_hash(content_hash, tenant_id, collection_id) for cross-source dedup.
-- WS-14 (slice): ✅ OCR tool universal input 96b51364. Remaining: workflow ocr step type + org-mission reach + cross-engine e2e.
-- WS-2 org / WS-10 RAG framework / WS-4 workflow-Celery: 🔄 IN FLIGHT (worktrees wt-ws2/wt-ws10/wt-ws4).
-- WS-13 RPA→KB + OCR→KB convergence, WS-8 (full pyramid+CI), WS-9 (ruff), WS-15 (convergence): TODO. Full fast tier baseline @ 7b5b19d6: 20874 passed / 0 failed. Execution model (user): PARALLEL worktrees, disjoint trees, merged as each lands; WS-8 before WS-15.
-- WS-1 Civilization throttle: TODO
-- WS-2 Org de-fake: TODO
-- WS-3 HITL flawless: TODO
-- WS-4 Workflow/Trigger/Schedule Celery e2e: TODO
-- WS-5 RPA→PDF: TODO
-- WS-6 OCR universal: TODO
-- WS-7 Org frontend AWE: TODO
-- WS-8 Full e2e + Playwright: TODO
+- WS-2 org world-class: ✅ DONE fec331d6 (real any-task decompose→assign→handoff→finalize + rich events; LLM composer w/ fallback; de-faked analytics; RBAC+quality-gate TODOs; WS-3b closed) + org-approval bug fix 6618477e (G-24 endpoints called non-existent HITLGateway.resolve → always-404; now real approve/reject; 3 regression tests). 742+243 tests, e2e PASS.
+- WS-10 RAG/agentic GENERIC framework: ✅ DONE ce6bcbd9 (rerank on DEFAULT retrieve path — engine + gateway; agent-pattern auto-select at AgentGraph seam, default-off gate, reachable on live goal path; calibrated confidence + low-conf fallback; e2e real cross-encoder rerank PASS). 2814 tests. Memory-TTL + classifier honestly out-of-scope.
+- WS-14: ✅ tool universal 96b51364 + workflow 'ocr' step type f0bb5190 + cross-route consistency 1a210378. Remaining (→WS-15): OCR as by-name builtin agent tool (goal/org reachability) — app/mcp catalog+handler wiring.
+- WS-13 RPA→KB + OCR→KB convergence: ✅ DONE 27c6117d (duplicate scraper DELETED; /ingest/rpa-url routes through the one RPAExecutor + real httpx fallback; kb_emit + scrape_to_kb; /ocr/extract persist_to_kb; cross-source dedup via exists_by_hash). 529+2580 tests, e2e convergence PASS.
+- WS-4 Workflow real-Celery: ✅ DONE 17a2e3b4 (ROOT-CAUSE fix: Celery branch never seeded checkpointer → 0 step rows/stuck pending; execute_fresh + _finalize_status; real out-of-process worker proven subprocess+compose; 3 e2e PASS: real run 2 step rows no _mock, scheduled dedup, workflow-HITL). Honest caveat: cross-process HITL needs DB-backed approval store + shared checkpointer (future WS).
+- WS-8 full pyramid + CI: ✅ CORE DONE 4c1ec37f (dedicated backend-e2e-full nightly job gating all 50 real-infra e2e tests via CI services — FAILS not skips, + non-empty guard). Existing: lint/mypy/unit(+empty-guard)/integration/security/docker-build + rich Playwright "live" projects + visual-regression. Follow-up: full backend-in-CI Playwright real-backend job (→WS-15/UI pass).
+- WS-9 ruff debt: 🔄 IN FLIGHT (wt-ws9).
+- WS-15 convergence + live UI e2e: TODO (after WS-9). Full fast tier @ merged HEAD: 20949 passed / 0 failed; mypy 1521 Success. No new DB migrations (head 0117) → UI e2e needs no schema change.
