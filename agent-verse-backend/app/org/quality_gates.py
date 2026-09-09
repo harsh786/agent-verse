@@ -8,8 +8,8 @@ GATE 5: POLICY_CHECK            — PolicyEngine validation (mandatory)
 GATE 6: HUMAN_APPROVAL          — real human (required for external/financial/legal)
 
 Scoring formula:
-  score = self_check×0.10 + deterministic×0.20 + evaluator×0.40
-        + peer_review×0.20 + policy×0.10
+  score = self_check x 0.10 + deterministic x 0.20 + evaluator x 0.40
+        + peer_review x 0.20 + policy x 0.10
 
 Thresholds:
   > 0.90 → auto-approve
@@ -205,6 +205,16 @@ class QualityGateSystem:
     async def _run_gate_2(self, output: str, context: dict) -> GateOutcome:
         """Gate 2: Deterministic validation — schema/type/syntax."""
         output_type = context.get("output_type", "text")
+
+        if not output or not output.strip():
+            return GateOutcome(
+                2,
+                "deterministic",
+                GateResult.FAIL,
+                0.0,
+                "Empty output fails deterministic validation",
+            )
+
         score = 0.90
         details = "Deterministic validation passed"
 
