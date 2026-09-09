@@ -20,11 +20,24 @@ from typing import Any
 import structlog
 from opentelemetry import trace
 
+from app.org.model_gateway import get_gateway
+
 _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
 
 # ── SUPP-J: Decision Intelligence ────────────────────────────────────────────
+
+# Which ModelGateway profile best suits reasoning about each decision type.
+# Higher-stakes/ambiguous decision types route to higher quality-floor profiles.
+_DECISION_TYPE_MODEL_PROFILES: dict[str, str] = {
+    "strategic_planning": "premium",
+    "financial": "analytical",
+    "operational": "smart",
+    "creative": "creative",
+    "routine": "fast",
+}
+_DEFAULT_DECISION_MODEL_PROFILE = "smart"
 
 
 @dataclass
@@ -129,6 +142,24 @@ class DecisionIntelligence:
             "high_confidence_failures": len(hc_failures),
             "calibration_warning": len(hc_failures) > 2,
         }
+
+    async def recommend_decision_model(self, decision_type: str, dept_id: str = "") -> str:
+        """Recommend which LLM should reason about a decision of this type.
+
+        Delegates to the ModelGateway, mapping decision_type onto a model
+        profile with a quality floor proportional to the decision's stakes.
+        """
+        profile = _DECISION_TYPE_MODEL_PROFILES.get(decision_type, _DEFAULT_DECISION_MODEL_PROFILE)
+        quality_req = 0.90 if profile in ("premium", "analytical") else 0.80
+        task_type = f"decision:{decision_type}"
+        if dept_id:
+            task_type = f"{task_type}:{dept_id}"
+        selection = await get_gateway().select_model(
+            role_profile=profile,
+            task_type=task_type,
+            quality_req=quality_req,
+        )
+        return selection.model_id
 
     def list_decisions(self, org_id: str, limit: int = 50) -> list[dict[str, Any]]:
         records = self._records.get(org_id, [])
