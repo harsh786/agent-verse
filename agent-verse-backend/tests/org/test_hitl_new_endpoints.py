@@ -9,15 +9,16 @@ Tests cover:
 """
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 import types
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from app.org.router import router as org_router, get_org_service
+from app.org.router import get_org_service
+from app.org.router import router as org_router
 
 TENANT_ID  = "00000000-0000-0000-0000-000000000001"
 ORG_ID     = "org-test-001"
@@ -76,7 +77,7 @@ async def test_org_approvals_no_gateway(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_org_approvals_with_pending() -> None:
     """Returns pending approvals from HITL gateway."""
-    from app.governance.hitl import ApprovalRequest, ApprovalStatus
+    from app.governance.hitl import ApprovalStatus
 
     mock_req = MagicMock()
     mock_req.goal_id    = "goal-123"
@@ -114,16 +115,34 @@ async def test_org_approvals_requires_auth() -> None:
 
 @pytest.mark.asyncio
 async def test_org_events_stream_returns_sse() -> None:
-    """SSE stream endpoint returns text/event-stream content type."""
-    app = _make_app()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        resp = await c.get(
-            f"/v1/org/{ORG_ID}/events/stream",
-            headers={"Accept": "text/event-stream"},
-            timeout=2.0,
-        )
-    assert resp.status_code == 200
-    assert "text/event-stream" in resp.headers.get("content-type", "")
+    """SSE stream endpoint returns text/event-stream content type.
+
+    This endpoint streams forever (keepalive every 15s, since no Redis is
+    configured) and only exits when `request.is_disconnected()` becomes
+    True. httpx's ASGITransport does not propagate a real disconnect when a
+    client-side stream is closed early, so a full HTTP round trip via
+    AsyncClient hangs. Instead, call the route function directly with a
+    fake Request that reports an immediate disconnect — this still
+    exercises the real StreamingResponse the endpoint builds, just without
+    the un-testable infinite keepalive loop.
+    """
+    import types
+
+    from app.org.router import org_events_stream
+
+    request = MagicMock()
+    request.is_disconnected = AsyncMock(return_value=True)
+    request.app = types.SimpleNamespace(state=types.SimpleNamespace(redis=None))
+
+    service = MagicMock()
+    service._tenant_id = TENANT_ID
+
+    resp = await org_events_stream(org_id=ORG_ID, request=request, service=service)
+    assert resp.media_type == "text/event-stream"
+
+    chunks = [c async for c in resp.body_iterator]
+    text = "".join(c if isinstance(c, str) else c.decode() for c in chunks)
+    assert "connected" in text
 
 
 @pytest.mark.asyncio
@@ -142,7 +161,8 @@ async def test_org_events_stream_requires_auth() -> None:
 def test_expire_timed_out_calls_notify() -> None:
     """G-12: expire_timed_out_requests() marks request TIMED_OUT."""
     from datetime import UTC, datetime, timedelta
-    from app.governance.hitl import HITLGateway, ApprovalRequest, ApprovalStatus
+
+    from app.governance.hitl import ApprovalRequest, ApprovalStatus, HITLGateway
 
     gateway = HITLGateway()
     req = ApprovalRequest(
@@ -161,7 +181,8 @@ def test_expire_timed_out_calls_notify() -> None:
 def test_expire_future_request_skips() -> None:
     """Non-expired requests are NOT expired."""
     from datetime import UTC, datetime, timedelta
-    from app.governance.hitl import HITLGateway, ApprovalRequest, ApprovalStatus
+
+    from app.governance.hitl import ApprovalRequest, ApprovalStatus, HITLGateway
 
     gateway = HITLGateway()
     req = ApprovalRequest(
@@ -195,8 +216,9 @@ async def test_notify_approval_timeout_method_exists() -> None:
 @pytest.mark.asyncio
 async def test_notify_approval_required_has_token_param() -> None:
     """G-17: notify_approval_required accepts approval_token."""
-    from app.services.notification_service import NotificationService
     import inspect
+
+    from app.services.notification_service import NotificationService
     sig = inspect.signature(NotificationService.notify_approval_required)
     assert "approval_token" in sig.parameters
 
