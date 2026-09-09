@@ -227,6 +227,7 @@ def test_redis_schedule_key_written_updated_and_deleted() -> None:
         "fire_at_iso": "",
         "condition": "",
         "description": "",
+        "config": {},
         "paused": False,
     }
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
+from typing import Any
 
 
 class TriggerType(enum.StrEnum):
@@ -186,6 +187,7 @@ class TriggerSpec:
 
     # ── Family F: Data/File/Storage ───────────────────────────────────────────
     file_drop_path: str = ""  # watched directory path
+    file_pattern: str = ""  # glob for FILE_DROP (e.g. "*.csv"); "" = all files
     db_table: str = ""  # table to watch for DB_ROW_CHANGE
     db_operation: str = ""  # INSERT | UPDATE | DELETE | *
     db_filter: str = ""  # SQL WHERE clause for filter
@@ -241,6 +243,74 @@ class TriggerSpec:
 
     # ── Versioning ────────────────────────────────────────────────────────────
     version: int = 1
+
+    def config_dict(self) -> dict[str, Any]:
+        """Family-specific config fields, for the generic schedule ``config`` blob.
+
+        Core scheduling fields (cron/interval/fire_at/event_channel/...) are
+        persisted as first-class columns and secrets are excluded; everything a
+        beat poller needs to actually fire a data/file/polling trigger (watch
+        path, RSS/poll URL, ...) lives here. Only values that differ from the
+        dataclass default are emitted so shared defaults (e.g.
+        ``poll_interval_seconds=300``) don't leak onto unrelated schedules.
+        """
+        result: dict[str, Any] = {}
+        for name in CONFIG_FIELD_NAMES:
+            value = getattr(self, name, None)
+            if value == _CONFIG_FIELD_DEFAULTS.get(name):
+                continue
+            result[name] = value
+        return result
+
+
+# Family-specific fields carried in the generic ``config`` blob on a Schedule.
+# Excludes core scheduling columns and any secret-bearing fields (webhook
+# tokens/signatures, poll headers/body, allowed API keys) so the blob is safe to
+# persist to Postgres and mirror into Redis.
+CONFIG_FIELD_NAMES: tuple[str, ...] = (
+    # Family F: Data/File/Storage
+    "file_drop_path",
+    "file_pattern",
+    "db_table",
+    "db_operation",
+    "db_filter",
+    "s3_bucket",
+    "s3_prefix",
+    "s3_events",
+    "rss_url",
+    "sheets_spreadsheet_id",
+    "sheets_range",
+    "sharepoint_site_url",
+    "sharepoint_library",
+    # Family H: API/Polling
+    "poll_url",
+    "poll_method",
+    "poll_jsonpath",
+    "poll_expected_value",
+    "poll_interval_seconds",
+    "graphql_endpoint",
+    "websocket_url",
+    "price_symbol",
+    "price_threshold",
+    "price_direction",
+)
+
+
+def _compute_config_field_defaults() -> dict[str, Any]:
+    from dataclasses import MISSING, fields
+
+    defaults: dict[str, Any] = {}
+    for f in fields(TriggerSpec):
+        if f.name not in CONFIG_FIELD_NAMES:
+            continue
+        if f.default_factory is not MISSING:  # type: ignore[misc]
+            defaults[f.name] = f.default_factory()
+        else:
+            defaults[f.name] = f.default
+    return defaults
+
+
+_CONFIG_FIELD_DEFAULTS: dict[str, Any] = _compute_config_field_defaults()
 
 
 def validate_cron(expression: str, plan: str = "free") -> None:

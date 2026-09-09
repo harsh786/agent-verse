@@ -1645,6 +1645,8 @@ def _db_schedule_payload(row: Any) -> dict[str, Any]:
     goal_template = str(getattr(row, "goal_id_template", "") or "")
     tenant_id = str(getattr(row, "tenant_id", "") or "")
     schedule_id = str(getattr(row, "id", "") or "")
+    raw_config = getattr(row, "config", None)
+    config = dict(raw_config) if isinstance(raw_config, dict) else {}
     return {
         "schedule_id": schedule_id,
         "tenant_id": tenant_id,
@@ -1660,6 +1662,7 @@ def _db_schedule_payload(row: Any) -> dict[str, Any]:
         "fire_at_iso": str(getattr(row, "fire_at_iso", "") or ""),
         "condition": str(getattr(row, "condition", "") or ""),
         "description": str(getattr(row, "description", "") or ""),
+        "config": config,
         "paused": bool(getattr(row, "paused", False)),
         "last_fired_at": _datetime_to_naive_iso(getattr(row, "last_fired_at", None)),
     }
@@ -2167,8 +2170,15 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                         import json as _json_fd
                         import os as _os_fd
 
-                        watch_path = sched.get("file_watch_path") or sched.get("watch_path", "")
-                        watch_pattern = sched.get("file_pattern", "*")
+                        _fd_config = sched.get("config") or {}
+                        watch_path = (
+                            _fd_config.get("file_drop_path")
+                            or sched.get("file_watch_path")
+                            or sched.get("watch_path", "")
+                        )
+                        watch_pattern = (
+                            _fd_config.get("file_pattern") or sched.get("file_pattern") or "*"
+                        )
                         processed_key = f"processed_files:{key}"
                         processed: set[str] = set()
                         new_files: list[str] = []

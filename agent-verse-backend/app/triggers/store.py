@@ -61,6 +61,7 @@ class ScheduleStore:
                 "fire_at_iso": spec.fire_at_iso or "",
                 "condition": spec.condition or "",
                 "description": spec.description or "",
+                "config": spec.config_dict(),
                 "paused": bool(rec.get("paused", False)),
             }
         )
@@ -251,6 +252,7 @@ class ScheduleStore:
                     fire_at_iso=spec.fire_at_iso or "",
                     condition=spec.condition or "",
                     description=spec.description or "",
+                    config=spec.config_dict(),
                     paused=False,
                 )
                 session.add(row)
@@ -448,6 +450,13 @@ class ScheduleStore:
                             condition=row.condition or "",
                             description=row.description or "",
                         )
+                        # Rehydrate family-specific config (file_drop_path,
+                        # rss_url, poll_url, ...) from the generic blob.
+                        row_config = getattr(row, "config", None)
+                        if isinstance(row_config, dict):
+                            for cfg_key, cfg_val in row_config.items():
+                                if hasattr(spec, cfg_key):
+                                    setattr(spec, cfg_key, cfg_val)
                         self._data[key] = {
                             "schedule_id": row.id,
                             "goal_id": row.goal_id_template,
