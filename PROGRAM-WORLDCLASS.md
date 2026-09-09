@@ -129,15 +129,15 @@ For any path where pause/resume is not truly wired, wire it. Reject/deny path al
 - Consistent design tokens, loading/empty/error states, a11y, tasteful motion (artifact-design principles). Elevate the second-class graph/RAG-config surfaces to JARVIS-shell quality.
 **DoD:** typecheck 0, vitest green (+ component tests), build ok (lazy-load heavy viz, keep main chunk small), every surface wired to REAL backend (no demo data). **e2e:** Playwright covers KB search+citation, real graph explore, a RAG-config change, and the trace viewer showing scores.
 
-## WS-12 · Ingestion — GENERIC handling + world-class knowledge base (backend)
-**Detailed by recon report `recon/G-ingestion-worldclass-kb.md` (read it first).** The user emphasized: ingestion must handle ALL things generically and produce a world-class KB. Close whatever recon marks PARTIAL/STUB. Likely items:
-- **Generic parser coverage**: every input type (PDF text+scanned, DOCX, CSV/Excel, JSON, HTML, MD, code, image, audio, video) routed to a REAL parser by MIME — no naive string parsers, no silent drops (ING-4/7/11/12 — confirm closed).
-- **Pipeline EMIT + metrics** actually publish `knowledge.updated` + increment counters (ING-8/9); scheduler/connector path alive (ING-11).
-- **Two-stack convergence**: `IngestionPipeline` / `IngestionOrchestrator` / `knowledge/ingestors/*` share one parser registry + chunker selector (ING-13) — no silent divergence.
-- **Connectors**: Confluence/Jira/Slack/GitHub/S3/GDrive/web real + correct `RawDocument.content_type`; each stub either implemented or marked unsupported.
-- **Dedup/hashing, incremental re-ingest, failure/reprocessing** generic; RLS-isolated; retrievable + cited.
+## WS-12 · Ingestion — GENERIC handling + world-class KB (backend)
+**Detailed by recon `recon/G-ingestion-worldclass-kb.md` (rated 2026-09-10). Solid baseline (EMIT/metrics/scheduler REAL, two-stack ING-13 closed w/ parity test, 38/41 connectors real). Fix the confirmed bugs — ordered by severity:**
+- **[4/10 — DEAD dedup] TOP FIX:** no `exists_by_hash` implementation exists, so the Stage-3 `hasattr` dedup check always fails and document-level dedup NEVER fires in production → duplicates re-indexed. Implement `exists_by_hash` on the KnowledgeStore (content-hash lookup, RLS-scoped) so dedup + incremental re-ingest actually work. Failing test first.
+- **[7/10 — FAKE success] Notion/GDrive/SharePoint connectors:** real but unregistered, reachable only via a stub `delta_reingest_files` task that reports success WITHOUT calling the pipeline (honesty violation). Register them via `@register` and route through the real pipeline, or mark explicitly unsupported — never fake success.
+- **[7/10 — video gap] Video parser:** `VideoParser` (Whisper-backed) exists but is never called — no `ContentType.VIDEO` branch in `parser_registry.parse_bytes_async`; video falls to naive byte-decode. Add the branch.
+- **[metadata gap] OCR/degradation provenance:** persist OCR-used / degradation metadata onto indexed docs (ties to WS-13 provenance).
+- **[zero-vector] Embedder-failure path:** confirm the ingestion embed path uses the None-sentinel (per D-12) and never writes silent zero-vector chunks; fix if a zero-vector path remains.
 - **Universal OCR fallback** (ties to WS-6): unreadable format → rasterize → OCR.
-**DoD:** unit tests per parser/route; mypy clean. **e2e (`tests/e2e_full/test_ingestion_worldclass_e2e.py`):** real PDF+DOCX+CSV+image+audio through the connector/scheduler path → real text (no garbage) → correct chunker (no silent fixed) → pgvector rows → retrievable by query → `knowledge.updated` published → dedup on re-ingest.
+**DoD:** failing-test-first for dedup + connectors + video; unit tests per parser/route; mypy clean; fast tier green. **e2e (`tests/e2e_full/test_ingestion_worldclass_e2e.py`) — recon G confirmed NO real ingestion e2e exists (tests 4/10, mock-heavy):** real PDF+DOCX+CSV+image+audio+video through the connector/scheduler path against real pgvector → real text (no garbage) → correct chunker (no silent fixed) → pgvector rows → retrievable by query → `knowledge.updated` published → **dedup fires on re-ingest** (proves the top fix).
 
 ## WS-13 · Unified world-class knowledge base — ALL sources converge (backend + frontend)
 **Detailed by recon `recon/G-ingestion-worldclass-kb.md` + `recon/H-unified-kb-convergence.md` (read both first).** The user's requirement: the KB created from ingestion, from RPA scraping, AND from OCR must be ONE coherent, world-class knowledge base — every source's content becomes retrievable, cited, deduped, provenance-tagged, tenant-isolated knowledge, with a unified frontend view.
