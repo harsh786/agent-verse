@@ -72,7 +72,7 @@ _RM_COMMAND_PATTERN = re.compile(r"\brm\b")
 
 # GraphState and RetrievalEntryPointError now live in graph_types
 # to avoid circular imports from mixin modules.
-from app.agent.graph_types import GraphState, RetrievalEntryPointError
+from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # AgentGraph — thin orchestrator, all node logic lives in nodes/

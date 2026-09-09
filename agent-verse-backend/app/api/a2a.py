@@ -24,9 +24,7 @@ router = APIRouter(tags=["a2a"])
 _tasks: dict[str, dict[str, Any]] = {}
 
 # ── startup check: warn loudly when HMAC auth is disabled ─────────────────────
-import os as _os
-
-if not _os.getenv("A2A_SHARED_SECRET", ""):
+if not os.getenv("A2A_SHARED_SECRET", ""):
     logger.warning(
         "a2a_hmac_disabled",
         message=(

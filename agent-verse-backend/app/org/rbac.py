@@ -12,6 +12,9 @@ Enforced at FastAPI dependency level.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import time
 from typing import Any, ClassVar
 
 from fastapi import Depends, HTTPException, Request, status
@@ -218,10 +221,6 @@ class OrgRBACGuard:
 
 
 # ── Cross-dept request signing (PART 18) ──────────────────────────────────────
-
-import hashlib
-import hmac
-import time
 
 
 def sign_cross_dept_request(

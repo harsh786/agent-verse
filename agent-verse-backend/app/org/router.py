@@ -10,13 +10,24 @@ All endpoints:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import uuid4
 
 import structlog
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -2529,10 +2540,6 @@ async def org_dept_memory_add(
 # This is the actual WS transport layer for OrgMCPServer.
 # Clients: Claude Desktop, Cursor, any JSON-RPC 2.0 / MCP client.
 # Auth: "Authorization: Bearer <api_key>" header or ?api_key= query param.
-
-import contextlib
-
-from fastapi import WebSocket, WebSocketDisconnect
 
 
 @router.websocket("/{org_id}/mcp")

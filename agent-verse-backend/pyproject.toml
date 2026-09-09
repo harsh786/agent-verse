@@ -216,6 +216,13 @@ known-first-party = ["app"]
 "app/org/context_engine.py" = ["RUF003"]
 "app/org/org_learning.py" = ["RUF003"]
 "app/rag/agentic/llm_query_transformer.py" = ["RUF001", "RUF003"]
+# E402: app.services.goal_service defines `_svc_logger` and the module-level
+# `_GOAL_PAUSE_EVENTS` registry before importing sibling app.agent/app.services
+# modules on purpose — some of those modules import back into goal_service
+# (circular), and Python only exposes names already bound in a partially
+# initialized module during a circular import. Reordering to put all imports
+# first would reintroduce that circular-import failure.
+"app/services/goal_service.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.12"
