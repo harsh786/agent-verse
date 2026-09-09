@@ -1476,7 +1476,7 @@ class OrgService:
                                 or role_obj
                             )[:60]
                         await self._emit_event(
-                            mission.org_id,
+                            uuid.UUID(str(mission.org_id)),
                             "agent.activated",
                             title=f"Agent {viz_agent_id} joined the team",
                             entity_type="agent",
@@ -1490,7 +1490,7 @@ class OrgService:
                             source="orchestrator",
                         )
                     await self._emit_event(
-                        mission.org_id,
+                        uuid.UUID(str(mission.org_id)),
                         "team.formed",
                         title=f"Team formed for '{mission.title}'",
                         entity_type="team",
