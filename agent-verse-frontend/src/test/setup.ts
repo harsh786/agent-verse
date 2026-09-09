@@ -43,3 +43,32 @@ if (typeof Range.prototype.getClientRects === "undefined") {
 if (typeof Range.prototype.getBoundingClientRect === "undefined") {
   Range.prototype.getBoundingClientRect = () => new DOMRect();
 }
+
+// jsdom in some environments does not expose Web Storage; many hooks/components
+// (auth token, theme, drafts) call localStorage/sessionStorage and would crash
+// with "Cannot read properties of undefined (reading 'getItem')". Provide a
+// deterministic in-memory implementation when one is missing.
+function _memoryStorage(): Storage {
+  const store = new Map<string, string>();
+  return {
+    getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+    setItem: (k: string, v: string) => void store.set(k, String(v)),
+    removeItem: (k: string) => void store.delete(k),
+    clear: () => store.clear(),
+    key: (i: number) => Array.from(store.keys())[i] ?? null,
+    get length() {
+      return store.size;
+    },
+  } as Storage;
+}
+
+for (const name of ["localStorage", "sessionStorage"] as const) {
+  const existing = (globalThis as Record<string, unknown>)[name] as Storage | undefined;
+  if (!existing || typeof existing.getItem !== "function") {
+    Object.defineProperty(globalThis, name, {
+      value: _memoryStorage(),
+      configurable: true,
+      writable: true,
+    });
+  }
+}
