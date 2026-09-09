@@ -41,6 +41,7 @@ import { MissionOrbit }           from './components/MissionOrbit';
 import { ApprovalCenter }         from './ApprovalCenter';
 import { LoginGreetingPlayer }   from '@/components/voice/LoginGreetingPlayer';
 import { useVoiceAlerts }        from '@/lib/voice/useVoiceAlerts';
+import { useOrgRealtimeManager } from './OrgRealtimeManager';
 import { useOrganization, useOrgHealth, useMissions } from './hooks/useOrg';
 import type { OrgMission }       from './types';
 
@@ -49,6 +50,11 @@ export function OrgPage() {
 
   // D-6: Proactive voice alerts — plays TTS audio when mission fails/approval needed
   useVoiceAlerts({ enabled: !!orgId });
+
+  // Live org event stream — missions forming, teams assembling, agents activating,
+  // approvals — pushed over SSE and invalidated into the query cache so the whole
+  // console updates in real time (this is what makes "things move" on screen).
+  useOrgRealtimeManager(orgId);
 
   // JARVIS boot screen — play the full cinematic boot ONCE per browser session
   // (it's a delight the first time, a 3s tax on every subsequent org visit), and

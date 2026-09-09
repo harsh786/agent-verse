@@ -12,6 +12,8 @@ import { toast } from '@/stores/toast';
  */
 import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { API_BASE } from '@/lib/api/client';
+import { useAuthStore } from '@/stores/auth';
 import { orgKeys } from './hooks/useOrg';
 
 // ── Event type constants ───────────────────────────────────────────────────────
@@ -70,6 +72,7 @@ export interface OrgEvent {
 
 export class OrgRealtimeManager {
   private orgId: string;
+  private apiKey: string;
   private eventSource: EventSource | null = null;
   private queryClient: ReturnType<typeof useQueryClient> | null = null;
   private onEvent?: (event: OrgEvent) => void;
@@ -78,8 +81,9 @@ export class OrgRealtimeManager {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 2000;
 
-  constructor(orgId: string) {
+  constructor(orgId: string, apiKey = '') {
     this.orgId = orgId;
+    this.apiKey = apiKey;
   }
 
   connect(options: {
@@ -109,7 +113,12 @@ export class OrgRealtimeManager {
       this.eventSource.close();
     }
 
-    const url = `/v1/org/${this.orgId}/events/stream`;
+    // Full backend origin + query-param auth: EventSource can't send headers and
+    // the app talks to the backend cross-origin, so a relative path would hit the
+    // dev server and 404 (this is why the stream was never live). Mirrors the
+    // working voice-alerts SSE pattern.
+    const auth = this.apiKey ? `?api_key=${encodeURIComponent(this.apiKey)}` : '';
+    const url = `${API_BASE}/v1/org/${this.orgId}/events/stream${auth}`;
     this.eventSource = new EventSource(url);
 
     this.eventSource.onopen = () => {
@@ -163,7 +172,12 @@ export class OrgRealtimeManager {
       case ORG_EVENTS.MISSION_FAILED:
       case ORG_EVENTS.MISSION_PAUSED:
       case ORG_EVENTS.MISSION_BLOCKED:
-        qc.invalidateQueries({ queryKey: orgKeys.missions(orgId) });
+        // 3-element prefix (no trailing filter): orgKeys.missions(orgId) yields
+        // [...,'missions',undefined], which does NOT partial-match the live query
+        // key [...,'missions',{}] — so invalidating with it silently refreshed
+        // nothing and the mission list never updated on live events.
+        qc.invalidateQueries({ queryKey: ['orgs', orgId, 'missions'] });
+        qc.invalidateQueries({ queryKey: orgKeys.health(orgId) });
         if (payload.mission_id) {
           qc.invalidateQueries({
             queryKey: orgKeys.mission(orgId, payload.mission_id),
@@ -190,7 +204,7 @@ export class OrgRealtimeManager {
       case ORG_EVENTS.AGENT_COMPLETED_TASK:
       case ORG_EVENTS.AGENT_FAILED_TASK:
         qc.invalidateQueries({ queryKey: ['agents', orgId] });
-        qc.invalidateQueries({ queryKey: orgKeys.tasks(orgId) });
+        qc.invalidateQueries({ queryKey: ['orgs', orgId, 'tasks'] });
         break;
 
       // ── Approval events ─────────────────────────────────────────────────────
@@ -296,15 +310,16 @@ export function useOrgRealtimeManager(
   } = {},
 ): { connected: boolean } {
   const qc = useQueryClient();
+  const apiKey = useAuthStore(s => s.apiKey);
   const managerRef = useRef<OrgRealtimeManager | null>(null);
   const connectedRef = useRef(false);
 
   const { onEvent, onConnected, onDisconnected } = options;
 
   useEffect(() => {
-    if (!orgId) return;
+    if (!orgId || !apiKey) return;
 
-    const manager = new OrgRealtimeManager(orgId);
+    const manager = new OrgRealtimeManager(orgId, apiKey);
     managerRef.current = manager;
 
     manager.connect({
@@ -325,7 +340,7 @@ export function useOrgRealtimeManager(
       managerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orgId, qc]);
+  }, [orgId, qc, apiKey]);
 
   return { connected: connectedRef.current };
 }
