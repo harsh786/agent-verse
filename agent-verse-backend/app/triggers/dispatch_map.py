@@ -72,6 +72,12 @@ CONSUMER_TYPES: frozenset[TriggerType] = frozenset(
         TriggerType.HITL_REJECTED,
         TriggerType.MEMORY_CREATED,
         TriggerType.EVENT,
+        # Family D — evaluated on the EVENT bus by ConditionTriggerConsumer.
+        TriggerType.CONDITION,
+        TriggerType.COUNTER_THRESHOLD,
+        TriggerType.COMPOUND,
+        TriggerType.STATE_TRANSITION,
+        TriggerType.WINDOW_AGGREGATE,
     }
 )
 

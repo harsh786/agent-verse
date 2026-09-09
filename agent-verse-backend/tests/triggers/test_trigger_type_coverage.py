@@ -83,8 +83,8 @@ def test_distribution_matches_verified_ground_truth() -> None:
         counts[mech] += 1
     assert counts[DispatchMechanism.BEAT] == 6  # cron/interval/once/file_drop/rss_feed/api_poll
     assert counts[DispatchMechanism.PUSH] == 16
-    assert counts[DispatchMechanism.CONSUMER] == 7  # + event
-    assert counts[DispatchMechanism.UNSUPPORTED] == 29
+    assert counts[DispatchMechanism.CONSUMER] == 12  # goal-chain(3)+hitl(2)+memory+event+familyD(5)
+    assert counts[DispatchMechanism.UNSUPPORTED] == 24
 
 
 def test_known_unsupported_types_are_unsupported() -> None:
