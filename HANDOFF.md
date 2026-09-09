@@ -11,7 +11,8 @@
 - **Branch:** `feature/platform-10x` (off `main` @ `be425b42`). All work is committed here. `main` is untouched.
 - **State:** healthy. Backend fast tier **20,870 passing / 0 failed**; `uv run mypy app` = **Success (0 errors, 1518 files)**. Frontend typecheck 0, vitest 1010, build clean.
 - **The plan is STALE.** `/Users/harsh/.claude/plans/go-through-it-...-snug-allen.md` lists dozens of per-category items as "to do", but recon this session proved **the vast majority were already fixed and wired in prior sessions**. Do NOT re-implement plan items blindly — verify current state first (that's how this session avoided huge wasted effort).
-- **Remaining code work:** essentially **just BK6** (self-optimizer executor disposition). Then a whole-branch review, then two optional e2e acceptance gates.
+- **▶▶ THE AUTHORITATIVE REMAINING-WORK ROADMAP TO 10/10 IS `/PROGRAM-WORLDCLASS.md` ◀◀** — read it after this file. It holds workstreams WS-1…WS-9 (HITL-flawless, Workflow+Trigger+Schedule+Celery e2e, RPA→PDF, universal OCR, AI-org frontend awe, Civilization throttle, Org de-fake, full Playwright automation, ruff-debt cleanup), each with tasks + DoD + e2e gate. Execute those top-to-bottom to bring the WHOLE platform to a proven 10/10.
+- **Original inventory (BK0–BK6): ALL DONE.** The remaining path to 10/10 is entirely in `PROGRAM-WORLDCLASS.md`.
 
 ## 1. How to verify state on resume (run these first)
 
@@ -44,12 +45,13 @@ Frontend: `25567435` real MissionCard progress (FE4) · `ea35351e` remove fabric
 
 ## 4. REMAINING WORK (in priority order)
 
-### BK6 — self-optimizer executor disposition (LAST code item)  🔴 do this first
-- Brief: `.superpowers/sdd/.../briefs/BK6-d3-self-optimizer.md` (complete, ready).
-- Gist: `SelfOptimizerV2` is invoked but flag-gated OFF by default (KEEP off — safety). `ImprovementActionExecutor` is orphan dead code. Ruling already made: **assess wire-vs-delete** so exactly ONE reachable implementation remains. If superseded → delete it + tests; if it IS the intended executor but never wired → wire it behind the (still default-off) flag with a test proving flag-on→executes, flag-off→no-op.
-- Dispatch: a `general-purpose` sonnet subagent, prompt = "read the brief file, implement on branch `feature/platform-10x` in `agent-verse-backend`, commit, do not dispatch subagents, write the report file."
+### ▶ PRIMARY: execute `/PROGRAM-WORLDCLASS.md` WS-1…WS-9  🔴
+That file is the authoritative roadmap to a proven 10/10 for the whole platform (HITL-flawless everywhere, Workflow+Trigger+Schedule unified on real Celery, RPA→PDF, universal OCR, AI-org frontend awe with JARVIS speaking, Civilization throttle, Org analytics de-fake, full Playwright/e2e automation, ruff-debt cleanup). Each workstream is TDD + ends in an e2e/automation gate. Briefs for the in-flight ones are in `.superpowers/sdd/.../briefs/` (WS3-hitl-flawless.md, WS7-org-frontend-awe.md already written). Dispatch pattern: a `general-purpose` sonnet subagent per workstream, "read the brief, implement on `feature/platform-10x`, run tests foreground, commit, no subagents, write the report file." One backend + one frontend implementer may run concurrently.
 
-### Whole-branch review  🟠 after BK6
+### BK6 — self-optimizer executor disposition  ✅ DONE (13fcf398)
+Chose DELETE: orphan `ImprovementActionExecutor` was superseded by the inline `SelfImprovementEngine` path; removed it + handlers + flag + main.py wiring + tests. Safety gate `enable_self_improvement` kept default-off. mypy 0, tier 20989.
+
+### Whole-branch review  🟠 after WS-1…WS-9
 - Dispatch one review (most-capable model) over `git diff main..HEAD` for the whole branch. Confirm mypy Success + full fast tier 0-failed. Fix any finding, one round.
 
 ### Two real 10/10 acceptance gates (the only genuine gaps left)  🟡 highest external value
