@@ -16,7 +16,7 @@
  */
 import { useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISBootScreen } from '@/components/ui/JARVISBootScreen';
 import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal, BookOpen } from 'lucide-react';
@@ -50,8 +50,26 @@ export function OrgPage() {
   // D-6: Proactive voice alerts — plays TTS audio when mission fails/approval needed
   useVoiceAlerts({ enabled: !!orgId });
 
-  // JARVIS boot screen — show on every org visit
-  const [isBooted, setIsBooted] = useState(false);
+  // JARVIS boot screen — play the full cinematic boot ONCE per browser session
+  // (it's a delight the first time, a 3s tax on every subsequent org visit), and
+  // skip it entirely for users who prefer reduced motion.
+  const reduceMotion = useReducedMotion();
+  const [isBooted, setIsBooted] = useState(() => {
+    if (reduceMotion) return true;
+    try {
+      return sessionStorage.getItem('av_org_booted') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const markBooted = useCallback(() => {
+    try {
+      sessionStorage.setItem('av_org_booted', '1');
+    } catch {
+      /* sessionStorage unavailable (private mode) — boot will just replay */
+    }
+    setIsBooted(true);
+  }, []);
 
   const [selectedMission, setSelectedMission] = useState<string | null>(null);
   const [showCreate, setShowCreate]           = useState(false);
@@ -91,8 +109,8 @@ export function OrgPage() {
     return (
       <JARVISBootScreen
         orgName={org?.name ?? 'AgentVerse OS'}
-        onComplete={() => setIsBooted(true)}
-        duration={3200}
+        onComplete={markBooted}
+        duration={2400}
       />
     );
   }
