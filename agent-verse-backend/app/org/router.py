@@ -787,8 +787,12 @@ async def org_events_stream(
         try:
             yield f"data: {json.dumps({'type': 'connected', 'org_id': org_id})}\n\n"
 
-            # Subscribe to Redis pub/sub channel for this org
-            redis = getattr(getattr(request.app, "state", None), "redis", None)
+            # Subscribe to Redis pub/sub channel for this org. The runtime redis
+            # client is app.state._redis (app.state.redis is never set — the same
+            # trap that silently killed proactive voice alerts); reading "redis"
+            # here left the stream on keepalive-only, so no live event ever arrived.
+            app_state = getattr(request.app, "state", None)
+            redis = getattr(app_state, "_redis", None) or getattr(app_state, "redis", None)
             if redis is None:
                 # No Redis — keepalive only
                 while not await request.is_disconnected():

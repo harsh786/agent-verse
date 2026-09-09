@@ -122,7 +122,52 @@ class OrgService:
         )
         self._session.add(ev)
         await self._session.flush()
+        # Bridge to the real-time SSE bus. _emit_event previously only wrote the DB
+        # row, but the org events/stream SSE endpoint reads a Redis pub/sub channel
+        # — so without this publish the live console never saw mission/team/agent
+        # events (the "things moving on screen" experience was dead). Best-effort:
+        # a publish failure must never break the write.
+        await self._publish_realtime(
+            org_id=org_id,
+            event_type=event_type,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            payload=payload,
+        )
         return ev
+
+    async def _publish_realtime(
+        self,
+        *,
+        org_id: uuid.UUID,
+        event_type: str,
+        entity_type: str | None,
+        entity_id: str | None,
+        payload: dict | None,
+    ) -> None:
+        """Publish an org event onto the Redis SSE channel the frontend listens on.
+
+        Maps the internal ``<entity>.<action>`` name to the ``org.<entity>.<action>``
+        taxonomy the OrgRealtimeManager dispatches on, and threads the entity id into
+        the payload (e.g. ``mission_id``) so the client invalidates the right query.
+        """
+        try:
+            from app.org.events import get_org_event_publisher
+
+            publisher = get_org_event_publisher()
+            if getattr(publisher, "_redis", None) is None:
+                return
+            rt_payload = dict(payload or {})
+            if entity_type and entity_id:
+                rt_payload.setdefault(f"{entity_type}_id", str(entity_id))
+            await publisher.publish(
+                event_type=f"org.{event_type}",
+                org_id=str(org_id),
+                tenant_id=self._tenant_id,
+                payload=rt_payload,
+            )
+        except Exception as exc:  # pragma: no cover - best-effort realtime bridge
+            _log.debug("org_event_realtime_publish_failed", error=str(exc))
 
     # ── Organization CRUD ─────────────────────────────────────────────────────
 
