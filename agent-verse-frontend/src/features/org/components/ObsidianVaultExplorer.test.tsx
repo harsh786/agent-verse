@@ -29,11 +29,36 @@ const REAL_GRAPH_PAYLOAD = {
   format: 'agentverse_kg_v1',
 };
 
-function mockFetch(payload: unknown) {
+const REAL_TASKS_PAGE = {
+  data: [
+    { id: 't1', tenant_id: 'tenant-1', org_id: 'org-1', mission_id: 'm1', title: 'Draft Q3 report', objective: '', status: 'running', priority: 'high', assigned_to: 'agent-writer-1', created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-01T00:00:00Z' },
+  ],
+  cursor: null, hasMore: false,
+};
+const REAL_MISSIONS_PAGE = {
+  data: [
+    { id: 'm1', tenant_id: 'tenant-1', org_id: 'org-1', dept_id: null, assigned_team_id: 'team-1', title: 'Launch Q3 campaign', objective: '', why: '', expected_outcome: '', status: 'active', priority: 'high', source: 'user', autonomy_level: 2, budget_usd: null, deadline: null, tags: [], created_by: null, outputs: [], evidence: [], started_at: null, completed_at: null, created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-01T00:00:00Z' },
+  ],
+  cursor: null, hasMore: false,
+};
+const REAL_EVENTS_PAGE = {
+  data: [
+    { id: 'ev1', org_id: 'org-1', event_type: 'org.mission.created', title: 'Mission created', description: '', severity: 'info', entity_type: 'mission', entity_id: 'm1', created_at: '2026-08-01T00:00:00Z' },
+  ],
+  cursor: null, hasMore: false,
+};
+
+function mockFetch(payload: unknown, opts?: { tasks?: unknown; missions?: unknown; events?: unknown }) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input);
     if (url.includes('/knowledge-graph/export'))
       return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.includes('/tasks'))
+      return new Response(JSON.stringify(opts?.tasks ?? { data: [], cursor: null, hasMore: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.includes('/missions'))
+      return new Response(JSON.stringify(opts?.missions ?? { data: [], cursor: null, hasMore: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.includes('/events'))
+      return new Response(JSON.stringify(opts?.events ?? { data: [], cursor: null, hasMore: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     if (url.includes('/v1/org'))
       return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
     return new Response('{}', { status: 200 });
@@ -92,21 +117,91 @@ describe('ObsidianVaultExplorer — Graph tab (real backend data)', () => {
   });
 });
 
-describe('ObsidianVaultExplorer — Bases/Maps/Timeline (honest preview, no fabricated data)', () => {
-  test.each([
-    ['Bases', /Bases — preview, not yet connected/i, 'Q3 Revenue Analysis'],
-    ['Maps', /Maps — preview, not yet connected/i, 'org-map.canvas'],
-    ['Timeline', /Timeline — preview, not yet connected/i, 'notes this week'],
-  ])('%s tab shows an honest preview state and never fabricated demo rows', async (tabLabel, previewRe, forbidden) => {
+describe('ObsidianVaultExplorer — Bases tab (real org tasks/missions)', () => {
+  test('renders real task rows (title, status, priority, owner, age) from /v1/org/{id}/tasks', async () => {
+    mockFetch(REAL_GRAPH_PAYLOAD, { tasks: REAL_TASKS_PAGE });
+    renderExplorer();
+
+    await screen.findByLabelText('Knowledge graph view');
+    fireEvent.click(screen.getByRole('tab', { name: /bases/i }));
+
+    expect(await screen.findByText('Draft Q3 report')).toBeInTheDocument();
+    expect(screen.getByText('running')).toBeInTheDocument();
+    expect(screen.getByText('agent-writer-1')).toBeInTheDocument();
+    // No fabricated demo rows.
+    expect(screen.queryByText('Q3 Revenue Analysis')).not.toBeInTheDocument();
+  });
+
+  test('switching to Missions renders real mission rows from /v1/org/{id}/missions', async () => {
+    mockFetch(REAL_GRAPH_PAYLOAD, { tasks: { data: [], cursor: null, hasMore: false }, missions: REAL_MISSIONS_PAGE });
+    renderExplorer();
+
+    await screen.findByLabelText('Knowledge graph view');
+    fireEvent.click(screen.getByRole('tab', { name: /bases/i }));
+    // Wait for the Bases panel to finish mounting (AnimatePresence mode="wait")
+    // before interacting with its toggle.
+    await screen.findByText(/no tasks yet/i);
+    fireEvent.click(screen.getByRole('button', { name: /^missions$/i }));
+
+    expect(await screen.findByText('Launch Q3 campaign')).toBeInTheDocument();
+    expect(screen.getByText('team-1')).toBeInTheDocument();
+  });
+
+  test('shows an honest empty state when the org has no tasks', async () => {
+    mockFetch(REAL_GRAPH_PAYLOAD, { tasks: { data: [], cursor: null, hasMore: false } });
+    renderExplorer();
+
+    await screen.findByLabelText('Knowledge graph view');
+    fireEvent.click(screen.getByRole('tab', { name: /bases/i }));
+
+    expect(await screen.findByText(/no tasks yet/i)).toBeInTheDocument();
+  });
+});
+
+describe('ObsidianVaultExplorer — Maps tab (real KG reused as a cluster view)', () => {
+  test('renders a clustered map derived from the same real /knowledge-graph/export payload', async () => {
     mockFetch(REAL_GRAPH_PAYLOAD);
     renderExplorer();
 
-    // Wait for the graph tab to settle, then switch to the target tab.
     await screen.findByLabelText('Knowledge graph view');
-    fireEvent.click(screen.getByRole('tab', { name: new RegExp(tabLabel, 'i') }));
+    fireEvent.click(screen.getByRole('tab', { name: /maps/i }));
 
-    expect(await screen.findByText(previewRe)).toBeInTheDocument();
-    // The removed demo data must never appear.
-    expect(screen.queryByText(forbidden)).not.toBeInTheDocument();
+    expect(await screen.findByLabelText('Knowledge map — clustered by node type')).toBeInTheDocument();
+    // Cluster labels come straight from the real node types in the payload.
+    expect(screen.getAllByText('document').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('entity').length).toBeGreaterThan(0);
+  });
+
+  test('shows an honest empty state when the tenant knowledge graph has no nodes', async () => {
+    mockFetch({ tenant_id: 'tenant-1', exported_at: '2026-09-01T00:00:00Z', nodes: [], edges: [], stats: { nodes: 0, edges: 0 }, format: 'agentverse_kg_v1' });
+    renderExplorer();
+
+    fireEvent.click(screen.getByRole('tab', { name: /maps/i }));
+
+    expect(await screen.findByText(/knowledge map is empty/i)).toBeInTheDocument();
+  });
+});
+
+describe('ObsidianVaultExplorer — Timeline tab (real org event history)', () => {
+  test('renders real event rows from /v1/org/{id}/events, never a fabricated sparkline', async () => {
+    mockFetch(REAL_GRAPH_PAYLOAD, { events: REAL_EVENTS_PAGE });
+    renderExplorer();
+
+    await screen.findByLabelText('Knowledge graph view');
+    fireEvent.click(screen.getByRole('tab', { name: /timeline/i }));
+
+    expect(await screen.findByText('Mission created')).toBeInTheDocument();
+    expect(screen.getByLabelText(/org activity by day/i)).toBeInTheDocument();
+    expect(screen.queryByText('notes this week')).not.toBeInTheDocument();
+  });
+
+  test('shows an honest empty state when the org has no event history', async () => {
+    mockFetch(REAL_GRAPH_PAYLOAD, { events: { data: [], cursor: null, hasMore: false } });
+    renderExplorer();
+
+    await screen.findByLabelText('Knowledge graph view');
+    fireEvent.click(screen.getByRole('tab', { name: /timeline/i }));
+
+    expect(await screen.findByText(/no activity yet/i)).toBeInTheDocument();
   });
 });

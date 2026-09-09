@@ -12,14 +12,15 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertCircle, CheckCircle, ChevronDown, ChevronUp, ClipboardCopy,
-  Download, FileText, History, Layers, Loader2, RefreshCw,
+  Database, Download, FileText, History, Layers, Loader2, RefreshCw,
   ScanText, Trash2, Upload, XCircle, Zap,
 } from 'lucide-react';
 import {
   ocrApi,
+  knowledgeApi,
   type OcrDocumentType,
   type OcrFieldResult,
   type OcrResponse,
@@ -270,6 +271,82 @@ function FieldRow({ name, field }: { name: string; field: OcrFieldResult }) {
   );
 }
 
+// ── Save to Knowledge Base (WS-13: link the isolated OCR page back to the KB) ─
+//
+// HONESTY RULE: this posts the real extracted text to a real collection via
+// the existing `POST /knowledge/ingest` endpoint (source_type: "ocr") — the
+// same generic ingest path the Knowledge page's Ingest tab already uses. The
+// collection list is fetched live; there is no fabricated "saved" state.
+
+function SaveToKnowledgeBase({ result, filename }: { result: OcrResponse; filename: string }) {
+  const qc = useQueryClient();
+  const [collectionId, setCollectionId] = useState('');
+
+  const { data: collections = [], isLoading: collectionsLoading } = useQuery({
+    queryKey: ['knowledge-collections'],
+    queryFn: () => knowledgeApi.listCollections(),
+    staleTime: 30_000,
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      knowledgeApi.ingest({
+        collection_id: collectionId,
+        source_type: 'ocr',
+        content: result.raw_text,
+        metadata: {
+          filename,
+          document_type: result.document_type,
+          engine_used: result.engine_used,
+          overall_confidence: result.overall_confidence,
+        },
+      }),
+    onSuccess: (r) => {
+      toast({ kind: 'success', message: `Saved to knowledge base — ${r.chunks_created} chunk${r.chunks_created !== 1 ? 's' : ''} indexed.` });
+      void qc.invalidateQueries({ queryKey: ['knowledge-docs', collectionId] });
+    },
+    onError: (e) => toast({ kind: 'error', message: e instanceof Error ? e.message : 'Save to knowledge base failed' }),
+  });
+
+  if (!collectionsLoading && collections.length === 0) {
+    return (
+      <p className="text-xs text-[#5A7494]" data-testid="kb-no-collections">
+        No knowledge collections yet — create one on the Knowledge page to save this extract.
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2" data-testid="kb-save-row">
+      <Database className="h-3.5 w-3.5 text-[#5A7494] shrink-0" aria-hidden />
+      <label htmlFor="ocr-kb-collection" className="sr-only">Knowledge collection</label>
+      <select
+        id="ocr-kb-collection"
+        value={collectionId}
+        onChange={(e) => setCollectionId(e.target.value)}
+        disabled={collectionsLoading}
+        className="px-2.5 py-1.5 text-xs rounded-lg border border-[#1E2535] bg-[#0F1117] text-[#CBD5E1] focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+      >
+        <option value="">{collectionsLoading ? 'Loading collections…' : 'Select collection…'}</option>
+        {collections.map((c) => (
+          <option key={c.collection_id} value={c.collection_id}>{c.name}</option>
+        ))}
+      </select>
+      <button
+        onClick={() => saveMutation.mutate()}
+        disabled={!collectionId || saveMutation.isPending}
+        data-testid="kb-save-btn"
+        className="flex items-center gap-1.5 rounded-lg border border-[#1E2535] px-3 py-1.5 text-xs text-[#CBD5E1] hover:border-[#94A3B8] hover:text-[#F1F5F9] disabled:opacity-50 transition-colors"
+      >
+        {saveMutation.isPending
+          ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          : <Database className="h-3.5 w-3.5" />}
+        Save to Knowledge Base
+      </button>
+    </div>
+  );
+}
+
 function OcrResultPanel({
   result,
   filename,
@@ -381,6 +458,11 @@ function OcrResultPanel({
           </div>
         </div>
       )}
+
+      {/* Save extract to the unified Knowledge Base (WS-13) */}
+      <div className="rounded-xl border border-[#1E2535] bg-[#1A1F2E]/40 p-4">
+        <SaveToKnowledgeBase result={result} filename={filename} />
+      </div>
 
       {/* Raw text accordion */}
       <div className="rounded-xl border border-[#1E2535] bg-[#1A1F2E]/40">

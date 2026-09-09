@@ -818,8 +818,17 @@ export interface KnowledgeCollection {
 export interface IngestRequest {
   collection_id: string;
   content: string;
-  source?: string;
+  /** Matches the backend `IngestRequest.source_type` field exactly (freeform —
+   *  e.g. "text" | "ocr" | "rpa-web" | any source label). */
+  source_type?: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface IngestResult {
+  document_id: string;
+  collection_id: string;
+  chunks_created: number;
+  content_hash: string;
 }
 
 export interface SearchResult {
@@ -879,7 +888,7 @@ export const knowledgeApi = {
   deleteCollection: (id: string) =>
     request<void>(`/knowledge/collections/${id}`, { method: "DELETE" }),
   ingest: (data: IngestRequest) =>
-    request<void>("/knowledge/ingest", { method: "POST", body: JSON.stringify(data) }),
+    request<IngestResult>("/knowledge/ingest", { method: "POST", body: JSON.stringify(data) }),
   search: (collectionId: string, query: string, limit = 10) =>
     request<SearchResult[]>(
       `/knowledge/search?collection_id=${collectionId}&q=${encodeURIComponent(query)}&limit=${limit}`

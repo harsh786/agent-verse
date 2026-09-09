@@ -20,10 +20,12 @@ function renderPage() {
 const COLLECTION = { collection_id: 'col-1', name: 'Engineering Docs', doc_count: 42, embedder: 'voyage' };
 const CHUNK = { chunk_id: 'c1', content: 'Relevant document content about engineering.', score: 0.9234, source_url: '' };
 
-function mockFetch(opts: { collections?: unknown[]; searchResults?: unknown[] } = {}) {
+function mockFetch(opts: { collections?: unknown[]; searchResults?: unknown[]; documents?: unknown[] } = {}) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);
     const method = (init?.method ?? 'GET');
+    if (url.includes('/documents') && url.includes('/knowledge/collections/'))
+      return new Response(JSON.stringify({ documents: opts.documents ?? [], total: (opts.documents ?? []).length }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     if (url.includes('/knowledge/cache/stats'))
       return new Response(JSON.stringify({ hits: 5, misses: 3 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     if (url.includes('/knowledge/collections/col-1/stats'))
@@ -268,5 +270,55 @@ describe('KnowledgePage – Search tab', () => {
     const searchBtns = screen.getAllByRole('button', { name: /^search$/i });
     await userEvent.click(searchBtns[searchBtns.length - 1]);
     expect(await screen.findByText(/no results/i)).toBeInTheDocument();
+  });
+});
+
+describe('KnowledgePage – Documents tab (WS-13: source-provenance filtering)', () => {
+  const DOCS = [
+    { id: 'd1', title: 'Runbook.md', source_type: 'text', chunk_count: 4, created_at: '2026-08-01T00:00:00Z' },
+    { id: 'd2', title: 'scraped-page', source_type: 'rpa-web', chunk_count: 2, created_at: '2026-08-02T00:00:00Z' },
+    { id: 'd3', title: 'invoice-scan', source_type: 'ocr', chunk_count: 1, created_at: '2026-08-03T00:00:00Z' },
+  ];
+
+  test('renders real source_type badges for every document, including rpa-web and ocr', async () => {
+    mockFetch({ documents: DOCS });
+    renderPage();
+    await screen.findByRole('heading', { name: /knowledge/i });
+    await userEvent.click(screen.getByTestId('tab-documents'));
+
+    expect(await screen.findByText('Runbook.md')).toBeInTheDocument();
+    expect(screen.getByText('scraped-page')).toBeInTheDocument();
+    expect(screen.getByText('invoice-scan')).toBeInTheDocument();
+    // "rpa-web"/"ocr" appear twice (filter chip + document badge) — both real.
+    expect(screen.getAllByText('rpa-web').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('ocr').length).toBeGreaterThan(0);
+  });
+
+  test('filtering by source shows only documents with that real source_type', async () => {
+    mockFetch({ documents: DOCS });
+    renderPage();
+    await screen.findByRole('heading', { name: /knowledge/i });
+    await userEvent.click(screen.getByTestId('tab-documents'));
+    await screen.findByText('Runbook.md');
+
+    await userEvent.click(screen.getByRole('button', { name: 'ocr' }));
+
+    expect(screen.getByText('invoice-scan')).toBeInTheDocument();
+    expect(screen.queryByText('Runbook.md')).not.toBeInTheDocument();
+    expect(screen.queryByText('scraped-page')).not.toBeInTheDocument();
+
+    // Back to "All" restores every real document.
+    await userEvent.click(screen.getByRole('button', { name: 'All' }));
+    expect(await screen.findByText('Runbook.md')).toBeInTheDocument();
+  });
+
+  test('does not show a source filter when there is only one collection with no documents', async () => {
+    mockFetch({ documents: [] });
+    renderPage();
+    await screen.findByRole('heading', { name: /knowledge/i });
+    await userEvent.click(screen.getByTestId('tab-documents'));
+
+    expect(await screen.findByText(/no documents in this collection/i)).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: /filter by source/i })).not.toBeInTheDocument();
   });
 });

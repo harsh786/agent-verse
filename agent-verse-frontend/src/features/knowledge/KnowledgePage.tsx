@@ -924,6 +924,7 @@ function DocumentsTab({ collections }: { collections: Collection[] }) {
   );
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const [sourceTypeFilter, setSourceTypeFilter] = useState<string | null>(null);
   const PAGE_SIZE = 20;
 
   const { data, isLoading } = useQuery({
@@ -935,6 +936,16 @@ function DocumentsTab({ collections }: { collections: Collection[] }) {
     enabled: !!selectedCollection,
     staleTime: 30_000,
   });
+
+  // Source-provenance filtering (WS-13): the backend `/documents` endpoint has
+  // no `source_type` query param, so this filters the real `source_type` field
+  // already returned per document (client-side, over the currently loaded
+  // page — every value shown here comes straight from the API response).
+  const allDocuments = data?.documents ?? [];
+  const sourceTypes = [...new Set(allDocuments.map((d) => (d.source_type as string | undefined) ?? 'unknown'))].sort();
+  const filteredDocuments = sourceTypeFilter
+    ? allDocuments.filter((d) => ((d.source_type as string | undefined) ?? 'unknown') === sourceTypeFilter)
+    : allDocuments;
 
   const [previewDoc, setPreviewDoc] = useState<Record<string, unknown> | null>(null);
 
@@ -1017,6 +1028,31 @@ function DocumentsTab({ collections }: { collections: Collection[] }) {
         </button>
       </div>
 
+      {/* Source-provenance filter — every value is a real source_type already
+          present on the loaded documents (incl. rpa-web, ocr, pdf, docx, …). */}
+      {sourceTypes.length > 1 && (
+        <div className="flex items-center gap-1.5 flex-wrap" role="group" aria-label="Filter by source">
+          <span className="text-xs text-muted-foreground">Source:</span>
+          <button
+            onClick={() => setSourceTypeFilter(null)}
+            aria-pressed={!sourceTypeFilter}
+            className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${!sourceTypeFilter ? 'bg-primary text-primary-foreground border-primary' : 'border-border hover:bg-muted'}`}
+          >
+            All
+          </button>
+          {sourceTypes.map((st) => (
+            <button
+              key={st}
+              onClick={() => setSourceTypeFilter(st === sourceTypeFilter ? null : st)}
+              aria-pressed={st === sourceTypeFilter}
+              className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${st === sourceTypeFilter ? 'bg-primary text-primary-foreground border-primary' : 'border-border hover:bg-muted'}`}
+            >
+              {st}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Document list */}
       {isLoading ? (
         <div className="space-y-2">
@@ -1024,16 +1060,18 @@ function DocumentsTab({ collections }: { collections: Collection[] }) {
             <Skeleton key={i} className="h-16 rounded-lg" />
           ))}
         </div>
-      ) : (data?.documents ?? []).length === 0 ? (
+      ) : filteredDocuments.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
           <FileText className="h-8 w-8 opacity-20 mb-2" />
           <p className="text-sm">
-            {search ? 'No documents match your search' : 'No documents in this collection'}
+            {sourceTypeFilter
+              ? `No ${sourceTypeFilter} documents on this page`
+              : search ? 'No documents match your search' : 'No documents in this collection'}
           </p>
         </div>
       ) : (
         <div className="space-y-2">
-          {(data?.documents ?? []).map((doc) => {
+          {filteredDocuments.map((doc) => {
             const docId = (doc.id ?? doc.document_id) as string;
             const docTitle = (doc.title ?? doc.source ?? (docId?.slice(0, 20))) as string | undefined;
             const chunkCount = (doc.chunk_count ?? 0) as number;
