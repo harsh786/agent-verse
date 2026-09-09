@@ -140,6 +140,7 @@ class TriggerConsumerSupervisor:
     def _consumer_specs(self) -> list[_ConsumerSpec]:
         from app.triggers.consumers.chain import ChainTriggerConsumer
         from app.triggers.consumers.condition import ConditionTriggerConsumer
+        from app.triggers.consumers.conversational import ConversationalTriggerConsumer
         from app.triggers.consumers.event import EventTriggerConsumer
         from app.triggers.consumers.hitl import HITLTriggerConsumer
         from app.triggers.consumers.memory import MemoryTriggerConsumer
@@ -181,6 +182,11 @@ class TriggerConsumerSupervisor:
             _ConsumerSpec(
                 name="ConditionTriggerConsumer",
                 factory=lambda: ConditionTriggerConsumer(**_core_kwargs()),
+                required=dict(core_deps),
+            ),
+            _ConsumerSpec(
+                name="ConversationalTriggerConsumer",
+                factory=lambda: ConversationalTriggerConsumer(**_core_kwargs()),
                 required=dict(core_deps),
             ),
         ]

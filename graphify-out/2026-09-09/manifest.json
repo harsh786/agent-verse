@@ -1626,9 +1626,9 @@
     "semantic_hash": "116138fc900842d3a9624b6c444887e0"
   },
   "agent-verse-backend/app/api/triggers.py": {
-    "mtime": 1788901767.6436918,
-    "seen": 1788902183.6956549,
-    "ast_hash": "7243550ebe7b7c7220d0ca1209553a7e",
+    "mtime": 1788908550.543075,
+    "seen": 1788908678.715858,
+    "ast_hash": "da21c593f1efe5aa90efa55ff84c1786",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/api/trust_governance.py": {
@@ -4938,9 +4938,9 @@
     "semantic_hash": "0057bdcf208924cb9d30b8fec3b79423"
   },
   "agent-verse-backend/app/main.py": {
-    "mtime": 1788897934.963584,
-    "seen": 1788900052.177305,
-    "ast_hash": "c2abb7d94e5e21dd89f35db1232fb063",
+    "mtime": 1788908530.3806562,
+    "seen": 1788908678.716177,
+    "ast_hash": "03a6333e926b5fdab952eb5e0d0efa84",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/main_services.py": {
@@ -12744,9 +12744,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/app/triggers/supervisor.py": {
-    "mtime": 1788858520.4527426,
-    "seen": 1788900052.17771,
-    "ast_hash": "6049b8a106a6dce4964892718eb0a016",
+    "mtime": 1788908341.1940837,
+    "seen": 1788908678.7165802,
+    "ast_hash": "c28109abf7fc42311d91589bca1723b9",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/voice/consent.py": {
@@ -20058,9 +20058,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/triggers/test_api.py": {
-    "mtime": 1788901804.7632747,
-    "seen": 1788902183.697185,
-    "ast_hash": "81ee3dd5eac1f97966fbdcad8f3c4f60",
+    "mtime": 1788908561.3392186,
+    "seen": 1788908678.717408,
+    "ast_hash": "3fab7dacb326382004239de136b4bb73",
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/triggers/test_api_extended.py": {
@@ -20166,9 +20166,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/triggers/test_supervisor.py": {
-    "mtime": 1788858520.4566333,
-    "seen": 1788900052.178431,
-    "ast_hash": "0f70c8a81346f78aaec0535aceb00ce9",
+    "mtime": 1788908410.1075056,
+    "seen": 1788908678.7174249,
+    "ast_hash": "4ac7670a9a85eec62ea725aa2413d545",
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/triggers/test_triggers.py": {
@@ -24996,9 +24996,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/app/triggers/dispatch_map.py": {
-    "mtime": 1788905807.3173363,
-    "seen": 1788905975.104542,
-    "ast_hash": "472a9017485019881e6f7ff6a9c2f4c1",
+    "mtime": 1788908349.2155466,
+    "seen": 1788908678.716567,
+    "ast_hash": "064a8b4776a8d5a383beca124f52f2d6",
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/triggers/test_nl_scheduler_golden.py": {
@@ -25008,9 +25008,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/triggers/test_trigger_type_coverage.py": {
-    "mtime": 1788905812.993361,
-    "seen": 1788905975.105386,
-    "ast_hash": "98c100120bd2b4f7846797a5fe16bc8a",
+    "mtime": 1788908359.5004673,
+    "seen": 1788908678.7174258,
+    "ast_hash": "625c16ec46e4df3cffca6e53a5ef8b6d",
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/workflow/test_plan_queue_routing.py": {
@@ -25026,15 +25026,15 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/app/triggers/polling.py": {
-    "mtime": 1788905764.503753,
-    "seen": 1788905975.10455,
-    "ast_hash": "0653c20a3e6774383f0f273a7bd588b9",
+    "mtime": 1788906079.7069879,
+    "seen": 1788908678.716574,
+    "ast_hash": "57bd666ad4d178b46f0f14b12a9dca61",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/triggers/rss.py": {
-    "mtime": 1788905412.5947568,
-    "seen": 1788905975.104553,
-    "ast_hash": "08a6c2c42152f74a5f612f3a6fc2641f",
+    "mtime": 1788906069.6249495,
+    "seen": 1788908678.716578,
+    "ast_hash": "12ce79505e9a18a9e29b6c01c613e5f4",
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/ingestion/test_stack_parity.py": {
@@ -25044,21 +25044,33 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/triggers/test_polling.py": {
-    "mtime": 1788905772.3486698,
-    "seen": 1788905975.10538,
-    "ast_hash": "b8bd91ae1d2605168195d87be57bfc90",
+    "mtime": 1788906032.9112508,
+    "seen": 1788908678.717417,
+    "ast_hash": "cb0f2d5c55846aa911a7c74224cc17ac",
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/triggers/test_rss.py": {
-    "mtime": 1788905425.6735146,
-    "seen": 1788905975.10538,
-    "ast_hash": "4638248adeba47a7be2ce68f7ba69aee",
+    "mtime": 1788906022.0384495,
+    "seen": 1788908678.717419,
+    "ast_hash": "370ab2673deded6b26802ee1593a0371",
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/triggers/test_schedule_config_plumbing.py": {
     "mtime": 1788905720.7657971,
     "seen": 1788905975.105381,
     "ast_hash": "14afd95d23aea9efc3d6cf9689a9c02c",
+    "semantic_hash": ""
+  },
+  "agent-verse-backend/app/triggers/consumers/event.py": {
+    "mtime": 1788908430.2226038,
+    "seen": 1788908678.716562,
+    "ast_hash": "872b9cdc535b918aab43363d502a996e",
+    "semantic_hash": ""
+  },
+  "agent-verse-backend/tests/triggers/test_event_consumer.py": {
+    "mtime": 1788908430.2225654,
+    "seen": 1788908678.717414,
+    "ast_hash": "e9069e38340f6b295fef8f0b22db1b36",
     "semantic_hash": ""
   }
 }

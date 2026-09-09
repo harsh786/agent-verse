@@ -30,6 +30,24 @@ def _get_dispatcher(request: Request) -> Any:
     return getattr(request.app.state, "trigger_dispatcher", None)
 
 
+async def _emit_chat_event(request: Request, channel_type: str, body: dict, tenant_id: str) -> None:
+    """Publish a normalized conversational event onto the EVENT bus so Family C
+    (chat/email/sms/voice/form) triggers can fire."""
+    redis = getattr(request.app.state, "trigger_event_redis", None)
+    if redis is None or not tenant_id:
+        return
+    try:
+        from app.triggers.consumers.conversational import (
+            normalize_conversational_event,
+            publish_conversational_event,
+        )
+
+        event = normalize_conversational_event(channel_type, body)
+        await publish_conversational_event(redis, tenant_id=tenant_id, event=event)
+    except Exception as exc:  # never break ingestion on a publish failure
+        _log.warning("chat_event_publish_failed channel=%s: %s", channel_type, exc)
+
+
 # ── Tenant resolution via channel mapping ────────────────────────────────────
 
 
@@ -96,6 +114,8 @@ async def slack_events(
     elif not tenant_id:
         _log.warning("slack_event_unknown_team team_id=%s", team_id)
 
+    if tenant_id:
+        await _emit_chat_event(request, "slack", body, tenant_id)
     return {"ok": True}
 
 
@@ -114,6 +134,8 @@ async def teams_events(request: Request) -> dict:
     gateway = _get_gateway(request)
     if gateway and tenant_id:
         await gateway.ingest("teams", body, tenant_id=tenant_id)
+    if tenant_id:
+        await _emit_chat_event(request, "teams", body, tenant_id)
     return {"type": "message", "text": "Received"}
 
 
@@ -132,6 +154,8 @@ async def discord_events(request: Request) -> dict:
     gateway = _get_gateway(request)
     if gateway and tenant_id:
         await gateway.ingest("discord", body, tenant_id=tenant_id)
+    if tenant_id:
+        await _emit_chat_event(request, "discord", body, tenant_id)
     return {"type": 5}
 
 
@@ -155,6 +179,8 @@ async def email_inbound(request: Request) -> dict:
     gateway = _get_gateway(request)
     if gateway and tenant_id:
         await gateway.ingest("email", body, tenant_id=tenant_id)
+    if tenant_id:
+        await _emit_chat_event(request, "email", body, tenant_id)
     return {"status": "ok"}
 
 
@@ -178,6 +204,8 @@ async def sms_inbound(request: Request) -> str:
     gateway = _get_gateway(request)
     if gateway and tenant_id:
         await gateway.ingest("sms", body, tenant_id=tenant_id)
+    if tenant_id:
+        await _emit_chat_event(request, "sms", body, tenant_id)
     return '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
 
 
@@ -194,6 +222,7 @@ async def voice_transcript(request: Request) -> dict:
     gateway = _get_gateway(request)
     if gateway:
         await gateway.ingest("voice", body, tenant_id=tenant_id)
+    await _emit_chat_event(request, "voice", body, tenant_id)
     return {"status": "ok"}
 
 
@@ -214,6 +243,7 @@ async def form_submission(form_id: str, request: Request) -> dict:
     gateway = _get_gateway(request)
     if gateway:
         await gateway.ingest("form", body, tenant_id=tenant_id)
+    await _emit_chat_event(request, "form", body, tenant_id)
     return {"status": "ok"}
 
 

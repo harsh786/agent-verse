@@ -78,6 +78,16 @@ CONSUMER_TYPES: frozenset[TriggerType] = frozenset(
         TriggerType.COMPOUND,
         TriggerType.STATE_TRANSITION,
         TriggerType.WINDOW_AGGREGATE,
+        # Family C (conversational) — normalized channel events on the EVENT bus,
+        # matched by ConversationalTriggerConsumer. MEETING_ENDED has no inbound
+        # endpoint, so it stays unsupported.
+        TriggerType.CHAT_COMMAND,
+        TriggerType.CHAT_KEYWORD,
+        TriggerType.CHAT_MENTION,
+        TriggerType.EMAIL_INTENT,
+        TriggerType.SMS_INBOUND,
+        TriggerType.VOICE_TRANSCRIPT,
+        TriggerType.FORM_SUBMISSION,
     }
 )
 
