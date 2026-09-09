@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import structlog
 from opentelemetry import trace
@@ -230,6 +230,163 @@ class OrgService:
         org.updated_at = datetime.now(UTC)
         await self._session.flush()
         return True
+
+    # ── N2: Org Composer (NL → Organisation) ──────────────────────────────────
+
+    # Industry-aware department blueprints for template composition. Each entry is
+    # (name, purpose, capability_domains). Keep these small and sensible — the org
+    # can be refined after creation via the normal department CRUD.
+    _INDUSTRY_DEPARTMENTS: ClassVar[dict[str, list[tuple[str, str, list[str]]]]] = {
+        "fintech": [
+            ("Product", "Own the financial product roadmap", ["product", "strategy"]),
+            ("Engineering", "Build and operate the platform", ["engineering", "software"]),
+            ("Risk & Compliance", "Manage regulatory and financial risk", ["compliance", "risk"]),
+            ("Growth", "Acquire and retain customers", ["marketing", "sales"]),
+        ],
+        "ecommerce": [
+            ("Merchandising", "Curate catalog and pricing", ["merchandising", "pricing"]),
+            ("Engineering", "Build storefront and fulfilment systems", ["engineering", "software"]),
+            ("Marketing", "Drive demand and brand", ["marketing", "content"]),
+            ("Operations", "Run fulfilment and support", ["operations", "support"]),
+        ],
+        "healthcare": [
+            ("Clinical", "Own clinical quality and safety", ["clinical", "quality"]),
+            ("Engineering", "Build compliant health systems", ["engineering", "software"]),
+            ("Compliance", "Ensure HIPAA/regulatory compliance", ["compliance", "privacy"]),
+            ("Operations", "Coordinate care delivery", ["operations", "coordination"]),
+        ],
+    }
+
+    _DEFAULT_DEPARTMENTS: ClassVar[list[tuple[str, str, list[str]]]] = [
+        ("Operations", "Coordinate execution across the org", ["operations", "coordination"]),
+        ("Engineering", "Build and maintain products and systems", ["engineering", "software"]),
+        ("Research", "Gather intelligence and analyse the market", ["research", "analysis"]),
+        ("Growth", "Drive customer acquisition and revenue", ["marketing", "sales"]),
+    ]
+
+    # Keyword → extra department, so the description can shape the structure.
+    _KEYWORD_DEPARTMENTS: ClassVar[list[tuple[tuple[str, ...], tuple[str, str, list[str]]]]] = [
+        (("support", "customer", "success"),
+         ("Customer Success", "Support and retain customers", ["support", "success"])),
+        (("legal", "contract", "regulat"),
+         ("Legal", "Handle legal, contracts, and regulation", ["legal", "compliance"])),
+        (("finance", "budget", "accounting"),
+         ("Finance", "Own budgeting and financial planning", ["finance", "accounting"])),
+        (("data", "analytics", "ml", "ai model"),
+         ("Data & Analytics", "Own data pipelines and insights", ["data", "analytics"])),
+        (("design", "ux", "brand"),
+         ("Design", "Own product and brand design", ["design", "ux"])),
+    ]
+
+    @staticmethod
+    def _derive_org_name(description: str, industry: str) -> str:
+        """Derive a short, human org name from the description (deterministic)."""
+        cleaned = " ".join(description.strip().split())
+        if not cleaned:
+            return f"{industry.title()} Organisation" if industry else "AI Organisation"
+        # First clause, capped to a reasonable length, title-cased.
+        first = cleaned.split(".")[0].split(",")[0].strip()
+        words = first.split()[:5]
+        name = " ".join(words).title()
+        return name[:80] or "AI Organisation"
+
+    def _compose_departments(
+        self, industry: str, description: str
+    ) -> list[tuple[str, str, list[str]]]:
+        """Pick a department blueprint by industry, then add keyword-driven extras."""
+        base = self._INDUSTRY_DEPARTMENTS.get(industry.lower().strip(), self._DEFAULT_DEPARTMENTS)
+        depts = list(base)
+        existing = {d[0].lower() for d in depts}
+        desc_lower = description.lower()
+        for keywords, dept in self._KEYWORD_DEPARTMENTS:
+            if any(k in desc_lower for k in keywords) and dept[0].lower() not in existing:
+                depts.append(dept)
+                existing.add(dept[0].lower())
+        return depts
+
+    async def compose_from_nl(
+        self,
+        *,
+        description: str,
+        goals: list[str] | None = None,
+        industry: str = "",
+        autonomy_level: int = 2,
+        budget_usd: float = 0.0,
+        constraints: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Compose a whole organisation from a natural-language description.
+
+        Template-based composition: derives a name and an industry-appropriate
+        department structure (with keyword-driven extras), creates the org, its
+        departments, and one initial mission per stated goal, then returns a
+        summary. Deterministic and provider-free so it works on every deployment;
+        an LLM refinement pass can layer on top later without changing this contract.
+        """
+        goals = goals or []
+        constraints = constraints or []
+        with _tracer.start_as_current_span("org.compose_from_nl") as span:
+            span.set_attribute("tenant_id", self._tenant_id)
+            span.set_attribute("industry", industry)
+
+            org = await self.create_organization(
+                name=self._derive_org_name(description, industry),
+                description=description,
+                industry=industry,
+                autonomy_level=autonomy_level,
+                monthly_budget_usd=budget_usd,
+                goals=list(goals),
+                settings={"constraints": list(constraints), "composed_from_nl": True},
+            )
+            org_id = str(org.id)
+            span.set_attribute("org.id", org_id)
+
+            departments: list[dict[str, Any]] = []
+            for name, purpose, domains in self._compose_departments(industry, description):
+                dept = await self.create_department(
+                    org_id=org_id, name=name, purpose=purpose, capability_domains=list(domains)
+                )
+                departments.append(
+                    {
+                        "id": str(dept.id),
+                        "name": dept.name,
+                        "purpose": dept.purpose,
+                        "capability_domains": list(dept.capability_domains or []),
+                    }
+                )
+
+            initial_missions: list[dict[str, Any]] = []
+            for goal in goals[:10]:
+                goal_text = str(goal).strip()
+                if not goal_text:
+                    continue
+                mission = await self.create_mission(
+                    org_id=org_id,
+                    title=goal_text[:200],
+                    objective=goal_text,
+                    priority="high",
+                    source="composer",
+                )
+                initial_missions.append(
+                    {"id": str(mission.id), "title": mission.title, "status": mission.status}
+                )
+
+            span.set_attribute("departments_created", len(departments))
+            _log.info(
+                "org_composed tenant=%s org_id=%s departments=%d missions=%d",
+                self._tenant_id,
+                org_id,
+                len(departments),
+                len(initial_missions),
+            )
+            return {
+                "org_id": org_id,
+                "name": org.name,
+                "departments": departments,
+                "initial_missions": initial_missions,
+                "autonomy_level": org.autonomy_level,
+                "status": "ready",
+                "composition_method": "template",
+            }
 
     # ── Department CRUD ───────────────────────────────────────────────────────
 
