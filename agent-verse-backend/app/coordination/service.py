@@ -24,11 +24,23 @@ class SessionAdmission(BaseModel):
 
 class CoordinationCommandStore(Protocol):
     async def create_session(
-        self, tenant_ctx: TenantContext, **values: Any
+        self,
+        tenant_ctx: TenantContext,
+        *,
+        civilization_id: str,
+        goal_id: str,
+        policy_snapshot: dict[str, Any],
+        budget_snapshot: dict[str, Any],
     ) -> CoordinationSessionRecord: ...
 
     async def transition_session(
-        self, tenant_ctx: TenantContext, **values: Any
+        self,
+        tenant_ctx: TenantContext,
+        *,
+        session_id: str,
+        expected_version: int,
+        target_state: str,
+        idempotency_key: str,
     ) -> AcceptedTransition: ...
 
     async def get_session(
