@@ -1006,7 +1006,12 @@ class OrgService:
                 depth=depth,
                 linked_goal_id=linked_goal_id,
                 expires_at=expires_at,
-                metadata=metadata or {},
+                # NOTE: OrgTask has no "metadata" column — that name is the
+                # SQLAlchemy declarative Base.metadata registry. The JSONB scratch
+                # field is "extra_data"; passing metadata= only set a transient
+                # shadow attribute that was NEVER persisted (so task metadata was
+                # silently lost on reload). Write the real column.
+                extra_data=metadata or {},
             )
             self._session.add(task)
             await self._session.flush()
@@ -1530,6 +1535,7 @@ class OrgService:
         tasks: list[OrgTask] = []
         prev_agent: str | None = None
         prev_task_id: str | None = None
+        prev_dept: str | None = None
         for idx, st in enumerate(subtasks):
             task = await self.create_task(
                 org_id=org_id,
@@ -1581,7 +1587,11 @@ class OrgService:
                 },
                 source="orchestrator",
             )
-            if prev_agent is not None and prev_agent != agent_id:
+            # A decomposed mission is a pipeline: each subtask hands its result
+            # to the next. Emit a handoff for every consecutive pair, carrying the
+            # real owner/department transition (which may or may not change).
+            cur_dept = st.get("department")
+            if prev_task_id is not None:
                 await self._emit_event(
                     org_uuid,
                     "task.handoff",
@@ -1593,12 +1603,15 @@ class OrgService:
                         "to_agent": agent_id,
                         "from_task": prev_task_id,
                         "to_task": str(task.id),
+                        "from_department": prev_dept,
+                        "to_department": cur_dept,
                         "mission_id": mission_id,
                     },
                     source="orchestrator",
                 )
             prev_agent = agent_id
             prev_task_id = str(task.id)
+            prev_dept = cur_dept
             tasks.append(task)
 
         await self._emit_event(
@@ -1703,7 +1716,7 @@ class OrgService:
 
         all_tasks = await self.list_tasks(str(org_uuid), mission_id=mission_id, limit=200)
         subtasks = [
-            t for t in all_tasks if (t.metadata or {}).get("task_kind") == "subtask"
+            t for t in all_tasks if (t.extra_data or {}).get("task_kind") == "subtask"
         ] or all_tasks
 
         terminal_ok = goal_status in ("complete", "completed", "succeeded", "success")

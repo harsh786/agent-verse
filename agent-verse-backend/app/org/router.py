@@ -623,7 +623,7 @@ async def approve_task(
 
 def _extract_hitl_request_id(task: Any) -> str | None:
     """Find the paired HITLGateway request id recorded on an approval-gate task."""
-    for bucket in (getattr(task, "outputs", None) or [], [getattr(task, "metadata", None) or {}]):
+    for bucket in (getattr(task, "outputs", None) or [], [getattr(task, "extra_data", None) or {}]):
         for entry in bucket:
             if isinstance(entry, dict):
                 rid = entry.get("hitl_request_id") or entry.get("approval_request_id")
