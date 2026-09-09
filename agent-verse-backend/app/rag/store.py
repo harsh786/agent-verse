@@ -218,6 +218,54 @@ class KnowledgeStore:
             embedder=str(row[4] or "voyage"),
         )
 
+    async def get_collection_embedding_dim(
+        self,
+        collection_id: str,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> int | None:
+        """Return the collection's already-established embedding dimension.
+
+        ``None`` means the collection has no persisted vectors yet, so any
+        dimension is safe to write. Backs the D-10 dimension-safety guard in
+        ``IngestionOrchestrator`` (never write a mismatched-dimension vector
+        for the selected model — degrade to the default embedder instead).
+        Reads the *same* ``embedding_dim``/``chunk_count`` source of truth
+        ``_persist_chunks`` already enforces at the persistence boundary,
+        rather than duplicating a separate dimension check.
+        """
+        if self._db is None:
+            cache_key = (tenant_ctx.tenant_id, collection_id)
+            index_records = self._index_records.get(cache_key)
+            if index_records:
+                return index_records[0].embedding_dimension
+            collection_store = self._data.get(cache_key)
+            if collection_store and collection_store.chunks:
+                return len(collection_store.chunks[0].embedding)
+            return None
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT embedding_dim, chunk_count FROM knowledge_collections "
+                        "WHERE id = :id AND tenant_id = :tid AND is_active IS TRUE"
+                    ),
+                    {"id": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchone()
+            if row is None or int(row[1]) == 0:
+                return None
+            return int(row[0])
+
     async def list_collections_async(
         self,
         *,

@@ -131,11 +131,17 @@ class RAGIndexingPipeline:
         embedder: EmbeddingProvider,
         dependencies: Mapping[RAGStrategy, IndexingDependency],
         config: RAGIndexingConfig,
+        embed_model: str = "",
     ) -> None:
         self._store = store
         self._embedder = embedder
         self._dependencies = dict(dependencies)
         self._config = config
+        # D-10: model id to thread into the physical embed call so the *selected*
+        # model is actually used (see IngestionOrchestrator.ingest) instead of
+        # silently relying on whatever the provider does by default. Empty string
+        # preserves the historical behaviour of letting the provider pick.
+        self._embed_model = embed_model
         missing = config.strategies - set(self._dependencies)
         if missing:
             values = ", ".join(sorted(strategy.value for strategy in missing))
@@ -412,7 +418,10 @@ class RAGIndexingPipeline:
         for start in range(0, len(records), self._config.embedding_batch_size):
             batch = records[start : start + self._config.embedding_batch_size]
             response = await self._embedder.embed(
-                EmbedRequest(texts=[record.content for record in batch])
+                EmbedRequest(
+                    texts=[record.content for record in batch],
+                    model=self._embed_model,
+                )
             )
             if len(response.embeddings) != len(batch) or any(
                 not embedding for embedding in response.embeddings
