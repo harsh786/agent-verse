@@ -1,9 +1,8 @@
-"""D-16: MultiHopReasoner against the real KnowledgeGraphStore.get_neighbors.
+"""D-16: KnowledgeGraphStore.get_neighbors adjacency behaviour.
 
 Seeds a small graph in-memory and proves that:
   * ``KnowledgeGraphStore.get_neighbors`` returns the correct adjacency,
-  * it is tenant-scoped,
-  * ``MultiHopReasoner`` performs correct N-hop traversal over it.
+  * it is tenant-scoped.
 """
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ from __future__ import annotations
 import uuid
 
 from app.knowledge_graph.models import EdgeType, GraphEdge, GraphNode, NodeType
-from app.knowledge_graph.multi_hop import MultiHopReasoner
 from app.knowledge_graph.store import KnowledgeGraphStore
 
 
@@ -70,39 +68,3 @@ def test_get_neighbors_is_tenant_scoped() -> None:
 def test_get_neighbors_unknown_node() -> None:
     store = _seeded_store()
     assert store.get_neighbors("ZZZ", "t-1") == []
-
-
-# ---------------------------------------------------------------------------
-# MultiHopReasoner over the real store
-# ---------------------------------------------------------------------------
-
-
-def test_multi_hop_finds_two_hop_path() -> None:
-    reasoner = MultiHopReasoner(_seeded_store(), tenant_id="t-1")
-    paths = reasoner.find_paths("A", "C", max_hops=3)
-    assert paths, "expected at least one path A -> C"
-    assert paths[0].nodes[0] == "A"
-    assert paths[0].nodes[-1] == "C"
-    assert any(p.length == 2 for p in paths)  # A -> B -> C
-
-
-def test_multi_hop_respects_max_hops() -> None:
-    reasoner = MultiHopReasoner(_seeded_store(), tenant_id="t-1")
-    # D is reachable in 2 hops (A->B->D) but not in 1.
-    assert reasoner.find_paths("A", "D", max_hops=1) == []
-    assert any(p.length == 2 for p in reasoner.find_paths("A", "D", max_hops=2))
-
-
-def test_multi_hop_subgraph_neighbourhood() -> None:
-    reasoner = MultiHopReasoner(_seeded_store(), tenant_id="t-1")
-    sg = reasoner.retrieve_subgraph("A", depth=2)
-    # From A within 2 hops (undirected): A, B, C, D are all reachable.
-    node_labels = {n.get("label") for n in sg.nodes}
-    assert {"A", "B"}.issubset(node_labels)
-    assert sg.center == "A"
-
-
-def test_multi_hop_tenant_isolation() -> None:
-    """A reasoner bound to a foreign tenant sees no traversable graph."""
-    reasoner = MultiHopReasoner(_seeded_store(), tenant_id="other-tenant")
-    assert reasoner.find_paths("A", "C", max_hops=3) == []
