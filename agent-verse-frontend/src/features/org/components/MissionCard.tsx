@@ -17,10 +17,13 @@ import {
   Cpu, GitBranch, Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { OrgMission, MissionStatus, Priority } from '../types';
+import { useOrgTasks } from '../hooks/useOrg';
+import type { OrgMission, OrgTask, MissionStatus, Priority } from '../types';
 
 interface MissionCardProps {
   mission:    OrgMission;
+  /** Org the mission belongs to — needed to fetch real task progress. Omit to skip the progress fetch (e.g. isolated previews). */
+  orgId?:     string;
   isSelected?: boolean;
   onClick?:   (id: string) => void;
   className?: string;
@@ -81,6 +84,7 @@ function PulseDot({ dot }: { dot: string }) {
 
 export const MissionCard = React.memo(function MissionCard({
   mission,
+  orgId,
   isSelected = false,
   onClick,
   className,
@@ -90,9 +94,18 @@ export const MissionCard = React.memo(function MissionCard({
   const Icon        = cfg.icon;
   const stripe      = PRIORITY_STRIPE[mission.priority] ?? PRIORITY_STRIPE.medium;
   const labelId     = useId();
-  const total       = 0;   // TODO: add task counts to OrgMission type
-  const done        = 0;
+
+  // Real task progress — OrgMission carries no task/subtask counts of its own
+  // (see app/org/schemas.py MissionResponse), so derive it from the tasks
+  // actually scoped to this mission via the tasks endpoint. When orgId isn't
+  // supplied, or the fetch hasn't resolved yet, show an honest unknown state
+  // rather than a fabricated 0%.
+  const { data: tasksResp } = useOrgTasks(orgId, { mission_id: mission.id });
+  const tasks       = (tasksResp as { data?: OrgTask[] } | undefined)?.data;
+  const total       = tasks?.length ?? 0;
+  const done        = tasks?.filter(t => t.status === 'completed').length ?? 0;
   const pct         = total > 0 ? Math.round((done / total) * 100) : 0;
+  const progressUnknown = !!orgId && tasks === undefined;
 
   const handleClick = useCallback(() => onClick?.(mission.id), [mission.id, onClick]);
   const handleKey   = useCallback((e: React.KeyboardEvent) => {
@@ -184,27 +197,38 @@ export const MissionCard = React.memo(function MissionCard({
         </p>
       )}
 
-      {/* Progress bar — only when tasks exist */}
-      {total > 0 && (
+      {/* Progress bar — real task counts when known; honest "—" while unresolved.
+          Hidden entirely once resolved with zero tasks (nothing to show progress on). */}
+      {(total > 0 || progressUnknown) && (
         <div className="flex items-center gap-2 min-w-0">
-          <div
-            className="flex-1 h-1 rounded-full bg-[#252B3B] overflow-hidden"
-            role="progressbar"
-            aria-valuenow={pct}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-label={`Progress: ${pct}%`}
-          >
-            <motion.div
-              className="h-full rounded-full bg-gradient-to-r from-blue-600 to-blue-400"
-              initial={{ width: 0 }}
-              animate={{ width: `${pct}%` }}
-              transition={reduce ? { duration: 0 } : FILL_SPRING}
-            />
-          </div>
+          {progressUnknown ? (
+            <div
+              className="flex-1 h-1 rounded-full bg-[#252B3B] overflow-hidden"
+              role="progressbar"
+              aria-label="Progress: unknown, loading task data"
+            >
+              <div className="h-full w-1/3 rounded-full bg-[#334155] animate-pulse" />
+            </div>
+          ) : (
+            <div
+              className="flex-1 h-1 rounded-full bg-[#252B3B] overflow-hidden"
+              role="progressbar"
+              aria-valuenow={pct}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label={`Progress: ${pct}%`}
+            >
+              <motion.div
+                className="h-full rounded-full bg-gradient-to-r from-blue-600 to-blue-400"
+                initial={{ width: 0 }}
+                animate={{ width: `${pct}%` }}
+                transition={reduce ? { duration: 0 } : FILL_SPRING}
+              />
+            </div>
+          )}
           {/* web-guidelines: tabular-nums for numbers in comparison context */}
           <span className="text-[11px] text-[#475569] tabular-nums shrink-0 font-mono">
-            {done}/{total}
+            {progressUnknown ? '—' : `${done}/${total}`}
           </span>
         </div>
       )}
@@ -284,5 +308,6 @@ export const MissionCard = React.memo(function MissionCard({
   prev.mission.status           === next.mission.status           &&
   prev.mission.title            === next.mission.title            &&
   prev.mission.completed_at     === next.mission.completed_at     &&
+  prev.orgId                    === next.orgId                    &&
   prev.isSelected               === next.isSelected,
 );

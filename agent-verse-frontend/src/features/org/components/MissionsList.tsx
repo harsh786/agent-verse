@@ -154,6 +154,7 @@ export function MissionsList({
                 >
                   <MissionCard
                     mission={mission}
+                    orgId={orgId}
                     onClick={handleMissionClick}
                   />
                 </div>
