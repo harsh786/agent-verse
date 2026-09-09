@@ -388,10 +388,10 @@ class GoalAnalyticsAggregator:
                 g for g in agent_goals if _goal_status_completed(getattr(g, "status", None))
             ]
             costs = [getattr(g, "cost_usd", 0.0) or 0.0 for g in agent_goals]
-            eval_scores = [
-                getattr(g, "eval_score", None)
+            eval_scores: list[float] = [
+                float(score)
                 for g in agent_goals
-                if getattr(g, "eval_score", None) is not None
+                if (score := getattr(g, "eval_score", None)) is not None
             ]
 
             results.append(

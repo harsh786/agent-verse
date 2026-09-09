@@ -172,9 +172,9 @@ class BrowserSessionManager:
 
         for key in to_close:
             async with self._lock:
-                session = self._sessions.pop(key, None)
-            if session:
-                await session.close()
+                closed_session = self._sessions.pop(key, None)
+            if closed_session:
+                await closed_session.close()
                 await self._deregister_from_redis(key[0], key[1])
 
         return len(to_close)

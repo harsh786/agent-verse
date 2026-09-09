@@ -94,8 +94,10 @@ async def send_approval_request_to_slack(
 ) -> dict[str, Any]:
     """Send an interactive HITL approval request to Slack with buttons."""
     target_channel = channel or os.getenv("SLACK_APPROVAL_CHANNEL", "#approvals")
+    if target_channel is None:
+        target_channel = "#approvals"
 
-    blocks = [
+    blocks: list[dict[str, Any]] = [
         {
             "type": "section",
             "text": {
