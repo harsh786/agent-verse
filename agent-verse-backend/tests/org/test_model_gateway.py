@@ -1,65 +1,66 @@
 """Tests for ModelGateway — app/org/model_gateway.py"""
 from __future__ import annotations
 
-import pytest
-from app.org.model_gateway import ModelGateway, ModelSelection
+from app.org.model_gateway import MODEL_PROFILES, ModelGateway, ModelSelection
 
 
-def test_gateway_executive_gets_premium_model():
+async def test_gateway_executive_gets_premium_model():
     gw = ModelGateway()
-    sel = gw.select_model(role_family="executive", task_type="strategy", quality_required=0.95)
+    sel = await gw.select_model(role_profile="premium", task_type="strategy", quality_req=0.95)
     assert isinstance(sel, ModelSelection)
-    assert sel.cost_tier in ("premium", "smart")
+    # A high quality requirement must be satisfied by a genuinely high-quality profile.
+    assert MODEL_PROFILES[sel.profile_name].min_quality >= 0.90
 
 
-def test_gateway_support_gets_fast_model():
+async def test_gateway_support_gets_fast_model():
     gw = ModelGateway()
-    sel = gw.select_model(role_family="support", task_type="answer", latency_slo_seconds=2.0)
-    assert sel.latency_tier in ("fast", "economy")
+    sel = await gw.select_model(role_profile="fast", task_type="answer", latency_budget_ms=2000)
+    assert sel.estimated_latency_s <= 5.0
 
 
-def test_gateway_coding_task_selects_coding_model():
+async def test_gateway_coding_task_selects_coding_model():
     gw = ModelGateway()
-    sel = gw.select_model(role_family="engineering", task_type="code_generation")
-    assert "codex" in sel.model_id.lower() or "sonnet" in sel.model_id.lower() or sel.model_id
+    sel = await gw.select_model(role_profile="coding", task_type="code_generation")
+    assert "sonnet" in sel.model_id.lower()
 
 
-def test_gateway_fallback_cascade_on_unavailable():
+async def test_gateway_fallback_cascade_on_unavailable():
     gw = ModelGateway()
-    # Force primary unavailable
-    sel = gw.select_model(
-        role_family="executive",
-        task_type="strategy",
-        exclude_models=["claude-opus-4"],
-    )
-    assert sel.model_id != "claude-opus-4"
+    # Force the primary that would otherwise win to be unavailable.
+    baseline = await gw.select_model(role_profile="premium", task_type="strategy", quality_req=0.99)
+    await gw.mark_unhealthy(baseline.model_id)
+    sel = await gw.select_model(role_profile="premium", task_type="strategy", quality_req=0.99)
+    assert sel.model_id != baseline.model_id
     assert sel.model_id  # fallback was found
 
 
-def test_gateway_respects_cost_budget():
+async def test_gateway_respects_cost_budget():
     gw = ModelGateway()
-    sel = gw.select_model(
-        role_family="marketing",
+    sel = await gw.select_model(
+        role_profile="marketing",
         task_type="draft",
-        max_cost_per_1k_tokens=0.002,
+        quality_req=0.65,
+        cost_budget_usd=0.001,
     )
-    assert sel.cost_per_1k_tokens <= 0.005  # within reasonable range
+    assert sel.estimated_cost_usd_per_1k <= 0.001
+    assert MODEL_PROFILES[sel.profile_name].cost_tier == "economy"
 
 
-def test_gateway_privacy_constraint_blocks_external():
+async def test_gateway_privacy_constraint_blocks_external():
     gw = ModelGateway()
-    sel = gw.select_model(
-        role_family="legal",
+    sel = await gw.select_model(
+        role_profile="smart",
         task_type="contract_review",
-        privacy_required=True,
+        has_pii=True,
     )
-    # Privacy required → should prefer local or private model
+    # Privacy required → should not route to an OpenAI ("gpt") model.
     assert sel.model_id
+    assert "gpt" not in sel.model_id.lower()
 
 
-def test_gateway_returns_selection_metadata():
+async def test_gateway_returns_selection_metadata():
     gw = ModelGateway()
-    sel = gw.select_model(role_family="data", task_type="sql_analysis")
+    sel = await gw.select_model(role_profile="analytical", task_type="sql_analysis")
     assert sel.model_id
-    assert sel.provider
+    assert sel.profile_name
     assert sel.reasoning

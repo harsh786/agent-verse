@@ -118,6 +118,14 @@ _COST_TIER_SCORE: dict[str, float] = {
     "premium": 0.3,
 }
 
+# Rough estimated USD cost per 1k tokens for each cost tier — used both to
+# populate ModelSelection.estimated_cost_usd_per_1k and to enforce cost_budget_usd.
+_COST_TIER_USD_PER_1K: dict[str, float] = {
+    "economy": 0.0006,
+    "standard": 0.003,
+    "premium": 0.02,
+}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Selection output
@@ -186,6 +194,13 @@ class ModelGateway:
                 if not self._health.get(profile.primary, True):
                     skip_reasons.append(f"{name}: primary model marked unhealthy")
                     continue
+                estimated_cost = _COST_TIER_USD_PER_1K.get(profile.cost_tier, 0.003)
+                if estimated_cost > cost_budget_usd:
+                    skip_reasons.append(
+                        f"{name}: estimated cost ${estimated_cost:.4f}/1k exceeds "
+                        f"budget ${cost_budget_usd:.4f}/1k"
+                    )
+                    continue
 
                 score = self._score(profile, quality_req, latency_budget_s, cost_budget_usd)
                 if score > best_score:
@@ -213,6 +228,7 @@ class ModelGateway:
                 profile_name=best_profile_name,
                 fallback_model=profile.fallback,
                 reasoning=reasoning,
+                estimated_cost_usd_per_1k=_COST_TIER_USD_PER_1K.get(profile.cost_tier, 0.003),
                 estimated_latency_s=profile.latency_slo,
             )
 
