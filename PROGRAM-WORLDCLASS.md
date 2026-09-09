@@ -106,8 +106,16 @@ For any path where pause/resume is not truly wired, wire it. Reject/deny path al
 **Tasks (staged, low-risk first):** (1) `ruff check --fix` the safe auto-fixable set, commit in reviewable batches by rule family (imports/I, unused/F401, UP, C4) — run the fast tier after each batch to prove no behavior change; (2) hand-fix the residual `app/` errors (the 325 — these are the ones that matter most); (3) leave genuinely-intentional violations with scoped `# noqa` + reason or a per-file ignore in `pyproject.toml`; (4) then make CI gate on `ruff check .` so debt can't regrow.
 **DoD:** `app/` ruff = 0; tests ruff reduced to <a small documented residual or 0; fast tier still ~20990 passed; mypy still 0. Do NOT `--unsafe-fixes` without per-fix review.
 
-## WS-10 · RAG/retrieval/reranking/patterns — make generic & world-class (backend)
+## WS-10 · Agentic patterns + RAG patterns + all RAG aspects — GENERIC FRAMEWORK, world-class (backend)
 **Detailed by recon `recon/E-rag-knowledge-intelligence-backend.md` (rated 2026-09-10). Chunking is already 9/10 (real semantic + tokenizer — DONE). Focus on the confirmed gaps:**
+
+### ▶ FRAMEWORK PRINCIPLE (explicit, user requirement) — implement all of these GENERICALLY as a framework, not hardcoded/flag-gated per case:
+- **Agentic patterns** (plan-execute, ReAct, reflection, reflexion, ToT, goal-tree, supervisor, debate, consensus, and the advanced tier) MUST be selectable/composable GENERICALLY per goal via ONE registry + ONE selector driven by task characteristics (complexity, tool needs, ambiguity) — NOT via per-agent boolean flags. Explicit override allowed; default selection automatic. Respect the existing default-off safety gate for the autonomous/advanced tier, but make selection real.
+- **RAG patterns** (all ~18: basic/hybrid/CRAG/self-RAG/FLARE/RAPTOR/RAFT/agentic/speculative/fusion/modular/memory/graph/web/code…) MUST be selectable GENERICALLY on query characteristics via ONE selector (BK1 completed the adaptive coverage — build on it; optionally upgrade the keyword/regex heuristic to a light classifier).
+- **Retrieval / chunking / reranking / embedding strategies** MUST be pluggable GENERICALLY per collection/query through ONE registry each — any strategy addable without touching call sites; one reachable implementation per capability; extensible.
+- The whole stack is a FRAMEWORK: adding a new pattern/strategy = registering it, and it becomes selectable everywhere (goal/agent/workflow/org execution) without bespoke wiring. This is what makes AgentVerse a truly generic agentic platform.
+
+### Confirmed gaps to close (from recon E):
 - **[6/10, generic:n] Reranking on the DEFAULT path** — cross-encoder / MMR / ColBERT currently fire only on explicit pattern branches, NOT the default hybrid `retrieve()`. Wire a reranking stage into the default retrieval flow (config-gated, degrade when the reranker/dep is absent). Score calibration beyond raw MMR.
 - **[7/10, generic:n] Agent-pattern auto-selection** — ToT/supervisor/debate engage only via per-agent flags. Add automatic per-goal complexity detection that routes a goal to the right pattern (keep an explicit override). One reachable selector (respect the existing default-off safety gate for the advanced tier — make selection real but safe).
 - **[8/10] Retrieval confidence** — replace heuristic confidence with calibrated scoring; real fallback when confidence low.
