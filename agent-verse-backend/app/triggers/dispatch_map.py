@@ -108,6 +108,8 @@ BEAT_TYPES: frozenset[TriggerType] = frozenset(
         TriggerType.RELATIVE_DELAY,
         TriggerType.DEADLINE,
         TriggerType.BUSINESS_CALENDAR,
+        # DB_ROW_CHANGE — polls an allowlisted table's row count in the beat loop.
+        TriggerType.DB_ROW_CHANGE,
     }
 )
 

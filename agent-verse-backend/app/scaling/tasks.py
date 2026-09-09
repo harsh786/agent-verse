@@ -7,6 +7,7 @@ import contextlib
 import datetime
 import hashlib
 import os
+import re
 import signal as _signal
 import time
 from datetime import UTC
@@ -2012,6 +2013,53 @@ def _business_calendar_slots(
     return [s for s in slots if _is_business_time(s, tz_name)]
 
 
+_SAFE_TABLE = re.compile(r"^[a-z_][a-z0-9_]*$")
+
+
+def _db_row_change_allowlist() -> frozenset[str]:
+    """Operator-configured allowlist of tables DB_ROW_CHANGE may poll."""
+    from app.core.config import get_settings
+
+    raw = getattr(get_settings(), "db_row_change_tables", "") or ""
+    return frozenset(t.strip() for t in raw.split(",") if t.strip())
+
+
+def _safe_db_table(name: str, allowlist: frozenset[str]) -> bool:
+    """A table is pollable only if it is a bare identifier AND allowlisted —
+    so a tenant-supplied db_table can never inject SQL or read an off-limits table."""
+    return bool(name) and bool(_SAFE_TABLE.match(name)) and name in allowlist
+
+
+def _row_change_fires(current_count: int, last_count: int | None) -> bool:
+    """DB_ROW_CHANGE fires when the tenant's row count in the watched table has
+    grown since the last poll (first observation establishes a baseline)."""
+    if last_count is None:
+        return False
+    return current_count > last_count
+
+
+async def _count_tenant_rows(table: str, tenant_id: str, allowlist: frozenset[str]) -> int | None:
+    """Count a tenant's rows in an allowlisted table (RLS-scoped). Returns None
+    on error. The table name is re-validated here (defense-in-depth) so it can
+    only ever be a vetted, allowlisted identifier before interpolation."""
+    if not _safe_db_table(table, allowlist):
+        return None
+    from sqlalchemy import text as _sa_text
+
+    from app.db.rls import sqlalchemy_rls_context
+    from app.db.session import get_session_factory as _get_fresh_db
+
+    db = _get_fresh_db()
+    async with db() as session, sqlalchemy_rls_context(session, tenant_id):
+        # `table` is validated (allowlist + safe-identifier regex) above, so this
+        # interpolation cannot inject SQL or reach an off-limits table.
+        result = await session.execute(
+            _sa_text(f"SELECT COUNT(*) FROM {table} WHERE tenant_id = :tid"),
+            {"tid": tenant_id},
+        )
+        return int(result.scalar_one())
+
+
 def _db_schedule_payload(row: Any) -> dict[str, Any]:
     goal_template = str(getattr(row, "goal_id_template", "") or "")
     tenant_id = str(getattr(row, "tenant_id", "") or "")
@@ -2930,6 +2978,83 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                         logger.warning(
                             "api_poll_trigger_error",
                             error=str(_ap_err)[:100],
+                            schedule_id=sched.get("schedule_id", key),
+                        )
+
+                # ── DB_ROW_CHANGE trigger ─────────────────────────────────────
+                elif trigger_type == "db_row_change":
+                    # Poll an allowlisted table's tenant row count; fire when it
+                    # grows. Fail-closed: a table not in the allowlist never runs.
+                    try:
+                        table = str(sched.get("db_table", "") or "")
+                        _tenant_id_db = str(sched.get("tenant_id") or "")
+                        allow = _db_row_change_allowlist()
+                        if _tenant_id_db and _safe_db_table(table, allow):
+                            count_key = f"db_row_count:{key}"
+                            last_count: int | None = None
+                            if r is not None:
+                                _lc = r.get(count_key)
+                                if _lc is not None:
+                                    try:
+                                        last_count = int(_lc)
+                                    except (TypeError, ValueError):
+                                        last_count = None
+                            current = _run_async(
+                                _count_tenant_rows(table, _tenant_id_db, allow)
+                            )
+                            if current is not None:
+                                if _row_change_fires(current, last_count):
+                                    from app.tenancy.context import (
+                                        PlanTier as _PT_db,
+                                    )
+                                    from app.tenancy.context import (
+                                        TenantContext as _TC_db,
+                                    )
+
+                                    _tc_db = _TC_db(
+                                        tenant_id=_tenant_id_db,
+                                        plan=_PT_db.PROFESSIONAL,
+                                        api_key_id="trigger-db-row-change",
+                                    )
+                                    _db_alert = {
+                                        "db_table": table,
+                                        "row_count": current,
+                                        "previous_count": last_count,
+                                    }
+                                    _db_kw = _run_async(
+                                        _build_goal_kwargs_for_alert(
+                                            sched,
+                                            "db_row_change",
+                                            _db_alert,
+                                            goal_service=None,
+                                            tenant_ctx=_tc_db,
+                                        )
+                                    )
+                                    if _db_kw:
+                                        _db_goal_id = _scheduled_goal_id(
+                                            key, fire_instance_id=f"dbrow:{current}"
+                                        )
+                                        run_goal.apply_async(
+                                            kwargs={
+                                                "goal_id": _db_goal_id,
+                                                "tenant_id": _tenant_id_db,
+                                                "goal_text": _db_kw["goal"],
+                                                "priority": _db_kw["priority"],
+                                                "agent_id": str(_db_kw.get("agent_id") or ""),
+                                            },
+                                            queue="schedules",
+                                        )
+                                        fired += 1
+                                        logger.info(
+                                            "db_row_change_trigger_fired",
+                                            schedule_id=sched.get("schedule_id", key),
+                                        )
+                                if r is not None:
+                                    r.set(count_key, str(current), ex=604800)
+                    except Exception as _db_err:
+                        logger.warning(
+                            "db_row_change_error",
+                            error=str(_db_err)[:100],
                             schedule_id=sched.get("schedule_id", key),
                         )
 

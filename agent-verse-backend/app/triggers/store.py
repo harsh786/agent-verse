@@ -46,6 +46,8 @@ def spec_config(spec: TriggerSpec) -> dict[str, Any]:
         cfg["relative_offset_seconds"] = int(spec.relative_offset_seconds)
     if getattr(spec, "deadline_warning_seconds", 0):
         cfg["deadline_warning_seconds"] = int(spec.deadline_warning_seconds)
+    if getattr(spec, "db_table", ""):
+        cfg["db_table"] = spec.db_table
     return cfg
 
 

@@ -35,6 +35,13 @@ class Settings(BaseSettings):
         default_factory=lambda: ["http://localhost:5173"]
     )
 
+    # --- triggers ---
+    # DB_ROW_CHANGE trigger: comma-separated allowlist of tables safe to poll.
+    # Empty (default) → DB_ROW_CHANGE triggers never fire (fail-closed). Each name
+    # must be a bare identifier and is checked against this list before querying,
+    # so a tenant-supplied db_table can never inject SQL or read an off-limits table.
+    db_row_change_tables: str = ""
+
     # --- infrastructure DSNs ---
     database_url: str = "postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse"
     redis_url: str = "redis://localhost:6379/0"
