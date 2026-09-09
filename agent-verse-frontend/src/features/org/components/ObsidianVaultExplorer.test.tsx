@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import { ObsidianVaultExplorer } from './ObsidianVaultExplorer';
@@ -89,5 +89,24 @@ describe('ObsidianVaultExplorer — Graph tab (real backend data)', () => {
 
     expect(await screen.findByText(/couldn't load the knowledge graph/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
+  });
+});
+
+describe('ObsidianVaultExplorer — Bases/Maps/Timeline (honest preview, no fabricated data)', () => {
+  test.each([
+    ['Bases', /Bases — preview, not yet connected/i, 'Q3 Revenue Analysis'],
+    ['Maps', /Maps — preview, not yet connected/i, 'org-map.canvas'],
+    ['Timeline', /Timeline — preview, not yet connected/i, 'notes this week'],
+  ])('%s tab shows an honest preview state and never fabricated demo rows', async (tabLabel, previewRe, forbidden) => {
+    mockFetch(REAL_GRAPH_PAYLOAD);
+    renderExplorer();
+
+    // Wait for the graph tab to settle, then switch to the target tab.
+    await screen.findByLabelText('Knowledge graph view');
+    fireEvent.click(screen.getByRole('tab', { name: new RegExp(tabLabel, 'i') }));
+
+    expect(await screen.findByText(previewRe)).toBeInTheDocument();
+    // The removed demo data must never appear.
+    expect(screen.queryByText(forbidden)).not.toBeInTheDocument();
   });
 });

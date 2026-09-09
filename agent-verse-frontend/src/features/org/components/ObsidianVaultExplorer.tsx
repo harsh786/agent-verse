@@ -5,15 +5,16 @@
  *   Graph View  — real force-directed knowledge graph, wired to the tenant KG
  *                 (`/knowledge-graph/export`), click-to-focus, filter by type
  *   File Tree   — the same real KG nodes grouped by type, with search
- *   Bases       — live Obsidian-Bases table views (missions, tasks)
- *   Maps        — JSON Canvas thumbnails → launch CanvasMapViewer
- *   Timeline    — knowledge growth sparkline per day
+ *   Bases       — preview only: no Obsidian-Bases backend store exists yet
+ *   Maps        — preview only: no JSON Canvas backend store exists yet
+ *   Timeline    — preview only: no vault-history backend store exists yet
  *
  * HONESTY RULE: the Graph and File Tree tabs render only real backend data
  * (`knowledgeGraphApi`, see src/lib/api/client.ts) — no demo/fabricated nodes.
  * When the tenant's knowledge graph is empty, an honest empty state is shown.
- * (Bases/Maps/Timeline below remain demo-illustrative pending backend support
- * for an actual Obsidian vault store — out of scope for the KG wiring here.)
+ * Bases/Maps/Timeline have **no backend source** (no `/obsidian/*` API, no
+ * vault-store endpoints) — they render an honest "Preview — not yet
+ * connected" empty state instead of fabricated rows/canvases/sparklines.
  *
  * Skills:
  *   frontend-design:   JARVIS dark vault, emerald-400 note glow, pulsing graph
@@ -28,8 +29,7 @@ import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   Network, FileText, BarChart3, Map as MapIcon, Clock,
   Search, ChevronRight, FileCode, Layers,
-  ExternalLink, TrendingUp, Circle, CheckCircle2,
-  AlertTriangle, RefreshCw, X, GitBranch,
+  ExternalLink, AlertTriangle, RefreshCw, X, GitBranch, Sparkles,
 } from 'lucide-react';
 
 import { knowledgeGraphApi, type KGNode } from '@/lib/api/client';
@@ -37,46 +37,11 @@ import { KnowledgeGraph, type KnowledgeNode, type KnowledgeEdge } from '@/compon
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Skeleton } from '@/components/ui/Skeleton';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-interface BaseRow   { title: string; priority: 'HIGH' | 'MEDIUM' | 'LOW'; owner: string; runningFor: string }
-interface BaseTable { name: string; rows: BaseRow[]; cost: string }
-interface CanvasThumb { name: string; description: string; nodeCount: number }
-interface DayGrowth  { date: string; notesAdded: number }
-
 // ── Spring constants ──────────────────────────────────────────────────────────
 
 const SPRING_FAST  = { type: 'spring', stiffness: 600, damping: 35 } as const;
 const SPRING_NODE  = { type: 'spring', stiffness: 400, damping: 30 } as const;
 const SPRING_PANEL = { type: 'spring', stiffness: 280, damping: 26 } as const;
-
-// ── Demo data (Bases/Maps/Timeline only — see HONESTY RULE note above) ────────
-
-const DEMO_BASES: BaseTable[] = [{
-  name: 'active-missions.base',
-  cost: '$8.40/day avg',
-  rows: [
-    { title: 'Q3 Revenue Analysis', priority: 'HIGH', owner: 'Maya', runningFor: '3 days' },
-    { title: 'SEBI Compliance',     priority: 'HIGH', owner: 'Raj',  runningFor: '1 day' },
-    { title: 'Competitor Intel',    priority: 'MEDIUM', owner: 'Team', runningFor: '5 hours' },
-  ],
-}];
-
-const DEMO_CANVASES: CanvasThumb[] = [
-  { name: 'org-map.canvas',              description: 'Full org dependency map',    nodeCount: 24 },
-  { name: 'competitor-landscape.canvas', description: 'Competitor analysis',        nodeCount: 12 },
-  { name: 'mission-deps.canvas',         description: 'Mission interdependencies',  nodeCount: 8  },
-];
-
-const DEMO_TIMELINE: DayGrowth[] = [
-  { date: '2026-08-17', notesAdded: 28 },
-  { date: '2026-08-16', notesAdded: 18 },
-  { date: '2026-08-15', notesAdded: 25 },
-  { date: '2026-08-14', notesAdded: 14 },
-  { date: '2026-08-13', notesAdded: 32 },
-  { date: '2026-08-12', notesAdded: 21 },
-  { date: '2026-08-11', notesAdded: 9  },
-];
 
 // ── Tab types ─────────────────────────────────────────────────────────────────
 
@@ -369,133 +334,32 @@ function FileTree() {
   );
 }
 
-// ── Bases Tab ─────────────────────────────────────────────────────────────────
+// ── Preview placeholder (Bases / Maps / Timeline) ─────────────────────────────
+//
+// HONESTY RULE: there is no backend source for Obsidian Bases, JSON Canvas maps,
+// or vault-growth history yet (no `/obsidian/*` API, no vault-store endpoints).
+// Rather than render fabricated rows/canvases/sparklines, these tabs show an
+// explicit "Preview — not yet connected" state naming the missing backend.
 
-const PRIORITY_COLORS = { HIGH: 'text-red-400 bg-red-500/10', MEDIUM: 'text-amber-400 bg-amber-500/10', LOW: 'text-[#64748B] bg-[#252B3B]' };
-
-function BasesTab({ tables }: { tables: BaseTable[] }) {
+function PreviewPlaceholder({ feature, backend }: { feature: string; backend: string }) {
   const reduce = useReducedMotion();
   return (
-    <div className="space-y-3">
-      {tables.map((table, ti) => (
-        <motion.div key={table.name}
-          initial={reduce ? {} : { opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ ...SPRING_PANEL, delay: ti * 0.06 }}
-          className="bg-[#0F1117] border border-[#2D3748] rounded-xl overflow-hidden"
-        >
-          <div className="flex items-center justify-between px-3 py-2 border-b border-[#1E2535]">
-            <div className="flex items-center gap-1.5">
-              <BarChart3 className="h-3.5 w-3.5 text-emerald-400" aria-hidden />
-              <span className="text-[12px] font-medium text-[#F1F5F9]">{table.name}</span>
-            </div>
-            <button aria-label={`Open ${table.name} in Obsidian`}
-              className="flex items-center gap-1 text-[10px] text-[#475569] hover:text-[#94A3B8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 rounded">
-              <ExternalLink className="h-3 w-3" aria-hidden />Open
-            </button>
-          </div>
-          <table className="w-full text-[11px]" aria-label={table.name}>
-            <thead>
-              <tr className="border-b border-[#1E2535]">
-                {['Title', 'Priority', 'Owner', 'Running For'].map(h => (
-                  <th key={h} className="text-left px-3 py-1.5 text-[#475569] font-medium">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {table.rows.map((row, ri) => (
-                <motion.tr key={ri}
-                  initial={reduce ? {} : { opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ ...SPRING_FAST, delay: ti * 0.06 + ri * 0.04 }}
-                  className="border-b border-[#0D1117] hover:bg-[#1A1F2E] transition-colors"
-                >
-                  <td className="px-3 py-2 text-[#E2E8F0]">{row.title}</td>
-                  <td className="px-3 py-2">
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${PRIORITY_COLORS[row.priority]}`}>{row.priority}</span>
-                  </td>
-                  <td className="px-3 py-2 text-[#94A3B8]">{row.owner}</td>
-                  <td className="px-3 py-2 text-[#64748B] tabular-nums">{row.runningFor}</td>
-                </motion.tr>
-              ))}
-            </tbody>
-          </table>
-          <div className="px-3 py-2 text-[10px] text-[#475569]">
-            {table.rows.length} missions · {table.cost}
-          </div>
-        </motion.div>
-      ))}
-    </div>
-  );
-}
-
-// ── Maps Tab ──────────────────────────────────────────────────────────────────
-
-function MapsTab({ canvases, onOpen }: { canvases: CanvasThumb[]; onOpen: (c: CanvasThumb) => void }) {
-  const reduce = useReducedMotion();
-  return (
-    <div className="grid gap-2">
-      {canvases.map((c, i) => (
-        <motion.button
-          key={c.name}
-          initial={reduce ? {} : { opacity: 0, x: -8 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ ...SPRING_NODE, delay: i * 0.06 }}
-          whileHover={reduce ? {} : { x: 3 }}
-          whileTap={reduce ? {} : { scale: 0.98 }}
-          onClick={() => onOpen(c)}
-          aria-label={`Open canvas: ${c.name}`}
-          style={{ touchAction: 'manipulation' }}
-          className="flex items-center gap-3 p-3 bg-[#0F1117] border border-[#2D3748] rounded-xl text-left hover:border-violet-500/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/70 group"
-        >
-          <div className="w-10 h-10 rounded-lg bg-violet-500/10 border border-violet-500/20 flex items-center justify-center flex-shrink-0">
-            <MapIcon className="h-5 w-5 text-violet-400" aria-hidden />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-[12px] font-medium text-[#F1F5F9] truncate">{c.name}</p>
-            <p className="text-[11px] text-[#64748B]">{c.description}</p>
-          </div>
-          <div className="text-right flex-shrink-0">
-            <p className="text-[11px] text-[#475569] tabular-nums">{c.nodeCount} nodes</p>
-            <ChevronRight className="h-3.5 w-3.5 text-[#374151] group-hover:text-violet-400 transition-colors mt-0.5 ml-auto" aria-hidden />
-          </div>
-        </motion.button>
-      ))}
-    </div>
-  );
-}
-
-// ── Timeline Tab ──────────────────────────────────────────────────────────────
-
-function TimelineTab({ days }: { days: DayGrowth[] }) {
-  const reduce = useReducedMotion();
-  const max    = Math.max(...days.map(d => d.notesAdded), 1);
-  return (
-    <div className="space-y-2" aria-label="Knowledge growth timeline">
-      <div className="flex items-center gap-2 mb-3">
-        <TrendingUp className="h-4 w-4 text-emerald-400" aria-hidden />
-        <span className="text-[12px] font-medium text-[#F1F5F9]">Knowledge Growth</span>
-        <span className="text-[11px] text-[#64748B] ml-auto tabular-nums">
-          {days.reduce((s, d) => s + d.notesAdded, 0)} notes this week
-        </span>
+    <motion.div
+      initial={reduce ? {} : { opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={SPRING_PANEL}
+      role="status"
+      className="flex flex-col items-center justify-center gap-2 py-10 px-4 text-center bg-[#0F1117] border border-dashed border-[#2D3748] rounded-xl"
+    >
+      <div className="w-8 h-8 rounded-lg bg-violet-500/10 flex items-center justify-center">
+        <Sparkles className="h-4 w-4 text-violet-400" aria-hidden />
       </div>
-      {days.map((day, i) => (
-        <div key={day.date} className="flex items-center gap-3">
-          <time dateTime={day.date} className="text-[10px] text-[#475569] tabular-nums w-14 flex-shrink-0">
-            {new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' }).format(new Date(day.date))}
-          </time>
-          <div className="flex-1 h-5 bg-[#1A1F2E] rounded-full overflow-hidden" role="meter" aria-valuenow={day.notesAdded} aria-valuemax={max} aria-label={`${day.notesAdded} notes added`}>
-            <motion.div
-              initial={{ width: 0 }}
-              animate={{ width: `${(day.notesAdded / max) * 100}%` }}
-              transition={reduce ? { duration: 0 } : { ...SPRING_PANEL, delay: i * 0.05 }}
-              className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 rounded-full"
-            />
-          </div>
-          <span className="text-[11px] text-[#64748B] tabular-nums w-8 text-right">{day.notesAdded}</span>
-        </div>
-      ))}
-    </div>
+      <p className="text-[12px] font-medium text-[#F1F5F9]">{feature} — preview, not yet connected</p>
+      <p className="text-[11px] text-[#64748B] max-w-xs leading-relaxed">
+        This view will light up once the {backend} backend exists. It intentionally
+        shows nothing rather than fabricated data.
+      </p>
+    </motion.div>
   );
 }
 
@@ -503,20 +367,13 @@ function TimelineTab({ days }: { days: DayGrowth[] }) {
 
 interface ObsidianVaultExplorerProps {
   orgId:    string;
-  onOpenCanvas?: (name: string) => void;
   compact?: boolean;
 }
 
-export function ObsidianVaultExplorer({ orgId: _orgId, onOpenCanvas, compact = false }: ObsidianVaultExplorerProps) {
+export function ObsidianVaultExplorer({ orgId: _orgId, compact = false }: ObsidianVaultExplorerProps) {
   const labelId  = useId();
   const reduce   = useReducedMotion();
   const [activeTab, setActiveTab] = useState<VaultTab>('graph');
-  const [openCanvas, setOpenCanvas] = useState<CanvasThumb | null>(null);
-
-  const handleOpenCanvas = useCallback((c: CanvasThumb) => {
-    setOpenCanvas(c);
-    onOpenCanvas?.(c.name);
-  }, [onOpenCanvas]);
 
   return (
     <section aria-labelledby={labelId} className="space-y-3">
@@ -578,47 +435,10 @@ export function ObsidianVaultExplorer({ orgId: _orgId, onOpenCanvas, compact = f
         >
           {activeTab === 'graph'    && <GraphView />}
           {activeTab === 'files'    && <FileTree />}
-          {activeTab === 'bases'    && <BasesTab tables={DEMO_BASES} />}
-          {activeTab === 'maps'     && <MapsTab canvases={DEMO_CANVASES} onOpen={handleOpenCanvas} />}
-          {activeTab === 'timeline' && <TimelineTab days={DEMO_TIMELINE} />}
+          {activeTab === 'bases'    && <PreviewPlaceholder feature="Bases" backend="Obsidian-Bases table" />}
+          {activeTab === 'maps'     && <PreviewPlaceholder feature="Maps" backend="JSON Canvas store" />}
+          {activeTab === 'timeline' && <PreviewPlaceholder feature="Timeline" backend="vault-history" />}
         </motion.div>
-      </AnimatePresence>
-
-      {/* Canvas viewer overlay */}
-      <AnimatePresence>
-        {openCanvas && (
-          <motion.div
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="mt-3 p-3 bg-[#0F1117] border border-violet-500/30 rounded-xl"
-            aria-label={`Canvas viewer: ${openCanvas.name}`}
-          >
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <MapIcon className="h-3.5 w-3.5 text-violet-400" aria-hidden />
-                <span className="text-[12px] font-medium text-[#F1F5F9]">{openCanvas.name}</span>
-              </div>
-              <button onClick={() => setOpenCanvas(null)} aria-label="Close canvas preview"
-                className="text-[#475569] hover:text-[#94A3B8] text-[10px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 rounded">
-                Close
-              </button>
-            </div>
-            <div className="h-32 bg-[#090C12] rounded-lg border border-[#1E2535] flex items-center justify-center">
-              <div className="text-center">
-                <p className="text-[12px] text-[#475569]">{openCanvas.description}</p>
-                <p className="text-[11px] text-[#374151] mt-1 tabular-nums">{openCanvas.nodeCount} nodes</p>
-                <motion.div
-                  animate={reduce ? {} : { scale: [1, 1.05, 1] }}
-                  transition={{ duration: 2, repeat: Infinity }}
-                  className="mt-2 flex items-center justify-center gap-1"
-                >
-                  <Circle className="h-3 w-3 text-blue-400 fill-blue-400/20" aria-hidden />
-                  <Circle className="h-3 w-3 text-violet-400 fill-violet-400/20" aria-hidden />
-                  <CheckCircle2 className="h-3 w-3 text-emerald-400" aria-hidden />
-                </motion.div>
-              </div>
-            </div>
-          </motion.div>
-        )}
       </AnimatePresence>
     </section>
   );
