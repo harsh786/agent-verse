@@ -41,6 +41,11 @@ def spec_config(spec: TriggerSpec) -> dict[str, Any]:
         cfg["poll_method"] = getattr(spec, "poll_method", "") or "GET"
         cfg["poll_jsonpath"] = getattr(spec, "poll_jsonpath", "") or ""
         cfg["poll_expected_value"] = getattr(spec, "poll_expected_value", "") or ""
+    # Family A time offsets (relative_delay / deadline) — beat needs these.
+    if getattr(spec, "relative_offset_seconds", 0):
+        cfg["relative_offset_seconds"] = int(spec.relative_offset_seconds)
+    if getattr(spec, "deadline_warning_seconds", 0):
+        cfg["deadline_warning_seconds"] = int(spec.deadline_warning_seconds)
     return cfg
 
 

@@ -1956,6 +1956,62 @@ def _solar_due_run_utc(
     return _norm_utc_naive(fire_time)
 
 
+def _naive(dt: datetime.datetime) -> datetime.datetime:
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+
+def _relative_delay_due_utc(
+    fire_at_iso: str,
+    offset_seconds: int,
+    now: datetime.datetime,
+    last_fired: datetime.datetime | None,
+) -> datetime.datetime | None:
+    """RELATIVE_DELAY: fire once at (base + offset). ``base`` is ``fire_at_iso``;
+    a positive offset fires after it, negative before. Returns the fire instant
+    (UTC-naive) if due and unfired, else None."""
+    base = _schedule_datetime(fire_at_iso)
+    if base is None or last_fired is not None:
+        return None
+    target = base + datetime.timedelta(seconds=int(offset_seconds or 0))
+    return target if _naive(now) >= _naive(target) else None
+
+
+def _deadline_due_utc(
+    fire_at_iso: str,
+    warning_seconds: int,
+    now: datetime.datetime,
+    last_fired: datetime.datetime | None,
+) -> datetime.datetime | None:
+    """DEADLINE: fire once ``warning_seconds`` before the deadline in
+    ``fire_at_iso``."""
+    base = _schedule_datetime(fire_at_iso)
+    if base is None or last_fired is not None:
+        return None
+    target = base - datetime.timedelta(seconds=int(warning_seconds or 0))
+    return target if _naive(now) >= _naive(target) else None
+
+
+def _is_business_time(dt_utc: datetime.datetime, tz_name: str = "UTC") -> bool:
+    """True when the instant is Mon-Fri, 09:00-17:00 (local wall-clock in tz)."""
+    tz = _resolve_tz(tz_name)
+    aware = dt_utc.replace(tzinfo=datetime.UTC) if dt_utc.tzinfo is None else dt_utc
+    local = aware.astimezone(tz)
+    return local.weekday() < 5 and 9 <= local.hour < 17
+
+
+def _business_calendar_slots(
+    cron_expr: str,
+    last_fired: datetime.datetime | None,
+    now: datetime.datetime,
+    tz_name: str = "UTC",
+) -> list[datetime.datetime]:
+    """BUSINESS_CALENDAR: cron slots that fall within business hours only."""
+    if not cron_expr:
+        return []
+    slots = _cron_missed_runs_utc(cron_expr, last_fired, now, tz_name)
+    return [s for s in slots if _is_business_time(s, tz_name)]
+
+
 def _db_schedule_payload(row: Any) -> dict[str, Any]:
     goal_template = str(getattr(row, "goal_id_template", "") or "")
     tenant_id = str(getattr(row, "tenant_id", "") or "")
@@ -2529,6 +2585,53 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                             if goal_kwargs is not None:
                                 fired += 1
                                 logger.info("Fired once schedule %s", key)
+
+                # ── RELATIVE_DELAY (fire once at base + offset) ────────────────
+                elif trigger_type == "relative_delay":
+                    last_dt = _schedule_datetime(sched.get("last_fired_at"))
+                    due = _relative_delay_due_utc(
+                        sched.get("fire_at_iso", ""),
+                        int(sched.get("relative_offset_seconds", 0) or 0),
+                        now,
+                        last_dt,
+                    )
+                    if due is not None:
+                        goal_kwargs = advance_and_dispatch_schedule(
+                            key, sched, fired_at=due, fire_instance_id=due.isoformat()
+                        )
+                        if goal_kwargs is not None:
+                            fired += 1
+                            logger.info("Fired relative_delay schedule %s", key)
+
+                # ── DEADLINE (fire once, warning_seconds before deadline) ──────
+                elif trigger_type == "deadline":
+                    last_dt = _schedule_datetime(sched.get("last_fired_at"))
+                    due = _deadline_due_utc(
+                        sched.get("fire_at_iso", ""),
+                        int(sched.get("deadline_warning_seconds", 0) or 0),
+                        now,
+                        last_dt,
+                    )
+                    if due is not None:
+                        goal_kwargs = advance_and_dispatch_schedule(
+                            key, sched, fired_at=due, fire_instance_id=due.isoformat()
+                        )
+                        if goal_kwargs is not None:
+                            fired += 1
+                            logger.info("Fired deadline schedule %s", key)
+
+                # ── BUSINESS_CALENDAR (cron, business hours only) ─────────────
+                elif trigger_type == "business_calendar":
+                    cron_expr = sched.get("cron_expression", "")
+                    if cron_expr:
+                        tz_name = sched.get("timezone") or "UTC"
+                        last_dt = _schedule_datetime(sched.get("last_fired_at"))
+                        try:
+                            slots = _business_calendar_slots(cron_expr, last_dt, now, tz_name)
+                        except Exception as bc_exc:
+                            logger.warning("business_calendar parse error %s: %s", key, bc_exc)
+                            continue
+                        fired += dispatch_missed_slots(key, sched, slots, kind="business_calendar")
 
                 # ── FILE_DROP trigger ─────────────────────────────────────────
                 elif trigger_type == "file_drop":

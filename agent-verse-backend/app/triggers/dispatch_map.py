@@ -103,6 +103,10 @@ BEAT_TYPES: frozenset[TriggerType] = frozenset(
         TriggerType.FILE_DROP,
         TriggerType.RSS_FEED,
         TriggerType.API_POLL,
+        # Family A time math — computed in the beat loop.
+        TriggerType.RELATIVE_DELAY,
+        TriggerType.DEADLINE,
+        TriggerType.BUSINESS_CALENDAR,
     }
 )
 
