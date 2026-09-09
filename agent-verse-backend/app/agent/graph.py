@@ -17,8 +17,8 @@ import asyncio
 import itertools
 import re
 import uuid
-from collections.abc import Awaitable, Callable
-from typing import Any
+from collections.abc import Awaitable, Callable, Hashable
+from typing import Any, cast
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -361,11 +361,12 @@ class AgentGraph(
         if self._enable_reflection:
             routing_map["reflect"] = "reflect"
         # H7: Peer review fires after verify, before routing decision
+        routing_map_edges = cast("dict[Hashable, str]", routing_map)
         if getattr(self, "_enable_peer_review", False):
             g.add_edge("verify", "peer_review")
-            g.add_conditional_edges("peer_review", self._route, routing_map)
+            g.add_conditional_edges("peer_review", self._route, routing_map_edges)
         else:
-            g.add_conditional_edges("verify", self._route, routing_map)
+            g.add_conditional_edges("verify", self._route, routing_map_edges)
         return g.compile(checkpointer=self._checkpointer)
 
     # ── Verify node — delegates to VerifierMixin ─────────────────────────

@@ -394,7 +394,7 @@ class SimulationRunner:
                 await asyncio.sleep(0.1)
                 mock_hit = tool_name is not None and tool_name in _mock_tools
                 mock_output = (
-                    str(_mock_tools.get(tool_name, ""))[:200]
+                    str(_mock_tools.get(str(tool_name), ""))[:200]
                     if mock_hit
                     else f"[simulated: {step_desc}]"
                 )
