@@ -471,6 +471,96 @@ async def test_tick_learning_exception_is_swallowed():
     assert "learning" not in result
 
 
+# ── WS-1: tick throttle (distributed lock + min-interval guard) ────────────────
+
+
+class _FakeThrottleRedis:
+    """In-memory async Redis stand-in supporting SET NX / GET / DELETE.
+
+    Expiry (`ex`) is ignored — tests operate entirely within the interval window,
+    which is exactly the condition the throttle must skip.
+    """
+
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+
+    async def set(self, key: str, val: str, nx: bool = False, ex: int | None = None):
+        if nx and key in self.store:
+            return None
+        self.store[key] = val
+        return True
+
+    async def get(self, key: str):
+        return self.store.get(key)
+
+    async def delete(self, *keys: str) -> int:
+        removed = 0
+        for k in keys:
+            if k in self.store:
+                del self.store[k]
+                removed += 1
+        return removed
+
+
+@pytest.mark.asyncio
+async def test_tick_second_within_interval_is_skipped(monkeypatch):
+    """A second tick inside the min-interval window skips cleanly (no re-work)."""
+    monkeypatch.setenv("CIV_TICK_MIN_INTERVAL_SECONDS", "25")
+    redis = _FakeThrottleRedis()
+    orch = _make_orchestrator(redis=redis)
+
+    first = await orch.tick()
+    assert first.get("skipped") is not True
+    assert orch._governor.check_breach.call_count == 1
+
+    second = await orch.tick()
+    assert second["skipped"] is True
+    assert second["reason"] == "too_soon"
+    # No additional breach-check work was performed on the skipped tick.
+    assert orch._governor.check_breach.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_tick_skipped_when_run_lock_held(monkeypatch):
+    """If another worker holds the run-lock, the tick skips with reason=locked."""
+    monkeypatch.setenv("CIV_TICK_MIN_INTERVAL_SECONDS", "25")
+    redis = _FakeThrottleRedis()
+    # Pre-seed the run-lock as if another worker is mid-tick.
+    redis.store["civ_tick_lock:t1:civ-1"] = "other-worker"
+    orch = _make_orchestrator(redis=redis)
+
+    result = await orch.tick()
+    assert result["skipped"] is True
+    assert result["reason"] == "locked"
+    orch._governor.check_breach.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_tick_releases_run_lock_after_completion(monkeypatch):
+    """The run-lock is released once a real tick finishes (so the next window can run)."""
+    monkeypatch.setenv("CIV_TICK_MIN_INTERVAL_SECONDS", "0")  # disable frequency guard
+    redis = _FakeThrottleRedis()
+    orch = _make_orchestrator(redis=redis)
+
+    await orch.tick()
+    assert "civ_tick_lock:t1:civ-1" not in redis.store  # released in finally
+
+    # With the frequency guard disabled, a following tick runs again.
+    await orch.tick()
+    assert orch._governor.check_breach.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_tick_without_redis_is_not_throttled():
+    """No Redis → single-process path → throttle degrades off; both ticks run."""
+    orch = _make_orchestrator(redis=None)
+    first = await orch.tick()
+    second = await orch.tick()
+    assert first.get("skipped") is not True
+    assert second.get("skipped") is not True
+    assert orch._governor.check_breach.call_count == 2
+
+
 @pytest.mark.asyncio
 async def test_sync_reputation_from_evals_no_db():
     orch = _make_orchestrator()
