@@ -99,6 +99,19 @@ celery_app.conf.update(
         "app.scaling.tasks.civilization_learning_step": {"queue": "maintenance"},
         "app.scaling.tasks.discover_and_tick_civilizations": {"queue": "maintenance"},
         # ── Workflow Automation Engine ─────────────────────────────────────────
+        # The tasks in app/workflow/celery_tasks.py register under explicit
+        # ``name="workflow.*"`` (not their dotted module path), so route on those
+        # registered names. WorkflowRunner dispatch also passes an explicit
+        # ``queue=workflows.{plan_tier}`` which overrides these at apply_async
+        # time; the routes here are the fallback when no queue is supplied (e.g.
+        # a bare ``.delay()`` or a beat entry) and keep every workflow task on a
+        # ``workflows.*`` queue.
+        "workflow.execute_workflow_run": {"queue": "workflows.free"},
+        "workflow.check_hitl_escalations": {"queue": "workflows.maintenance"},
+        "workflow.retry_dead_letter_webhooks": {"queue": "workflows.maintenance"},
+        "workflow.cleanup_expired_runs": {"queue": "workflows.maintenance"},
+        # Legacy dotted-path keys (kept for backwards-compat; do not match the
+        # registered task names above, but harmless).
         "app.workflow.celery_tasks.execute_workflow_run": {"queue": "workflows.free"},
         "app.workflow.celery_tasks.check_hitl_escalations": {"queue": "workflows.maintenance"},
         "app.workflow.celery_tasks.retry_dead_letter_webhooks": {"queue": "workflows.maintenance"},
