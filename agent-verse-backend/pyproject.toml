@@ -63,8 +63,7 @@ dependencies = [
     "soundfile>=0.12.1",
     "numpy>=1.26",
     "kokoro-onnx>=0.3.4",
-    "misaki[en]>=0.7.0",
-]
+    "misaki[en]>=0.7.0"]
 
 [project.scripts]
 agentverse = "app.cli.main:app"
@@ -81,16 +80,13 @@ docx = ["python-docx>=1.1"]
 multimodal = [
     "pdfminer.six>=20221105",
     "pymupdf>=1.24.0",
-    "pillow>=11.0.0",
-]
+    "pillow>=11.0.0"]
 colbert = [
-    "ragatouille==0.0.9.post2",
-]
+    "ragatouille==0.0.9.post2"]
 ocr = [
     "pytesseract>=0.3.13",
     "Pillow>=10.0.0",
-    "pdf2image>=1.17.0",
-]
+    "pdf2image>=1.17.0"]
 
 # Install all optional: pip install "agent-verse-backend[voyage,gemini,browser]"
 
@@ -104,9 +100,7 @@ dev = [
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "httpx2>=2.4.0",
-    "asgi-lifespan>=2.1.0",
-
-]
+    "asgi-lifespan>=2.1.0"]
 
 [build-system]
 requires = ["hatchling"]
@@ -124,8 +118,7 @@ markers = [
     "slow: tests that hit real LLM providers (opt-in)",
     "real_openai: tests that call the real OpenAI API (requires OPENAI_API_KEY)",
     "smoke: E2E smoke tests that require a running backend at localhost:8000",
-    "e2e_full: full-stack e2e tests booting create_app(manage_pools=True) against real Postgres+Redis (testcontainers or infra/docker-compose.e2e.yml)",
-]
+    "e2e_full: full-stack e2e tests booting create_app(manage_pools=True) against real Postgres+Redis (testcontainers or infra/docker-compose.e2e.yml)"]
 filterwarnings = [
     "error",
     # Third-party deprecation inside testcontainers wait helpers (out of our control).
@@ -158,8 +151,7 @@ filterwarnings = [
     # whose async methods raise NotImplementedError — breaking inline workflow runs in the
     # e2e harness. Scope-ignore this dependency-internal deprecation so tests exercise the
     # same async checkpointer production uses.
-    "ignore:get_async_redis_connection will become async.*:DeprecationWarning",
-]
+    "ignore:get_async_redis_connection will become async.*:DeprecationWarning"]
 
 [tool.coverage.report]
 # Ratchet, not aspiration. Measured true coverage on the fast tier
@@ -176,14 +168,12 @@ omit = [
     # different external API. The common dispatch pattern is covered by
     # parametrized tests in tests/mcp/test_servers_comprehensive.py.
     # Individual HTTP bodies need live API keys; belong in integration tests.
-    "app/mcp/servers/*",
-]
+    "app/mcp/servers/*"]
 
 [tool.coverage.run]
 omit = [
     "app/db/migrations/*",
-    "app/mcp/servers/*",
-]
+    "app/mcp/servers/*"]
 
 [tool.ruff]
 line-length = 100
@@ -231,8 +221,7 @@ disable_error_code = [
     "return-value",
     "assignment",
     "override",
-    "type-var",
-]
+    "type-var"]
 
 [[tool.mypy.overrides]]
 module = "tests.*"
@@ -272,8 +261,7 @@ module = [
     "app.agent.nodes.rag_mixin",
     "app.agent.nodes.reasoning_mixin",
     "app.agent.nodes.initialize_mixin",
-    "app.agent.nodes.routing_mixin",
-]
+    "app.agent.nodes.routing_mixin"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
@@ -286,7 +274,7 @@ module = ["app.agent.graph", "app.agent.loop", "app.agent.state"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_any_generics = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "override", "assignment", "arg-type"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "override", "assignment"]
 
 # Celery tasks: sync Redis + dynamic goal execution graph
 [[tool.mypy.overrides]]
@@ -304,13 +292,12 @@ module = [
     "app.ingestion.parser_registry",
     "app.ingestion.parsers.vision_parser",
     "app.ingestion.parsers.*",
-    "app.ingestion.connectors.*",
-]
+    "app.ingestion.connectors.*"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
 disallow_any_generics = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "override", "assignment", "arg-type", "call-arg", "return-value"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "override", "assignment", "return-value"]
 
 # Org OS: dynamic service resolution + event publishing
 [[tool.mypy.overrides]]
@@ -319,7 +306,7 @@ warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
 disallow_any_generics = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value", "index"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value", "index"]
 
 # API routers: Pydantic + FastAPI dynamic dependency injection
 [[tool.mypy.overrides]]
@@ -329,23 +316,21 @@ module = [
     "app.api.civilization",
     "app.api.collab",
     "app.api.tenants",
-    "app.api.*",
-]
+    "app.api.*"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_any_generics = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value", "union-attr"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value", "union-attr"]
 
 # LLM providers: third-party SDKs (anthropic, openai) have incomplete stubs
 [[tool.mypy.overrides]]
 module = [
     "app.providers.anthropic_provider",
     "app.providers.openai_compatible",
-    "app.providers.*",
-]
+    "app.providers.*"]
 warn_return_any = false
 no_warn_return_any = true
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value", "union-attr", "import-untyped"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value", "union-attr", "import-untyped"]
 
 # MCP: dynamic connector dispatch + external server schemas
 [[tool.mypy.overrides]]
@@ -355,8 +340,7 @@ module = [
     "app.mcp.servers.stripe_server",
     "app.mcp.servers.*",
     "app.gateway.mcp_server",
-    "app.mcp.*",
-]
+    "app.mcp.*"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
@@ -402,7 +386,7 @@ module = ["app.rpa.*", "app.perception.*"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value", "union-attr"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value", "union-attr"]
 
 # Governance: dynamic policy engine + audit
 [[tool.mypy.overrides]]
@@ -418,14 +402,14 @@ module = ["app.knowledge.*", "app.rag.*"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_any_generics = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value", "override", "union-attr"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value", "override", "union-attr"]
 
 # Reliability: circuit breaker + rollback dynamic dispatch
 [[tool.mypy.overrides]]
 module = ["app.reliability.*"]
 warn_return_any = false
 no_warn_return_any = true
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment"]
 
 # Core + config + DB: SQLAlchemy dynamic models
 [[tool.mypy.overrides]]
@@ -433,7 +417,14 @@ module = ["app.core.*", "app.db.*", "app.tenancy.*", "app.auth.*"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_any_generics = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value", "union-attr"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value", "union-attr"]
+
+# DB migrations: Alembic op.add_column(Column("x", DateTime, ...)) typing quirk
+# (SQLAlchemy's Column() overloads don't line up with how Alembic scripts pass
+# already-instantiated type objects) — not real bugs, exclude entirely.
+[[tool.mypy.overrides]]
+module = ["app.db.migrations.*"]
+disable_error_code = ["call-arg", "arg-type", "attr-defined", "type-arg", "assignment"]
 
 # Chat + voice: streaming + WebSocket dynamic content
 [[tool.mypy.overrides]]
@@ -441,14 +432,14 @@ module = ["app.chat.*", "app.voice.*"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value"]
 
 # Enterprise + compliance + simulation: dynamic policy evaluation
 [[tool.mypy.overrides]]
 module = ["app.enterprise.*", "app.compliance.*"]
 warn_return_any = false
 no_warn_return_any = true
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value"]
 
 # Intelligence: eval runner + self-optimizer dynamic LLM calls
 [[tool.mypy.overrides]]
@@ -456,14 +447,14 @@ module = ["app.intelligence.*"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value"]
 
 # Observability + analytics: dynamic metric collection
 [[tool.mypy.overrides]]
 module = ["app.observability.*", "app.analytics.*"]
 warn_return_any = false
 no_warn_return_any = true
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment"]
 
 # Bootstrap + main: service construction with dynamic imports
 [[tool.mypy.overrides]]
@@ -471,7 +462,7 @@ module = ["app.bootstrap.*", "app.main", "app.main_services"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_any_generics = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value", "union-attr", "import-untyped"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value", "union-attr", "import-untyped"]
 
 # CLI: Click dynamic commands
 [[tool.mypy.overrides]]
@@ -479,21 +470,21 @@ module = ["app.cli.*"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_decorators = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment"]
 
 # Notifications + integrations: third-party webhook delivery
 [[tool.mypy.overrides]]
 module = ["app.integrations.*"]
 warn_return_any = false
 no_warn_return_any = true
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment"]
 
 # Capabilities + content + context: dynamic registry
 [[tool.mypy.overrides]]
 module = ["app.capabilities.*", "app.content.*", "app.context.*"]
 warn_return_any = false
 no_warn_return_any = true
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment"]
 
 # Civilization: dynamic society + learning orchestration
 [[tool.mypy.overrides]]
@@ -501,7 +492,7 @@ module = ["app.civilization.*"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value"]
 
 # Tools: dynamic document parser + file ops
 [[tool.mypy.overrides]]
@@ -509,14 +500,14 @@ module = ["app.tools.*"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value", "override"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value", "override"]
 
 # Net: Redis connection factory
 [[tool.mypy.overrides]]
 module = ["app.net.*"]
 warn_return_any = false
 no_warn_return_any = true
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "return-value"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value"]
 
 # Ingestion pipeline: dynamic content processing
 [[tool.mypy.overrides]]
@@ -532,7 +523,7 @@ disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment",
 module = ["app.coordination.*"]
 warn_return_any = false
 no_warn_return_any = true
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment"]
 
 # Multimodal + OCR + perception: dynamic vision processing
 [[tool.mypy.overrides]]
@@ -540,21 +531,21 @@ module = ["app.multimodal.*", "app.ocr.*"]
 warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value"]
 
 # Memory: dynamic execution memory + long-term store
 [[tool.mypy.overrides]]
 module = ["app.memory.*", "app.memory_v2.*"]
 warn_return_any = false
 no_warn_return_any = true
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value"]
 
 # Admin + lifecycle + optimization: dynamic runtime management
 [[tool.mypy.overrides]]
 module = ["app.admin.*", "app.lifecycle.*", "app.optimization.*"]
 warn_return_any = false
 no_warn_return_any = true
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment"]
 
 # AI router + agent runtime + plan runtime: dynamic model dispatch
 [[tool.mypy.overrides]]
@@ -562,27 +553,27 @@ module = ["app.ai_router.*", "app.agent_runtime.*", "app.plan_runtime.*", "app.s
 warn_return_any = false
 no_warn_return_any = true
 disallow_untyped_defs = false
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value"]
 
 # Embedding + pipeline: dynamic vector operations
 [[tool.mypy.overrides]]
 module = ["app.embedding.*", "app.pipeline.*"]
 warn_return_any = false
 no_warn_return_any = true
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment"]
 
 # Knowledge graph + guardrails: dynamic graph + safety rules
 [[tool.mypy.overrides]]
 module = ["app.knowledge_graph.*", "app.guardrails_v2.*"]
 warn_return_any = false
 no_warn_return_any = true
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type", "call-arg", "return-value"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "return-value"]
 
 # SDK + manifest: dynamic client generation
 [[tool.mypy.overrides]]
 module = ["app.sdk.*"]
 warn_return_any = false
 no_warn_return_any = true
-disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment", "arg-type"]
+disable_error_code = ["attr-defined", "type-arg", "no-any-return", "assignment"]
 
 
