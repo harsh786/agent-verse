@@ -142,7 +142,7 @@ class PromptBuilder:
             sections.extend(untrusted)
 
         if bundle.reflexion_lessons:
-            lessons = "\n".join(f"- {l}" for l in bundle.reflexion_lessons[:3])
+            lessons = "\n".join(f"- {lesson}" for lesson in bundle.reflexion_lessons[:3])
             sections.append(f"Past lessons:\n{lessons}")
 
         if bundle.citations:
