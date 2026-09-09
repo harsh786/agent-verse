@@ -45,6 +45,31 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_openai, append=False)
 
 
+@pytest.fixture(autouse=True)
+def _keep_scaling_tasks_bound():
+    """Guard against full-suite module-state pollution.
+
+    A handful of tests re-import ``app.scaling.*`` (e.g. to re-evaluate
+    module-level ``os.getenv`` in ``celery_app``) by clearing those entries from
+    ``sys.modules``. If the ``app.scaling`` *package* is re-imported fresh without
+    ``app.scaling.tasks`` being re-imported, the package object loses its
+    ``tasks`` attribute — and a later ``monkeypatch.setattr("app.scaling.tasks.X")``
+    fails with ``AttributeError: module 'app.scaling' has no attribute 'tasks'``.
+    These failures are order-dependent (the victims pass in isolation). Re-bind
+    the submodule when it has gone missing so the attribute-resolution path is
+    stable regardless of test ordering.
+    """
+    import contextlib
+    import importlib
+    import sys
+
+    scaling = sys.modules.get("app.scaling")
+    if scaling is not None and not hasattr(scaling, "tasks"):
+        with contextlib.suppress(Exception):
+            importlib.import_module("app.scaling.tasks")
+    yield
+
+
 @pytest.fixture
 def app():
     from app.main import create_app
