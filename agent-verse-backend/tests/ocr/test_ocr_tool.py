@@ -89,6 +89,32 @@ async def test_execute_with_file_path_pdf(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_execute_universal_document_base64_routes_through_extract_any():
+    """WS-14: a generic document routes through the universal extract_any path
+    and surfaces source_format + degradation metadata."""
+    mock_engine = MagicMock()
+    mock_engine.extract = AsyncMock()  # must NOT be used on the universal path
+    degraded = OcrResult(
+        raw_text="",
+        document_type=DocumentType.GENERAL,
+        degraded=True,
+        degradation_reason="office document conversion requires LibreOffice",
+        source_format="office",
+    )
+    mock_engine.extract_any = AsyncMock(return_value=degraded)
+    tool = OcrDocumentTool(ocr_engine=mock_engine)
+
+    doc_b64 = base64.b64encode(b"PK\x03\x04fakedocx").decode()
+    result = await tool.execute(document_base64=doc_b64, filename="report.docx")
+
+    mock_engine.extract_any.assert_called_once()
+    mock_engine.extract.assert_not_called()
+    assert result["source_format"] == "office"
+    assert result["degraded"] is True
+    assert "LibreOffice" in result["degradation_reason"]
+
+
+@pytest.mark.asyncio
 async def test_execute_raises_on_empty_input():
     tool = OcrDocumentTool()
     with pytest.raises(ValueError, match="must be provided"):

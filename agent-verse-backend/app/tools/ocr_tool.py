@@ -27,9 +27,12 @@ class OcrDocumentTool:
 
     name = "extract_document"
     description = (
-        "Extract text and structured fields from any document image or PDF. "
-        "Accepts file_path (local path), image_base64, or pdf_base64. "
-        "Returns raw_text, document_type, and structured field key-value pairs."
+        "Extract text and structured fields from ANY document. "
+        "Accepts file_path (local path), image_base64, pdf_base64, or "
+        "document_base64 (+ content_type/filename) for any other format "
+        "(office docs, etc. — routed through universal OCR). "
+        "Returns raw_text, document_type, structured fields, and source_format/"
+        "degradation metadata."
     )
 
     def __init__(self, ocr_engine: OcrEngine | None = None) -> None:
@@ -41,19 +44,28 @@ class OcrDocumentTool:
         file_path: str = "",
         image_base64: str = "",
         pdf_base64: str = "",
+        document_base64: str = "",
+        content_type: str | None = None,
+        filename: str | None = None,
         provider: Any = None,
     ) -> dict[str, Any]:
-        image_bytes, pdf_bytes = self._resolve_input(
-            file_path=file_path,
-            image_base64=image_base64,
-            pdf_base64=pdf_base64,
-        )
-
-        result = await self._engine.extract(
-            image_bytes=image_bytes,
-            pdf_bytes=pdf_bytes,
-            provider=provider,
-        )
+        # Universal path (WS-6/WS-14): any format via one OcrEngine.extract_any.
+        if document_base64:
+            data = self._decode_b64(document_base64)
+            result = await self._engine.extract_any(
+                data, content_type=content_type, filename=filename, provider=provider
+            )
+        else:
+            image_bytes, pdf_bytes = self._resolve_input(
+                file_path=file_path,
+                image_base64=image_base64,
+                pdf_base64=pdf_base64,
+            )
+            result = await self._engine.extract(
+                image_bytes=image_bytes,
+                pdf_bytes=pdf_bytes,
+                provider=provider,
+            )
 
         return {
             "raw_text": result.raw_text,
@@ -70,6 +82,9 @@ class OcrDocumentTool:
             "engine_used": result.engine_used,
             "overall_confidence": round(result.overall_confidence, 4),
             "page_count": result.page_count,
+            "source_format": result.source_format,
+            "degraded": result.degraded,
+            "degradation_reason": result.degradation_reason,
         }
 
     def _resolve_input(
