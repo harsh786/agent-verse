@@ -87,6 +87,66 @@ async def execute_rpa_tool(request: Request, body: RPAExecuteRequest) -> dict[st
     }
 
 
+class RPAReportRequest(BaseModel):
+    url: str
+    selectors: list[str] | None = None
+    title: str | None = None
+    goal_id: str = "rpa-report"
+
+
+@router.post("/report", status_code=201)
+async def generate_rpa_report(request: Request, body: RPAReportRequest) -> dict[str, Any]:
+    """Scrape a URL and return a structured, provenance-tagged PDF report.
+
+    Runs an ``open_url → extract_text → screenshot`` sequence through the RPA
+    executor (WS-5), assembles a :class:`ScrapeReport`, renders it to a real PDF
+    (fpdf2), and persists it via the RPA artifact store. The PDF is returned
+    inline (base64) for immediate download and referenced by its stored ``uri``.
+    """
+    tenant = _require_tenant(request)
+
+    executor = _executor(request)
+    if executor is None:
+        from app.rpa.executor import RPAExecutor
+
+        executor = RPAExecutor()
+        request.app.state.rpa_executor = executor
+
+    from app.rpa.artifacts import get_artifact_store
+    from app.rpa.report import build_and_store_report_pdf, render_report_pdf, run_scrape_report
+
+    report, _results = await run_scrape_report(
+        executor,
+        url=body.url,
+        tenant_id=tenant.tenant_id,
+        goal_id=body.goal_id,
+        selectors=body.selectors,
+        title=body.title,
+    )
+
+    store = getattr(request.app.state, "rpa_artifact_store", None) or get_artifact_store()
+    artifact = await build_and_store_report_pdf(
+        report,
+        artifact_store=store,
+        goal_id=body.goal_id,
+        name=f"{body.goal_id}-report.pdf",
+    )
+    pdf_bytes = render_report_pdf(report)
+
+    return {
+        "source_url": report.source_url,
+        "title": report.title,
+        "scraped_at": report.scraped_at,
+        "sections": len(report.sections),
+        "screenshots": len(report.screenshots),
+        "artifact_id": getattr(artifact, "artifact_id", None),
+        "artifact_name": getattr(artifact, "name", None),
+        "artifact_uri": getattr(artifact, "uri", None),
+        "size_bytes": getattr(artifact, "size_bytes", len(pdf_bytes)),
+        "pdf_base64": base64.b64encode(pdf_bytes).decode(),
+    }
+
+
 @router.get("/sessions")
 async def list_sessions(request: Request) -> list[dict[str, Any]]:
     """List active RPA sessions for the tenant."""
