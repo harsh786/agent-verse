@@ -527,11 +527,11 @@ async def get_session_insights(request: Request, session_id: str) -> dict[str, A
     tenant = _require_tenant(request)
     store = _store(request)
 
-    session = store.get_session(session_id, tenant_ctx=tenant)
+    session = await store.get_session(tenant_ctx=tenant, session_id=session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    operations = store.list_operations(session_id, tenant_ctx=tenant)
+    operations = await store.list_operations(tenant_ctx=tenant, session_id=session_id)
     rounds = getattr(session, "rounds", []) or []
 
     # Collect all textual content from operations
@@ -586,6 +586,7 @@ async def get_session_insights(request: Request, session_id: str) -> dict[str, A
                     Message(role="system", content=system_prompt),
                     Message(role="user", content=user_msg),
                 ],
+                model="",
                 max_tokens=800,
             )
         )
