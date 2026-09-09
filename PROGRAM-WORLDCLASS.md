@@ -183,6 +183,14 @@ The workflow feature gets the deepest coverage: **unit** (DSL parse/validate, st
 ## Global requirement (applies to EVERY workstream WS-1…WS-14)
 Per the user: everything must be **analyzed → built generically → implemented world-class for BOTH frontend and backend → covered by e2e tests + an automation suite**. Concretely, no workstream is "done" until: (1) backend capability is generic (handles arbitrary inputs, one reachable impl); (2) a world-class frontend surface exists for it (org/JARVIS console is the quality bar); (3) unit + integration tests pass; (4) a real-infra `e2e_full` backend test AND a real-backend Playwright test exercise it (WS-8 aggregates the automation suite + CI tiers). No fabricated data anywhere.
 
+## WS-15 · FINAL re-verification + convergence loop (do NOT skip — the closing gate)
+**After WS-1…WS-14 are implemented, re-verify and re-analyze the WHOLE platform so nothing is missed, and keep improving until every area is genuinely 10/10.**
+- **Re-run the rating sweep:** dispatch fresh read-only recon (same shape as A1–H) across every dimension — org, civilization, coordination, JARVIS/HITL, RPA, OCR, retrieval, chunking, embeddings, reranking, KB, KG, Obsidian, agentic patterns, RAG patterns, memory, self-improvement, ingestion, unified KB, workflow, triggers, scheduling — plus the FRAMEWORK genericness (WS-10) and the FULL test pyramid + automation (WS-8) for each. Produce a fresh x/10 per area with evidence, against the LIVE code (not the plan).
+- **Whole-branch review:** dispatch a most-capable-model review over the full `git diff main..HEAD`; run mypy + full fast tier + e2e_full + Playwright; confirm all green and automated in CI.
+- **Convergence loop:** for ANY area still < 10/10, or any missing test layer, or any non-generic path, or any fabricated data — open a new improvement wave, implement it (TDD + full pyramid), and re-verify. REPEAT until every area is a defensible 10/10 with full automated coverage. Do not declare done until the sweep comes back all-10 with green automation.
+- **Anti-miss checklist:** no stubs/`pass`/`NotImplementedError` on a live path; no fabricated/demo data anywhere; one reachable implementation per capability; every feature has unit+functional+integration+e2e_full+Playwright, automated; every capability generic + world-class on BOTH FE and BE.
+**DoD:** a final recon sweep report shows every dimension 10/10 with green + automated full-pyramid coverage; whole-branch review clean; then (and only then) surface to the user for the merge-to-main decision.
+
 ## Status tracker (update as waves land)
 - WS-0 BK6: ✅ DONE 13fcf398 (deleted orphan ImprovementActionExecutor; safety gate default-off kept; mypy 0, tier 20989)
 - WS-3 HITL flawless: 🔄 IN FLIGHT (backend)

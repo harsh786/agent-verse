@@ -23,6 +23,7 @@ Keep executing continuously until the WHOLE platform is genuinely 10/10 with FUL
 - A workstream is DONE only when its full test pyramid is green + automated (workflow: all 5 layers). Update the WS status tracker + this ledger as each lands.
 - Keep everything committed on `feature/platform-10x`; do NOT merge to `main` without explicit user go-ahead.
 - On a context cutoff, a fresh agent resumes from this file → verifies state → continues WS execution from the first TODO in the tracker. Nothing stalls.
+- **FINAL STEP (WS-15, mandatory — do not skip):** after ALL waves WS-1…WS-14 are implemented, run the full re-verification + convergence loop — re-run the rating recon sweep (A1–H shape) across EVERY dimension against the live code, do a whole-branch review, and for ANY area still < 10/10 (or any missing test layer / non-generic path / fabricated data) open a new improvement wave and REPEAT until the sweep comes back all-10 with green + automated full-pyramid coverage. Only then surface to the user for the merge-to-main decision. "Nothing missed, everything 10/10, keep improving until it is."
 
 ## 1. How to verify state on resume (run these first)
 
