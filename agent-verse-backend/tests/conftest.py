@@ -73,11 +73,13 @@ def _keep_scaling_tasks_bound():
     # parent attribute during the submodule's original import, not on cached
     # re-imports — so force-rebind the attribute explicitly.
     with contextlib.suppress(Exception):
+        # import_module recreates the app.scaling package if a prior test removed
+        # it entirely, and returns the (possibly cached) tasks submodule.
+        scaling = importlib.import_module("app.scaling")
         tasks_mod = sys.modules.get("app.scaling.tasks") or importlib.import_module(
             "app.scaling.tasks"
         )
-        scaling = sys.modules.get("app.scaling")
-        if scaling is not None and getattr(scaling, "tasks", None) is not tasks_mod:
+        if getattr(scaling, "tasks", None) is not tasks_mod:
             scaling.tasks = tasks_mod  # type: ignore[attr-defined]
     yield
 

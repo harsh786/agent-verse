@@ -86,7 +86,14 @@ def test_production_guard_fake_provider_celery(monkeypatch):
                 "app.db.session._make_session_factory",
                 lambda: (_ for _ in ()).throw(RuntimeError("no db")),
             )
-            mp.setattr("app.scaling.tasks._get_llm_provider", lambda _tenant_id: None)
+            # Resolve the module object directly rather than via the
+            # "app.scaling.tasks._get_llm_provider" string path: pytest's string
+            # form does getattr(app.scaling, "tasks"), which AttributeErrors in
+            # the full suite when a prior test replaced the app.scaling package
+            # without its tasks submodule. `import ... as` binds the (cached)
+            # module regardless of the parent package's attributes.
+            import app.scaling.tasks as _scaling_tasks
+            mp.setattr(_scaling_tasks, "_get_llm_provider", lambda _tenant_id: None)
             mp.setattr("app.core.config.get_provider_env", lambda _name: None)
             mp.setattr("app.providers.vault.get_vault", lambda: fake_vault)
             from app.scaling.tasks import run_goal
