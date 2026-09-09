@@ -199,7 +199,7 @@ class OllamaProvider(OpenAICompatibleProvider):
         super().__init__(
             api_key="ollama",  # Ollama does not require a real key
             base_url=f"{self._base}/v1",
-            default_model=_model,
+            default_model=str(_model),
             supports_vision_flag=True,  # glm-ocr supports vision
         )
         self._default_embed_model = _embed
@@ -215,7 +215,7 @@ class OllamaProvider(OpenAICompatibleProvider):
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         """Embed a list of texts using Ollama's /api/embeddings endpoint."""
-        model = request.model or self._default_embed_model
+        model = request.model or self._default_embed_model or "qwen3-embedding:latest"
         embeddings: list[list[float]] = []
         async with httpx.AsyncClient(timeout=120.0) as client:
             for text in request.texts:

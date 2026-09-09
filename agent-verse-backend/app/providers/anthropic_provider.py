@@ -208,7 +208,7 @@ class AnthropicProvider:
             (m.content for m in request.messages if m.role == "system"), None
         )
         try:
-            kwargs = {
+            kwargs: dict[str, Any] = {
                 "model": model,
                 "messages": messages,
                 "max_tokens": request.max_tokens,

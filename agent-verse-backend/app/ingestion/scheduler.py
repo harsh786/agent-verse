@@ -74,7 +74,6 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
     from app.ingestion.connector_registry import get_connector
     from app.ingestion.job_tracker import IngestionJobTracker
     from app.ingestion.pipeline import IngestionPipeline
-    from app.ingestion.source_config import IngestionStatus
 
     tracker = IngestionJobTracker()
     pipeline = IngestionPipeline()
@@ -179,7 +178,7 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
 
                 # Commit cursor every 100 docs (LAW-14 atomicity)
                 if (docs_indexed + docs_skipped + docs_failed) % 100 == 0:
-                    await tracker.update_cursor(source_id, tenant_id, new_cursor)
+                    await tracker.update_cursor(job, new_cursor or "", config)
 
             except Exception as doc_exc:
                 docs_failed += 1
@@ -188,16 +187,15 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
                 )
 
         # ── Final cursor commit ───────────────────────────────────────────────
-        await tracker.update_cursor(source_id, tenant_id, new_cursor)
-        await tracker.complete_job(
-            job_id=job.job_id,
-            docs_indexed=docs_indexed,
-            docs_skipped=docs_skipped,
-            docs_failed=docs_failed,
-            status=IngestionStatus.COMPLETED
-            if docs_failed < docs_indexed
-            else IngestionStatus.PARTIAL,
-        )
+        await tracker.update_cursor(job, new_cursor or "", config)
+        # Sync the loop's tallies onto the job before completing it — complete_job
+        # records the job's own counters. This path previously called an API that
+        # does not exist (job_id=/docs_*/status= kwargs), raising TypeError on
+        # every run.
+        job.docs_indexed = docs_indexed
+        job.docs_skipped = docs_skipped
+        job.docs_failed = docs_failed
+        await tracker.complete_job(job)
         # Reset failure counter on success
         await tracker.reset_failure_counter(source_id, tenant_id)
 
@@ -210,14 +208,10 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
 
     except Exception as exc:
         _log.exception("sync failed for source=%s: %s", source_id, exc)
-        await tracker.complete_job(
-            job_id=job.job_id,
-            docs_indexed=docs_indexed,
-            docs_skipped=docs_skipped,
-            docs_failed=docs_failed,
-            status=IngestionStatus.FAILED,
-            error=str(exc),
-        )
+        job.docs_indexed = docs_indexed
+        job.docs_skipped = docs_skipped
+        job.docs_failed = docs_failed
+        await tracker.complete_job(job, error=str(exc))
         await tracker.increment_failure_counter(source_id, tenant_id)
         # Celery retry
         raise task.retry(exc=exc, countdown=int(_backoff_seconds(1))) from exc
@@ -269,7 +263,7 @@ async def _retry_dlq_async() -> dict:
     from app.core.config import settings
     from app.ingestion.job_tracker import IngestionJobTracker
     from app.ingestion.pipeline import IngestionPipeline
-    from app.tenancy.context import TenantContext
+    from app.tenancy.context import PlanTier, TenantContext
 
     tracker = IngestionJobTracker()
     pipeline = IngestionPipeline()
@@ -287,7 +281,7 @@ async def _retry_dlq_async() -> dict:
             tenant_ctx = TenantContext(
                 tenant_id=entry.tenant_id,
                 api_key_id="dlq_retry",
-                plan=getattr(settings, "DEFAULT_PLAN", "free"),
+                plan=getattr(settings, "DEFAULT_PLAN", PlanTier.FREE),
             )
             result = await pipeline.run(
                 entry.raw_doc,
