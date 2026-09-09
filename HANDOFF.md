@@ -16,6 +16,14 @@
 - **▶ EXPLICIT FRAMEWORK REQUIREMENT (user):** agentic patterns, RAG patterns, and ALL RAG aspects (retrieval, chunking, reranking, embeddings, knowledge base, knowledge graph, memory) must be implemented as a GENERIC, composable, world-class FRAMEWORK — ONE registry + ONE selector per dimension, selectable generically per goal/query (NOT per-agent flags or hardcoded paths), one reachable implementation per capability, extensible so adding a new pattern/strategy = registering it and it works everywhere (goal/agent/workflow/org execution). See `PROGRAM-WORLDCLASS.md` §WS-10 (framework principle) + WS-11 (its frontend control/observability surface). This is what makes AgentVerse a truly generic agentic platform.
 - **▶ EXPLICIT TEST-AUTOMATION REQUIREMENT (user):** EVERYTHING automated. Every feature must have the FULL pyramid — unit + functional + integration + `e2e_full` (real infra) + Playwright real-backend UI e2e — all running AUTOMATICALLY in CI. UI e2e must be automated (Playwright real-backend project with a webServer/compose baseURL). **Workflow especially must be fully e2e-tested + automated across all five layers** (DSL unit → step-type functional → run-store integration → real-Celery `e2e_full` → Playwright builder→run→terminal). See `PROGRAM-WORLDCLASS.md` §WS-8 (+ its WORKFLOW block). A feature is not 10/10 until its whole pyramid is green and automated. Directive: keep implementing until the whole platform is genuinely 10/10 — do not stop at "planned".
 
+## 0.5 EXECUTION DIRECTIVE (standing order — do not stop early)
+Keep executing continuously until the WHOLE platform is genuinely 10/10 with FULL automated coverage (unit + functional + integration + e2e_full + Playwright real-backend UI, all automated in CI). Do NOT stop at "planned"; implement until done. Operate autonomously:
+- Run ONE backend + ONE frontend implementer at a time (disjoint trees, concurrent OK); as each lands, review the diff + run the affected test tier, commit via the SDD ledger, then dispatch the next workstream from `PROGRAM-WORLDCLASS.md` (WS-1…WS-14) in priority order.
+- Do NOT pause to ask "should I continue?" — the user has said no need to prompt; report as waves land and keep going. Only stop for a genuinely destructive/irreversible action, a security-sensitive step, or a merge/push to a shared branch.
+- A workstream is DONE only when its full test pyramid is green + automated (workflow: all 5 layers). Update the WS status tracker + this ledger as each lands.
+- Keep everything committed on `feature/platform-10x`; do NOT merge to `main` without explicit user go-ahead.
+- On a context cutoff, a fresh agent resumes from this file → verifies state → continues WS execution from the first TODO in the tracker. Nothing stalls.
+
 ## 1. How to verify state on resume (run these first)
 
 ```bash
