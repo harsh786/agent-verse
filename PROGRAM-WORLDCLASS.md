@@ -9,7 +9,7 @@ Ratings baseline (recon 2026-09-10): Org 8, JARVIS-UI 8, HITL 8, OCR 8, RPA 7, C
 ## Priority order (rulings)
 1. **WS-0 BK6** — self-optimizer disposition (in flight).
 2. **WS-1 Civilization throttle** — concrete latent bug (30s discovery, no lock → backlog). Small, high value.
-3. **WS-2 Org backend de-fake** — replace 7 hardcoded analytics constants w/ real metrics; finish 3 RBAC/quality-gate TODOs. Honesty rule: no fabricated numbers.
+3. **WS-2 Org backend WORLD-CLASS (any-task execution)** — the org backend must genuinely execute ANY NL objective (dynamic team + real goal dispatch + decomposition/handoff + tool access + verified deliverable + rich events for the frontend), plus de-fake analytics + finish RBAC/quality gates. Backend half of the WS-7 awe integration.
 4. **WS-3 HITL flawless everywhere** — one gateway, proven pause→approve→resume in goal / org-mission / workflow / agent-step. THE user's top emphasis.
 5. **WS-4 Workflow+Trigger+Schedule unified + real Celery e2e** — add Celery worker to e2e compose; prove trigger→workflow→celery run→terminal, scheduled fire governed, and a HITL gate INSIDE a workflow.
 6. **WS-5 RPA → report + PDF** — scrape → structured report → rendered PDF artifact.
@@ -28,10 +28,26 @@ Run one backend + one frontend implementer concurrently (disjoint trees). WS-7 (
 - Triage the 17 bare `pass` stubs: implement the meaningful ones, or make them explicit no-ops with a reason (no silent stubs).
 **DoD:** test proving a second tick within the interval is skipped (lock held); mypy clean; fast tier green. **e2e:** a civilization tick under a simulated backlog does not pile up.
 
-## WS-2 · Org backend de-fake + finish governance (backend)
-**Gap:** `app/org/analytics.py` returns 7 hardcoded constants; `rbac.py` (1) + `quality_gates.py` (2) TODOs.
-**Tasks:** compute the analytics from real mission/task/agent data (throughput, success rate, cost, cycle time) — honest empty/indeterminate when no data, never a fabricated constant. Implement RBAC check + quality-gate peer-review path (or reject explicitly if unsupported).
-**DoD:** tests that analytics reflect seeded data; RBAC denies/permits correctly; mypy clean. **e2e:** org analytics endpoint returns real computed numbers for a seeded org.
+## WS-2 · Org backend WORLD-CLASS — any-task autonomous execution (backend)
+**Intent (user):** the AI org team backend must be world-class and able to do **ANY type of task**, not just hardcoded industry blueprints — and it must emit the rich events the frontend (WS-7) animates (decomposition, assignment, handoff, tool use, progress, completion). The frontend awe is only real if the backend genuinely does the work.
+
+### 2a — Verify the any-task execution path end-to-end (Step 1 deliverable)
+Trace `app/org/service.py::create_mission_and_execute` and the composer (`compose_from_nl` / team formation). Answer with evidence:
+- For an **arbitrary NL objective** (not a known industry template), does it (i) decompose into real subtasks, (ii) form a fit team (roles/departments) dynamically, (iii) dispatch **real** goals to `GoalService.submit_goal` that the agent loop actually executes (plan→execute→verify→complete) with tool/MCP access, (iv) handle handoffs between agents/teams, (v) track progress from **real** `OrgTask` status, (vi) produce a verified deliverable/report? Mark each REAL/PARTIAL/STUB.
+
+### 2b — Close the capability gaps found
+- **Arbitrary-domain composition:** if team/dept composition is limited to hardcoded blueprints, add a generalized LLM-driven composer that produces a sensible team for any objective (degrade to a sane default team when no LLM). One reachable composer.
+- **Real task decomposition + assignment + handoff:** mission → subtasks → assigned to agents → executed as real goals → handoff events on reassignment. No simulated/`pass` steps.
+- **Tool/MCP access for org agents:** confirm dispatched org goals run with the tenant's MCP tools (so agents can actually accomplish work), not a restricted stub set.
+- **Deliverable + report:** a completed mission yields a real aggregated result/report (ties to RPA→PDF WS-5 for document output where relevant).
+- **Rich event emission:** emit `mission.*`, `task.decomposed`, `task.assigned`, `task.handoff`, `agent.working`, `mission.progress`, `mission.completed` on the org Redis→SSE channel so WS-7 animates real activity. Coordinate event names with WS-7.
+
+### 2c — De-fake + governance (original WS-2)
+- `app/org/analytics.py`: replace the 7 hardcoded constants with metrics computed from real mission/task/agent/cost data (throughput, success rate, cost, cycle time) — honest empty/indeterminate when no data, never a fabricated number.
+- Finish `rbac.py` (1 TODO) + `quality_gates.py` (2 TODOs): real RBAC enforcement + quality-gate peer-review, or explicit rejection if unsupported.
+
+**DoD:** an arbitrary NL mission executes real goals to completion with dynamic team + real progress + emitted events; analytics reflect seeded data; RBAC permits/denies correctly; mypy clean; fast tier green. **e2e (`tests/e2e_full/test_org_any_task_e2e.py`):** submit an arbitrary objective → team forms → real goal(s) dispatched and reach terminal → mission completes with a real result → the decomposition/handoff/progress events were published. This is also the backend half of the WS-7 "awe" integration.
+**Size note:** this is large — split into 2a(verify)→2b(build, possibly multiple commits)→2c if one implementer can't hold it; the controller sequences the sub-tasks.
 
 ## WS-3 · HITL flawless in every execution path (backend, THE priority)
 **Gap:** HITL gateway is real + DB-persisted, `HITL_REQUIRED` honored in `executor_mixin`, but live pause→resume not traced across all paths.
