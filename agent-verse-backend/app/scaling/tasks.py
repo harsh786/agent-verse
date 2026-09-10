@@ -276,21 +276,23 @@ async def _finalize_owning_mission(goal_id: str, tenant_id: str) -> None:
 
         db_factory = get_session_factory()
         async with db_factory() as session, sqlalchemy_rls_context(session, tenant_id):
-            row = (
+            # Finalize EVERY still-active mission that owns this goal — not just
+            # one. GoalService dedupes identical goal text to a single goal_id, so
+            # two missions can share one goal; a LIMIT 1 here left the others stuck
+            # 'active' forever after the shared goal completed.
+            rows = (
                 await session.execute(
                     text(
                         "SELECT id FROM org_missions "
                         "WHERE tenant_id = :t "
                         "AND extra_data->>'goal_id' = :g "
-                        "AND status NOT IN ('completed', 'failed', 'cancelled', 'archived') "
-                        "LIMIT 1"
+                        "AND status NOT IN ('completed', 'failed', 'cancelled', 'archived')"
                     ),
                     {"t": tenant_id, "g": goal_id},
                 )
-            ).fetchone()
-            if row is None:
+            ).fetchall()
+            if not rows:
                 return  # standalone goal — no owning mission to reconcile
-            mission_id = str(row[0])
 
             goal_bridge = GoalService(
                 db_session_factory=db_factory,
@@ -302,19 +304,21 @@ async def _finalize_owning_mission(goal_id: str, tenant_id: str) -> None:
                 api_key_id="worker_mission_finalize",
             )
             svc = OrgService(session, tenant_id)
-            result = await svc.finalize_mission(
-                mission_id,
-                app_state=types.SimpleNamespace(goal_service=goal_bridge),
-                tenant_ctx=tenant_ctx,
-            )
+            for row in rows:
+                mission_id = str(row[0])
+                result = await svc.finalize_mission(
+                    mission_id,
+                    app_state=types.SimpleNamespace(goal_service=goal_bridge),
+                    tenant_ctx=tenant_ctx,
+                )
+                logger.info(
+                    "mission_finalized_from_worker",
+                    goal_id=goal_id,
+                    mission_id=mission_id,
+                    finalized=result.get("finalized"),
+                    mission_status=result.get("status"),
+                )
             await session.commit()
-            logger.info(
-                "mission_finalized_from_worker",
-                goal_id=goal_id,
-                mission_id=mission_id,
-                finalized=result.get("finalized"),
-                mission_status=result.get("status"),
-            )
     except Exception as exc:  # never let mission reconciliation break the goal task
         logger.warning("worker mission finalize failed (non-fatal): %s", exc)
 

@@ -507,9 +507,27 @@ export function OrgPage() {
             className="shrink-0 hidden lg:flex flex-col overflow-y-auto border-l border-[#1E2535] bg-[#0B0E14]"
             aria-label="Command panel"
           >
-            {/* Live agent constellation — moved here so missions own the main pane.
-                Obsidian-style force graph where each member lights up as it works. */}
-            <section className="border-b border-[#1E2535] shrink-0" aria-label="Live agent network">
+            {/* Command deck — agent network + mission orbit. Side by side when the
+                panel is dragged wide (≥560px), stacked when narrow. */}
+            <div
+              className={cn(
+                'shrink-0',
+                rightWidth >= 560
+                  ? 'flex items-stretch border-b border-[#1E2535]'
+                  : 'flex flex-col',
+              )}
+            >
+            {/* Live agent constellation — Obsidian-style force graph where each
+                team member lights up as it works. */}
+            <section
+              className={cn(
+                'min-w-0',
+                rightWidth >= 560 && activeMissions.length > 0
+                  ? 'flex-1 border-r border-[#1E2535]'
+                  : 'border-b border-[#1E2535] shrink-0',
+              )}
+              aria-label="Live agent network"
+            >
               <div className="flex items-center justify-between px-4 pt-3 pb-1">
                 <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#00D4FF]/70 flex items-center gap-1.5">
                   <Network className="h-2.5 w-2.5" aria-hidden />
@@ -563,11 +581,13 @@ export function OrgPage() {
               </AnimatePresence>
             </section>
 
-            {/* ── Mission Orbit — sits right under the agent view so both live
-                visualizations are in the first view of the command panel. ── */}
+            {/* Mission Orbit — beside the agent view when wide, beneath when narrow. */}
             {activeMissions.length > 0 && (
               <section
-                className="flex flex-col items-center py-4 border-b border-[#1E2535] shrink-0"
+                className={cn(
+                  'flex flex-col items-center justify-center py-4 min-w-0',
+                  rightWidth >= 560 ? 'flex-1' : 'border-b border-[#1E2535] shrink-0',
+                )}
                 aria-label="Active mission orbit visualization"
               >
                 <p className="text-[10px] font-medium uppercase tracking-[0.1em] text-[#00D4FF]/60 mb-2 flex items-center gap-1.5">
@@ -577,6 +597,7 @@ export function OrgPage() {
                 <MissionOrbit missions={activeMissions} />
               </section>
             )}
+            </div>
 
             {/* Live activity feed — the JARVIS event stream, kept prominent right
                 under the agent network so both are visible without scrolling. */}
