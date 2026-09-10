@@ -538,7 +538,7 @@ export function OrgPage() {
                     transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
                     className="overflow-hidden"
                   >
-                    <div className="flex items-center justify-center p-3 overflow-auto">
+                    <div className="flex items-center justify-center p-3 overflow-auto min-h-[300px] bg-[radial-gradient(ellipse_at_center,rgba(0,212,255,0.06),transparent_70%)]">
                       <AgentConstellation
                         orgId={orgId}
                         missions={activeMissions}
@@ -562,6 +562,16 @@ export function OrgPage() {
                 )}
               </AnimatePresence>
             </section>
+
+            {/* Live activity feed — the JARVIS event stream, kept prominent right
+                under the agent network so both are visible without scrolling. */}
+            <section
+              className="border-b border-[#1E2535] shrink-0 max-h-[22rem] overflow-y-auto p-4"
+              aria-label="Live activity"
+            >
+              <ActivityFeed orgId={orgId} />
+            </section>
+
             {/* Digital Twin panel */}
             <AnimatePresence mode="wait">
               {showTwin && (
@@ -735,11 +745,6 @@ export function OrgPage() {
                   setDeptFilter((prev) => (prev?.id === d.id ? null : { id: d.id, name: d.name }))
                 }
               />
-            </section>
-
-            {/* Activity feed */}
-            <section className="flex-1 p-4 overflow-y-auto">
-              <ActivityFeed orgId={orgId} />
             </section>
           </aside>
         </div>
