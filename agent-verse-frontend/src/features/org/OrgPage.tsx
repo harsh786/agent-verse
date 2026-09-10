@@ -14,7 +14,7 @@
  *   - impeccable-ui:    clear section hierarchy, 3-level visual system
  *   - ui-ux-pro-max:    reduced motion, accessible layout, URL state
  */
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
@@ -46,7 +46,7 @@ import { useVoicePrefsStore }    from '@/stores/voicePrefs';
 import { useOrgRealtimeManager, type OrgEvent } from './OrgRealtimeManager';
 import { useOrgNeuralState } from './hooks/useOrgNeuralState';
 import { AgentConstellation } from './components/AgentConstellation';
-import { useOrganization, useOrgHealth, useMissions } from './hooks/useOrg';
+import { useOrganization, useOrgHealth, useMissions, useDepartments } from './hooks/useOrg';
 import type { OrgMission }       from './types';
 
 // Toolbar side-panels — each opens in the one right slide-over drawer.
@@ -183,6 +183,47 @@ export function OrgPage() {
   const pendingApprovalCount = (health as any)?.pending_approvals ?? 0;
   const { data: missionInf } = useMissions(orgId, {});
   const activeMissions = (missionInf?.pages?.flatMap(p => p.data ?? []) ?? []).filter((m: OrgMission) => m.status === 'active');
+
+  // Live agent network data. Two layers, so the panel is never a dead hub:
+  //   • Live agents stream in over SSE while a mission runs (neural.agents) —
+  //     they execute, exchange messages, and hand off tasks.
+  //   • When nothing is running, the org's real departments stand in as idle
+  //     "standing by" robots. This is honest structure (these departments
+  //     exist), not fabricated activity — no fake beams when idle.
+  const { data: departments } = useDepartments(orgId ?? null);
+
+  const liveAgents = useMemo(
+    () => neural.agents.map(a => ({
+      id:     a.id,
+      label:  a.label,
+      role:   a.role,
+      status: (a.state === 'executing' || a.state === 'communicating')
+        ? ('active' as const)
+        : (a.state === 'error' || a.state === 'blocked')
+          ? ('error' as const)
+          : ('idle' as const),
+      goalCount: a.goalCount,
+    })),
+    [neural.agents],
+  );
+
+  const departmentAgents = useMemo(
+    () => (departments ?? [])
+      .filter(d => d.status !== 'archived')
+      .map(d => ({
+        id:        `dept-${d.id}`,
+        label:     d.name,
+        role:      d.purpose || 'Department',
+        status:    'idle' as const,
+        goalCount: d.agent_count ?? 1,
+      })),
+    [departments],
+  );
+
+  // Prefer live agents; fall back to the department roster so the scene always
+  // has a breathing population to render.
+  const constellationAgents = liveAgents.length > 0 ? liveAgents : departmentAgents;
+  const constellationIsLive  = liveAgents.length > 0;
 
   const navigate = useNavigate();
   // Open the full mission board (Tasks / Team workstreams / Artifacts / Activity)
@@ -546,11 +587,15 @@ export function OrgPage() {
                 <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#00D4FF]/70 flex items-center gap-1.5">
                   <Network className="h-2.5 w-2.5" aria-hidden />
                   Live Agent Network
-                  {neural.agents.length > 0 && (
+                  {constellationIsLive ? (
                     <span className="text-[#475569] normal-case tracking-normal">
-                      · {neural.agents.length} agent{neural.agents.length !== 1 ? 's' : ''} active
+                      · {liveAgents.length} agent{liveAgents.length !== 1 ? 's' : ''} active
                     </span>
-                  )}
+                  ) : departmentAgents.length > 0 ? (
+                    <span className="text-[#475569] normal-case tracking-normal">
+                      · {departmentAgents.length} department{departmentAgents.length !== 1 ? 's' : ''} standing by
+                    </span>
+                  ) : null}
                 </p>
                 <button
                   onClick={() => setShowConstellation(v => !v)}
@@ -574,19 +619,10 @@ export function OrgPage() {
                       <AgentConstellation
                         orgId={orgId}
                         missions={activeMissions}
-                        agents={neural.agents.map(a => ({
-                          id: a.id,
-                          label: a.label,
-                          role: a.role,
-                          status:
-                            a.state === 'executing' || a.state === 'communicating'
-                              ? 'active'
-                              : a.state === 'error' || a.state === 'blocked'
-                                ? 'error'
-                                : 'idle',
-                          goalCount: a.goalCount,
-                        }))}
-                        communicatingPairs={neural.communicatingPairs}
+                        agents={constellationAgents}
+                        // Real message beams only — never fabricated when the
+                        // scene is showing idle departments.
+                        communicatingPairs={constellationIsLive ? neural.communicatingPairs : []}
                         className="max-w-full"
                       />
                     </div>
