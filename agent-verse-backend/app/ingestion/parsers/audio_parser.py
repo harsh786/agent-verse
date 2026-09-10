@@ -109,13 +109,14 @@ class AudioParser:
     async def _transcribe_with_whisper(
         self, audio_bytes: bytes, filename: str, mime_type: str
     ) -> Any:
+        from app.providers.model_defaults import configured_audio_model
         from app.providers.openai_client import async_openai_client
 
         client = async_openai_client()
         audio_file = io.BytesIO(audio_bytes)
         audio_file.name = filename  # type: ignore[attr-defined]
         return await client.audio.transcriptions.create(
-            model="whisper-1",
+            model=configured_audio_model("whisper-1"),
             file=audio_file,
             response_format="verbose_json",
             timestamp_granularities=["segment"],

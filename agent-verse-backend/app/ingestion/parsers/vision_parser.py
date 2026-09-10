@@ -140,6 +140,7 @@ class VisionParser:
         provider implementation.
         """
         from app.providers.base import CompletionRequest, Message
+        from app.providers.model_defaults import configured_vision_model
 
         request = CompletionRequest(
             messages=[
@@ -149,7 +150,8 @@ class VisionParser:
                     image_data=b64_image,
                 )
             ],
-            model="",  # provider picks the vision-capable model
+            # Dedicated vision/OCR model; empty defers to the provider default.
+            model=configured_vision_model(""),
             system="You are an expert image analyst. Describe the image accurately.",
             max_tokens=500,
         )
@@ -160,16 +162,12 @@ class VisionParser:
         from app.providers.openai_client import async_openai_client
 
         client = async_openai_client()
-        # Model comes from config, not a hardcoded slug: with an OpenAI-compatible
-        # endpoint (NVIDIA, vLLM, …) configured via OPENAI_BASE_URL, this routes
-        # OCR/vision to the configured model (e.g. moonshotai/kimi-k3).
-        ocr_model = (
-            os.getenv("OCR_MODEL")
-            or os.getenv("NVIDIA_MODEL")
-            or os.getenv("DEFAULT_MODEL")
-            or os.getenv("OPENAI_MODEL")
-            or "gpt-4o"
-        )
+        # Model comes from config, not a hardcoded slug: the dedicated vision/OCR
+        # model (VISION_MODEL/OCR_MODEL), else the reasoning model, resolved on the
+        # OpenAI-compatible endpoint configured via OPENAI_BASE_URL.
+        from app.providers.model_defaults import configured_vision_model
+
+        ocr_model = configured_vision_model("gpt-4o")
         response = await client.chat.completions.create(
             model=ocr_model,
             messages=[
