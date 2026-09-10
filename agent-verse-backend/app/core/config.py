@@ -106,6 +106,45 @@ class Settings(BaseSettings):
     rag_low_confidence_fallback_enabled: bool = True
     rag_low_confidence_widen_factor: int = 4  # widen candidate pool by this multiple
 
+    # --- Eval scoring (config-driven; NOTHING hardcoded in the scorer) --------
+    # The 7-dimension eval scorer (app/intelligence/eval_runner.py) and the
+    # self-improvement decision surfaces read every weight/threshold/budget from
+    # here. Defaults reproduce the historically shipped behaviour, so tuning is a
+    # config change, not a code change. See app/evals/scoring_config.py.
+    eval_pass_threshold: float = 0.70  # average score >= this passes
+    # efficiency dimension
+    eval_max_iterations_budget: float = 15.0  # iterations budget before efficiency decays
+    eval_cost_budget_usd: float = 2.0  # LLM cost at which cost-efficiency hits 0
+    eval_efficiency_iter_weight: float = 0.7  # iteration vs cost blend (must sum to 1.0)
+    eval_efficiency_cost_weight: float = 0.3
+    # accuracy dimension
+    eval_accuracy_partial_credit: float = 0.5  # credit when feedback says "partial"
+    # safety dimension
+    eval_safety_violation_penalty: float = 0.25  # score drop per DENY/blocked event
+    # coherence dimension
+    eval_coherence_output_weight: float = 0.6  # output-rate vs step-diversity blend
+    eval_coherence_diversity_weight: float = 0.4
+    # sla dimension
+    eval_sla_budget_seconds: float = 300.0  # default wall-clock budget per goal
+    eval_sla_iteration_seconds: float = 20.0  # per-iteration time proxy when no timing
+    # tool_relevance dimension
+    eval_tool_calls_per_step_target: float = 2.0  # ideal tool calls per step
+    eval_tool_efficiency_tolerance: float = 5.0  # calls-over-target that zeroes efficiency
+    eval_tool_relevance_success_weight: float = 0.6  # success-rate vs efficiency blend
+    eval_tool_relevance_efficiency_weight: float = 0.4
+    # neutral defaults when evidence is missing
+    eval_neutral_no_data_score: float = 0.5  # no step data at all
+    eval_neutral_no_tool_calls_score: float = 0.7  # steps exist but made no tool calls
+    # self-improvement decision floors (shared by both decision surfaces)
+    eval_improve_rag_quality_floor: float = 0.5
+    eval_improve_retrieval_confidence_floor: float = 0.4
+    eval_improve_goal_success_floor: float = 0.7
+    eval_improve_tool_success_floor: float = 0.5
+    eval_improve_tool_success_critical: float = 0.3
+    eval_improve_cost_efficiency_floor: float = 0.3
+    eval_improve_latency_floor: float = 0.3
+    eval_improve_regression_case_floor: float = 0.4
+
     # --- Agent multi-agent auto-selection (WS-10) -----------------------------
     # Default-off safety gate for the advanced multi-agent tier: when on, a goal's
     # complexity/domain/risk can auto-route it to the in-graph supervisor /debate
