@@ -91,6 +91,12 @@ class SourceConfig:
     # ── Quality & PII (LAW-06) ────────────────────────────────────────────────
     min_quality_score: float = 0.3
     pii_action: str = "redact"  # redact | reject | allow
+    # Semantic near-duplicate chunk removal (pipeline Stage 11). Chunks whose
+    # embedding cosine-similarity to an already-kept chunk is >= this threshold
+    # are dropped as near-dupes (on top of exact SHA-256 dedup). 0.0 disables it
+    # (exact-hash only) — the safe default, since a too-low threshold would drop
+    # legitimately distinct-but-similar chunks. ~0.97-0.99 catches boilerplate.
+    near_dup_threshold: float = 0.0
 
     # ── Freshness (LAW-08) ────────────────────────────────────────────────────
     freshness_ttl_seconds: int = 86400  # 24h default

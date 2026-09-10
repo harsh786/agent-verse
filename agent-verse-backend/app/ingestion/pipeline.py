@@ -38,6 +38,22 @@ from app.ingestion.source_config import PipelineResult, RawDocument, SourceConfi
 
 _log = logging.getLogger(__name__)
 
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity of two equal-length embedding vectors (0.0 on degenerate input)."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b, strict=False):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    if na <= 0.0 or nb <= 0.0:
+        return 0.0
+    return dot / ((na**0.5) * (nb**0.5))
+
 # Minimum text length (chars) to consider a document worth chunking
 _MIN_TEXT_LENGTH = 50
 
@@ -284,7 +300,9 @@ class IngestionPipeline:
             result.tokens_consumed = sum(count_tokens(c["text"]) for c in embedded_chunks)
 
             # ── Stage 11: DEDUP CHUNKS ────────────────────────────────────────
-            unique_chunks = self._dedup_chunks(embedded_chunks)
+            unique_chunks = self._dedup_chunks(
+                embedded_chunks, near_dup_threshold=source_config.near_dup_threshold
+            )
 
             # ── Stage 11b: EMBEDDING INTEGRITY (D-12) ─────────────────────────
             # ``embed_texts`` returns an empty list (never zero/noise vectors)
@@ -496,16 +514,36 @@ class IngestionPipeline:
                 chunk["embedding"] = []
         return enriched_chunks
 
-    def _dedup_chunks(self, chunks: list[dict]) -> list[dict]:
-        """Remove exact-duplicate chunks within this document."""
+    def _dedup_chunks(self, chunks: list[dict], *, near_dup_threshold: float = 0.0) -> list[dict]:
+        """Remove duplicate chunks within this document (pipeline Stage 11).
+
+        Always drops exact duplicates by ``content_hash``. When
+        ``near_dup_threshold > 0``, additionally drops *semantic* near-duplicates:
+        a chunk whose embedding cosine-similarity to an already-kept chunk is at
+        or above the threshold is discarded (catches boilerplate/near-identical
+        passages that survive exact-hash dedup). Chunks without an embedding are
+        never dropped by the near-dup pass — they simply skip it.
+        """
         seen_hashes: set[str] = set()
         unique: list[dict] = []
+        kept_embeddings: list[list[float]] = []
+        use_near_dup = near_dup_threshold > 0.0
         for chunk in chunks:
             h = chunk.get("content_hash", "")
             if h and h in seen_hashes:
                 continue
+
+            if use_near_dup:
+                emb = chunk.get("embedding")
+                if emb and any(
+                    _cosine_similarity(emb, kept) >= near_dup_threshold for kept in kept_embeddings
+                ):
+                    continue  # semantic near-duplicate of an already-kept chunk
+
             if h:
                 seen_hashes.add(h)
+            if use_near_dup and chunk.get("embedding"):
+                kept_embeddings.append(chunk["embedding"])
             unique.append(chunk)
         return unique
 
