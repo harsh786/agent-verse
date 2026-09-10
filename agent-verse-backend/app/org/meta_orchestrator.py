@@ -182,16 +182,31 @@ class GoalAnalyzer:
         )
         from app.providers.base import CompletionRequest, Message
 
+        # Use the provider's own default model, not a hardcoded Anthropic slug —
+        # a self-hosted endpoint (vLLM/Qwen) doesn't serve "claude-sonnet-4-5".
+        _model = getattr(self._llm, "_default_model", "") or ""
         req = CompletionRequest(
             messages=[Message(role="user", content=prompt)],
-            model="claude-sonnet-4-5",
-            max_tokens=256,
+            model=_model,
+            # Reasoning models emit a <think> preamble before the JSON; give them
+            # enough room to reach it.
+            max_tokens=1024,
         )
         resp = await self._llm.complete(req)
-        raw = resp.content.strip()
+        # Robust parse: reasoning models wrap the JSON in <think>…</think> and/or
+        # prose, so a bare json.loads fails. Reuse the agent nodes' extractor.
+        from app.agent.nodes._helpers import _first_json_object, _strip_reasoning
+
+        raw = _strip_reasoning((resp.content or "").strip())
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
-        data: dict[str, Any] = json.loads(raw)
+        try:
+            data: dict[str, Any] = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            extracted = _first_json_object(raw)
+            if extracted is None:
+                raise
+            data = extracted
         return GoalAnalysis(
             complexity=data.get("complexity", "medium"),
             domain_count=int(data.get("domain_count", 2)),
@@ -371,6 +386,21 @@ class MetaOrchestrator:
                         estimated_hours=hours,
                         description=f"{'Parallel' if parallel else 'Sequential'} execution "
                         f"across {', '.join(phase_depts)}",
+                    )
+                )
+            # Floor: a mission must always have at least one executable phase, even
+            # when department grouping yields nothing (thin team / degraded analysis)
+            # — otherwise the mission is a silent no-op that produces no deliverable.
+            if not phases:
+                _fallback_depts = list(manifest.departments) or ["operations"]
+                phases.append(
+                    ExecutionPhase(
+                        phase_number=1,
+                        name="Phase 1: Execution",
+                        dept_assignments=_fallback_depts,
+                        parallel=False,
+                        estimated_hours=1.0,
+                        description=f"Sequential execution across {', '.join(_fallback_depts)}",
                     )
                 )
             return phases

@@ -88,11 +88,17 @@ def _detect_providers() -> list[ProviderConfig]:
             if openai_base_url.rstrip("/").lower() == _OFFICIAL_OPENAI_BASE_URL.lower()
             else "openai_compatible"
         )
+        # An openai_compatible endpoint (vLLM, Together, Azure, …) REQUIRES an
+        # explicit model, or _instantiate_provider raises and we silently fall
+        # back to FakeProvider. Source it from OPENAI_MODEL/DEFAULT_MODEL so a
+        # self-hosted deployment actually uses its model instead of the fake.
+        _openai_model = (os.getenv("OPENAI_MODEL") or os.getenv("DEFAULT_MODEL") or "").strip()
         providers.append(
             ProviderConfig(
                 provider_type=provider_type,
                 api_key=os.getenv("OPENAI_API_KEY", ""),
                 base_url=openai_base_url,
+                models=[_openai_model] if _openai_model else None,
                 display_name="OpenAI",
             )
         )
