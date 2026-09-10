@@ -18,6 +18,19 @@ from app.ocr.models import DocumentType, OcrResult
 
 _log = logging.getLogger(__name__)
 
+
+def _ocr_model() -> str:
+    """The configured OCR/vision model: OCR_MODEL first, then the system default.
+
+    Empty string lets the provider fall back to its own default model, so no
+    cloud slug is ever forced onto a differently-configured endpoint.
+    """
+    import os
+
+    from app.providers.model_defaults import configured_default_model
+
+    return (os.getenv("OCR_MODEL") or "").strip() or configured_default_model("")
+
 CONFIDENCE_THRESHOLD = 0.6
 
 OcrFormat = Literal["image", "pdf", "office", "text", "unsupported"]
@@ -329,7 +342,9 @@ class OcrEngine:
                         image_data=img_b64,
                     )
                 ],
-                model="gpt-4o",  # provider will use its own configured model
+                # OCR uses the system-configured model (OCR_MODEL/NVIDIA_MODEL/…);
+                # the empty case lets the provider fall back to its default model.
+                model=_ocr_model(),
             )
             response = await provider.complete(req)
             return response.content, 0.85, "llm_vision"

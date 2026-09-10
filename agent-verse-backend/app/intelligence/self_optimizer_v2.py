@@ -656,9 +656,11 @@ Respond with ONLY valid JSON:
                 indent=2,
             )
 
+            from app.providers.model_defaults import configured_default_model
+
             response = await provider.complete(
                 CompletionRequest(
-                    model="claude-haiku-3-5",
+                    model=configured_default_model("claude-haiku-3-5"),
                     messages=[
                         Message(role="system", content=self.OPTIMIZER_PROMPT),
                         Message(role="user", content=user_content),

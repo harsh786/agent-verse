@@ -18,6 +18,7 @@ from typing import Any
 
 from app.agent.state import AgentState, GoalStatus, SubGoal
 from app.providers.base import CompletionRequest, LLMProvider, Message
+from app.providers.model_defaults import configured_default_model as _configured_default_model
 from app.tenancy.context import TenantContext
 
 
@@ -41,7 +42,7 @@ async def decompose_goal(
             Message(role="system", content=GOAL_TREE_SYSTEM),
             Message(role="user", content=f"Goal: {goal}"),
         ],
-        model="claude-opus-4-8",
+        model=_configured_default_model("claude-opus-4-8"),
     )
     resp = await planner.complete(req)
     text = re.sub(r"```(?:json)?\n?", "", resp.content).strip()

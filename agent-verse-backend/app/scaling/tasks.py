@@ -1124,15 +1124,19 @@ def run_goal(
                         embed_model=_embed_model or "text-embedding-3-small",
                     )
                 elif _o_key:
-                    from app.providers.openai_compatible import OpenAICompatibleProvider
-
                     # Honour OPENAI_BASE_URL when set so a self-hosted chat+embed
                     # endpoint is never bypassed for the official OpenAI API.
+                    from app.providers.model_defaults import configured_embed_model
+                    from app.providers.openai_compatible import OpenAICompatibleProvider
+
+                    _embed_model_name = configured_embed_model("text-embedding-3-small")
                     _embedder_for_graph = OpenAICompatibleProvider(
                         api_key=_o_key,
-                        base_url=os.getenv("OPENAI_BASE_URL") or None,
-                        default_model="text-embedding-3-small",
-                        embed_model=os.getenv("OPENAI_MODEL") or "text-embedding-3-small",
+                        base_url=os.getenv("EMBEDDING_BASE_URL")
+                        or os.getenv("OPENAI_BASE_URL")
+                        or None,
+                        default_model=_embed_model_name,
+                        embed_model=_embed_model_name,
                     )
             except Exception as _emb_exc:
                 logger.warning("worker_embedder_build_failed: %s", _emb_exc)

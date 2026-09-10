@@ -25,6 +25,7 @@ import json
 import re
 
 from app.providers.base import CompletionRequest, LLMProvider, Message
+from app.providers.model_defaults import configured_default_model as _configured_default_model
 from app.triggers.models import TriggerSpec, TriggerType
 
 # ── Keyword routing: (pattern, TriggerType, {extra_spec_fields}) ──────────────
@@ -476,7 +477,7 @@ class NLScheduler:
                     Message(role="system", content=_NL_SCHEDULER_SYSTEM),
                     Message(role="user", content=description),
                 ],
-                model="claude-opus-4-8",
+                model=_configured_default_model("claude-opus-4-8"),
             )
             resp = await self._provider.complete(req)
             text = re.sub(r"```(?:json)?\n?", "", resp.content).strip()

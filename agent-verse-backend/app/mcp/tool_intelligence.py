@@ -357,10 +357,12 @@ Produce a corrected JSON object with the right parameter names and values.
 - For any required parameter still missing, use a reasonable default or empty string
 - Return ONLY a valid JSON object, nothing else"""
 
+        from app.providers.model_defaults import configured_default_model
+
         req = CompletionRequest(
             messages=[Message(role="user", content=prompt)],
-            # Use fastest/cheapest model for self-healing
-            model="claude-haiku-3-5",
+            # Configured model (fastest/cheapest tier as fallback for self-healing)
+            model=configured_default_model("claude-haiku-3-5"),
             max_tokens=500,
         )
         resp = await self._provider.complete(req)

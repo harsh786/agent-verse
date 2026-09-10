@@ -191,6 +191,9 @@ class BrowserAgent:
 
         try:
             from app.providers.base import CompletionRequest, Message
+            from app.providers.model_defaults import (
+                configured_default_model as _configured_default_model,
+            )
 
             req = CompletionRequest(
                 messages=[
@@ -203,7 +206,7 @@ class BrowserAgent:
                         image_data=screenshot_b64,
                     ),
                 ],
-                model="claude-opus-4-5",
+                model=_configured_default_model("claude-opus-4-5"),
             )
             resp = await self._vision.complete(req)
             return resp.content  # type: ignore[no-any-return]
