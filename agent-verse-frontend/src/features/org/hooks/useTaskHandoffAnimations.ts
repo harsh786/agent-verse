@@ -22,12 +22,19 @@ import type { OrgTask } from '../types';
 /** How long a handoff stays "active" (i.e. rendered) after it's detected. */
 export const HANDOFF_ANIMATION_MS = 1400;
 
+// Stable empty-array identity for the "no tasks yet" case. Using a fresh `[]`
+// fallback would give `tasks` a new reference every render, making the
+// `tasks !== prevTasks` diff below always true → setPrevTasks on every render →
+// infinite re-render loop. A shared constant keeps the identity stable so the
+// diff only fires on a real data change.
+const EMPTY_TASKS: readonly OrgTask[] = [];
+
 export function useTaskHandoffAnimations(
   orgId: string | null | undefined,
   ttlMs: number = HANDOFF_ANIMATION_MS,
 ): TaskHandoff[] {
   const { data } = useOrgTasks(orgId ?? undefined, {});
-  const tasks = ((data as { data?: OrgTask[] } | undefined)?.data ?? []);
+  const tasks = ((data as { data?: OrgTask[] } | undefined)?.data ?? EMPTY_TASKS) as OrgTask[];
 
   // Nothing to diff against on the very first snapshot — that's existing
   // state, not a live transition, so `prevTasks` starts equal to `tasks`.

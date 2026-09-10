@@ -87,6 +87,22 @@ describe('useTaskHandoffAnimations', () => {
     await waitFor(() => expect(result.current).toHaveLength(0), { timeout: 3000 });
   });
 
+  it('does not infinite-loop when there are no tasks yet (undefined data)', () => {
+    // Regression: with no cached tasks, `data` is undefined and the `?? []`
+    // fallback used to allocate a fresh array every render → the
+    // `tasks !== prevTasks` diff was always true → setPrevTasks on every render
+    // → "Too many re-renders" crash (it took down the whole Org page). A stable
+    // empty-array identity fixes it: the hook renders once and returns [].
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, enabled: false, refetchOnMount: false } },
+    });
+    apiFetchMock.mockResolvedValue(undefined);
+    // If the loop regressed, renderHook throws synchronously with
+    // "Too many re-renders" — so simply rendering is the assertion.
+    const { result } = renderHook(() => useTaskHandoffAnimations('org-1'), { wrapper: wrapper(qc) });
+    expect(result.current).toEqual([]);
+  });
+
   it('never fabricates a handoff when nothing actually changed', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const snapshot = {
