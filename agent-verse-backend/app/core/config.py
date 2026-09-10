@@ -91,6 +91,11 @@ class Settings(BaseSettings):
 
     # --- Embedding vector dimension (must match the embed model) --------------
     embedding_dim: int = 2048  # qwen3-embedding uses 2048-d vectors
+    # Embedding quantization for stored/compared vectors: none|int8|binary.
+    # int8 = 4x smaller (close accuracy); binary = 32x smaller (coarse, good as a
+    # first-stage filter). ``none`` keeps full precision (default). Consumers opt
+    # in (e.g. the ingestion near-duplicate pass) — nothing is quantized globally.
+    embedding_quantization: str = "none"
 
     # --- RAG default-path reranking (WS-10) -----------------------------------
     # Engage a reranking STAGE on the DEFAULT hybrid retrieval path (not only on

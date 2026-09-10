@@ -300,8 +300,18 @@ class IngestionPipeline:
             result.tokens_consumed = sum(count_tokens(c["text"]) for c in embedded_chunks)
 
             # ── Stage 11: DEDUP CHUNKS ────────────────────────────────────────
+            _quant_mode = "none"
+            if source_config.near_dup_threshold > 0.0:
+                try:
+                    from app.core.config import get_settings
+
+                    _quant_mode = str(getattr(get_settings(), "embedding_quantization", "none"))
+                except Exception:  # pragma: no cover - defensive; keep full precision
+                    _quant_mode = "none"
             unique_chunks = self._dedup_chunks(
-                embedded_chunks, near_dup_threshold=source_config.near_dup_threshold
+                embedded_chunks,
+                near_dup_threshold=source_config.near_dup_threshold,
+                quantization_mode=_quant_mode,
             )
 
             # ── Stage 11b: EMBEDDING INTEGRITY (D-12) ─────────────────────────
@@ -514,36 +524,59 @@ class IngestionPipeline:
                 chunk["embedding"] = []
         return enriched_chunks
 
-    def _dedup_chunks(self, chunks: list[dict], *, near_dup_threshold: float = 0.0) -> list[dict]:
+    def _dedup_chunks(
+        self,
+        chunks: list[dict],
+        *,
+        near_dup_threshold: float = 0.0,
+        quantization_mode: str = "none",
+    ) -> list[dict]:
         """Remove duplicate chunks within this document (pipeline Stage 11).
 
         Always drops exact duplicates by ``content_hash``. When
         ``near_dup_threshold > 0``, additionally drops *semantic* near-duplicates:
-        a chunk whose embedding cosine-similarity to an already-kept chunk is at
-        or above the threshold is discarded (catches boilerplate/near-identical
-        passages that survive exact-hash dedup). Chunks without an embedding are
-        never dropped by the near-dup pass — they simply skip it.
+        a chunk whose embedding similarity to an already-kept chunk is at or above
+        the threshold is discarded (catches boilerplate/near-identical passages
+        that survive exact-hash dedup). Chunks without an embedding are never
+        dropped by the near-dup pass.
+
+        ``quantization_mode`` (``none``/``int8``/``binary``) selects how the
+        near-dup similarity is computed: full-precision cosine by default, or the
+        cheaper quantized similarity (int8 tracks cosine closely; binary is a
+        coarse first-stage estimate). Kept embeddings are encoded once.
         """
+        from app.rag.quantization import EmbeddingQuantizer
+
         seen_hashes: set[str] = set()
         unique: list[dict] = []
-        kept_embeddings: list[list[float]] = []
+        quantizer = EmbeddingQuantizer(quantization_mode)
+        # Cache of already-kept embeddings in the active representation.
+        kept_encoded: list[object] = []
         use_near_dup = near_dup_threshold > 0.0
         for chunk in chunks:
             h = chunk.get("content_hash", "")
             if h and h in seen_hashes:
                 continue
 
-            if use_near_dup:
-                emb = chunk.get("embedding")
-                if emb and any(
-                    _cosine_similarity(emb, kept) >= near_dup_threshold for kept in kept_embeddings
-                ):
+            emb = chunk.get("embedding")
+            if use_near_dup and emb:
+                encoded = quantizer.encode(emb) if quantizer.enabled else emb
+                is_near_dup = any(
+                    (
+                        quantizer.similarity(encoded, kept)
+                        if quantizer.enabled
+                        else _cosine_similarity(encoded, kept)  # type: ignore[arg-type]
+                    )
+                    >= near_dup_threshold
+                    for kept in kept_encoded
+                )
+                if is_near_dup:
                     continue  # semantic near-duplicate of an already-kept chunk
 
             if h:
                 seen_hashes.add(h)
-            if use_near_dup and chunk.get("embedding"):
-                kept_embeddings.append(chunk["embedding"])
+            if use_near_dup and emb:
+                kept_encoded.append(quantizer.encode(emb) if quantizer.enabled else emb)
             unique.append(chunk)
         return unique
 
