@@ -10,7 +10,7 @@
  *  - ApprovalQueue: pending approvals for this mission
  *  - Activity feed: real-time event stream
  */
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft, Users, DollarSign, Clock, Target, CheckCircle2,
@@ -25,6 +25,7 @@ import { useMission, useOrgTasks } from './hooks/useOrg';
 import { KanbanBoard } from './KanbanBoard';
 import { ArtifactGallery } from './ArtifactGallery';
 import { ActivityFeed } from './components/ActivityFeed';
+import { MissionDeliverable } from './components/MissionDeliverable';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import type { MissionStatus } from './types';
 
@@ -96,6 +97,19 @@ export function MissionPage({ orgId: orgIdProp, missionId: missionIdProp }: Miss
   const { data: mission, isLoading } = useMission(orgId, missionId);
   const { data: tasksPage } = useOrgTasks(orgId, { mission_id: missionId });
   const [activeTab, setActiveTab] = useState('tasks');
+
+  // Surface the deliverable: when the mission has produced output, auto-open the
+  // Output tab once so the result is never a blackbox behind the task board.
+  const outputs = ((mission as any)?.outputs ?? []) as unknown[];
+  const evidence = ((mission as any)?.evidence ?? []) as unknown[];
+  const hasOutput = outputs.length > 0;
+  const autoOpenedRef = useRef(false);
+  useEffect(() => {
+    if (hasOutput && !autoOpenedRef.current) {
+      setActiveTab('output');
+      autoOpenedRef.current = true;
+    }
+  }, [hasOutput]);
 
   if (isLoading) {
     return (
@@ -194,10 +208,21 @@ export function MissionPage({ orgId: orgIdProp, missionId: missionIdProp }: Miss
         {/* ── Tabs ─────────────────────────────────────────────────────── */}
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="bg-[var(--bg-surface)]">
+            {hasOutput && (
+              <TabsTrigger value="output" className="data-[state=active]:text-emerald-300">
+                Output ✨
+              </TabsTrigger>
+            )}
             <TabsTrigger value="tasks">Tasks ({totalTasks})</TabsTrigger>
             <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
             <TabsTrigger value="activity">Activity</TabsTrigger>
           </TabsList>
+
+          {hasOutput && (
+            <TabsContent value="output" className="mt-4">
+              <MissionDeliverable outputs={outputs} evidence={evidence} />
+            </TabsContent>
+          )}
 
           <TabsContent value="tasks" className="mt-4">
             <KanbanBoard orgId={orgId} missionId={missionId} />
