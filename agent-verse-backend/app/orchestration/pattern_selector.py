@@ -50,14 +50,52 @@ class PatternSelector:
             for index, strategy_id in enumerate(selected.reasoning)
         )
 
+    def select_multi_agent(self, props: GoalProperties) -> tuple[list[str], dict[str, str]]:
+        """Select the multi-agent topology for a goal via the ONE generic rule.
+
+        Delegates the characteristic-driven decision to
+        :func:`app.agent.multi_agent_selector.select_multi_agent_patterns` (the
+        single source of truth shared with the AgentGraph seam), then registry-gates
+        each candidate so an unavailable/PLANNED pattern is never selected. Adding a
+        new multi-agent pattern to the registry makes it eligible here automatically.
+
+        Returns ``(patterns, reasons)``; ``patterns`` falls back to
+        ``["single_agent"]`` when the goal warrants no advanced coordination.
+        """
+        from app.agent.multi_agent_selector import select_multi_agent_patterns
+
+        selection = select_multi_agent_patterns(
+            complexity=props.complexity.value,
+            domain=props.domain.value,
+            multi_step=bool(getattr(props, "multi_step", True)),
+            risk=props.risk.value,
+        )
+        reasons = dict(selection.reasons)
+        patterns: list[str] = []
+        # Expert goals decompose into parallel sub-goals first (registry-gated).
+        if props.complexity == Complexity.EXPERT and self._registry.is_available("goal_tree"):
+            patterns.append("goal_tree")
+            reasons["goal_tree"] = "expert complexity → parallel sub-goals"
+        for pattern_id in ("supervisor", "debate", "consensus"):
+            if pattern_id in selection.patterns and self._registry.is_available(pattern_id):
+                patterns.append(pattern_id)
+        patterns = list(dict.fromkeys(patterns))
+        if not patterns:
+            patterns = ["single_agent"]
+            reasons.setdefault("single_agent", "one agent handles the whole goal")
+        return patterns, reasons
+
     def select_agent_patterns(self, props: GoalProperties) -> AgentPatternConfig:
         reasoning: list[str] = ["react"]
-        multi_agent: list[str] = ["single_agent"]
         safety: list[str] = ["guardrails"]
         reasons: dict[str, str] = {"react": "default reasoning loop"}
         max_iter = 15
         persistence = False
         autonomy = "bounded-autonomous"
+        # ONE selector owns the multi-agent dimension too (no hardcoded topology):
+        # characteristic-driven + registry-gated, shared with the AgentGraph seam.
+        multi_agent, multi_agent_reasons = self.select_multi_agent(props)
+        reasons.update(multi_agent_reasons)
 
         # CRITICAL: High/critical risk always adds HITL + rollback
         if props.risk in (RiskLevel.HIGH, RiskLevel.CRITICAL):
@@ -89,9 +127,7 @@ class PatternSelector:
         if props.complexity == Complexity.EXPERT:
             max_iter = 50
             persistence = True
-            if self._registry.is_available("goal_tree"):
-                multi_agent = ["goal_tree"]
-                reasons["goal_tree"] = "expert complexity → parallel sub-goals"
+            # (multi-agent topology, incl. goal_tree, is decided by select_multi_agent)
             if props.time_sensitivity != TimeSensitivity.REALTIME and self._registry.is_available(
                 "tree_of_thoughts"
             ):

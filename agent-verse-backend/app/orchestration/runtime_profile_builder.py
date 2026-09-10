@@ -129,6 +129,21 @@ class RuntimeProfileBuilder:
             str(agent_cfg.selection_reasons),
         )
 
+        # Surface the multi-agent topology decision as its own trace dimension so
+        # the chosen coordination pattern (+ why) is observable, not just implied.
+        trace.add(
+            "PatternSelector",
+            "multi_agent",
+            agent_cfg.multi_agent,
+            "; ".join(
+                f"{pattern}: {agent_cfg.selection_reasons[pattern]}"
+                for pattern in agent_cfg.multi_agent
+                if pattern in agent_cfg.selection_reasons
+            )
+            or "single_agent: one agent handles the whole goal",
+            alternatives=["supervisor", "debate", "consensus", "goal_tree", "single_agent"],
+        )
+
         rag_cfg = self._selector.select_rag_strategy(props)
         trace.add(
             "PatternSelector",
