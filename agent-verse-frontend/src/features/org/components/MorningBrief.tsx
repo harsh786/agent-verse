@@ -111,48 +111,54 @@ export function MorningBrief({ orgId, compact = false }: MorningBriefProps) {
       aria-live="polite"
       className="bg-[#1A1F2E] border border-[#2D3748] rounded-xl overflow-hidden"
     >
-      {/* Header */}
-      <motion.button
-        type="button"
-        onClick={() => setExpanded(x => !x)}
-        aria-expanded={expanded}
-        aria-label={expanded ? 'Collapse morning brief' : 'Expand morning brief'}
-        whileTap={reduce ? {} : { scale: 0.99 }}
-        transition={SPRING_FAST}
-        style={{ touchAction: 'manipulation' }}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 focus-visible:ring-inset"
-      >
-        <div className="w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center flex-shrink-0">
-          <Sun className="h-4 w-4 text-amber-400" aria-hidden />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-[13px] font-semibold text-[#F1F5F9]">
-            {isLoading ? 'Loading brief…' : `${greeting}${brief ? `, ${brief.org_name.split(' ')[0]}` : ''}`}
-          </p>
-          {brief && (
-            <p className={`text-[11px] font-medium ${HEALTH_COLORS[brief.overall_health]}`}>
-              {brief.overall_health === 'healthy' ? '● HEALTHY' :
-               brief.overall_health === 'degraded' ? '⚠ DEGRADED' : '⚠ NEEDS ATTENTION'}
+      {/* Header — a row, not a button, so the refresh control isn't nested
+          inside the expand toggle (nested <button> is invalid HTML). */}
+      <div className="w-full flex items-center gap-3 px-4 py-3">
+        <motion.button
+          type="button"
+          onClick={() => setExpanded(x => !x)}
+          aria-expanded={expanded}
+          aria-label={expanded ? 'Collapse morning brief' : 'Expand morning brief'}
+          whileTap={reduce ? {} : { scale: 0.99 }}
+          transition={SPRING_FAST}
+          style={{ touchAction: 'manipulation' }}
+          className="flex flex-1 min-w-0 items-center gap-3 text-left rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 focus-visible:ring-inset"
+        >
+          <div className="w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center flex-shrink-0">
+            <Sun className="h-4 w-4 text-amber-400" aria-hidden />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[13px] font-semibold text-[#F1F5F9]">
+              {isLoading ? 'Loading brief…' : `${greeting}${brief ? `, ${brief.org_name.split(' ')[0]}` : ''}`}
             </p>
-          )}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <motion.button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); refetch(); }}
-            aria-label="Refresh brief"
-            whileTap={reduce ? {} : { scale: 0.88 }}
+            {brief && (
+              <p className={`text-[11px] font-medium ${HEALTH_COLORS[brief.overall_health]}`}>
+                {brief.overall_health === 'healthy' ? '● HEALTHY' :
+                 brief.overall_health === 'degraded' ? '⚠ DEGRADED' : '⚠ NEEDS ATTENTION'}
+              </p>
+            )}
+          </div>
+          <motion.div
+            animate={{ rotate: expanded ? 180 : 0 }}
             transition={SPRING_FAST}
-            style={{ touchAction: 'manipulation' }}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-[#475569] hover:text-[#94A3B8] hover:bg-[#252B3B] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70"
+            className="flex-shrink-0"
+            aria-hidden
           >
-            <RefreshCw className="h-3.5 w-3.5" aria-hidden />
-          </motion.button>
-          <motion.div animate={{ rotate: expanded ? 180 : 0 }} transition={SPRING_FAST}>
-            <ChevronDown className="h-4 w-4 text-[#475569]" aria-hidden />
+            <ChevronDown className="h-4 w-4 text-[#475569]" />
           </motion.div>
-        </div>
-      </motion.button>
+        </motion.button>
+        <motion.button
+          type="button"
+          onClick={() => refetch()}
+          aria-label="Refresh brief"
+          whileTap={reduce ? {} : { scale: 0.88 }}
+          transition={SPRING_FAST}
+          style={{ touchAction: 'manipulation' }}
+          className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[#475569] hover:text-[#94A3B8] hover:bg-[#252B3B] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70"
+        >
+          <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+        </motion.button>
+      </div>
 
       {/* Content */}
       <AnimatePresence>
