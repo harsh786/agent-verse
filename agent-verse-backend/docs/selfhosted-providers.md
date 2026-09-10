@@ -7,6 +7,10 @@
 # model router selects model NAMES against it. To use a SEPARATE server per role
 # you would need per-role base_urls (not yet supported) — see the status notes.
 
+# A small self-hosted model that emits <think> chains needs a longer LLM timeout
+# than the 60s default — a 6000-token planner generation can exceed it. Raise it:
+AGENTVERSE_LLM_CALL_TIMEOUT_SECONDS=300
+
 # ── Reasoning / chat LLM (planner, executor, verifier) ── Qwen3.5-4B @ :30080 ──
 DEFAULT_LLM_PROVIDER=openai_compatible
 OPENAI_BASE_URL=http://192.168.63.104:30080/v1
