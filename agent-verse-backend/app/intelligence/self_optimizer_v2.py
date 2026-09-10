@@ -16,6 +16,7 @@ Integration point (Amendment 9.4):
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -321,14 +322,14 @@ Respond with ONLY valid JSON:
         """
         from sqlalchemy import text as _t
 
+        # ── CRITICAL: the live apply, in its OWN committed transaction ──────────
+        # The improved config is what the next agent run reads back — it must NOT
+        # be rolled back by a failure in the history/experiment bookkeeping below.
         try:
             async with self._db() as db:
-                # Read current config for history record (Fix 2)
                 current_config = await self._read_current_agent_config_with_session(
                     db, tenant_id, agent_id
                 )
-
-                # Apply the candidate config (Fix 1)
                 await db.execute(
                     _t("""
                         UPDATE agents
@@ -341,8 +342,20 @@ Respond with ONLY valid JSON:
                         "tenant_id": tenant_id,
                     },
                 )
+                await db.commit()
+        except Exception as exc:
+            logger.error(
+                "optimization_apply_error",
+                error=str(exc),
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+            )
+            return False
 
-                # Record in optimization history
+        # ── BEST-EFFORT: history + experiment bookkeeping (separate txn) ────────
+        # A failure here is logged but never negates the already-applied config.
+        try:
+            async with self._db() as db:
                 await db.execute(
                     _t("""
                         INSERT INTO agent_optimization_history
@@ -366,8 +379,6 @@ Respond with ONLY valid JSON:
                         ),
                     },
                 )
-
-                # Mark experiment applied
                 await db.execute(
                     _t("""
                         UPDATE improvement_experiments
@@ -376,10 +387,16 @@ Respond with ONLY valid JSON:
                     """),
                     {"exp_id": experiment_id},
                 )
-
                 await db.commit()
+        except Exception as exc:
+            logger.warning(
+                "optimization_history_record_failed",
+                error=str(exc),
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+            )
 
-            # Reset tenant state for next optimization cycle
+        with contextlib.suppress(Exception):
             await self._state.update(
                 tenant_id,
                 agent_id,
@@ -390,22 +407,13 @@ Respond with ONLY valid JSON:
                 },
             )
 
-            logger.info(
-                "optimization_applied",
-                tenant_id=tenant_id,
-                agent_id=agent_id,
-                experiment_id=experiment_id,
-            )
-            return True
-
-        except Exception as exc:
-            logger.error(
-                "optimization_apply_error",
-                error=str(exc),
-                tenant_id=tenant_id,
-                agent_id=agent_id,
-            )
-            return False
+        logger.info(
+            "optimization_applied",
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            experiment_id=experiment_id,
+        )
+        return True
 
     async def rollback(
         self,
