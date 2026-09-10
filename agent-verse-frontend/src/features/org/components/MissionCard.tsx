@@ -14,7 +14,6 @@ import { motion, useReducedMotion } from 'framer-motion';
 import {
   Clock, AlertCircle, CheckCircle2, Zap,
   PauseCircle, XCircle, Circle, ChevronRight,
-  Cpu, GitBranch, Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useOrgTasks } from '../hooks/useOrg';
@@ -94,6 +93,13 @@ export const MissionCard = React.memo(function MissionCard({
   const Icon        = cfg.icon;
   const stripe      = PRIORITY_STRIPE[mission.priority] ?? PRIORITY_STRIPE.medium;
   const labelId     = useId();
+  const statusText  =
+    mission.status === 'active'    ? 'text-emerald-300'    :
+    mission.status === 'completed' ? 'text-emerald-400/70' :
+    mission.status === 'failed'    ? 'text-rose-400'       :
+    mission.status === 'review'    ? 'text-violet-300'     :
+    mission.status === 'paused' || mission.status === 'queued' ? 'text-amber-300' :
+    'text-[#94A3B8]';
 
   // Real task progress — OrgMission carries no task/subtask counts of its own
   // (see app/org/schemas.py MissionResponse), so derive it from the tasks
@@ -129,7 +135,7 @@ export const MissionCard = React.memo(function MissionCard({
       style={{ touchAction: 'manipulation' }}
       data-testid="mission-card"
       className={cn(
-        'relative flex flex-col gap-2.5 rounded-xl p-4',
+        'relative flex flex-col gap-1.5 rounded-xl px-3.5 py-3',
         'min-w-0',              // web-guidelines: flex child min-w-0
         'bg-[#1A1F2E] border border-[#1E2535]',
         'border-l-2', stripe,
@@ -144,161 +150,65 @@ export const MissionCard = React.memo(function MissionCard({
         className,
       )}
     >
-      {/* Header */}
-      <div className="flex items-start gap-2 min-w-0">
-        {/* impeccable-ui: ONE dominant element — title is primary */}
+      {/* Row 1 — status glyph · title · status label · chevron. One scannable line. */}
+      <div className="flex items-center gap-2 min-w-0">
+        {cfg.pulse
+          ? <PulseDot dot={cfg.dot} />
+          : <Icon className={cn('h-3 w-3 shrink-0', statusText)} aria-hidden />}
         <h3
           id={labelId}
-          className={cn(
-            'flex-1 min-w-0',
-            // impeccable-ui: body ≥15px, -0.01em tracking for headings
-            'text-[15px] font-semibold leading-snug tracking-[-0.01em]',
-            'text-[#F1F5F9] truncate',
-            // web-guidelines: text-balance prevents orphans on headings
-            '[text-wrap:balance]',
-          )}
+          className="flex-1 min-w-0 text-[14px] font-medium leading-tight tracking-[-0.01em] text-[#F1F5F9] truncate"
         >
           {mission.title}
         </h3>
-
-        <div className="flex items-center gap-1 shrink-0 mt-0.5">
-          <span
-            className={cn(
-              'flex items-center gap-1 px-1.5 py-0.5 rounded-full',
-              'text-[10px] font-medium uppercase tracking-[0.07em]',
-              'ring-1', cfg.ring,
-              cfg.pulse ? 'text-emerald-300' : 'text-[#94A3B8]',
-            )}
-            // a11y: status conveyed both visually and via aria
-            aria-label={`Status: ${cfg.label}`}
-          >
-            {cfg.pulse
-              ? <PulseDot dot={cfg.dot} />
-              : <Icon className="h-2.5 w-2.5" aria-hidden />
-            }
-            {cfg.label}
-          </span>
-
-          <ChevronRight
-            className={cn(
-              'h-3.5 w-3.5 shrink-0',
-              isSelected ? 'text-blue-400' : 'text-[#475569]',
-              'transition-colors duration-150',
-            )}
-            aria-hidden
-          />
-        </div>
+        {mission.priority === 'critical' && (
+          <span className="shrink-0 text-[9px] font-semibold uppercase tracking-[0.08em] text-rose-400">crit</span>
+        )}
+        {mission.priority === 'high' && (
+          <span className="shrink-0 text-[9px] font-semibold uppercase tracking-[0.08em] text-amber-400">high</span>
+        )}
+        <span
+          className={cn('shrink-0 text-[10px] font-medium uppercase tracking-[0.06em]', statusText)}
+          aria-label={`Status: ${cfg.label}`}
+        >
+          {cfg.label}
+        </span>
+        <ChevronRight
+          className={cn('h-3.5 w-3.5 shrink-0', isSelected ? 'text-blue-400' : 'text-[#475569]')}
+          aria-hidden
+        />
       </div>
 
-      {/* Objective — secondary hierarchy (impeccable-ui) */}
-      {mission.objective && (
-        <p className="text-[13px] leading-[1.55] text-[#94A3B8] line-clamp-2 min-w-0">
-          {mission.objective}
-        </p>
-      )}
-
-      {/* Progress bar — real task counts when known; honest "—" while unresolved.
-          Hidden entirely once resolved with zero tasks (nothing to show progress on). */}
-      {(total > 0 || progressUnknown) && (
-        <div className="flex items-center gap-2 min-w-0">
-          {progressUnknown ? (
+      {/* Row 2 — objective (single line) with an inline progress sliver on the right. */}
+      <div className="flex items-center gap-3 min-w-0">
+        {mission.objective ? (
+          <p className="flex-1 min-w-0 text-[12px] leading-tight text-[#64748B] truncate">
+            {mission.objective}
+          </p>
+        ) : (
+          <span className="flex-1" />
+        )}
+        {(total > 0 || progressUnknown) && (
+          <div className="flex items-center gap-1.5 shrink-0">
             <div
-              className="flex-1 h-1 rounded-full bg-[#252B3B] overflow-hidden"
+              className="w-16 h-1 rounded-full bg-[#252B3B] overflow-hidden"
               role="progressbar"
-              aria-label="Progress: unknown, loading task data"
-            >
-              <div className="h-full w-1/3 rounded-full bg-[#334155] animate-pulse" />
-            </div>
-          ) : (
-            <div
-              className="flex-1 h-1 rounded-full bg-[#252B3B] overflow-hidden"
-              role="progressbar"
-              aria-valuenow={pct}
+              aria-valuenow={progressUnknown ? undefined : pct}
               aria-valuemin={0}
               aria-valuemax={100}
-              aria-label={`Progress: ${pct}%`}
+              aria-label={progressUnknown ? 'Progress: loading' : `Progress: ${pct}%`}
             >
               <motion.div
-                className="h-full rounded-full bg-gradient-to-r from-blue-600 to-blue-400"
+                className={cn('h-full rounded-full', progressUnknown ? 'bg-[#334155] animate-pulse' : 'bg-[#00D4FF]/70')}
                 initial={{ width: 0 }}
-                animate={{ width: `${pct}%` }}
+                animate={{ width: progressUnknown ? '33%' : `${pct}%` }}
                 transition={reduce ? { duration: 0 } : FILL_SPRING}
               />
             </div>
-          )}
-          {/* web-guidelines: tabular-nums for numbers in comparison context */}
-          <span className="text-[11px] text-[#475569] tabular-nums shrink-0 font-mono">
-            {progressUnknown ? '—' : `${done}/${total}`}
-          </span>
-        </div>
-      )}
-
-      {/* ── Execution metadata (team formation + dispatch status) ── */}
-      {(() => {
-        const meta = mission.metadata as Record<string, unknown> | undefined;
-        const goalId = meta?.goal_id as string | undefined;
-        const dispatched = meta?.dispatched as boolean | undefined;
-        const plan = meta?.orchestration_plan_summary as {
-          topology?: string; departments?: string[]; autonomy_level?: number;
-        } | undefined;
-        const depts = plan?.departments ?? [];
-        if (!goalId && !dispatched && depts.length === 0) return null;
-        return (
-          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-            {/* Dispatched / executing indicator */}
-            {goalId && (
-              <span className="flex items-center gap-1 text-[10px] font-medium text-[#00D4FF]/80">
-                {mission.status === 'active'
-                  ? <motion.span animate={{ rotate: 360 }} transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}>
-                      <Loader2 className="h-3 w-3 text-[#00D4FF]" />
-                    </motion.span>
-                  : <Cpu className="h-3 w-3" />
-                }
-                {mission.status === 'active' ? 'Executing' : 'Agent dispatched'}
-              </span>
-            )}
-            {/* Topology badge */}
-            {plan?.topology && (
-              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#00D4FF]/8 text-[10px] text-[#00D4FF]/70 border border-[#00D4FF]/15">
-                <GitBranch className="h-2.5 w-2.5" />
-                {plan.topology}
-              </span>
-            )}
-            {/* Department tags */}
-            {depts.slice(0, 3).map((d: string) => (
-              <span key={d} className="px-1.5 py-0.5 rounded bg-[#1E2535] text-[10px] text-[#64748B] border border-[#252B3B] capitalize">
-                {d}
-              </span>
-            ))}
-            {depts.length > 3 && (
-              <span className="text-[10px] text-[#475569]">+{depts.length - 3}</span>
-            )}
+            <span className="text-[10px] text-[#475569] tabular-nums font-mono">
+              {progressUnknown ? '—' : `${done}/${total}`}
+            </span>
           </div>
-        );
-      })()}
-
-      {/* Footer meta — tertiary (impeccable-ui: clearly de-emphasized) */}
-      <div className="flex items-center justify-between text-[11px] text-[#475569] min-w-0">
-        <span
-          className={cn(
-            'uppercase tracking-[0.06em] font-medium',
-            mission.priority === 'critical' && 'text-rose-400',
-            mission.priority === 'high'     && 'text-amber-400',
-          )}
-          aria-label={`Priority: ${mission.priority}`}
-        >
-          {mission.priority}
-        </span>
-
-        {mission.deadline && (
-          <time
-            dateTime={mission.deadline}
-            className="tabular-nums"
-            aria-label={`Due: ${new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(mission.deadline))}`}
-          >
-            {/* web-guidelines: use Intl.DateTimeFormat not hardcoded formats */}
-            {new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(mission.deadline))}
-          </time>
         )}
       </div>
     </motion.article>

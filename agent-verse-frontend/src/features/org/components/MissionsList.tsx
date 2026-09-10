@@ -10,8 +10,8 @@
  */
 import { useRef, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { AnimatePresence } from 'framer-motion';
-import { Plus, Loader2 } from 'lucide-react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { Plus, Loader2, Zap } from 'lucide-react';
 import { MissionCard } from './MissionCard';
 import { useMissions } from '../hooks/useOrg';
 import type { OrgMission } from '../types';
@@ -51,7 +51,7 @@ export function MissionsList({
   const virtualizer = useVirtualizer({
     count:            missions.length,
     getScrollElement: () => parentRef.current,
-    estimateSize:     () => 96,   // estimated card height (denser)
+    estimateSize:     () => 78,   // compact 2-row card
     overscan:         5,
   });
 
@@ -88,25 +88,7 @@ export function MissionsList({
   }
 
   if (missions.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-16 text-center">
-        <div className="text-4xl mb-4 opacity-30" aria-hidden="true">🎯</div>
-        <p className="text-[var(--text-secondary)] mb-4">No missions yet</p>
-        <p className="text-xs text-[var(--text-muted)] mb-6">
-          Create your first mission to get started
-        </p>
-        {onCreateClick && (
-          <button
-            onClick={onCreateClick}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[var(--accent-blue)] text-white text-sm font-medium hover:opacity-90 transition-opacity"
-            aria-label="Create first mission"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            New Mission
-          </button>
-        )}
-      </div>
-    );
+    return <MissionsEmptyState filtered={!!statusFilter} onCreateClick={onCreateClick} />;
   }
 
   return (
@@ -133,7 +115,7 @@ export function MissionsList({
         ref={parentRef}
         onScroll={handleScroll}
         className="overflow-auto"
-        style={{ height: Math.min(missions.length * 96 + 20, 720) }}
+        style={{ height: Math.min(missions.length * 78 + 20, 720) }}
         aria-label={`${missions.length} missions`}
         role="list"
       >
@@ -174,6 +156,66 @@ export function MissionsList({
         <div className="flex justify-center py-2" aria-live="polite">
           <Loader2 className="h-4 w-4 animate-spin text-[var(--text-muted)]" aria-label="Loading more missions" />
         </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Empty state ────────────────────────────────────────────────────────────
+// A glowing invitation, not dead space. When a filter simply has no matches we
+// stay quiet; when the org has no missions at all we invite the first launch.
+function MissionsEmptyState({
+  filtered,
+  onCreateClick,
+}: {
+  filtered: boolean;
+  onCreateClick?: () => void;
+}) {
+  const reduce = useReducedMotion();
+
+  if (filtered) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-center">
+        <p className="text-[13px] text-[#94A3B8]">No missions match this filter.</p>
+        <p className="text-[12px] text-[#475569] mt-1">Try another status, or clear the filter.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative flex flex-col items-center justify-center overflow-hidden px-6 py-20 text-center">
+      <div
+        className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(0,212,255,0.10),transparent_65%)]"
+        aria-hidden
+      />
+      <div className="relative mb-6">
+        {!reduce && (
+          <motion.span
+            className="absolute inset-0 rounded-full bg-[#00D4FF]/20 blur-xl"
+            animate={{ scale: [1, 1.35, 1], opacity: [0.5, 0.15, 0.5] }}
+            transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+            aria-hidden
+          />
+        )}
+        <div className="relative flex h-16 w-16 items-center justify-center rounded-full border border-[#00D4FF]/30 bg-[#0F1826] shadow-[0_0_40px_-8px_rgba(0,212,255,0.5)]">
+          <Zap className="h-7 w-7 text-[#00D4FF]" aria-hidden />
+        </div>
+      </div>
+      <h2 className="text-[19px] font-semibold tracking-[-0.01em] text-[#F1F5F9]">
+        Your command center is ready
+      </h2>
+      <p className="mt-2 max-w-sm text-[13px] leading-relaxed text-[#94A3B8]">
+        Launch a mission and watch your AI org form a team, assign agents, execute, and deliver — live.
+      </p>
+      {onCreateClick && (
+        <button
+          onClick={onCreateClick}
+          className="mt-6 inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-[#00A3CC] px-5 py-2.5 text-sm font-semibold text-white shadow-[0_0_30px_-8px_rgba(0,212,255,0.6)] transition-all hover:from-blue-500 hover:to-[#00B8E6] active:scale-[0.98]"
+          aria-label="Launch your first mission"
+        >
+          <Plus className="h-4 w-4" aria-hidden />
+          Launch your first mission
+        </button>
       )}
     </div>
   );
