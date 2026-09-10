@@ -99,7 +99,17 @@ class Settings(BaseSettings):
     # deterministic score-sort otherwise; the stage is an honest passthrough when
     # disabled or when the reranker backend is unavailable.
     rag_default_rerank_enabled: bool = True
-    rag_default_rerank_strategy: str = "auto"  # score|rrf|diversity|cross_encoder|llm|auto
+    rag_default_rerank_strategy: str = "auto"  # score|rrf|diversity|cross_encoder|llm|hosted|auto
+    # --- Hosted reranker (first-class managed reranking provider) --------------
+    # A managed cross-encoder rerank API (Cohere-compatible ``/v1/rerank`` shape:
+    # Cohere, Voyage, Jina, or a self-hosted equivalent). When a URL is set the
+    # ``hosted`` rerank strategy calls it over HTTPS (SSRF-guarded, Bearer auth);
+    # unset/erroring, the stage degrades honestly to the local path. No vendor
+    # lock-in — any endpoint returning ``{"results":[{"index","relevance_score"}]}``.
+    rag_hosted_reranker_url: str = ""
+    rag_hosted_reranker_api_key: str = ""
+    rag_hosted_reranker_model: str = "rerank-english-v3.0"
+    rag_hosted_reranker_timeout_seconds: float = 10.0
     # Calibrated retrieval confidence below this [0,1] threshold flags a result as
     # low-confidence and (when the fallback is on) triggers a real widening retry.
     rag_low_confidence_threshold: float = 0.35

@@ -36,7 +36,7 @@ logger = get_logger(__name__)
 
 # Strategies that emit a genuine per-(query, passage) relevance score we should
 # reflect onto the result (rather than a pure reordering).
-_SCORING_STRATEGIES = frozenset({"cross_encoder", "llm", "auto"})
+_SCORING_STRATEGIES = frozenset({"cross_encoder", "llm", "hosted", "auto"})
 
 
 def is_enabled(settings: Any) -> bool:
@@ -99,11 +99,13 @@ async def apply_default_rerank(
         chunk_dicts.append(chunk)
 
     try:
-        if strategy is RerankStrategy.CROSS_ENCODER:
+        # Async strategies (blocking cross-encoder / HTTP hosted reranker) run via
+        # rerank_async; everything else on the synchronous path.
+        if strategy in (RerankStrategy.CROSS_ENCODER, RerankStrategy.HOSTED):
             reranked = await policy.rerank_async(
                 chunk_dicts,
                 query=query,
-                strategy=RerankStrategy.CROSS_ENCODER,
+                strategy=strategy,
                 query_embedding=query_embedding,
             )
         else:
