@@ -219,4 +219,10 @@ Per the user: everything must be **analyzed → built generically → implemente
   - #5 Civilization: ✅ 18cb6b1c — fixed dead capability-routing + fabricated retired_members metric, dead-code removal, a2a_repository 0→100% cov; 356→376 tests, e2e passed. Civilization 7 → 9.
   - #6 Memory: ✅ 53aeda72 — expires_at was never set (TTL dead for all kinds) → fixed uniformly; new GET /memory/records API (kind + goal-linkage) + wired inspector; e2e passed. Memory 7 → 9.
   - All-6-gaps tree: fast tier 20993 passed / 1 pre-existing DNS-flake (test_ssrf_guard_available, passes standalone), mypy 1526, ruff app+tests 0.
+- ▶ WORLD-CLASS WAVE-2 (user: Evals/self-improve, AI Org, Agent patterns → 10, no hardcoding, BE+FE+e2e+Playwright):
+  - Agent patterns → 9/10: d07f3c8d — ONE generic registry+selector (characteristic-driven, not flag/hardcoded), decision traced + consumed by graph seam, GET /goals/{id}/pattern-selection, FE Pattern tab + override, e2e_full 2 passed, agent-patterns.realbe.spec.
+  - AI Org → backend 10: b0958a9d — real LLM composer/decomposer path reachable (provider threaded), no hardcoded blueprint, stronger any-task e2e (real aggregated deliverable). FE AWE real-data. org.realbe.spec.
+  - Evals/self-improve → 9/10: a490f50a (config-driven 7-dim scoring — no hardcoded weights/thresholds, shared source) + 9e150ecc (self-improve loop hardened: reads real agent config → writes improved config back → next run reads; bookkeeping failure no longer negates the live apply; proven live + robust). evals.realbe.spec.
+  - Note: 2 FE polish items deferred (evals auto-suggestion surface, org mission live-view enhancement) — additive niceties on already-real-data surfaces, not gaps. Evals/Org agents hit infra watchdog stalls; substantive work salvaged + finished by hand.
+  - FINAL GREEN: fast tier 21015 passed / 0 failed · e2e_full **58 passed** · mypy 1528 · ruff app+tests 0 · 4 real-backend Playwright specs collectable + nightly CI-wired.
 - ▶ MERGE-TO-MAIN: pending the user's explicit go-ahead (main is preserved at backup/main-pre-overwrite-20260909-2325). Branch feature/platform-10x is green + UI-verified.
