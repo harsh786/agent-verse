@@ -105,4 +105,15 @@ class OcrStepNode:
                     return base64.b64decode(b64), ct, filename
                 except Exception:
                     return None, None, None
+        # file_path — a server-local file (documented input; previously ignored,
+        # so a workflow OCR step pointed at a file silently degraded to no text).
+        file_path = resolved.get("file_path")
+        if file_path:
+            try:
+                import os as _os
+
+                with open(file_path, "rb") as _f:
+                    return _f.read(), content_type, filename or _os.path.basename(file_path)
+            except Exception:
+                return None, None, None
         return None, None, None

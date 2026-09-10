@@ -63,6 +63,7 @@ class LLMStepNode:
             output = {"result": f"[FakeProvider: {self.step.id}]", "confidence": 1.0}
         else:
             from app.providers.base import CompletionRequest, Message
+            from app.providers.model_defaults import configured_default_model
 
             req = CompletionRequest(
                 messages=[
@@ -72,7 +73,9 @@ class LLMStepNode:
                     ),
                     Message(role="user", content=full_prompt),
                 ],
-                model=self.step.model or "gpt-4o",
+                # Use the step's model, else the system-configured model — never a
+                # hardcoded cloud slug that a self-hosted/NVIDIA endpoint 404s on.
+                model=self.step.model or configured_default_model("gpt-4o"),
                 temperature=self.step.temperature,
                 max_tokens=self.step.max_tokens,
             )

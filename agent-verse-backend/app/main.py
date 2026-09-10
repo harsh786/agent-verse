@@ -1336,12 +1336,22 @@ def create_app(
                 # rebuilt compiler — otherwise HITLStepNode loses its gateway
                 # the moment this DB-backed compiler replaces the in-memory one.
                 _wf_hitl_gw_existing = getattr(app.state, "hitl_workflow_gateway", None)
+                from app.ocr.engine import OcrEngine as _WFOcrEngine
+
+                # Step nodes receive services from the COMPILER
+                # (node_class(step, ctx, **compiler._services)), so the real
+                # llm/ocr/knowledge services must be wired here — otherwise steps
+                # fall back to FakeProvider and degraded OCR.
                 _wf_compiler_db = _WFCompiler(
                     context_resolver=_WFCtx(),
                     checkpointer=_wf_checkpointer,
                     mcp_client=_wf_mcp_client,
                     run_store=_wf_run_store,
                     hitl_workflow_gateway=_wf_hitl_gw_existing,
+                    llm_provider=_app_provider,
+                    provider=_app_provider,
+                    ocr_engine=_WFOcrEngine(),
+                    knowledge_store=getattr(app.state, "knowledge_store", None),
                 )
                 _wf_runner_db = _WFRunner(
                     compiler=_wf_compiler_db,

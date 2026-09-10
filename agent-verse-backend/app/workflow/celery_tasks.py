@@ -56,13 +56,38 @@ def _build_worker_runner() -> Any:
         from app.workflow.approval_store import PostgresWorkflowApprovalStore
 
         hitl_workflow_gateway._approval_store = PostgresWorkflowApprovalStore(db_factory)
+    # Wire the REAL services so worker-executed steps use the configured model
+    # (not FakeProvider) and OCR/RAG steps actually work — the FastAPI lifespan
+    # that normally wires these never runs in a Celery worker. NOTE: step nodes
+    # receive services from the COMPILER (node_class(step, ctx, **compiler._services)),
+    # so these must go on the compiler, not the runner.
+    from app.ocr.engine import OcrEngine
+    from app.providers.registry import resolve_provider
+
+    _wf_provider = resolve_provider()
+    _wf_knowledge: Any = None
+    try:
+        from app.rag.store import KnowledgeStore
+
+        _wf_knowledge = KnowledgeStore(db_factory)
+    except Exception as _ks_exc:
+        _log.warning("worker_runner_knowledge_store_unavailable", error=str(_ks_exc)[:120])
     compiler = WorkflowCompiler(
         context_resolver=ContextResolver(),
         checkpointer=_WORKER_CHECKPOINTER,
         run_store=run_store,
         hitl_workflow_gateway=hitl_workflow_gateway,
+        llm_provider=_wf_provider,
+        provider=_wf_provider,
+        ocr_engine=OcrEngine(),
+        knowledge_store=_wf_knowledge,
     )
-    _WORKER_RUNNER = WorkflowRunner(compiler=compiler, run_store=run_store, celery_app=celery_app)
+    _WORKER_RUNNER = WorkflowRunner(
+        compiler=compiler,
+        run_store=run_store,
+        celery_app=celery_app,
+        hitl_workflow_gateway=hitl_workflow_gateway,
+    )
     return _WORKER_RUNNER
 
 
