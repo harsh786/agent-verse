@@ -636,6 +636,21 @@ async def get_goal_eval(request: Request, goal_id: str) -> dict[str, Any]:
     return result
 
 
+@router.get("/{goal_id}/eval/suggestions")
+async def get_goal_eval_suggestions(request: Request, goal_id: str) -> dict[str, Any]:
+    """Auto-suggested improvement actions derived from the goal's real eval scores.
+
+    Each dimension below the config-driven pass threshold yields one actionable
+    suggestion (worst first). Honest empty when unevaluated or all pass.
+    """
+    tenant = _require_tenant(request)
+    svc = _goal_service(request)
+    try:
+        return await svc.get_eval_suggestions(goal_id=goal_id, tenant_ctx=tenant)
+    except NotFoundError as exc:
+        raise _not_found_response(request, exc) from exc
+
+
 @router.post("/{goal_id}/eval", status_code=status.HTTP_200_OK)
 async def trigger_goal_eval(request: Request, goal_id: str) -> dict[str, Any]:
     """Trigger on-demand evaluation for a completed goal.

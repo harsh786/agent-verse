@@ -35,6 +35,7 @@ import { LiveCostTicker } from "@/components/live/LiveCostTicker";
 import { GoalFeedback } from "./components/GoalFeedback";
 import { GoalExplainPanel } from "./components/GoalExplainPanel";
 import { PatternSelectionPanel } from "./components/PatternSelectionPanel";
+import { EvalSuggestionsPanel } from "./components/EvalSuggestionsPanel";
 import { normalizeAdaptiveResult } from "./adaptiveResult";
 import { AdaptiveResultPanel } from "./components/AdaptiveResultPanel";
 import { artifactToCsv, artifactToMarkdown } from "./resultArtifact";
@@ -1240,6 +1241,7 @@ export function GoalDetailPage() {
                   </div>
                 </div>
               )}
+              <EvalSuggestionsPanel goalId={goalId!} enabled={isTerminal} />
             </div>
           )}
         </div>

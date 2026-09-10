@@ -3151,6 +3151,78 @@ class GoalService:
             "iterations": scorecard.iterations,
         }
 
+    async def get_eval_suggestions(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
+        """Auto-suggest improvement actions for a goal from its real eval scores.
+
+        Every dimension scoring below the config-driven pass threshold
+        (``EvalScoringConfig.pass_threshold``, env-overridable) yields one
+        actionable suggestion. Deterministic from the real scorecard — no
+        fabricated data; honest empty when the goal is unevaluated or all
+        dimensions pass. This is the read side of the self-improvement surface.
+        """
+        self._get_record(goal_id, tenant_ctx)  # raises if not found / wrong tenant
+        scorecard = self._eval_scores.get(goal_id)
+        if scorecard is None:
+            return {"goal_id": goal_id, "status": "not_evaluated", "pass_threshold": None,
+                    "suggestions": [], "count": 0}
+
+        from app.evals.scoring_config import EvalScoringConfig
+
+        threshold = EvalScoringConfig.from_settings().pass_threshold
+        # Advisory copy per dimension (UI guidance, not data) — the trigger + score
+        # are real; the phrasing points the operator at the right lever.
+        _completion_advice = (
+            "Goal wasn't fully achieved — tighten the planner prompt or decompose "
+            "into smaller verifiable sub-goals."
+        )
+        advice = {
+            "task_completion": _completion_advice,
+            "completion": _completion_advice,
+            "efficiency": (
+                "Used more iterations/cost than budget — enable goal-tree parallelism "
+                "or a cheaper executor model for simple steps."
+            ),
+            "accuracy": (
+                "Low grounding/accuracy — attach a knowledge collection (RAG) or raise "
+                "the retrieval top-k so claims are evidence-backed."
+            ),
+            "safety": (
+                "Safety/guardrail signal — review the guardrail profile and add HITL "
+                "gating for the risky tool/step."
+            ),
+            "coherence": (
+                "Output coherence was low — add a reflection node or strengthen the "
+                "verifier's rubric."
+            ),
+            "sla": (
+                "Ran slower than the SLA — cache retrieval, reduce tool round-trips, "
+                "or route to a faster model."
+            ),
+            "tool_relevance": (
+                "Tool calls weren't relevant/efficient — refine tool descriptions or "
+                "restrict the tool set for this agent."
+            ),
+        }
+        suggestions: list[dict[str, Any]] = []
+        for dim, score in (scorecard.scores or {}).items():
+            if isinstance(score, int | float) and score < threshold:
+                suggestions.append({
+                    "dimension": dim,
+                    "score": round(float(score), 4),
+                    "threshold": threshold,
+                    "suggestion": advice.get(
+                        dim, f"'{dim}' scored below the pass threshold — review this dimension."
+                    ),
+                })
+        suggestions.sort(key=lambda s: s["score"])  # worst first
+        return {
+            "goal_id": goal_id,
+            "status": "evaluated",
+            "pass_threshold": threshold,
+            "suggestions": suggestions,
+            "count": len(suggestions),
+        }
+
     async def run_eval(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
         """Score a goal on demand and cache the result.
 

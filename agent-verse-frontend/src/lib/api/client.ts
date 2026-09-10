@@ -253,6 +253,21 @@ export interface GoalEvent {
   ts?: string;
 }
 
+export interface EvalSuggestion {
+  dimension: string;
+  score: number;
+  threshold: number;
+  suggestion: string;
+}
+
+export interface EvalSuggestions {
+  goal_id: string;
+  status: "evaluated" | "not_evaluated";
+  pass_threshold: number | null;
+  suggestions: EvalSuggestion[];
+  count: number;
+}
+
 export interface EvalScorecard {
   goal_id: string;
   score?: number;
@@ -355,6 +370,10 @@ export const goalsApi = {
     request<EvalScorecard>(`/goals/${id}/eval`),
   triggerEvaluation: (id: string) =>
     request<EvalScorecard>(`/goals/${id}/eval`, { method: "POST" }),
+  /** Auto-suggested improvement actions derived from the goal's real eval scores
+   *  (each dimension below the config-driven pass threshold, worst first). */
+  getEvalSuggestions: (id: string) =>
+    request<EvalSuggestions>(`/goals/${id}/eval/suggestions`),
   ghostRun: (body: { goal: string; strategies: GhostRunStrategy[] }) =>
     request<GhostRunResponse>("/goals/ghost-run", {
       method: "POST",
