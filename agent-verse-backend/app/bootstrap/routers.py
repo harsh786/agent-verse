@@ -370,12 +370,17 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
         from app.workflow.router_runs import router as workflow_runs_router
         from app.workflow.router_templates import router as workflow_templates_router
         from app.workflow.router_versions import router as workflow_versions_router
+        from app.workflow.webhook_router import router as workflow_webhook_router
 
         app.include_router(workflow_engine_router, prefix="/api/v1")
         app.include_router(workflow_runs_router, prefix="/api/v1")
         app.include_router(workflow_hitl_router, prefix="/api/v1")
         app.include_router(workflow_templates_router, prefix="/api/v1")
         app.include_router(workflow_versions_router, prefix="/api/v1")
+        # Public webhook trigger — mounted at ROOT (no /api/v1) so its path is
+        # /wf-hooks/{token}, matching the _BYPASS_PREFIXES entry. Auth is the
+        # signed token in the path, not a tenant API key.
+        app.include_router(workflow_webhook_router)
         logger.info("workflow_engine_routers_registered")
     except Exception as _we:
         logger.warning("workflow_engine_router_failed", error=str(_we))

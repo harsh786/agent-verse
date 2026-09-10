@@ -107,13 +107,41 @@ class WorkflowService:
         return True
 
     async def publish(self, tenant_id: str, workflow_id: str) -> dict[str, Any] | None:
-        """Publish a draft workflow (status draft → published)."""
-        return await self._store.update(
+        """Publish a draft workflow (status draft → published).
+
+        Publishing also *activates* the workflow's triggers: it mints the stable
+        signed webhook token so an external system can fire the workflow (item 3),
+        and — because the workflow is now ``published`` — the Celery beat scan
+        (``fire_due_workflow_schedules``) begins evaluating its cron triggers
+        (item 4). The returned dict carries the webhook token/path/url so the UI
+        can show the caller their trigger URL.
+        """
+        result = await self._store.update(
             tenant_id=tenant_id,
             workflow_id=workflow_id,
             status="published",
             published_at=datetime.now(UTC).isoformat(),
         )
+        if result is None:
+            return None
+
+        from app.workflow.webhook_tokens import make_webhook_token
+
+        token = make_webhook_token(tenant_id, workflow_id)
+        path = f"/wf-hooks/{token}"
+        result["webhook_token"] = token
+        result["webhook_path"] = path
+
+        base = ""
+        try:
+            from app.core.config import get_settings
+
+            base = (get_settings().workflow_webhook_base_url or "").rstrip("/")
+        except Exception:
+            base = ""
+        result["webhook_url"] = f"{base}{path}" if base else path
+        _log.info("workflow.published", tenant_id=tenant_id, workflow_id=workflow_id)
+        return result
 
     async def unpublish(self, tenant_id: str, workflow_id: str) -> dict[str, Any] | None:
         """Unpublish a workflow (status published → draft)."""

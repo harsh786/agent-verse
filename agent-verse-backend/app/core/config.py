@@ -199,6 +199,14 @@ class Settings(BaseSettings):
     # --- Public URL (for magic links in approval notifications) ---
     public_base_url: str = "http://localhost:5173"
 
+    # Public base URL of THIS backend (for building externally-callable workflow
+    # webhook trigger URLs). Empty → publish() returns only the relative path.
+    workflow_webhook_base_url: str = ""
+
+    # HMAC signing key for stateless workflow webhook trigger tokens. Empty in
+    # dev falls back to a warned default; set a real secret in any deployment.
+    workflow_webhook_secret: str = ""
+
     # --- Voice OS configuration ---
     voice_enabled: bool = True
     voice_device: str = "cpu"  # "cpu" | "cuda"

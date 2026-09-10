@@ -81,6 +81,7 @@ _BYPASS_PREFIXES = (
     "/auth/token",  # authorization code exchange
     "/integrations/",  # integration webhooks use their own auth (Slack sig, Zapier secret)
     "/billing/webhook",  # Razorpay webhook — authenticated by HMAC signature, not API key
+    "/wf-hooks/",  # workflow webhook triggers — authenticated by the signed token in the path
 )
 
 KeyResolver = Callable[[str], Awaitable[TenantContext | None]]

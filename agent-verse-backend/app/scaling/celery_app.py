@@ -110,6 +110,7 @@ celery_app.conf.update(
         "workflow.check_hitl_escalations": {"queue": "workflows.maintenance"},
         "workflow.retry_dead_letter_webhooks": {"queue": "workflows.maintenance"},
         "workflow.cleanup_expired_runs": {"queue": "workflows.maintenance"},
+        "workflow.fire_due_workflow_schedules": {"queue": "workflows.maintenance"},
         # Legacy dotted-path keys (kept for backwards-compat; do not match the
         # registered task names above, but harmless).
         "app.workflow.celery_tasks.execute_workflow_run": {"queue": "workflows.free"},
@@ -232,19 +233,29 @@ celery_app.conf.update(
             "options": {"queue": "maintenance"},
         },
         # ── Workflow Automation Engine beat tasks ─────────────────────────────
+        # NOTE: these tasks register under their explicit ``workflow.*`` names
+        # (see @celery_app.task(name=...) in app/workflow/celery_tasks.py), NOT
+        # their dotted module path — beat entries must reference the registered
+        # name or the schedule fires an unregistered-task error.
         "workflow-check-hitl-escalations": {
-            "task": "app.workflow.celery_tasks.check_hitl_escalations",
+            "task": "workflow.check_hitl_escalations",
             "schedule": 900.0,  # every 15 minutes
             "options": {"queue": "workflows.maintenance"},
         },
         "workflow-retry-dead-letter-webhooks": {
-            "task": "app.workflow.celery_tasks.retry_dead_letter_webhooks",
+            "task": "workflow.retry_dead_letter_webhooks",
             "schedule": 300.0,  # every 5 minutes
             "options": {"queue": "workflows.maintenance"},
         },
         "workflow-cleanup-expired-runs": {
-            "task": "app.workflow.celery_tasks.cleanup_expired_runs",
+            "task": "workflow.cleanup_expired_runs",
             "schedule": crontab(hour=2, minute=0),  # 2 AM UTC daily
+            "options": {"queue": "workflows.maintenance"},
+        },
+        # Item 4: fire published workflows whose cron schedule trigger is due.
+        "workflow-fire-due-schedules": {
+            "task": "workflow.fire_due_workflow_schedules",
+            "schedule": 60.0,  # every 60 seconds
             "options": {"queue": "workflows.maintenance"},
         },
     },

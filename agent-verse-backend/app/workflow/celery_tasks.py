@@ -4,12 +4,19 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Any
 
 from app.observability.logging import get_logger
 from app.scaling.celery_app import celery_app
 
 _log = get_logger(__name__)
+
+# A scheduled cron occurrence is only fired when it came due within this many
+# seconds of the scan. The beat scan runs every 60s, so this tolerates a couple
+# of missed scans (beat restart / brief outage) without replaying occurrences
+# that were due long ago (e.g. while the workflow was unpublished).
+_SCHEDULE_GRACE_SECONDS = 150
 
 
 # Cached DB-backed runner built once per Celery worker process (the FastAPI
@@ -254,6 +261,138 @@ def cleanup_expired_runs() -> None:
             _log.warning("cleanup_expired_runs_failed", error=str(exc))
 
     _run_async(_cleanup())
+
+
+def _sched_redis() -> Any:
+    """Sync Redis client for schedule-fire dedup (shared worker pool), or None."""
+    try:
+        from app.scaling.tasks import _get_sync_redis
+
+        return _get_sync_redis()
+    except Exception as exc:  # pragma: no cover - redis optional in some envs
+        _log.warning("workflow_schedule_redis_unavailable", error=str(exc)[:120])
+        return None
+
+
+def _cron_bounds(cron: str, now: datetime, tz_name: str) -> tuple[datetime, datetime] | None:
+    """Return (prev_occurrence <= now, next_occurrence > now) for ``cron`` in
+    ``tz_name``, or None if the expression is invalid."""
+    from croniter import croniter
+
+    if not croniter.is_valid(cron):
+        return None
+    base = now
+    try:
+        from zoneinfo import ZoneInfo
+
+        base = now.astimezone(ZoneInfo(tz_name or "UTC"))
+    except Exception:
+        base = now
+    itr = croniter(cron, base)
+    prev: datetime = itr.get_prev(datetime)
+    nxt: datetime = itr.get_next(datetime)
+    return prev, nxt
+
+
+@celery_app.task(name="workflow.fire_due_workflow_schedules")
+def fire_due_workflow_schedules() -> dict[str, int]:
+    """Beat task (every 60s): fire published workflows whose cron schedule is due.
+
+    Activates item-4 recurring triggers. Scans every published workflow with a
+    ``trigger.type == "schedule"`` across all tenants (RLS-bypassed system scan),
+    and for each cron occurrence that just came due, dispatches one run. A Redis
+    SETNX keyed on the occurrence timestamp makes each occurrence fire exactly
+    once even with overlapping scans or multiple beat replicas.
+    """
+
+    async def _scan_and_fire() -> dict[str, int]:
+        from sqlalchemy import text as sa_text
+
+        from app.db.rls import system_session
+        from app.db.session import get_session_factory
+
+        runner = _get_runner()
+        if runner is None:
+            _log.error("workflow_schedule_runner_unavailable")
+            return {"scanned": 0, "fired": 0}
+
+        now = datetime.now(UTC)
+        db_factory = get_session_factory()
+        async with db_factory() as session, session.begin(), system_session(session):
+            result = await session.execute(
+                sa_text(
+                    "SELECT id, tenant_id, definition FROM workflows "
+                    "WHERE status = 'published'"
+                )
+            )
+            rows = result.fetchall()
+
+        from app.workflow.trigger_extract import extract_triggers, schedule_cron
+
+        redis = _sched_redis()
+        scanned = 0
+        fired = 0
+        for row in rows:
+            wf_id, tenant_id, definition = str(row[0]), str(row[1]), (row[2] or {})
+            # Pick the first schedule trigger (builder plural or DSL singular).
+            sched_trigger = next(
+                (t for t in extract_triggers(definition) if t.get("type") == "schedule"),
+                None,
+            )
+            if sched_trigger is None:
+                continue
+            cron, tz_name = schedule_cron(sched_trigger)
+            if not cron:
+                continue
+            scanned += 1
+            try:
+                bounds = _cron_bounds(cron, now, tz_name)
+            except Exception as exc:
+                _log.warning("workflow_schedule_cron_error", workflow_id=wf_id, error=str(exc))
+                continue
+            if bounds is None:
+                _log.warning("workflow_schedule_invalid_cron", workflow_id=wf_id, cron=cron)
+                continue
+            prev, nxt = bounds
+            # Only fire an occurrence that came due within the grace window.
+            if (now - prev).total_seconds() > _SCHEDULE_GRACE_SECONDS:
+                continue
+            # Dedup: this occurrence fires at most once. TTL covers the gap until
+            # the next occurrence so the key can't expire while ``prev`` is still
+            # the current occurrence (which would double-fire).
+            ttl = max(int((nxt - now).total_seconds()) + 60, 120)
+            key = f"wf:sched:{wf_id}:{int(prev.timestamp())}"
+            if redis is not None:
+                try:
+                    if not redis.set(key, "1", nx=True, ex=ttl):
+                        continue  # already claimed by another scan / replica
+                except Exception as exc:
+                    _log.warning("workflow_schedule_dedup_failed", error=str(exc)[:120])
+            try:
+                run_id = await runner.run(
+                    workflow_id=wf_id,
+                    tenant_id=tenant_id,
+                    inputs={},
+                    trigger_type="schedule",
+                    trigger_payload={"scheduled_for": prev.isoformat(), "cron": cron},
+                )
+                fired += 1
+                _log.info(
+                    "workflow_schedule_fired",
+                    workflow_id=wf_id,
+                    run_id=run_id,
+                    scheduled_for=prev.isoformat(),
+                )
+            except Exception as exc:
+                _log.error("workflow_schedule_fire_failed", workflow_id=wf_id, error=str(exc))
+        _log.info("workflow_schedules_scanned", scanned=scanned, fired=fired)
+        return {"scanned": scanned, "fired": fired}
+
+    try:
+        return _run_async(_scan_and_fire())
+    except Exception as exc:
+        _log.error("fire_due_workflow_schedules_failed", error=str(exc))
+        return {"scanned": 0, "fired": 0}
 
 
 # ── Register Beat schedules ───────────────────────────────────────────────────
