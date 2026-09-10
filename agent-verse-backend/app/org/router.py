@@ -31,6 +31,7 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.org.rbac import OrgRole, require_org_role
 from app.org.schemas import (
     CreateDepartmentRequest,
     CreateMissionRequest,
@@ -51,8 +52,7 @@ from app.org.schemas import (
     UpdateMissionRequest,
     UpdateOrganizationRequest,
 )
-from app.org.rbac import OrgRole, require_org_role
-from app.org.service import OrgService
+from app.org.service import OrgService, resolve_llm_provider
 
 router = APIRouter(prefix="/v1/org", tags=["org"])
 
@@ -1813,7 +1813,12 @@ async def org_compose(
         span.set_attribute("industry", body.industry)
         span.set_attribute("autonomy_level", body.autonomy_level)
 
-        # Deep N2: delegate to service layer which uses LLM when available
+        # Deep N2: delegate to service layer which uses LLM when available.
+        # Resolve the real provider from the wired app.state so the composer
+        # actually designs a bespoke org structure for the objective instead of
+        # always falling back to the industry template (the provider attribute
+        # was previously never threaded, so the LLM path was unreachable).
+        _llm_provider = resolve_llm_provider(request.app.state)
         result = await service.compose_from_nl(
             description=body.description,
             goals=body.goals,
@@ -1821,7 +1826,9 @@ async def org_compose(
             autonomy_level=body.autonomy_level,
             budget_usd=body.budget_usd,
             constraints=body.constraints,
+            llm_provider=_llm_provider,
         )
+        span.set_attribute("composition_method", str(result.get("composition_method", "")))
 
         span.set_attribute("org_id", result.get("org_id", ""))
         span.set_attribute("departments_created", len(result.get("departments", [])))
