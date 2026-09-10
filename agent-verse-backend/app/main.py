@@ -807,10 +807,20 @@ def create_app(
         and hasattr(_embedder, "supports_vision")
         and _embedder.supports_vision()
     )
+    # SSRF egress allowlist for RPA navigation. Empty by default → public-only
+    # (metadata/loopback/RFC-1918 blocked). Set RPA_SSRF_ALLOWED_DOMAINS to a
+    # comma-separated list to permit specific internal hosts (e.g. an internal
+    # staging site) per deployment.
+    import os as _os
+
+    _rpa_allowed_domains = [
+        d.strip() for d in _os.environ.get("RPA_SSRF_ALLOWED_DOMAINS", "").split(",") if d.strip()
+    ] or None
     _rpa_executor = RPAExecutor(
         session_manager=_rpa_session_manager,
         artifact_store=_rpa_artifact_store,
         vision_provider=_embedder if _supports_vision else None,
+        allowed_domains=_rpa_allowed_domains,
     )
     _rpa_session_store = RPASessionStore()
 

@@ -45,7 +45,7 @@ async def test_open_then_extract_returns_real_text() -> None:
     with patch("httpx.AsyncClient", _mock_httpx(_HTML)):
         opened = await ex.execute(
             tool_name="rpa_open_url",
-            arguments={"url": "https://example.com"},
+            arguments={"url": "https://1.1.1.1"},
             session_id="s1",
             allow_http_fetch=True,
         )
@@ -79,7 +79,7 @@ async def test_extract_with_inline_url_fetches_directly() -> None:
     with patch("httpx.AsyncClient", _mock_httpx(_HTML)):
         extracted = await ex.execute(
             tool_name="rpa_extract_text",
-            arguments={"url": "https://example.com"},
+            arguments={"url": "https://1.1.1.1"},
             session_id="s2",
             allow_http_fetch=True,
         )
@@ -100,7 +100,7 @@ async def test_open_url_fetch_error_is_reported() -> None:
     with patch("httpx.AsyncClient", _boom):
         result = await ex.execute(
             tool_name="rpa_open_url",
-            arguments={"url": "https://nope.example"},
+            arguments={"url": "https://1.1.1.1"},
             session_id="s3",
             allow_http_fetch=True,
         )

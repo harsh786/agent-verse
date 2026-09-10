@@ -35,12 +35,17 @@ class RPAExecutor:
         session_manager: Any = None,
         headless: bool = True,
         vision_provider: Any = None,
+        allowed_domains: list[str] | None = None,
     ) -> None:
         self._playwright_available = self._check_playwright()
         self._headless = headless
         self._artifact_store = artifact_store
         self._session_manager = session_manager
         self._vision_provider = vision_provider
+        # SSRF egress allowlist: exact domains (and their subdomains) that may be
+        # navigated even if they would otherwise resolve to an internal address.
+        # Empty by default → public-only (metadata/loopback/RFC-1918 all blocked).
+        self._allowed_domains = allowed_domains
         # P1.2: Vault credential injector (set externally or at construction time)
         self._credential_injector: Any = None
         # WS-13: per-session cache of page text fetched via the httpx fallback so
@@ -87,6 +92,33 @@ class RPAExecutor:
                 import logging
 
                 logging.getLogger(__name__).warning("credential_injection_failed error=%s", exc)
+
+        # SSRF egress guard: validate the target URL before ANY real navigation
+        # or fetch. Both Playwright paths call page.goto(url) and the WS-13 http
+        # fallback issues a real GET — all reachable from an agent's rpa_* tool
+        # call, so an attacker-supplied url like http://169.254.169.254/… or a
+        # loopback/RFC-1918 host would otherwise reach internal services. The
+        # simulation path makes no request and is intentionally exempt (its tests
+        # use arbitrary placeholder URLs). Fail-closed on any block.
+        _will_fetch = self._playwright_available or (
+            allow_http_fetch and tool_name in _HTTP_FETCH_TOOLS
+        )
+        _target_url = arguments.get("url", "")
+        if _will_fetch and _target_url:
+            from app.net.ssrf_guard import SSRFError, assert_public_url
+
+            try:
+                assert_public_url(
+                    _target_url,
+                    allowed_domains=self._allowed_domains,
+                    context="rpa_navigate",
+                )
+            except (SSRFError, ValueError) as exc:
+                return RPAResult(
+                    success=False,
+                    error=f"blocked by SSRF guard: {exc}",
+                    duration_ms=(time.monotonic() - start) * 1000,
+                )
 
         if self._playwright_available and self._session_manager:
             result = await self._execute_with_playwright(
