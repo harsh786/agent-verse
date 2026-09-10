@@ -42,6 +42,7 @@ class HostedReranker:
         api_key: str = "",
         model: str = "rerank-english-v3.0",
         timeout_seconds: float = 10.0,
+        allow_internal: bool = False,
         client: Any = None,
     ) -> None:
         if not url or not url.strip():
@@ -50,6 +51,9 @@ class HostedReranker:
         self._api_key = api_key
         self._model = model
         self._timeout = timeout_seconds
+        # When True the SSRF guard is skipped for this operator-configured,
+        # trusted endpoint so a self-hosted reranker on a private LAN IP works.
+        self._allow_internal = allow_internal
         self._client = client  # injectable httpx.AsyncClient for tests
 
     async def rerank(
@@ -63,11 +67,13 @@ class HostedReranker:
         if not documents:
             return []
 
-        # SSRF egress guard — fail closed before any network call.
-        try:
-            assert_public_url(self._url, context="hosted_reranker")
-        except (SSRFError, ValueError) as exc:
-            raise HostedRerankerError(f"hosted reranker url blocked: {exc}") from exc
+        # SSRF egress guard — fail closed before any network call, unless the
+        # operator explicitly trusts an internal endpoint.
+        if not self._allow_internal:
+            try:
+                assert_public_url(self._url, context="hosted_reranker")
+            except (SSRFError, ValueError) as exc:
+                raise HostedRerankerError(f"hosted reranker url blocked: {exc}") from exc
 
         payload: dict[str, Any] = {
             "model": self._model,
@@ -133,6 +139,7 @@ def hosted_reranker_from_settings(settings: Any) -> HostedReranker | None:
         api_key=str(getattr(settings, "rag_hosted_reranker_api_key", "") or ""),
         model=str(getattr(settings, "rag_hosted_reranker_model", "rerank-english-v3.0")),
         timeout_seconds=float(getattr(settings, "rag_hosted_reranker_timeout_seconds", 10.0)),
+        allow_internal=bool(getattr(settings, "rag_hosted_reranker_allow_internal", False)),
     )
 
 

@@ -61,6 +61,27 @@ async def test_rerank_blocks_internal_url() -> None:
 
 
 @pytest.mark.asyncio
+async def test_allow_internal_permits_a_trusted_lan_endpoint() -> None:
+    """allow_internal skips the SSRF guard for an operator-configured LAN reranker
+    (e.g. a self-hosted Qwen3-Reranker on a 192.168.x host)."""
+    payload = {"results": [{"index": 0, "relevance_score": 0.9}]}
+    rr = HostedReranker(
+        url="http://192.168.63.104:30083/v1/rerank",
+        allow_internal=True,
+        client=_client_returning(payload),
+    )
+    pairs = await rr.rerank("q", ["a"])
+    assert pairs == [(0, 0.9)]
+
+    # Without allow_internal the same private host is blocked.
+    blocked = HostedReranker(
+        url="http://192.168.63.104:30083/v1/rerank", client=_client_returning(payload)
+    )
+    with pytest.raises(HostedRerankerError, match="blocked"):
+        await blocked.rerank("q", ["a"])
+
+
+@pytest.mark.asyncio
 async def test_rerank_rejects_malformed_response() -> None:
     rr = HostedReranker(url="https://1.1.1.1/v1/rerank", client=_client_returning({"nope": 1}))
     with pytest.raises(HostedRerankerError, match="missing 'results'"):

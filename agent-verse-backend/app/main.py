@@ -609,14 +609,43 @@ def create_app(
     _openai_key = get_provider_env("OPENAI_API_KEY")
     _voyage_key = get_provider_env("VOYAGE_API_KEY")
     _anthropic_key = get_provider_env("ANTHROPIC_API_KEY")
-    if _voyage_key:
+    # Highest priority: a dedicated OpenAI-compatible embedding endpoint (its own
+    # base_url + model), e.g. a self-hosted Qwen3-Embedding on vLLM. This is
+    # separate from the chat LLM base_url so reasoning and embedding can live on
+    # different servers.
+    _embed_base_url = os.getenv("EMBEDDING_BASE_URL", "") or getattr(
+        settings, "embedding_base_url", ""
+    )
+    if not _embedder and _embed_base_url:
+        try:
+            from app.providers.openai_compatible import OpenAICompatibleProvider
+
+            _embed_model = os.getenv("EMBEDDING_MODEL", "") or getattr(
+                settings, "embedding_model", ""
+            )
+            _embedder = OpenAICompatibleProvider(
+                api_key=(
+                    os.getenv("EMBEDDING_API_KEY", "")
+                    or getattr(settings, "embedding_api_key", "")
+                    or "sk-noauth"
+                ),
+                base_url=_embed_base_url,
+                default_model=_embed_model or "text-embedding-3-small",
+                embed_model=_embed_model or "text-embedding-3-small",
+            )
+            logger.info(
+                "dedicated_embed_provider_wired", base_url=_embed_base_url, model=_embed_model
+            )
+        except Exception as _exc:
+            logger.warning("dedicated_embed_provider_failed", error=str(_exc))
+    if _voyage_key and not _embedder:
         try:
             from app.providers.voyage_provider import VoyageProvider
 
             _embedder = VoyageProvider(api_key=_voyage_key)
         except Exception:
             pass
-    elif _openai_key:
+    elif _openai_key and not _embedder:
         try:
             from app.providers.openai_compatible import OpenAICompatibleProvider
 
@@ -625,14 +654,14 @@ def create_app(
             )
         except Exception:
             pass
-    elif get_provider_env("GOOGLE_API_KEY"):
+    elif get_provider_env("GOOGLE_API_KEY") and not _embedder:
         try:
             from app.providers.gemini_provider import GeminiProvider
 
             _embedder = GeminiProvider(api_key=get_provider_env("GOOGLE_API_KEY"))
         except Exception:
             pass
-    elif os.getenv("SENTENCE_TRANSFORMERS_MODEL", ""):
+    elif os.getenv("SENTENCE_TRANSFORMERS_MODEL", "") and not _embedder:
         try:
             from app.providers.voyage_provider import LocalEmbedProvider
 

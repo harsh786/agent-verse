@@ -33,6 +33,7 @@ class OpenAICompatibleProvider:
         *,
         base_url: str | None = None,
         default_model: str = "gpt-5.2",
+        embed_model: str | None = None,
         supports_vision_flag: bool = True,
     ) -> None:
         try:
@@ -42,6 +43,9 @@ class OpenAICompatibleProvider:
 
         self._client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._default_model = default_model
+        # Embedding model is tracked separately from the chat model: a chat
+        # default like "gpt-5.2" must never be sent to the embeddings endpoint.
+        self._embed_model_name = embed_model
         self._vision = supports_vision_flag
 
     # Models in the gpt-5.x series use max_completion_tokens; older models use max_tokens.
@@ -305,8 +309,18 @@ class OpenAICompatibleProvider:
             output_tokens=completion_tokens,
         )
 
+    def _embed_model(self, requested: str | None = None) -> str:
+        """Resolve the embedding model: explicit request → configured embed_model.
+
+        Falls back to ``text-embedding-3-small`` only when neither is set, so a
+        self-hosted endpoint configured with its own embed_model (e.g. a
+        Qwen3-Embedding on vLLM) is used instead of a hardcoded OpenAI name — and
+        the chat default_model (e.g. "gpt-5.2") is NEVER sent to /embeddings.
+        """
+        return requested or self._embed_model_name or "text-embedding-3-small"
+
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
-        model = request.model or "text-embedding-3-small"
+        model = self._embed_model(request.model)
         response = await self._client.embeddings.create(
             model=model,
             input=request.texts,
@@ -326,7 +340,7 @@ class OpenAICompatibleProvider:
         if not texts:
             return []
 
-        model = "text-embedding-3-small"
+        model = self._embed_model()
         all_embeddings: list[list[float]] = []
         batch_size = 2048  # OpenAI API limit per request
 

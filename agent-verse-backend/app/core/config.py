@@ -87,6 +87,12 @@ class Settings(BaseSettings):
     ollama_default_model: str = "qwen3.8:latest"
     ollama_embed_model: str = "qwen3-embedding:latest"
     ollama_ocr_model: str = "glm-ocr:latest"
+    # Dedicated embedding endpoint (OpenAI-compatible /v1/embeddings), separate
+    # from the chat LLM base_url — e.g. a self-hosted Qwen3-Embedding on vLLM.
+    # When set, the embedder targets this endpoint/model instead of the chat one.
+    embedding_base_url: str = ""  # e.g. http://host:30082/v1
+    embedding_model: str = ""  # e.g. Qwen/Qwen3-Embedding-0.6B
+    embedding_api_key: str = ""  # optional; many self-hosted servers ignore it
     ollama_auto_pull: bool = False
 
     # --- Embedding vector dimension (must match the embed model) --------------
@@ -120,6 +126,10 @@ class Settings(BaseSettings):
     rag_hosted_reranker_api_key: str = ""
     rag_hosted_reranker_model: str = "rerank-english-v3.0"
     rag_hosted_reranker_timeout_seconds: float = 10.0
+    # Allow the hosted reranker to target a private/internal host (e.g. a
+    # self-hosted reranker on a LAN IP). Off by default → the SSRF guard blocks
+    # RFC-1918/loopback. Set true ONLY for a trusted, operator-configured endpoint.
+    rag_hosted_reranker_allow_internal: bool = False
     # Calibrated retrieval confidence below this [0,1] threshold flags a result as
     # low-confidence and (when the fallback is on) triggers a real widening retry.
     rag_low_confidence_threshold: float = 0.35
