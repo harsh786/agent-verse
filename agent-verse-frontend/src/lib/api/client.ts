@@ -274,6 +274,51 @@ export interface EvalScorecard {
   iterations?: number;
 }
 
+// ── Pattern selection types ────────────────────────────────────────────────────
+
+export interface PatternRationale {
+  pattern: string;
+  name: string;
+  category: 'reasoning' | 'multi_agent' | 'safety' | string;
+  why: string;
+}
+
+export interface AgentPatternCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  state: string;
+  available: boolean;
+  cost_class: string;
+  latency_class: string;
+}
+
+export interface PatternSelectionResponse {
+  goal_id: string;
+  status?: string;
+  source: 'auto' | 'override' | string;
+  override?: string | null;
+  primary_pattern: string;
+  primary_pattern_name: string;
+  reasoning_patterns: string[];
+  multi_agent_patterns: string[];
+  safety_patterns: string[];
+  autonomy_mode: string;
+  max_iterations: number;
+  advanced_tier_enabled: boolean;
+  advanced_tier_gated: boolean;
+  goal_properties: {
+    complexity: string;
+    domain: string;
+    risk: string;
+    multi_step: boolean;
+    requires_code: boolean;
+    classifier_confidence: number;
+  };
+  rationale: PatternRationale[];
+  available_patterns: AgentPatternCatalogEntry[];
+}
+
 export const goalsApi = {
   list: (params?: { status?: string; search?: string; page?: number; page_size?: number }) => {
     const q = new URLSearchParams();
@@ -287,6 +332,9 @@ export const goalsApi = {
   submit: (body: GoalRequest) =>
     request<GoalResponse>("/goals", { method: "POST", body: JSON.stringify(body) }),
   get: (id: string) => request<GoalResponse>(`/goals/${id}`),
+  /** The agent pattern this goal was routed to (auto-selected or overridden) + why. */
+  getPatternSelection: (id: string) =>
+    request<PatternSelectionResponse>(`/goals/${id}/pattern-selection`),
   cancel: (id: string) =>
     request<GoalResponse>(`/goals/${id}/cancel`, { method: "POST" }),
   submitBatch: (goals: string[], priority = "normal", agentId?: string) =>

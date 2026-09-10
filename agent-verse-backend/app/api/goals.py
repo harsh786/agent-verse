@@ -495,6 +495,25 @@ async def explain_goal(request: Request, goal_id: str) -> dict[str, Any]:
     }
 
 
+@router.get("/{goal_id}/pattern-selection")
+async def get_goal_pattern_selection(request: Request, goal_id: str) -> dict[str, Any]:
+    """Return the agent pattern this goal was routed to, and why.
+
+    Surfaces the ONE selector's decision for the frontend selection UX: the
+    auto-selected (or explicitly overridden) primary pattern, the reasoning /
+    multi-agent topology, plain-language rationale, and the registry-driven catalog
+    of patterns available to override with. Falls back to computing the summary
+    on demand for goals persisted before the record existed.
+    """
+    tenant = _require_tenant(request)
+    try:
+        return await _goal_service(request).get_pattern_selection(
+            goal_id=goal_id, tenant_ctx=tenant
+        )
+    except NotFoundError as exc:
+        raise _not_found_response(request, exc) from exc
+
+
 @router.post("/{goal_id}/cancel")
 async def cancel_goal(request: Request, goal_id: str) -> dict[str, Any]:
     tenant = _require_tenant(request)

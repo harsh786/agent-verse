@@ -42,6 +42,10 @@ class MultiAgentSelection:
     def debate(self) -> bool:
         return "debate" in self.patterns
 
+    @property
+    def consensus(self) -> bool:
+        return "consensus" in self.patterns
+
 
 def select_multi_agent_patterns(
     *,
@@ -53,12 +57,18 @@ def select_multi_agent_patterns(
     """Decide the multi-agent pattern(s) a goal warrants from its properties.
 
     Pure and side-effect free so it can be reused by any execution seam and
-    unit-tested in isolation.
+    unit-tested in isolation. This is the single characteristic-driven rule for
+    the multi-agent dimension: the ONE :class:`~app.orchestration.pattern_selector.PatternSelector`
+    delegates here (registry-gating the result), and the AgentGraph seam consumes
+    the same decision from the runtime profile — so every execution path routes
+    identically and the choice is surfaced once in the DecisionTrace.
 
     - ``supervisor``: a complex/expert multi-step goal in a decomposable domain —
       it pays to split the goal across delegated sub-agents.
     - ``debate``: an expert goal that is either analytical or high/critical risk —
       contested or high-stakes reasoning benefits from adversarial cross-checking.
+    - ``consensus``: a critical-risk goal — an irreversible/high-stakes decision
+      warrants independent agents converging on an agreed answer before it acts.
     """
     complexity_l = (complexity or "").lower()
     domain_l = (domain or "").lower()
@@ -81,6 +91,12 @@ def select_multi_agent_patterns(
         patterns.add("debate")
         reasons.append(
             ("debate", f"complexity=expert domain={domain_l} risk={risk_l}")
+        )
+
+    if risk_l == "critical":
+        patterns.add("consensus")
+        reasons.append(
+            ("consensus", f"risk={risk_l} — independent agents must converge")
         )
 
     return MultiAgentSelection(patterns=frozenset(patterns), reasons=tuple(reasons))

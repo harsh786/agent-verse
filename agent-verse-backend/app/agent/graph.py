@@ -292,11 +292,17 @@ class AgentGraph(
 
     @staticmethod
     def _auto_select_multi_agent(runtime_profile: Any | None) -> frozenset[str]:
-        """Auto-select supervisor/debate from the goal's classified properties.
+        """Consume the ONE selector's multi-agent decision for this goal.
 
         Returns an empty set unless the default-off ``agent_auto_multi_agent_enabled``
-        safety gate is open AND the runtime profile carries goal properties. Uses the
-        one characteristic-driven selector so any execution seam routes identically.
+        safety gate is open AND the runtime profile carries goal properties.
+
+        The multi-agent topology is decided once, by ``PatternSelector`` during
+        profile assembly, and recorded in the DecisionTrace. This seam therefore
+        *reads* that already-traced decision from ``profile.agent_patterns.multi_agent``
+        rather than re-deriving it — so the pattern that runs is exactly the pattern
+        that was surfaced. It falls back to the shared pure rule only when a caller
+        passes a profile that carries goal properties but no assembled patterns.
         """
         props = getattr(runtime_profile, "properties", None)
         if props is None:
@@ -309,6 +315,14 @@ class AgentGraph(
         except Exception:  # pragma: no cover - defensive; fail safe (no auto-select)
             return frozenset()
 
+        # Preferred path: the unified, already-traced decision from profile assembly.
+        agent_patterns = getattr(runtime_profile, "agent_patterns", None)
+        selected = getattr(agent_patterns, "multi_agent", None)
+        if selected:
+            return frozenset(p for p in selected if p != "single_agent")
+
+        # Fallback: re-derive from properties via the same shared rule (keeps any
+        # execution seam identical even without a fully-assembled profile).
         from app.agent.multi_agent_selector import select_multi_agent_patterns
 
         def _val(name: str, default: str = "") -> str:

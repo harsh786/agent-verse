@@ -2690,6 +2690,25 @@ class GoalService:
             except Exception:
                 pass
 
+            # Always-on pattern selection record: which agent pattern this goal was
+            # routed to (+ why), in plain language — independent of the heavy
+            # dynamic_orchestration flag — so the choice is real, traceable and
+            # retrievable for every goal (see GET /goals/{id}/pattern-selection).
+            try:
+                from app.orchestration.pattern_selection_summary import (
+                    summarize_pattern_selection,
+                )
+
+                _pattern_selection = summarize_pattern_selection(
+                    goal,
+                    goal_id=goal_id,
+                    tenant_id=tenant_ctx.tenant_id,
+                    agent_config=record.execution_context.get("strategy_runtime"),
+                )
+                record.execution_context["pattern_selection"] = _pattern_selection
+            except Exception:
+                pass
+
             # Agent Runtime 2.0: auto-create AgentExecutionPlan + AgentRunTrace per goal
             try:
                 from app.agent_runtime.models import AgentExecutionPlan, AgentRunTrace
@@ -2921,6 +2940,37 @@ class GoalService:
             "provider_warning": record.execution_context.get("provider_warning"),
             "result_artifact": result_artifact,
         }
+
+    async def get_pattern_selection(
+        self, goal_id: str, tenant_ctx: TenantContext
+    ) -> dict[str, Any]:
+        """Return the agent pattern this goal was routed to (+ why).
+
+        Reads the ``pattern_selection`` record persisted at goal creation (which
+        reflects any explicit strategy override); recomputes the summary on demand
+        for goals persisted before the record existed. ``get_goal`` intentionally
+        does not surface ``execution_context``, so this reads the record directly.
+        """
+        record = self._goals.get(goal_id)
+        if record is None or record.tenant_id != tenant_ctx.tenant_id:
+            record = await self._db_get_goal_record(goal_id, tenant_ctx)
+        else:
+            record = await self._refresh_goal_from_db_if_needed(record, tenant_ctx)
+        if record is None:
+            raise NotFoundError(f"Goal not found: {goal_id}")
+        ctx = record.execution_context if isinstance(record.execution_context, dict) else {}
+        selection = ctx.get("pattern_selection")
+        if not isinstance(selection, dict) or not selection:
+            from app.orchestration.pattern_selection_summary import summarize_pattern_selection
+
+            strategy_runtime = ctx.get("strategy_runtime")
+            selection = summarize_pattern_selection(
+                record.goal_text,
+                goal_id=goal_id,
+                tenant_id=tenant_ctx.tenant_id,
+                agent_config=strategy_runtime if isinstance(strategy_runtime, dict) else None,
+            )
+        return {"goal_id": goal_id, "status": record.status.value, **selection}
 
     async def list_goals(self, tenant_ctx: TenantContext) -> dict[str, list[dict[str, Any]]]:
         """Return all goals visible to the tenant, newest first."""
