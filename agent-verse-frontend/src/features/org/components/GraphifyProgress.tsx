@@ -15,6 +15,7 @@ import { motion, useReducedMotion } from 'framer-motion';
 import { Network, Zap, CheckCircle2, AlertCircle, X, GitBranch, Brain, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/stores/auth';
+import { apiFetch } from '@/lib/api/client';
 
 export type GraphifyPhase =
   | 'idle' | 'queued' | 'extracting' | 'building'
@@ -90,17 +91,14 @@ export function GraphifyProgress({ orgId, onClose, onComplete }: GraphifyProgres
   // Connect SSE when jobId is set
   useEffect(() => {
     if (!jobId) return;
-    // EventSource can't set headers; the tenant middleware accepts api_key as a
-    // query param for exactly this SSE case.
-    const apiKey = useAuthStore.getState().apiKey ?? '';
-    const url = `/api/v1/org/${orgId}/graphify/${jobId}/stream?api_key=${encodeURIComponent(apiKey)}`;
-    const es = new EventSource(url, { withCredentials: true });
-    esRef.current = es;
+    let es: EventSource | null = null;
+    let cancelled = false;
 
     // The backend emits {type: 'connected'|'phase'|'stats'|'complete'|'error', …}
     // (phase carries a 1-based index + label). Map that onto the UI phase model.
     const RUNNING: GraphifyPhase[] = ['extracting', 'building', 'community', 'discovery'];
-    es.onmessage = (e) => {
+
+    const onMessage = (e: MessageEvent) => {
       try {
         const ev = JSON.parse(e.data) as Record<string, unknown>;
         const type = ev.type as string | undefined;
@@ -116,7 +114,7 @@ export function GraphifyProgress({ orgId, onClose, onComplete }: GraphifyProgres
         if (type === 'error') {
           setPhase('error');
           setError((ev.message as string) ?? 'Unknown error');
-          es.close();
+          esRef.current?.close();
           return;
         }
         if (type === 'stats') { applyStats(); return; }
@@ -124,7 +122,7 @@ export function GraphifyProgress({ orgId, onClose, onComplete }: GraphifyProgres
           setPhase('complete');
           setProgress(100);
           applyStats();
-          es.close();
+          esRef.current?.close();
           onComplete?.({
             nodes: (ev.nodes as number) ?? 0, edges: (ev.edges as number) ?? 0,
             communities: (ev.communities as number) ?? 0, discoveries: (ev.discoveries as number) ?? 0,
@@ -148,8 +146,26 @@ export function GraphifyProgress({ orgId, onClose, onComplete }: GraphifyProgres
         /* ignore malformed frame */
       }
     };
-    es.onerror = () => { setPhase('error'); setError('Stream disconnected'); es.close(); };
-    return () => es.close();
+
+    // EventSource can't set headers, so authenticate the SSE with a SHORT-LIVED
+    // stream token (not the permanent API key) — keeps the durable credential out
+    // of URLs, logs, and browser history.
+    (async () => {
+      let token = '';
+      try {
+        token = (await apiFetch<{ token: string }>('/tenants/stream-token')).token;
+      } catch {
+        /* fall through — connect and let any auth error surface on the stream */
+      }
+      if (cancelled) return;
+      const url = `/api/v1/org/${orgId}/graphify/${jobId}/stream?token=${encodeURIComponent(token)}`;
+      es = new EventSource(url, { withCredentials: true });
+      esRef.current = es;
+      es.onmessage = onMessage;
+      es.onerror = () => { setPhase('error'); setError('Stream disconnected'); esRef.current?.close(); };
+    })();
+
+    return () => { cancelled = true; es?.close(); };
   }, [jobId, orgId, onComplete]);
 
   const cfg  = PHASE_CONFIG[phase];

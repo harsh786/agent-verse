@@ -1409,6 +1409,12 @@ async def _run_graphify_job(org_id: str, tenant_id: str, job_id: str, request: R
             log.info("graphify.event", job_id=job_id, event_type=payload.get("type"))
 
         try:
+            # The client connects to the SSE stream a moment after this
+            # fire-and-forget job is dispatched (it first fetches a stream token).
+            # Redis pub/sub does not replay, so give the subscriber time to attach
+            # before the first event — otherwise the whole build is missed and the
+            # UI sits on "Queued" forever.
+            await asyncio.sleep(1.5)
             phases = [
                 ("Fetching org knowledge", _phase_noop),
                 ("Extracting entities", _phase_noop),
