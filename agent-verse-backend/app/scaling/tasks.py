@@ -247,6 +247,78 @@ def _build_worker_graph_capability(db_factory: Any) -> Any:
     return TenantScopedGraphCapabilityAdapter()
 
 
+async def _finalize_owning_mission(goal_id: str, tenant_id: str) -> None:
+    """Reconcile the org mission that dispatched this goal, now that it is terminal.
+
+    An org mission dispatches a single goal and stores its id in
+    ``org_missions.extra_data->>'goal_id'``. Nothing else transitions the mission
+    when that goal finishes, so without this hook the mission (and its workstream
+    subtasks) stays ``active`` forever and its deliverable is never surfaced.
+
+    This closes the loop from the worker that just marked the goal complete/failed:
+    find the still-active owning mission and run the same ``finalize_mission``
+    reconciliation the manual endpoint uses — marking subtasks done, aggregating
+    the goal's deliverable onto the mission, completing it, and emitting
+    ``mission.completed`` on the org event channel. A no-op when the goal has no
+    owning mission (an ordinary standalone goal). Best-effort and non-fatal.
+    """
+    try:
+        import types
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+        from app.db.session import get_session_factory
+        from app.org.service import OrgService
+        from app.services.event_store import EventStore
+        from app.services.goal_service import GoalService
+        from app.tenancy.context import PlanTier, TenantContext
+
+        db_factory = get_session_factory()
+        async with db_factory() as session, sqlalchemy_rls_context(session, tenant_id):
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT id FROM org_missions "
+                        "WHERE tenant_id = :t "
+                        "AND extra_data->>'goal_id' = :g "
+                        "AND status NOT IN ('completed', 'failed', 'cancelled', 'archived') "
+                        "LIMIT 1"
+                    ),
+                    {"t": tenant_id, "g": goal_id},
+                )
+            ).fetchone()
+            if row is None:
+                return  # standalone goal — no owning mission to reconcile
+            mission_id = str(row[0])
+
+            goal_bridge = GoalService(
+                db_session_factory=db_factory,
+                event_store=EventStore(db_factory),
+            )
+            tenant_ctx = TenantContext(
+                tenant_id=tenant_id,
+                plan=PlanTier.PROFESSIONAL,
+                api_key_id="worker_mission_finalize",
+            )
+            svc = OrgService(session, tenant_id)
+            result = await svc.finalize_mission(
+                mission_id,
+                app_state=types.SimpleNamespace(goal_service=goal_bridge),
+                tenant_ctx=tenant_ctx,
+            )
+            await session.commit()
+            logger.info(
+                "mission_finalized_from_worker",
+                goal_id=goal_id,
+                mission_id=mission_id,
+                finalized=result.get("finalized"),
+                mission_status=result.get("status"),
+            )
+    except Exception as exc:  # never let mission reconciliation break the goal task
+        logger.warning("worker mission finalize failed (non-fatal): %s", exc)
+
+
 def _build_worker_retrieval_gateway(dependencies: Any) -> Any:
     from app.rag.gateway import RetrievalGateway
 
@@ -669,10 +741,17 @@ def run_goal(
                 "iterations": iterations,
             }
         )
+        # Close the org loop: if a mission dispatched this goal, reconcile it now
+        # (mark subtasks done, aggregate the deliverable, complete the mission).
+        # Skipped for dry runs — they must not finalize a real mission.
+        if not dry_run:
+            await _finalize_owning_mission(goal_id, tenant_id)
 
     async def mark_worker_failed(exc: Exception) -> None:
         await update_submitted_goal_status("failed", error_message=str(exc))
         await append_submitted_goal_event({"type": "worker_failed", "reason": str(exc)})
+        if not dry_run:
+            await _finalize_owning_mission(goal_id, tenant_id)
 
     # ── Distributed lock: at-most-once execution per goal ─────────────────────
     # Use a synchronous lock (_SyncGoalLock) to avoid event-loop-mismatch bugs:

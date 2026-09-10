@@ -877,22 +877,27 @@ async def org_events_stream(
                     await asyncio.sleep(15)
                 return
 
-            pubsub = redis.pubsub()
             channel = f"org:{org_id}:events"
-            await pubsub.subscribe(channel)
-            try:
-                async for message in pubsub.listen():
-                    if await request.is_disconnected():
-                        break
-                    if message["type"] not in ("message", "pmessage"):
-                        yield ": keepalive\n\n"
-                        continue
-                    data = message.get("data", b"")
-                    if isinstance(data, bytes):
-                        data = data.decode()
-                    yield f"data: {data}\n\n"
-            finally:
-                await pubsub.unsubscribe(channel)
+            # `async with` guarantees the pubsub's dedicated connection is reset and
+            # returned to the pool on exit. A bare `pubsub()` that only unsubscribes
+            # leaks one pooled connection per SSE disconnect (every OrgPage reload),
+            # which exhausts the Redis pool and 503s the whole backend.
+            async with redis.pubsub() as pubsub:
+                await pubsub.subscribe(channel)
+                try:
+                    async for message in pubsub.listen():
+                        if await request.is_disconnected():
+                            break
+                        if message["type"] not in ("message", "pmessage"):
+                            yield ": keepalive\n\n"
+                            continue
+                        data = message.get("data", b"")
+                        if isinstance(data, bytes):
+                            data = data.decode()
+                        yield f"data: {data}\n\n"
+                finally:
+                    with contextlib.suppress(Exception):
+                        await pubsub.unsubscribe(channel)
         except Exception as exc:
             yield f"data: {json.dumps({'type': 'error', 'detail': str(exc)})}\n\n"
 
