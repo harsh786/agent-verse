@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from app.providers.base import (
     CompletionRequest,
@@ -154,7 +155,7 @@ class OpenAICompatibleProvider:
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         model = request.model or self._default_model
-        messages = [{"role": m.role, "content": m.content} for m in request.messages]
+        messages = self._normalize_messages(request)
 
         # gpt-5.x and o-series require max_completion_tokens instead of max_tokens
         _use_completion_tokens = (
@@ -336,8 +337,19 @@ class OpenAICompatibleProvider:
             '{"tool": "<tool_name>", "arguments": { <arg>: <value>, ... }}\n'
             "If no tool is needed, answer the user normally in plain text."
         )
-        messages = [{"role": "system", "content": instruction}]
-        messages += [{"role": m.role, "content": m.content} for m in request.messages]
+        # Normalize first (merges any original system content into one leading
+        # system message), then fold the tool instruction into that single leading
+        # system message — so the request still has exactly one system message at
+        # index 0 (strict chat templates reject a second/mid-array system message).
+        normalized = self._normalize_messages(request)
+        if normalized and normalized[0].get("role") == "system":
+            normalized[0] = {
+                "role": "system",
+                "content": f"{instruction}\n\n{normalized[0]['content']}",
+            }
+            messages = normalized
+        else:
+            messages = [{"role": "system", "content": instruction}, *normalized]
         kwargs: dict = {
             "model": model,
             "messages": messages,
@@ -368,7 +380,7 @@ class OpenAICompatibleProvider:
     async def stream_complete(self, request: CompletionRequest):
         """Stream completion tokens one by one via the OpenAI streaming API."""
         model = request.model or self._default_model
-        messages = [{"role": m.role, "content": m.content} for m in request.messages]
+        messages = self._normalize_messages(request)
         _use_completion_tokens = (
             model in self._MAX_COMPLETION_TOKENS_MODELS
             or model.startswith("gpt-5")
@@ -410,7 +422,7 @@ class OpenAICompatibleProvider:
             return await self.complete(request)
 
         model = request.model or self._default_model
-        messages = [{"role": m.role, "content": m.content} for m in request.messages]
+        messages = self._normalize_messages(request)
 
         _use_ct = (
             model in self._MAX_COMPLETION_TOKENS_MODELS
@@ -455,6 +467,35 @@ class OpenAICompatibleProvider:
             input_tokens=prompt_tokens,
             output_tokens=completion_tokens,
         )
+
+    @staticmethod
+    def _normalize_messages(request: CompletionRequest) -> list[dict[str, Any]]:
+        """Build the messages list with all system content merged into ONE leading
+        message.
+
+        Many self-hosted chat templates (vLLM/Qwen, etc.) reject a request whose
+        system message is not first, or that has several system messages
+        ("System message must be at the beginning"). OpenAI is lenient; these are
+        not. Merge ``request.system`` and every ``role == "system"`` message into a
+        single system message at index 0, then the rest in order — compatible with
+        both strict and lenient backends.
+        """
+        system_parts: list[str] = []
+        if request.system:
+            system_parts.append(str(request.system))
+        others: list[dict[str, Any]] = []
+        for m in request.messages:
+            if m.role == "system":
+                # System content is expected to be text; ignore non-str (multimodal).
+                if isinstance(m.content, str) and m.content:
+                    system_parts.append(m.content)
+            else:
+                others.append({"role": m.role, "content": m.content})
+        messages: list[dict[str, Any]] = []
+        if system_parts:
+            messages.append({"role": "system", "content": "\n\n".join(system_parts)})
+        messages.extend(others)
+        return messages
 
     def _embed_model(self, requested: str | None = None) -> str:
         """Resolve the embedding model: explicit request → configured embed_model.

@@ -13,7 +13,8 @@ task-type model is not configured.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, replace
 from typing import Any
 
 from app.observability.logging import get_logger
@@ -61,6 +62,37 @@ _PROVIDER_DEFAULTS: dict[str, ModelRouterConfig] = {
 }
 
 
+def _apply_env_model_overrides(base: ModelRouterConfig) -> ModelRouterConfig:
+    """Apply env-configured model overrides on top of a provider's default profile.
+
+    Two mechanisms, both non-breaking (they only override when set):
+
+    * **Per-role** ``DEFAULT_PLANNING_MODEL`` / ``DEFAULT_EXECUTION_MODEL`` /
+      ``DEFAULT_VERIFICATION_MODEL`` always win when set — explicit operator intent.
+    * **Single self-hosted model mode**: when ``OPENAI_BASE_URL`` points at a
+      non-official (self-hosted) endpoint, ``OPENAI_MODEL``/``DEFAULT_MODEL`` fills
+      every role a per-role var didn't set — so a vLLM/Qwen deployment that serves
+      exactly one model never routes to a cloud slug (gpt-5.2, claude-…) it can't serve.
+
+    A cloud deployment (official base_url or none) is unaffected unless it sets the
+    explicit per-role vars, so multi-model routing keeps working.
+    """
+    base_url = (os.getenv("OPENAI_BASE_URL") or "").rstrip("/").lower()
+    is_self_hosted = bool(base_url) and base_url != "https://api.openai.com/v1"
+    single = ""
+    if is_self_hosted:
+        single = os.getenv("OPENAI_MODEL") or os.getenv("DEFAULT_MODEL") or ""
+
+    overrides = {
+        "planning_model": os.getenv("DEFAULT_PLANNING_MODEL") or single,
+        "execution_model": os.getenv("DEFAULT_EXECUTION_MODEL") or single,
+        "verification_model": os.getenv("DEFAULT_VERIFICATION_MODEL") or single,
+        "fallback_model": single,
+    }
+    applied = {k: v for k, v in overrides.items() if v}
+    return replace(base, **applied) if applied else base
+
+
 class ModelRouter:
     """Routes task types to optimal models for a given provider."""
 
@@ -74,6 +106,7 @@ class ModelRouter:
             self._provider,
             ModelRouterConfig(),
         )
+        self._config = _apply_env_model_overrides(self._config)
 
     def model_for(self, task_type: str, fallback: str = "") -> str:
         """Return the optimal model name for the given task type.

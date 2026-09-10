@@ -304,11 +304,22 @@ def _get_llm_provider(tenant_id: str) -> Any:
 
             return AnthropicProvider(api_key=api_key, default_model=model or "claude-opus-4-8")
 
-        if provider_name in {"openai", "groq", "together", "azure", "ollama"} and api_key:
+        if (
+            provider_name in {"openai", "openai_compatible", "groq", "together", "azure", "ollama"}
+            and api_key
+        ):
             from app.providers.openai_compatible import OpenAICompatibleProvider
 
+            # Fall back to the self-hosted model env (never a hardcoded cloud slug)
+            # so a tenant config without an explicit model still works on vLLM/Qwen.
+            _fallback_model = (
+                os.getenv("OPENAI_MODEL") or os.getenv("DEFAULT_MODEL") or "gpt-5.2"
+            )
             return OpenAICompatibleProvider(
-                api_key=api_key, base_url=base_url, default_model=model or "gpt-5.2"
+                api_key=api_key,
+                base_url=base_url,
+                default_model=model or _fallback_model,
+                embed_model=os.getenv("EMBEDDING_MODEL") or None,
             )
 
     except Exception as exc:
@@ -728,18 +739,16 @@ def run_goal(
     real_provider = _get_llm_provider(tenant_id)
 
     if real_provider is None:
-        from app.core.config import get_provider_env
+        # Reuse the process-wide registry resolver so the worker honours the SAME
+        # env config as the API (OPENAI_BASE_URL + OPENAI_MODEL/DEFAULT_MODEL for a
+        # self-hosted endpoint). The previous ad-hoc `OpenAICompatibleProvider(
+        # api_key=...)` ignored base_url and model, so a self-hosted deployment hit
+        # the official OpenAI API with a bogus "gpt-5.2" default and 404'd.
+        from app.providers.fake import FakeProvider as _RegFake
+        from app.providers.registry import resolve_provider as _resolve_provider
 
-        anthropic_key = get_provider_env("ANTHROPIC_API_KEY")
-        openai_key = get_provider_env("OPENAI_API_KEY")
-        if anthropic_key:
-            from app.providers.anthropic_provider import AnthropicProvider
-
-            real_provider = AnthropicProvider(api_key=anthropic_key)
-        elif openai_key:
-            from app.providers.openai_compatible import OpenAICompatibleProvider
-
-            real_provider = OpenAICompatibleProvider(api_key=openai_key)
+        _resolved = _resolve_provider()
+        real_provider = None if isinstance(_resolved, _RegFake) else _resolved
 
     used_fake_provider = real_provider is None
     provider = real_provider or FakeProvider(
