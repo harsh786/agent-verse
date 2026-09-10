@@ -11,7 +11,7 @@ import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Shield, DollarSign, AlertTriangle, CheckCircle2, XCircle,
-  RefreshCw, ChevronDown, ChevronUp, MessageSquare,
+  RefreshCw, ChevronDown, ChevronUp,
   Clock, Users,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -141,6 +141,57 @@ function ApprovalCard({ approval, orgId }: { approval: Approval; orgId: string }
         </div>
       </div>
 
+      {/* Actions — always visible so a pending approval is one click, not two */}
+      {!isExpired && (
+        <div className="px-4 pb-3 space-y-2">
+          {showRejectForm && (
+            <Textarea
+              value={rejectNotes}
+              onChange={e => setRejectNotes(e.target.value)}
+              placeholder="Reason for rejection (optional)…"
+              className="text-xs h-16 resize-none bg-[var(--bg-surface)] border-[var(--border)]"
+              aria-label="Rejection reason"
+            />
+          )}
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white h-8"
+              disabled={isPending}
+              onClick={() => act({ id: approval.id, action: 'approve' })}
+              aria-label="Approve"
+            >
+              {isPending ? <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1" />}
+              Approve
+            </Button>
+
+            {showRejectForm ? (
+              <Button
+                size="sm"
+                variant="destructive"
+                className="flex-1 h-8"
+                disabled={isPending}
+                onClick={() => act({ id: approval.id, action: 'reject', notes: rejectNotes })}
+                aria-label="Confirm rejection"
+              >
+                Confirm Reject
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                className="flex-1 h-8 border-red-400/40 text-red-400 hover:bg-red-400/10"
+                onClick={() => setShowRejectForm(true)}
+                aria-label="Reject"
+              >
+                <XCircle className="h-3.5 w-3.5 mr-1" />
+                Reject
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Expanded content */}
       <AnimatePresence>
         {expanded && (
@@ -173,67 +224,6 @@ function ApprovalCard({ approval, orgId }: { approval: Approval; orgId: string }
                 </div>
               )}
 
-              {/* Reject form */}
-              {showRejectForm && (
-                <div>
-                  <Textarea
-                    value={rejectNotes}
-                    onChange={e => setRejectNotes(e.target.value)}
-                    placeholder="Reason for rejection (optional)…"
-                    className="text-xs h-16 resize-none bg-[var(--bg-surface)] border-[var(--border)]"
-                    aria-label="Rejection reason"
-                  />
-                </div>
-              )}
-
-              {/* Action buttons */}
-              {!isExpired && (
-                <div className="flex gap-2 pb-1">
-                  <Button
-                    size="sm"
-                    className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white h-8"
-                    disabled={isPending}
-                    onClick={() => act({ id: approval.id, action: 'approve' })}
-                    aria-label="Approve"
-                  >
-                    {isPending ? <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1" />}
-                    Approve
-                  </Button>
-
-                  {showRejectForm ? (
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      className="flex-1 h-8"
-                      disabled={isPending}
-                      onClick={() => act({ id: approval.id, action: 'reject', notes: rejectNotes })}
-                      aria-label="Confirm rejection"
-                    >
-                      Confirm Reject
-                    </Button>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="flex-1 h-8 border-red-400/40 text-red-400 hover:bg-red-400/10"
-                      onClick={() => setShowRejectForm(true)}
-                      aria-label="Reject"
-                    >
-                      <XCircle className="h-3.5 w-3.5 mr-1" />
-                      Reject
-                    </Button>
-                  )}
-
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-8 px-2"
-                    aria-label="Add comment"
-                  >
-                    <MessageSquare className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              )}
             </div>
           </motion.div>
         )}
