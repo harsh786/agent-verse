@@ -2531,6 +2531,17 @@ export const selfImprovementApi = {
         body: JSON.stringify({ reason }),
       }
     ),
+  /**
+   * Manually apply a concluded experiment's winning candidate config — the
+   * human-in-the-loop half of the self-improvement loop, used when autonomous
+   * auto-apply is disabled (the default). Fails closed on the backend: 404 for
+   * unknown experiments, 409 when not an applicable winner.
+   */
+  applyExperiment: (id: string) =>
+    request<{ experiment_id: string; agent_id: string; status: string }>(
+      `/intelligence/experiments/${id}/apply`,
+      { method: "POST" }
+    ),
   getBenchmarks: (days = 30) =>
     request<BenchmarkMetrics>(`/intelligence/benchmarks?days=${days}`),
   /** Return all 7 eval dimension names from /intelligence/eval/dimensions */
