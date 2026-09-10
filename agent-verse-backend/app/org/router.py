@@ -928,60 +928,101 @@ async def list_org_approvals(
     Reads from the governance approval_requests table filtered by org context.
     ApprovalCenter.tsx consumes this endpoint.
     """
+    # Backed by the durable OrgTask store (task_kind == 'approval_gate') rather than
+    # the in-memory HITL gateway, whose requests vanish on every restart while the
+    # DB task lingers — the exact cause of "1 pending" with an empty inbox. This
+    # keeps the inbox consistent with the dashboard count and survives restarts.
+    _pending_status = "approval_required"
+    want_resolved = (status or "").lower() in (
+        "resolved",
+        "history",
+        "approved",
+        "rejected",
+        "completed",
+        "done",
+    )
     try:
-        # Get missions for this org first
-        missions = await service.list_missions(org_id, limit=500)
-        {str(m.id) for m in missions}
-
-        # Query approval requests for goals belonging to these missions
-        # Fall back to the governance API filtered by org
-        hitl_gateway = (
-            getattr(getattr(request.app, "state", None), "hitl_gateway", None) if request else None
-        )
-
-        if hitl_gateway is None:
-            return {"data": [], "org_id": org_id, "total": 0}
-
-        # Build minimal TenantContext for list_pending
-        tenant_id = service._tenant_id
-        try:
-            from app.tenancy.context import PlanTier, TenantContext
-
-            _tenant_ctx = TenantContext(
-                tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="org_approvals"
-            )
-            pending = hitl_gateway.list_pending(tenant_ctx=_tenant_ctx)
-        except Exception:
-            pending = []
-
-        # Filter approvals related to this org's missions (by goal_id prefix or all if no mission match)  # noqa: E501
-        results = []
-        for req in pending:
-            if status and getattr(req, "status", None) and req.status.value != status:
-                continue
-            results.append(
-                {
-                    "request_id": getattr(req, "request_id", str(getattr(req, "id", ""))),
-                    "goal_id": req.goal_id,
-                    "action": req.action,
-                    "risk_level": req.risk_level,
-                    "status": req.status.value if hasattr(req.status, "value") else str(req.status),
-                    "created_at": str(getattr(req, "created_at", "")),
-                }
-            )
-
-        return {"data": results[:limit], "org_id": org_id, "total": len(results)}
-
+        tasks = await service.list_tasks(org_id, limit=200)
     except Exception as exc:
         from app.observability.logging import get_logger
 
         get_logger(__name__).warning("org_list_approvals_failed", org_id=org_id, error=str(exc))
         return {"data": [], "org_id": org_id, "total": 0, "error": str(exc)}
 
+    def _to_item(t: Any) -> dict[str, Any]:
+        meta = t.extra_data or {}
+        approver: str | None = None
+        note: str | None = None
+        for o in t.outputs or []:
+            if isinstance(o, dict):
+                approver = o.get("approved_by") or o.get("rejected_by") or approver
+                note = o.get("approval_note") or o.get("rejection_note") or note
+        is_pending = t.status == _pending_status
+        gate = (meta.get("gate") if isinstance(meta.get("gate"), dict) else {}) or {}
+        gate_type = str(gate.get("type") or t.why or "approval")
+        return {
+            "id": str(t.id),
+            "request_id": str(t.id),
+            "task_id": str(t.id),
+            "mission_id": str(t.mission_id) if t.mission_id else None,
+            "agent_id": str(t.owner_agent_id) if getattr(t, "owner_agent_id", None) else None,
+            "action": gate_type,
+            "action_type": gate_type,
+            "title": t.title,
+            "description": t.objective or f"Approval required for: {gate_type}",
+            "risk_level": t.risk_level or "high",
+            "estimated_cost_usd": (
+                float(t.cost_estimate_usd) if getattr(t, "cost_estimate_usd", None) is not None
+                else None
+            ),
+            "status": "pending" if is_pending else str(t.status),
+            "gate": gate,
+            "prerequisite_approvals": [],
+            "created_at": t.created_at.isoformat() if t.created_at else "",
+            "expires_at": t.expires_at.isoformat() if getattr(t, "expires_at", None) else None,
+            "resolved_at": (
+                t.updated_at.isoformat() if (t.updated_at and not is_pending) else None
+            ),
+            "approver": approver,
+            "note": note,
+            "already_approved_by": [approver] if approver else [],
+            "approvers_needed": [] if not is_pending else [t.risk_level or "approver"],
+        }
+
+    gates = [t for t in tasks if (t.extra_data or {}).get("task_kind") == "approval_gate"]
+    if want_resolved:
+        selected = [t for t in gates if t.status != _pending_status]
+    else:
+        # Only PENDING gates on a still-open mission — matches the dashboard
+        # pending-approvals count so the inbox and the header badge never disagree.
+        try:
+            missions = await service.list_missions(org_id, limit=500)
+            _open = {
+                str(m.id)
+                for m in missions
+                if str(m.status) not in ("completed", "failed", "cancelled", "archived")
+            }
+        except Exception:
+            _open = set()
+        selected = [
+            t
+            for t in gates
+            if t.status == _pending_status
+            and (t.mission_id is None or str(t.mission_id) in _open)
+        ]
+    items = [_to_item(t) for t in selected][:limit]
+    return {"data": items, "org_id": org_id, "total": len(items)}
+
 
 class _OrgApprovalDecision(BaseModel):
     approver: str = Field(default="user", description="Approver identity (user ID or name)")
     note: str = Field(default="", description="Optional note or reason")
+    # The org ApprovalCenter UI posts the reason as `notes`; accept both.
+    notes: str = Field(default="", description="Alias for note (frontend field name)")
+
+    @property
+    def reason(self) -> str:
+        return self.note or self.notes
 
 
 # ── G-24: Org-scoped approve endpoint ────────────────────────────────────────
@@ -1002,34 +1043,57 @@ async def approve_org_request(
     service: OrgService = Depends(get_org_service),
     _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict:
-    """G-24: Approve a HITL request belonging to this org's missions."""
-    hitl_gateway = getattr(getattr(request.app, "state", None), "hitl_gateway", None)
-    if hitl_gateway is None:
-        raise HTTPException(status_code=503, detail="HITL gateway not available")
+    """G-24: Approve an org approval gate.
 
-    from app.tenancy.context import PlanTier, TenantContext
+    ``approval_id`` is the durable approval-gate task id. Approving releases the
+    gate: best-effort resolve of any paired (in-memory) HITL request so a blocked
+    agent is freed, then flip the DB task so the inbox and dashboard count clear
+    and survive restarts.
+    """
+    from datetime import UTC, datetime
 
-    tenant_ctx = TenantContext(
-        tenant_id=service._tenant_id, plan=PlanTier.FREE, api_key_id="org_approvals"
+    task = await service.get_task(approval_id)
+    if task is None or (task.extra_data or {}).get("task_kind") != "approval_gate":
+        raise _not_found("Approval", approval_id, x_request_id)
+
+    # gateway is ephemeral/best-effort — the DB task is the source of truth
+    with contextlib.suppress(Exception):
+        await _resolve_task_hitl_request(request, service._tenant_id, task, "approve", body)
+
+    updated = await service.update_task_status(
+        approval_id,
+        "running",
+        outputs=[
+            {
+                "approved_by": body.approver,
+                "approval_note": body.reason,
+                "decided_at": datetime.now(UTC).isoformat(),
+            }
+        ],
     )
-    # HITLGateway exposes approve/reject (not a `resolve` method); approve()
-    # returns a truthy _AwaitableBool only when the request exists and is pending.
-    ok = await hitl_gateway.approve(
-        approval_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
-    )
-    if not ok:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "type": "not-found",
-                "title": "Approval Not Found",
-                "status": 404,
-                "detail": f"Approval '{approval_id}' not found or already resolved",
-                "request_id": x_request_id,
-            },
-        )
+    if updated is None:
+        raise _not_found("Approval", approval_id, x_request_id)
 
-    return {"status": "approved", "approval_id": approval_id, "approver": body.approver}
+    try:
+        from app.org.events import get_org_event_publisher
+
+        pub = get_org_event_publisher()
+        if pub:
+            await pub.publish(
+                event_type="org.approval.granted",
+                org_id=org_id,
+                tenant_id=service._tenant_id,
+                payload={"task_id": approval_id, "approver": body.approver, "note": body.note},
+            )
+    except Exception:
+        pass
+
+    return {
+        "status": "approved",
+        "approval_id": approval_id,
+        "task_id": approval_id,
+        "approver": body.approver,
+    }
 
 
 # ── G-24: Org-scoped reject endpoint ─────────────────────────────────────────
@@ -1050,35 +1114,68 @@ async def reject_org_request(
     service: OrgService = Depends(get_org_service),
     _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict:
-    """G-24: Reject a HITL request belonging to this org's missions."""
-    hitl_gateway = getattr(getattr(request.app, "state", None), "hitl_gateway", None)
-    if hitl_gateway is None:
-        raise HTTPException(status_code=503, detail="HITL gateway not available")
+    """G-24: Reject an org approval gate (durable, task-backed).
 
-    from app.tenancy.context import PlanTier, TenantContext
+    Rejecting cancels the gate's task and, when it belongs to a still-open
+    mission, marks the mission failed — the human declined the gated action.
+    """
+    from datetime import UTC, datetime
 
-    tenant_ctx = TenantContext(
-        tenant_id=service._tenant_id, plan=PlanTier.FREE, api_key_id="org_approvals"
-    )
-    ok = await hitl_gateway.reject(
+    task = await service.get_task(approval_id)
+    if task is None or (task.extra_data or {}).get("task_kind") != "approval_gate":
+        raise _not_found("Approval", approval_id, x_request_id)
+
+    with contextlib.suppress(Exception):
+        await _resolve_task_hitl_request(request, service._tenant_id, task, "reject", body)
+
+    updated = await service.update_task_status(
         approval_id,
-        approver=body.approver,
-        note=body.note or "Rejected via org approval center",
-        tenant_ctx=tenant_ctx,
+        "cancelled",
+        outputs=[
+            {
+                "rejected_by": body.approver,
+                "rejection_note": body.reason or "Rejected via org approval center",
+                "decided_at": datetime.now(UTC).isoformat(),
+            }
+        ],
     )
-    if not ok:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "type": "not-found",
-                "title": "Approval Not Found",
-                "status": 404,
-                "detail": f"Approval '{approval_id}' not found or already resolved",
-                "request_id": x_request_id,
-            },
-        )
+    if updated is None:
+        raise _not_found("Approval", approval_id, x_request_id)
 
-    return {"status": "rejected", "approval_id": approval_id, "approver": body.approver}
+    # A declined gate stops the mission it guards.
+    try:
+        if task.mission_id:
+            mission = await service.get_mission(str(task.mission_id))
+            if mission and str(mission.status) not in (
+                "completed",
+                "failed",
+                "cancelled",
+                "archived",
+            ):
+                await service.update_mission_status(str(task.mission_id), "failed")
+    except Exception:
+        pass
+
+    try:
+        from app.org.events import get_org_event_publisher
+
+        pub = get_org_event_publisher()
+        if pub:
+            await pub.publish(
+                event_type="org.approval.rejected",
+                org_id=org_id,
+                tenant_id=service._tenant_id,
+                payload={"task_id": approval_id, "approver": body.approver, "note": body.note},
+            )
+    except Exception:
+        pass
+
+    return {
+        "status": "rejected",
+        "approval_id": approval_id,
+        "task_id": approval_id,
+        "approver": body.approver,
+    }
 
 
 # ── SSE: Mission Progress Stream ──────────────────────────────────────────────
