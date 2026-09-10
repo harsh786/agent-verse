@@ -1769,6 +1769,70 @@ class OrgService:
             source="orchestrator",
         )
 
+    async def dispatch_mission_goal(
+        self,
+        mission_id: str,
+        *,
+        app_state: Any = None,
+        tenant_ctx: Any | None = None,
+    ) -> dict[str, Any]:
+        """Launch the goal for a mission that was paused awaiting approval.
+
+        ``create_mission_and_execute`` defers dispatch when a mission has approval
+        gates — it stores the dispatch params under ``extra_data['pending_dispatch']``
+        and leaves the mission in ``review``. Once every gate is approved this
+        submits the goal and activates the mission, so an approval gate is a HARD
+        stop, not a passive sign-off. No-op if already dispatched or not paused.
+        """
+        mission = await self.get_mission(mission_id)
+        if mission is None:
+            return {"error": "mission_not_found", "dispatched": False}
+        meta = dict(mission.extra_data or {})
+        if meta.get("goal_id"):
+            return {"already_dispatched": True, "goal_id": meta["goal_id"], "dispatched": False}
+        goal_service = getattr(app_state, "goal_service", None)
+        if goal_service is None:
+            return {"error": "goal_service_unavailable", "dispatched": False}
+        if tenant_ctx is None:
+            from app.tenancy.context import PlanTier, TenantContext
+
+            tenant_ctx = TenantContext(
+                tenant_id=self._tenant_id,
+                plan=PlanTier.PROFESSIONAL,
+                api_key_id="org_gate_dispatch",
+            )
+        pd = meta.get("pending_dispatch") or {}
+        execution_ctx = pd.get("execution_context") or {
+            "org_id": str(mission.org_id),
+            "mission_id": mission_id,
+            "source": "org_mission",
+        }
+        try:
+            goal_result = await goal_service.submit_goal(
+                goal=mission.objective or mission.title,
+                priority=str(pd.get("priority") or mission.priority or "normal"),
+                dry_run=False,
+                tenant_ctx=tenant_ctx,
+                workflow_mode=pd.get("workflow_mode", "single_agent"),
+                execution_context=execution_ctx,
+            )
+        except Exception as exc:
+            _log.error(
+                "org.dispatch_mission_goal.submit_failed",
+                mission_id=mission_id,
+                error=str(exc)[:200],
+            )
+            return {"error": str(exc)[:200], "dispatched": False}
+        goal_id = goal_result.get("goal_id")
+        meta["goal_id"] = goal_id
+        meta.pop("pending_dispatch", None)
+        mission.extra_data = meta
+        mission.updated_at = datetime.now(UTC)
+        await self._session.flush()
+        await self.update_mission_status(mission_id, "active")
+        _log.info("org.dispatch_mission_goal.dispatched", mission_id=mission_id, goal_id=goal_id)
+        return {"goal_id": goal_id, "dispatched": True}
+
     async def finalize_mission(
         self,
         mission_id: str,
@@ -2373,32 +2437,61 @@ class OrgService:
                 }
                 workflow_mode = _topology_mode_map.get(workflow_mode, "single_agent")
 
-                try:
-                    goal_result = await goal_service.submit_goal(
-                        goal=objective or title,
-                        priority=priority,
-                        dry_run=False,
-                        tenant_ctx=tenant_ctx,
-                        workflow_mode=workflow_mode,
-                        execution_context=execution_ctx,
-                    )
-                    goal_id: str | None = goal_result.get("goal_id")
-                    dispatch_result["goal_id"] = goal_id
-                    dispatch_result["goal_status"] = goal_result.get("status", "queued")
-                    span.set_attribute("goal_id", goal_id or "")
+                if approval_gates:
+                    # ── PAUSE: a human must approve the gate before ANY work runs.
+                    # Don't dispatch the goal now; persist the dispatch params so the
+                    # approve endpoint can launch it once every gate is signed off.
+                    # The mission sits in 'review' (awaiting approval) meanwhile.
+                    new_meta = dict(mission.extra_data or {})
+                    new_meta["pending_dispatch"] = {
+                        "workflow_mode": workflow_mode,
+                        "execution_context": execution_ctx,
+                        "priority": priority,
+                    }
+                    new_meta["orchestration_plan_summary"] = {
+                        "topology": dispatch_result.get("topology"),
+                        "departments": dispatch_result.get("departments"),
+                        "autonomy_level": dispatch_result.get("autonomy_level"),
+                        "estimated_cost_usd": dispatch_result.get("estimated_cost_usd"),
+                    }
+                    mission.extra_data = new_meta
+                    mission.updated_at = datetime.now(UTC)
+                    await self._session.flush()
+                    await self.update_mission_status(str(mission.id), "review")
+                    dispatch_result["awaiting_approval"] = True
+                    dispatch_result["goal_status"] = "awaiting_approval"
                     _log.info(
-                        "org.create_mission_and_execute.dispatched",
+                        "org.create_mission_and_execute.paused_for_approval",
                         mission_id=str(mission.id),
-                        goal_id=goal_id,
-                        topology=workflow_mode,
+                        gates=len(approval_gates) if isinstance(approval_gates, list) else 1,
                     )
-                except Exception as submit_exc:
-                    _log.error(
-                        "org.create_mission_and_execute.submit_failed",
-                        mission_id=str(mission.id),
-                        error=str(submit_exc)[:200],
-                    )
-                    dispatch_result["error"] = str(submit_exc)[:200]
+                else:
+                    try:
+                        goal_result = await goal_service.submit_goal(
+                            goal=objective or title,
+                            priority=priority,
+                            dry_run=False,
+                            tenant_ctx=tenant_ctx,
+                            workflow_mode=workflow_mode,
+                            execution_context=execution_ctx,
+                        )
+                        goal_id: str | None = goal_result.get("goal_id")
+                        dispatch_result["goal_id"] = goal_id
+                        dispatch_result["goal_status"] = goal_result.get("status", "queued")
+                        span.set_attribute("goal_id", goal_id or "")
+                        _log.info(
+                            "org.create_mission_and_execute.dispatched",
+                            mission_id=str(mission.id),
+                            goal_id=goal_id,
+                            topology=workflow_mode,
+                        )
+                    except Exception as submit_exc:
+                        _log.error(
+                            "org.create_mission_and_execute.submit_failed",
+                            mission_id=str(mission.id),
+                            error=str(submit_exc)[:200],
+                        )
+                        dispatch_result["error"] = str(submit_exc)[:200]
             else:
                 _log.warning(
                     "org.create_mission_and_execute.no_goal_service",

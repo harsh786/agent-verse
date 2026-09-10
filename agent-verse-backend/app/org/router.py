@@ -1053,7 +1053,14 @@ async def approve_org_request(
     from datetime import UTC, datetime
 
     task = await service.get_task(approval_id)
-    if task is None or (task.extra_data or {}).get("task_kind") != "approval_gate":
+    # Scope to THIS org, not just the tenant: get_task is tenant-scoped, and the
+    # RBAC gate above authorises the URL's org — without this a team-lead of org A
+    # could action org B's gate (same tenant) by id. 404 hides cross-org ids.
+    if (
+        task is None
+        or str(task.org_id) != org_id
+        or (task.extra_data or {}).get("task_kind") != "approval_gate"
+    ):
         raise _not_found("Approval", approval_id, x_request_id)
 
     # gateway is ephemeral/best-effort — the DB task is the source of truth
@@ -1074,7 +1081,25 @@ async def approve_org_request(
     if updated is None:
         raise _not_found("Approval", approval_id, x_request_id)
 
-    try:
+    # Hard stop released: if this was the LAST pending gate on the mission, launch
+    # the deferred goal now. create_mission_and_execute paused the mission (status
+    # 'review') and stashed the dispatch params instead of running the work.
+    dispatched: dict[str, Any] = {}
+    if task.mission_id:
+        with contextlib.suppress(Exception):
+            gate_tasks = await service.list_tasks(org_id, mission_id=str(task.mission_id))
+            remaining = [
+                t
+                for t in gate_tasks
+                if (t.extra_data or {}).get("task_kind") == "approval_gate"
+                and t.status == "approval_required"
+            ]
+            if not remaining:
+                dispatched = await service.dispatch_mission_goal(
+                    str(task.mission_id), app_state=request.app.state
+                )
+
+    with contextlib.suppress(Exception):
         from app.org.events import get_org_event_publisher
 
         pub = get_org_event_publisher()
@@ -1083,16 +1108,16 @@ async def approve_org_request(
                 event_type="org.approval.granted",
                 org_id=org_id,
                 tenant_id=service._tenant_id,
-                payload={"task_id": approval_id, "approver": body.approver, "note": body.note},
+                payload={"task_id": approval_id, "approver": body.approver, "note": body.reason},
             )
-    except Exception:
-        pass
 
     return {
         "status": "approved",
         "approval_id": approval_id,
         "task_id": approval_id,
         "approver": body.approver,
+        "mission_dispatched": bool(dispatched.get("dispatched")),
+        "goal_id": dispatched.get("goal_id"),
     }
 
 
@@ -1122,7 +1147,11 @@ async def reject_org_request(
     from datetime import UTC, datetime
 
     task = await service.get_task(approval_id)
-    if task is None or (task.extra_data or {}).get("task_kind") != "approval_gate":
+    if (
+        task is None
+        or str(task.org_id) != org_id
+        or (task.extra_data or {}).get("task_kind") != "approval_gate"
+    ):
         raise _not_found("Approval", approval_id, x_request_id)
 
     with contextlib.suppress(Exception):
@@ -1374,7 +1403,10 @@ async def _run_graphify_job(org_id: str, tenant_id: str, job_id: str, request: R
         async def _emit(payload: dict) -> None:  # type: ignore[type-arg]
             if redis:
                 await redis.publish(channel, json.dumps(payload))
-            log.info("graphify.event", job_id=job_id, event=payload.get("type"))
+            # NB: 'event' is structlog's reserved positional arg — passing it as a
+            # kwarg raised "multiple values for keyword argument 'event'" and killed
+            # the whole graphify job. Use 'event_type' instead.
+            log.info("graphify.event", job_id=job_id, event_type=payload.get("type"))
 
         try:
             phases = [
