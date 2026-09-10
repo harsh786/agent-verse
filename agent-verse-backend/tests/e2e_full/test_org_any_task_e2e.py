@@ -113,12 +113,35 @@ async def test_arbitrary_mission_executes_forms_team_completes_and_emits_events(
     # The deliverable is a REAL aggregated report tied to the goal, not a stub.
     result = fin.get("result") or {}
     assert result.get("goal_id") == goal_id
-    assert result.get("subtasks"), "aggregated report has no subtasks"
+    # The report carries the mission's real objective, not a canned string.
+    assert result.get("objective") == objective, f"report objective mismatch: {result}"
+    assert result.get("goal_status") in ("complete", "completed"), result.get("goal_status")
+    assert result.get("generated_at"), "report has no generation timestamp"
+    # The mission was really decomposed into >= 2 reconciled subtasks, all marked
+    # completed to match the terminal goal outcome (genuine aggregation).
+    report_subtasks = result.get("subtasks") or []
+    assert len(report_subtasks) >= 2, f"aggregated report under-decomposed: {report_subtasks}"
+    assert all(s.get("status") == "completed" for s in report_subtasks), report_subtasks
+    assert all(s.get("title") for s in report_subtasks), report_subtasks
 
-    # 5. The mission itself is terminal-complete.
+    # 5. The mission itself is terminal-complete AND persists the same report,
+    #    so a later reader (frontend deliverable view) sees the real aggregation.
     mission_get = await tenant_client.get(f"/v1/org/{org_id}/missions/{mission_id}")
     assert mission_get.status_code == 200
-    assert str(mission_get.json().get("status")) == "completed"
+    mission_body = mission_get.json()
+    assert str(mission_body.get("status")) == "completed"
+    outputs = mission_body.get("outputs") or []
+    assert outputs, f"mission persisted no deliverable output: {mission_body}"
+    persisted = outputs[-1]
+    assert persisted.get("goal_id") == goal_id, f"persisted deliverable missing: {persisted}"
+
+    # No industry template was involved: this org was created bare (POST /v1/org,
+    # not the composer), so its structure came only from the arbitrary objective.
+    depts_resp = await tenant_client.get(f"/v1/org/{org_id}/departments")
+    assert depts_resp.status_code == 200
+    dept_rows = depts_resp.json()
+    dept_rows = dept_rows.get("data", dept_rows) if isinstance(dept_rows, dict) else dept_rows
+    assert dept_rows == [], f"unexpected pre-seeded departments (hardcoded?): {dept_rows}"
 
     # 6. The rich console events were all published for this mission.
     event_types = await _collect_event_types(tenant_client, org_id)
