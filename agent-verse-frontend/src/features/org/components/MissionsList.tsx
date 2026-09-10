@@ -21,6 +21,8 @@ interface MissionsListProps {
   onMissionClick?: (mission: OrgMission) => void;
   onCreateClick?: () => void;
   statusFilter?: string;
+  /** When set, only missions in this department are shown. */
+  deptFilter?: string;
 }
 
 export function MissionsList({
@@ -28,6 +30,7 @@ export function MissionsList({
   onMissionClick,
   onCreateClick,
   statusFilter,
+  deptFilter,
 }: MissionsListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -40,13 +43,15 @@ export function MissionsList({
     error,
   } = useMissions(orgId, { status: statusFilter });
 
-  // Flatten all pages into a single list
-  const missions = data?.pages.flatMap((p) => p.data) ?? [];
+  // Flatten all pages into a single list, optionally scoped to a department.
+  const missions = (data?.pages.flatMap((p) => p.data) ?? []).filter(
+    (m) => !deptFilter || m.dept_id === deptFilter,
+  );
 
   const virtualizer = useVirtualizer({
     count:            missions.length,
     getScrollElement: () => parentRef.current,
-    estimateSize:     () => 110,   // estimated card height
+    estimateSize:     () => 96,   // estimated card height (denser)
     overscan:         5,
   });
 
@@ -128,7 +133,7 @@ export function MissionsList({
         ref={parentRef}
         onScroll={handleScroll}
         className="overflow-auto"
-        style={{ height: Math.min(missions.length * 110 + 20, 600) }}
+        style={{ height: Math.min(missions.length * 96 + 20, 720) }}
         aria-label={`${missions.length} missions`}
         role="list"
       >

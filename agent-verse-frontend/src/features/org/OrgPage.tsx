@@ -14,7 +14,7 @@
  *   - impeccable-ui:    clear section hierarchy, 3-level visual system
  *   - ui-ux-pro-max:    reduced motion, accessible layout, URL state
  */
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
@@ -111,6 +111,8 @@ export function OrgPage() {
   const [selectedMission, setSelectedMission] = useState<string | null>(null);
   const [showCreate, setShowCreate]           = useState(false);
   const [statusFilter, setStatusFilter]       = useState<string | undefined>();
+  // Clicking a department scopes the missions pane to that department.
+  const [deptFilter, setDeptFilter]           = useState<{ id: string; name: string } | null>(null);
   const [showGraphify, setShowGraphify]       = useState(false);
   const [showVoice, setShowVoice]             = useState(false);
   const [showConnectors, setShowConnectors]   = useState(false);
@@ -120,6 +122,48 @@ export function OrgPage() {
   const [showObsidian, setShowObsidian]       = useState(false);
   const [showApprovals, setShowApprovals]     = useState(false);
   const [showConstellation, setShowConstellation] = useState(true);
+
+  // Resizable command panel (right pane). Width persisted per-browser.
+  const RIGHT_MIN = 320;
+  const RIGHT_MAX = 720;
+  const [rightWidth, setRightWidth] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem('av-org-right-w'));
+      return v >= RIGHT_MIN && v <= RIGHT_MAX ? v : 400;
+    } catch {
+      return 400;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('av-org-right-w', String(rightWidth));
+    } catch {
+      /* localStorage unavailable — width just won't persist */
+    }
+  }, [rightWidth]);
+  const startResize = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = rightWidth;
+      const onMove = (ev: PointerEvent) => {
+        // Panel is on the right, so dragging left (smaller clientX) widens it.
+        const next = Math.min(RIGHT_MAX, Math.max(RIGHT_MIN, startW + (startX - ev.clientX)));
+        setRightWidth(next);
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    },
+    [rightWidth],
+  );
 
   const { data: org, isLoading: orgLoading, refetch } = useOrganization(orgId ?? null);
   const { data: health }    = useOrgHealth(orgId ?? null);
@@ -202,6 +246,7 @@ export function OrgPage() {
             <button
               onClick={() => setShowVoice(true)}
               aria-label="Voice input"
+              title="Voice input — describe a mission"
               style={{ touchAction: 'manipulation' }}
               className={cn(
                 'p-2 rounded-lg text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
@@ -237,6 +282,7 @@ export function OrgPage() {
             <button
               onClick={() => setShowGraphify(v => !v)}
               aria-label="Open knowledge graph builder"
+              title="Knowledge graph (Graphify)"
               style={{ touchAction: 'manipulation' }}
               className={cn(
                 'p-2 rounded-lg transition-colors duration-150',
@@ -254,6 +300,7 @@ export function OrgPage() {
             <button
               onClick={() => setShowConnectors(v => !v)}
               aria-label="Connector marketplace"
+              title="Connectors & integrations"
               style={{ touchAction: 'manipulation' }}
               className={cn(
                 'p-2 rounded-lg transition-colors duration-150',
@@ -288,6 +335,7 @@ export function OrgPage() {
             <button
               onClick={() => setShowCommands(v => !v)}
               aria-label="Command gateway history"
+              title="Command history"
               style={{ touchAction: 'manipulation' }}
               className={cn(
                 'p-2 rounded-lg transition-colors duration-150',
@@ -305,6 +353,7 @@ export function OrgPage() {
             <button
               onClick={() => setShowHistory(v => !v)}
               aria-label="Organisation history"
+              title="Org history & timeline"
               style={{ touchAction: 'manipulation' }}
               className={cn(
                 'p-2 rounded-lg transition-colors duration-150',
@@ -322,6 +371,7 @@ export function OrgPage() {
             <button
               onClick={() => setShowObsidian(v => !v)}
               aria-label="Obsidian vault explorer"
+              title="Knowledge vault"
               style={{ touchAction: 'manipulation' }}
               className={cn(
                 'p-2 rounded-lg transition-colors duration-150',
@@ -361,6 +411,7 @@ export function OrgPage() {
             <button
               onClick={() => refetch()}
               aria-label="Refresh organization data"
+              title="Refresh"
               style={{ touchAction: 'manipulation' }}
               className={cn(
                 'p-2 rounded-lg text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
@@ -399,13 +450,65 @@ export function OrgPage() {
         {/* ── Main content area ───────────────────────────────────────────── */}
         <div className="flex-1 flex overflow-hidden">
 
-          {/* Left: Missions */}
+          {/* Left (main): Active Missions — the star of the page */}
           <main
-            className="flex-1 flex flex-col overflow-hidden border-r border-[#1E2535]"
+            className="flex-1 min-w-0 flex flex-col overflow-hidden"
             aria-label="Missions panel"
           >
-            {/* Live agent constellation — Obsidian-style force graph where each
-                team member spawns a node and lights up as it works. */}
+            {/* Filter tabs */}
+            <StatusFilterBar value={statusFilter} onChange={setStatusFilter} />
+
+            {/* Active department filter chip */}
+            {deptFilter && (
+              <div className="px-4 pt-2 shrink-0">
+                <button
+                  onClick={() => setDeptFilter(null)}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/10 px-3 py-1
+                             text-[12px] font-medium text-[#00D4FF] ring-1 ring-blue-500/30
+                             hover:bg-blue-500/20 transition-colors"
+                  aria-label={`Clear department filter: ${deptFilter.name}`}
+                >
+                  <Zap className="h-3 w-3" aria-hidden />
+                  {deptFilter.name}
+                  <span className="text-[#94A3B8]">✕</span>
+                </button>
+              </div>
+            )}
+
+            {/* Virtualized missions list */}
+            <div className="flex-1 overflow-hidden p-4">
+              <MissionsList
+                orgId={orgId}
+                statusFilter={statusFilter}
+                deptFilter={deptFilter?.id}
+                onMissionClick={handleMissionClick}
+                onCreateClick={() => setShowCreate(true)}
+              />
+            </div>
+          </main>
+
+          {/* Drag handle — resize the command panel */}
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize command panel"
+            onPointerDown={startResize}
+            className={cn(
+              'hidden lg:flex w-1.5 shrink-0 cursor-col-resize items-center justify-center group',
+              'bg-[#1E2535] hover:bg-blue-500/40 active:bg-blue-500/60 transition-colors',
+            )}
+          >
+            <span className="h-8 w-0.5 rounded-full bg-[#334155] group-hover:bg-blue-400" />
+          </div>
+
+          {/* Right (command panel): agent network + orbit + activity + departments — resizable */}
+          <aside
+            style={{ width: rightWidth }}
+            className="shrink-0 hidden lg:flex flex-col overflow-y-auto border-l border-[#1E2535] bg-[#0B0E14]"
+            aria-label="Command panel"
+          >
+            {/* Live agent constellation — moved here so missions own the main pane.
+                Obsidian-style force graph where each member lights up as it works. */}
             <section className="border-b border-[#1E2535] shrink-0" aria-label="Live agent network">
               <div className="flex items-center justify-between px-4 pt-3 pb-1">
                 <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#00D4FF]/70 flex items-center gap-1.5">
@@ -459,26 +562,6 @@ export function OrgPage() {
                 )}
               </AnimatePresence>
             </section>
-
-            {/* Filter tabs */}
-            <StatusFilterBar value={statusFilter} onChange={setStatusFilter} />
-
-            {/* Virtualized missions list */}
-            <div className="flex-1 overflow-hidden p-4">
-              <MissionsList
-                orgId={orgId}
-                statusFilter={statusFilter}
-                onMissionClick={handleMissionClick}
-                onCreateClick={() => setShowCreate(true)}
-              />
-            </div>
-          </main>
-
-          {/* Right sidebar: Graphify / Connectors / Dept tree + Activity */}
-          <aside
-            className="w-72 shrink-0 hidden lg:flex flex-col overflow-y-auto"
-            aria-label="Organisation sidebar"
-          >
             {/* Digital Twin panel */}
             <AnimatePresence mode="wait">
               {showTwin && (
@@ -644,8 +727,14 @@ export function OrgPage() {
               <h2 className="text-[11px] font-medium uppercase tracking-[0.08em] text-[#475569] mb-3 flex items-center gap-1.5">
                 <Zap className="h-3 w-3" aria-hidden />
                 Departments
+                <span className="normal-case tracking-normal text-[#334155]">· click to filter missions</span>
               </h2>
-              <DepartmentTree orgId={orgId} />
+              <DepartmentTree
+                orgId={orgId}
+                onDeptSelect={(d) =>
+                  setDeptFilter((prev) => (prev?.id === d.id ? null : { id: d.id, name: d.name }))
+                }
+              />
             </section>
 
             {/* Activity feed */}
