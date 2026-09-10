@@ -140,6 +140,14 @@ class WorkflowResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class WorkflowDetailResponse(WorkflowResponse):
+    """Detail view — includes the full ``definition`` (steps/triggers/edges) so the
+    builder can render the canvas. The list view intentionally omits it to stay lean.
+    """
+
+    definition: dict[str, Any] = Field(default_factory=dict)
+
+
 class RunResponse(BaseModel):
     run_id: str
     workflow_id: str
@@ -208,7 +216,7 @@ async def list_workflows(
     return {"items": items, "total": total, "page": page, "per_page": per_page}
 
 
-@router.get("/{workflow_id}", response_model=WorkflowResponse)
+@router.get("/{workflow_id}", response_model=WorkflowDetailResponse)
 async def get_workflow(workflow_id: str, request: Request) -> Any:
     svc = _svc(request)
     tenant = _get_tenant(request)
@@ -218,7 +226,7 @@ async def get_workflow(workflow_id: str, request: Request) -> Any:
     return item
 
 
-@router.patch("/{workflow_id}", response_model=WorkflowResponse)
+@router.patch("/{workflow_id}", response_model=WorkflowDetailResponse)
 async def update_workflow(
     workflow_id: str,
     body: WorkflowUpdateRequest,

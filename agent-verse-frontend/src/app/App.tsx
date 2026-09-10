@@ -50,6 +50,7 @@ const ChannelMappingsPage = lazy(() => import('@/features/channels/ChannelMappin
 const StateMachinesPage   = lazy(() => import('@/features/state-machines/StateMachinesPage').then(m => ({ default: m.StateMachinesPage })));
 const TriggersPage            = lazy(() => import('@/features/triggers/TriggersPage').then(m => ({ default: m.TriggersPage })));
 const WorkflowListPage        = lazy(() => import('@/features/workflow/WorkflowListPage'));
+const WorkflowEditorPage      = lazy(() => import('@/features/workflow/WorkflowBuilderPage'));
 const WorkflowRunsPage        = lazy(() => import('@/features/workflow/WorkflowRunsPage'));
 const WorkflowRunDetailPage   = lazy(() => import('@/features/workflow/WorkflowRunDetailPage'));
 const WorkflowAnalyticsPage   = lazy(() => import('@/features/workflow/WorkflowAnalyticsPage'));
@@ -304,14 +305,17 @@ export default function App() {
         <Route path="org/:orgId/team/:teamId"       element={lazy_rb("Team",              <TeamPage />)} />
         <Route path="org/:orgId/strategic-advisor"  element={lazy_rb("Strategic Advisor", <StrategicAdvisorPage orgId="" />)} />
 
-        {/* Workflow */}
-        <Route path="workflow"                element={lazy_rb("Workflows",           <WorkflowListPage />)} />
-        <Route path="workflow/runs"           element={lazy_rb("Workflow Runs",       <WorkflowRunsPage />)} />
-        <Route path="workflow/runs/:runId"    element={lazy_rb("Workflow Run",        <WorkflowRunDetailPage />)} />
-        <Route path="workflow/analytics"      element={lazy_rb("Workflow Analytics",  <WorkflowAnalyticsPage />)} />
-        <Route path="workflow/marketplace"    element={lazy_rb("Workflow Marketplace",<WorkflowMarketplacePage />)} />
-        <Route path="workflow/settings"       element={lazy_rb("Workflow Settings",   <WorkflowSettingsPage />)} />
-        <Route path="workflow/approvals"      element={lazy_rb("Approval Inbox",      <ApprovalInboxPage />)} />
+        {/* Workflow — the feature pages link to plural /workflows/:id/... ; keep
+            singular /workflow as the list too (the sidebar links there). */}
+        <Route path="workflow"                     element={lazy_rb("Workflows",            <WorkflowListPage />)} />
+        <Route path="workflows"                    element={lazy_rb("Workflows",            <WorkflowListPage />)} />
+        <Route path="workflows/marketplace"        element={lazy_rb("Workflow Marketplace", <WorkflowMarketplacePage />)} />
+        <Route path="workflows/approvals"          element={lazy_rb("Approval Inbox",       <ApprovalInboxPage />)} />
+        <Route path="workflows/:id/edit"           element={lazy_rb("Workflow Editor",      <WorkflowEditorPage />)} />
+        <Route path="workflows/:id/runs"           element={lazy_rb("Workflow Runs",        <WorkflowRunsPage />)} />
+        <Route path="workflows/:id/runs/:runId"    element={lazy_rb("Workflow Run",         <WorkflowRunDetailPage />)} />
+        <Route path="workflows/:id/analytics"      element={lazy_rb("Workflow Analytics",   <WorkflowAnalyticsPage />)} />
+        <Route path="workflows/:id/settings"       element={lazy_rb("Workflow Settings",    <WorkflowSettingsPage />)} />
 
         {/* Automation */}
         <Route path="triggers"        element={lazy_rb("Triggers",       <TriggersPage />)} />
