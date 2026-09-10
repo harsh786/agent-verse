@@ -323,8 +323,17 @@ class OcrEngine:
     ) -> tuple[str, float, str]:
         """Use LLM vision to extract text from an image."""
         if provider is None:
-            _log.warning("No provider for LLM vision OCR; returning empty text")
-            return "", 0.0, "llm_vision"
+            # Agent-callable OCR (extract_document) often runs with no injected
+            # provider. Rather than return empty, resolve the system-configured
+            # provider so OCR works standalone; the vision model is still chosen
+            # per-request via _ocr_model() below.
+            try:
+                from app.providers.registry import resolve_provider
+
+                provider = resolve_provider()
+            except Exception as exc:
+                _log.warning("No provider for LLM vision OCR (%s); empty text", exc)
+                return "", 0.0, "llm_vision"
 
         img_b64 = self._image_to_base64(img)
         try:

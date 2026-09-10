@@ -93,6 +93,31 @@ def parse_prompted_tool_calls(content: str, tool_names: set[str]) -> list[dict]:
     return calls
 
 
+def _as_image_data_uri(image_data: str) -> str:
+    """Return an ``data:image/...;base64,`` URI for a message's base64 image.
+
+    Accepts an already-formed data URI (returned as-is) or raw base64, whose
+    leading bytes are sniffed to pick the right MIME (PNG/JPEG/GIF/WebP), so the
+    OpenAI-compatible ``image_url`` block is well-formed for vision models.
+    """
+    if image_data.startswith("data:"):
+        return image_data
+    mime = "image/png"
+    try:
+        import base64 as _b64
+
+        head = _b64.b64decode(image_data[:24] + "===", validate=False)
+        if head[:3] == b"\xff\xd8\xff":
+            mime = "image/jpeg"
+        elif head[:6] in (b"GIF87a", b"GIF89a"):
+            mime = "image/gif"
+        elif head[:4] == b"RIFF":
+            mime = "image/webp"
+    except Exception:
+        pass
+    return f"data:{mime};base64,{image_data}"
+
+
 class OpenAICompatibleProvider:
     """Provider for OpenAI and any OpenAI-compatible API.
 
@@ -489,6 +514,25 @@ class OpenAICompatibleProvider:
                 # System content is expected to be text; ignore non-str (multimodal).
                 if isinstance(m.content, str) and m.content:
                     system_parts.append(m.content)
+            elif getattr(m, "image_data", None) and isinstance(m.content, str):
+                # Vision: a base64 image on the message becomes the OpenAI
+                # multimodal content array (text + image_url data URI). Without
+                # this the image was silently dropped and the model answered as if
+                # blind — so provider-path OCR/vision produced hallucinated text.
+                others.append(
+                    {
+                        "role": m.role,
+                        "content": [
+                            {"type": "text", "text": m.content},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": _as_image_data_uri(str(m.image_data)),
+                                },
+                            },
+                        ],
+                    }
+                )
             else:
                 others.append({"role": m.role, "content": m.content})
         messages: list[dict[str, Any]] = []
