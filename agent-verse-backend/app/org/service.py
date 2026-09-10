@@ -400,7 +400,7 @@ class OrgService:
         )
         req = CompletionRequest(
             messages=[Message(role="user", content=prompt)],
-            model="claude-sonnet-4-5",
+            model=getattr(llm_provider, "_default_model", "") or "claude-sonnet-4-5",
             max_tokens=600,
         )
         resp = await llm_provider.complete(req)
@@ -1504,7 +1504,7 @@ class OrgService:
         )
         req = CompletionRequest(
             messages=[Message(role="user", content=prompt)],
-            model="claude-sonnet-4-5",
+            model=getattr(llm_provider, "_default_model", "") or "claude-sonnet-4-5",
             max_tokens=600,
         )
         resp = await llm_provider.complete(req)

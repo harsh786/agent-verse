@@ -369,7 +369,7 @@ class QualityGateSystem:
                     Message(role="system", content=system),
                     Message(role="user", content=prompt),
                 ],
-                model="claude-sonnet-4-5",
+                model=getattr(self._llm, "_default_model", "") or "claude-sonnet-4-5",
                 max_tokens=200,
                 response_schema={
                     "type": "object",

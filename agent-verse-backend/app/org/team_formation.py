@@ -501,7 +501,7 @@ class TeamFormationEngine:
 
         req = CompletionRequest(
             messages=[Message(role="user", content=prompt)],
-            model="claude-sonnet-4-5",
+            model=getattr(self._llm, "_default_model", "") or "claude-sonnet-4-5",
             max_tokens=512,
         )
         resp = await self._llm.complete(req)
