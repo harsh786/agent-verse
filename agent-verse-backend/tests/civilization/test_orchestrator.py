@@ -121,6 +121,30 @@ async def test_trigger_debate_emits_events():
 
 
 @pytest.mark.asyncio
+async def test_trigger_debate_records_debate_metric():
+    """The debate counter is incremented via the single metrics.record_debate helper."""
+    from unittest.mock import patch
+
+    orch = _make_orchestrator()
+    orch._debate = AsyncMock()
+    orch._debate.run = AsyncMock(return_value=MagicMock(consensus="c", confidence=0.7))
+    orch._blackboard.post = AsyncMock()
+
+    from app.tenancy.context import PlanTier, TenantContext
+
+    orch._tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
+
+    with patch("app.civilization.metrics.record_debate") as mock_record:
+        await orch.trigger_debate(
+            topic="perf",
+            claim_a={"content": "a"},
+            claim_b={"content": "b"},
+            initiator_agent_id="a1",
+        )
+    mock_record.assert_called_once_with(tenant_id="t1")
+
+
+@pytest.mark.asyncio
 async def test_submit_goal_needs_new_agent_spawns():
     """When society has no active members, orchestrator triggers spawn."""
     mock_society = AsyncMock()

@@ -11,7 +11,6 @@ from app.civilization.learning import (
     _PROMOTION_SCORE_THRESHOLD,
     _REJECTION_SCORE_THRESHOLD,
     LearningPipeline,
-    _FakeScoringState,
 )
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -445,18 +444,4 @@ async def test_set_candidate_promoted_db_exception_swallowed():
     session = _FakeSession(raise_on="DB error")
     pipeline = _make_pipeline(db=lambda: session)
     await pipeline._set_candidate_promoted("c1", "mem-1", 0.9)  # should not raise
-
-
-# ── _FakeScoringState ──────────────────────────────────────────────────────────
-
-
-def test_fake_scoring_state_init():
-    state = _FakeScoringState(goal="optimize code", steps=["step1", "step2"])
-    assert state.goal == "optimize code"
-    assert state.steps == ["step1", "step2"]
-    assert state.status == "complete"
-    assert state.error_message == ""
-    assert state.verification_success is True
-    assert state.context == {}
-    assert state.goal_id  # non-empty UUID hex
 

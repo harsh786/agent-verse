@@ -379,16 +379,3 @@ class LearningPipeline:
                 )
         except Exception as exc:
             logger.warning("learning_set_promoted_failed", error=str(exc))
-
-
-class _FakeScoringState:
-    """Minimal state stub for EvalRunner.score_and_persist when no real state available."""
-
-    def __init__(self, goal: str, steps: list) -> None:
-        self.goal = goal
-        self.goal_id = uuid.uuid4().hex
-        self.steps = steps
-        self.status = "complete"
-        self.error_message = ""
-        self.verification_success = True
-        self.context: dict = {}

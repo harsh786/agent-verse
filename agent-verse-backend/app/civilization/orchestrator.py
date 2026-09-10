@@ -288,11 +288,11 @@ class CivilizationOrchestrator:
             payload=result,
         )
 
-        # GAP 4: Record debate metric
+        # GAP 4: Record debate metric (single reachable path via metrics helper)
         try:
-            from app.civilization.metrics import civ_debates_total
+            from app.civilization.metrics import record_debate
 
-            civ_debates_total().labels(tenant_id=self._tenant_id).inc()
+            record_debate(tenant_id=self._tenant_id)
         except Exception:
             pass
 

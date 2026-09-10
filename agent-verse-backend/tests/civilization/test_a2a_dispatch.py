@@ -1,14 +1,12 @@
 """Tests for A2A internal dispatch for civilization members."""
 from __future__ import annotations
 
-import hashlib
-import hmac as _hmac
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from app.civilization.a2a_dispatch import _sign_payload, dispatch_internal_task
+from app.civilization.a2a_dispatch import dispatch_internal_task
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -16,49 +14,6 @@ from app.civilization.a2a_dispatch import _sign_payload, dispatch_internal_task
 def _make_tenant_ctx() -> Any:
     from app.tenancy.context import PlanTier, TenantContext
     return TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
-
-
-# ── _sign_payload ─────────────────────────────────────────────────────────────
-
-
-def test_sign_payload_has_sha256_prefix():
-    sig = _sign_payload(b"hello world", "my-secret")
-    assert sig.startswith("sha256=")
-
-
-def test_sign_payload_produces_deterministic_result():
-    payload = b'{"goal": "test task"}'
-    secret = "shared-secret"
-    sig1 = _sign_payload(payload, secret)
-    sig2 = _sign_payload(payload, secret)
-    assert sig1 == sig2
-
-
-def test_sign_payload_matches_hmac_sha256():
-    payload = b"test payload data"
-    secret = "my-signing-key"
-    sig = _sign_payload(payload, secret)
-    expected_hex = _hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
-    assert sig == f"sha256={expected_hex}"
-
-
-def test_sign_payload_different_secrets_differ():
-    payload = b"same data"
-    sig1 = _sign_payload(payload, "secret-a")
-    sig2 = _sign_payload(payload, "secret-b")
-    assert sig1 != sig2
-
-
-def test_sign_payload_different_payloads_differ():
-    secret = "same-secret"
-    sig1 = _sign_payload(b"payload-a", secret)
-    sig2 = _sign_payload(b"payload-b", secret)
-    assert sig1 != sig2
-
-
-def test_sign_payload_empty_payload():
-    sig = _sign_payload(b"", "secret")
-    assert sig.startswith("sha256=")
 
 
 # ── dispatch_internal_task ────────────────────────────────────────────────────
@@ -222,5 +177,139 @@ async def test_dispatch_callback_url_parameter_accepted():
         goal_service=None,
         tenant_ctx=_make_tenant_ctx(),
         callback_url="https://my.callback.url/hook",
+    )
+    assert result["status"] == "accepted"
+
+
+# ── durable-intent repository (idempotency) ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_dispatch_is_idempotent_with_repository():
+    """Two dispatches sharing an idempotency_key submit the goal exactly once."""
+    from app.civilization.a2a_repository import InMemoryA2ARepository
+
+    repo = InMemoryA2ARepository()
+    mock_gs = AsyncMock()
+    mock_gs.submit_goal = AsyncMock(return_value={"goal_id": "goal-1"})
+
+    kwargs = dict(
+        from_agent_id="agent-a",
+        to_agent_id="agent-b",
+        goal="Analyze metrics",
+        context={},
+        civilization_id="civ-1",
+        tenant_id="t1",
+        goal_service=mock_gs,
+        tenant_ctx=_make_tenant_ctx(),
+        repository=repo,
+        idempotency_key="same-key",
+    )
+
+    first = await dispatch_internal_task(**kwargs)  # type: ignore[arg-type]
+    second = await dispatch_internal_task(**kwargs)  # type: ignore[arg-type]
+
+    assert first["status"] == "accepted"
+    assert first["goal_id"] == "goal-1"
+    # Second call short-circuits on the already-accepted record.
+    assert second["task_id"] == first["task_id"]
+    assert second["status"] == "accepted"
+    assert "already accepted" in second["message"]
+    # The goal was submitted only ONCE despite two dispatch calls.
+    mock_gs.submit_goal.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_same_key_yields_same_task_id():
+    from app.civilization.a2a_repository import InMemoryA2ARepository
+
+    repo = InMemoryA2ARepository()
+    mock_gs = AsyncMock()
+    mock_gs.submit_goal = AsyncMock(return_value={"goal_id": "g"})
+
+    common = dict(
+        from_agent_id="a",
+        to_agent_id="b",
+        goal="task",
+        context={},
+        civilization_id="civ-1",
+        tenant_id="t1",
+        goal_service=mock_gs,
+        tenant_ctx=_make_tenant_ctx(),
+        repository=repo,
+        idempotency_key="k-123",
+    )
+    r1 = await dispatch_internal_task(**common)  # type: ignore[arg-type]
+    r2 = await dispatch_internal_task(**common)  # type: ignore[arg-type]
+    assert r1["task_id"] == r2["task_id"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_records_failure_in_repository():
+    """On goal_service failure the durable record is transitioned to 'failed'."""
+    from app.civilization.a2a_repository import InMemoryA2ARepository
+
+    repo = InMemoryA2ARepository()
+    mock_gs = AsyncMock()
+    mock_gs.submit_goal = AsyncMock(side_effect=RuntimeError("boom"))
+
+    result = await dispatch_internal_task(
+        from_agent_id="a",
+        to_agent_id="b",
+        goal="task",
+        context={},
+        civilization_id="civ-1",
+        tenant_id="t1",
+        goal_service=mock_gs,
+        tenant_ctx=_make_tenant_ctx(),
+        repository=repo,
+        idempotency_key="fail-key",
+    )
+    assert result["status"] == "failed"
+    record = await repo.get("t1", result["task_id"])
+    assert record is not None
+    assert record.status == "failed"
+
+
+# ── membership guard ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_inactive_membership():
+    """Both agents must be active members of the same civilization."""
+    membership = AsyncMock()
+    membership.active_member = AsyncMock(side_effect=[True, False])  # source active, target not
+
+    with pytest.raises(PermissionError):
+        await dispatch_internal_task(
+            from_agent_id="a",
+            to_agent_id="b",
+            goal="task",
+            context={},
+            civilization_id="civ-1",
+            tenant_id="t1",
+            goal_service=AsyncMock(),
+            tenant_ctx=_make_tenant_ctx(),
+            membership=membership,
+        )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_allows_active_membership():
+    membership = AsyncMock()
+    membership.active_member = AsyncMock(return_value=True)
+    mock_gs = AsyncMock()
+    mock_gs.submit_goal = AsyncMock(return_value={"goal_id": "g"})
+
+    result = await dispatch_internal_task(
+        from_agent_id="a",
+        to_agent_id="b",
+        goal="task",
+        context={},
+        civilization_id="civ-1",
+        tenant_id="t1",
+        goal_service=mock_gs,
+        tenant_ctx=_make_tenant_ctx(),
+        membership=membership,
     )
     assert result["status"] == "accepted"
