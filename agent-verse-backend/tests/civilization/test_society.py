@@ -615,3 +615,146 @@ async def test_get_metrics_retired_counted():
     assert metrics["retired_members"] == 1
     assert metrics["total_members"] == 1
 
+
+
+# ── capability-aware routing enrichment (join to agents) ─────────────────────
+
+
+class _RoutingSession:
+    """Fake session that answers the member SELECT and the retired COUNT distinctly."""
+
+    def __init__(self, member_rows, retired_count=0):
+        self._member_rows = member_rows
+        self._retired_count = retired_count
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return None
+
+    def begin(self):
+        return _noop_ctx()
+
+    async def execute(self, stmt, params=None):
+        sql = str(stmt).upper()
+        if "COUNT(*)" in sql:
+            return SimpleNamespace(
+                fetchone=lambda: (self._retired_count,),
+                fetchall=lambda: [(self._retired_count,)],
+            )
+        return SimpleNamespace(
+            fetchall=lambda: list(self._member_rows),
+            fetchone=lambda: self._member_rows[0] if self._member_rows else None,
+        )
+
+
+class _CapturingRouter:
+    """Router double that records the available_agents it is handed."""
+
+    def __init__(self, decision):
+        self._decision = decision
+        self.seen_agents = None
+
+    async def route(self, *, goal, tenant_ctx, available_agents):
+        self.seen_agents = available_agents
+        return self._decision
+
+
+def _member_row(agent_id, *, name="", goal_template="", connectors=None, reputation=0.7):
+    now = datetime.now(UTC)
+    return (
+        f"m-{agent_id}", agent_id, "worker", None, reputation, "active",
+        0, 10.0, 1.0, now, now, name, goal_template, connectors if connectors is not None else [],
+    )
+
+
+@pytest.mark.asyncio
+async def test_load_members_maps_joined_agent_columns():
+    """load_members surfaces name/goal_template/connector_ids from the agents join."""
+    row = _member_row(
+        "agent-1", name="Billing Bot", goal_template="reconcile invoices",
+        connectors=["stripe", "quickbooks"],
+    )
+    session = _RoutingSession([row])
+    society = _make_society(db=lambda: session)
+    members = await society.load_members()
+    assert members[0]["name"] == "Billing Bot"
+    assert members[0]["goal_template"] == "reconcile invoices"
+    assert members[0]["connector_ids"] == ["stripe", "quickbooks"]
+
+
+@pytest.mark.asyncio
+async def test_load_members_tolerates_missing_join_columns():
+    """A narrow 11-col row (no agents match) still parses with safe defaults."""
+    now = datetime.now(UTC)
+    narrow = ("m1", "agent-1", "worker", None, 0.6, "active", 0, 5.0, 1.0, now, now)
+    session = _RoutingSession([narrow])
+    society = _make_society(db=lambda: session)
+    members = await society.load_members()
+    assert members[0]["name"] == ""
+    assert members[0]["goal_template"] == ""
+    assert members[0]["connector_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_route_goal_passes_capability_data_to_router():
+    """The router must receive real name/goal_template/connector_ids, not blanks."""
+    decision = SimpleNamespace(
+        agent_id="agent-1", mode="single_agent", reason="matched", confidence=0.9
+    )
+    router = _CapturingRouter(decision)
+    row = _member_row(
+        "agent-1", name="Jira Agent", goal_template="create jira tickets",
+        connectors=["jira"],
+    )
+    society = _make_society(db=lambda: _RoutingSession([row]), router=router)
+
+    from app.tenancy.context import PlanTier, TenantContext
+
+    ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
+    routing = await society.route_goal(goal="open a jira ticket", tenant_ctx=ctx)
+
+    assert routing["agent_id"] == "agent-1"
+    # The enrichment fix: these were previously always empty.
+    assert router.seen_agents is not None
+    seen = router.seen_agents[0]
+    assert seen["name"] == "Jira Agent"
+    assert seen["goal_template"] == "create jira tickets"
+    assert seen["connector_ids"] == ["jira"]
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (["a", "b"], ["a", "b"]),
+        (None, []),
+        ('["x", "y"]', ["x", "y"]),  # raw JSON string
+        ("not-json", []),
+        (123, []),
+        ([1, 2], ["1", "2"]),  # coerced to str
+    ],
+)
+def test_normalize_connectors(value, expected):
+    from app.civilization.society import _normalize_connectors
+
+    assert _normalize_connectors(value) == expected
+
+
+@pytest.mark.asyncio
+async def test_count_retired_via_db():
+    """retired count comes from a real DB count, not the retired-excluding member list."""
+    session = _RoutingSession([], retired_count=4)
+    society = _make_society(db=lambda: session)
+    assert await society._count_retired() == 4
+
+
+@pytest.mark.asyncio
+async def test_get_metrics_retired_honest_despite_load_excluding_retired():
+    """load_members excludes retired rows, yet get_metrics still reports the real count."""
+    active_row = _member_row("agent-1", reputation=0.8)
+    session = _RoutingSession([active_row], retired_count=3)
+    society = _make_society(db=lambda: session)
+    metrics = await society.get_metrics()
+    assert metrics["total_members"] == 1  # only the active member is loaded
+    assert metrics["retired_members"] == 3  # honest DB count, not 0
