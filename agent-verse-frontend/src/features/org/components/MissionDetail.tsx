@@ -17,6 +17,7 @@ import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import { getAuthHeader } from '@/stores/auth';
 import { useMission, useOrgEvents, useUpdateMissionStatus } from '../hooks/useOrg';
+import { MissionDeliverable } from './MissionDeliverable';
 import type { OrgMission, MissionStatus } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
@@ -268,6 +269,9 @@ function MissionBody({
           )}
         </div>
       )}
+
+      {/* ── Deliverable (the aggregated mission result from finalize_mission) ── */}
+      <MissionDeliverable outputs={mission.outputs ?? []} evidence={mission.evidence ?? []} />
 
       {/* ── Live Agent Execution Panel ── */}
       {goalId && (
