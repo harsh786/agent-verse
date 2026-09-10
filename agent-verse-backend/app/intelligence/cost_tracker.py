@@ -47,17 +47,36 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "gemini-1.5-flash": {"input": 0.075, "output": 0.30},
 }
 
-# Default fallback pricing when model is unknown
+# Default fallback pricing when a model is unknown (e.g. a self-hosted or NVIDIA
+# model not in the reference table). Configurable so operators can price their
+# own endpoint: MODEL_PRICE_INPUT_USD_PER_M / MODEL_PRICE_OUTPUT_USD_PER_M
+# (USD per 1M tokens). Reasonable mid-tier defaults keep budgeting sane.
 _FALLBACK_PRICING: dict[str, float] = {"input": 3.0, "output": 15.0}
+
+
+def _fallback_pricing() -> dict[str, float]:
+    import os
+
+    def _num(name: str, default: float) -> float:
+        try:
+            raw = os.getenv(name)
+            return float(raw) if raw else default
+        except ValueError:
+            return default
+
+    return {
+        "input": _num("MODEL_PRICE_INPUT_USD_PER_M", _FALLBACK_PRICING["input"]),
+        "output": _num("MODEL_PRICE_OUTPUT_USD_PER_M", _FALLBACK_PRICING["output"]),
+    }
 
 
 def calculate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
     """Return cost in USD for a given model + token counts.
 
-    Uses the in-memory MODEL_PRICING table; falls back to ``_FALLBACK_PRICING``
-    when the model is not recognised.  Callers may pass a full model name like
-    ``"claude-sonnet-4-5"`` or a partially-qualified name — the lookup tries an
-    exact match first, then a prefix scan.
+    Uses the in-memory MODEL_PRICING table; falls back to the (env-configurable)
+    fallback pricing when the model is not recognised.  Callers may pass a full
+    model name like ``"claude-sonnet-4-5"`` or a partially-qualified name — the
+    lookup tries an exact match first, then a prefix scan.
     """
     pricing = MODEL_PRICING.get(model)
     if pricing is None:
@@ -68,7 +87,7 @@ def calculate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> fl
                 break
     if pricing is None:
         logger.warning("model_pricing_miss", model=model)
-        pricing = _FALLBACK_PRICING
+        pricing = _fallback_pricing()
 
     return (prompt_tokens * pricing["input"] + completion_tokens * pricing["output"]) / 1_000_000
 

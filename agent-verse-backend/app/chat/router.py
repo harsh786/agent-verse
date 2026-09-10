@@ -25,6 +25,7 @@ from app.chat.stream import (
     stream_schedule_created,
 )
 from app.chat.templates import TemplateStore
+from app.providers.model_defaults import configured_default_model as _configured_default_model
 from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -308,7 +309,7 @@ async def stream_session(
                     "tokens_in": len(content),
                     "tokens_out": len(tokens) * 3,
                     "cost_usd": 0.0001,
-                    "model": "gpt-4o",
+                    "model": _configured_default_model("gpt-4o"),
                 },
                 show_reasoning=s.show_reasoning,
             ):

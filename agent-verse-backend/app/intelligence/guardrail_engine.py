@@ -369,11 +369,14 @@ class LLMJudge:
     def __init__(
         self,
         provider_factory: Any,
-        model: str = "gpt-4o-mini",
+        model: str = "",
         threshold: float = 0.7,
     ) -> None:
+        from app.providers.model_defaults import configured_default_model
+
         self._provider_factory = provider_factory
-        self._model = model
+        # Use the system-configured model; the cloud slug is only a last resort.
+        self._model = model or configured_default_model("gpt-4o-mini")
         self._threshold = threshold
 
     async def evaluate(self, text: str) -> GuardrailViolation | None:
@@ -529,7 +532,8 @@ class GuardrailEngine:
         if llm_provider_factory and self._config.get("llm_judge", {}).get("enabled"):
             self._judge = LLMJudge(
                 llm_provider_factory,
-                model=self._config["llm_judge"].get("model", "gpt-4o-mini"),
+                # Empty model → LLMJudge resolves the system-configured default.
+                model=self._config["llm_judge"].get("model", ""),
                 threshold=self._config["llm_judge"].get("threshold", 0.7),
             )
 

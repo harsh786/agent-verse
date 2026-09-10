@@ -307,8 +307,15 @@ class IntentRouter:
     # ── Model availability ────────────────────────────────────────────────────
 
     def available_models(self) -> list[str]:
-        """Return list of model IDs available for selection."""
-        return [
+        """Return model IDs available for selection.
+
+        The system-configured model (NVIDIA/self-hosted/…) is listed first so it
+        takes priority; the cloud slugs remain as additional options.
+        """
+        from app.providers.model_defaults import configured_default_model
+
+        configured = configured_default_model("")
+        base = [
             "claude-3-5-sonnet",
             "claude-3-haiku",
             "gpt-4o",
@@ -316,3 +323,6 @@ class IntentRouter:
             "gemini-1.5-pro",
             "gemini-1.5-flash",
         ]
+        if configured and configured not in base:
+            return [configured, *base]
+        return base

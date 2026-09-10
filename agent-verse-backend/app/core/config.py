@@ -183,16 +183,17 @@ class Settings(BaseSettings):
     agent_auto_multi_agent_enabled: bool = False
 
     # --- default model names per task type (override via env vars) ---
-    default_planning_model: str = "qwen3.8:latest"
-    default_planning_provider: str = "ollama"
-    default_execution_model: str = "qwen3.8:latest"
-    default_execution_provider: str = "ollama"
-    default_verification_model: str = "qwen3.8:latest"
-    default_verification_provider: str = "ollama"
-    default_summarization_model: str = "qwen3.8:latest"
-    default_summarization_provider: str = "ollama"
-    default_classification_model: str = "qwen3.8:latest"
-    default_classification_provider: str = "ollama"
+    # Empty = use the resolved provider's configured model (no hardcoded slug).
+    default_planning_model: str = ""
+    default_planning_provider: str = ""
+    default_execution_model: str = ""
+    default_execution_provider: str = ""
+    default_verification_model: str = ""
+    default_verification_provider: str = ""
+    default_summarization_model: str = ""
+    default_summarization_provider: str = ""
+    default_classification_model: str = ""
+    default_classification_provider: str = ""
 
     # --- Voice OS configuration ---------------------------------------------------
     # --- Public URL (for magic links in approval notifications) ---
