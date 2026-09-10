@@ -15,7 +15,7 @@
  *   - ui-ux-pro-max:    reduced motion, accessible layout, URL state
  */
 import { useState, useCallback, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISBootScreen } from '@/components/ui/JARVISBootScreen';
@@ -128,9 +128,13 @@ export function OrgPage() {
   const { data: missionInf } = useMissions(orgId, {});
   const activeMissions = (missionInf?.pages?.flatMap(p => p.data ?? []) ?? []).filter((m: OrgMission) => m.status === 'active');
 
+  const navigate = useNavigate();
+  // Open the full mission board (Tasks / Team workstreams / Artifacts / Activity)
+  // — the view users expect when they click a mission — instead of only toggling
+  // the slide-in live panel.
   const handleMissionClick = useCallback((mission: OrgMission) => {
-    setSelectedMission(prev => prev === mission.id ? null : mission.id);
-  }, []);
+    if (orgId) navigate(`/org/${orgId}/mission/${mission.id}`);
+  }, [navigate, orgId]);
 
   const closeMissionDetail = useCallback(() => setSelectedMission(null), []);
 
