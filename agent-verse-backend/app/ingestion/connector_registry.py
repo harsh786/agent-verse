@@ -149,6 +149,7 @@ def load_all_connectors() -> None:
         "app.ingestion.connectors.confluence_connector",
         "app.ingestion.connectors.jira_connector",
         "app.ingestion.connectors.rss_connector",
+        "app.ingestion.connectors.http_connector",
         "app.ingestion.connectors.youtube_connector",
         "app.ingestion.connectors.arxiv_connector",
         "app.ingestion.connectors.gitlab_connector",
