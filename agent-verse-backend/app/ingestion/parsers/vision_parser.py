@@ -11,14 +11,76 @@ Supports two modes:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.providers.base import LLMProvider
+
+# A dedicated OCR/vision model (esp. a large reasoning VLM like the NVIDIA omni
+# model) can be slow on its first, cold request — long enough that a one-shot
+# attempt times out and the parser falls back to a placeholder. Give the vision
+# call a generous timeout and a bounded retry so the cold attempt warms the model
+# and the retry succeeds. Both are env-tunable.
+_VISION_TIMEOUT_S = float(os.getenv("VISION_CALL_TIMEOUT_SECONDS", "") or 180.0)
+_VISION_MAX_ATTEMPTS = max(1, int(os.getenv("VISION_MAX_ATTEMPTS", "") or 3))
+_VISION_RETRY_DELAY_S = float(os.getenv("VISION_RETRY_DELAY_SECONDS", "") or 2.0)
+
+# Process-level guard so the proactive warm-up ping runs at most once.
+_warmed_up = False
+
+
+async def _retry_async(factory: Callable[[], Awaitable[str]]) -> str:
+    """Run an awaitable factory with bounded retries (cold-start resilience).
+
+    Retries on any exception up to ``_VISION_MAX_ATTEMPTS``; the first (cold)
+    attempt typically loads the model so a later attempt returns text instead of
+    the parser falling back. Re-raises the last error only if every attempt fails.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(_VISION_MAX_ATTEMPTS):
+        try:
+            return await factory()
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _VISION_MAX_ATTEMPTS - 1:
+                await asyncio.sleep(_VISION_RETRY_DELAY_S * (attempt + 1))
+    raise last_exc if last_exc else RuntimeError("vision call failed")
+
+
+async def warm_up_vision_model() -> bool:
+    """Proactively spin up the configured OCR/vision model (once per process).
+
+    Sends a tiny text request so the model is loaded before the first real image
+    arrives, so a cold start never turns into a fallback. Best-effort and safe to
+    call from app startup; a failure here is swallowed (the retry path still
+    covers cold starts at request time).
+    """
+    global _warmed_up
+    if _warmed_up:
+        return True
+    _warmed_up = True  # set first: never warm more than once, even on failure
+    try:
+        from app.providers.model_defaults import configured_vision_model
+        from app.providers.openai_client import async_openai_client
+
+        model = configured_vision_model("")
+        if not model:
+            return False
+        client = async_openai_client()
+        await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "ok"}],
+            max_tokens=1,
+            timeout=_VISION_TIMEOUT_S,
+        )
+        return True
+    except Exception:
+        return False
 
 
 @dataclass
@@ -85,10 +147,13 @@ class VisionParser:
         b64_image = base64.standard_b64encode(image_bytes).decode()
 
         # ── Protocol path: use the injected LLMProvider if available ──────────
-        if self._provider is not None:
+        provider = self._provider
+        if provider is not None:
             try:
-                description = await self._describe_with_provider(
-                    self._provider, b64_image, mime_type, prompt
+                description = await _retry_async(
+                    lambda: self._describe_with_provider(
+                        provider, b64_image, mime_type, prompt
+                    )
                 )
                 return VisionParseResult(
                     source_name=source_name,
@@ -111,7 +176,9 @@ class VisionParser:
             if describe_fn is None:
                 continue
             try:
-                description = await describe_fn(b64_image, mime_type, prompt)
+                description = await _retry_async(
+                    lambda fn=describe_fn: fn(b64_image, mime_type, prompt)
+                )
                 return VisionParseResult(
                     source_name=source_name,
                     description=description,
@@ -170,6 +237,7 @@ class VisionParser:
         ocr_model = configured_vision_model("gpt-4o")
         response = await client.chat.completions.create(
             model=ocr_model,
+            timeout=_VISION_TIMEOUT_S,
             messages=[
                 {
                     "role": "user",

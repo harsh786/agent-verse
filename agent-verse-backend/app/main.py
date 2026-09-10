@@ -1979,6 +1979,21 @@ def create_app(
                 except Exception as _tc_exc:
                     logger.warning("trigger_consumers_start_failed", error=str(_tc_exc))
 
+            # ── OCR/vision warmup (non-blocking — spins up the configured vision
+            # model at startup so a cold first image never falls back to a
+            # placeholder). No-op when no vision model is configured; best-effort.
+            try:
+                import asyncio as _vision_asyncio
+
+                from app.ingestion.parsers.vision_parser import (
+                    warm_up_vision_model as _warm_up_vision_model,
+                )
+
+                _vision_asyncio.create_task(_warm_up_vision_model())  # noqa: RUF006  # fire-and-forget by design
+                logger.info("vision_model_warmup_scheduled")
+            except Exception as _vision_exc:
+                logger.warning("vision_model_warmup_skipped", error=str(_vision_exc))
+
             try:
                 yield
             finally:
