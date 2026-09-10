@@ -109,9 +109,9 @@ class AudioParser:
     async def _transcribe_with_whisper(
         self, audio_bytes: bytes, filename: str, mime_type: str
     ) -> Any:
-        import openai  # type: ignore[import]
+        from app.providers.openai_client import async_openai_client
 
-        client = openai.AsyncOpenAI()
+        client = async_openai_client()
         audio_file = io.BytesIO(audio_bytes)
         audio_file.name = filename  # type: ignore[attr-defined]
         return await client.audio.transcriptions.create(

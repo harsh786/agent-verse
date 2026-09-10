@@ -156,9 +156,9 @@ class VisionParser:
         return response.content or ""
 
     async def _describe_with_openai(self, b64_image: str, mime_type: str, prompt: str) -> str:
-        import openai  # type: ignore[import]
+        from app.providers.openai_client import async_openai_client
 
-        client = openai.AsyncOpenAI()
+        client = async_openai_client()
         response = await client.chat.completions.create(
             model="gpt-4o",
             messages=[
