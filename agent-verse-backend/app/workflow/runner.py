@@ -296,6 +296,75 @@ class WorkflowRunner:
         # otherwise mark the run COMPLETE so it reaches a terminal state.
         await self._finalize_status(run_id, tenant_id, final_state)
 
+    async def execute_resume_fresh(
+        self,
+        run_id: str,
+        workflow_id: str,
+        tenant_id: str,
+        *,
+        step_id: str,
+        action: str,
+        actor_id: str,
+        note: str | None = None,
+        form_data: dict[str, Any] | None = None,
+    ) -> None:
+        """Resume a HITL-suspended run in a *separate* process from the one that
+        paused it (gap #2: cross-process workflow HITL).
+
+        The run originally suspended in an out-of-process Celery worker whose
+        per-process LangGraph checkpointer this (API- or worker-)process cannot
+        read — so there is no shared checkpoint to ``aupdate_state`` + re-invoke.
+        Instead, mirror :meth:`execute_fresh`: reconstruct the initial
+        ``WorkflowState`` from the persisted run record, then seed the reviewer's
+        decision onto the HITL fields so that when the graph re-runs, the HITL
+        step short-circuits into ``_process_decision`` (it detects the resume via
+        ``hitl_request_id == step.id``) instead of creating a *new* approval and
+        re-suspending. The run then advances to a terminal state and is persisted.
+
+        A distinct checkpointer ``thread_id`` (``<run_id>::resume``) is used so a
+        stale END checkpoint from the fresh run (if this happens to be the same
+        worker process) cannot interfere with the reconstructed invocation.
+        """
+        definition = await self._load_definition(workflow_id, tenant_id)
+        inputs: dict[str, Any] = {}
+        labels: dict[str, str] | None = None
+        if self._run_store is not None:
+            record = await self._run_store.get(tenant_id, run_id)
+            if record:
+                inputs = record.get("inputs") or {}
+                labels = record.get("labels") or None
+        initial_state = self._build_initial_state(
+            run_id=run_id,
+            workflow_id=workflow_id,
+            tenant_id=tenant_id,
+            definition=definition,
+            inputs=inputs,
+            labels=labels,
+        )
+        # Seed the reviewer's decision. HITLStepNode.execute() resumes (rather
+        # than re-suspends) when ``hitl_request_id == step.id``.
+        initial_state["hitl_request_id"] = step_id
+        initial_state["hitl_action"] = action
+        initial_state["hitl_note"] = note
+        initial_state["hitl_reviewer"] = actor_id
+        initial_state["hitl_form_data"] = form_data
+        initial_state["status"] = WorkflowRunStatus.RUNNING
+
+        compiled = self._compiler.compile(definition)
+        config = {"configurable": {"thread_id": f"{run_id}::resume"}}
+        try:
+            final_state = await compiled.ainvoke(initial_state, config)
+        except Exception as exc:
+            _log.error(
+                "workflow_resume_failed_worker", run_id=run_id, error=repr(exc), exc_info=True
+            )
+            if self._run_store is not None:
+                await self._run_store.update_status(
+                    run_id, WorkflowRunStatus.FAILED, tenant_id=tenant_id, error=str(exc)
+                )
+            return
+        await self._finalize_status(run_id, tenant_id, final_state)
+
     async def _finalize_status(
         self, run_id: str, tenant_id: str, final_state: Any
     ) -> None:
@@ -330,12 +399,49 @@ class WorkflowRunner:
         form_data: dict[str, Any] | None,
         tenant_id: str,
     ) -> None:
-        """Resume a WAITING_HITL run after reviewer decision."""
-        # Load state from checkpointer
-        workflow_id = await self._run_store.get_workflow_id(run_id) if self._run_store else ""
+        """Resume a WAITING_HITL run after a reviewer decision.
+
+        Two paths, chosen by whether Celery is wired:
+
+        * **Celery (cross-process, gap #2):** the run suspended in an
+          out-of-process worker whose per-process checkpointer this process
+          cannot read, so ``aupdate_state`` + re-invoke against a local
+          checkpoint would apply the decision to the wrong (empty) checkpoint.
+          Instead dispatch the decision itself to a worker, which reconstructs
+          the run from the persisted run record and advances it to terminal
+          (:meth:`execute_resume_fresh`). No shared checkpointer required.
+        * **In-process (``_celery`` is ``None``, e.g. the in-process e2e):** the
+          suspended checkpoint lives in this process, so update it and re-invoke
+          directly — the original WS-3/WS-4 behaviour, preserved unchanged.
+        """
+        workflow_id = (
+            await self._run_store.get_workflow_id(run_id, tenant_id)
+            if self._run_store
+            else ""
+        )
+
+        if self._celery:
+            from app.workflow.celery_tasks import execute_workflow_run
+
+            execute_workflow_run.apply_async(
+                args=[run_id, workflow_id, tenant_id],
+                kwargs={
+                    "resume": True,
+                    "hitl_decision": {
+                        "step_id": step_id,
+                        "action": action,
+                        "actor_id": actor_id,
+                        "note": note,
+                        "form_data": form_data,
+                    },
+                },
+                queue=f"workflows.{await self._get_plan_tier(tenant_id)}",
+            )
+            return
+
+        # In-process resume: the checkpoint is local to this process.
         definition = await self._load_definition(workflow_id, tenant_id)
         compiled = self._compiler.compile(definition)
-
         config = {"configurable": {"thread_id": run_id}}
         state_update: dict[str, Any] = {
             "status": WorkflowRunStatus.RUNNING,
@@ -352,25 +458,14 @@ class WorkflowRunner:
             "hitl_form_data": form_data,
         }
         await compiled.aupdate_state(config, state_update)
-
-        # Re-dispatch to continue execution
-        if self._celery:
-            from app.workflow.celery_tasks import execute_workflow_run
-
-            execute_workflow_run.apply_async(
-                args=[run_id, workflow_id, tenant_id],
-                kwargs={"resume": True},
-                queue=f"workflows.{await self._get_plan_tier(tenant_id)}",
-            )
-        else:
-            current = await compiled.aget_state(config)
-            if hasattr(current, "values"):
-                state = dict(current.values)
-                state.update(state_update)
-                final_state = await compiled.ainvoke(state, config)
-                # A resumed in-process run must also reach a terminal run-level
-                # status (the graph itself only emits step_outputs).
-                await self._finalize_status(run_id, tenant_id, final_state)
+        current = await compiled.aget_state(config)
+        if hasattr(current, "values"):
+            state = dict(current.values)
+            state.update(state_update)
+            final_state = await compiled.ainvoke(state, config)
+            # A resumed in-process run must also reach a terminal run-level
+            # status (the graph itself only emits step_outputs).
+            await self._finalize_status(run_id, tenant_id, final_state)
 
     async def _load_definition(self, workflow_id: str, tenant_id: str) -> WorkflowDefinition:
         if self._run_store is not None:

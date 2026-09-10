@@ -47,6 +47,15 @@ def _build_worker_runner() -> Any:
         hitl_workflow_gateway = None
     if hitl_workflow_gateway is None:
         hitl_workflow_gateway = HITLWorkflowGateway()
+    # Cross-process HITL (gap #2): give the worker's gateway the same durable,
+    # RLS-scoped Postgres approval store the API uses, so a pending approval the
+    # worker creates when a run suspends at a HITL step is visible to the API's
+    # /approvals endpoints (and a decision the API writes is visible here). The
+    # FastAPI lifespan — which normally wires this — never runs in a worker.
+    if getattr(hitl_workflow_gateway, "_approval_store", None) is None:
+        from app.workflow.approval_store import PostgresWorkflowApprovalStore
+
+        hitl_workflow_gateway._approval_store = PostgresWorkflowApprovalStore(db_factory)
     compiler = WorkflowCompiler(
         context_resolver=ContextResolver(),
         checkpointer=_WORKER_CHECKPOINTER,
@@ -111,6 +120,7 @@ def execute_workflow_run(
     is_test_run: bool = False,
     mock_overrides: dict | None = None,
     resume: bool = False,
+    hitl_decision: dict | None = None,
 ) -> None:
     """Execute a workflow run (or resume after HITL)."""
     runner = _get_runner()
@@ -119,8 +129,24 @@ def execute_workflow_run(
         return
 
     async def _execute() -> None:
-        if resume:
-            # State was already updated via aupdate_state; just re-invoke
+        if resume and hitl_decision:
+            # Cross-process HITL resume (gap #2): the run suspended in a worker
+            # whose per-process checkpointer this process cannot read, so the
+            # reviewer's decision travels in the task payload. Reconstruct the
+            # run from the persisted record + decision and advance to terminal.
+            await runner.execute_resume_fresh(
+                run_id,
+                workflow_id,
+                tenant_id,
+                step_id=hitl_decision["step_id"],
+                action=hitl_decision["action"],
+                actor_id=hitl_decision.get("actor_id", ""),
+                note=hitl_decision.get("note"),
+                form_data=hitl_decision.get("form_data"),
+            )
+        elif resume:
+            # Legacy same-process resume: state was updated via aupdate_state on
+            # this process's checkpointer; just re-invoke.
             definition = await runner._load_definition(workflow_id, tenant_id)
             compiled = runner._compiler.compile(definition)
             config = {"configurable": {"thread_id": run_id}}
