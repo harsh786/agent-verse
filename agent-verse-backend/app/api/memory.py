@@ -249,6 +249,74 @@ async def list_execution_memories(request: Request) -> list[dict[str, Any]]:
     ]
 
 
+@router.get("/records")
+async def list_memory_records(
+    request: Request,
+    kind: str | None = Query(
+        None, description="Filter by memory_kind (episodic|procedural|reflexion|…)"
+    ),
+    goal_id: str | None = Query(None, description="Filter by source_goal_id (goal-linkage)"),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, Any]:
+    """List canonical governed memory records for this tenant.
+
+    Unlike ``GET /memory`` (flat long_term_memory rows), this surfaces the real
+    ``memory_kind`` categorization (episodic / procedural / reflexion / semantic /
+    …) and ``source_goal_id`` goal-linkage that live in the canonical
+    ``memory_records`` table, with per-record TTL (``expires_at``). RLS/tenant
+    scoped; returns an honest empty list when there are none.
+    """
+    from typing import get_args
+
+    from app.memory.contracts import MemoryKind
+
+    tenant_ctx = _require_tenant(request)
+    allowed_kinds = set(get_args(MemoryKind))
+    if kind is not None and kind not in allowed_kinds:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown memory kind {kind!r}; expected one of {sorted(allowed_kinds)}",
+        )
+
+    repo = getattr(request.app.state, "memory_repository", None)
+    if repo is None or not hasattr(repo, "list_records"):
+        return {"records": [], "total": 0, "kinds": {}}
+
+    memory_kinds = frozenset({kind}) if kind else None
+    records = await repo.list_records(
+        tenant_ctx.tenant_id,
+        memory_kinds=memory_kinds,
+        source_goal_id=goal_id,
+        limit=limit,
+    )
+
+    kind_counts: dict[str, int] = {}
+    serialized: list[dict[str, Any]] = []
+    for rec in records:
+        kind_counts[rec.memory_kind] = kind_counts.get(rec.memory_kind, 0) + 1
+        serialized.append(
+            {
+                "memory_id": rec.memory_id,
+                "memory_kind": rec.memory_kind,
+                "content": rec.safe_summary,
+                "source_goal_id": rec.source_goal_id,
+                "source_execution_id": rec.source_execution_id,
+                "classification": rec.classification,
+                "confidence": rec.confidence,
+                "lifecycle_state": rec.lifecycle_state,
+                "evidence_refs": list(rec.evidence_refs),
+                "recall_count": rec.recall_count,
+                "helpful_count": rec.helpful_count,
+                "harmful_count": rec.harmful_count,
+                "expires_at": rec.expires_at.isoformat() if rec.expires_at else None,
+                "created_at": rec.created_at.isoformat() if rec.created_at else None,
+                "updated_at": rec.updated_at.isoformat() if rec.updated_at else None,
+            }
+        )
+
+    return {"records": serialized, "total": len(serialized), "kinds": kind_counts}
+
+
 @router.delete("/{memory_id}")
 async def delete_memory_by_id(request: Request, memory_id: str) -> dict:
     """Delete a specific memory entry (GDPR right-to-erasure for individual records)."""

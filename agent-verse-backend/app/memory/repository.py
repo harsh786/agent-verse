@@ -12,11 +12,13 @@ from typing import Protocol
 from app.coordination.store import OptimisticConflictError
 from app.memory.contracts import (
     MemoryFeedback,
+    MemoryKind,
     MemoryRecallHit,
     MemoryRecallRequest,
     MemoryRecord,
     MemoryWriteRequest,
 )
+from app.memory.retention import resolve_expires_at
 
 Embedder = Callable[[str], Awaitable[tuple[float, ...]]]
 
@@ -29,6 +31,14 @@ class MemoryRepository(Protocol):
         self, tenant_id: str, memory_id: str, *, state: str, expected_version: int
     ) -> MemoryRecord: ...
     async def purge_expired(self, tenant_id: str, *, now: datetime) -> int: ...
+    async def list_records(
+        self,
+        tenant_id: str,
+        *,
+        memory_kinds: frozenset[MemoryKind] | None = None,
+        source_goal_id: str | None = None,
+        limit: int = 100,
+    ) -> tuple[MemoryRecord, ...]: ...
 
 
 class InMemoryMemoryRepository:
@@ -92,6 +102,7 @@ class InMemoryMemoryRepository:
                 embedding=embedding,
                 created_at=now,
                 updated_at=now,
+                expires_at=resolve_expires_at(request.retention_policy_id, now),
                 retention_policy_id=request.retention_policy_id,
                 idempotency_key=request.idempotency_key,
             )
@@ -228,6 +239,30 @@ class InMemoryMemoryRepository:
             for key in expired:
                 del self._records[key]
             return len(expired)
+
+    async def list_records(
+        self,
+        tenant_id: str,
+        *,
+        memory_kinds: frozenset[MemoryKind] | None = None,
+        source_goal_id: str | None = None,
+        limit: int = 100,
+    ) -> tuple[MemoryRecord, ...]:
+        """List a tenant's canonical records, newest first, with optional filters.
+
+        Read model for the memory inspector: exposes ``memory_kind`` and
+        ``source_goal_id`` goal-linkage. Tenant-scoped; honest empty when none.
+        """
+        async with self._lock:
+            records = [
+                record for (tid, _mid), record in self._records.items() if tid == tenant_id
+            ]
+        if memory_kinds:
+            records = [r for r in records if r.memory_kind in memory_kinds]
+        if source_goal_id is not None:
+            records = [r for r in records if r.source_goal_id == source_goal_id]
+        records.sort(key=lambda r: (r.created_at, r.memory_id), reverse=True)
+        return tuple(records[:limit])
 
 
 def _matches_scope(record: MemoryRecord, request: MemoryRecallRequest) -> bool:
