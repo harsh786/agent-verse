@@ -75,6 +75,34 @@ def test_granular_flag_independent_of_master():
     assert flags.enable_runtime_scorecard is True
 
 
+def test_self_improvement_auto_apply_is_opt_in_only():
+    """Auto-applying a winning config to a live agent must be opt-in.
+
+    It defaults off AND is deliberately NOT switched on by the master
+    dynamic_orchestration flag (unlike the other granular flags) — writing to a
+    live agent's config is higher-risk and must be enabled explicitly.
+    """
+    import os
+    import unittest.mock as _um
+
+    from app.core.runtime_flags import RuntimeFlags, get_runtime_flags
+
+    assert RuntimeFlags().enable_self_improvement_auto_apply is False
+
+    get_runtime_flags.cache_clear()
+    with _um.patch.dict(os.environ, {"DYNAMIC_ORCHESTRATION": "true"}, clear=False):
+        get_runtime_flags.cache_clear()
+        flags = get_runtime_flags()
+        assert flags.enable_self_improvement is True  # master cascades to this one
+        assert flags.enable_self_improvement_auto_apply is False  # but never this one
+    get_runtime_flags.cache_clear()
+
+    with _um.patch.dict(os.environ, {"ENABLE_SELF_IMPROVEMENT_AUTO_APPLY": "true"}, clear=False):
+        get_runtime_flags.cache_clear()
+        assert get_runtime_flags().enable_self_improvement_auto_apply is True
+    get_runtime_flags.cache_clear()
+
+
 def test_get_runtime_flags_reads_env_vars():
     """get_runtime_flags must read ENABLE_RUNTIME_SCORECARD env var."""
     import os

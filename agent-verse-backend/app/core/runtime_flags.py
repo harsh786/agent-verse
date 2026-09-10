@@ -47,6 +47,13 @@ class RuntimeFlags:
     # OR set via the master dynamic_orchestration=True
     enable_runtime_scorecard: bool = False  # RuntimeScorecard 9-dim scoring
     enable_self_improvement: bool = False  # SelfImprovementEngine action dispatch
+    # Closes the self-improvement loop: when a candidate config wins its A/B
+    # experiment, autonomously write it back to the agent. Higher-risk than the
+    # other granular flags (it mutates a live agent's config), so it is opt-in
+    # only and is deliberately NOT switched on by the master dynamic_orchestration
+    # flag — turn it on explicitly, per deployment.  When off, a winning
+    # experiment is concluded and left pending a manual apply via the API.
+    enable_self_improvement_auto_apply: bool = False
     enable_rag_strategy_routing: bool = False  # Profile-based RAG strategy selection
     enable_pattern_sse_events: bool = False  # pattern_assembled, eval_score_recorded SSEs
     enable_guardrail_profile: bool = False  # Profile-based GuardrailEnforcer
@@ -83,6 +90,7 @@ class RuntimeFlags:
             readiness_gate=_bool_env("READINESS_GATE"),
             enable_runtime_scorecard=_bool_env("ENABLE_RUNTIME_SCORECARD"),
             enable_self_improvement=_bool_env("ENABLE_SELF_IMPROVEMENT"),
+            enable_self_improvement_auto_apply=_bool_env("ENABLE_SELF_IMPROVEMENT_AUTO_APPLY"),
             enable_rag_strategy_routing=_bool_env("ENABLE_RAG_STRATEGY_ROUTING"),
             enable_pattern_sse_events=_bool_env("ENABLE_PATTERN_SSE_EVENTS"),
             enable_guardrail_profile=_bool_env("ENABLE_GUARDRAIL_PROFILE"),
@@ -117,6 +125,7 @@ def get_runtime_flags() -> RuntimeFlags:
         readiness_gate=_env_bool("READINESS_GATE"),
         enable_runtime_scorecard=_env_bool("ENABLE_RUNTIME_SCORECARD"),
         enable_self_improvement=_env_bool("ENABLE_SELF_IMPROVEMENT"),
+        enable_self_improvement_auto_apply=_env_bool("ENABLE_SELF_IMPROVEMENT_AUTO_APPLY"),
         enable_rag_strategy_routing=_env_bool("ENABLE_RAG_STRATEGY_ROUTING"),
         enable_pattern_sse_events=_env_bool("ENABLE_PATTERN_SSE_EVENTS"),
         enable_guardrail_profile=_env_bool("ENABLE_GUARDRAIL_PROFILE"),

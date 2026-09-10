@@ -576,10 +576,15 @@ def create_app(
     _self_optimizer = SelfOptimizer()
     # v2 self-optimizer: fixes all 4 critical bugs + Bayesian A/B testing
     # db_factory and redis are None here; upgraded in lifespan
+    from app.core.runtime_flags import get_runtime_flags
+
     _self_optimizer_v2 = SelfOptimizerV2(
         redis=_fake_redis,
         db_factory=None,
         llm_provider_factory=lambda: _app_provider,
+        # Closed-loop auto-apply is opt-in per deployment: only write a winning
+        # candidate config back to a live agent when the operator has enabled it.
+        auto_apply=get_runtime_flags().enable_self_improvement_auto_apply,
     )
     # v2 compliance checker: no hardcoded booleans; db_factory upgraded in lifespan
     _compliance_checker = ComplianceChecker(db_factory=None)
