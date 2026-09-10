@@ -40,6 +40,34 @@ from app.org.models import (
 _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
+
+def resolve_llm_provider(app_state: Any) -> Any | None:
+    """Resolve the real LLM provider from the request's wired ``app.state``.
+
+    The org layer is meant to be genuinely LLM-driven (generic composer + generic
+    mission decomposition), degrading to a deterministic heuristic only when no
+    usable model is available. Earlier code read ``app_state.planner_provider``,
+    an attribute that is *never* set on ``app.state`` — so the LLM path was dead
+    and every org ran the template/heuristic fallback. The real provider that
+    ``create_app`` binds is ``app.state._app_provider`` (see app/main.py). This
+    helper prefers an explicit ``planner_provider`` (tests may inject one), then
+    the canonical ``_app_provider``, then a per-request ``_llm_provider_override``,
+    returning ``None`` when nothing is wired so the caller degrades honestly.
+
+    A ``FakeProvider`` is intentionally returned as-is (not treated as ``None``):
+    it exercises the real LLM code path deterministically, and the JSON-parse
+    guards in the composer/decomposer degrade cleanly when its canned output is
+    not a usable plan.
+    """
+    if app_state is None:
+        return None
+    for attr in ("planner_provider", "_app_provider", "_llm_provider_override"):
+        provider = getattr(app_state, attr, None)
+        if provider is not None:
+            return provider
+    return None
+
+
 # ── Task status constants ─────────────────────────────────────────────────────
 TASK_STATUSES = frozenset(
     {
@@ -1892,9 +1920,12 @@ class OrgService:
                 from app.org.meta_orchestrator import MetaOrchestrator
 
                 # Resolve LLM provider from the request's wired app.state.
+                # (Reads _app_provider — the attribute create_app actually binds —
+                # so mission decomposition is genuinely LLM-driven, not always the
+                # heuristic fallback.)
                 _llm_provider: Any | None = None
                 with contextlib.suppress(Exception):
-                    _llm_provider = getattr(app_state, "planner_provider", None)
+                    _llm_provider = resolve_llm_provider(app_state)
 
                 orchestrator = MetaOrchestrator(llm_provider=_llm_provider)
                 orch_plan = await orchestrator.plan_mission(
