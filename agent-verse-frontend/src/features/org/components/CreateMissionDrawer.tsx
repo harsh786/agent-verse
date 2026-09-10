@@ -83,15 +83,17 @@ export function CreateMissionDrawer({ orgId, open, onClose }: CreateMissionDrawe
             // web-guidelines: overscroll-behavior:contain in drawers
             style={{ overscroll: 'contain' } as React.CSSProperties}
             className={cn(
-              'fixed bottom-0 left-0 right-0 z-50',
+              // Mobile: full-width bottom sheet. Desktop: a centered, constrained
+              // floating card lifted off the bottom edge — never edge-to-edge.
+              'fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-lg',
               'max-h-[90dvh] overflow-y-auto',
-              'bg-[#1A1F2E] border-t border-[#2D3748]',
-              'rounded-t-2xl',
-              'shadow-[0_-20px_60px_rgba(0,0,0,0.6)]',
+              'bg-[#1A1F2E] border border-[#2D3748]',
+              'rounded-t-2xl sm:mb-6 sm:rounded-2xl',
+              'shadow-[0_-20px_60px_rgba(0,0,0,0.6)] sm:shadow-[0_24px_80px_rgba(0,0,0,0.65)]',
             )}
           >
-            {/* Drag handle (visual affordance) */}
-            <div className="flex justify-center pt-3 pb-1">
+            {/* Drag handle — a mobile bottom-sheet affordance; hidden on desktop */}
+            <div className="flex justify-center pt-3 pb-1 sm:hidden">
               <div className="w-10 h-1 rounded-full bg-[#3D4A5C]" aria-hidden />
             </div>
 
