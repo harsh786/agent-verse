@@ -18,7 +18,7 @@ from typing import Any, ClassVar, cast
 
 import structlog
 from opentelemetry import trace
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.org.approval_chain import (
@@ -1312,13 +1312,24 @@ class OrgService:
                 .group_by(OrgEvent.severity)
             )
 
-            # Pending approvals
+            # Pending approvals — only those on a still-open mission. A completed/
+            # failed mission must not keep a leftover approval gate counted as
+            # "pending" (that made the dashboard show a phantom approval forever).
             approval_result = await self._session.execute(
-                select(func.count(OrgTask.id)).where(
+                select(func.count(OrgTask.id))
+                .select_from(OrgTask)
+                .outerjoin(OrgMission, OrgMission.id == OrgTask.mission_id)
+                .where(
                     and_(
                         OrgTask.tenant_id == self._tenant_id,
                         OrgTask.org_id == uid,
                         OrgTask.status == "approval_required",
+                        or_(
+                            OrgTask.mission_id.is_(None),
+                            OrgMission.status.not_in(
+                                ("completed", "failed", "cancelled", "archived")
+                            ),
+                        ),
                     )
                 )
             )
@@ -1838,7 +1849,11 @@ class OrgService:
             }
 
         new_task_status = "completed" if terminal_ok else "failed"
-        for t in subtasks:
+        # Close EVERY non-terminal task on the mission, not only 'subtask'-kind ones.
+        # Approval-gate tasks (status 'approval_required') were being left behind, so
+        # a finished mission kept inflating pending-approval counts with a gate that
+        # has no live HITL request and can never be actioned from the inbox.
+        for t in all_tasks:
             if t.status not in ("completed", "failed", "cancelled", "expired"):
                 await self.update_task_status(str(t.id), new_task_status)
 
