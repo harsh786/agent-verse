@@ -12,6 +12,7 @@ Supports two modes:
 from __future__ import annotations
 
 import base64
+import os
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -159,8 +160,18 @@ class VisionParser:
         from app.providers.openai_client import async_openai_client
 
         client = async_openai_client()
+        # Model comes from config, not a hardcoded slug: with an OpenAI-compatible
+        # endpoint (NVIDIA, vLLM, …) configured via OPENAI_BASE_URL, this routes
+        # OCR/vision to the configured model (e.g. moonshotai/kimi-k3).
+        ocr_model = (
+            os.getenv("OCR_MODEL")
+            or os.getenv("NVIDIA_MODEL")
+            or os.getenv("DEFAULT_MODEL")
+            or os.getenv("OPENAI_MODEL")
+            or "gpt-4o"
+        )
         response = await client.chat.completions.create(
-            model="gpt-4o",
+            model=ocr_model,
             messages=[
                 {
                     "role": "user",
@@ -185,7 +196,7 @@ class VisionParser:
 
         client = anthropic.AsyncAnthropic()
         response = await client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model=os.getenv("ANTHROPIC_VISION_MODEL") or "claude-3-5-sonnet-20241022",
             max_tokens=500,
             messages=[
                 {

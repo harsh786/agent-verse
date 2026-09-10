@@ -79,9 +79,18 @@ def _apply_env_model_overrides(base: ModelRouterConfig) -> ModelRouterConfig:
     """
     base_url = (os.getenv("OPENAI_BASE_URL") or "").rstrip("/").lower()
     is_self_hosted = bool(base_url) and base_url != "https://api.openai.com/v1"
+    # A single configured model (NVIDIA, self-hosted vLLM, …) should serve every
+    # role, so no hardcoded profile slug (gpt-5.2, claude-…) is ever routed to an
+    # endpoint that cannot serve it. NVIDIA is included even without OPENAI_BASE_URL.
+    is_single_model = is_self_hosted or bool(os.getenv("NVIDIA_API_KEY"))
     single = ""
-    if is_self_hosted:
-        single = os.getenv("OPENAI_MODEL") or os.getenv("DEFAULT_MODEL") or ""
+    if is_single_model:
+        single = (
+            os.getenv("NVIDIA_MODEL")
+            or os.getenv("OPENAI_MODEL")
+            or os.getenv("DEFAULT_MODEL")
+            or ""
+        )
 
     overrides = {
         "planning_model": os.getenv("DEFAULT_PLANNING_MODEL") or single,

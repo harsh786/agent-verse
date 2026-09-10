@@ -71,6 +71,24 @@ def _detect_providers() -> list[ProviderConfig]:
         except Exception as e:
             logger.warning("llm_providers_parse_error", error=str(e)[:80])
 
+    # ── NVIDIA (build.nvidia.com / integrate.api.nvidia.com) ──────────────────
+    # OpenAI-compatible cloud endpoint. Detected FIRST so, when configured, it is
+    # the *prioritised* provider: a generic, fully env-configured cloud model
+    # serves reasoning/tooling/OCR (and embeddings via NVIDIA_EMBED_MODEL) instead
+    # of falling back to a possibly-unreachable self-hosted default. Model names
+    # are never hardcoded — they come from NVIDIA_MODEL / NVIDIA_EMBED_MODEL.
+    if os.getenv("NVIDIA_API_KEY"):
+        _nvidia_model = (os.getenv("NVIDIA_MODEL") or "").strip()
+        providers.append(
+            ProviderConfig(
+                provider_type="nvidia",
+                api_key=os.getenv("NVIDIA_API_KEY", ""),
+                base_url=os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+                models=[_nvidia_model] if _nvidia_model else None,
+                display_name="NVIDIA",
+            )
+        )
+
     # Auto-detect from individual keys
     if os.getenv("ANTHROPIC_API_KEY"):
         providers.append(
@@ -274,6 +292,21 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
             api_key=cfg.api_key,
             base_url=cfg.base_url or _OFFICIAL_OPENAI_BASE_URL,
             default_model=configured_model or "gpt-5.2",
+        )
+
+    elif ptype == "nvidia":
+        # NVIDIA's integrate API is OpenAI-compatible, so reuse the hardened
+        # OpenAICompatibleProvider (system-message normalisation, prompted-tool
+        # fallback, reasoning-content parsing) rather than a thin bespoke client.
+        if not cfg.api_key:
+            return None
+        from app.providers.openai_compatible import OpenAICompatibleProvider
+
+        return OpenAICompatibleProvider(
+            api_key=cfg.api_key,
+            base_url=cfg.base_url or "https://integrate.api.nvidia.com/v1",
+            default_model=configured_model or os.getenv("NVIDIA_MODEL") or "moonshotai/kimi-k3",
+            embed_model=os.getenv("NVIDIA_EMBED_MODEL") or "nvidia/nemotron-3-embed-1b",
         )
 
     elif ptype == "gemini":
