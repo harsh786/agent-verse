@@ -122,12 +122,17 @@ class HITLWorkflowGateway:
         redis_client: Any | None = None,
         notification_service: Any | None = None,
         resume_callback: Any | None = None,
+        approval_store: Any | None = None,
     ) -> None:
         self._base = base_gateway
         self._redis = redis_client
         self._notify = notification_service
         self._resume_callback = resume_callback
-        # In-memory fallback (dev/tests)
+        # Durable, cross-process store (Postgres, RLS). When set, a pending
+        # approval created by an out-of-process Celery worker is visible to the
+        # API's /approvals endpoints and vice versa (gap #2: cross-process HITL).
+        self._approval_store = approval_store
+        # In-memory fallback (dev/tests, and process-local mirror).
         self._store: dict[str, WorkflowHITLRequest] = {}
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -217,9 +222,15 @@ class HITLWorkflowGateway:
         form_data: dict[str, Any] | None = None,
         *,
         idempotent: bool = True,
+        tenant_id: str | None = None,
     ) -> WorkflowHITLRequest:
-        """Submit a reviewer decision. Idempotent by default."""
-        req = await self.get_request(request_id)
+        """Submit a reviewer decision. Idempotent by default.
+
+        ``tenant_id`` lets the decision resolve the pending approval from the
+        durable (RLS-scoped) store — the path an API caller uses to decide an
+        approval that a Celery worker created in another process.
+        """
+        req = await self.get_request(request_id, tenant_id)
         if req is None:
             raise ValueError(f"HITL request not found: {request_id}")
 
@@ -402,8 +413,24 @@ class HITLWorkflowGateway:
 
     # ── Query ─────────────────────────────────────────────────────────────────
 
-    async def get_request(self, request_id: str) -> WorkflowHITLRequest | None:
-        """Load a HITL request by ID."""
+    async def get_request(
+        self, request_id: str, tenant_id: str | None = None
+    ) -> WorkflowHITLRequest | None:
+        """Load a HITL request by ID.
+
+        With a ``tenant_id`` and the durable store wired, the read is served from
+        Postgres (RLS-scoped) — the path that makes a worker-created approval
+        visible to the API process. Without a tenant (the legacy signature) it
+        falls back to Redis / the in-memory mirror.
+        """
+        if self._approval_store is not None and tenant_id:
+            try:
+                found = await self._approval_store.get(request_id, tenant_id)
+            except Exception as exc:
+                _log.warning("hitl_approval_db_get_failed", request_id=request_id, error=str(exc))
+                found = None
+            if found is not None:
+                return found
         if self._redis is not None:
             raw = await self._redis.get(f"hitl:req:{request_id}")
             if raw:
@@ -419,6 +446,17 @@ class HITLWorkflowGateway:
         per_page: int = 20,
     ) -> tuple[list[WorkflowHITLRequest], int]:
         """List pending HITL requests for a tenant."""
+        if self._approval_store is not None:
+            try:
+                return await self._approval_store.list_pending(
+                    tenant_id,
+                    assigned_to=assigned_to,
+                    priority=priority,
+                    page=page,
+                    per_page=per_page,
+                )
+            except Exception as exc:
+                _log.warning("hitl_approval_db_list_failed", tenant_id=tenant_id, error=str(exc))
         all_items = list(self._store.values())
         filtered = [
             r
@@ -438,6 +476,11 @@ class HITLWorkflowGateway:
 
     async def get_stats(self, tenant_id: str) -> dict[str, Any]:
         """Return inbox stats for a tenant."""
+        if self._approval_store is not None:
+            try:
+                return await self._approval_store.get_stats(tenant_id)
+            except Exception as exc:
+                _log.warning("hitl_approval_db_stats_failed", tenant_id=tenant_id, error=str(exc))
         items = [r for r in self._store.values() if r.tenant_id == tenant_id]
         pending = sum(1 for r in items if r.status == "pending")
         decided = [r for r in items if r.reviewed_at]
@@ -498,6 +541,17 @@ class HITLWorkflowGateway:
 
     async def _save(self, req: WorkflowHITLRequest) -> None:
         self._store[req.request_id] = req
+        # Durable, cross-process persistence (Postgres, RLS). Best-effort: an
+        # infra hiccup must not break the in-process suspend/resume path.
+        if self._approval_store is not None:
+            try:
+                await self._approval_store.save(req)
+            except Exception as exc:
+                _log.warning(
+                    "hitl_approval_db_save_failed",
+                    request_id=req.request_id,
+                    error=str(exc),
+                )
         if self._redis is not None:
             await self._redis.setex(
                 f"hitl:req:{req.request_id}",

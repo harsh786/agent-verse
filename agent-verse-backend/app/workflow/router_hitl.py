@@ -126,7 +126,7 @@ async def approval_stats(request: Request) -> dict[str, Any]:
 @router.get("/{request_id}")
 async def get_approval(request_id: str, request: Request) -> dict[str, Any]:
     svc = _svc(request)
-    req = await svc.get_request(request_id)
+    req = await svc.get_request(request_id, _tenant_id(request))
     if req is None:
         raise HTTPException(status_code=404, detail="Approval request not found")
     return req.__dict__
@@ -144,6 +144,7 @@ async def decide_approval(request_id: str, body: DecideRequest, request: Request
             actor_id=user_id,
             note=body.note,
             form_data=body.form_data or None,
+            tenant_id=_tenant_id(request),
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

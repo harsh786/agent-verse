@@ -1314,6 +1314,16 @@ def create_app(
                     _wf_hitl_gw._resume_callback = _make_workflow_hitl_resume_callback(
                         _wf_runner_db
                     )
+                    # Cross-process HITL (gap #2): back the gateway with the
+                    # durable, RLS-scoped Postgres approval store so a pending
+                    # approval created by an out-of-process Celery worker is
+                    # visible to the API's /approvals endpoints, and a decision
+                    # made here is visible to the worker that resumes the run.
+                    from app.workflow.approval_store import (
+                        PostgresWorkflowApprovalStore as _PgApprovalStore,
+                    )
+
+                    _wf_hitl_gw._approval_store = _PgApprovalStore(db_factory)
                 logger.info("workflow_engine_db_wired")
             except Exception as _wf_db_exc:
                 logger.warning("workflow_engine_db_wire_failed", error=str(_wf_db_exc))
