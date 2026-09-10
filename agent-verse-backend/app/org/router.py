@@ -51,6 +51,7 @@ from app.org.schemas import (
     UpdateMissionRequest,
     UpdateOrganizationRequest,
 )
+from app.org.rbac import OrgRole, require_org_role
 from app.org.service import OrgService
 
 router = APIRouter(prefix="/v1/org", tags=["org"])
@@ -224,6 +225,7 @@ async def update_organization(
     body: UpdateOrganizationRequest,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.DEPT_ADMIN),
 ) -> OrganizationResponse:
     org = await service.update_organization(org_id, body.model_dump(exclude_none=True))
     if not org:
@@ -241,6 +243,7 @@ async def delete_organization(
     org_id: str,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.ORG_ADMIN),
 ) -> None:
     deleted = await service.delete_organization(org_id)
     if not deleted:
@@ -352,6 +355,7 @@ async def create_mission(
     body: CreateMissionRequest,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> MissionResponse:
     mission = await service.create_mission(
         org_id=org_id,
@@ -991,6 +995,7 @@ async def approve_org_request(
     request: Request,
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict:
     """G-24: Approve a HITL request belonging to this org's missions."""
     hitl_gateway = getattr(getattr(request.app, "state", None), "hitl_gateway", None)
@@ -1038,6 +1043,7 @@ async def reject_org_request(
     request: Request,
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict:
     """G-24: Reject a HITL request belonging to this org's missions."""
     hitl_gateway = getattr(getattr(request.app, "state", None), "hitl_gateway", None)

@@ -67,26 +67,51 @@ class OrgRole:
 # ── RBAC dependency factories ─────────────────────────────────────────────────
 
 
+def _highest_org_role(roles: Any) -> str | None:
+    """Return the highest org role present in an iterable of role strings, or None."""
+    try:
+        present = [r for r in roles if r in OrgRole.HIERARCHY]
+    except TypeError:
+        return None
+    if not present:
+        return None
+    return max(present, key=OrgRole.HIERARCHY.index)
+
+
 def _resolve_actor_role(request: Request) -> str:
     """Resolve the caller's org role from request state.
 
-    ``TenantMiddleware`` / the auth layer stashes the resolved org role on
-    ``request.state`` (``org_role``, or on the tenant context). When none is
-    present we fall back to the *most restrictive* role (viewer) — never an
-    implicit admin — so a misconfigured caller is denied, not silently elevated.
+    Resolution order (first hit wins):
+      1. an explicit ``request.state.org_role`` (test/override or a future
+         per-org membership middleware);
+      2. an explicit role on the tenant context (``org_role``/``role``);
+      3. the highest org role among ``TenantContext.roles`` (the api-key/SSO
+         roles resolved by ``TenantMiddleware``) — this is where an assigned
+         sub-role like ``viewer``/``team_lead`` comes from;
+      4. an ``org:admin`` scope.
+
+    Fallback: an **authenticated** tenant with no assigned sub-role is the owner
+    of the org it is acting on — every org query is RLS-scoped to its own
+    ``tenant_id``, so an accessible org is an owned org — and resolves to
+    ``org_admin``. An **unauthenticated** request (no tenant on state) gets the
+    most restrictive ``viewer`` and is denied, never silently elevated.
     """
     state = getattr(request, "state", None)
     role = getattr(state, "org_role", None)
+    tenant = getattr(state, "tenant", None)
     if not role:
-        tenant = getattr(state, "tenant", None)
         role = getattr(tenant, "org_role", None) or getattr(tenant, "role", None)
     if not role:
-        scopes = getattr(state, "scopes", None) or getattr(
-            getattr(state, "tenant", None), "scopes", None
-        )
+        role = _highest_org_role(getattr(tenant, "roles", ()) or ())
+    if not role:
+        scopes = getattr(state, "scopes", None) or getattr(tenant, "scopes", None)
         if scopes and "org:admin" in scopes:
             role = OrgRole.ORG_ADMIN
-    return str(role) if role else OrgRole.VIEWER
+    if role:
+        return str(role)
+    # Owner fallback: authenticated tenant → org_admin; unauthenticated → viewer.
+    tenant_id = getattr(tenant, "tenant_id", None)
+    return OrgRole.ORG_ADMIN if tenant_id else OrgRole.VIEWER
 
 
 def enforce_org_role(request: Request, minimum_role: str) -> str:
