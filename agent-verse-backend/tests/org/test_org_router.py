@@ -116,6 +116,7 @@ def test_app() -> FastAPI:
             tenant_id=TENANT_ID,
             plan=PlanTier.PROFESSIONAL,
             api_key_id="test-key",
+            roles=("admin",),  # owner key → org_admin (org RBAC is now fail-closed)
         )
         return await call_next(request)
 
