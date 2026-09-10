@@ -90,11 +90,12 @@ def _resolve_actor_role(request: Request) -> str:
          sub-role like ``viewer``/``team_lead`` comes from;
       4. an ``org:admin`` scope.
 
-    Fallback: an **authenticated** tenant with no assigned sub-role is the owner
-    of the org it is acting on — every org query is RLS-scoped to its own
-    ``tenant_id``, so an accessible org is an owned org — and resolves to
-    ``org_admin``. An **unauthenticated** request (no tenant on state) gets the
-    most restrictive ``viewer`` and is denied, never silently elevated.
+    The tenant OWNER key carries a broad ``admin`` role (issued at signup —
+    ``tenant_service``: "initial owner key gets full admin access"), which maps
+    to ``org_admin``; an ``org:admin`` scope does the same. Everything else is
+    **fail-closed**: a caller with no admin/org role — including an authenticated
+    key that was never granted one — resolves to the most restrictive ``viewer``
+    and is denied, never silently elevated to admin.
     """
     state = getattr(request, "state", None)
     role = getattr(state, "org_role", None)
@@ -102,16 +103,16 @@ def _resolve_actor_role(request: Request) -> str:
     if not role:
         role = getattr(tenant, "org_role", None) or getattr(tenant, "role", None)
     if not role:
-        role = _highest_org_role(getattr(tenant, "roles", ()) or ())
+        tenant_roles = tuple(getattr(tenant, "roles", ()) or ())
+        role = _highest_org_role(tenant_roles)
+        if not role and "admin" in tenant_roles:
+            role = OrgRole.ORG_ADMIN  # tenant owner key
     if not role:
         scopes = getattr(state, "scopes", None) or getattr(tenant, "scopes", None)
         if scopes and "org:admin" in scopes:
             role = OrgRole.ORG_ADMIN
-    if role:
-        return str(role)
-    # Owner fallback: authenticated tenant → org_admin; unauthenticated → viewer.
-    tenant_id = getattr(tenant, "tenant_id", None)
-    return OrgRole.ORG_ADMIN if tenant_id else OrgRole.VIEWER
+    # Fail-closed: no admin/org role → viewer (deny writes), never implicit admin.
+    return str(role) if role else OrgRole.VIEWER
 
 
 def enforce_org_role(request: Request, minimum_role: str) -> str:

@@ -26,13 +26,16 @@ def _tenant(*, tenant_id="t1", roles=()):
     return SimpleNamespace(tenant_id=tenant_id, roles=tuple(roles))
 
 
-def test_authenticated_owner_resolves_to_org_admin() -> None:
-    # No assigned sub-role → owner of the RLS-scoped org → org_admin.
-    assert _resolve_actor_role(_req(tenant=_tenant(roles=()))) == OrgRole.ORG_ADMIN
+def test_owner_admin_key_resolves_to_org_admin() -> None:
+    # The tenant owner key carries roles=("admin",) → org_admin.
+    assert _resolve_actor_role(_req(tenant=_tenant(roles=("admin",)))) == OrgRole.ORG_ADMIN
 
 
-def test_unauthenticated_request_is_viewer() -> None:
-    # No tenant on state → most restrictive, never an implicit admin.
+def test_fail_closed_when_no_role_assigned() -> None:
+    # FAIL-CLOSED: an authenticated key with no admin/org role → viewer (denied),
+    # never silently elevated to admin. Unauthenticated → viewer too.
+    assert _resolve_actor_role(_req(tenant=_tenant(roles=()))) == OrgRole.VIEWER
+    assert _resolve_actor_role(_req(tenant=_tenant(roles=("operator",)))) == OrgRole.VIEWER
     assert _resolve_actor_role(_req(tenant=None)) == OrgRole.VIEWER
 
 
@@ -56,7 +59,7 @@ def test_enforce_denies_viewer_writes_and_allows_owner() -> None:
         enforce_org_role(viewer_req, OrgRole.TEAM_LEAD)
     assert exc.value.status_code == 403
 
-    owner_req = _req(tenant=_tenant(roles=()))
+    owner_req = _req(tenant=_tenant(roles=("admin",)))
     assert enforce_org_role(owner_req, OrgRole.TEAM_LEAD) == OrgRole.ORG_ADMIN
 
 
