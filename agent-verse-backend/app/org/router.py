@@ -31,6 +31,7 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.org.rbac import OrgRole, require_org_role
 from app.org.schemas import (
     CreateDepartmentRequest,
     CreateMissionRequest,
@@ -51,7 +52,6 @@ from app.org.schemas import (
     UpdateMissionRequest,
     UpdateOrganizationRequest,
 )
-from app.org.rbac import OrgRole, require_org_role
 from app.org.service import OrgService
 
 router = APIRouter(prefix="/v1/org", tags=["org"])
