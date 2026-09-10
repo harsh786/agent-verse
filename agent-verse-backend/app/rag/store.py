@@ -923,6 +923,103 @@ class KnowledgeStore:
             for result in engine_results
         ]
 
+    async def binary_prefilter_search(
+        self,
+        query_embedding: list[float],
+        collection_id: str,
+        tenant_ctx: TenantContext,
+        top_k: int = 5,
+        *,
+        shortlist: int = 200,
+        metadata_filter: dict[str, Any] | None = None,
+    ) -> list[HybridSearchResult]:
+        """Two-stage vector search using the binary_quantize() Hamming index.
+
+        Stage 1 (cheap, index-backed): shortlist ``shortlist`` chunks by Hamming
+        distance over ``binary_quantize(embedding)::bit(dim)`` — 32x smaller codes,
+        served by the migration-0120 HNSW ``bit_hamming_ops`` index. Stage 2:
+        rerank that shortlist by full-precision cosine and return ``top_k``.
+
+        This is the storage-layer counterpart to the in-process quantizer: the
+        coarse filter runs in Postgres against the compact binary index, and only
+        a small candidate set is scored at full precision. Requires pgvector >= 0.7
+        and the 0120 index; callers opt in (``rag_binary_prefilter_enabled``).
+        """
+        if self._db is None or not query_embedding:
+            return []
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            dimension_row = (
+                await session.execute(
+                    text(
+                        "SELECT embedding_dim FROM knowledge_collections "
+                        "WHERE id = :cid AND tenant_id = :tid AND is_active IS TRUE"
+                    ),
+                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchone()
+            if dimension_row is None:
+                return []
+            dim = int(dimension_row[0])
+            table = _chunk_table(dim)
+            metadata_clause = (
+                " AND metadata @> CAST(:metadata_filter AS jsonb)" if metadata_filter else ""
+            )
+            # Stage 1 Hamming shortlist (bit index) → Stage 2 exact cosine rerank.
+            sql = text(
+                f"""
+                WITH shortlist AS (
+                    SELECT id, content, metadata, embedding
+                      FROM {table}
+                     WHERE collection_id = :cid{metadata_clause}
+                     ORDER BY binary_quantize(embedding)::bit({dim})
+                              <~> binary_quantize(CAST(:emb AS vector))::bit({dim})
+                     LIMIT :shortlist
+                )
+                SELECT id, content, metadata,
+                       1 - (embedding <=> CAST(:emb AS vector)) AS score
+                  FROM shortlist
+                 ORDER BY embedding <=> CAST(:emb AS vector)
+                 LIMIT :top_k
+                """
+            )
+            params: dict[str, Any] = {
+                "cid": collection_id,
+                "emb": str(query_embedding),
+                "shortlist": max(int(shortlist), top_k),
+                "top_k": top_k,
+            }
+            if metadata_filter:
+                import json as _json
+
+                params["metadata_filter"] = _json.dumps(metadata_filter)
+            rows = (await session.execute(sql, params)).fetchall()
+
+        results: list[HybridSearchResult] = []
+        for row in rows:
+            meta = row[2] if isinstance(row[2], dict) else {}
+            results.append(
+                HybridSearchResult(
+                    chunk_id=str(row[0]),
+                    content=str(row[1]),
+                    score=float(row[3]),
+                    vector_score=float(row[3]),
+                    trigram_score=0.0,
+                    source_url=str(meta.get("source_url", "") or ""),
+                    source_doc_id=str(meta.get("source_doc_id", "") or ""),
+                    metadata=meta,
+                )
+            )
+        return results
+
     async def search(
         self,
         query: str,

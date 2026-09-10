@@ -96,6 +96,11 @@ class Settings(BaseSettings):
     # first-stage filter). ``none`` keeps full precision (default). Consumers opt
     # in (e.g. the ingestion near-duplicate pass) — nothing is quantized globally.
     embedding_quantization: str = "none"
+    # Binary first-stage retrieval: use the pgvector binary_quantize() Hamming
+    # index (migration 0120) to shortlist candidates cheaply, then rerank the
+    # shortlist by full-precision cosine. Off by default (exact search unchanged).
+    rag_binary_prefilter_enabled: bool = False
+    rag_binary_prefilter_shortlist: int = 200  # candidates the Hamming stage keeps
 
     # --- RAG default-path reranking (WS-10) -----------------------------------
     # Engage a reranking STAGE on the DEFAULT hybrid retrieval path (not only on
