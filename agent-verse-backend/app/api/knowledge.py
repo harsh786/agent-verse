@@ -789,6 +789,7 @@ async def ingest_repository(request: Request, body: RepoIngestRequest) -> dict[s
             curl_resolve=repository_source.curl_resolve,
             lease_seconds=settings.repo_ingest_lease_seconds,
             heartbeat_seconds=settings.repo_ingest_heartbeat_seconds,
+            job_tracker=getattr(request.app.state, "ingestion_job_tracker", None),
         )
     )
     tasks = getattr(request.app.state, "repository_ingestion_tasks", None)
@@ -843,12 +844,17 @@ async def _ingest_repo_background(
     curl_resolve: str | None = None,
     lease_seconds: int = 60,
     heartbeat_seconds: int = 5,
+    job_tracker: Any = None,
 ) -> None:
     """Clone and atomically ingest under a disk/file quota and durable lease.
 
     Git/libcurl does not expose reliable aggregate network-byte accounting here.
     The worker therefore fails closed on continuously monitored clone disk bytes,
     clone file count, wall-clock timeout, selected bytes, and selected file count.
+
+    On terminal failure the job is dead-lettered (via ``job_tracker``) with the
+    parameters needed to retry it, matching the durable DLQ guarantee the
+    scheduled connector-sync path already has.
     """
     import asyncio
     import pathlib
@@ -859,6 +865,33 @@ async def _ingest_repo_background(
     from app.observability.logging import get_logger
 
     logger = get_logger(__name__)
+
+    async def _dead_letter(error_message: str) -> None:
+        """Best-effort: record the failed repo ingest in the DLQ for later retry.
+
+        Never masks the original failure — any DLQ error is swallowed and logged.
+        """
+        if job_tracker is None:
+            return
+        try:
+            await job_tracker.add_to_dlq(
+                source_id=f"repo:{repo_url}",
+                tenant_id=getattr(tenant_ctx, "tenant_id", ""),
+                doc_id=job_id,
+                error=error_message,
+                raw_doc={
+                    "kind": "repository",
+                    "job_id": job_id,
+                    "repo_url": repo_url,
+                    "collection_id": collection_id,
+                    "branch": branch,
+                    "file_patterns": file_patterns,
+                    "max_files": max_files,
+                },
+            )
+        except Exception as dlq_exc:
+            logger.error("repo_ingest_dlq_failed", job_id=job_id, error=type(dlq_exc).__name__)
+
     if limits is None:
         settings = get_settings()
         limits = RepositoryLimits(
@@ -1074,6 +1107,7 @@ async def _ingest_repo_background(
                 tenant_ctx=tenant_ctx,
             )
         )
+        await asyncio.shield(_dead_letter("Repository ingestion cancelled"))
         raise
     except Exception as exc:
         logger.warning("repo_ingest_failed", repo=repo_url, error=type(exc).__name__)
@@ -1090,6 +1124,7 @@ async def _ingest_repo_background(
                 job_id=job_id,
                 error=type(status_exc).__name__,
             )
+        await _dead_letter("Repository ingestion failed")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
         shutil.rmtree(config_dir, ignore_errors=True)
