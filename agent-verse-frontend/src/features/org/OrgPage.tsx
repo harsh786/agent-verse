@@ -19,7 +19,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISBootScreen } from '@/components/ui/JARVISBootScreen';
-import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal, BookOpen, Volume2, VolumeX } from 'lucide-react';
+import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal, BookOpen, Volume2, VolumeX, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { OrgHealthWidget }      from './components/OrgHealthWidget';
 import { MissionsList }          from './components/MissionsList';
@@ -48,6 +48,18 @@ import { useOrgNeuralState } from './hooks/useOrgNeuralState';
 import { AgentConstellation } from './components/AgentConstellation';
 import { useOrganization, useOrgHealth, useMissions } from './hooks/useOrg';
 import type { OrgMission }       from './types';
+
+// Toolbar side-panels — each opens in the one right slide-over drawer.
+type PanelKey = 'graphify' | 'connectors' | 'twin' | 'commands' | 'history' | 'obsidian' | 'approvals';
+const PANEL_META: Record<PanelKey, { title: string; subtitle: string; Icon: typeof Network }> = {
+  graphify:   { title: 'Knowledge Graph',    subtitle: 'Graphify build & progress',      Icon: Network },
+  connectors: { title: 'Connectors',         subtitle: 'Integrations & tool marketplace', Icon: Plug },
+  twin:       { title: 'Digital Twin',        subtitle: 'Capacity & load simulation',      Icon: Cpu },
+  commands:   { title: 'Command History',     subtitle: 'Gateway command log',             Icon: Terminal },
+  history:    { title: 'Org History',         subtitle: 'Timeline & navigation',           Icon: Clock },
+  obsidian:   { title: 'Knowledge Vault',     subtitle: 'Obsidian-style explorer',         Icon: BookOpen },
+  approvals:  { title: 'Approvals',           subtitle: 'Pending human sign-offs',         Icon: Zap },
+};
 
 export function OrgPage() {
   const { orgId } = useParams<{ orgId: string }>();
@@ -113,14 +125,14 @@ export function OrgPage() {
   const [statusFilter, setStatusFilter]       = useState<string | undefined>();
   // Clicking a department scopes the missions pane to that department.
   const [deptFilter, setDeptFilter]           = useState<{ id: string; name: string } | null>(null);
-  const [showGraphify, setShowGraphify]       = useState(false);
   const [showVoice, setShowVoice]             = useState(false);
-  const [showConnectors, setShowConnectors]   = useState(false);
-  const [showTwin, setShowTwin]               = useState(false);
-  const [showHistory, setShowHistory]         = useState(false);
-  const [showCommands, setShowCommands]       = useState(false);
-  const [showObsidian, setShowObsidian]       = useState(false);
-  const [showApprovals, setShowApprovals]     = useState(false);
+  // Toolbar side-panels all open in ONE right slide-over drawer — clear, labeled,
+  // and obviously toggled — instead of injecting hidden panels into the column.
+  const [activePanel, setActivePanel]         = useState<PanelKey | null>(null);
+  const togglePanel = useCallback(
+    (k: PanelKey) => setActivePanel((p) => (p === k ? null : k)),
+    [],
+  );
   const [showConstellation, setShowConstellation] = useState(true);
 
   // Resizable command panel (right pane). Width persisted per-browser.
@@ -280,7 +292,7 @@ export function OrgPage() {
 
             {/* Graphify */}
             <button
-              onClick={() => setShowGraphify(v => !v)}
+              onClick={() => togglePanel('graphify')}
               aria-label="Open knowledge graph builder"
               title="Knowledge graph (Graphify)"
               style={{ touchAction: 'manipulation' }}
@@ -288,7 +300,7 @@ export function OrgPage() {
                 'p-2 rounded-lg transition-colors duration-150',
                 'min-w-[44px] min-h-[44px] flex items-center justify-center',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
-                showGraphify
+                activePanel === 'graphify'
                   ? 'text-violet-300 bg-violet-500/10'
                   : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
               )}
@@ -298,7 +310,7 @@ export function OrgPage() {
 
             {/* Connectors */}
             <button
-              onClick={() => setShowConnectors(v => !v)}
+              onClick={() => togglePanel('connectors')}
               aria-label="Connector marketplace"
               title="Connectors & integrations"
               style={{ touchAction: 'manipulation' }}
@@ -306,7 +318,7 @@ export function OrgPage() {
                 'p-2 rounded-lg transition-colors duration-150',
                 'min-w-[44px] min-h-[44px] flex items-center justify-center',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
-                showConnectors
+                activePanel === 'connectors'
                   ? 'text-violet-300 bg-violet-500/10'
                   : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
               )}
@@ -316,14 +328,15 @@ export function OrgPage() {
 
             {/* Digital Twin */}
             <button
-              onClick={() => setShowTwin(v => !v)}
+              onClick={() => togglePanel('twin')}
               aria-label="Digital Twin capacity view"
+              title="Digital Twin — capacity & load"
               style={{ touchAction: 'manipulation' }}
               className={cn(
                 'p-2 rounded-lg transition-colors duration-150',
                 'min-w-[44px] min-h-[44px] flex items-center justify-center',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
-                showTwin
+                activePanel === 'twin'
                   ? 'text-purple-300 bg-purple-500/10'
                   : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
               )}
@@ -333,7 +346,7 @@ export function OrgPage() {
 
             {/* Command History */}
             <button
-              onClick={() => setShowCommands(v => !v)}
+              onClick={() => togglePanel('commands')}
               aria-label="Command gateway history"
               title="Command history"
               style={{ touchAction: 'manipulation' }}
@@ -341,7 +354,7 @@ export function OrgPage() {
                 'p-2 rounded-lg transition-colors duration-150',
                 'min-w-[44px] min-h-[44px] flex items-center justify-center',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
-                showCommands
+                activePanel === 'commands'
                   ? 'text-emerald-300 bg-emerald-500/10'
                   : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
               )}
@@ -351,7 +364,7 @@ export function OrgPage() {
 
             {/* History */}
             <button
-              onClick={() => setShowHistory(v => !v)}
+              onClick={() => togglePanel('history')}
               aria-label="Organisation history"
               title="Org history & timeline"
               style={{ touchAction: 'manipulation' }}
@@ -359,7 +372,7 @@ export function OrgPage() {
                 'p-2 rounded-lg transition-colors duration-150',
                 'min-w-[44px] min-h-[44px] flex items-center justify-center',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
-                showHistory
+                activePanel === 'history'
                   ? 'text-amber-300 bg-amber-500/10'
                   : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
               )}
@@ -369,7 +382,7 @@ export function OrgPage() {
 
             {/* Obsidian Vault */}
             <button
-              onClick={() => setShowObsidian(v => !v)}
+              onClick={() => togglePanel('obsidian')}
               aria-label="Obsidian vault explorer"
               title="Knowledge vault"
               style={{ touchAction: 'manipulation' }}
@@ -377,7 +390,7 @@ export function OrgPage() {
                 'p-2 rounded-lg transition-colors duration-150',
                 'min-w-[44px] min-h-[44px] flex items-center justify-center',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
-                showObsidian
+                activePanel === 'obsidian'
                   ? 'text-violet-300 bg-violet-500/10'
                   : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
               )}
@@ -387,14 +400,15 @@ export function OrgPage() {
 
             {/* G-05: Approvals button — amber badge when pending */}
             <button
-              onClick={() => setShowApprovals(v => !v)}
+              onClick={() => togglePanel('approvals')}
               aria-label={`Approvals${pendingApprovalCount > 0 ? ` (${pendingApprovalCount} pending)` : ''}`}
+              title={`Approvals${pendingApprovalCount > 0 ? ` — ${pendingApprovalCount} pending` : ''}`}
               style={{ touchAction: 'manipulation' }}
               className={cn(
                 'relative p-2 rounded-lg transition-colors duration-150',
                 'min-w-[44px] min-h-[44px] flex items-center justify-center',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60',
-                showApprovals || pendingApprovalCount > 0
+                activePanel === 'approvals' || pendingApprovalCount > 0
                   ? 'text-amber-400 bg-amber-500/10'
                   : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
               )}
@@ -608,102 +622,6 @@ export function OrgPage() {
               <ActivityFeed orgId={orgId} />
             </section>
 
-            {/* Digital Twin panel */}
-            <AnimatePresence mode="wait">
-              {showTwin && (
-                <motion.div
-                  key="twin"
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-                  style={{ overflow: 'hidden' }}
-                  className="border-b border-[#1E2535]"
-                >
-                  <div className="p-4">
-                    <DigitalTwinPanel orgId={orgId} />
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Command history panel */}
-            <AnimatePresence mode="wait">
-              {showCommands && (
-                <motion.div
-                  key="commands"
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-                  style={{ overflow: 'hidden' }}
-                  className="border-b border-[#1E2535]"
-                >
-                  <div className="p-4 max-h-96 overflow-y-auto">
-                    <CommandHistoryPanel orgId={orgId} />
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* History nav panel */}
-            <AnimatePresence mode="wait">
-              {showHistory && (
-                <motion.div
-                  key="history"
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-                  style={{ overflow: 'hidden' }}
-                  className="border-b border-[#1E2535]"
-                >
-                  <div className="p-4">
-                    <OrgHistoryNav orgId={orgId} compact />
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Obsidian Vault Explorer panel */}
-            <AnimatePresence mode="wait">
-              {showObsidian && (
-                <motion.div
-                  key="obsidian"
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-                  style={{ overflow: 'hidden' }}
-                  className="border-b border-[#1E2535]"
-                >
-                  <div className="p-4">
-                    <ObsidianVaultExplorer orgId={orgId} compact />
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* G-05: ApprovalCenter panel — shown when showApprovals or pending > 0 */}
-            <AnimatePresence mode="wait">
-              {(showApprovals || pendingApprovalCount > 0) && (
-                <motion.div
-                  key="approvals"
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-                  style={{ overflow: 'hidden' }}
-                  className="border-b border-amber-500/20 bg-amber-500/5"
-                >
-                  <div className="max-h-96 overflow-y-auto">
-                    <ApprovalCenter orgId={orgId} />
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-
             {/* Morning brief panel */}
             <div className="p-4 border-b border-[#1E2535]">
               <MorningBrief orgId={orgId} compact />
@@ -717,43 +635,6 @@ export function OrgPage() {
                 isLoading={orgLoading}
               />
             </div>
-
-            {/* Graphify panel */}
-            <AnimatePresence mode="wait">
-              {showGraphify && (
-                <motion.div
-                  key="graphify"
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-                  style={{ overflow: 'hidden' }}
-                  className="border-b border-[#1E2535]"
-                >
-                  <div className="p-4">
-                    <GraphifyProgress orgId={orgId} onClose={() => setShowGraphify(false)} />
-                  </div>
-                </motion.div>
-              )}
-
-              {/* Connector marketplace panel */}
-              {showConnectors && (
-                <motion.div
-                  key="connectors"
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-                  style={{ overflow: 'hidden' }}
-                  className="border-b border-[#1E2535]"
-                >
-                  <div className="h-80">
-                    <ConnectorMarketplace orgId={orgId} onClose={() => setShowConnectors(false)} />
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
 
             {/* Department tree */}
             <section className="p-4 border-b border-[#1E2535]">
@@ -806,6 +687,62 @@ export function OrgPage() {
         }}
         placeholder="Describe a mission for your agents…"
       />
+
+      {/* ── Toolbar side-panel drawer — one clear, labeled slide-over ──────── */}
+      {activePanel && (
+          <div className="fixed inset-0 z-40 flex justify-end">
+            <div
+              className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+              onClick={() => setActivePanel(null)}
+              aria-hidden
+            />
+            <motion.aside
+              role="dialog"
+              aria-modal="true"
+              aria-label={PANEL_META[activePanel].title}
+              className="relative z-10 h-full w-full sm:w-[420px] max-w-full
+                         bg-[#0B0E14] border-l border-[#1E2535] shadow-2xl flex flex-col"
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              transition={{ type: 'spring', stiffness: 320, damping: 34 }}
+            >
+              <div className="flex items-center gap-2.5 px-4 py-3 border-b border-[#1E2535] shrink-0">
+                {(() => {
+                  const I = PANEL_META[activePanel].Icon;
+                  return <I className="h-4 w-4 text-[#00D4FF] shrink-0" aria-hidden />;
+                })()}
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-[#F1F5F9] truncate">
+                    {PANEL_META[activePanel].title}
+                  </p>
+                  <p className="text-[11px] text-[#475569] truncate">
+                    {PANEL_META[activePanel].subtitle}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setActivePanel(null)}
+                  aria-label="Close panel"
+                  className="ml-auto p-1.5 rounded-lg text-[#64748B] hover:text-[#F1F5F9] hover:bg-[#1A1F2E] transition-colors"
+                >
+                  <X className="h-4 w-4" aria-hidden />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                {activePanel === 'graphify' && (
+                  <div className="p-4"><GraphifyProgress orgId={orgId} onClose={() => setActivePanel(null)} /></div>
+                )}
+                {activePanel === 'connectors' && (
+                  <div className="h-full"><ConnectorMarketplace orgId={orgId} onClose={() => setActivePanel(null)} /></div>
+                )}
+                {activePanel === 'twin' && <div className="p-4"><DigitalTwinPanel orgId={orgId} /></div>}
+                {activePanel === 'commands' && <div className="p-4"><CommandHistoryPanel orgId={orgId} /></div>}
+                {activePanel === 'history' && <div className="p-4"><OrgHistoryNav orgId={orgId} compact /></div>}
+                {activePanel === 'obsidian' && <div className="p-4"><ObsidianVaultExplorer orgId={orgId} compact /></div>}
+                {activePanel === 'approvals' && <ApprovalCenter orgId={orgId} />}
+              </div>
+            </motion.aside>
+          </div>
+      )}
     </>
   );
 }
