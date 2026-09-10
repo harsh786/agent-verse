@@ -12,8 +12,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Trash2, Search, Plus, Brain, Wrench, Cpu, X, Loader2,
   AlertTriangle, CheckCircle2, ChevronDown, Pencil, Inbox,
+  Layers, Link2, Clock,
 } from 'lucide-react';
-import { memoryApi, type RecallResult, type MemoryEntry } from '@/lib/api/client';
+import {
+  memoryApi,
+  type RecallResult,
+  type MemoryEntry,
+  type MemoryKind,
+  type MemoryRecordItem,
+} from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -37,6 +44,30 @@ const TYPE_COLORS: Record<string, string> = {
 
 function typeColor(t: string) {
   return TYPE_COLORS[t] ?? 'bg-[#0F1826]/8 text-white/50 border border-white/15';
+}
+
+// Canonical governed-memory kinds surfaced by GET /memory/records.
+const MEMORY_KINDS: MemoryKind[] = [
+  'episodic', 'procedural', 'reflexion', 'execution',
+  'long_term', 'knowledge_graph', 'prospective',
+];
+
+const KIND_COLORS: Record<string, string> = {
+  episodic:        'bg-telemetry-cyan/15 text-telemetry-cyan border border-telemetry-cyan/30',
+  procedural:      'bg-neural-violet/20 text-neural-violet border border-neural-violet/40',
+  reflexion:       'bg-verified-green/15 text-verified-green border border-verified-green/30',
+  execution:       'bg-risk-amber/15 text-risk-amber border border-risk-amber/30',
+  long_term:       'bg-pink-500/15 text-pink-400 border border-pink-500/30',
+  knowledge_graph: 'bg-blue-500/15 text-blue-300 border border-blue-500/30',
+  prospective:     'bg-[#0F1826]/8 text-white/60 border border-white/15',
+};
+
+function kindColor(k: string) {
+  return KIND_COLORS[k] ?? 'bg-[#0F1826]/8 text-white/50 border border-white/15';
+}
+
+function kindLabel(k: string) {
+  return k.replace('_', ' ');
 }
 
 function formatDate(iso: string) {
@@ -279,6 +310,175 @@ function EditMemoryModal({ memory, onClose, onUpdated }: { memory: MemoryEntry; 
   );
 }
 
+// ── Governed Records (canonical memory_records, categorized) ───────────────────
+
+function RecordRow({ r }: { r: MemoryRecordItem }) {
+  const pct = Math.round((r.confidence ?? 0) / 100);
+  return (
+    <div className="px-5 py-3 flex items-start justify-between gap-3 hover:bg-neural-violet/5 transition-colors">
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <p className="text-sm text-white/80 leading-relaxed">{r.content}</p>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium capitalize ${kindColor(r.memory_kind)}`}>
+            {kindLabel(r.memory_kind)}
+          </span>
+          {r.source_goal_id && (
+            <span
+              className="flex items-center gap-1 text-[10px] text-telemetry-cyan/80 font-mono truncate max-w-[180px]"
+              title={`Goal: ${r.source_goal_id}`}
+            >
+              <Link2 className="h-3 w-3 shrink-0" aria-hidden="true" />
+              goal:{r.source_goal_id.slice(0, 12)}
+            </span>
+          )}
+          <ConfidenceBar value={pct / 100} />
+          <span className="text-[10px] text-white/30 capitalize">{r.lifecycle_state}</span>
+          {r.expires_at && (
+            <span className="flex items-center gap-1 text-[10px] text-white/30 font-mono" title={`Expires ${r.expires_at}`}>
+              <Clock className="h-3 w-3" aria-hidden="true" />
+              expires {formatDate(r.expires_at)}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GovernedRecordsSection() {
+  const [kindFilter, setKindFilter] = useState<MemoryKind | null>(null);
+  const [goalFilter, setGoalFilter] = useState('');
+  const [goalInput, setGoalInput] = useState('');
+
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ['memory-records', kindFilter, goalFilter],
+    queryFn: () => memoryApi.listRecords({
+      kind: kindFilter ?? undefined,
+      goalId: goalFilter || undefined,
+    }),
+  });
+
+  const records = data?.records ?? [];
+  const kindCounts = data?.kinds ?? {};
+
+  // Group by kind for a categorized view.
+  const grouped = records.reduce<Record<string, MemoryRecordItem[]>>((acc, r) => {
+    (acc[r.memory_kind] ??= []).push(r);
+    return acc;
+  }, {});
+
+  return (
+    <div className="bg-panel-graphite border border-neural-violet/20 rounded-xl overflow-hidden">
+      <div className="px-5 py-3 border-b border-neural-violet/15 bg-command-black/40 flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold flex items-center gap-2 text-white/80">
+            <Layers className="h-4 w-4 text-neural-violet" aria-hidden="true" />
+            Governed Records
+            <span className="text-[10px] text-white/30 font-normal ml-1">episodic · procedural · reflexion · goal-linked</span>
+          </h2>
+          {data && data.total > 0 && (
+            <span className="text-[10px] bg-neural-violet/20 text-neural-violet px-2 py-0.5 rounded-full border border-neural-violet/30 font-mono">
+              {data.total}
+            </span>
+          )}
+        </div>
+        {/* Kind counts summary */}
+        {Object.keys(kindCounts).length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {Object.entries(kindCounts).map(([k, n]) => (
+              <span key={k} className={`text-[10px] px-2 py-0.5 rounded-full font-medium capitalize ${kindColor(k)}`}>
+                {kindLabel(k)} {n}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Filters */}
+      <div className="px-5 py-3 border-b border-neural-violet/10 flex items-center gap-3 flex-wrap">
+        <div className="flex gap-1 flex-wrap">
+          <button
+            onClick={() => setKindFilter(null)}
+            className={`px-2 py-0.5 text-[10px] rounded-full border transition-colors ${!kindFilter ? 'bg-neural-violet text-white border-neural-violet' : 'border-neural-violet/20 hover:border-neural-violet/40 text-white/40 hover:text-white/70'}`}
+          >
+            All kinds
+          </button>
+          {MEMORY_KINDS.map((k) => (
+            <button
+              key={k}
+              onClick={() => setKindFilter(k === kindFilter ? null : k)}
+              className={`px-2 py-0.5 text-[10px] rounded-full border transition-colors capitalize ${k === kindFilter ? 'bg-neural-violet text-white border-neural-violet' : 'border-neural-violet/20 hover:border-neural-violet/40 text-white/40 hover:text-white/70'}`}
+            >
+              {kindLabel(k)}
+            </button>
+          ))}
+        </div>
+        <form
+          className="flex items-center gap-1.5 ml-auto"
+          onSubmit={(e) => { e.preventDefault(); setGoalFilter(goalInput.trim()); }}
+        >
+          <input
+            value={goalInput}
+            onChange={(e) => setGoalInput(e.target.value)}
+            placeholder="Filter by goal id…"
+            aria-label="Filter records by goal id"
+            className="px-2.5 py-1 text-xs border border-neural-violet/20 rounded-lg bg-command-black text-white placeholder-white/25 focus:outline-none focus:ring-2 focus:ring-neural-violet/40 w-40"
+          />
+          {goalFilter && (
+            <button
+              type="button"
+              onClick={() => { setGoalFilter(''); setGoalInput(''); }}
+              className="p-1 rounded text-white/40 hover:text-white/70"
+              aria-label="Clear goal filter"
+            >
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          )}
+        </form>
+      </div>
+
+      {/* Body: honest loading / error / empty / data */}
+      {isLoading ? (
+        <div className="p-5 space-y-3">
+          {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-14" />)}
+        </div>
+      ) : isError ? (
+        <div className="px-5 py-6 flex items-center gap-3 text-sm text-mission-red">
+          <AlertTriangle className="h-5 w-5 shrink-0" aria-hidden="true" />
+          Failed to load governed records: {String((error as Error)?.message ?? error)}
+        </div>
+      ) : records.length === 0 ? (
+        <EmptyState
+          icon={<Inbox size={40} />}
+          title="No governed records yet"
+          description={
+            kindFilter || goalFilter
+              ? 'No records match the current filters.'
+              : 'Episodic, procedural and reflexion records accumulate as agents run goals.'
+          }
+          variant="float"
+        />
+      ) : (
+        <div className="divide-y divide-neural-violet/10">
+          {MEMORY_KINDS.filter((k) => grouped[k]?.length).map((k) => (
+            <div key={k}>
+              <div className="px-5 pt-3 pb-1 flex items-center gap-2">
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium capitalize ${kindColor(k)}`}>
+                  {kindLabel(k)}
+                </span>
+                <span className="text-[10px] text-white/30 font-mono">{grouped[k].length}</span>
+              </div>
+              <div className="divide-y divide-neural-violet/5">
+                {grouped[k].map((r) => <RecordRow key={r.memory_id} r={r} />)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function MemoryExplorerPage() {
@@ -443,6 +643,9 @@ export function MemoryExplorerPage() {
             )}
           </div>
         </div>
+
+        {/* ── Section 1.5: Governed Records (categorized by kind) ─────────────── */}
+        <GovernedRecordsSection />
 
         {/* ── Section 2: Long-term Memories ──────────────────────────────────── */}
         <div className="bg-panel-graphite border border-neural-violet/20 rounded-xl overflow-hidden">

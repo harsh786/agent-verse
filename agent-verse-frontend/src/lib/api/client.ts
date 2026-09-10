@@ -1062,6 +1062,36 @@ export interface ToolReliabilityRow {
   [key: string]: unknown;
 }
 
+/** Canonical governed memory kinds (backend `MemoryKind`). */
+export type MemoryKind =
+  | "execution" | "reflexion" | "long_term" | "episodic"
+  | "procedural" | "knowledge_graph" | "prospective";
+
+/** One row from GET /memory/records (canonical `memory_records` table). */
+export interface MemoryRecordItem {
+  memory_id: string;
+  memory_kind: MemoryKind;
+  content: string;
+  source_goal_id: string;
+  source_execution_id: string;
+  classification: string;
+  confidence: number;
+  lifecycle_state: string;
+  evidence_refs: string[];
+  recall_count: number;
+  helpful_count: number;
+  harmful_count: number;
+  expires_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface MemoryRecordsResponse {
+  records: MemoryRecordItem[];
+  total: number;
+  kinds: Record<string, number>;
+}
+
 export const memoryApi = {
   list: (opts: { limit?: number; offset?: number; memoryType?: string } = {}) => {
     const params = new URLSearchParams();
@@ -1083,6 +1113,14 @@ export const memoryApi = {
   clearAll: () => request<void>("/memory", { method: "DELETE" }),
   toolReliability: () => request<ToolReliabilityRow[]>("/memory/tool-reliability"),
   listExecution: () => request<Array<{ goal_text: string; success: boolean; recorded_at: string }>>("/memory/execution"),
+  /** Canonical governed records categorized by memory_kind with goal-linkage + TTL. */
+  listRecords: (opts: { kind?: MemoryKind; goalId?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    params.set("limit", String(opts.limit ?? 50));
+    if (opts.kind) params.set("kind", opts.kind);
+    if (opts.goalId) params.set("goal_id", opts.goalId);
+    return request<MemoryRecordsResponse>(`/memory/records?${params.toString()}`);
+  },
 };
 
 // ── Knowledge Graph (tenant KG — app/api/knowledge_graph.py) ──────────────────

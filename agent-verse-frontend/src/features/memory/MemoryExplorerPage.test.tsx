@@ -167,3 +167,89 @@ describe('MemoryExplorerPage', () => {
     expect(screen.getByText(/clear all memories/i)).toBeInTheDocument();
   });
 });
+
+// ── Governed Records (canonical memory_records) ────────────────────────────────
+
+const RECORDS_RESPONSE = {
+  records: [
+    {
+      memory_id: 'r1', memory_kind: 'episodic', content: 'Recovered from a failed deploy',
+      source_goal_id: 'goal-abc123', source_execution_id: 'e1', classification: 'internal',
+      confidence: 8500, lifecycle_state: 'active', evidence_refs: ['ev://1'],
+      recall_count: 0, helpful_count: 0, harmful_count: 0,
+      expires_at: '2026-12-01T00:00:00Z', created_at: '2026-06-01T00:00:00Z', updated_at: '2026-06-01T00:00:00Z',
+    },
+    {
+      memory_id: 'r2', memory_kind: 'procedural', content: 'jira → github tool sequence works',
+      source_goal_id: 'goal-abc123', source_execution_id: 'e2', classification: 'internal',
+      confidence: 9000, lifecycle_state: 'active', evidence_refs: ['ev://2'],
+      recall_count: 0, helpful_count: 0, harmful_count: 0,
+      expires_at: '2026-12-01T00:00:00Z', created_at: '2026-06-01T00:00:00Z', updated_at: '2026-06-01T00:00:00Z',
+    },
+    {
+      memory_id: 'r3', memory_kind: 'reflexion', content: 'Add stronger evidence next time',
+      source_goal_id: 'goal-xyz', source_execution_id: 'e3', classification: 'internal',
+      confidence: 7000, lifecycle_state: 'active', evidence_refs: ['ev://3'],
+      recall_count: 0, helpful_count: 0, harmful_count: 0,
+      expires_at: null, created_at: '2026-06-01T00:00:00Z', updated_at: '2026-06-01T00:00:00Z',
+    },
+  ],
+  total: 3,
+  kinds: { episodic: 1, procedural: 1, reflexion: 1 },
+};
+
+function mockRecordsFetch(handler?: (url: string) => Response | null) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = String(input);
+    const custom = handler?.(url);
+    if (custom) return custom;
+    if (url.includes('/memory/records'))
+      return new Response(JSON.stringify(RECORDS_RESPONSE), { status: 200 });
+    if (url.includes('/memory/tool-reliability')) return new Response('[]', { status: 200 });
+    if (url.match(/\/memory\?/)) return new Response('[]', { status: 200 });
+    return new Response('[]', { status: 200 });
+  });
+}
+
+describe('MemoryExplorerPage — Governed Records', () => {
+  test('renders categorized records with kind badges and goal-linkage', async () => {
+    mockRecordsFetch();
+    renderPage();
+    expect(await screen.findByRole('heading', { name: /governed records/i })).toBeInTheDocument();
+    // Real content from the read API.
+    expect(await screen.findByText(/Recovered from a failed deploy/)).toBeInTheDocument();
+    expect(screen.getByText(/jira → github tool sequence/)).toBeInTheDocument();
+    // Goal-linkage rendered (source_goal_id).
+    expect(screen.getAllByText(/goal:goal-abc123/).length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('filtering by kind requests /memory/records with that kind', async () => {
+    const spy = mockRecordsFetch();
+    renderPage();
+    await screen.findByText(/Recovered from a failed deploy/);
+    // Click the "procedural" kind pill inside the governed records filter row.
+    await userEvent.click(screen.getByRole('button', { name: /^procedural$/i }));
+    await waitFor(() => {
+      const called = spy.mock.calls.some(([u]) => /\/memory\/records\?.*kind=procedural/.test(String(u)));
+      expect(called).toBe(true);
+    });
+  });
+
+  test('shows honest empty state when no governed records', async () => {
+    mockRecordsFetch((url) =>
+      url.includes('/memory/records')
+        ? new Response(JSON.stringify({ records: [], total: 0, kinds: {} }), { status: 200 })
+        : null,
+    );
+    renderPage();
+    expect(await screen.findByText(/no governed records yet/i)).toBeInTheDocument();
+  });
+
+  test('shows error state when the records API fails', async () => {
+    mockRecordsFetch((url) =>
+      url.includes('/memory/records') ? new Response('nope', { status: 500 }) : null,
+    );
+    renderPage();
+    expect(await screen.findByText(/failed to load governed records/i)).toBeInTheDocument();
+  });
+});

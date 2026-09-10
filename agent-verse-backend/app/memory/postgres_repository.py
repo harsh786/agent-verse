@@ -13,12 +13,14 @@ from app.db.models.memory import CanonicalMemoryRecord, MemoryFeedbackRow
 from app.db.rls import sqlalchemy_rls_context
 from app.memory.contracts import (
     MemoryFeedback,
+    MemoryKind,
     MemoryRecallHit,
     MemoryRecallRequest,
     MemoryRecord,
     MemoryWriteRequest,
 )
 from app.memory.repository import Embedder, _matches_scope, _similarity
+from app.memory.retention import resolve_expires_at
 
 
 class PostgresMemoryRepository:
@@ -62,6 +64,10 @@ class PostgresMemoryRepository:
                 for marker in ("ignore previous instructions", "reveal secret", "override policy")
             )
             now = datetime.now(UTC)
+            # Assign the retention deadline uniformly for every memory_kind so the
+            # kind-agnostic purge paths can physically reclaim the row once it
+            # elapses (previously expires_at was never set → nothing ever expired).
+            expires_at = resolve_expires_at(request.retention_policy_id, now)
             values = {
                 "id": identifier,
                 "tenant_id": request.tenant_id,
@@ -89,6 +95,7 @@ class PostgresMemoryRepository:
                 "harmful_count": 0,
                 "retention_policy_id": request.retention_policy_id,
                 "idempotency_key": request.idempotency_key,
+                "expires_at": expires_at,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -96,7 +103,6 @@ class PostgresMemoryRepository:
             return MemoryRecord(
                 memory_id=identifier,
                 embedding=embedding,
-                expires_at=None,
                 **{key: value for key, value in values.items() if key not in {"id", "embedding"}},
             )
 
@@ -264,6 +270,36 @@ class PostgresMemoryRepository:
                 )
             )
             return result.rowcount or 0
+
+    async def list_records(
+        self,
+        tenant_id: str,
+        *,
+        memory_kinds: frozenset[MemoryKind] | None = None,
+        source_goal_id: str | None = None,
+        limit: int = 100,
+    ) -> tuple[MemoryRecord, ...]:
+        """List a tenant's canonical records, newest first, with optional filters.
+
+        Runs inside the tenant's RLS scope so it can only ever read this tenant's
+        rows. Exposes ``memory_kind`` and ``source_goal_id`` goal-linkage for the
+        memory inspector; honest empty tuple when nothing matches.
+        """
+        async with (
+            self._sessions() as db,
+            db.begin(),
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
+            stmt = select(CanonicalMemoryRecord).where(
+                CanonicalMemoryRecord.tenant_id == tenant_id
+            )
+            if memory_kinds:
+                stmt = stmt.where(CanonicalMemoryRecord.memory_kind.in_(memory_kinds))
+            if source_goal_id is not None:
+                stmt = stmt.where(CanonicalMemoryRecord.source_goal_id == source_goal_id)
+            stmt = stmt.order_by(CanonicalMemoryRecord.created_at.desc()).limit(limit)
+            rows = (await db.execute(stmt)).scalars()
+            return tuple(_record(row) for row in rows)
 
 
 def _record(row: CanonicalMemoryRecord) -> MemoryRecord:
