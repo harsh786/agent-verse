@@ -14,6 +14,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { Network, Zap, CheckCircle2, AlertCircle, X, GitBranch, Brain, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useAuthStore } from '@/stores/auth';
 
 export type GraphifyPhase =
   | 'idle' | 'queued' | 'extracting' | 'building'
@@ -30,17 +31,6 @@ export interface GraphifyStats {
   edges:       number;
   communities: number;
   discoveries: number;
-}
-
-interface SSEEvent {
-  phase:       GraphifyPhase;
-  progress?:   number;
-  nodes?:      number;
-  edges?:      number;
-  communities?: number;
-  discoveries?: number;
-  message?:    string;
-  error?:      string;
 }
 
 // ─── Phase config ────────────────────────────────────────────────────────────
@@ -82,9 +72,10 @@ export function GraphifyProgress({ orgId, onClose, onComplete }: GraphifyProgres
     setStats({ nodes: 0, edges: 0, communities: 0, discoveries: 0 });
     setProgress(0);
     try {
+      const apiKey = useAuthStore.getState().apiKey ?? '';
       const resp = await fetch(`/api/v1/org/${orgId}/graphify`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
         credentials: 'include',
       });
       if (!resp.ok) throw new Error(`Failed to start: ${resp.status}`);
@@ -99,33 +90,63 @@ export function GraphifyProgress({ orgId, onClose, onComplete }: GraphifyProgres
   // Connect SSE when jobId is set
   useEffect(() => {
     if (!jobId) return;
-    const url = `/api/v1/org/${orgId}/graphify/${jobId}/stream`;
+    // EventSource can't set headers; the tenant middleware accepts api_key as a
+    // query param for exactly this SSE case.
+    const apiKey = useAuthStore.getState().apiKey ?? '';
+    const url = `/api/v1/org/${orgId}/graphify/${jobId}/stream?api_key=${encodeURIComponent(apiKey)}`;
     const es = new EventSource(url, { withCredentials: true });
     esRef.current = es;
 
+    // The backend emits {type: 'connected'|'phase'|'stats'|'complete'|'error', …}
+    // (phase carries a 1-based index + label). Map that onto the UI phase model.
+    const RUNNING: GraphifyPhase[] = ['extracting', 'building', 'community', 'discovery'];
     es.onmessage = (e) => {
       try {
-        const ev: SSEEvent = JSON.parse(e.data);
-        setPhase(ev.phase);
-        if (ev.progress != null) setProgress(ev.progress);
-        if (ev.message)          setMessage(ev.message);
-        if (ev.nodes != null || ev.edges != null) {
+        const ev = JSON.parse(e.data) as Record<string, unknown>;
+        const type = ev.type as string | undefined;
+        const applyStats = () =>
           setStats(prev => ({
-            nodes:       ev.nodes       ?? prev.nodes,
-            edges:       ev.edges       ?? prev.edges,
-            communities: ev.communities ?? prev.communities,
-            discoveries: ev.discoveries ?? prev.discoveries,
+            nodes:       (ev.nodes       as number) ?? prev.nodes,
+            edges:       (ev.edges       as number) ?? prev.edges,
+            communities: (ev.communities as number) ?? prev.communities,
+            discoveries: (ev.discoveries as number) ?? prev.discoveries,
           }));
-        }
-        if (ev.phase === 'complete') {
+
+        if (type === 'connected') return;
+        if (type === 'error') {
+          setPhase('error');
+          setError((ev.message as string) ?? 'Unknown error');
           es.close();
-          onComplete?.({ nodes: ev.nodes ?? 0, edges: ev.edges ?? 0, communities: ev.communities ?? 0, discoveries: ev.discoveries ?? 0 });
+          return;
         }
-        if (ev.phase === 'error') {
-          setError(ev.error ?? 'Unknown error');
+        if (type === 'stats') { applyStats(); return; }
+        if (type === 'complete') {
+          setPhase('complete');
+          setProgress(100);
+          applyStats();
           es.close();
+          onComplete?.({
+            nodes: (ev.nodes as number) ?? 0, edges: (ev.edges as number) ?? 0,
+            communities: (ev.communities as number) ?? 0, discoveries: (ev.discoveries as number) ?? 0,
+          });
+          return;
         }
-      } catch {}
+        if (type === 'phase') {
+          const idx = typeof ev.phase === 'number' ? ev.phase : 1;
+          const total = (ev.total_phases as number) || RUNNING.length;
+          setPhase(RUNNING[Math.min(idx - 1, RUNNING.length - 1)]);
+          setProgress(Math.round((idx / total) * 100));
+          if (ev.label) setMessage(ev.label as string);
+          return;
+        }
+        // Legacy shape: a bare phase string.
+        if (typeof ev.phase === 'string') {
+          setPhase(ev.phase as GraphifyPhase);
+          if (ev.progress != null) setProgress(ev.progress as number);
+        }
+      } catch {
+        /* ignore malformed frame */
+      }
     };
     es.onerror = () => { setPhase('error'); setError('Stream disconnected'); es.close(); };
     return () => es.close();

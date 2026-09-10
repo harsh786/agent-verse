@@ -1,8 +1,15 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 
-export default defineConfig(({ command, mode }) => ({
+export default defineConfig(({ command, mode }) => {
+  // Single source of truth for the backend URL: the dev proxy target derives
+  // from the SAME VITE_API_BASE_URL the API client uses, so components that call
+  // through the /api/v1 proxy (Graphify, Obsidian, Command History, Knowledge)
+  // always reach the same backend as everything else — no port drift.
+  const env = loadEnv(mode, process.cwd(), "");
+  const apiTarget = env.VITE_API_BASE_URL || "http://localhost:8001";
+  return {
   plugins: [
     react(),
     // In test mode: stub all CSS files to prevent sucrase failing on
@@ -52,10 +59,10 @@ export default defineConfig(({ command, mode }) => ({
   server: {
     port: 5173,
     proxy: {
-      // Proxy /api/v1/* → http://localhost:8000/v1/*
-      // GraphifyProgress and other components use /api/v1/ prefix
+      // Proxy /api/v1/* → <VITE_API_BASE_URL>/v1/*
+      // GraphifyProgress and other components use the /api/v1/ prefix.
       '/api/v1': {
-        target: 'http://localhost:8000',
+        target: apiTarget,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
@@ -67,4 +74,5 @@ export default defineConfig(({ command, mode }) => ({
     setupFiles: ["./src/test/setup.ts"],
     exclude: ["e2e/**", "node_modules/**", "**/dist/**"],
   },
-}));
+  };
+});
