@@ -73,12 +73,13 @@ async def test_build_greeting_wywa():
 async def test_build_greeting_time_of_day_morning(monkeypatch):
     """Greeting says 'morning' for AM hours."""
     import datetime as _dt
+
     from app.voice import greeting as gmod
 
     class _FakeDatetime(_dt.datetime):
         @classmethod
         def now(cls, tz=None):   # type: ignore[override]
-            return cls(2026, 8, 20, 9, 0, tzinfo=_dt.timezone.utc)
+            return cls(2026, 8, 20, 9, 0, tzinfo=_dt.UTC)
 
     monkeypatch.setattr(gmod.datetime, "datetime", _FakeDatetime)
     script = await gmod.build_greeting_script(MOCK_HEALTH_HEALTHY, "Test")
@@ -89,12 +90,13 @@ async def test_build_greeting_time_of_day_morning(monkeypatch):
 async def test_build_greeting_time_of_day_evening(monkeypatch):
     """Greeting says 'evening' for PM hours."""
     import datetime as _dt
+
     from app.voice import greeting as gmod
 
     class _FakeDatetime(_dt.datetime):
         @classmethod
         def now(cls, tz=None):   # type: ignore[override]
-            return cls(2026, 8, 20, 20, 0, tzinfo=_dt.timezone.utc)
+            return cls(2026, 8, 20, 20, 0, tzinfo=_dt.UTC)
 
     monkeypatch.setattr(gmod.datetime, "datetime", _FakeDatetime)
     script = await gmod.build_greeting_script(MOCK_HEALTH_HEALTHY, "Test")

@@ -1,5 +1,6 @@
 """Tests for SSRF egress guard."""
 import pytest
+
 from app.net.ssrf_guard import SSRFError, assert_public_url, is_public_url
 
 

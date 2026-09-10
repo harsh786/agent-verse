@@ -1,9 +1,9 @@
 """Extra coverage for app/enterprise/simulation.py — MockMCPClient and SimulationRunner."""
 from __future__ import annotations
 
-import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.enterprise.simulation import MockMCPClient, SimulationRun, SimulationRunner
 from app.tenancy.context import PlanTier, TenantContext

@@ -70,51 +70,54 @@ const RedTeamPage          = lazy(() => import('@/features/red-team/RedTeamPage'
 const AgentCredentialsPage = lazy(() => import('@/features/agents/AgentCredentialsPage').then(m => ({ default: m.AgentCredentialsPage })));
 const WorkflowEnginePage   = lazy(() => import('@/features/workflow-engine/WorkflowEnginePage').then(m => ({ default: m.WorkflowEnginePage })));
 
+// ── Authenticated app pages — lazy (FE2: moved out of the eager entry chunk) ──
+const DashboardPage = lazy(() => import('@/features/dashboard/DashboardPage').then(m => ({ default: m.DashboardPage })));
+const AIOpsDashboard = lazy(() => import('@/features/dashboard/AIOpsDashboard').then(m => ({ default: m.AIOpsDashboard })));
+const GoalsListPage = lazy(() => import('@/features/goals/GoalsListPage').then(m => ({ default: m.GoalsListPage })));
+const GoalDetailPage = lazy(() => import('@/features/goals/GoalDetailPage').then(m => ({ default: m.GoalDetailPage })));
+const AgentsListPage = lazy(() => import('@/features/agents/AgentsListPage').then(m => ({ default: m.AgentsListPage })));
+const AgentCreatePage = lazy(() => import('@/features/agents/AgentCreatePage').then(m => ({ default: m.AgentCreatePage })));
+const AgentDetailPage = lazy(() => import('@/features/agents/AgentDetailPage').then(m => ({ default: m.AgentDetailPage })));
+const AgentDashboardPage = lazy(() => import('@/features/agents/AgentDashboardPage').then(m => ({ default: m.AgentDashboardPage })));
+const ApprovalsPage = lazy(() => import('@/features/approvals/ApprovalsPage').then(m => ({ default: m.ApprovalsPage })));
+const OnboardingPage = lazy(() => import('@/features/onboarding/OnboardingPage').then(m => ({ default: m.OnboardingPage })));
+const ConnectorsCatalogPage = lazy(() => import('@/features/connectors/ConnectorsCatalogPage').then(m => ({ default: m.ConnectorsCatalogPage })));
+const ConnectorsRegisteredPage = lazy(() => import('@/features/connectors/ConnectorsRegisteredPage').then(m => ({ default: m.ConnectorsRegisteredPage })));
+const ConnectorDetailPage = lazy(() => import('@/features/connectors/ConnectorDetailPage').then(m => ({ default: m.ConnectorDetailPage })));
+const SchedulesPage = lazy(() => import('@/features/schedules/SchedulesPage'));
+const KnowledgePage = lazy(() => import('@/features/knowledge/KnowledgePage'));
+const SourcesPage = lazy(() => import('@/features/ingestion/SourcesPage').then(m => ({ default: m.SourcesPage })));
+const GovernancePage = lazy(() => import('@/features/governance/GovernancePage').then(m => ({ default: m.GovernancePage })));
+const CollaborationPage = lazy(() => import('@/features/collaboration/CollaborationPage').then(m => ({ default: m.CollaborationPage })));
+const CoordinationRunPage = lazy(() => import('@/features/coordination/CoordinationRunPage'));
+const ObservabilityPage = lazy(() => import('@/features/observability/ObservabilityPage').then(m => ({ default: m.ObservabilityPage })));
+const CostDashboardPage = lazy(() => import('@/features/observability/CostDashboardPage').then(m => ({ default: m.CostDashboardPage })));
+const EvalPage = lazy(() => import('@/features/eval/EvalPage').then(m => ({ default: m.EvalPage })));
+const MarketplacePage = lazy(() => import('@/features/marketplace/MarketplacePage').then(m => ({ default: m.MarketplacePage })));
+const EnterprisePage = lazy(() => import('@/features/enterprise/EnterprisePage').then(m => ({ default: m.EnterprisePage })));
+const SettingsPage = lazy(() => import('@/features/settings/SettingsPage').then(m => ({ default: m.SettingsPage })));
+const PlaygroundPage = lazy(() => import('@/features/playground/PlaygroundPage').then(m => ({ default: m.PlaygroundPage })));
+const AnalyticsDashboardPage = lazy(() => import('@/features/analytics/AnalyticsDashboardPage').then(m => ({ default: m.AnalyticsDashboardPage })));
+const SimulationPage = lazy(() => import('@/features/simulation/SimulationPage'));
+const AuditExplorerPage = lazy(() => import('@/features/audit/AuditExplorerPage'));
+const RpaLivePage = lazy(() => import('@/features/rpa/RpaLivePage'));
+const OcrPage = lazy(() => import('@/features/ocr/OcrPage'));
+const MemoryExplorerPage = lazy(() => import('@/features/memory/MemoryExplorerPage').then(m => ({ default: m.MemoryExplorerPage })));
+const ArtifactsBrowserPage = lazy(() => import('@/features/artifacts/ArtifactsBrowserPage').then(m => ({ default: m.ArtifactsBrowserPage })));
+const ToolsPage = lazy(() => import('@/features/tools/ToolsPage').then(m => ({ default: m.ToolsPage })));
+const IntegrationsPage = lazy(() => import('@/features/integrations/IntegrationsPage').then(m => ({ default: m.IntegrationsPage })));
+const TrainingExportPage = lazy(() => import('@/features/training/TrainingExportPage').then(m => ({ default: m.TrainingExportPage })));
+const PerceptionPage = lazy(() => import('@/features/perception/PerceptionPage').then(m => ({ default: m.PerceptionPage })));
+const A2APage = lazy(() => import('@/features/a2a/A2APage').then(m => ({ default: m.A2APage })));
+const NotificationCenterPage = lazy(() => import('@/features/notifications/NotificationCenterPage'));
+const RbacPage = lazy(() => import('@/features/rbac/RbacPage'));
+const CompliancePage = lazy(() => import('@/features/compliance/CompliancePage'));
+
+// ── Public / first-paint pages — kept eager (small, needed before auth) ──────
 import { LandingPage } from "@/features/landing/LandingPage";
 import { AuthPage } from "@/features/auth/AuthPage";
 import { SSOCallbackPage } from "@/features/auth/SSOCallbackPage";
 import MFAVerifyPage from "@/features/auth/MFAVerifyPage";
-import { DashboardPage } from "@/features/dashboard/DashboardPage";
-import { AIOpsDashboard } from "@/features/dashboard/AIOpsDashboard";
-import { GoalsListPage } from "@/features/goals/GoalsListPage";
-import { GoalDetailPage } from "@/features/goals/GoalDetailPage";
-import { AgentsListPage } from "@/features/agents/AgentsListPage";
-import { AgentCreatePage } from "@/features/agents/AgentCreatePage";
-import { AgentDetailPage } from "@/features/agents/AgentDetailPage";
-import { ApprovalsPage } from "@/features/approvals/ApprovalsPage";
-import { OnboardingPage } from "@/features/onboarding/OnboardingPage";
-import { ConnectorsCatalogPage } from "@/features/connectors/ConnectorsCatalogPage";
-import { ConnectorsRegisteredPage } from "@/features/connectors/ConnectorsRegisteredPage";
-import { SchedulesPage } from "@/features/schedules/SchedulesPage";
-import { KnowledgePage } from "@/features/knowledge/KnowledgePage";
-import { SourcesPage } from "@/features/ingestion/SourcesPage";
-import { GovernancePage } from "@/features/governance/GovernancePage";
-import { CollaborationPage } from "@/features/collaboration/CollaborationPage";
-import { CoordinationRunPage } from "@/features/coordination/CoordinationRunPage";
-import { ObservabilityPage } from "@/features/observability/ObservabilityPage";
-import { CostDashboardPage } from "@/features/observability/CostDashboardPage";
-import { EvalPage } from "@/features/eval/EvalPage";
-import { MarketplacePage } from "@/features/marketplace/MarketplacePage";
-import { EnterprisePage } from "@/features/enterprise/EnterprisePage";
-import { SettingsPage } from "@/features/settings/SettingsPage";
-import { PlaygroundPage } from "@/features/playground/PlaygroundPage";
-import { AnalyticsDashboardPage } from "@/features/analytics/AnalyticsDashboardPage";
-import SimulationPage from "@/features/simulation/SimulationPage";
-import AuditExplorerPage from "@/features/audit/AuditExplorerPage";
-import RpaLivePage from "@/features/rpa/RpaLivePage";
-import OcrPage from "@/features/ocr/OcrPage";
-import { MemoryExplorerPage } from "@/features/memory/MemoryExplorerPage";
-import { ArtifactsBrowserPage } from "@/features/artifacts/ArtifactsBrowserPage";
-import { ToolsPage } from "@/features/tools/ToolsPage";
-import { IntegrationsPage } from "@/features/integrations/IntegrationsPage";
-import { TrainingExportPage } from "@/features/training/TrainingExportPage";
-import { PerceptionPage } from "@/features/perception/PerceptionPage";
-import { A2APage } from "@/features/a2a/A2APage";
-import { NotificationCenterPage } from "@/features/notifications/NotificationCenterPage";
-import { RbacPage } from "@/features/rbac/RbacPage";
-import { CompliancePage } from "@/features/compliance/CompliancePage";
-import { ConnectorDetailPage } from "@/features/connectors/ConnectorDetailPage";
-import { AgentDashboardPage } from "@/features/agents/AgentDashboardPage";
 import { StatusPage } from "@/features/status/StatusPage";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
@@ -222,36 +225,36 @@ export default function App() {
           </RequireAuth>
         }
       >
-        <Route path="dashboard"             element={rb("Dashboard",          <DashboardPage />)} />
-        <Route path="ai-ops"                element={rb("AI Ops",             <AIOpsDashboard />)} />
-        <Route path="goals"                 element={rb("Goals",              <GoalsListPage />)} />
-        <Route path="goals/:goalId"         element={rb("Goal Detail",        <GoalDetailPage />)} />
-        <Route path="agents"                element={rb("Agents",             <AgentsListPage />)} />
-        <Route path="agents/create"         element={rb("Create Agent",       <AgentCreatePage />)} />
-        <Route path="agents/:agentId"       element={rb("Agent Detail",       <AgentDetailPage />)} />
+        <Route path="dashboard"             element={lazy_rb("Dashboard",          <DashboardPage />)} />
+        <Route path="ai-ops"                element={lazy_rb("AI Ops",             <AIOpsDashboard />)} />
+        <Route path="goals"                 element={lazy_rb("Goals",              <GoalsListPage />)} />
+        <Route path="goals/:goalId"         element={lazy_rb("Goal Detail",        <GoalDetailPage />)} />
+        <Route path="agents"                element={lazy_rb("Agents",             <AgentsListPage />)} />
+        <Route path="agents/create"         element={lazy_rb("Create Agent",       <AgentCreatePage />)} />
+        <Route path="agents/:agentId"       element={lazy_rb("Agent Detail",       <AgentDetailPage />)} />
         <Route path="agents/:agentId/identity"    element={lazy_rb("Agent Identity",    <AgentIdentityPage />)} />
-        <Route path="agents/:agentId/dashboard"   element={rb("Agent Dashboard",        <AgentDashboardPage />)} />
+        <Route path="agents/:agentId/dashboard"   element={lazy_rb("Agent Dashboard",        <AgentDashboardPage />)} />
         <Route path="agents/:agentId/radar"       element={lazy_rb("Agent Radar",       <AgentRadarPage />)} />
         <Route path="agents/:agentId/personality" element={lazy_rb("Agent Personality", <AgentPersonalityPage />)} />
-        <Route path="approvals"             element={rb("Approvals",          <ApprovalsPage />)} />
-        <Route path="onboarding"            element={rb("Onboarding",         <OnboardingPage />)} />
-        <Route path="connectors/catalog"    element={rb("Connectors Catalog", <ConnectorsCatalogPage />)} />
-        <Route path="connectors"            element={rb("Connectors",         <ConnectorsRegisteredPage />)} />
-        <Route path="connectors/:connectorId" element={rb("Connector Detail", <ConnectorDetailPage />)} />
-        <Route path="schedules"             element={rb("Schedules",          <SchedulesPage />)} />
-        <Route path="knowledge"             element={rb("Knowledge",          <KnowledgePage />)} />
-        <Route path="sources"              element={rb("Sources",            <SourcesPage />)} />
-        <Route path="governance"            element={rb("Governance",         <GovernancePage />)} />
-        <Route path="collaboration"         element={rb("Collaboration",      <CollaborationPage />)} />
-        <Route path="coordination/:sessionId?" element={rb("Coordination",    <CoordinationRunPage />)} />
-        <Route path="observability"         element={rb("Observability",      <ObservabilityPage />)} />
-        <Route path="observability/cost"    element={rb("Cost Dashboard",     <CostDashboardPage />)} />
-        <Route path="eval"                  element={rb("Evaluations",        <EvalPage />)} />
-        <Route path="marketplace"           element={rb("Marketplace",        <MarketplacePage />)} />
+        <Route path="approvals"             element={lazy_rb("Approvals",          <ApprovalsPage />)} />
+        <Route path="onboarding"            element={lazy_rb("Onboarding",         <OnboardingPage />)} />
+        <Route path="connectors/catalog"    element={lazy_rb("Connectors Catalog", <ConnectorsCatalogPage />)} />
+        <Route path="connectors"            element={lazy_rb("Connectors",         <ConnectorsRegisteredPage />)} />
+        <Route path="connectors/:connectorId" element={lazy_rb("Connector Detail", <ConnectorDetailPage />)} />
+        <Route path="schedules"             element={lazy_rb("Schedules",          <SchedulesPage />)} />
+        <Route path="knowledge"             element={lazy_rb("Knowledge",          <KnowledgePage />)} />
+        <Route path="sources"              element={lazy_rb("Sources",            <SourcesPage />)} />
+        <Route path="governance"            element={lazy_rb("Governance",         <GovernancePage />)} />
+        <Route path="collaboration"         element={lazy_rb("Collaboration",      <CollaborationPage />)} />
+        <Route path="coordination/:sessionId?" element={lazy_rb("Coordination",    <CoordinationRunPage />)} />
+        <Route path="observability"         element={lazy_rb("Observability",      <ObservabilityPage />)} />
+        <Route path="observability/cost"    element={lazy_rb("Cost Dashboard",     <CostDashboardPage />)} />
+        <Route path="eval"                  element={lazy_rb("Evaluations",        <EvalPage />)} />
+        <Route path="marketplace"           element={lazy_rb("Marketplace",        <MarketplacePage />)} />
         <Route path="domains"               element={lazy_rb("Domains",       <DomainsPage />)} />
         <Route path="domains/:domain"       element={lazy_rb("Domain Detail", <DomainDetailPage />)} />
-        <Route path="enterprise"            element={rb("Enterprise",         <EnterprisePage />)} />
-        <Route path="settings"              element={rb("Settings",           <SettingsPage />)} />
+        <Route path="enterprise"            element={lazy_rb("Enterprise",         <EnterprisePage />)} />
+        <Route path="settings"              element={lazy_rb("Settings",           <SettingsPage />)} />
         <Route path="settings/scopes"       element={lazy_rb("Scope Explorer",   <ScopeExplorerPage />)} />
         <Route path="settings/guardrails"   element={lazy_rb("Guardrail Center", <GuardrailCenterPage />)} />
         <Route path="settings/budgets"      element={lazy_rb("Budget Manager",   <BudgetManagerPage />)} />
@@ -260,22 +263,22 @@ export default function App() {
         <Route path="lab"                   element={lazy_rb("Agent Lab",        <AgentLabPage />)} />
         <Route path="skills"                element={lazy_rb("Skills",           <SkillsPage />)} />
         <Route path="workflow-builder"      element={lazy_rb("Workflow Builder", <WorkflowBuilderPage />)} />
-        <Route path="playground"            element={rb("Playground",     <PlaygroundPage />)} />
-        <Route path="analytics"             element={rb("Analytics",      <AnalyticsDashboardPage />)} />
-        <Route path="simulation"            element={rb("Simulation",     <SimulationPage />)} />
-        <Route path="audit"                 element={rb("Audit Explorer", <AuditExplorerPage />)} />
-        <Route path="rpa/live"              element={rb("RPA Live",       <RpaLivePage />)} />
-        <Route path="ocr"                   element={rb("OCR Extraction", <OcrPage />)} />
-        <Route path="memory"                element={rb("Memory",         <MemoryExplorerPage />)} />
-        <Route path="artifacts"             element={rb("Artifacts",      <ArtifactsBrowserPage />)} />
-        <Route path="tools"                 element={rb("Tools",          <ToolsPage />)} />
-        <Route path="integrations"          element={rb("Integrations",   <IntegrationsPage />)} />
-        <Route path="training-export"       element={rb("Training Export",<TrainingExportPage />)} />
-        <Route path="perception"            element={rb("Perception",     <PerceptionPage />)} />
-        <Route path="a2a"                   element={rb("A2A",            <A2APage />)} />
-        <Route path="notifications"         element={rb("Notifications",  <NotificationCenterPage />)} />
-        <Route path="rbac"                  element={rb("RBAC",           <RbacPage />)} />
-        <Route path="compliance"            element={rb("Compliance",     <CompliancePage />)} />
+        <Route path="playground"            element={lazy_rb("Playground",     <PlaygroundPage />)} />
+        <Route path="analytics"             element={lazy_rb("Analytics",      <AnalyticsDashboardPage />)} />
+        <Route path="simulation"            element={lazy_rb("Simulation",     <SimulationPage />)} />
+        <Route path="audit"                 element={lazy_rb("Audit Explorer", <AuditExplorerPage />)} />
+        <Route path="rpa/live"              element={lazy_rb("RPA Live",       <RpaLivePage />)} />
+        <Route path="ocr"                   element={lazy_rb("OCR Extraction", <OcrPage />)} />
+        <Route path="memory"                element={lazy_rb("Memory",         <MemoryExplorerPage />)} />
+        <Route path="artifacts"             element={lazy_rb("Artifacts",      <ArtifactsBrowserPage />)} />
+        <Route path="tools"                 element={lazy_rb("Tools",          <ToolsPage />)} />
+        <Route path="integrations"          element={lazy_rb("Integrations",   <IntegrationsPage />)} />
+        <Route path="training-export"       element={lazy_rb("Training Export",<TrainingExportPage />)} />
+        <Route path="perception"            element={lazy_rb("Perception",     <PerceptionPage />)} />
+        <Route path="a2a"                   element={lazy_rb("A2A",            <A2APage />)} />
+        <Route path="notifications"         element={lazy_rb("Notifications",  <NotificationCenterPage />)} />
+        <Route path="rbac"                  element={lazy_rb("RBAC",           <RbacPage />)} />
+        <Route path="compliance"            element={lazy_rb("Compliance",     <CompliancePage />)} />
         <Route path="goals/:goalId/dna"     element={lazy_rb("Goal DNA",      <GoalDNAPage />)} />
         <Route path="goals/:goalId/diff"    element={lazy_rb("Goal Diff",     <GoalDiffPage />)} />
         <Route path="goals/ghost-run"       element={lazy_rb("Ghost Run",     <GhostRunPage />)} />

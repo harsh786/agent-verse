@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import builtins
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 import respx
-import httpx
 
 from app.mcp.client import CircuitBreakerOpenError, MCPClient
 from app.mcp.registry import MCPRegistry, MCPServerConfig
@@ -136,7 +136,7 @@ async def test_call_tool_succeeds_when_cb_allows(registry):
     )
     server_id = await registry.register(cfg, tenant_ctx=_CTX)
 
-    respx.post(f"http://mcp.example.com/tools/test_tool").mock(
+    respx.post("http://mcp.example.com/tools/test_tool").mock(
         return_value=httpx.Response(200, json={"result": "ok"})
     )
 

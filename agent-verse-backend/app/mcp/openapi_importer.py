@@ -141,21 +141,24 @@ async def persist_tools(
     from app.db.rls import sqlalchemy_rls_context
 
     try:
-        async with db_session_factory() as session, session.begin():
-            async with sqlalchemy_rls_context(session, tenant_id):
-                for tool in tools:
-                    row = ToolCapability(
-                        id=tool["id"],
-                        tenant_id=tool["tenant_id"],
-                        connector_id=tool["connector_id"],
-                        tool_name=tool["tool_name"],
-                        description=tool["description"],
-                        http_method=tool["http_method"],
-                        http_path=tool["http_path"],
-                        parameters_schema=tool["parameters_schema"],
-                        response_schema=tool.get("response_schema"),
-                    )
-                    session.add(row)
+        async with (
+            db_session_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            for tool in tools:
+                row = ToolCapability(
+                    id=tool["id"],
+                    tenant_id=tool["tenant_id"],
+                    connector_id=tool["connector_id"],
+                    tool_name=tool["tool_name"],
+                    description=tool["description"],
+                    http_method=tool["http_method"],
+                    http_path=tool["http_path"],
+                    parameters_schema=tool["parameters_schema"],
+                    response_schema=tool.get("response_schema"),
+                )
+                session.add(row)
         return len(tools)
     except Exception as exc:
         import logging

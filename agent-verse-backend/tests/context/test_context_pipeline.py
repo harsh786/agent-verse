@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import pytest
-from app.context.context_budget import ContextBudget, BudgetResult
-from app.context.rerank_policy import RerankPolicy, RerankStrategy, rrf_fuse
-from app.context.citation_manager import CitationManager, Citation
+
+from app.context.citation_manager import CitationManager
+from app.context.context_budget import BudgetResult, ContextBudget
 from app.context.prompt_builder import PromptBuilder, PromptContextBundle
+from app.context.rerank_policy import RerankPolicy, RerankStrategy, rrf_fuse
 
 
 @pytest.fixture
@@ -174,7 +175,7 @@ def test_prompt_builder_creates_bundle():
 
 
 def test_prompt_builder_includes_citations(sample_chunks):
-    from app.context.citation_manager import CitationManager, Citation
+    from app.context.citation_manager import CitationManager
     mgr = CitationManager()
     _, citations = mgr.attach_citations(sample_chunks[:2])
     builder = PromptBuilder()

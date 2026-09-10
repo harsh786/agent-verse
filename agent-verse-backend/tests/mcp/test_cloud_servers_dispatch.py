@@ -7,10 +7,10 @@ Covers: AWS S3, IAM, Lambda, CloudWatch (boto3),
 from __future__ import annotations
 
 import os
+from datetime import UTC
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 
 
@@ -263,6 +263,7 @@ async def test_lambda_list_functions():
 @pytest.mark.asyncio
 async def test_lambda_invoke_function():
     import json
+
     from app.mcp.servers.aws_lambda_server import call_tool
 
     mock_lam = MagicMock()
@@ -323,14 +324,15 @@ async def test_lambda_list_aliases():
 
 @pytest.mark.asyncio
 async def test_cloudwatch_get_metric_data():
+    from datetime import datetime
+
     from app.mcp.servers.aws_cloudwatch_server import call_tool
-    from datetime import datetime, timezone
 
     # CloudWatch uses _cw_client() not _client()
     # Timestamp must be a datetime object (server calls .isoformat())
     mock_cw = MagicMock()
     mock_cw.get_metric_statistics.return_value = {
-        "Datapoints": [{"Timestamp": datetime(2024, 1, 1, tzinfo=timezone.utc), "Average": 50.0, "Unit": "Percent"}],
+        "Datapoints": [{"Timestamp": datetime(2024, 1, 1, tzinfo=UTC), "Average": 50.0, "Unit": "Percent"}],
         "Label": "CPUUtilization",
     }
     with patch.dict("os.environ", _AWS_ENV), patch("app.mcp.servers.aws_cloudwatch_server._cw_client", return_value=mock_cw):
@@ -563,9 +565,9 @@ async def test_gcs_get_object():
 
 @pytest.mark.asyncio
 async def test_gcs_upload_object():
-    from app.mcp.servers.google_cloud_storage_server import call_tool
-
     import base64
+
+    from app.mcp.servers.google_cloud_storage_server import call_tool
     # GCS upload uses "content_base64" not "content"
     data = {"name": "new-file.txt", "size": "5", "updated": "2024-01-01", "contentType": "text/plain", "md5Hash": "xyz"}
     mc = mk_client(post=make_resp(data=data))

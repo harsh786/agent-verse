@@ -1,9 +1,7 @@
 """Comprehensive tests for app/auth/scope_seeder.py."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, call, patch
-
-import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 from app.auth.scope_seeder import (
     BUILTIN_ROLES,
@@ -11,7 +9,6 @@ from app.auth.scope_seeder import (
     seed_builtin_scopes,
     seed_scope_definitions,
 )
-
 
 # ---------------------------------------------------------------------------
 # Static data integrity
@@ -233,6 +230,7 @@ def test_seed_builtin_scopes_sql_uses_cast_not_double_colon():
     the param name.  The fix replaces it with standard SQL CAST() syntax.
     """
     import inspect
+
     from app.auth import scope_seeder
 
     source = inspect.getsource(scope_seeder)

@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
+from unittest.mock import MagicMock
 
 from app.enterprise.compliance import ComplianceController, DataExportRequest
 from app.tenancy.context import PlanTier, TenantContext

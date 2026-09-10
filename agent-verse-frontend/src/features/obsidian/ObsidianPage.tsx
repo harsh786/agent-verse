@@ -113,12 +113,7 @@ export function ObsidianPage() {
                   Change org
                 </button>
               </div>
-              <ObsidianVaultExplorer
-                orgId={selectedOrg}
-                onOpenCanvas={(canvasId) => {
-                  console.log('Open canvas:', canvasId);
-                }}
-              />
+              <ObsidianVaultExplorer orgId={selectedOrg} />
             </div>
           </JARVISStaggerItem>
         )}

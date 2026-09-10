@@ -1,11 +1,14 @@
 """Security: cross-tenant isolation, API key scoping, identity profile, SSRF guard."""
 from __future__ import annotations
+
 import pytest
-from app.tenancy.context import TenantContext, PlanTier
+
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def test_orchestration_profile_tenant_scoped():
     import asyncio
+
     from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
     from app.orchestration.strategy_registry import build_default_registry
 
@@ -27,7 +30,10 @@ def test_api_key_scoped_to_tenant():
 
 
 def test_identity_profile_all_scopes():
-    from app.security_runtime.identity_profile import IdentityProfile, IdentityScope, IdentityResolver
+    from app.security_runtime.identity_profile import (
+        IdentityResolver,
+        IdentityScope,
+    )
     resolver = IdentityResolver()
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k1")
     # Tenant scope
@@ -43,7 +49,10 @@ def test_identity_profile_all_scopes():
 
 
 def test_action_safety_profile_critical_requires_hitl():
-    from app.security_runtime.action_safety_profile import ActionSafetyProfileSelector, ActionSafetyLevel
+    from app.security_runtime.action_safety_profile import (
+        ActionSafetyLevel,
+        ActionSafetyProfileSelector,
+    )
     selector = ActionSafetyProfileSelector()
     profile = selector.select("postgres_query", {"query": "DELETE FROM users"}, "critical")
     assert profile.safety_level == ActionSafetyLevel.HITL_REQUIRED
@@ -51,7 +60,10 @@ def test_action_safety_profile_critical_requires_hitl():
 
 
 def test_action_safety_profile_read_is_safe():
-    from app.security_runtime.action_safety_profile import ActionSafetyProfileSelector, ActionSafetyLevel
+    from app.security_runtime.action_safety_profile import (
+        ActionSafetyLevel,
+        ActionSafetyProfileSelector,
+    )
     selector = ActionSafetyProfileSelector()
     profile = selector.select("jira.search_issues", {"jql": "project = X"}, "low")
     assert profile.safety_level == ActionSafetyLevel.SAFE

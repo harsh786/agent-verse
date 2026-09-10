@@ -7,12 +7,12 @@ from uuid import uuid4
 import pytest
 
 from app.governance.policies import (
+    REGULATED_DOMAINS,
     Policy,
     PolicyEngine,
     PolicyResult,
     PolicyVersionManager,
     evaluate_with_domain_failsafe,
-    REGULATED_DOMAINS,
 )
 from app.tenancy.context import PlanTier, TenantContext
 

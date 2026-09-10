@@ -1,15 +1,21 @@
 """All 9 scorecard dimensions + self-improvement loop actions."""
 from __future__ import annotations
-import pytest
+
+from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
 from app.evals.agent_score import AgentScorer
 from app.evals.runtime_scorecard import RuntimeScorecard, ScorecardResult
-from app.evals.self_improvement_engine import SelfImprovementEngine, ImprovementAction
-from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
+from app.evals.self_improvement_engine import ImprovementAction, SelfImprovementEngine
 from app.orchestration.runtime_profile import (
-    GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-    ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+    AgentPatternConfig,
+    EvalConfig,
+    GoalProperties,
+    GoalRuntimeProfile,
+    MemoryCacheConfig,
+    ModelPlanConfig,
+    RAGStrategyConfig,
+    SecurityConfig,
 )
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _make_state(status=GoalStatus.COMPLETE, iterations=3):

@@ -1,8 +1,8 @@
 """Verify critical modules use structlog instead of stdlib logging."""
 from __future__ import annotations
+
 import importlib
 import inspect
-
 
 MIGRATED_MODULES = [
     "app.services.goal_service",

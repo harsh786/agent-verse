@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.collab.agent_collab import AgentCollabSession, CollabRound, ConsensusResult
+from app.intelligence.eval import EvalScorecard
 from app.intelligence.explainability import DecisionTrace
 from app.intelligence.guardrails import GuardrailChecker
-from app.intelligence.eval import EvalResult, EvalScorecard
 from app.tenancy.context import PlanTier, TenantContext
 
 _CTX = TenantContext(tenant_id="tid-a", plan=PlanTier.PROFESSIONAL, api_key_id="kid-1")

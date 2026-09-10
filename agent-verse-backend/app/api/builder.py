@@ -146,7 +146,8 @@ async def serve_preview(workspace_id: str, request: Request) -> HTMLResponse:
   <meta http-equiv="refresh" content="5" />
   <style>
     body {{ font-family: system-ui, sans-serif; display: flex; align-items: center;
-           justify-content: center; height: 100vh; margin: 0; background: #0f172a; color: #e2e8f0; }}
+           justify-content: center; height: 100vh; margin: 0;
+           background: #0f172a; color: #e2e8f0; }}
     .card {{ text-align: center; padding: 2rem; border-radius: 1rem;
              background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); }}
     .spinner {{ width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.1);

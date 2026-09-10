@@ -10,14 +10,14 @@ import inspect
 
 def test_all_pm_servers_importable() -> None:
     from app.mcp.servers import (
-        jira_server,
-        confluence_server,
         asana_server,
+        confluence_server,
+        jira_server,
         linear_server,
-        notion_server,
-        trello_server,
         monday_server,
+        notion_server,
         todoist_server,
+        trello_server,
     )
 
     for s in [
@@ -42,9 +42,9 @@ def test_bonus_pm_servers_importable() -> None:
     """Bonus servers: basecamp, wrike, clickup, smartsuite."""
     from app.mcp.servers import (
         basecamp_server,
-        wrike_server,
         clickup_server,
         smartsuite_server,
+        wrike_server,
     )
 
     for s in [basecamp_server, wrike_server, clickup_server, smartsuite_server]:
@@ -56,18 +56,18 @@ def test_bonus_pm_servers_importable() -> None:
 def test_tool_definitions_well_formed() -> None:
     """Every tool in every PM server must have name, description, and parameters."""
     from app.mcp.servers import (
-        jira_server,
-        confluence_server,
         asana_server,
-        linear_server,
-        notion_server,
-        trello_server,
-        monday_server,
-        todoist_server,
         basecamp_server,
-        wrike_server,
         clickup_server,
+        confluence_server,
+        jira_server,
+        linear_server,
+        monday_server,
+        notion_server,
         smartsuite_server,
+        todoist_server,
+        trello_server,
+        wrike_server,
     )
 
     servers = [

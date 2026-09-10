@@ -1,9 +1,11 @@
 """Verify self-optimizer suggestions persist to DB and can be queried."""
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-from app.intelligence.self_optimization import SelfOptimizer, OptimizationSuggestion
+
+import pytest
+
 from app.intelligence.eval import EvalScorecard
-from app.tenancy.context import TenantContext, PlanTier
+from app.intelligence.self_optimization import OptimizationSuggestion, SelfOptimizer
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _tenant() -> TenantContext:

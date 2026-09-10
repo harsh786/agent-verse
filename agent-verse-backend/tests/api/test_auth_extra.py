@@ -1,14 +1,13 @@
 """Extra coverage for app/api/auth.py — SSO auth endpoints."""
 from __future__ import annotations
 
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.auth import router, _default_redirect_uri, _check_auth_rate_limit
+from app.api.auth import _check_auth_rate_limit, _default_redirect_uri, router
 
 
 def _make_app() -> FastAPI:

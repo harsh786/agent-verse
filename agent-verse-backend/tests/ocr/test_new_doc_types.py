@@ -3,7 +3,6 @@ from app.ocr.classifier import DocumentClassifier
 from app.ocr.extractors import get_extractor
 from app.ocr.models import DocumentType
 
-
 classifier = DocumentClassifier()
 
 # ── Classifier tests ──────────────────────────────────────────────────────────

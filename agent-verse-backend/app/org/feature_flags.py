@@ -91,7 +91,7 @@ class FeatureFlagService:
 
     def enable_phase(self, phase: int) -> list[str]:
         """Enable all flags for a deployment phase. Returns enabled flags."""
-        PHASE_FLAGS = {
+        phase_flags = {
             0: [],  # nothing (deploy with flag=OFF)
             1: ["org_os_enabled"],  # internal testing
             2: ["org_os_enabled", "team_formation_enabled", "meta_orchestrator_enabled"],
@@ -123,7 +123,7 @@ class FeatureFlagService:
                 "gateway_teams_enabled",
             ],
         }
-        flags = PHASE_FLAGS.get(phase, [])
+        flags = phase_flags.get(phase, [])
         for flag in flags:
             self.enable(flag)
         _log.info("feature_flag.phase_enabled", phase=phase, flags=flags)
@@ -175,13 +175,12 @@ async def _run_org_intelligence_cron() -> dict[str, Any]:
 
         for org_id, tenant_id in orgs:
             try:
-                async with db_factory() as s2:
-                    async with sqlalchemy_rls_context(s2, str(tenant_id)):
-                        svc = OrgAnalyticsService(s2, str(tenant_id))
-                        await svc.get_org_health_score(str(org_id))
-                        bottlenecks = await svc.get_bottlenecks(str(org_id))
-                        if bottlenecks:
-                            insights_generated += len(bottlenecks)
+                async with db_factory() as s2, sqlalchemy_rls_context(s2, str(tenant_id)):
+                    svc = OrgAnalyticsService(s2, str(tenant_id))
+                    await svc.get_org_health_score(str(org_id))
+                    bottlenecks = await svc.get_bottlenecks(str(org_id))
+                    if bottlenecks:
+                        insights_generated += len(bottlenecks)
                 processed += 1
             except Exception as exc:
                 _log.warning("org_intelligence_cron.org_failed", org_id=str(org_id), error=str(exc))
@@ -219,11 +218,10 @@ async def _run_org_digest_cron() -> dict[str, Any]:
 
         for org_id, tenant_id in orgs:
             try:
-                async with db_factory() as s2:
-                    async with sqlalchemy_rls_context(s2, str(tenant_id)):
-                        digest_svc = OrgDigestService(s2, str(tenant_id))
-                        await digest_svc.generate(str(org_id))
-                        digests_generated += 1
+                async with db_factory() as s2, sqlalchemy_rls_context(s2, str(tenant_id)):
+                    digest_svc = OrgDigestService(s2, str(tenant_id))
+                    await digest_svc.generate(str(org_id))
+                    digests_generated += 1
                 processed += 1
             except Exception as exc:
                 _log.warning("org_digest_cron.org_failed", org_id=str(org_id), error=str(exc))

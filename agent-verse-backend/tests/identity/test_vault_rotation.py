@@ -44,6 +44,7 @@ def test_vault_byok_can_encrypt_and_decrypt():
 def test_vault_rotate_key_returns_dict():
     """rotate_key without a DB should still return a valid dict."""
     import asyncio
+
     from app.providers.vault import CredentialVault
     vault = CredentialVault(master_key="test-master-key")
     result = asyncio.run(vault.rotate_key(new_master_key=b"newkey_32_bytes_long_padding__xx"))
@@ -53,6 +54,7 @@ def test_vault_rotate_key_returns_dict():
 
 def test_vault_rotate_key_rejects_short_key():
     import asyncio
+
     from app.providers.vault import CredentialVault
     vault = CredentialVault(master_key="test-master-key")
     with pytest.raises(ValueError):

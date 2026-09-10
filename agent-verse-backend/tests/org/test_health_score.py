@@ -1,7 +1,6 @@
 """Tests for OrgHealthScore — app/org/analytics.py"""
 from __future__ import annotations
 
-import pytest
 from app.org.analytics import OrgHealthScore
 
 

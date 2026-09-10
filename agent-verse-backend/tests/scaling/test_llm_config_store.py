@@ -1,10 +1,7 @@
 """Tests for LLMConfigStore and RedisCircuitBreaker (in-memory Redis stubs)."""
 from __future__ import annotations
 
-import pytest
-
 from app.services.llm_config_store import LLMConfigStore
-
 
 # ── Minimal in-memory Redis fake (no external deps) ───────────────────────────
 
@@ -133,8 +130,8 @@ async def test_redis_delete_failure_is_swallowed_gracefully() -> None:
 # ── RedisCircuitBreaker ────────────────────────────────────────────────────────
 
 async def test_redis_circuit_breaker_starts_closed() -> None:
-    from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
     from app.reliability.circuit_breaker import CircuitState
+    from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
 
     breaker = RedisCircuitBreaker(
         redis_client=_FakeRedis(), tenant_id="t1", tool_name="github", failure_threshold=3
@@ -144,8 +141,8 @@ async def test_redis_circuit_breaker_starts_closed() -> None:
 
 
 async def test_redis_circuit_breaker_opens_after_threshold() -> None:
-    from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
     from app.reliability.circuit_breaker import CircuitState
+    from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
 
     breaker = RedisCircuitBreaker(
         redis_client=_FakeRedis(), tenant_id="t1", tool_name="github", failure_threshold=3
@@ -161,8 +158,8 @@ async def test_redis_circuit_breaker_opens_after_threshold() -> None:
 
 
 async def test_redis_circuit_breaker_success_resets_to_closed() -> None:
-    from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
     from app.reliability.circuit_breaker import CircuitState
+    from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
 
     breaker = RedisCircuitBreaker(
         redis_client=_FakeRedis(), tenant_id="t1", tool_name="github", failure_threshold=3
@@ -178,8 +175,8 @@ async def test_redis_circuit_breaker_success_resets_to_closed() -> None:
 
 
 async def test_redis_circuit_breaker_different_tools_are_isolated() -> None:
-    from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
     from app.reliability.circuit_breaker import CircuitState
+    from app.reliability.redis_circuit_breaker import RedisCircuitBreaker
 
     redis = _FakeRedis()
     github = RedisCircuitBreaker(

@@ -1,8 +1,8 @@
 """P1.2 tests: vault credential injection, CAPTCHA tools, takeover endpoint."""
 import inspect
+from unittest.mock import AsyncMock
 
 import pytest
-from unittest.mock import AsyncMock
 
 
 @pytest.mark.asyncio
@@ -99,8 +99,8 @@ async def test_rpa_executor_network_idle_simulation():
 @pytest.mark.asyncio
 async def test_credential_injector_wired_to_executor():
     """RPAExecutor respects _credential_injector when set."""
-    from app.rpa.executor import RPAExecutor
     from app.rpa.credential_injector import CredentialInjector
+    from app.rpa.executor import RPAExecutor
 
     mock_store = AsyncMock()
     mock_store.get_secret = AsyncMock(return_value="resolved-secret")
@@ -120,8 +120,9 @@ async def test_credential_injector_wired_to_executor():
 
 
 def test_rpa_api_has_takeover_endpoint():
-    from app.main import create_app
     from fastapi.openapi.utils import get_openapi
+
+    from app.main import create_app
     app = create_app()
     schema = get_openapi(title="test", version="0.1", routes=app.routes)
     paths = list(schema.get("paths", {}).keys())

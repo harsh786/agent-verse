@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
-from app.governance.hitl import HITLGateway, ApprovalStatus
 from app.governance.audit import AuditLog
+from app.governance.hitl import HITLGateway
 from app.memory.long_term import LongTermMemoryStore
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 CTX = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")
 
@@ -115,7 +114,7 @@ async def test_eval_suite_runner_create_and_list() -> None:
 def test_redbeat_import() -> None:
     """celery-redbeat is installable."""
     try:
-        import redbeat  # noqa: F401
+        import redbeat
         assert redbeat is not None
     except ImportError:
         pytest.skip("celery-redbeat not installed")

@@ -8,13 +8,11 @@ Covers: amazon_ses, amazon_sqs, apache_kafka, bigquery, cloudflare,
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers

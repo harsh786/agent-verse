@@ -1,7 +1,8 @@
 """Tests for P2.6 golden tasks and rollout gate."""
 import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from tests._paths import MIGRATIONS_DIR
 

@@ -1,12 +1,28 @@
 /**
  * ObsidianVaultExplorer — T7: In-app Obsidian vault exploration panel.
  *
- * Tabs:
- *   Graph View  — animated knowledge graph (same JARVIS style as GraphifyProgress)
- *   File Tree   — hierarchical note explorer with search
- *   Bases       — live Obsidian-Bases table views (missions, tasks)
- *   Maps        — JSON Canvas thumbnails → launch CanvasMapViewer
- *   Timeline    — knowledge growth sparkline per day
+ * Tabs (WS-11c: all five wired to real backend analogs — no Obsidian-specific
+ * backend exists, so each tab is mapped onto the closest real AgentVerse data
+ * source rather than left as a demo):
+ *   Graph View  — real force-directed knowledge graph, wired to the tenant KG
+ *                 (`/knowledge-graph/export`), click-to-focus, filter by type
+ *   File Tree   — the same real KG nodes grouped by type, with search
+ *   Bases       — real org missions/tasks table (`/v1/org/{id}/missions|tasks`):
+ *                 title, status, priority, owner/team, age — the closest real
+ *                 analog to an Obsidian Base (structured, filterable records)
+ *   Maps        — real KG reused as a clustered/grouped map (nodes grouped by
+ *                 type, cross-type edges as connectors) — the closest real
+ *                 analog to a JSON Canvas spatial map; no separate canvas
+ *                 store exists so it's a real transform of the same KG data
+ *   Timeline    — real org event history (`/v1/org/{id}/events`: mission/task/
+ *                 approval lifecycle), day-bucketed activity + chronological
+ *                 feed — real timestamps only, never a fabricated sparkline
+ *
+ * HONESTY RULE: every tab renders only real backend data (`knowledgeGraphApi`,
+ * `orgApi`, see src/lib/api/client.ts / src/features/org/api.ts) — no demo/
+ * fabricated nodes, rows, or sparklines. Each tab shows an honest empty state
+ * when its real backend query returns no data, and an honest error+retry state
+ * on fetch failure.
  *
  * Skills:
  *   frontend-design:   JARVIS dark vault, emerald-400 note glow, pulsing graph
@@ -15,32 +31,20 @@
  *   web-guidelines:    role=tablist, aria-selected, time[datetime], aria-live
  *   ui-ux-pro-max:     44px targets, useReducedMotion, keyboard nav
  */
-import { useState, useCallback, useId } from 'react';
+import { useState, useCallback, useId, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
-  Network, FileText, BarChart3, Map, Clock,
+  Network, FileText, BarChart3, Map as MapIcon, Clock,
   Search, ChevronRight, FileCode, Layers,
-  ExternalLink, TrendingUp, Circle, CheckCircle2,
+  ExternalLink, AlertTriangle, RefreshCw, X, GitBranch,
 } from 'lucide-react';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-interface VaultNode {
-  id:       string;
-  label:    string;
-  type:     'note' | 'folder' | 'canvas' | 'base';
-  path:     string;
-  x:        number;
-  y:        number;
-  tags:     string[];
-  modified: string;
-}
-
-interface VaultEdge { from: string; to: string; label?: string }
-interface BaseRow   { title: string; priority: 'HIGH' | 'MEDIUM' | 'LOW'; owner: string; runningFor: string }
-interface BaseTable { name: string; rows: BaseRow[]; cost: string }
-interface CanvasThumb { name: string; description: string; nodeCount: number }
-interface DayGrowth  { date: string; notesAdded: number }
+import { knowledgeGraphApi, type KGNode } from '@/lib/api/client';
+import { KnowledgeGraph, type KnowledgeNode, type KnowledgeEdge } from '@/components/knowledge/KnowledgeGraph';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { Skeleton } from '@/components/ui/Skeleton';
+import { orgApi } from '../api';
 
 // ── Spring constants ──────────────────────────────────────────────────────────
 
@@ -48,48 +52,47 @@ const SPRING_FAST  = { type: 'spring', stiffness: 600, damping: 35 } as const;
 const SPRING_NODE  = { type: 'spring', stiffness: 400, damping: 30 } as const;
 const SPRING_PANEL = { type: 'spring', stiffness: 280, damping: 26 } as const;
 
-// ── Demo data ─────────────────────────────────────────────────────────────────
+// ── Shared helpers (Bases/Maps/Timeline real-data rendering) ──────────────────
 
-const DEMO_NODES: VaultNode[] = [
-  { id: 'n1', label: 'Q3 Strategy', type: 'note', path: 'strategy/Q3.md', x: 120, y: 80, tags: ['strategy', 'q3'], modified: '2026-08-17' },
-  { id: 'n2', label: 'Germany Launch', type: 'note', path: 'ops/germany.md', x: 260, y: 60, tags: ['ops', 'eu'], modified: '2026-08-17' },
-  { id: 'n3', label: 'SEBI Compliance', type: 'note', path: 'legal/sebi.md', x: 180, y: 160, tags: ['legal', 'compliance'], modified: '2026-08-16' },
-  { id: 'n4', label: 'Competitor Map', type: 'canvas', path: 'maps/competitors.canvas', x: 310, y: 150, tags: ['intel'], modified: '2026-08-15' },
-  { id: 'n5', label: 'Mission Deps', type: 'canvas', path: 'maps/mission-deps.canvas', x: 80, y: 200, tags: ['planning'], modified: '2026-08-17' },
-  { id: 'n6', label: 'Finance Models', type: 'base', path: 'bases/finance.base', x: 220, y: 230, tags: ['finance'], modified: '2026-08-16' },
-];
+/** Same palette as KnowledgeGraph.tsx's DEFAULT_NODE_COLORS, kept local so the
+ *  Maps cluster view visually matches the Graph tab without exporting internals. */
+const NODE_TYPE_COLORS: Record<string, string> = {
+  document: '#3b82f6', chunk: '#0ea5e9', concept: '#22c55e', entity: '#f59e0b',
+  goal: '#a855f7', tool: '#ef4444', memory: '#14b8a6', artifact: '#eab308',
+  agent: '#ec4899', workflow: '#6366f1',
+};
 
-const DEMO_EDGES: VaultEdge[] = [
-  { from: 'n1', to: 'n2', label: 'drives' },
-  { from: 'n1', to: 'n3', label: 'requires' },
-  { from: 'n3', to: 'n6', label: 'feeds' },
-];
+/** Compact relative-age label for a real ISO timestamp (never fabricated). */
+function ageLabel(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '—';
+  const diffMs = Date.now() - then;
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo`;
+  return `${Math.floor(months / 12)}y`;
+}
 
-const DEMO_BASES: BaseTable[] = [{
-  name: 'active-missions.base',
-  cost: '$8.40/day avg',
-  rows: [
-    { title: 'Q3 Revenue Analysis', priority: 'HIGH', owner: 'Maya', runningFor: '3 days' },
-    { title: 'SEBI Compliance',     priority: 'HIGH', owner: 'Raj',  runningFor: '1 day' },
-    { title: 'Competitor Intel',    priority: 'MEDIUM', owner: 'Team', runningFor: '5 hours' },
-  ],
-}];
+function priorityColor(p: string): string {
+  if (p === 'critical') return 'text-red-400 bg-red-500/10 border-red-500/30';
+  if (p === 'high') return 'text-amber-400 bg-amber-500/10 border-amber-500/30';
+  if (p === 'medium') return 'text-blue-400 bg-blue-500/10 border-blue-500/30';
+  return 'text-[#64748B] bg-[#1A1F2E] border-[#2D3748]';
+}
 
-const DEMO_CANVASES: CanvasThumb[] = [
-  { name: 'org-map.canvas',              description: 'Full org dependency map',    nodeCount: 24 },
-  { name: 'competitor-landscape.canvas', description: 'Competitor analysis',        nodeCount: 12 },
-  { name: 'mission-deps.canvas',         description: 'Mission interdependencies',  nodeCount: 8  },
-];
-
-const DEMO_TIMELINE: DayGrowth[] = [
-  { date: '2026-08-17', notesAdded: 28 },
-  { date: '2026-08-16', notesAdded: 18 },
-  { date: '2026-08-15', notesAdded: 25 },
-  { date: '2026-08-14', notesAdded: 14 },
-  { date: '2026-08-13', notesAdded: 32 },
-  { date: '2026-08-12', notesAdded: 21 },
-  { date: '2026-08-11', notesAdded: 9  },
-];
+function statusColor(s: string): string {
+  if (['completed', 'active', 'running', 'assigned'].includes(s)) return 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30';
+  if (['failed', 'blocked', 'cancelled', 'expired'].includes(s)) return 'text-red-400 bg-red-500/10 border-red-500/30';
+  if (['queued', 'planned', 'draft', 'waiting', 'review', 'approval_required'].includes(s)) return 'text-amber-400 bg-amber-500/10 border-amber-500/30';
+  return 'text-[#64748B] bg-[#1A1F2E] border-[#2D3748]';
+}
 
 // ── Tab types ─────────────────────────────────────────────────────────────────
 
@@ -99,117 +102,227 @@ const TABS: { id: VaultTab; label: string; icon: React.ComponentType<{className?
   { id: 'graph',    label: 'Graph',    icon: Network    },
   { id: 'files',    label: 'Files',    icon: FileText   },
   { id: 'bases',    label: 'Bases',    icon: BarChart3  },
-  { id: 'maps',     label: 'Maps',     icon: Map        },
+  { id: 'maps',     label: 'Maps',     icon: MapIcon    },
   { id: 'timeline', label: 'Timeline', icon: Clock      },
 ];
 
-// ── Graph View ────────────────────────────────────────────────────────────────
+// ── Graph View — real tenant knowledge graph ───────────────────────────────────
 
-function GraphView({ nodes, edges }: { nodes: VaultNode[]; edges: VaultEdge[] }) {
-  const reduce = useReducedMotion();
-  const [hovered, setHovered] = useState<string | null>(null);
-
-  const NODE_COLORS: Record<string, string> = {
-    note: '#60a5fa',   // blue
-    canvas: '#a78bfa', // violet
-    base: '#34d399',   // emerald
-    folder: '#fb923c', // orange
-  };
+/** Node-detail side panel: fetches full content/metadata/edges for one node. */
+function NodeDetailPanel({ nodeId, nodesById, onClose }: {
+  nodeId: string;
+  nodesById: Map<string, KGNode>;
+  onClose: () => void;
+}) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['kg-node-detail', nodeId],
+    queryFn: () => knowledgeGraphApi.getNode(nodeId),
+  });
+  const summary = nodesById.get(nodeId);
 
   return (
-    <div className="relative h-72 bg-[#090C12] rounded-xl overflow-hidden border border-[#1E2535]" aria-label="Knowledge graph view">
-      {/* Ambient grid */}
-      <div
-        className="absolute inset-0 opacity-10"
-        style={{
-          backgroundImage: 'radial-gradient(circle, #2D3748 1px, transparent 1px)',
-          backgroundSize: '24px 24px',
-        }}
-      />
+    <motion.div
+      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+      transition={SPRING_PANEL}
+      className="mt-2 p-3 bg-[#0F1117] border border-[#2D3748] rounded-xl space-y-2"
+      aria-label="Node detail"
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <GitBranch className="h-3.5 w-3.5 text-[#00D4FF] shrink-0" aria-hidden />
+          <span className="text-[12px] font-medium text-[#F1F5F9] truncate">{summary?.label ?? nodeId}</span>
+          {summary && <span className="text-[10px] text-[#475569] capitalize shrink-0">{summary.node_type}</span>}
+        </div>
+        <button onClick={onClose} aria-label="Close node detail" className="text-[#475569] hover:text-[#94A3B8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 rounded shrink-0">
+          <X className="h-3.5 w-3.5" aria-hidden />
+        </button>
+      </div>
+      {isLoading ? (
+        <Skeleton className="h-10 w-full" />
+      ) : data ? (
+        <>
+          {data.node.content && (
+            <p className="text-[11px] text-[#94A3B8] leading-relaxed">{data.node.content}</p>
+          )}
+          {data.edges.length > 0 && (
+            <div className="space-y-1">
+              <p className="text-[10px] text-[#475569] uppercase tracking-wide">Connections ({data.edges.length})</p>
+              {data.edges.slice(0, 6).map(e => (
+                <div key={e.edge_id} className="flex items-center gap-2 text-[11px] text-[#64748B]">
+                  <span className="text-[9px] bg-[#1A1F2E] text-[#94A3B8] px-1.5 py-0.5 rounded font-mono shrink-0">{e.edge_type}</span>
+                  <span className="truncate">
+                    {e.source_node_id === nodeId ? '→ ' : '← '}
+                    {(e.source_node_id === nodeId ? nodesById.get(e.target_node_id) : nodesById.get(e.source_node_id))?.label
+                      ?? (e.source_node_id === nodeId ? e.target_node_id : e.source_node_id)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <p className="text-[11px] text-[#475569]">Could not load node detail.</p>
+      )}
+    </motion.div>
+  );
+}
 
-      {/* Edges */}
-      <svg className="absolute inset-0 w-full h-full pointer-events-none">
-        {edges.map((e, i) => {
-          const from = nodes.find(n => n.id === e.from);
-          const to   = nodes.find(n => n.id === e.to);
-          if (!from || !to) return null;
+function GraphView() {
+  const reduce = useReducedMotion();
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [activeTypes, setActiveTypes] = useState<Set<string> | null>(null); // null = all types
+
+  const { data: graph, isLoading, isError, refetch } = useQuery({
+    queryKey: ['kg-graph'],
+    queryFn: () => knowledgeGraphApi.getGraph(),
+    staleTime: 15_000,
+  });
+
+  const allNodes = useMemo(() => graph?.nodes ?? [], [graph]);
+  const allEdges = useMemo(() => graph?.edges ?? [], [graph]);
+  const nodesById = useMemo(() => new Map(allNodes.map(n => [n.node_id, n])), [allNodes]);
+  const availableTypes = useMemo(() => [...new Set(allNodes.map(n => n.node_type))].sort(), [allNodes]);
+
+  const visibleNodes = useMemo(
+    () => (activeTypes ? allNodes.filter(n => activeTypes.has(n.node_type)) : allNodes),
+    [allNodes, activeTypes]
+  );
+  const visibleIds = useMemo(() => new Set(visibleNodes.map(n => n.node_id)), [visibleNodes]);
+  const visibleEdges = useMemo(
+    () => allEdges.filter(e => visibleIds.has(e.source) && visibleIds.has(e.target)),
+    [allEdges, visibleIds]
+  );
+
+  const graphData = useMemo(() => ({
+    nodes: visibleNodes.map((n): KnowledgeNode => ({ id: n.node_id, label: n.label, type: n.node_type })),
+    edges: visibleEdges.map((e): KnowledgeEdge => ({ id: e.edge_id, source: e.source, target: e.target, label: e.edge_type })),
+  }), [visibleNodes, visibleEdges]);
+
+  const toggleType = useCallback((type: string) => {
+    setActiveTypes(prev => {
+      const base = prev ?? new Set(availableTypes);
+      const next = new Set(base);
+      if (next.has(type)) next.delete(type); else next.add(type);
+      // Selecting everything is equivalent to "all" (null)
+      return next.size === availableTypes.length ? null : next;
+    });
+  }, [availableTypes]);
+
+  if (isLoading) {
+    return <Skeleton className="h-72 w-full rounded-xl" />;
+  }
+
+  if (isError) {
+    return (
+      <div className="h-72 flex flex-col items-center justify-center gap-3 bg-[#090C12] rounded-xl border border-[#1E2535]" role="alert">
+        <AlertTriangle className="h-6 w-6 text-amber-400" aria-hidden />
+        <p className="text-[12px] text-[#94A3B8]">Couldn't load the knowledge graph.</p>
+        <button
+          onClick={() => refetch()}
+          className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-lg border border-[#2D3748] text-[#94A3B8] hover:text-[#F1F5F9] hover:border-blue-500/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70"
+        >
+          <RefreshCw className="h-3 w-3" aria-hidden />Retry
+        </button>
+      </div>
+    );
+  }
+
+  if (allNodes.length === 0) {
+    return (
+      <div className="bg-[#090C12] rounded-xl border border-[#1E2535]">
+        <EmptyState
+          icon={<Network className="h-10 w-10" />}
+          title="Knowledge graph is empty"
+          description="Ingest documents or run entity extraction to populate this org's knowledge graph."
+          variant="static"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {/* Type filter chips */}
+      <div className="flex flex-wrap gap-1" role="group" aria-label="Filter by node type">
+        {availableTypes.map(type => {
+          const isActive = !activeTypes || activeTypes.has(type);
           return (
-            <motion.line
-              key={i}
-              initial={reduce ? {} : { pathLength: 0, opacity: 0 }}
-              animate={{ pathLength: 1, opacity: 0.35 }}
-              transition={{ ...SPRING_PANEL, delay: i * 0.1 }}
-              x1={from.x} y1={from.y} x2={to.x} y2={to.y}
-              stroke="#4B5563" strokeWidth={1.5} strokeDasharray="4 3"
-            />
+            <button
+              key={type}
+              onClick={() => toggleType(type)}
+              aria-pressed={isActive}
+              className={`px-2 py-0.5 text-[10px] rounded-full border capitalize transition-colors ${
+                isActive ? 'bg-[#1A1F2E] border-blue-500/40 text-[#F1F5F9]' : 'border-[#2D3748] text-[#475569] hover:text-[#94A3B8]'
+              }`}
+            >
+              {type}
+            </button>
           );
         })}
-      </svg>
-
-      {/* Nodes */}
-      {nodes.map((node, i) => {
-        const color = NODE_COLORS[node.type] ?? '#9CA3AF';
-        const isHov = hovered === node.id;
-        return (
-          <motion.button
-            key={node.id}
-            initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.4 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ ...SPRING_NODE, delay: i * 0.06 }}
-            whileHover={reduce ? {} : { scale: 1.15 }}
-            onHoverStart={() => setHovered(node.id)}
-            onHoverEnd={() => setHovered(null)}
-            style={{ left: node.x, top: node.y, touchAction: 'manipulation' }}
-            aria-label={`Vault node: ${node.label} (${node.type})`}
-            className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 rounded"
-          >
-            <motion.div
-              animate={!reduce ? { boxShadow: [`0 0 6px ${color}40`, `0 0 16px ${color}80`, `0 0 6px ${color}40`] } : {}}
-              transition={{ duration: 2, repeat: Infinity, delay: i * 0.3 }}
-              style={{ backgroundColor: `${color}20`, borderColor: color }}
-              className="w-8 h-8 rounded-full border-2 flex items-center justify-center"
-            >
-              {node.type === 'canvas' ? <Map className="h-3.5 w-3.5" style={{ color }} aria-hidden /> :
-               node.type === 'base'   ? <BarChart3 className="h-3.5 w-3.5" style={{ color }} aria-hidden /> :
-                                        <FileText className="h-3.5 w-3.5" style={{ color }} aria-hidden />}
-            </motion.div>
-            <AnimatePresence>
-              {isHov && (
-                <motion.span
-                  initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                  transition={SPRING_FAST}
-                  className="text-[10px] font-medium text-[#F1F5F9] bg-[#1A1F2E] px-2 py-0.5 rounded-full border border-[#2D3748] whitespace-nowrap pointer-events-none z-10"
-                >
-                  {node.label}
-                </motion.span>
-              )}
-            </AnimatePresence>
-          </motion.button>
-        );
-      })}
-
-      {/* Stats overlay */}
-      <div className="absolute bottom-3 left-3 flex items-center gap-3 text-[10px] text-[#475569]">
-        <span className="tabular-nums">{nodes.length} nodes</span>
-        <span>·</span>
-        <span className="tabular-nums">{edges.length} edges</span>
       </div>
+
+      <div
+        className="relative h-72 bg-[#090C12] rounded-xl overflow-hidden border border-[#1E2535] p-2"
+        aria-label="Knowledge graph view"
+      >
+        {visibleNodes.length === 0 ? (
+          <div className="h-full flex items-center justify-center text-[12px] text-[#475569]">
+            No nodes match the selected types
+          </div>
+        ) : (
+          <KnowledgeGraph
+            data={graphData}
+            width={560}
+            height={reduce ? 240 : 240}
+            focusNodeId={selectedNodeId}
+            onNodeClick={(n) => setSelectedNodeId(prev => (prev === n.id ? null : n.id))}
+          />
+        )}
+      </div>
+
+      <AnimatePresence>
+        {selectedNodeId && (
+          <NodeDetailPanel nodeId={selectedNodeId} nodesById={nodesById} onClose={() => setSelectedNodeId(null)} />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
-// ── File Tree ─────────────────────────────────────────────────────────────────
+// ── File Tree — same real KG nodes, grouped by type ────────────────────────────
 
-function FileTree({ nodes }: { nodes: VaultNode[] }) {
+function FileTree() {
   const reduce = useReducedMotion();
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(['strategy', 'ops']));
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
+
+  const { data: graph, isLoading } = useQuery({
+    queryKey: ['kg-graph'],
+    queryFn: () => knowledgeGraphApi.getGraph(),
+    staleTime: 15_000,
+  });
+  const nodes = graph?.nodes ?? [];
 
   const filtered = nodes.filter(n =>
     !search || n.label.toLowerCase().includes(search.toLowerCase())
   );
 
-  const folders = [...new Set(filtered.map(n => n.path.split('/')[0]))];
+  const folders = [...new Set(filtered.map(n => n.node_type))].sort();
+
+  if (isLoading) {
+    return <Skeleton className="h-40 w-full rounded-xl" />;
+  }
+
+  if (nodes.length === 0) {
+    return (
+      <EmptyState
+        icon={<FileText className="h-10 w-10" />}
+        title="No knowledge graph nodes yet"
+        description="Ingested documents and extracted entities will appear here."
+        variant="static"
+      />
+    );
+  }
 
   return (
     <div className="space-y-2">
@@ -217,7 +330,7 @@ function FileTree({ nodes }: { nodes: VaultNode[] }) {
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#475569]" aria-hidden />
         <input
           type="search" value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search vault…"
+          placeholder="Search knowledge graph…"
           aria-label="Search vault notes"
           className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-[#0F1117] border border-[#2D3748] text-[12px] text-[#F1F5F9] placeholder:text-[#374151] focus:outline-none focus:ring-2 focus:ring-blue-500/60"
         />
@@ -232,14 +345,14 @@ function FileTree({ nodes }: { nodes: VaultNode[] }) {
             <button
               onClick={() => setExpanded(s => { const n = new Set(s); n.has(folder) ? n.delete(folder) : n.add(folder); return n; })}
               aria-expanded={expanded.has(folder)}
-              aria-label={`${expanded.has(folder) ? 'Collapse' : 'Expand'} ${folder} folder`}
+              aria-label={`${expanded.has(folder) ? 'Collapse' : 'Expand'} ${folder} group`}
               className="flex items-center gap-1.5 w-full text-left px-2 py-1 rounded-lg text-[12px] text-[#94A3B8] hover:bg-[#1A1F2E] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70"
             >
               <motion.div animate={{ rotate: expanded.has(folder) ? 90 : 0 }} transition={SPRING_FAST}>
                 <ChevronRight className="h-3.5 w-3.5" aria-hidden />
               </motion.div>
               <Layers className="h-3.5 w-3.5 text-amber-400" aria-hidden />
-              <span>{folder}/</span>
+              <span className="capitalize">{folder} ({filtered.filter(n => n.node_type === folder).length})</span>
             </button>
             <AnimatePresence>
               {expanded.has(folder) && (
@@ -248,19 +361,17 @@ function FileTree({ nodes }: { nodes: VaultNode[] }) {
                   exit={{ height: 0, opacity: 0 }} transition={SPRING_PANEL}
                   style={{ overflow: 'hidden' }} className="pl-6"
                 >
-                  {filtered.filter(n => n.path.startsWith(folder + '/')).map((n, ni) => (
-                    <motion.div key={n.id}
+                  {filtered.filter(n => n.node_type === folder).map((n, ni) => (
+                    <motion.div key={n.node_id}
                       initial={reduce ? {} : { opacity: 0, x: -4 }}
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ ...SPRING_FAST, delay: ni * 0.04 }}
                       className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] text-[#64748B] hover:text-[#F1F5F9] hover:bg-[#1A1F2E] cursor-pointer"
                     >
-                      {n.type === 'canvas' ? <Map className="h-3 w-3 text-violet-400" aria-hidden /> :
-                       n.type === 'base'   ? <BarChart3 className="h-3 w-3 text-emerald-400" aria-hidden /> :
-                                            <FileCode className="h-3 w-3 text-blue-400" aria-hidden />}
-                      <span>{n.label}</span>
-                      <span className="ml-auto text-[10px] text-[#374151] tabular-nums">
-                        {new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' }).format(new Date(n.modified))}
+                      <FileCode className="h-3 w-3 text-blue-400" aria-hidden />
+                      <span className="truncate">{n.label}</span>
+                      <span className="ml-auto text-[10px] text-[#374151] tabular-nums shrink-0">
+                        {Math.round(n.confidence * 100)}%
                       </span>
                     </motion.div>
                   ))}
@@ -274,132 +385,348 @@ function FileTree({ nodes }: { nodes: VaultNode[] }) {
   );
 }
 
-// ── Bases Tab ─────────────────────────────────────────────────────────────────
+// ── Bases — real org missions/tasks table ──────────────────────────────────────
+//
+// HONESTY RULE: no Obsidian-Bases backend exists, so this tab is wired to the
+// closest real analog — this org's real missions/tasks (`orgApi`) — rendered
+// as a structured, filterable table (title, status, priority, owner, age).
 
-const PRIORITY_COLORS = { HIGH: 'text-red-400 bg-red-500/10', MEDIUM: 'text-amber-400 bg-amber-500/10', LOW: 'text-[#64748B] bg-[#252B3B]' };
+type BaseRow = { id: string; title: string; status: string; priority: string; owner: string; created_at: string };
 
-function BasesTab({ tables }: { tables: BaseTable[] }) {
+function BasesTab({ orgId }: { orgId: string }) {
   const reduce = useReducedMotion();
+  const [kind, setKind] = useState<'tasks' | 'missions'>('tasks');
+
+  const tasksQuery = useQuery({
+    queryKey: ['obsidian-bases-tasks', orgId],
+    queryFn: () => orgApi.listTasks(orgId, {}),
+    enabled: kind === 'tasks',
+    staleTime: 15_000,
+  });
+  const missionsQuery = useQuery({
+    queryKey: ['obsidian-bases-missions', orgId],
+    queryFn: () => orgApi.listMissions(orgId, { limit: 20 }),
+    enabled: kind === 'missions',
+    staleTime: 15_000,
+  });
+
+  const active = kind === 'tasks' ? tasksQuery : missionsQuery;
+  const rows: BaseRow[] = kind === 'tasks'
+    ? (tasksQuery.data?.data ?? []).map(t => ({
+        id: t.id, title: t.title, status: t.status, priority: t.priority,
+        owner: t.assigned_to ?? '—', created_at: t.created_at,
+      }))
+    : (missionsQuery.data?.data ?? []).map(m => ({
+        id: m.id, title: m.title, status: m.status, priority: m.priority,
+        owner: m.assigned_team_id ?? '—', created_at: m.created_at,
+      }));
+
   return (
-    <div className="space-y-3">
-      {tables.map((table, ti) => (
-        <motion.div key={table.name}
-          initial={reduce ? {} : { opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ ...SPRING_PANEL, delay: ti * 0.06 }}
-          className="bg-[#0F1117] border border-[#2D3748] rounded-xl overflow-hidden"
-        >
-          <div className="flex items-center justify-between px-3 py-2 border-b border-[#1E2535]">
-            <div className="flex items-center gap-1.5">
-              <BarChart3 className="h-3.5 w-3.5 text-emerald-400" aria-hidden />
-              <span className="text-[12px] font-medium text-[#F1F5F9]">{table.name}</span>
-            </div>
-            <button aria-label={`Open ${table.name} in Obsidian`}
-              className="flex items-center gap-1 text-[10px] text-[#475569] hover:text-[#94A3B8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 rounded">
-              <ExternalLink className="h-3 w-3" aria-hidden />Open
-            </button>
-          </div>
-          <table className="w-full text-[11px]" aria-label={table.name}>
+    <div className="space-y-2">
+      <div className="flex gap-1" role="group" aria-label="Base type">
+        {(['tasks', 'missions'] as const).map(k => (
+          <button
+            key={k}
+            onClick={() => setKind(k)}
+            aria-pressed={kind === k}
+            className={`px-2.5 py-1 text-[10px] rounded-full border capitalize transition-colors ${
+              kind === k ? 'bg-[#1A1F2E] border-blue-500/40 text-[#F1F5F9]' : 'border-[#2D3748] text-[#475569] hover:text-[#94A3B8]'
+            }`}
+          >
+            {k}
+          </button>
+        ))}
+      </div>
+
+      {active.isLoading ? (
+        <Skeleton className="h-40 w-full rounded-xl" />
+      ) : active.isError ? (
+        <div className="h-40 flex flex-col items-center justify-center gap-2 bg-[#090C12] rounded-xl border border-[#1E2535]" role="alert">
+          <AlertTriangle className="h-5 w-5 text-amber-400" aria-hidden />
+          <p className="text-[12px] text-[#94A3B8]">Couldn't load {kind}.</p>
+          <button
+            onClick={() => void active.refetch()}
+            className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-lg border border-[#2D3748] text-[#94A3B8] hover:text-[#F1F5F9] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70"
+          >
+            <RefreshCw className="h-3 w-3" aria-hidden />Retry
+          </button>
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="bg-[#090C12] rounded-xl border border-[#1E2535]">
+          <EmptyState
+            icon={<BarChart3 className="h-10 w-10" />}
+            title={`No ${kind} yet`}
+            description={kind === 'tasks' ? 'Tasks dispatched to agents for this org will appear here.' : 'Missions created for this org will appear here.'}
+            variant="static"
+          />
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-[#1E2535] bg-[#090C12]">
+          <table className="w-full text-left" aria-label={`${kind} table`}>
             <thead>
-              <tr className="border-b border-[#1E2535]">
-                {['Title', 'Priority', 'Owner', 'Running For'].map(h => (
-                  <th key={h} className="text-left px-3 py-1.5 text-[#475569] font-medium">{h}</th>
-                ))}
+              <tr className="border-b border-[#1E2535] text-[10px] uppercase tracking-wide text-[#475569]">
+                <th className="px-3 py-2 font-medium">Title</th>
+                <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 font-medium">Priority</th>
+                <th className="px-3 py-2 font-medium">{kind === 'tasks' ? 'Owner' : 'Team'}</th>
+                <th className="px-3 py-2 font-medium">Age</th>
               </tr>
             </thead>
             <tbody>
-              {table.rows.map((row, ri) => (
-                <motion.tr key={ri}
-                  initial={reduce ? {} : { opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ ...SPRING_FAST, delay: ti * 0.06 + ri * 0.04 }}
-                  className="border-b border-[#0D1117] hover:bg-[#1A1F2E] transition-colors"
+              {rows.slice(0, 20).map((row, i) => (
+                <motion.tr
+                  key={row.id}
+                  initial={reduce ? {} : { opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ ...SPRING_NODE, delay: i * 0.03 }}
+                  className="border-b border-[#1E2535] last:border-0 hover:bg-[#1A1F2E]/60"
                 >
-                  <td className="px-3 py-2 text-[#E2E8F0]">{row.title}</td>
+                  <td className="px-3 py-2 text-[11px] text-[#F1F5F9] max-w-[160px] truncate">{row.title}</td>
                   <td className="px-3 py-2">
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${PRIORITY_COLORS[row.priority]}`}>{row.priority}</span>
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] border capitalize ${statusColor(row.status)}`}>
+                      {row.status.replace(/_/g, ' ')}
+                    </span>
                   </td>
-                  <td className="px-3 py-2 text-[#94A3B8]">{row.owner}</td>
-                  <td className="px-3 py-2 text-[#64748B] tabular-nums">{row.runningFor}</td>
+                  <td className="px-3 py-2">
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] border capitalize ${priorityColor(row.priority)}`}>
+                      {row.priority}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-[11px] text-[#64748B] font-mono truncate max-w-[100px]">{row.owner}</td>
+                  <td className="px-3 py-2 text-[10px] text-[#475569] tabular-nums">
+                    <time dateTime={row.created_at}>{ageLabel(row.created_at)}</time>
+                  </td>
                 </motion.tr>
               ))}
             </tbody>
           </table>
-          <div className="px-3 py-2 text-[10px] text-[#475569]">
-            {table.rows.length} missions · {table.cost}
-          </div>
-        </motion.div>
-      ))}
+        </div>
+      )}
     </div>
   );
 }
 
-// ── Maps Tab ──────────────────────────────────────────────────────────────────
+// ── Maps — real KG reused as a clustered/grouped map ───────────────────────────
+//
+// HONESTY RULE: no JSON Canvas store exists, so this tab reuses the same real
+// tenant KG (`knowledgeGraphApi`) as the Graph tab, transformed into a spatial
+// clustered view (nodes grouped by type, cross-type edges as connectors) — a
+// real, derived view, not a fabricated canvas.
 
-function MapsTab({ canvases, onOpen }: { canvases: CanvasThumb[]; onOpen: (c: CanvasThumb) => void }) {
+function MapsTab() {
   const reduce = useReducedMotion();
-  return (
-    <div className="grid gap-2">
-      {canvases.map((c, i) => (
-        <motion.button
-          key={c.name}
-          initial={reduce ? {} : { opacity: 0, x: -8 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ ...SPRING_NODE, delay: i * 0.06 }}
-          whileHover={reduce ? {} : { x: 3 }}
-          whileTap={reduce ? {} : { scale: 0.98 }}
-          onClick={() => onOpen(c)}
-          aria-label={`Open canvas: ${c.name}`}
-          style={{ touchAction: 'manipulation' }}
-          className="flex items-center gap-3 p-3 bg-[#0F1117] border border-[#2D3748] rounded-xl text-left hover:border-violet-500/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/70 group"
+  const { data: graph, isLoading, isError, refetch } = useQuery({
+    queryKey: ['kg-graph'],
+    queryFn: () => knowledgeGraphApi.getGraph(),
+    staleTime: 15_000,
+  });
+
+  const nodes = useMemo(() => graph?.nodes ?? [], [graph]);
+  const edges = useMemo(() => graph?.edges ?? [], [graph]);
+
+  const clusters = useMemo(() => {
+    const byType = new Map<string, KGNode[]>();
+    for (const n of nodes) {
+      const list = byType.get(n.node_type) ?? [];
+      list.push(n);
+      byType.set(n.node_type, list);
+    }
+    return [...byType.entries()].map(([type, members]) => ({ type, members }));
+  }, [nodes]);
+
+  const nodeTypeById = useMemo(() => new Map(nodes.map(n => [n.node_id, n.node_type])), [nodes]);
+
+  const linkCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const e of edges) {
+      const ta = nodeTypeById.get(e.source);
+      const tb = nodeTypeById.get(e.target);
+      if (!ta || !tb || ta === tb) continue;
+      const key = [ta, tb].sort().join('|');
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }, [edges, nodeTypeById]);
+
+  if (isLoading) return <Skeleton className="h-72 w-full rounded-xl" />;
+
+  if (isError) {
+    return (
+      <div className="h-72 flex flex-col items-center justify-center gap-3 bg-[#090C12] rounded-xl border border-[#1E2535]" role="alert">
+        <AlertTriangle className="h-6 w-6 text-amber-400" aria-hidden />
+        <p className="text-[12px] text-[#94A3B8]">Couldn't load the knowledge map.</p>
+        <button
+          onClick={() => void refetch()}
+          className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-lg border border-[#2D3748] text-[#94A3B8] hover:text-[#F1F5F9] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70"
         >
-          <div className="w-10 h-10 rounded-lg bg-violet-500/10 border border-violet-500/20 flex items-center justify-center flex-shrink-0">
-            <Map className="h-5 w-5 text-violet-400" aria-hidden />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-[12px] font-medium text-[#F1F5F9] truncate">{c.name}</p>
-            <p className="text-[11px] text-[#64748B]">{c.description}</p>
-          </div>
-          <div className="text-right flex-shrink-0">
-            <p className="text-[11px] text-[#475569] tabular-nums">{c.nodeCount} nodes</p>
-            <ChevronRight className="h-3.5 w-3.5 text-[#374151] group-hover:text-violet-400 transition-colors mt-0.5 ml-auto" aria-hidden />
-          </div>
-        </motion.button>
-      ))}
+          <RefreshCw className="h-3 w-3" aria-hidden />Retry
+        </button>
+      </div>
+    );
+  }
+
+  if (nodes.length === 0) {
+    return (
+      <div className="bg-[#090C12] rounded-xl border border-[#1E2535]">
+        <EmptyState
+          icon={<MapIcon className="h-10 w-10" />}
+          title="Knowledge map is empty"
+          description="Ingest documents or run entity extraction to populate this org's knowledge map."
+          variant="static"
+        />
+      </div>
+    );
+  }
+
+  const W = 560, H = 240, cx = W / 2, cy = H / 2, R = Math.min(W, H) / 2 - 46;
+  const positioned = clusters.map((c, i) => {
+    const angle = (2 * Math.PI * i) / clusters.length - Math.PI / 2;
+    return { ...c, x: cx + R * Math.cos(angle), y: cy + R * Math.sin(angle) };
+  });
+  const posByType = new Map(positioned.map(p => [p.type, p]));
+  const maxCount = Math.max(...clusters.map(c => c.members.length), 1);
+
+  return (
+    <div className="space-y-2">
+      <div
+        className="relative bg-[#090C12] rounded-xl overflow-hidden border border-[#1E2535] p-2"
+        style={{ height: H }}
+        aria-label="Knowledge map — clustered by node type"
+      >
+        <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="100%">
+          {[...linkCounts.entries()].map(([key, count]) => {
+            const [ta, tb] = key.split('|');
+            const a = posByType.get(ta);
+            const b = posByType.get(tb);
+            if (!a || !b) return null;
+            return (
+              <line
+                key={key} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+                stroke="#2D3748" strokeWidth={Math.min(1 + count / 3, 6)} strokeOpacity={0.6}
+              />
+            );
+          })}
+          {positioned.map((c, i) => {
+            const r = 18 + 26 * (c.members.length / maxCount);
+            const color = NODE_TYPE_COLORS[c.type] ?? '#64748b';
+            return (
+              <g key={c.type} transform={`translate(${c.x}, ${c.y})`}>
+                <motion.circle
+                  initial={reduce ? {} : { r: 0, opacity: 0 }}
+                  animate={{ r, opacity: 1 }}
+                  transition={{ ...SPRING_NODE, delay: i * 0.05 }}
+                  fill={color} fillOpacity={0.18} stroke={color} strokeWidth={1.5}
+                />
+                <text textAnchor="middle" dy="-2" fontSize="10" fill={color} fontWeight={600}>{c.members.length}</text>
+                <text textAnchor="middle" dy="12" fontSize="9" fill="#94A3B8" className="capitalize">{c.type}</text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+      <p className="text-[10px] text-[#475569] px-1">
+        {clusters.length} node type{clusters.length !== 1 ? 's' : ''} · {edges.length} relationship{edges.length !== 1 ? 's' : ''} · line weight = cross-type connections
+      </p>
     </div>
   );
 }
 
-// ── Timeline Tab ──────────────────────────────────────────────────────────────
+// ── Timeline — real org event history (missions/tasks/approvals) ──────────────
+//
+// HONESTY RULE: no vault-growth-history store exists, so this tab is wired to
+// this org's real event feed (`orgApi.listEvents` — mission/task/approval
+// lifecycle events with real `created_at` timestamps). The bar chart buckets
+// real event counts by day; nothing here is fabricated or interpolated.
 
-function TimelineTab({ days }: { days: DayGrowth[] }) {
+function TimelineTab({ orgId }: { orgId: string }) {
   const reduce = useReducedMotion();
-  const max    = Math.max(...days.map(d => d.notesAdded), 1);
-  return (
-    <div className="space-y-2" aria-label="Knowledge growth timeline">
-      <div className="flex items-center gap-2 mb-3">
-        <TrendingUp className="h-4 w-4 text-emerald-400" aria-hidden />
-        <span className="text-[12px] font-medium text-[#F1F5F9]">Knowledge Growth</span>
-        <span className="text-[11px] text-[#64748B] ml-auto tabular-nums">
-          {days.reduce((s, d) => s + d.notesAdded, 0)} notes this week
-        </span>
+  const { data: events, isLoading, isError, refetch } = useQuery({
+    queryKey: ['obsidian-timeline-events', orgId],
+    queryFn: () => orgApi.listEvents(orgId, 100),
+    staleTime: 15_000,
+  });
+
+  const rows = useMemo(() => events ?? [], [events]);
+
+  const buckets = useMemo(() => {
+    const byDay = new Map<string, number>();
+    for (const e of rows) {
+      const d = e.created_at?.slice(0, 10);
+      if (!d) continue;
+      byDay.set(d, (byDay.get(d) ?? 0) + 1);
+    }
+    return [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b)).slice(-14);
+  }, [rows]);
+
+  if (isLoading) return <Skeleton className="h-56 w-full rounded-xl" />;
+
+  if (isError) {
+    return (
+      <div className="h-56 flex flex-col items-center justify-center gap-3 bg-[#090C12] rounded-xl border border-[#1E2535]" role="alert">
+        <AlertTriangle className="h-6 w-6 text-amber-400" aria-hidden />
+        <p className="text-[12px] text-[#94A3B8]">Couldn't load org activity.</p>
+        <button
+          onClick={() => void refetch()}
+          className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-lg border border-[#2D3748] text-[#94A3B8] hover:text-[#F1F5F9] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70"
+        >
+          <RefreshCw className="h-3 w-3" aria-hidden />Retry
+        </button>
       </div>
-      {days.map((day, i) => (
-        <div key={day.date} className="flex items-center gap-3">
-          <time dateTime={day.date} className="text-[10px] text-[#475569] tabular-nums w-14 flex-shrink-0">
-            {new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' }).format(new Date(day.date))}
-          </time>
-          <div className="flex-1 h-5 bg-[#1A1F2E] rounded-full overflow-hidden" role="meter" aria-valuenow={day.notesAdded} aria-valuemax={max} aria-label={`${day.notesAdded} notes added`}>
+    );
+  }
+
+  if (rows.length === 0) {
+    return (
+      <div className="bg-[#090C12] rounded-xl border border-[#1E2535]">
+        <EmptyState
+          icon={<Clock className="h-10 w-10" />}
+          title="No activity yet"
+          description="Mission, task and approval events for this org will appear here as they happen."
+          variant="static"
+        />
+      </div>
+    );
+  }
+
+  const maxCount = Math.max(...buckets.map(([, c]) => c), 1);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-end gap-1 h-16 px-1" aria-label="Org activity by day, last 14 active days" role="img">
+        {buckets.map(([day, count]) => (
+          <div key={day} className="flex-1 flex flex-col items-center gap-0.5" title={`${day}: ${count} event${count !== 1 ? 's' : ''}`}>
             <motion.div
-              initial={{ width: 0 }}
-              animate={{ width: `${(day.notesAdded / max) * 100}%` }}
-              transition={reduce ? { duration: 0 } : { ...SPRING_PANEL, delay: i * 0.05 }}
-              className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 rounded-full"
+              initial={reduce ? {} : { height: 0 }}
+              animate={{ height: `${Math.max((count / maxCount) * 100, 6)}%` }}
+              transition={SPRING_PANEL}
+              className="w-full rounded-t bg-violet-500/50 hover:bg-violet-400 transition-colors"
+              style={{ minHeight: 2 }}
             />
           </div>
-          <span className="text-[11px] text-[#64748B] tabular-nums w-8 text-right">{day.notesAdded}</span>
-        </div>
-      ))}
+        ))}
+      </div>
+
+      <div className="space-y-1 max-h-52 overflow-y-auto">
+        {rows.slice(0, 30).map((e, i) => (
+          <motion.div
+            key={e.id}
+            initial={reduce ? {} : { opacity: 0, x: -6 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ ...SPRING_NODE, delay: i * 0.02 }}
+            className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-[#1A1F2E]"
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                e.severity === 'critical' || e.severity === 'error' ? 'bg-red-400'
+                : e.severity === 'warning' ? 'bg-amber-400' : 'bg-emerald-400'
+              }`}
+              aria-hidden
+            />
+            <span className="text-[11px] text-[#94A3B8] truncate flex-1">{e.title || e.event_type}</span>
+            <time dateTime={e.created_at} className="text-[10px] text-[#475569] font-mono shrink-0">{ageLabel(e.created_at)}</time>
+          </motion.div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -408,20 +735,13 @@ function TimelineTab({ days }: { days: DayGrowth[] }) {
 
 interface ObsidianVaultExplorerProps {
   orgId:    string;
-  onOpenCanvas?: (name: string) => void;
   compact?: boolean;
 }
 
-export function ObsidianVaultExplorer({ orgId: _orgId, onOpenCanvas, compact = false }: ObsidianVaultExplorerProps) {
+export function ObsidianVaultExplorer({ orgId, compact = false }: ObsidianVaultExplorerProps) {
   const labelId  = useId();
   const reduce   = useReducedMotion();
   const [activeTab, setActiveTab] = useState<VaultTab>('graph');
-  const [openCanvas, setOpenCanvas] = useState<CanvasThumb | null>(null);
-
-  const handleOpenCanvas = useCallback((c: CanvasThumb) => {
-    setOpenCanvas(c);
-    onOpenCanvas?.(c.name);
-  }, [onOpenCanvas]);
 
   return (
     <section aria-labelledby={labelId} className="space-y-3">
@@ -481,49 +801,12 @@ export function ObsidianVaultExplorer({ orgId: _orgId, onOpenCanvas, compact = f
           exit={reduce ? { opacity: 0 } : { opacity: 0, x: -10 }}
           transition={SPRING_PANEL}
         >
-          {activeTab === 'graph'    && <GraphView nodes={DEMO_NODES} edges={DEMO_EDGES} />}
-          {activeTab === 'files'    && <FileTree nodes={DEMO_NODES} />}
-          {activeTab === 'bases'    && <BasesTab tables={DEMO_BASES} />}
-          {activeTab === 'maps'     && <MapsTab canvases={DEMO_CANVASES} onOpen={handleOpenCanvas} />}
-          {activeTab === 'timeline' && <TimelineTab days={DEMO_TIMELINE} />}
+          {activeTab === 'graph'    && <GraphView />}
+          {activeTab === 'files'    && <FileTree />}
+          {activeTab === 'bases'    && <BasesTab orgId={orgId} />}
+          {activeTab === 'maps'     && <MapsTab />}
+          {activeTab === 'timeline' && <TimelineTab orgId={orgId} />}
         </motion.div>
-      </AnimatePresence>
-
-      {/* Canvas viewer overlay */}
-      <AnimatePresence>
-        {openCanvas && (
-          <motion.div
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="mt-3 p-3 bg-[#0F1117] border border-violet-500/30 rounded-xl"
-            aria-label={`Canvas viewer: ${openCanvas.name}`}
-          >
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <Map className="h-3.5 w-3.5 text-violet-400" aria-hidden />
-                <span className="text-[12px] font-medium text-[#F1F5F9]">{openCanvas.name}</span>
-              </div>
-              <button onClick={() => setOpenCanvas(null)} aria-label="Close canvas preview"
-                className="text-[#475569] hover:text-[#94A3B8] text-[10px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 rounded">
-                Close
-              </button>
-            </div>
-            <div className="h-32 bg-[#090C12] rounded-lg border border-[#1E2535] flex items-center justify-center">
-              <div className="text-center">
-                <p className="text-[12px] text-[#475569]">{openCanvas.description}</p>
-                <p className="text-[11px] text-[#374151] mt-1 tabular-nums">{openCanvas.nodeCount} nodes</p>
-                <motion.div
-                  animate={reduce ? {} : { scale: [1, 1.05, 1] }}
-                  transition={{ duration: 2, repeat: Infinity }}
-                  className="mt-2 flex items-center justify-center gap-1"
-                >
-                  <Circle className="h-3 w-3 text-blue-400 fill-blue-400/20" aria-hidden />
-                  <Circle className="h-3 w-3 text-violet-400 fill-violet-400/20" aria-hidden />
-                  <CheckCircle2 className="h-3 w-3 text-emerald-400" aria-hidden />
-                </motion.div>
-              </div>
-            </div>
-          </motion.div>
-        )}
       </AnimatePresence>
     </section>
   );

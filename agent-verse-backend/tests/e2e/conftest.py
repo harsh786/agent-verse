@@ -21,9 +21,9 @@ def _bypass_ssrf(monkeypatch):
     rely on respx to intercept the HTTP calls — the SSRF guard must not block
     those requests before respx can handle them.
     """
+    import app.api.connectors as _connectors_api
     import app.mcp.client as _mcp_client
     import app.net.ssrf_guard as _ssrf
-    import app.api.connectors as _connectors_api
 
     noop = lambda *_a, **_kw: None  # noqa: E731
     monkeypatch.setattr(_ssrf, "assert_public_url", noop)

@@ -18,8 +18,6 @@ Tests the security model specified in PART 18 and PART 48:
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, patch
-
 
 # ── 1. Goal Injection Detection ────────────────────────────────────────────────
 
@@ -68,8 +66,7 @@ class TestOrgRBAC:
     """PART 18 security test: Org RBAC roles enforce correct permissions."""
 
     def test_viewer_cannot_create_mission(self):
-        from app.org.events import OrgRole
-        from app.org.events import has_permission
+        from app.org.events import OrgRole, has_permission
         assert not has_permission(OrgRole.VIEWER, "create_mission")
 
     def test_viewer_can_read(self):
@@ -118,8 +115,9 @@ class TestMemoryAntiPoisoning:
         return OrgLearningSystem()
 
     def test_low_confidence_lesson_rejected(self, learning):
-        from app.org.self_improvement import OrgLesson, LearningCategory
         import uuid
+
+        from app.org.self_improvement import LearningCategory, OrgLesson
         lesson = OrgLesson(
             id=str(uuid.uuid4()),
             category=LearningCategory.TEAM_COMPOSITION,
@@ -131,8 +129,9 @@ class TestMemoryAntiPoisoning:
             learning.add_lesson(lesson)
 
     def test_pii_lesson_rejected(self, learning):
-        from app.org.self_improvement import OrgLesson, LearningCategory
         import uuid
+
+        from app.org.self_improvement import LearningCategory, OrgLesson
         lesson = OrgLesson(
             id=str(uuid.uuid4()),
             category=LearningCategory.TEAM_COMPOSITION,
@@ -144,8 +143,9 @@ class TestMemoryAntiPoisoning:
             learning.add_lesson(lesson)
 
     def test_failed_mission_lessons_quarantined(self, learning):
-        from app.org.self_improvement import OrgLesson, LearningCategory
         import uuid
+
+        from app.org.self_improvement import LearningCategory, OrgLesson
         m_id = str(uuid.uuid4())
         for i in range(3):
             lesson = OrgLesson(
@@ -161,8 +161,9 @@ class TestMemoryAntiPoisoning:
         assert count == 3
 
     def test_valid_lesson_accepted(self, learning):
-        from app.org.self_improvement import OrgLesson, LearningCategory
         import uuid
+
+        from app.org.self_improvement import LearningCategory, OrgLesson
         lesson = OrgLesson(
             id=str(uuid.uuid4()),
             category=LearningCategory.MODEL_ROUTING,

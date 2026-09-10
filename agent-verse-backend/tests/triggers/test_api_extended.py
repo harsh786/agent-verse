@@ -1,10 +1,11 @@
 """Tests for extended trigger API endpoints — PATCH, rotate-secret, validate-condition, typed webhooks."""
 from __future__ import annotations
 
-import pytest
-from fastapi.testclient import TestClient
-from fastapi import FastAPI
 from types import SimpleNamespace
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from app.api.triggers import router
 from app.triggers.store import ScheduleStore

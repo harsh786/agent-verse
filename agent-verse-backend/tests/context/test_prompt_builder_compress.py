@@ -1,8 +1,7 @@
 """Tests for Phase 5: PromptBuilder auto-compression."""
 from __future__ import annotations
 
-import pytest
-from app.context.prompt_builder import PromptBuilder, PromptContextBundle, _CHARS_PER_TOKEN
+from app.context.prompt_builder import _CHARS_PER_TOKEN, PromptBuilder, PromptContextBundle
 
 
 class TestPromptBuilderAutoCompress:

@@ -214,8 +214,12 @@ class IngestionOrchestrator:
 
         # 1b. Select embedding model policy for this content type.
         # D-10: the selection is no longer cosmetic — it is ACTUALLY used to route
-        # the physical embedding below (see embed_for_content). Record it in
-        # metadata for provenance and downstream re-embedding decisions.
+        # the physical embedding below (see embed_for_content, and the indexed-path
+        # wiring further down). Record it in metadata for provenance and downstream
+        # re-embedding decisions. `_emb_selection` stays None (never raises) when
+        # selection fails, so every consumer below must degrade to the default
+        # embedder rather than assume it succeeded.
+        _emb_selection: Any = None
         try:
             _emb_selection = self._embedding_orch().select(
                 content_type=detected, tenant_ctx=tenant_ctx
@@ -229,7 +233,7 @@ class IngestionOrchestrator:
                 "text_of_caption" if _emb_selection.requires_captioning else "native"
             )
         except Exception:
-            pass
+            _emb_selection = None
 
         # 2. Select chunking strategy
         chunking_strategy = self._chunking_selector.select(detected)
@@ -281,9 +285,51 @@ class IngestionOrchestrator:
             )
             document_id = hashlib.sha256(identity_scope.encode()).hexdigest()
 
+            # D-10 (indexed-path discard-site): the selection computed above was
+            # previously written to metadata and then discarded — the pipeline
+            # always embedded on the one fixed `self._embedder` with no model id
+            # threaded through at all. Resolve the SAME selection used by the
+            # plain path (`embed_for_content`) onto a real provider here too,
+            # degrading to the default embedder (never raising) when the
+            # selection failed, its provider isn't configured, or its dimension
+            # would corrupt the collection's existing vectors.
+            effective_embedder = self._embedder
+            effective_model = ""
+            embedding_model_effective = "default"
+            if _emb_selection is not None:
+                existing_dim: int | None = None
+                dim_lookup = getattr(self._kb, "get_collection_embedding_dim", None)
+                if dim_lookup is not None:
+                    try:
+                        existing_dim = await dim_lookup(collection_id, tenant_ctx=tenant_ctx)
+                    except Exception:
+                        existing_dim = None
+                if existing_dim is not None and existing_dim != _emb_selection.dimension:
+                    # Dimension safety: never write a mismatched-dimension vector.
+                    # Reuses the collection's stored embedding_dim (the same
+                    # source of truth `_persist_chunks` enforces) instead of a
+                    # separate check; falls back to the default embedder with no
+                    # model override — its own, already-matching, dimension.
+                    pass
+                else:
+                    resolved = None
+                    if self._embed_provider_resolver is not None:
+                        try:
+                            resolved = self._embed_provider_resolver(_emb_selection.provider)
+                        except Exception:
+                            resolved = None
+                    effective_embedder = resolved if resolved is not None else self._embedder
+                    effective_model = _emb_selection.model_id
+                    embedding_model_effective = _emb_selection.model_id
+
+            if metadata is None:
+                metadata = {}
+            metadata["embedding_model_effective"] = embedding_model_effective
+
             pipeline = RAGIndexingPipeline(
                 store=self._kb,
-                embedder=self._embedder,
+                embedder=effective_embedder,
+                embed_model=effective_model,
                 dependencies=self._indexing_dependencies,
                 config=self._rag_indexing_config,
             )

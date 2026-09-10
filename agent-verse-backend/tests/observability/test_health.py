@@ -5,7 +5,6 @@ import pytest
 
 from app.observability.health import HealthCheck, HealthRegistry
 
-
 # ── HealthRegistry.run() output keys ─────────────────────────────────────────
 
 @pytest.mark.asyncio

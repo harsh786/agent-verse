@@ -10,10 +10,9 @@ Covers:
 from __future__ import annotations
 
 import os
+from unittest.mock import MagicMock
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
-
 
 # ---------------------------------------------------------------------------
 # H3: IP must not be spoofable via X-Forwarded-For without a trusted proxy
@@ -153,7 +152,6 @@ class TestA2AIDORFix:
 
     def test_list_tasks_filters_by_tenant(self) -> None:
         """In-memory task store should only return tasks owned by the calling tenant."""
-        import importlib
 
         # Re-import module to get a fresh _tasks dict reference
         import app.api.a2a as a2a_mod

@@ -681,7 +681,8 @@ async def get_agent_health(agent_id: str, request: Request) -> dict[str, Any]:
                         tool_rows = (
                             await session.execute(
                                 _t("""
-                                SELECT COUNT(DISTINCT (execution_context->>'last_tool_used')) AS unique_tools  # noqa: E501
+                                SELECT COUNT(DISTINCT (execution_context->>'last_tool_used'))
+                                    AS unique_tools
                                 FROM goals
                                 WHERE tenant_id = :tid
                                   AND agent_id = :aid
@@ -729,18 +730,31 @@ async def get_benchmarks(request: Request) -> dict[str, Any]:
                             _t("""
                             SELECT
                                 COUNT(*) as total,
-                                AVG(CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as success_rate,  # noqa: E501
+                                AVG(CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END)
+                                    as success_rate,
                                 AVG(COALESCE(cost_usd, 0)) as avg_cost,
                                 AVG(COALESCE(duration_s, 0)) as avg_duration,
                                 AVG(COALESCE(iterations, 0)) as avg_iterations,
-                                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p25_cost,  # noqa: E501
-                                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p50_cost,  # noqa: E501
-                                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p75_cost,  # noqa: E501
-                                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p90_cost,  # noqa: E501
-                                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p25_sr,  # noqa: E501
-                                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p50_sr,  # noqa: E501
-                                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p75_sr,  # noqa: E501
-                                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END) as p90_sr  # noqa: E501
+                                PERCENTILE_CONT(0.25)
+                                    WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p25_cost,
+                                PERCENTILE_CONT(0.50)
+                                    WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p50_cost,
+                                PERCENTILE_CONT(0.75)
+                                    WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p75_cost,
+                                PERCENTILE_CONT(0.90)
+                                    WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p90_cost,
+                                PERCENTILE_CONT(0.25) WITHIN GROUP (
+                                    ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END
+                                ) as p25_sr,
+                                PERCENTILE_CONT(0.50) WITHIN GROUP (
+                                    ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END
+                                ) as p50_sr,
+                                PERCENTILE_CONT(0.75) WITHIN GROUP (
+                                    ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END
+                                ) as p75_sr,
+                                PERCENTILE_CONT(0.90) WITHIN GROUP (
+                                    ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END
+                                ) as p90_sr
                             FROM goals
                             WHERE status IN ('complete', 'failed')
                               AND cost_usd IS NOT NULL

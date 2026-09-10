@@ -63,7 +63,7 @@ class AgentGeneratedConnector(BaseConnector):
         # Yield nothing in pull mode — streaming mode via on_webhook is primary
         # Implement DB query when DB integration is available
         return
-        yield  # Make this an async generator  # noqa: unreachable
+        yield  # makes this an async generator (unreachable, intentional)
 
     async def on_webhook(
         self,

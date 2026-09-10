@@ -1,7 +1,6 @@
 """Extra coverage for app/services/goal_service.py — utility functions and non-DB paths."""
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,7 +8,7 @@ import pytest
 
 from app.governance.audit import AuditLog
 from app.governance.hitl import HITLGateway
-from app.services.goal_service import GoalService, GoalRecord, GoalStatus
+from app.services.goal_service import GoalRecord, GoalService, GoalStatus
 from app.tenancy.context import PlanTier, TenantContext
 
 _CTX = TenantContext(tenant_id="tid-gs-extra", plan=PlanTier.ENTERPRISE, api_key_id="k1")
@@ -122,8 +121,8 @@ class TestFakeProvider:
         assert provider is not None
 
     def test_fake_provider_is_fake_provider_type(self):
-        from app.services.goal_service import _fake_provider
         from app.providers.fake import FakeProvider
+        from app.services.goal_service import _fake_provider
         provider = _fake_provider()
         assert isinstance(provider, FakeProvider)
 
@@ -131,14 +130,17 @@ class TestFakeProvider:
 class TestCheckpointSaverSelection:
     def test_returns_memory_saver_by_default(self):
         from langgraph.checkpoint.memory import MemorySaver
+
         from app.services.goal_service import _resolve_checkpointer
         result = _resolve_checkpointer(app_state=None)
         assert isinstance(result, MemorySaver)
 
     def test_returns_memory_saver_when_no_redis_url(self):
-        from langgraph.checkpoint.memory import MemorySaver
-        from app.services.goal_service import _resolve_checkpointer
         import os
+
+        from langgraph.checkpoint.memory import MemorySaver
+
+        from app.services.goal_service import _resolve_checkpointer
         with patch.dict(os.environ, {}, clear=True):
             result = _resolve_checkpointer(app_state=None)
         assert isinstance(result, MemorySaver)

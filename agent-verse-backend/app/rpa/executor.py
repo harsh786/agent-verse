@@ -10,6 +10,11 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+# WS-13: tools that can produce REAL page text over a plain HTTP GET when no
+# browser (Playwright) is installed. Everything else keeps the simulation
+# fallback (a click/type without a browser has no real effect to model).
+_HTTP_FETCH_TOOLS = frozenset({"rpa_open_url", "rpa_extract_text", "rpa_screenshot"})
+
 
 @dataclass
 class RPAResult:
@@ -30,14 +35,23 @@ class RPAExecutor:
         session_manager: Any = None,
         headless: bool = True,
         vision_provider: Any = None,
+        allowed_domains: list[str] | None = None,
     ) -> None:
         self._playwright_available = self._check_playwright()
         self._headless = headless
         self._artifact_store = artifact_store
         self._session_manager = session_manager
         self._vision_provider = vision_provider
+        # SSRF egress allowlist: exact domains (and their subdomains) that may be
+        # navigated even if they would otherwise resolve to an internal address.
+        # Empty by default → public-only (metadata/loopback/RFC-1918 all blocked).
+        self._allowed_domains = allowed_domains
         # P1.2: Vault credential injector (set externally or at construction time)
         self._credential_injector: Any = None
+        # WS-13: per-session cache of page text fetched via the httpx fallback so
+        # an ``open_url`` → ``extract_text`` sequence sharing a session id returns
+        # the page it actually fetched (mirrors Playwright session page state).
+        self._http_pages: dict[str, str] = {}
 
     @staticmethod
     def _check_playwright() -> bool:
@@ -56,8 +70,16 @@ class RPAExecutor:
         session_id: str | None = None,
         tenant_id: str = "",
         goal_id: str = "",
+        allow_http_fetch: bool = False,
     ) -> RPAResult:
-        """Execute an RPA tool command."""
+        """Execute an RPA tool command.
+
+        ``allow_http_fetch`` opts a caller into the WS-13 real-HTTP fallback: when
+        no browser (Playwright) is installed, ``rpa_open_url``/``rpa_extract_text``
+        fetch the page over httpx and return its REAL text instead of the
+        ``[simulated]`` placeholder. Off by default so existing simulation
+        behaviour (and its tests) is preserved.
+        """
         start = time.monotonic()
         sid = session_id or uuid.uuid4().hex
         ephemeral = session_id is None
@@ -70,6 +92,33 @@ class RPAExecutor:
                 import logging
 
                 logging.getLogger(__name__).warning("credential_injection_failed error=%s", exc)
+
+        # SSRF egress guard: validate the target URL before ANY real navigation
+        # or fetch. Both Playwright paths call page.goto(url) and the WS-13 http
+        # fallback issues a real GET — all reachable from an agent's rpa_* tool
+        # call, so an attacker-supplied url like http://169.254.169.254/… or a
+        # loopback/RFC-1918 host would otherwise reach internal services. The
+        # simulation path makes no request and is intentionally exempt (its tests
+        # use arbitrary placeholder URLs). Fail-closed on any block.
+        _will_fetch = self._playwright_available or (
+            allow_http_fetch and tool_name in _HTTP_FETCH_TOOLS
+        )
+        _target_url = arguments.get("url", "")
+        if _will_fetch and _target_url:
+            from app.net.ssrf_guard import SSRFError, assert_public_url
+
+            try:
+                assert_public_url(
+                    _target_url,
+                    allowed_domains=self._allowed_domains,
+                    context="rpa_navigate",
+                )
+            except (SSRFError, ValueError) as exc:
+                return RPAResult(
+                    success=False,
+                    error=f"blocked by SSRF guard: {exc}",
+                    duration_ms=(time.monotonic() - start) * 1000,
+                )
 
         if self._playwright_available and self._session_manager:
             result = await self._execute_with_playwright(
@@ -84,6 +133,10 @@ class RPAExecutor:
                 tool_name=tool_name,
                 arguments=arguments,
                 goal_id=goal_id,
+            )
+        elif allow_http_fetch and tool_name in _HTTP_FETCH_TOOLS:
+            result = await self._execute_http_fallback(
+                tool_name=tool_name, arguments=arguments, session_id=sid
             )
         else:
             result = await self._execute_simulation(tool_name=tool_name, arguments=arguments)
@@ -202,9 +255,9 @@ class RPAExecutor:
                 vision_analysis = ""
                 if self._vision_provider:
                     try:
-                        from app.perception.browser_agent import BrowserAgent as _BA
+                        from app.perception.browser_agent import BrowserAgent
 
-                        _ba = _BA(vision_provider=self._vision_provider)
+                        _ba = BrowserAgent(vision_provider=self._vision_provider)
                         vision_analysis = await _ba.analyze_screenshot(
                             b64,
                             "Describe the main content and purpose of this page.",
@@ -630,6 +683,124 @@ class RPAExecutor:
                 return RPAResult(success=False, error=str(exc))
             finally:
                 await browser.close()
+
+    async def _execute_http_fallback(
+        self, *, tool_name: str, arguments: dict[str, Any], session_id: str
+    ) -> RPAResult:
+        """WS-13: real page text over httpx when no browser is installed.
+
+        This is the *no-Playwright* production path for the KB scraper — it fetches
+        the page and returns its actual text (not a ``[simulated]`` placeholder),
+        so routing ``/knowledge/ingest/rpa-url`` through the RPA executor no longer
+        regresses the browser-less path. Screenshots are not possible over httpx,
+        so ``rpa_screenshot`` degrades to a no-op success (text still flows).
+        """
+        if tool_name == "rpa_open_url":
+            url = arguments.get("url", "")
+            if not url:
+                return RPAResult(success=False, error="url argument required")
+            try:
+                text, title = await self._http_fetch_text(url)
+            except Exception as exc:
+                return RPAResult(success=False, error=str(exc))
+            self._http_pages[session_id] = text
+            return RPAResult(success=True, output=f"Opened {url} — title: {title}")
+
+        if tool_name == "rpa_extract_text":
+            url = arguments.get("url", "")
+            if url:
+                try:
+                    text, _ = await self._http_fetch_text(url)
+                except Exception as exc:
+                    return RPAResult(success=False, error=str(exc))
+                self._http_pages[session_id] = text
+            else:
+                text = self._http_pages.get(session_id, "")
+            # A CSS selector cannot be honoured over raw-HTML httpx text; return the
+            # whole page text (the selector is recorded by callers for provenance).
+            return RPAResult(success=True, output=text[:50_000])
+
+        # rpa_screenshot: no browser → no image. Succeed with no artifact so a
+        # scrape sequence still yields its text sections.
+        return RPAResult(
+            success=True,
+            output="[no-screenshot] httpx fallback cannot capture screenshots",
+        )
+
+    @staticmethod
+    async def _http_fetch_text(url: str) -> tuple[str, str]:
+        """Fetch ``url`` and return ``(cleaned_text, title)`` — no ``raise_for_status``.
+
+        Error responses still carry a body; we surface whatever text is present so
+        the scrape degrades gracefully rather than dropping the page entirely.
+        """
+        import re
+
+        import httpx
+
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "AgentVerse-RPA/1.0"})
+        raw = resp.text
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL)
+        title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else ""
+        cleaned = re.sub(
+            r"<(script|style)[^>]*>.*?</\1>", " ", raw, flags=re.IGNORECASE | re.DOTALL
+        )
+        text = re.sub(r"<[^>]+>", " ", cleaned)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text, title
+
+    async def scrape_to_kb(
+        self,
+        *,
+        url: str,
+        knowledge_store: Any,
+        embedder: Any,
+        collection_id: str,
+        tenant_ctx: Any,
+        selectors: list[str] | None = None,
+        source_type: str = "rpa",
+        max_chars: int = 50_000,
+    ) -> dict[str, Any]:
+        """Scrape ``url`` via this executor and persist it to the knowledge base.
+
+        The single reachable RPA→KB path usable outside the HTTP API (e.g. by the
+        agent RPA tool): scrape → provenance-tagged chunks → cross-source dedup via
+        ``exists_by_hash`` → the shared KB persistence helper. Returns a summary
+        dict (``chunks_ingested``, ``deduplicated``, ``content_hash``).
+        """
+        from app.rpa.kb_emit import scrape_url_to_chunks
+
+        scraped = await scrape_url_to_chunks(
+            self,
+            url=url,
+            selectors=selectors,
+            source_type=source_type,
+            max_chars=max_chars,
+        )
+        if not scraped.content.strip():
+            return {"chunks_ingested": 0, "deduplicated": False, "content_hash": ""}
+        tenant_id = getattr(tenant_ctx, "tenant_id", "")
+        if await knowledge_store.exists_by_hash(
+            content_hash=scraped.content_hash,
+            tenant_id=tenant_id,
+            collection_id=collection_id,
+        ):
+            return {
+                "chunks_ingested": 0,
+                "deduplicated": True,
+                "content_hash": scraped.content_hash,
+            }
+        from app.api.knowledge import _ingest_chunks_from_source
+
+        ingested = await _ingest_chunks_from_source(
+            knowledge_store, scraped.chunks, collection_id, tenant_ctx, embedder
+        )
+        return {
+            "chunks_ingested": ingested,
+            "deduplicated": False,
+            "content_hash": scraped.content_hash,
+        }
 
     async def _execute_simulation(self, *, tool_name: str, arguments: dict[str, Any]) -> RPAResult:
         """Simulated execution when Playwright is not available."""

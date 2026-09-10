@@ -5,9 +5,7 @@ Targets uncovered lines: 91-99 (_update_task_status with DB),
 """
 from __future__ import annotations
 
-import asyncio
 import os
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,9 +15,10 @@ from fastapi.testclient import TestClient
 from app.api.a2a import (
     _get_task,
     _persist_task,
-    _send_callback,
     _tasks,
     _update_task_status,
+)
+from app.api.a2a import (
     router as a2a_router,
 )
 from app.tenancy.context import PlanTier, TenantContext

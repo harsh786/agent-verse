@@ -9,8 +9,8 @@
 from __future__ import annotations
 
 import datetime
-import pytest
 
+import pytest
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  agent_runtime.models
@@ -45,7 +45,7 @@ class TestAgentRuntimeModels:
         assert RiskLevel.CRITICAL == "critical"
 
     def test_plan_step_defaults(self) -> None:
-        from app.agent_runtime.models import PlanStep, AgentRole, StepStatus, RiskLevel
+        from app.agent_runtime.models import AgentRole, PlanStep, RiskLevel, StepStatus
         step = PlanStep(step_id="s1", description="Do something")
         assert step.role == AgentRole.EXECUTOR
         assert step.status == StepStatus.PENDING
@@ -58,7 +58,7 @@ class TestAgentRuntimeModels:
         assert step.error == ""
 
     def test_plan_step_custom_values(self) -> None:
-        from app.agent_runtime.models import PlanStep, AgentRole, StepStatus, RiskLevel
+        from app.agent_runtime.models import AgentRole, PlanStep, RiskLevel
         step = PlanStep(
             step_id="s2",
             description="Deploy to prod",
@@ -238,7 +238,7 @@ class TestMemoryConsolidator:
                 "memory_id": "mem1",
                 "content": "Paris is the capital of France",
                 "lifecycle_state": "active",
-                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "updated_at": datetime.datetime.now(datetime.UTC).isoformat(),
                 "confidence": 0.9,
             }
         }
@@ -251,7 +251,7 @@ class TestMemoryConsolidator:
     @pytest.mark.asyncio
     async def test_old_active_memory_marked_stale(self, consolidator) -> None:
         old_date = (
-            datetime.datetime.now(datetime.timezone.utc)
+            datetime.datetime.now(datetime.UTC)
             - datetime.timedelta(days=35)
         ).isoformat()
         store = {
@@ -270,7 +270,7 @@ class TestMemoryConsolidator:
     @pytest.mark.asyncio
     async def test_very_old_stale_memory_archived(self, consolidator) -> None:
         very_old = (
-            datetime.datetime.now(datetime.timezone.utc)
+            datetime.datetime.now(datetime.UTC)
             - datetime.timedelta(days=95)
         ).isoformat()
         store = {
@@ -288,7 +288,7 @@ class TestMemoryConsolidator:
 
     @pytest.mark.asyncio
     async def test_duplicate_content_merges(self, consolidator) -> None:
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        now = datetime.datetime.now(datetime.UTC).isoformat()
         # Two memories with IDENTICAL content (same first 100 chars triggers dedup)
         same_content = "The Eiffel Tower is in Paris and was built in 1889 as a landmark for the World Fair"
         store = {
@@ -315,7 +315,7 @@ class TestMemoryConsolidator:
     @pytest.mark.asyncio
     async def test_different_tenants_isolated(self, consolidator) -> None:
         old_date = (
-            datetime.datetime.now(datetime.timezone.utc)
+            datetime.datetime.now(datetime.UTC)
             - datetime.timedelta(days=35)
         ).isoformat()
         store = {
@@ -345,7 +345,7 @@ class TestMemoryConsolidator:
                 "memory_id": "mem8",
                 "content": "Already gone",
                 "lifecycle_state": "archived",
-                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "updated_at": datetime.datetime.now(datetime.UTC).isoformat(),
                 "confidence": 0.5,
             }
         }
@@ -401,16 +401,16 @@ class TestRAGPlatformQueryPlanner:
         assert strategy == RAGStrategy.NAIVE
 
     def test_retrieval_leg_dataclass(self) -> None:
-        from app.rag_platform.query_planner import RetrievalLeg
         from app.rag.contracts import RAGStrategy
+        from app.rag_platform.query_planner import RetrievalLeg
         leg = RetrievalLeg(strategy=RAGStrategy.NAIVE, query="test query")
         assert leg.results == []
         assert leg.score == 0.0
         assert leg.latency_ms == 0.0
 
     def test_rag_result_dataclass(self) -> None:
-        from app.rag_platform.query_planner import RAGResult
         from app.rag.contracts import RAGStrategy
+        from app.rag_platform.query_planner import RAGResult
         result = RAGResult(query="test", strategy_used=RAGStrategy.HYBRID)
         assert result.grounded is True
         assert result.confidence == 0.0
@@ -419,8 +419,8 @@ class TestRAGPlatformQueryPlanner:
         assert result.answer == ""
 
     def test_rag_result_with_citations(self) -> None:
-        from app.rag_platform.query_planner import RAGResult
         from app.rag.contracts import RAGStrategy
+        from app.rag_platform.query_planner import RAGResult
         result = RAGResult(
             query="What is X?",
             strategy_used=RAGStrategy.FUSION,
@@ -529,8 +529,8 @@ class TestSkillsExecutorPublicSurface:
         assert executor is not None
 
     def test_executor_has_execute_method(self) -> None:
+
         from app.skills_runtime.executor import SkillExecutor
-        import inspect
         executor = SkillExecutor()
         assert hasattr(executor, "execute") or hasattr(executor, "run_skill")
 

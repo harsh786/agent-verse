@@ -138,34 +138,36 @@ def submit(
 def _stream_goal(goal_id: str) -> None:
     """Stream SSE events for a goal to the terminal."""
     try:
-        with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=None) as client:
-            with client.stream("GET", f"/goals/{goal_id}/stream") as resp:
-                for line in resp.iter_lines():
-                    if line.startswith("data: "):
-                        try:
-                            event = json.loads(line[6:])
-                            event_type = event.get("type", "")
-                            if event_type == "goal_started":
-                                typer.echo(f"[START] Goal: {event.get('goal', '')}")
-                            elif event_type == "plan_ready":
-                                steps = event.get("steps", [])
-                                typer.echo(f"[PLAN] {len(steps)} steps: {', '.join(steps[:3])}")
-                            elif event_type == "step_started":
-                                typer.echo(f"  > {event.get('step', '')}")
-                            elif event_type == "step_complete":
-                                output = event.get("output", "")[:100]
-                                typer.echo(f"    + {output}")
-                            elif event_type == "goal_complete":
-                                typer.echo("[DONE] Goal completed successfully!")
-                                break
-                            elif event_type == "goal_failed":
-                                typer.echo(f"[FAIL] {event.get('reason', 'Unknown error')}")
-                                sys.exit(1)
-                            elif event_type == "waiting_approval":
-                                typer.echo(f"[WAIT] Approval needed for: {event.get('action', '')}")
-                                typer.echo(f"       Request ID: {event.get('request_id', '')}")
-                        except json.JSONDecodeError:
-                            pass
+        with (
+            httpx.Client(base_url=_base_url(), headers=_headers(), timeout=None) as client,
+            client.stream("GET", f"/goals/{goal_id}/stream") as resp,
+        ):
+            for line in resp.iter_lines():
+                if line.startswith("data: "):
+                    try:
+                        event = json.loads(line[6:])
+                        event_type = event.get("type", "")
+                        if event_type == "goal_started":
+                            typer.echo(f"[START] Goal: {event.get('goal', '')}")
+                        elif event_type == "plan_ready":
+                            steps = event.get("steps", [])
+                            typer.echo(f"[PLAN] {len(steps)} steps: {', '.join(steps[:3])}")
+                        elif event_type == "step_started":
+                            typer.echo(f"  > {event.get('step', '')}")
+                        elif event_type == "step_complete":
+                            output = event.get("output", "")[:100]
+                            typer.echo(f"    + {output}")
+                        elif event_type == "goal_complete":
+                            typer.echo("[DONE] Goal completed successfully!")
+                            break
+                        elif event_type == "goal_failed":
+                            typer.echo(f"[FAIL] {event.get('reason', 'Unknown error')}")
+                            sys.exit(1)
+                        elif event_type == "waiting_approval":
+                            typer.echo(f"[WAIT] Approval needed for: {event.get('action', '')}")
+                            typer.echo(f"       Request ID: {event.get('request_id', '')}")
+                    except json.JSONDecodeError:
+                        pass
     except KeyboardInterrupt:
         typer.echo("\n[INTERRUPTED] Streaming stopped. Goal continues in background.")
 

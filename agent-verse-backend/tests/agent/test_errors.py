@@ -1,8 +1,6 @@
 """Tests for ErrorClass and classify_error."""
 from __future__ import annotations
 
-import pytest
-
 from app.agent.errors import ErrorClass, classify_error
 
 

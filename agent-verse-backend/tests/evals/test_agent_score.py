@@ -1,10 +1,12 @@
 # tests/evals/test_agent_score.py
 """app/evals/agent_score.py must exist as spec §Layer 10 file."""
 from __future__ import annotations
+
 import pytest
-from app.evals.agent_score import AgentScorer
+
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
-from app.tenancy.context import TenantContext, PlanTier
+from app.evals.agent_score import AgentScorer
+from app.tenancy.context import PlanTier, TenantContext
 
 
 @pytest.fixture

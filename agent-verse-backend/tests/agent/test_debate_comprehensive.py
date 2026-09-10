@@ -1,15 +1,8 @@
 """Comprehensive tests for app/agent/debate.py — targets 90%+ statement coverage."""
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
-
 from app.agent.debate import AgentProposal, DebateOrchestrator, DebateResult
 from app.providers.fake import FakeProvider
-from app.tenancy.context import PlanTier, TenantContext
-
 
 # ── Dataclass smoke tests ─────────────────────────────────────────────────────
 

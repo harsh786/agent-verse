@@ -1,8 +1,6 @@
 """Tests for self_optimization.apply_suggestion() actually mutating agent configs."""
 from __future__ import annotations
 
-import pytest
-
 from app.intelligence.self_optimization import OptimizationSuggestion, SelfOptimizer
 from app.tenancy.context import PlanTier, TenantContext
 

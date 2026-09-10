@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -301,7 +300,6 @@ def test_registry_configs_have_required_keys():
 @pytest.mark.asyncio
 async def test_call_tool_returns_error_without_env(monkeypatch):
     """call_tool must return an error dict when credentials are not set."""
-    import os
 
     servers_and_env = [
         ("salesforce_server", ["SALESFORCE_INSTANCE_URL", "SALESFORCE_ACCESS_TOKEN"]),

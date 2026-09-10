@@ -345,6 +345,8 @@ def get_builtin_server_configs() -> list[dict]:
         unbounce_server,
         upkeep_server,
         upwork_server,
+        # Built-in local utility tools (OCR, web search, HTTP) — agent-callable by name
+        utility_server,
         vercel_server,
         vero_server,
         vimeo_server,
@@ -403,6 +405,18 @@ def get_builtin_server_configs() -> list[dict]:
             "tool_definitions": slack_server.TOOL_DEFINITIONS,
             "handler": slack_server.call_tool,
             "requires_env": ["SLACK_BOT_TOKEN"],
+        },
+        # ── Built-in utility tools (local, no external creds) ─────────────────
+        # Makes AgentVerse's own tool classes (OCR/extract_document, web_search,
+        # http_request) agent-callable BY NAME. No requires_env → registered on
+        # every tenant's builtin surface so the planner/executor can pick them.
+        {
+            "server_id": utility_server.SERVER_ID,
+            "name": utility_server.SERVER_NAME,
+            "description": utility_server.SERVER_DESCRIPTION,
+            "tool_definitions": utility_server.TOOL_DEFINITIONS,
+            "handler": utility_server.call_tool,
+            "requires_env": [],
         },
         # ── CRM & Sales ───────────────────────────────────────────────────────
         {

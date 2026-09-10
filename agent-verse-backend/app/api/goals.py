@@ -495,6 +495,25 @@ async def explain_goal(request: Request, goal_id: str) -> dict[str, Any]:
     }
 
 
+@router.get("/{goal_id}/pattern-selection")
+async def get_goal_pattern_selection(request: Request, goal_id: str) -> dict[str, Any]:
+    """Return the agent pattern this goal was routed to, and why.
+
+    Surfaces the ONE selector's decision for the frontend selection UX: the
+    auto-selected (or explicitly overridden) primary pattern, the reasoning /
+    multi-agent topology, plain-language rationale, and the registry-driven catalog
+    of patterns available to override with. Falls back to computing the summary
+    on demand for goals persisted before the record existed.
+    """
+    tenant = _require_tenant(request)
+    try:
+        return await _goal_service(request).get_pattern_selection(
+            goal_id=goal_id, tenant_ctx=tenant
+        )
+    except NotFoundError as exc:
+        raise _not_found_response(request, exc) from exc
+
+
 @router.post("/{goal_id}/cancel")
 async def cancel_goal(request: Request, goal_id: str) -> dict[str, Any]:
     tenant = _require_tenant(request)
@@ -615,6 +634,21 @@ async def get_goal_eval(request: Request, goal_id: str) -> dict[str, Any]:
     except NotFoundError as exc:
         raise _not_found_response(request, exc) from exc
     return result
+
+
+@router.get("/{goal_id}/eval/suggestions")
+async def get_goal_eval_suggestions(request: Request, goal_id: str) -> dict[str, Any]:
+    """Auto-suggested improvement actions derived from the goal's real eval scores.
+
+    Each dimension below the config-driven pass threshold yields one actionable
+    suggestion (worst first). Honest empty when unevaluated or all pass.
+    """
+    tenant = _require_tenant(request)
+    svc = _goal_service(request)
+    try:
+        return await svc.get_eval_suggestions(goal_id=goal_id, tenant_ctx=tenant)
+    except NotFoundError as exc:
+        raise _not_found_response(request, exc) from exc
 
 
 @router.post("/{goal_id}/eval", status_code=status.HTTP_200_OK)

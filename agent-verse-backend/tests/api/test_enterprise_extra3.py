@@ -9,12 +9,9 @@ Targets missing lines:
 """
 from __future__ import annotations
 
-import json
-from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -22,8 +19,10 @@ from app.api.enterprise import (
     compliance_router,
     intelligence_router,
     marketplace_router,
-    router as enterprise_router,
     scim_router,
+)
+from app.api.enterprise import (
+    router as enterprise_router,
 )
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import TenantMiddleware
@@ -1587,3 +1586,52 @@ def test_stream_simulation_agent_config_branch() -> None:
         headers=_headers(),
     )
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# POST /intelligence/experiments/{id}/apply — manual apply (HITL half of loop)
+# ---------------------------------------------------------------------------
+
+def test_apply_experiment_no_self_opt_v2() -> None:
+    """No optimizer on state → 503 (capability unavailable)."""
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    resp = client.post("/intelligence/experiments/e1/apply", headers=_headers())
+    assert resp.status_code == 503
+
+
+def test_apply_experiment_applies_pending_winner() -> None:
+    """A pending candidate winner is applied → 200 with agent_id."""
+    opt_v2 = MagicMock()
+    opt_v2.apply_pending = AsyncMock(
+        return_value={"applied": True, "agent_id": "agent-9", "experiment_id": "e1"}
+    )
+    app = _make_app()
+    app.state.self_optimizer_v2 = opt_v2
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/intelligence/experiments/e1/apply", headers=_headers())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "applied"
+    assert body["agent_id"] == "agent-9"
+    opt_v2.apply_pending.assert_awaited_once()
+
+
+def test_apply_experiment_unknown_is_404() -> None:
+    opt_v2 = MagicMock()
+    opt_v2.apply_pending = AsyncMock(return_value={"applied": False, "reason": "not_found"})
+    app = _make_app()
+    app.state.self_optimizer_v2 = opt_v2
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/intelligence/experiments/missing/apply", headers=_headers())
+    assert resp.status_code == 404
+
+
+def test_apply_experiment_already_applied_is_409() -> None:
+    opt_v2 = MagicMock()
+    opt_v2.apply_pending = AsyncMock(return_value={"applied": False, "reason": "already_applied"})
+    app = _make_app()
+    app.state.self_optimizer_v2 = opt_v2
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/intelligence/experiments/e1/apply", headers=_headers())
+    assert resp.status_code == 409
+    assert "already_applied" in resp.json()["detail"]

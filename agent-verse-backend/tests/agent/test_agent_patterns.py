@@ -1,8 +1,6 @@
 """Tests for all 13 agent pattern adapters and ALL_PATTERNS list."""
 from __future__ import annotations
 
-import pytest
-
 from app.agent.patterns import (
     ALL_PATTERNS,
     AgentPattern,

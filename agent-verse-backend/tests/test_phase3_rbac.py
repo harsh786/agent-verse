@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import patch
-from httpx import AsyncClient, ASGITransport
-
+from httpx import ASGITransport, AsyncClient
 
 # ── Task 3.1: ORM model tests ────────────────────────────────────────────────
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.chat.intent import IntentRouter, ScheduleConfirmation
 
 router = IntentRouter()

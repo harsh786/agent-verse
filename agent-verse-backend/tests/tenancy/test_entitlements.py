@@ -1,7 +1,8 @@
 """Tests for Phase 1b entitlements system."""
 import pytest
-from app.tenancy.context import TenantContext, PlanTier
-from app.tenancy.entitlements import has_feature, assert_feature, check_limit, assert_limit
+
+from app.tenancy.context import PlanTier, TenantContext
+from app.tenancy.entitlements import assert_feature, assert_limit, check_limit, has_feature
 
 
 def _ctx(plan: PlanTier) -> TenantContext:

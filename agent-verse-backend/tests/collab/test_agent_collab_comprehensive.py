@@ -1,14 +1,11 @@
 """Comprehensive tests for app/collab/agent_collab.py — targets the 37% baseline."""
 from __future__ import annotations
 
-import pytest
-
 from app.collab.agent_collab import (
     AgentCollabSession,
     CollabRound,
     ConsensusResult,
 )
-
 
 # ── CollabRound dataclass ─────────────────────────────────────────────────────
 

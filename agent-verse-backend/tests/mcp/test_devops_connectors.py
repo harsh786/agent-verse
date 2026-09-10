@@ -8,16 +8,16 @@ from __future__ import annotations
 
 def test_devops_servers_importable():
     from app.mcp.servers import (
-        gitlab_server,
-        bitbucket_server,
-        jenkins_server,
-        vercel_server,
-        netlify_server,
-        digitalocean_server,
-        kubernetes_server,
         aws_lambda_server,
         aws_s3_server,
         azure_devops_server,
+        bitbucket_server,
+        digitalocean_server,
+        gitlab_server,
+        jenkins_server,
+        kubernetes_server,
+        netlify_server,
+        vercel_server,
     )
 
     for s in [
@@ -40,7 +40,7 @@ def test_devops_servers_importable():
 
 def test_additional_servers_importable():
     """Heroku and Docker servers are also created and meet the interface."""
-    from app.mcp.servers import heroku_server, docker_server
+    from app.mcp.servers import docker_server, heroku_server
 
     for s in [heroku_server, docker_server]:
         assert hasattr(s, "TOOL_DEFINITIONS"), f"{s.__name__} missing TOOL_DEFINITIONS"
@@ -134,20 +134,20 @@ def test_azure_devops_tools_present():
 def test_all_tools_have_required_schema_fields():
     """Every tool definition must have name, description, and parameters."""
     from app.mcp.servers import (
-        gitlab_server,
-        bitbucket_server,
-        jenkins_server,
-        vercel_server,
-        netlify_server,
-        heroku_server,
-        digitalocean_server,
-        kubernetes_server,
-        docker_server,
-        aws_lambda_server,
-        aws_s3_server,
         aws_cloudwatch_server,
         aws_iam_server,
+        aws_lambda_server,
+        aws_s3_server,
         azure_devops_server,
+        bitbucket_server,
+        digitalocean_server,
+        docker_server,
+        gitlab_server,
+        heroku_server,
+        jenkins_server,
+        kubernetes_server,
+        netlify_server,
+        vercel_server,
     )
 
     all_servers = [
@@ -179,23 +179,23 @@ def test_all_tools_have_required_schema_fields():
 
 def test_all_servers_have_call_tool():
     """Every server must expose an async call_tool function."""
-    import asyncio
     import inspect
+
     from app.mcp.servers import (
-        gitlab_server,
-        bitbucket_server,
-        jenkins_server,
-        vercel_server,
-        netlify_server,
-        heroku_server,
-        digitalocean_server,
-        kubernetes_server,
-        docker_server,
-        aws_lambda_server,
-        aws_s3_server,
         aws_cloudwatch_server,
         aws_iam_server,
+        aws_lambda_server,
+        aws_s3_server,
         azure_devops_server,
+        bitbucket_server,
+        digitalocean_server,
+        docker_server,
+        gitlab_server,
+        heroku_server,
+        jenkins_server,
+        kubernetes_server,
+        netlify_server,
+        vercel_server,
     )
 
     all_servers = [

@@ -10,7 +10,6 @@ import os
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -156,7 +155,7 @@ async def test_salesforce_get_record():
 async def test_salesforce_missing_env():
     from app.mcp.servers.salesforce_server import call_tool
 
-    env = {k: "" for k in ("SALESFORCE_INSTANCE_URL", "SALESFORCE_ACCESS_TOKEN")}
+    env = dict.fromkeys(("SALESFORCE_INSTANCE_URL", "SALESFORCE_ACCESS_TOKEN"), "")
     with patch.dict("os.environ", env, clear=False):
         os.environ.pop("SALESFORCE_INSTANCE_URL", None)
         result = await call_tool("salesforce_query", {"soql": "SELECT Id FROM Account"})

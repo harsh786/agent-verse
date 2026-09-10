@@ -8,7 +8,6 @@ Verifies that:
 """
 from __future__ import annotations
 
-
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
@@ -309,7 +308,7 @@ def test_onedrive_has_required_tools() -> None:
 import asyncio
 
 
-def _run(coro):  # noqa: D103
+def _run(coro):
     return asyncio.run(coro)
 
 

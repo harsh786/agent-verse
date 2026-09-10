@@ -12,7 +12,6 @@ from app.api.coordination_transcript import router as transcript_router
 from app.coordination.handoffs.models import HandoffState
 from app.coordination.transcript.models import TranscriptMessage
 
-
 FIXTURE = Path("tests/contracts/fixtures/program07_coordination.json")
 
 

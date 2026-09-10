@@ -1,5 +1,6 @@
 """Tests for tokenizer."""
 import pytest
+
 from app.agent.tokenizer import Tokenizer, count_tokens
 
 
@@ -113,7 +114,7 @@ class TestVectorCacheBackend:
 
     @pytest.mark.asyncio
     async def test_select_cache_backend_returns_in_memory_without_db(self):
-        from app.rag.vector_cache_backend import select_cache_backend, InMemoryCacheBackend
+        from app.rag.vector_cache_backend import InMemoryCacheBackend, select_cache_backend
         backend = await select_cache_backend(db_factory=None, redis=None)
         assert isinstance(backend, InMemoryCacheBackend)
 

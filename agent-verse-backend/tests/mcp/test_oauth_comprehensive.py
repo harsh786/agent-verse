@@ -2,13 +2,11 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-import pytest
 import respx
 
-from app.mcp.oauth import OAuthFlowManager, OAuthState, OAuthToken, _OAUTH_STATE_TTL
+from app.mcp.oauth import _OAUTH_STATE_TTL, OAuthFlowManager, OAuthState, OAuthToken
 from app.tenancy.context import PlanTier, TenantContext
 
 TENANT = TenantContext(tenant_id="oauth-comp-t1", plan=PlanTier.ENTERPRISE, api_key_id="key1")

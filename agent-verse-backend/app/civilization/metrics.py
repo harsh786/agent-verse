@@ -141,6 +141,16 @@ def civ_learnings_rejected_total() -> Any:
     )
 
 
+def civ_tick_skipped_total() -> Any:
+    """Counter: civilization ticks skipped by the throttle guard, by reason."""
+    return _get(
+        "civ_tick_skipped_total",
+        "Counter",
+        "Total civilization ticks skipped by the throttle guard (lock/min-interval)",
+        ["tenant_id", "reason"],
+    )
+
+
 # ── Recording helpers ─────────────────────────────────────────────────────────
 
 
@@ -187,6 +197,16 @@ def record_debate(*, tenant_id: str) -> None:
     """Increment the debate counter."""
     with contextlib.suppress(Exception):
         civ_debates_total().labels(tenant_id=tenant_id).inc()
+
+
+def record_tick_skipped(*, tenant_id: str, reason: str) -> None:
+    """Record a civilization tick skipped by the throttle guard.
+
+    reason is one of: "locked" (another tick in progress), "too_soon"
+    (fired inside the min-interval window).
+    """
+    with contextlib.suppress(Exception):
+        civ_tick_skipped_total().labels(tenant_id=tenant_id, reason=reason).inc()
 
 
 def record_learning_outcome(*, tenant_id: str, outcome: str) -> None:

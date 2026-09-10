@@ -10,16 +10,28 @@ All endpoints:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import uuid4
 
 import structlog
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.org.rbac import OrgRole, require_org_role
 from app.org.schemas import (
     CreateDepartmentRequest,
     CreateMissionRequest,
@@ -40,7 +52,7 @@ from app.org.schemas import (
     UpdateMissionRequest,
     UpdateOrganizationRequest,
 )
-from app.org.service import OrgService
+from app.org.service import OrgService, resolve_llm_provider
 
 router = APIRouter(prefix="/v1/org", tags=["org"])
 
@@ -213,6 +225,7 @@ async def update_organization(
     body: UpdateOrganizationRequest,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.DEPT_ADMIN),
 ) -> OrganizationResponse:
     org = await service.update_organization(org_id, body.model_dump(exclude_none=True))
     if not org:
@@ -230,6 +243,7 @@ async def delete_organization(
     org_id: str,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.ORG_ADMIN),
 ) -> None:
     deleted = await service.delete_organization(org_id)
     if not deleted:
@@ -341,6 +355,7 @@ async def create_mission(
     body: CreateMissionRequest,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> MissionResponse:
     mission = await service.create_mission(
         org_id=org_id,
@@ -589,6 +604,12 @@ async def approve_task(
     if not task:
         raise _not_found("Task", task_id, x_request_id)
 
+    # WS-3b: resolve the paired HITLGateway request BEFORE flipping status, so
+    # any agent blocked on this gate is released via the ONE shared gateway (no
+    # parallel approval mechanism). The request id was recorded on the task's
+    # outputs when the approval gate was created (create_mission_and_execute).
+    await _resolve_task_hitl_request(request, service._tenant_id, task, "approve", body)
+
     updated = await service.update_task_status(
         task_id,
         "running",
@@ -613,6 +634,58 @@ async def approve_task(
         pass  # Non-critical
 
     return TaskResponse.model_validate(updated)
+
+
+def _extract_hitl_request_id(task: Any) -> str | None:
+    """Find the paired HITLGateway request id recorded on an approval-gate task."""
+    for bucket in (getattr(task, "outputs", None) or [], [getattr(task, "extra_data", None) or {}]):
+        for entry in bucket:
+            if isinstance(entry, dict):
+                rid = entry.get("hitl_request_id") or entry.get("approval_request_id")
+                if rid:
+                    return str(rid)
+    return None
+
+
+async def _resolve_task_hitl_request(
+    request: Request, tenant_id: str, task: Any, action: str, body: Any
+) -> None:
+    """Resolve the HITLGateway request paired with an org task (best-effort).
+
+    Approving/rejecting an org task must release the same gateway approval a
+    blocked agent waits on — otherwise the two mechanisms drift. No-ops silently
+    when the task has no paired request or the gateway is unavailable.
+    """
+    request_id = _extract_hitl_request_id(task)
+    if not request_id:
+        return
+    gateway = getattr(getattr(request.app, "state", None), "hitl_gateway", None)
+    if gateway is None:
+        return
+    try:
+        from app.tenancy.context import PlanTier, TenantContext
+
+        tenant_ctx = TenantContext(
+            tenant_id=tenant_id,
+            plan=PlanTier.PROFESSIONAL,
+            api_key_id="org_task_approval",
+        )
+        approver = getattr(body, "approver", "user")
+        note = getattr(body, "note", "")
+        if action == "approve":
+            # approve() is synchronous (mutates gateway state immediately) and
+            # returns an awaitable-or-bool; awaiting it is safe and a no-op.
+            result = gateway.approve(
+                request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
+            )
+            if hasattr(result, "__await__"):
+                await result
+        else:
+            await gateway.reject(
+                request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
+            )
+    except Exception:
+        pass  # Non-critical — status transition + event still proceed.
 
 
 # ── G-28: Task-level reject endpoint ─────────────────────────────────────────
@@ -641,6 +714,10 @@ async def reject_task(
     task = await service.get_task(task_id)
     if not task:
         raise _not_found("Task", task_id, x_request_id)
+
+    # WS-3b: resolve the paired HITLGateway request (reject) so a blocked agent
+    # is released via the ONE shared gateway.
+    await _resolve_task_hitl_request(request, service._tenant_id, task, "reject", body)
 
     updated = await service.update_task_status(
         task_id,
@@ -863,10 +940,11 @@ async def list_org_approvals(
         # Build minimal TenantContext for list_pending
         tenant_id = service._tenant_id
         try:
-            from app.tenancy.context import PlanTier
-            from app.tenancy.context import TenantContext as _TC
+            from app.tenancy.context import PlanTier, TenantContext
 
-            _tenant_ctx = _TC(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="org_approvals")
+            _tenant_ctx = TenantContext(
+                tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="org_approvals"
+            )
             pending = hitl_gateway.list_pending(tenant_ctx=_tenant_ctx)
         except Exception:
             pending = []
@@ -917,22 +995,24 @@ async def approve_org_request(
     request: Request,
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict:
     """G-24: Approve a HITL request belonging to this org's missions."""
     hitl_gateway = getattr(getattr(request.app, "state", None), "hitl_gateway", None)
     if hitl_gateway is None:
         raise HTTPException(status_code=503, detail="HITL gateway not available")
 
-    tenant_id = service._tenant_id
-    try:
-        await hitl_gateway.resolve(
-            request_id=approval_id,
-            action="approve",
-            approver=body.approver,
-            note=body.note,
-            tenant_id=tenant_id,
-        )
-    except Exception as exc:
+    from app.tenancy.context import PlanTier, TenantContext
+
+    tenant_ctx = TenantContext(
+        tenant_id=service._tenant_id, plan=PlanTier.FREE, api_key_id="org_approvals"
+    )
+    # HITLGateway exposes approve/reject (not a `resolve` method); approve()
+    # returns a truthy _AwaitableBool only when the request exists and is pending.
+    ok = await hitl_gateway.approve(
+        approval_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
+    )
+    if not ok:
         raise HTTPException(
             status_code=404,
             detail={
@@ -942,7 +1022,7 @@ async def approve_org_request(
                 "detail": f"Approval '{approval_id}' not found or already resolved",
                 "request_id": x_request_id,
             },
-        ) from exc
+        )
 
     return {"status": "approved", "approval_id": approval_id, "approver": body.approver}
 
@@ -963,22 +1043,25 @@ async def reject_org_request(
     request: Request,
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict:
     """G-24: Reject a HITL request belonging to this org's missions."""
     hitl_gateway = getattr(getattr(request.app, "state", None), "hitl_gateway", None)
     if hitl_gateway is None:
         raise HTTPException(status_code=503, detail="HITL gateway not available")
 
-    tenant_id = service._tenant_id
-    try:
-        await hitl_gateway.resolve(
-            request_id=approval_id,
-            action="reject",
-            approver=body.approver,
-            note=body.note or "Rejected via org approval center",
-            tenant_id=tenant_id,
-        )
-    except Exception as exc:
+    from app.tenancy.context import PlanTier, TenantContext
+
+    tenant_ctx = TenantContext(
+        tenant_id=service._tenant_id, plan=PlanTier.FREE, api_key_id="org_approvals"
+    )
+    ok = await hitl_gateway.reject(
+        approval_id,
+        approver=body.approver,
+        note=body.note or "Rejected via org approval center",
+        tenant_ctx=tenant_ctx,
+    )
+    if not ok:
         raise HTTPException(
             status_code=404,
             detail={
@@ -988,7 +1071,7 @@ async def reject_org_request(
                 "detail": f"Approval '{approval_id}' not found or already resolved",
                 "request_id": x_request_id,
             },
-        ) from exc
+        )
 
     return {"status": "rejected", "approval_id": approval_id, "approver": body.approver}
 
@@ -1730,7 +1813,12 @@ async def org_compose(
         span.set_attribute("industry", body.industry)
         span.set_attribute("autonomy_level", body.autonomy_level)
 
-        # Deep N2: delegate to service layer which uses LLM when available
+        # Deep N2: delegate to service layer which uses LLM when available.
+        # Resolve the real provider from the wired app.state so the composer
+        # actually designs a bespoke org structure for the objective instead of
+        # always falling back to the industry template (the provider attribute
+        # was previously never threaded, so the LLM path was unreachable).
+        _llm_provider = resolve_llm_provider(request.app.state)
         result = await service.compose_from_nl(
             description=body.description,
             goals=body.goals,
@@ -1738,7 +1826,9 @@ async def org_compose(
             autonomy_level=body.autonomy_level,
             budget_usd=body.budget_usd,
             constraints=body.constraints,
+            llm_provider=_llm_provider,
         )
+        span.set_attribute("composition_method", str(result.get("composition_method", "")))
 
         span.set_attribute("org_id", result.get("org_id", ""))
         span.set_attribute("departments_created", len(result.get("departments", [])))
@@ -2465,10 +2555,6 @@ async def org_dept_memory_add(
 # Clients: Claude Desktop, Cursor, any JSON-RPC 2.0 / MCP client.
 # Auth: "Authorization: Bearer <api_key>" header or ?api_key= query param.
 
-import contextlib
-
-from fastapi import WebSocket, WebSocketDisconnect
-
 
 @router.websocket("/{org_id}/mcp")
 async def org_mcp_websocket(
@@ -2502,10 +2588,8 @@ async def org_mcp_websocket(
     # Attach the request's app.state (lifespan-wired services) for live service
     # injection — not the module-level app.main.app singleton.
     _app_state = None
-    try:
+    with contextlib.suppress(Exception):
         _app_state = getattr(websocket.app, "state", None)
-    except Exception:
-        pass
 
     mcp_server = OrgMCPServer(
         org_id=org_id,
@@ -2691,3 +2775,38 @@ async def org_create_mission_execute(
         "warning": dispatch.get("warning"),
         "error": dispatch.get("error"),
     }
+
+
+# ── WS-2b: Mission finalize — reconcile subtasks vs real goal + aggregate ─────
+
+
+@router.post(
+    "/{org_id}/missions/{mission_id}/finalize",
+    operation_id="org_mission_finalize",
+    summary="Reconcile a mission's subtasks against its real goal outcome and "
+    "aggregate the deliverable",
+    status_code=status.HTTP_200_OK,
+)
+async def org_finalize_mission(
+    org_id: str,
+    mission_id: str,
+    request: Request,
+    service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
+) -> dict[str, Any]:
+    """Pull the dispatched goal's terminal status, mark subtasks to match, and —
+    when terminal — aggregate a real deliverable/report onto the mission and emit
+    mission.progress (100%) + mission.completed / mission.failed.
+
+    Idempotent-ish: safe to call repeatedly; returns ``finalized=False`` while the
+    goal is still running.
+    """
+    mission = await service.get_mission(mission_id)
+    if not mission:
+        raise _not_found("Mission", mission_id, x_request_id)
+    ctx = _require_tenant(request)
+    tenant_ctx = ctx if hasattr(ctx, "tenant_id") else None
+    result = await service.finalize_mission(
+        mission_id, app_state=request.app.state, tenant_ctx=tenant_ctx
+    )
+    return result

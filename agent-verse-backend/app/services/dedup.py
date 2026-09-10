@@ -83,10 +83,9 @@ class GoalDeduplicator:
             try:
                 # SET NX: only sets if key doesn't exist (atomic)
                 set_result = await self._redis.set(key, goal_id, ex=self._ttl, nx=True)
-                if set_result:
-                    return True
-                # Key already existed — someone else registered first
-                return False
+                # falsy set_result means the key already existed — someone else
+                # registered first
+                return bool(set_result)
             except Exception as exc:
                 logger.debug("dedup_register_error", error=str(exc)[:60])
         self._mem[key] = goal_id

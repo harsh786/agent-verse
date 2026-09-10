@@ -1,8 +1,9 @@
 """Comprehensive tests for CollaborationStore — in-memory and DB paths."""
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from app.collab.store import CollaborationStore, VersionConflictError
 from app.tenancy.context import PlanTier, TenantContext

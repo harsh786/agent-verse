@@ -155,7 +155,7 @@ function UsageTab({ connectorId }: { connectorId: string }) {
         </div>
       ) : (
         <div className="space-y-2">
-          {goals.map((g: any) => (
+          {goals.map((g) => (
             <Link
               key={g.id}
               to={`/goals/${g.id}`}

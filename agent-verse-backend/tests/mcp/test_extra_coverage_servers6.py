@@ -4,7 +4,6 @@ This file specifically covers the exact missing lines identified in coverage ana
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -352,9 +351,9 @@ _GCS = {"GOOGLE_ACCESS_TOKEN": ""}  # No direct token
 @pytest.mark.asyncio
 async def test_gcs_service_account_path():
     """Cover lines 156-167: service account JSON credentials path."""
-    from app.mcp.servers.google_cloud_storage_server import call_tool
-
     import json
+
+    from app.mcp.servers.google_cloud_storage_server import call_tool
 
     sa_json = json.dumps({
         "type": "service_account",
@@ -393,9 +392,9 @@ async def test_gcs_service_account_path():
 @pytest.mark.asyncio
 async def test_gcs_service_account_exception_fallback():
     """Cover the except path when service account auth fails."""
-    from app.mcp.servers.google_cloud_storage_server import call_tool
-
     import json
+
+    from app.mcp.servers.google_cloud_storage_server import call_tool
     sa_json = json.dumps({"type": "service_account", "project_id": "test"})
 
     mc = mk_client(get=make_resp(data={"items": []}))

@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
@@ -398,6 +398,36 @@ class _FakeLuaScript:
                 return str(new_val)
 
 
+# ── workflow HITL wiring ──────────────────────────────────────────────────────
+
+
+def _make_workflow_hitl_resume_callback(
+    runner: Any,
+) -> Callable[[Any], Coroutine[Any, Any, None]]:
+    """Build the ``HITLWorkflowGateway`` resume callback bound to *runner*.
+
+    WS-3: a decided :class:`~app.workflow.hitl_extension.WorkflowHITLRequest`
+    only carries the reviewer's decision — this closure maps it onto the
+    ``WorkflowRunner.resume_from_hitl`` call that actually re-invokes the
+    suspended LangGraph checkpoint. Kept as a standalone factory (rather than
+    inline) so the lifespan can rebind it to the DB-backed runner once that
+    replaces the in-memory one.
+    """
+
+    async def _resume(req: Any) -> None:
+        await runner.resume_from_hitl(
+            run_id=req.run_id,
+            step_id=req.step_id,
+            action=req.action_taken or "",
+            actor_id=req.reviewed_by or "",
+            note=req.note,
+            form_data=req.form_data,
+            tenant_id=req.tenant_id,
+        )
+
+    return _resume
+
+
 # ── error handlers ─────────────────────────────────────────────────────────────
 
 
@@ -546,10 +576,15 @@ def create_app(
     _self_optimizer = SelfOptimizer()
     # v2 self-optimizer: fixes all 4 critical bugs + Bayesian A/B testing
     # db_factory and redis are None here; upgraded in lifespan
+    from app.core.runtime_flags import get_runtime_flags
+
     _self_optimizer_v2 = SelfOptimizerV2(
         redis=_fake_redis,
         db_factory=None,
         llm_provider_factory=lambda: _app_provider,
+        # Closed-loop auto-apply is opt-in per deployment: only write a winning
+        # candidate config back to a live agent when the operator has enabled it.
+        auto_apply=get_runtime_flags().enable_self_improvement_auto_apply,
     )
     # v2 compliance checker: no hardcoded booleans; db_factory upgraded in lifespan
     _compliance_checker = ComplianceChecker(db_factory=None)
@@ -574,14 +609,43 @@ def create_app(
     _openai_key = get_provider_env("OPENAI_API_KEY")
     _voyage_key = get_provider_env("VOYAGE_API_KEY")
     _anthropic_key = get_provider_env("ANTHROPIC_API_KEY")
-    if _voyage_key:
+    # Highest priority: a dedicated OpenAI-compatible embedding endpoint (its own
+    # base_url + model), e.g. a self-hosted Qwen3-Embedding on vLLM. This is
+    # separate from the chat LLM base_url so reasoning and embedding can live on
+    # different servers.
+    _embed_base_url = os.getenv("EMBEDDING_BASE_URL", "") or getattr(
+        settings, "embedding_base_url", ""
+    )
+    if not _embedder and _embed_base_url:
+        try:
+            from app.providers.openai_compatible import OpenAICompatibleProvider
+
+            _embed_model = os.getenv("EMBEDDING_MODEL", "") or getattr(
+                settings, "embedding_model", ""
+            )
+            _embedder = OpenAICompatibleProvider(
+                api_key=(
+                    os.getenv("EMBEDDING_API_KEY", "")
+                    or getattr(settings, "embedding_api_key", "")
+                    or "sk-noauth"
+                ),
+                base_url=_embed_base_url,
+                default_model=_embed_model or "text-embedding-3-small",
+                embed_model=_embed_model or "text-embedding-3-small",
+            )
+            logger.info(
+                "dedicated_embed_provider_wired", base_url=_embed_base_url, model=_embed_model
+            )
+        except Exception as _exc:
+            logger.warning("dedicated_embed_provider_failed", error=str(_exc))
+    if _voyage_key and not _embedder:
         try:
             from app.providers.voyage_provider import VoyageProvider
 
             _embedder = VoyageProvider(api_key=_voyage_key)
         except Exception:
             pass
-    elif _openai_key:
+    elif _openai_key and not _embedder:
         try:
             from app.providers.openai_compatible import OpenAICompatibleProvider
 
@@ -590,14 +654,14 @@ def create_app(
             )
         except Exception:
             pass
-    elif get_provider_env("GOOGLE_API_KEY"):
+    elif get_provider_env("GOOGLE_API_KEY") and not _embedder:
         try:
             from app.providers.gemini_provider import GeminiProvider
 
             _embedder = GeminiProvider(api_key=get_provider_env("GOOGLE_API_KEY"))
         except Exception:
             pass
-    elif os.getenv("SENTENCE_TRANSFORMERS_MODEL", ""):
+    elif os.getenv("SENTENCE_TRANSFORMERS_MODEL", "") and not _embedder:
         try:
             from app.providers.voyage_provider import LocalEmbedProvider
 
@@ -656,7 +720,7 @@ def create_app(
     from app.agent.model_router import ModelRouter
 
     try:
-        _mr_provider = "openai" if _openai_key else ("anthropic" if _anthropic_key else "anthropic")
+        _mr_provider = "openai" if _openai_key else "anthropic"
         _model_router: Any = ModelRouter(provider_name=_mr_provider)
     except Exception as _mr_exc:
         _model_router = None
@@ -772,10 +836,20 @@ def create_app(
         and hasattr(_embedder, "supports_vision")
         and _embedder.supports_vision()
     )
+    # SSRF egress allowlist for RPA navigation. Empty by default → public-only
+    # (metadata/loopback/RFC-1918 blocked). Set RPA_SSRF_ALLOWED_DOMAINS to a
+    # comma-separated list to permit specific internal hosts (e.g. an internal
+    # staging site) per deployment.
+    import os as _os
+
+    _rpa_allowed_domains = [
+        d.strip() for d in _os.environ.get("RPA_SSRF_ALLOWED_DOMAINS", "").split(",") if d.strip()
+    ] or None
     _rpa_executor = RPAExecutor(
         session_manager=_rpa_session_manager,
         artifact_store=_rpa_artifact_store,
         vision_provider=_embedder if _supports_vision else None,
+        allowed_domains=_rpa_allowed_domains,
     )
     _rpa_session_store = RPASessionStore()
 
@@ -1056,24 +1130,11 @@ def create_app(
             from app.memory.reflexion import ReflexionService
 
             app.state.reflexion_service = ReflexionService(repository=app.state.memory_repository)
-            from app.intelligence.improvement_action_executor import (
-                ImprovementActionExecutor,
-            )
-            from app.intelligence.improvement_handlers import build_default_handlers
             from app.intelligence.learning_experiments import LearningExperimentService
             from app.memory.prospective import ProspectiveMemoryService
 
             app.state.prospective_memory_service = ProspectiveMemoryService()
             app.state.learning_experiment_service = LearningExperimentService()
-            from app.core.runtime_flags import get_runtime_flags as _get_rt_flags
-
-            _rt_flags = _get_rt_flags()
-            _improvement_handlers = (
-                build_default_handlers() if _rt_flags.enable_improvement_handlers else {}
-            )
-            app.state.improvement_action_executor = ImprovementActionExecutor(
-                handlers=_improvement_handlers
-            )
 
             # Wire DB into UsageService so buffer flushes actually reach Postgres.
             _usage_svc = getattr(app.state, "usage_service", None)
@@ -1169,7 +1230,7 @@ def create_app(
                             "execution_memory_hydration_failed", error=str(_em_inner_err)
                         )
 
-                _em_asyncio.create_task(_hydrate_exec_memory())
+                _em_asyncio.create_task(_hydrate_exec_memory())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
             except Exception as _em_exc:
                 logger.warning("execution_memory_hydration_setup_failed", error=str(_em_exc))
 
@@ -1264,11 +1325,16 @@ def create_app(
                 _wf_run_store = _PgRunStore(db_factory)
                 _wf_checkpointer = getattr(app.state, "langgraph_checkpointer", None)
                 _wf_mcp_client = getattr(app.state, "mcp_client", None)
+                # WS-3: carry the existing hitl_workflow_gateway into the
+                # rebuilt compiler — otherwise HITLStepNode loses its gateway
+                # the moment this DB-backed compiler replaces the in-memory one.
+                _wf_hitl_gw_existing = getattr(app.state, "hitl_workflow_gateway", None)
                 _wf_compiler_db = _WFCompiler(
                     context_resolver=_WFCtx(),
                     checkpointer=_wf_checkpointer,
                     mcp_client=_wf_mcp_client,
                     run_store=_wf_run_store,
+                    hitl_workflow_gateway=_wf_hitl_gw_existing,
                 )
                 _wf_runner_db = _WFRunner(
                     compiler=_wf_compiler_db,
@@ -1283,6 +1349,25 @@ def create_app(
                     app.state.workflow_service = _WFService(
                         _workflow_store, run_store=_wf_run_store
                     )
+                # WS-3: rebind the HITL resume callback to the DB/Celery-backed
+                # runner that just replaced the in-memory one — otherwise an
+                # approval decided after this swap would resume against a
+                # runner with no run_store, silently no-oping.
+                _wf_hitl_gw = getattr(app.state, "hitl_workflow_gateway", None)
+                if _wf_hitl_gw is not None:
+                    _wf_hitl_gw._resume_callback = _make_workflow_hitl_resume_callback(
+                        _wf_runner_db
+                    )
+                    # Cross-process HITL (gap #2): back the gateway with the
+                    # durable, RLS-scoped Postgres approval store so a pending
+                    # approval created by an out-of-process Celery worker is
+                    # visible to the API's /approvals endpoints, and a decision
+                    # made here is visible to the worker that resumes the run.
+                    from app.workflow.approval_store import (
+                        PostgresWorkflowApprovalStore as _PgApprovalStore,
+                    )
+
+                    _wf_hitl_gw._approval_store = _PgApprovalStore(db_factory)
                 logger.info("workflow_engine_db_wired")
             except Exception as _wf_db_exc:
                 logger.warning("workflow_engine_db_wire_failed", error=str(_wf_db_exc))
@@ -1395,7 +1480,7 @@ def create_app(
                 _ab_engine._db_factory = db_factory
                 import asyncio as _ab_asyncio
 
-                _ab_asyncio.create_task(_ab_engine.load_from_db(db_factory=db_factory))
+                _ab_asyncio.create_task(_ab_engine.load_from_db(db_factory=db_factory))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 logger.info("ab_testing_engine_wired")
             except Exception as _ab_exc:
                 logger.warning("ab_testing_engine_wire_failed", error=str(_ab_exc))
@@ -1497,9 +1582,9 @@ def create_app(
                         _mcp._oauth_manager = getattr(app.state, "oauth_manager", None)
                     # Wire ToolResultCache (created fresh with Redis backend)
                     try:
-                        from app.mcp.tool_cache import ToolResultCache as _TRC
+                        from app.mcp.tool_cache import ToolResultCache
 
-                        _tool_cache = _TRC(redis=redis_for_runtime)
+                        _tool_cache = ToolResultCache(redis=redis_for_runtime)
                         _mcp._tool_cache = _tool_cache
                         app.state.tool_cache = _tool_cache
                         logger.info("tool_result_cache_wired")
@@ -1556,9 +1641,9 @@ def create_app(
 
                 # LLMResponseCache: wire Redis for cross-replica LLM cache.
                 try:
-                    from app.rag.llm_response_cache import LLMResponseCache as _LLMRC
+                    from app.rag.llm_response_cache import LLMResponseCache
 
-                    _llm_rc = _LLMRC(redis=redis_for_runtime)
+                    _llm_rc = LLMResponseCache(redis=redis_for_runtime)
                     app.state.llm_response_cache = _llm_rc
                     logger.info("llm_response_cache_wired")
                 except Exception as _lrc_exc:
@@ -1629,7 +1714,7 @@ def create_app(
                     _audit_writer = _AuditWriter(redis=redis_for_runtime)
                     app.state.audit_writer = _audit_writer
                     _audit_flusher = _AuditFlusher(redis=redis_for_runtime, db_factory=db_factory)
-                    _flush_task = _asyncio_wal.create_task(_audit_flusher.run())
+                    _flush_task = _asyncio_wal.create_task(_audit_flusher.run())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                     logger.info("audit_v3_wired")
                 except Exception as _aw_exc:
                     logger.warning("audit_v3_wire_failed", error=str(_aw_exc))
@@ -1734,7 +1819,7 @@ def create_app(
 
                     from app.auth.cache_warmer import warm_permission_cache
 
-                    _asyncio_cw.create_task(
+                    _asyncio_cw.create_task(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                         warm_permission_cache(redis=redis_for_runtime, db_factory=db_factory)
                     )
                     logger.info("permission_cache_warming_started")
@@ -1833,7 +1918,7 @@ def create_app(
                 _orch_persistence = OrchestrationPersistence(db=db_factory)
                 import asyncio as _asyncio
 
-                _asyncio.create_task(_orch_persistence.load_tool_trust_from_db("*", db=db_factory))
+                _asyncio.create_task(_orch_persistence.load_tool_trust_from_db("*", db=db_factory))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 app.state.orchestration_persistence = _orch_persistence
                 logger.info("orchestration_persistence_hydration_started")
             except Exception as _orch_exc:
@@ -1934,16 +2019,16 @@ def create_app(
 
                 from app.voice.providers import warmup_providers as _voice_warmup
 
-                _voice_asyncio.create_task(_voice_warmup())
+                _voice_asyncio.create_task(_voice_warmup())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 logger.info("voice_providers_warmup_scheduled")
                 # D-6: Start proactive voice alert manager
-                from app.voice.alerts import VoiceAlertManager as _VAM
+                from app.voice.alerts import VoiceAlertManager
 
                 # app.state._redis is the runtime redis client (set at the pool
                 # wiring above); app.state.redis is never set — reading it left
                 # the alert manager with no redis, so proactive voice alerts were
                 # silently never delivered.
-                _alert_mgr = _VAM(redis=getattr(app.state, "_redis", None))
+                _alert_mgr = VoiceAlertManager(redis=getattr(app.state, "_redis", None))
                 await _alert_mgr.start()
                 app.state.voice_alert_manager = _alert_mgr
                 logger.info("voice_alert_manager_started")
@@ -2031,22 +2116,11 @@ def create_app(
     from app.memory.reflexion import ReflexionService
 
     app.state.reflexion_service = ReflexionService(repository=app.state.memory_repository)
-    from app.intelligence.improvement_action_executor import ImprovementActionExecutor
-    from app.intelligence.improvement_handlers import build_default_handlers
     from app.intelligence.learning_experiments import LearningExperimentService
     from app.memory.prospective import ProspectiveMemoryService
 
     app.state.prospective_memory_service = ProspectiveMemoryService()
     app.state.learning_experiment_service = LearningExperimentService()
-    from app.core.runtime_flags import get_runtime_flags as _get_rt_flags2
-
-    _rt_flags2 = _get_rt_flags2()
-    _improvement_handlers2 = (
-        build_default_handlers() if _rt_flags2.enable_improvement_handlers else {}
-    )
-    app.state.improvement_action_executor = ImprovementActionExecutor(
-        handlers=_improvement_handlers2
-    )
     from app.coordination.auction.repository import (
         InMemoryAuctionRepository,
         InMemorySealedBidInbox,
@@ -2146,6 +2220,18 @@ def create_app(
     )
     # Knowledge + Memory
     app.state.knowledge_store = _knowledge_store
+    # BK3 (D-20 follow-up): the shared kg_store singleton (same object the
+    # ingestion hook feeds and the lifespan DB-wires below), exposed on
+    # app.state so goal_service can inject it into the agent loop's planner
+    # context pipeline (graph_facts producer). In-memory-first, DB-upgraded
+    # in place — same two-phase pattern as the other app.state services.
+    try:
+        from app.knowledge_graph.store import kg_store as _kg_store_singleton
+
+        app.state.knowledge_graph_store = _kg_store_singleton
+    except Exception as _kg_state_exc:
+        logger.warning("knowledge_graph_store_state_wire_failed", error=str(_kg_state_exc))
+        app.state.knowledge_graph_store = None
     app.state.repository_ingestion_tasks = set()
     # D-23: multimodal ingestion pipeline (upgraded to Redis-backed job
     # persistence in the lifespan below, when a Redis connection exists).
@@ -2213,9 +2299,21 @@ def create_app(
         from app.workflow.template_store import SystemTemplateStore
 
         _wf_ctx = ContextResolver()
-        _wf_compiler = WorkflowCompiler(context_resolver=_wf_ctx)
-        _wf_runner = WorkflowRunner(compiler=_wf_compiler)
         _hitl_wf_gateway = HITLWorkflowGateway()
+        # WS-3: the compiler must receive the gateway as a named service so
+        # HITLStepNode.__init__ (``services.get("hitl_workflow_gateway")``)
+        # actually finds it — previously it was never passed at all, so every
+        # HITL step silently took the no-gateway "test mode" fallback branch
+        # and no approval request was ever created for a real workflow run.
+        _wf_compiler = WorkflowCompiler(
+            context_resolver=_wf_ctx, hitl_workflow_gateway=_hitl_wf_gateway
+        )
+        _wf_runner = WorkflowRunner(compiler=_wf_compiler)
+        # WS-3: wire the resume callback so an approve/reject decision on a
+        # suspended HITL step actually re-invokes the paused workflow run.
+        # Without this, decide() only updated the WorkflowHITLRequest itself —
+        # the LangGraph checkpoint it belonged to was never resumed.
+        _hitl_wf_gateway._resume_callback = _make_workflow_hitl_resume_callback(_wf_runner)
         _nl_trigger_resolver = NLTriggerResolver()
         _system_template_store = SystemTemplateStore()
 

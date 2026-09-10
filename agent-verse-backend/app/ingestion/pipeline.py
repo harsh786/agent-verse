@@ -38,6 +38,22 @@ from app.ingestion.source_config import PipelineResult, RawDocument, SourceConfi
 
 _log = logging.getLogger(__name__)
 
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity of two equal-length embedding vectors (0.0 on degenerate input)."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b, strict=False):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    if na <= 0.0 or nb <= 0.0:
+        return 0.0
+    return dot / ((na**0.5) * (nb**0.5))
+
 # Minimum text length (chars) to consider a document worth chunking
 _MIN_TEXT_LENGTH = 50
 
@@ -284,9 +300,36 @@ class IngestionPipeline:
             result.tokens_consumed = sum(count_tokens(c["text"]) for c in embedded_chunks)
 
             # ── Stage 11: DEDUP CHUNKS ────────────────────────────────────────
-            unique_chunks = self._dedup_chunks(embedded_chunks)
+            _quant_mode = "none"
+            if source_config.near_dup_threshold > 0.0:
+                try:
+                    from app.core.config import get_settings
+
+                    _quant_mode = str(getattr(get_settings(), "embedding_quantization", "none"))
+                except Exception:  # pragma: no cover - defensive; keep full precision
+                    _quant_mode = "none"
+            unique_chunks = self._dedup_chunks(
+                embedded_chunks,
+                near_dup_threshold=source_config.near_dup_threshold,
+                quantization_mode=_quant_mode,
+            )
+
+            # ── Stage 11b: EMBEDDING INTEGRITY (D-12) ─────────────────────────
+            # ``embed_texts`` returns an empty list (never zero/noise vectors)
+            # when embedding is unavailable. Drop those chunks so we never index
+            # a silent zero-vector; if nothing survives, skip honestly rather
+            # than writing empty embeddings.
+            unique_chunks = [c for c in unique_chunks if c.get("embedding")]
+            if not unique_chunks:
+                result.status = "skipped"
+                result.skip_reason = "embedding_unavailable"
+                return result
 
             # ── Stage 12: INDEX ───────────────────────────────────────────────
+            # ``result.metadata`` carries the parse/OCR/degradation provenance
+            # gathered at Stage 5; persist it (and the document-level hash) onto
+            # every indexed chunk so dedup + provenance survive re-ingest.
+            provenance = dict(getattr(result, "metadata", {}) or {})
             chunk_ids = await self._index(
                 unique_chunks,
                 raw_doc,
@@ -294,6 +337,7 @@ class IngestionPipeline:
                 content_hash,
                 quality_score,
                 pii_detected,
+                provenance,
             )
             result.chunks_created = len(chunk_ids)
 
@@ -480,16 +524,59 @@ class IngestionPipeline:
                 chunk["embedding"] = []
         return enriched_chunks
 
-    def _dedup_chunks(self, chunks: list[dict]) -> list[dict]:
-        """Remove exact-duplicate chunks within this document."""
+    def _dedup_chunks(
+        self,
+        chunks: list[dict],
+        *,
+        near_dup_threshold: float = 0.0,
+        quantization_mode: str = "none",
+    ) -> list[dict]:
+        """Remove duplicate chunks within this document (pipeline Stage 11).
+
+        Always drops exact duplicates by ``content_hash``. When
+        ``near_dup_threshold > 0``, additionally drops *semantic* near-duplicates:
+        a chunk whose embedding similarity to an already-kept chunk is at or above
+        the threshold is discarded (catches boilerplate/near-identical passages
+        that survive exact-hash dedup). Chunks without an embedding are never
+        dropped by the near-dup pass.
+
+        ``quantization_mode`` (``none``/``int8``/``binary``) selects how the
+        near-dup similarity is computed: full-precision cosine by default, or the
+        cheaper quantized similarity (int8 tracks cosine closely; binary is a
+        coarse first-stage estimate). Kept embeddings are encoded once.
+        """
+        from app.rag.quantization import EmbeddingQuantizer
+
         seen_hashes: set[str] = set()
         unique: list[dict] = []
+        quantizer = EmbeddingQuantizer(quantization_mode)
+        # Cache of already-kept embeddings in the active representation.
+        kept_encoded: list[object] = []
+        use_near_dup = near_dup_threshold > 0.0
         for chunk in chunks:
             h = chunk.get("content_hash", "")
             if h and h in seen_hashes:
                 continue
+
+            emb = chunk.get("embedding")
+            if use_near_dup and emb:
+                encoded = quantizer.encode(emb) if quantizer.enabled else emb
+                is_near_dup = any(
+                    (
+                        quantizer.similarity(encoded, kept)
+                        if quantizer.enabled
+                        else _cosine_similarity(encoded, kept)  # type: ignore[arg-type]
+                    )
+                    >= near_dup_threshold
+                    for kept in kept_encoded
+                )
+                if is_near_dup:
+                    continue  # semantic near-duplicate of an already-kept chunk
+
             if h:
                 seen_hashes.add(h)
+            if use_near_dup and emb:
+                kept_encoded.append(quantizer.encode(emb) if quantizer.enabled else emb)
             unique.append(chunk)
         return unique
 
@@ -501,8 +588,17 @@ class IngestionPipeline:
         content_hash: str,
         quality_score: float,
         pii_detected: bool,
+        provenance: dict[str, Any] | None = None,
     ) -> list[str]:
-        """Write chunks to KnowledgeStore (pgvector + BM25)."""
+        """Write chunks to KnowledgeStore (pgvector + BM25).
+
+        ``content_hash`` is the document-level SHA-256 (LAW-02); it is persisted
+        on every chunk as ``doc_content_hash`` so ``KnowledgeStore.exists_by_hash``
+        can dedup a re-ingest of the same document. ``provenance`` carries the
+        parse/OCR/degradation metadata (ocr_used, ocr_engine, *_degraded, …) so
+        downstream consumers see how the text was obtained; RPA/OCR agents set
+        the same ``ingestion_provenance`` field on their own chunks.
+        """
         if self._kb is None or not config.collection_id:
             return []
 
@@ -510,6 +606,7 @@ class IngestionPipeline:
 
         from app.rag.models import Chunk
 
+        prov = dict(provenance or {})
         rag_chunks: list[Chunk] = []
         for c in chunks:
             chunk_id = _uuid.uuid4().hex
@@ -524,8 +621,14 @@ class IngestionPipeline:
                 "language": c.get("language", ""),
                 "acl": c.get("acl", []),
                 "content_hash": c.get("content_hash", ""),
+                "doc_content_hash": content_hash,
                 "correlation_id": c.get("correlation_id", ""),
             }
+            if prov:
+                metadata["ingestion_provenance"] = prov
+                # Surface the OCR-used flag at the top level for cheap filtering.
+                if prov.get("ocr_used"):
+                    metadata["ocr_used"] = True
             rag_chunk = Chunk(
                 chunk_id=chunk_id,
                 document_id=raw_doc.doc_id,

@@ -1,8 +1,9 @@
 """Unit tests for Blackboard (optimistic concurrency + conflict detection)."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.civilization.blackboard import Blackboard, BlackboardConflictError
 
@@ -251,7 +252,7 @@ async def test_confidence_clamped_between_0_and_1():
 
 
 class _noop_ctx:
-    async def __aenter__(self) -> "_noop_ctx":
+    async def __aenter__(self) -> _noop_ctx:
         return self
 
     async def __aexit__(self, *_):

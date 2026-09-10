@@ -5,7 +5,6 @@ import pytest
 
 from app.mcp.catalog import CONNECTOR_CATALOG, ConnectorSpec
 
-
 # ── CONNECTOR_CATALOG length ──────────────────────────────────────────────────
 
 

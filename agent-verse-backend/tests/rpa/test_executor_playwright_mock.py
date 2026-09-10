@@ -5,14 +5,13 @@ _execute_playwright_standalone (patched async_playwright context manager).
 """
 from __future__ import annotations
 
-import base64
 import os
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.rpa.executor import RPAExecutor, RPAResult
+from app.rpa.executor import RPAExecutor
 
 # Standalone tests patch async_playwright — skip the whole section when
 # playwright is not installed (CI/test environments without the browser).

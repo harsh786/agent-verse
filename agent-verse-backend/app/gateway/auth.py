@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from typing import ClassVar
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,7 +32,7 @@ class ChannelAuthGuard:
     All channels ultimately verify against tenant API key or user session.
     """
 
-    CHANNEL_AUTH_DOCS = {
+    CHANNEL_AUTH_DOCS: ClassVar[dict[str, str]] = {
         "rest": "X-API-Key header (tenant API key)",
         "telegram": "Telegram user_id must be in org's allowed_telegram_users list",
         "slack": "Slack workspace must be linked to tenant, user in org team",
@@ -45,7 +46,7 @@ class ChannelAuthGuard:
     }
 
     # Scope enforcement — what each scope allows
-    SCOPE_PERMISSIONS: dict[str, list[str]] = {
+    SCOPE_PERMISSIONS: ClassVar[dict[str, list[str]]] = {
         "orgs:read": ["read"],
         "missions:write": ["read", "create_mission", "update_mission"],
         "approve": ["read", "approve", "reject"],

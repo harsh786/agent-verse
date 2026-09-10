@@ -1,9 +1,6 @@
 """Comprehensive tests for app/intelligence/benchmarking.py — targeting 95%+ coverage."""
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 
 from app.intelligence.benchmarking import AgentBenchmark, BenchmarkRun, BenchmarkStore
@@ -18,7 +15,7 @@ def _scorecard(avg: float, goal_id: str = "g1") -> EvalScorecard:
     dims = ["task_completion", "efficiency", "accuracy", "safety", "coherence"]
     return EvalScorecard(
         goal_id=goal_id,
-        scores={k: avg for k in dims},
+        scores=dict.fromkeys(dims, avg),
     )
 
 

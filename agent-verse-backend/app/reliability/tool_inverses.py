@@ -110,7 +110,7 @@ def get_inverse_fn(
             try:
                 # If we're already inside a running loop (async context), schedule a task
                 running_loop = asyncio.get_running_loop()
-                running_loop.create_task(_async_inverse())
+                running_loop.create_task(_async_inverse())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
             except RuntimeError:
                 # No running loop — we're in a sync context; create a fresh one
                 asyncio.run(_async_inverse())

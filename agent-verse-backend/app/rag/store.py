@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.observability.logging import get_logger
 from app.rag.models import Chunk, KnowledgeCollection
-from app.tenancy.context import TenantContext
+from app.tenancy.context import PlanTier, TenantContext
 
 if TYPE_CHECKING:
     from app.rag.contracts import RAGStrategy
@@ -217,6 +217,54 @@ class KnowledgeStore:
             document_count=int(row[3] or 0),
             embedder=str(row[4] or "voyage"),
         )
+
+    async def get_collection_embedding_dim(
+        self,
+        collection_id: str,
+        *,
+        tenant_ctx: TenantContext,
+    ) -> int | None:
+        """Return the collection's already-established embedding dimension.
+
+        ``None`` means the collection has no persisted vectors yet, so any
+        dimension is safe to write. Backs the D-10 dimension-safety guard in
+        ``IngestionOrchestrator`` (never write a mismatched-dimension vector
+        for the selected model — degrade to the default embedder instead).
+        Reads the *same* ``embedding_dim``/``chunk_count`` source of truth
+        ``_persist_chunks`` already enforces at the persistence boundary,
+        rather than duplicating a separate dimension check.
+        """
+        if self._db is None:
+            cache_key = (tenant_ctx.tenant_id, collection_id)
+            index_records = self._index_records.get(cache_key)
+            if index_records:
+                return index_records[0].embedding_dimension
+            collection_store = self._data.get(cache_key)
+            if collection_store and collection_store.chunks:
+                return len(collection_store.chunks[0].embedding)
+            return None
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT embedding_dim, chunk_count FROM knowledge_collections "
+                        "WHERE id = :id AND tenant_id = :tid AND is_active IS TRUE"
+                    ),
+                    {"id": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchone()
+            if row is None or int(row[1]) == 0:
+                return None
+            return int(row[0])
 
     async def list_collections_async(
         self,
@@ -628,6 +676,105 @@ class KnowledgeStore:
         store.chunks.append(chunk)
         store.collection.document_count = len({c.document_id for c in store.chunks})
 
+    async def exists_by_hash(
+        self,
+        *,
+        content_hash: str,
+        tenant_id: str,
+        collection_id: str | None = None,
+    ) -> bool:
+        """Return True if content with this hash is already indexed (WS-12 dedup).
+
+        RLS/tenant-scoped content-hash lookup that backs cross-source dedup and
+        incremental re-ingest. A hash matches when either a chunk's native
+        per-chunk ``content_hash`` OR its ``doc_content_hash`` metadata equals
+        ``content_hash``. Ingestion (pipeline Stage 3), RPA→KB and OCR→KB all
+        call this before re-indexing, so the SAME content from any source dedups
+        against the one store.
+
+        Args:
+            content_hash: SHA-256 hex digest to look up. Empty never matches.
+            tenant_id: tenant whose collections are searched (RLS-scoped).
+            collection_id: when given, restrict the search to that collection;
+                otherwise search every collection in the tenant.
+        """
+        if not content_hash:
+            return False
+        if self._db is None:
+            return self._exists_by_hash_memory(content_hash, tenant_id, collection_id)
+        return await self._db_exists_by_hash(content_hash, tenant_id, collection_id)
+
+    def _exists_by_hash_memory(
+        self, content_hash: str, tenant_id: str, collection_id: str | None
+    ) -> bool:
+        for (tid, cid), store in self._data.items():
+            if tid != tenant_id:
+                continue
+            if collection_id is not None and cid != collection_id:
+                continue
+            for chunk in store.chunks:
+                meta = chunk.metadata or {}
+                if (
+                    meta.get("doc_content_hash") == content_hash
+                    or meta.get("content_hash") == content_hash
+                ):
+                    return True
+        return False
+
+    async def _db_exists_by_hash(
+        self, content_hash: str, tenant_id: str, collection_id: str | None
+    ) -> bool:
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        if collection_id is not None:
+            dim = await self.get_collection_embedding_dim(
+                collection_id,
+                tenant_ctx=TenantContext(
+                    tenant_id=tenant_id, api_key_id="dedup", plan=PlanTier.FREE
+                ),
+            )
+            dims: tuple[int, ...] = (dim,) if dim else SUPPORTED_EMBEDDING_DIMENSIONS
+        else:
+            dims = SUPPORTED_EMBEDDING_DIMENSIONS
+
+        params: dict[str, Any] = {"tid": tenant_id, "h": content_hash}
+        collection_clause = ""
+        if collection_id is not None:
+            collection_clause = "AND collection_id = :cid"
+            params["cid"] = collection_id
+
+        for dimension in dims:
+            table = _chunk_table(dimension)
+            # Each dimension is checked in its own transaction so a table that
+            # does not exist in this schema cannot abort the others.
+            try:
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
+                    found = (
+                        await session.execute(
+                            text(
+                                f"SELECT 1 FROM {table} "
+                                "WHERE tenant_id = :tid "
+                                f"{collection_clause} "
+                                "AND (content_hash = :h "
+                                "OR metadata->>'doc_content_hash' = :h) "
+                                "LIMIT 1"
+                            ),
+                            params,
+                        )
+                    ).scalar_one_or_none()
+                if found is not None:
+                    return True
+            except Exception as exc:  # missing table / transient DB error
+                _log.debug("exists_by_hash_probe_error table=%s: %s", table, exc)
+                continue
+        return False
+
     async def _db_ingest_chunk(self, chunk: Chunk, collection_id: str, tenant_id: str) -> None:
         if self._db is None:
             return
@@ -775,6 +922,103 @@ class KnowledgeStore:
             )
             for result in engine_results
         ]
+
+    async def binary_prefilter_search(
+        self,
+        query_embedding: list[float],
+        collection_id: str,
+        tenant_ctx: TenantContext,
+        top_k: int = 5,
+        *,
+        shortlist: int = 200,
+        metadata_filter: dict[str, Any] | None = None,
+    ) -> list[HybridSearchResult]:
+        """Two-stage vector search using the binary_quantize() Hamming index.
+
+        Stage 1 (cheap, index-backed): shortlist ``shortlist`` chunks by Hamming
+        distance over ``binary_quantize(embedding)::bit(dim)`` — 32x smaller codes,
+        served by the migration-0120 HNSW ``bit_hamming_ops`` index. Stage 2:
+        rerank that shortlist by full-precision cosine and return ``top_k``.
+
+        This is the storage-layer counterpart to the in-process quantizer: the
+        coarse filter runs in Postgres against the compact binary index, and only
+        a small candidate set is scored at full precision. Requires pgvector >= 0.7
+        and the 0120 index; callers opt in (``rag_binary_prefilter_enabled``).
+        """
+        if self._db is None or not query_embedding:
+            return []
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            dimension_row = (
+                await session.execute(
+                    text(
+                        "SELECT embedding_dim FROM knowledge_collections "
+                        "WHERE id = :cid AND tenant_id = :tid AND is_active IS TRUE"
+                    ),
+                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).fetchone()
+            if dimension_row is None:
+                return []
+            dim = int(dimension_row[0])
+            table = _chunk_table(dim)
+            metadata_clause = (
+                " AND metadata @> CAST(:metadata_filter AS jsonb)" if metadata_filter else ""
+            )
+            # Stage 1 Hamming shortlist (bit index) → Stage 2 exact cosine rerank.
+            sql = text(
+                f"""
+                WITH shortlist AS (
+                    SELECT id, content, metadata, embedding
+                      FROM {table}
+                     WHERE collection_id = :cid{metadata_clause}
+                     ORDER BY binary_quantize(embedding)::bit({dim})
+                              <~> binary_quantize(CAST(:emb AS vector))::bit({dim})
+                     LIMIT :shortlist
+                )
+                SELECT id, content, metadata,
+                       1 - (embedding <=> CAST(:emb AS vector)) AS score
+                  FROM shortlist
+                 ORDER BY embedding <=> CAST(:emb AS vector)
+                 LIMIT :top_k
+                """
+            )
+            params: dict[str, Any] = {
+                "cid": collection_id,
+                "emb": str(query_embedding),
+                "shortlist": max(int(shortlist), top_k),
+                "top_k": top_k,
+            }
+            if metadata_filter:
+                import json as _json
+
+                params["metadata_filter"] = _json.dumps(metadata_filter)
+            rows = (await session.execute(sql, params)).fetchall()
+
+        results: list[HybridSearchResult] = []
+        for row in rows:
+            meta = row[2] if isinstance(row[2], dict) else {}
+            results.append(
+                HybridSearchResult(
+                    chunk_id=str(row[0]),
+                    content=str(row[1]),
+                    score=float(row[3]),
+                    vector_score=float(row[3]),
+                    trigram_score=0.0,
+                    source_url=str(meta.get("source_url", "") or ""),
+                    source_doc_id=str(meta.get("source_doc_id", "") or ""),
+                    metadata=meta,
+                )
+            )
+        return results
 
     async def search(
         self,

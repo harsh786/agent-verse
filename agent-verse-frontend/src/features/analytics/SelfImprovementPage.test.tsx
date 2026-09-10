@@ -204,4 +204,41 @@ describe('SelfImprovementPage', () => {
       expect(screen.queryAllByText('Apply').length).toBeGreaterThan(0);
     }, { timeout: 3000 });
   });
+
+  test('concluded winner exposes an Apply-winner control that POSTs to the apply endpoint', async () => {
+    const user = userEvent.setup();
+    const applyCalls: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/apply') && init?.method === 'POST') {
+        applyCalls.push(url);
+        return new Response(
+          JSON.stringify({ experiment_id: 'exp-2', agent_id: 'agent-1', status: 'applied' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.includes('/intelligence/experiments')) {
+        return new Response(JSON.stringify(MOCK_EXPERIMENTS), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    renderPage();
+
+    // Expand the concluded winning experiment (exp-2, +12.5% lift).
+    const expandTrigger = await screen.findByText('Model comparison', undefined, { timeout: 3000 });
+    await user.click(expandTrigger);
+
+    const applyBtn = await screen.findByRole('button', {
+      name: /apply winning configuration from experiment model comparison/i,
+    });
+    await user.click(applyBtn);
+
+    await waitFor(() => {
+      expect(applyCalls.some((u) => u.includes('/intelligence/experiments/exp-2/apply'))).toBe(true);
+    }, { timeout: 3000 });
+  });
 });

@@ -8,8 +8,7 @@ Coverage targets:
 from __future__ import annotations
 
 import os
-import tempfile
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -169,7 +168,7 @@ class TestFileOpsClass:
 
         ops = FileOps(self.tenant_id)
         bytes_written = await ops.write("hello.txt", "hello world")
-        assert bytes_written == len("hello world".encode())
+        assert bytes_written == len(b"hello world")
 
         content = await ops.read("hello.txt")
         assert content == "hello world"
@@ -227,8 +226,8 @@ class TestFileOpsClass:
 
     @pytest.mark.asyncio
     async def test_delete_file(self):
+
         from app.tools.file_ops import FileOps
-        import pathlib
 
         ops = FileOps(self.tenant_id)
         await ops.write("to_delete.txt", "bye")
@@ -247,8 +246,8 @@ class TestFileOpsClass:
     @pytest.mark.asyncio
     async def test_delete_directory(self):
         """delete() on a directory uses shutil.rmtree."""
+
         from app.tools.file_ops import FileOps
-        import pathlib
 
         ops = FileOps(self.tenant_id)
         subdir = ops._workspace / "subdir"
@@ -331,16 +330,16 @@ class TestFileOpsWrappers:
 
     @pytest.mark.asyncio
     async def test_file_write_returns_bytes_written(self):
-        from app.tools.file_ops import file_write, file_delete
+        from app.tools.file_ops import file_delete, file_write
 
         result = await file_write("bytes_test.txt", "hello bytes", tenant_id=self.tid)
         assert result["success"] is True
-        assert result["bytes_written"] == len("hello bytes".encode())
+        assert result["bytes_written"] == len(b"hello bytes")
         await file_delete("bytes_test.txt", tenant_id=self.tid)
 
     @pytest.mark.asyncio
     async def test_file_list_returns_entries_with_metadata(self):
-        from app.tools.file_ops import file_write, file_list, file_delete
+        from app.tools.file_ops import file_delete, file_list, file_write
 
         await file_write("list_meta.txt", "x", tenant_id=self.tid)
         result = await file_list(".", tenant_id=self.tid)
@@ -486,6 +485,7 @@ class TestEmailToolSend:
     async def test_send_smtp_error_propagates(self):
         """aiosmtplib errors bubble up (not caught inside send())."""
         import aiosmtplib
+
         from app.tools.email_tool import EmailTool
 
         tool = EmailTool(smtp_config=self._smtp_config())
@@ -494,9 +494,8 @@ class TestEmailToolSend:
         with patch(
             "aiosmtplib.send",
             side_effect=aiosmtplib.SMTPConnectError("Connection refused"),
-        ):
-            with pytest.raises(aiosmtplib.SMTPConnectError):
-                await tool.send(to="x@x.com", subject="s", body="b")
+        ), pytest.raises(aiosmtplib.SMTPConnectError):
+            await tool.send(to="x@x.com", subject="s", body="b")
 
     @pytest.mark.asyncio
     async def test_send_message_id_format(self):
@@ -513,7 +512,7 @@ class TestEmailToolSend:
 
 class TestEmailToolFromVaultConfig:
     def test_from_vault_config_with_smtp(self):
-        from app.tools.email_tool import EmailTool, SMTPConfig
+        from app.tools.email_tool import EmailTool
 
         config = {
             "smtp_host": "mail.example.com",

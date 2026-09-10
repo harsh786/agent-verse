@@ -27,7 +27,7 @@ import pytest
 from app.agent.graph import AgentGraph
 from app.agent.state import GoalStatus
 from app.governance.hitl import ApprovalStatus, HITLGateway
-from app.governance.policies import Policy, PolicyEngine, PolicyResult
+from app.governance.policies import Policy, PolicyEngine
 from app.intelligence.guardrails import GuardrailChecker
 from app.providers.base import EmbedRequest
 from app.providers.fake import FakeProvider
@@ -703,7 +703,7 @@ async def test_exec_memory_record_async_with_db_session_factory() -> None:
         async def commit(self) -> None:
             pass
 
-        async def __aenter__(self) -> "_FakeSession":
+        async def __aenter__(self) -> _FakeSession:
             return self
 
         async def __aexit__(self, *a: Any) -> None:
@@ -741,7 +741,7 @@ async def test_decision_trace_persistence_with_db_factory() -> None:
     from contextlib import asynccontextmanager
 
     class _FakeSession:
-        async def execute(self, *a: Any, **kw: Any) -> "_FakeSession":
+        async def execute(self, *a: Any, **kw: Any) -> _FakeSession:
             return self
 
         async def commit(self) -> None:
@@ -754,7 +754,7 @@ async def test_decision_trace_persistence_with_db_factory() -> None:
 
             return _txn()
 
-        async def __aenter__(self) -> "_FakeSession":
+        async def __aenter__(self) -> _FakeSession:
             return self
 
         async def __aexit__(self, *a: Any) -> None:

@@ -1,22 +1,15 @@
 """Tests for execution-environment data models."""
 from __future__ import annotations
 
-import pytest
-
 from app.execution_environment.models import (
     AuditLevel,
-    ExecutionArtifact,
-    ExecutionEnvelope,
     ExecutionEnvironmentPolicy,
-    ExecutionEnvironmentSpec,
     ExecutionEvent,
     ExecutionFailureReason,
-    ExecutionRequest,
     ExecutionResourceLimits,
     ExecutionResult,
     FilesystemPolicy,
     NetworkPolicy,
-    RunnerType,
 )
 
 

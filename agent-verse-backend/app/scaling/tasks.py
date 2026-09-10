@@ -39,11 +39,9 @@ def _setup_sigterm() -> None:
         )
         raise SystemExit(0)
 
-    try:
+    # OSError: not in main thread; ValueError: invalid signal — both safe to ignore
+    with contextlib.suppress(OSError, ValueError):
         _signal.signal(_signal.SIGTERM, _handler)
-    except (OSError, ValueError):
-        # OSError: not in main thread; ValueError: invalid signal — both safe to ignore
-        pass
 
 
 _setup_sigterm()
@@ -531,12 +529,12 @@ def run_goal(
     except Exception:
         pass
 
-    from app.tenancy.context import PlanTier as _PT
+    from app.tenancy.context import PlanTier
 
     try:
-        plan = _PT(_plan_str)
+        plan = PlanTier(_plan_str)
     except ValueError:
-        plan = _PT.PROFESSIONAL
+        plan = PlanTier.PROFESSIONAL
 
     tenant_ctx = TenantContext(
         tenant_id=tenant_id,
@@ -1259,10 +1257,10 @@ def run_goal(
 
             if _use_isolation:
                 # Build and dispatch an ExecutionEnvelope instead of running in-process
-                _RunnerUnavail: type | None = None
+                _RunnerUnavail: type | None = None  # noqa: N806  # holds a class (exception type) for isinstance checks below
                 try:
                     from app.execution_environment.envelope import build_envelope as _build_env
-                    from app.execution_environment.models import RunnerType as _RT
+                    from app.execution_environment.models import RunnerType
                     from app.execution_environment.scheduler import (
                         ExecutionEnvironmentScheduler as _Scheduler,
                     )
@@ -1272,11 +1270,11 @@ def run_goal(
 
                     _iso_flags = _rt  # reuse already-fetched flags (G-44)
                     if _iso_flags.isolated_execution_kubernetes_runner:
-                        _iso_runner_type = _RT.KUBERNETES
+                        _iso_runner_type = RunnerType.KUBERNETES
                     elif _iso_flags.isolated_execution_local_runner:
-                        _iso_runner_type = _RT.LOCAL
+                        _iso_runner_type = RunnerType.LOCAL
                     else:
-                        _iso_runner_type = _RT.FAKE
+                        _iso_runner_type = RunnerType.FAKE
 
                     # Build feature flags snapshot for the envelope (G-28)
                     _iso_feature_flags = {
@@ -4240,14 +4238,12 @@ def process_feedback_batch(self: Any) -> dict[str, Any]:  # type: ignore[misc]
 
 
 # Register beat schedule for feedback processing
-try:
+with contextlib.suppress(Exception):
     celery_app.conf.beat_schedule["process-feedback-daily"] = {
         "task": "agentverse.maintenance.process_feedback_batch",
         "schedule": 86400.0,  # Every 24 hours
         "options": {"queue": "maintenance"},
     }
-except Exception:
-    pass
 
 
 # ---------------------------------------------------------------------------
@@ -4271,43 +4267,83 @@ def delta_reingest_files(
     """Trigger delta re-ingestion for a collection from an external source.
 
     Called by webhook handlers when a source signals new/updated content.
-    source_type: 'github' | 'confluence' | 'notion' | 'gdrive'
-    source_config: connector-specific config (repo, space_key, etc.)
+    source_type: any registered connector (e.g. 'github', 'confluence',
+    'notion', 'gdrive', 'sharepoint').
+    source_config: connector connection_config (api_key, folder_id, etc.)
+
+    Honesty (WS-12): routes through the REAL registered connector +
+    ``IngestionPipeline`` and reports the actual indexed/skipped/failed tallies.
+    An unknown source_type returns an explicit ``unsupported`` status — never a
+    fabricated success count.
     """
 
     async def _run() -> dict[str, Any]:
+        from app.ingestion.connector_registry import get_connector, load_all_connectors
+        from app.ingestion.pipeline import IngestionPipeline
+        from app.ingestion.source_config import SourceConfig, SourceFamily
+
+        load_all_connectors()
         try:
-            from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-            from app.core.config import get_settings
-
-            settings = get_settings()
-            engine = create_async_engine(str(settings.database_url), pool_pre_ping=True)
-            async_sessionmaker(engine, expire_on_commit=False)
-
-            # Very simple dispatch — real connectors do the heavy lifting
-            chunks_ingested = 0
-            if source_type == "notion":
-                from app.ingestion.connectors.notion_connector import NotionConnector
-
-                connector = NotionConnector(api_key=source_config.get("api_key", ""))
-                pages = await connector.list_pages(source_config.get("database_id", ""))
-                chunks_ingested = len(pages)  # simplified count
-            elif source_type == "gdrive":
-                from app.ingestion.connectors.gdrive_connector import GDriveConnector
-
-                connector = GDriveConnector(key_path=source_config.get("key_path"))
-                files = connector.list_files(source_config.get("folder_id", ""))
-                chunks_ingested = len(files)
+            connector_cls = get_connector(source_type)
+        except KeyError:
             return {
-                "status": "ok",
+                "status": "unsupported",
                 "source_type": source_type,
-                "chunks_ingested": chunks_ingested,
+                "reason": f"no registered connector for source_type={source_type!r}",
                 "tenant_id": tenant_id,
                 "collection_id": collection_id,
             }
+
+        family_map = {
+            "notion": SourceFamily.DOCUMENT_STORE,
+            "gdrive": SourceFamily.DOCUMENT_STORE,
+            "sharepoint": SourceFamily.DOCUMENT_STORE,
+            "confluence": SourceFamily.DOCUMENT_STORE,
+            "github": SourceFamily.CODE_REPOSITORY,
+            "gitlab": SourceFamily.CODE_REPOSITORY,
+        }
+        config = SourceConfig(
+            source_id=f"webhook-{source_type}",
+            tenant_id=tenant_id,
+            name=f"{source_type} delta re-ingest",
+            family=family_map.get(source_type, SourceFamily.WEB),
+            source_type=source_type,
+            connection_config=source_config,
+            collection_id=collection_id,
+        )
+        connector = connector_cls()
+        pipeline = IngestionPipeline()
+
+        indexed = skipped = failed = 0
+        try:
+            async for raw_doc, _cursor in connector.get_delta(config, None):
+                result = await pipeline.ingest(raw_doc, config)
+                if result.success:
+                    indexed += 1
+                elif result.skipped:
+                    skipped += 1
+                else:
+                    failed += 1
         except Exception as exc:
-            return {"error": str(exc), "source_type": source_type}
+            return {
+                "status": "error",
+                "source_type": source_type,
+                "error": str(exc)[:300],
+                "docs_indexed": indexed,
+                "docs_skipped": skipped,
+                "docs_failed": failed,
+                "tenant_id": tenant_id,
+                "collection_id": collection_id,
+            }
+        return {
+            "status": "ok",
+            "source_type": source_type,
+            "docs_indexed": indexed,
+            "docs_skipped": skipped,
+            "docs_failed": failed,
+            "tenant_id": tenant_id,
+            "collection_id": collection_id,
+        }
 
     loop = asyncio.new_event_loop()
     try:
@@ -4367,10 +4403,13 @@ def org_brain_loop() -> dict[str, int]:
                         from app.db.rls import sqlalchemy_rls_context
                         from app.org.service import OrgService
 
-                        async with db_factory() as s2, s2.begin():
-                            async with sqlalchemy_rls_context(s2, str(tenant_id)):
-                                svc = OrgService(s2, str(tenant_id))
-                                health = await svc.get_org_health(str(org_id))
+                        async with (
+                            db_factory() as s2,
+                            s2.begin(),
+                            sqlalchemy_rls_context(s2, str(tenant_id)),
+                        ):
+                            svc = OrgService(s2, str(tenant_id))
+                            health = await svc.get_org_health(str(org_id))
                         blocked = health.get("task_counts", {}).get("blocked", 0)
                         failed = health.get("task_counts", {}).get("failed", 0)
                         if blocked > 3 or failed > 0:

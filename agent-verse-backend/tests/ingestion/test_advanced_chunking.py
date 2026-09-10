@@ -1,10 +1,9 @@
 """Tests for Phase 1: Advanced chunking strategy wiring."""
 from __future__ import annotations
 
-import pytest
 from app.ingestion.chunking_strategy_selector import (
-    ChunkingStrategySelector,
     _ADVANCED_STRATEGIES,
+    ChunkingStrategySelector,
 )
 from app.ingestion.content_classifier import ContentType
 
@@ -40,8 +39,8 @@ class TestChunkingStrategySelectorAdvanced:
 
 class TestOrchestratorAdvancedChunking:
     def test_parent_child_chunking_dispatch(self) -> None:
-        from app.ingestion.orchestrator import IngestionOrchestrator
         from app.ingestion.content_classifier import ContentType
+        from app.ingestion.orchestrator import IngestionOrchestrator
 
         orch = IngestionOrchestrator()
         content = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph with more text."
@@ -52,8 +51,8 @@ class TestOrchestratorAdvancedChunking:
         assert all(isinstance(c, str) for c in result)
 
     def test_sentence_window_chunking_dispatch(self) -> None:
-        from app.ingestion.orchestrator import IngestionOrchestrator
         from app.ingestion.content_classifier import ContentType
+        from app.ingestion.orchestrator import IngestionOrchestrator
 
         orch = IngestionOrchestrator()
         content = "First sentence here. Second sentence follows. Third sentence here. Fourth one."
@@ -62,8 +61,8 @@ class TestOrchestratorAdvancedChunking:
         assert len(result) >= 1
 
     def test_fixed_chunking_dispatch(self) -> None:
-        from app.ingestion.orchestrator import IngestionOrchestrator
         from app.ingestion.content_classifier import ContentType
+        from app.ingestion.orchestrator import IngestionOrchestrator
 
         orch = IngestionOrchestrator()
         content = "A" * 500  # 500 chars of repeated A
@@ -72,8 +71,8 @@ class TestOrchestratorAdvancedChunking:
         assert len(result) >= 1
 
     def test_no_override_uses_default(self) -> None:
-        from app.ingestion.orchestrator import IngestionOrchestrator
         from app.ingestion.content_classifier import ContentType
+        from app.ingestion.orchestrator import IngestionOrchestrator
 
         orch = IngestionOrchestrator()
         content = "## Heading\n\nBody text under heading."

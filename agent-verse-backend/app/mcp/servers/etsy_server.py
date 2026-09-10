@@ -186,13 +186,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 return {
                     "listings": [
                         {
-                            "listing_id": l.get("listing_id"),
-                            "title": l.get("title"),
-                            "price": l.get("price"),
-                            "quantity": l.get("quantity"),
-                            "state": l.get("state"),
+                            "listing_id": listing.get("listing_id"),
+                            "title": listing.get("title"),
+                            "price": listing.get("price"),
+                            "quantity": listing.get("quantity"),
+                            "state": listing.get("state"),
                         }
-                        for l in data.get("results", [])
+                        for listing in data.get("results", [])
                     ],
                     "count": data.get("count", 0),
                 }

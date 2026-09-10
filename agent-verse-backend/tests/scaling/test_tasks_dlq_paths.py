@@ -12,7 +12,6 @@ import pytest
 
 from app.scaling import tasks
 
-
 # ── _update_goal_dlq success path ────────────────────────────────────────────
 
 

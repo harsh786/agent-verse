@@ -1,8 +1,9 @@
 """Tests for Phase 4: Connector Ecosystem Expansion."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 SAMPLE_OPENAPI_JSON = """{
   "openapi": "3.0.0",
@@ -94,7 +95,7 @@ def test_parse_openapi_invalid_json_raises():
 @pytest.mark.asyncio
 async def test_import_openapi_endpoint_returns_tool_count():
     """POST /connectors/import-openapi must return connector with tool_count."""
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
 
     from app.main import create_app
 
@@ -308,7 +309,7 @@ def test_catalog_has_required_new_connectors():
 @pytest.mark.asyncio
 async def test_execute_code_endpoint_requires_auth():
     """POST /tools/execute-code must return 401 without auth."""
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
 
     from app.main import create_app
 
@@ -323,7 +324,7 @@ async def test_execute_code_endpoint_requires_auth():
 @pytest.mark.asyncio
 async def test_tools_router_registered():
     """Tools router endpoints must be registered in the app."""
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
 
     from app.main import create_app
 

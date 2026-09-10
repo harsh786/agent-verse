@@ -6,11 +6,11 @@ credential injection, and edge cases.
 """
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.rpa.executor import RPAExecutor, RPAResult
+import pytest
 
+from app.rpa.executor import RPAExecutor, RPAResult
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 

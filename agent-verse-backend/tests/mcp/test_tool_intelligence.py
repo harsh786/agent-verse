@@ -6,7 +6,6 @@ without manual per-tool coding.
 """
 from __future__ import annotations
 
-import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -16,10 +15,7 @@ from app.mcp.tool_intelligence import (
     SchemaAwarePromptInjector,
     SelfHealingToolCaller,
     UniversalArgumentResolver,
-    get_healer,
-    get_resolver,
 )
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 

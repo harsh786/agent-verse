@@ -79,7 +79,7 @@ def test_policies_stream_emits_snapshot_without_redis() -> None:
 # DELETE /governance/notifications/{channel_id}
 # ---------------------------------------------------------------------------
 
-from app.services.notification_service import NotificationChannel, NotificationService  # noqa: E402
+from app.services.notification_service import NotificationChannel, NotificationService
 
 
 def _make_app_with_notifications() -> tuple[FastAPI, NotificationService]:

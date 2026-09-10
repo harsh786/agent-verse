@@ -1,16 +1,14 @@
 """Comprehensive tests for app/services/tenant_service.py — targeting 90%+ coverage."""
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from app.core.errors import ConflictError, NotFoundError
 from app.services.tenant_service import TenantService, _generate_raw_key, _hash_key
 from app.tenancy.context import PlanTier
-
 
 # ── Utility functions ─────────────────────────────────────────────────────────
 

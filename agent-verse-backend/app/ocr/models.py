@@ -40,3 +40,10 @@ class OcrResult:
     engine_used: Literal["tesseract", "llm_vision"] = "tesseract"
     overall_confidence: float = 0.0
     page_count: int = 1
+    # WS-6: universal-ingestion provenance. When an input format cannot be
+    # rasterized to images for OCR, ``degraded`` is set and ``degradation_reason``
+    # records why (honest metadata, never a silent drop). ``source_format`` names
+    # the detected input class (image/pdf/office/…).
+    degraded: bool = False
+    degradation_reason: str | None = None
+    source_format: str | None = None

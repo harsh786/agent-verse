@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.knowledge_graph import router as kg_router
-from app.knowledge_graph.store import KnowledgeGraphStore, kg_store
+from app.knowledge_graph.store import kg_store
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 

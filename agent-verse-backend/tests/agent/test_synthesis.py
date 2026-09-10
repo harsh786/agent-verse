@@ -1,6 +1,7 @@
 """Tests for Phase 3 Track C — AnswerSynthesizer."""
 import pytest
-from app.agent.synthesis import AnswerSynthesizer, CitedAnswer, Citation
+
+from app.agent.synthesis import AnswerSynthesizer, Citation, CitedAnswer
 
 
 class MockStep:

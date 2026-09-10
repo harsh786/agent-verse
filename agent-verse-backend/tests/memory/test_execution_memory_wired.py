@@ -1,7 +1,8 @@
 """Verify ExecutionMemory is wired into AgentGraph and recall/record works."""
 import pytest
+
 from app.memory.execution import ExecutionMemory
-from app.tenancy.context import TenantContext, PlanTier
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def _tenant() -> TenantContext:
@@ -49,6 +50,7 @@ def test_execution_memory_record_failure_and_recall():
 def test_agentgraph_accepts_exec_memory():
     """AgentGraph constructor must accept exec_memory kwarg without error."""
     from unittest.mock import MagicMock
+
     from app.agent.graph import AgentGraph
     from app.memory.execution import ExecutionMemory
 

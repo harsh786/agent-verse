@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import json
 import zlib
-import pytest
 from unittest.mock import AsyncMock
 
-from app.mcp.tool_cache import ToolResultCache, classify_tool, ttl_for_tool
+import pytest
 
+from app.mcp.tool_cache import ToolResultCache, classify_tool, ttl_for_tool
 
 # ── Tool classification ───────────────────────────────────────────────────────
 

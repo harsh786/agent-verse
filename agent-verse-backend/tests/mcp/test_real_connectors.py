@@ -103,8 +103,9 @@ def test_builtin_registry_wiring_active_with_env_var(monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_token")
 
     # Re-import to pick up env change
-    from app.mcp.servers.registry_wiring import get_builtin_server_configs
     import os
+
+    from app.mcp.servers.registry_wiring import get_builtin_server_configs
 
     configs = get_builtin_server_configs()
     active = [

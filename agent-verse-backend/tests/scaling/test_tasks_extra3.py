@@ -15,11 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -58,6 +56,7 @@ class TestGetLlmProvider:
 
     def test_returns_none_when_no_encrypted_key(self, monkeypatch):
         import json
+
         from app.scaling.tasks import _get_llm_provider
         monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
         mock_r = MagicMock()
@@ -68,6 +67,7 @@ class TestGetLlmProvider:
     def test_returns_anthropic_provider(self, monkeypatch):
         """Lines 180-183: returns AnthropicProvider for anthropic config."""
         import json
+
         from app.scaling.tasks import _get_llm_provider
         monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
         mock_r = MagicMock()
@@ -90,6 +90,7 @@ class TestGetLlmProvider:
     def test_returns_openai_compatible_provider(self, monkeypatch):
         """Lines 185-190: returns OpenAICompatibleProvider for openai config."""
         import json
+
         from app.scaling.tasks import _get_llm_provider
         monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
         mock_r = MagicMock()
@@ -111,6 +112,7 @@ class TestGetLlmProvider:
 
     def test_returns_none_for_unknown_provider(self, monkeypatch):
         import json
+
         from app.scaling.tasks import _get_llm_provider
         monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
         mock_r = MagicMock()
@@ -157,6 +159,7 @@ class TestFireDueSchedules:
     def test_fires_interval_schedule_when_due(self, monkeypatch):
         monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
         import json
+
         from app.scaling.tasks import fire_due_schedules
         mock_r = MagicMock()
         mock_r.scan_iter = MagicMock(return_value=["schedule:t1:s1"])
@@ -182,6 +185,7 @@ class TestFireDueSchedules:
     def test_fires_once_schedule_when_due(self, monkeypatch):
         monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
         import json
+
         from app.scaling.tasks import fire_due_schedules
         # Fire at a time in the past
         fire_at = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=5)).isoformat()
@@ -210,6 +214,7 @@ class TestFireDueSchedules:
         """Line 1261: advance_and_dispatch returns None when goal_kwargs is None."""
         monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
         import json
+
         from app.scaling.tasks import fire_due_schedules
         mock_r = MagicMock()
         mock_r.scan_iter = MagicMock(return_value=["schedule:t1:s3"])
@@ -231,6 +236,7 @@ class TestFireDueSchedules:
         """Line 1372-1373: exception processing a schedule is logged and continued."""
         monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
         import json
+
         from app.scaling.tasks import fire_due_schedules
         mock_r = MagicMock()
         mock_r.scan_iter = MagicMock(return_value=["schedule:t1:bad"])
@@ -553,24 +559,27 @@ class TestNoopTasks:
 
     def test_embed_marketplace_templates_has_real_impl(self):
         """Task now queries DB for unembedded templates."""
-        from app.scaling.tasks import embed_marketplace_templates
         import inspect
+
+        from app.scaling.tasks import embed_marketplace_templates
         src = inspect.getsource(embed_marketplace_templates)
         assert "noop" not in src
         assert "marketplace_templates" in src or "embedding" in src.lower()
 
     def test_conclude_stale_experiments_has_real_impl(self):
         """Task now marks stale prompt_variants as concluded."""
-        from app.scaling.tasks import conclude_stale_experiments
         import inspect
+
+        from app.scaling.tasks import conclude_stale_experiments
         src = inspect.getsource(conclude_stale_experiments)
         assert "noop" not in src
         assert "prompt_variants" in src or "experiment" in src.lower()
 
     def test_expire_stale_documents_has_real_impl(self):
         """Task now deletes documents past retention window."""
-        from app.scaling.tasks import expire_stale_documents
         import inspect
+
+        from app.scaling.tasks import expire_stale_documents
         src = inspect.getsource(expire_stale_documents)
         assert "noop" not in src
         assert "documents" in src or "retention" in src.lower()
@@ -740,8 +749,8 @@ class TestRunWithSignals:
 
     async def test_pause_and_cancel_while_paused(self):
         """Lines 236-247: pause detected → cancel run, wait, cancel while paused."""
-        from app.scaling.tasks import _run_with_signals
         from app.reliability.goal_lifecycle import GoalCancelledError
+        from app.scaling.tasks import _run_with_signals
 
         call_count = 0
 
@@ -778,16 +787,15 @@ class TestRunWithSignals:
         with patch("app.scaling.tasks._get_sync_redis", return_value=mock_sync_r), \
              patch("app.reliability.goal_lifecycle.is_paused_sync", is_paused), \
              patch("app.reliability.goal_lifecycle.is_cancelled_sync", is_cancelled), \
-             patch("asyncio.sleep", AsyncMock()):
-            with pytest.raises(GoalCancelledError):
-                await _run_with_signals(
-                    mock_runner, "Do task", tenant_ctx, AsyncMock(), "goal-1"
-                )
+             patch("asyncio.sleep", AsyncMock()), pytest.raises(GoalCancelledError):
+            await _run_with_signals(
+                mock_runner, "Do task", tenant_ctx, AsyncMock(), "goal-1"
+            )
 
     async def test_cancel_before_pause(self):
         """Lines 228-234: cancel detected before pause check."""
-        from app.scaling.tasks import _run_with_signals
         from app.reliability.goal_lifecycle import GoalCancelledError
+        from app.scaling.tasks import _run_with_signals
 
         async def mock_agent_run(*args, **kwargs):
             await asyncio.sleep(100)
@@ -800,11 +808,10 @@ class TestRunWithSignals:
         with patch("app.scaling.tasks._get_sync_redis", return_value=mock_sync_r), \
              patch("app.reliability.goal_lifecycle.is_cancelled_sync", return_value=True), \
              patch("app.reliability.goal_lifecycle.is_paused_sync", return_value=False), \
-             patch("asyncio.sleep", AsyncMock()):
-            with pytest.raises(GoalCancelledError):
-                await _run_with_signals(
-                    mock_runner, "Do task", MagicMock(), AsyncMock(), "goal-cancel"
-                )
+             patch("asyncio.sleep", AsyncMock()), pytest.raises(GoalCancelledError):
+            await _run_with_signals(
+                mock_runner, "Do task", MagicMock(), AsyncMock(), "goal-cancel"
+            )
 
 
 # ── check_email_goals (IMAP disabled path) ────────────────────────────────────
@@ -836,6 +843,7 @@ class TestFlushAuditWalDbFactory:
         TypeError because AuditFlusher.__init__ expects db_factory not db.
         """
         from unittest.mock import AsyncMock, MagicMock, patch
+
         from app.scaling.tasks import flush_audit_wal
 
         mock_flusher_instance = MagicMock()
@@ -877,6 +885,7 @@ class TestEnforceHitlSlaSqlColumns:
         UndefinedColumnError. Actual column in hitl_approval_requests is sla_deadline.
         """
         import inspect
+
         from app.scaling.tasks import enforce_hitl_sla
 
         # Get the source of the task to inspect the SQL string
@@ -896,6 +905,7 @@ class TestEnforceHitlSlaSqlColumns:
         The primary key column is just 'id'.
         """
         import inspect
+
         from app.scaling.tasks import enforce_hitl_sla
 
         source = inspect.getsource(enforce_hitl_sla)

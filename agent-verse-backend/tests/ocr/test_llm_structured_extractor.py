@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.ocr.extractors.general import GeneralExtractor, LlmStructuredExtractor
 from app.ocr.extractors import get_extractor
+from app.ocr.extractors.general import GeneralExtractor, LlmStructuredExtractor
 from app.ocr.models import DocumentType
 
 

@@ -760,6 +760,44 @@ async def rollback_experiment(
     }
 
 
+@intelligence_router.post("/experiments/{experiment_id}/apply")
+async def apply_experiment(request: Request, experiment_id: str) -> dict:
+    """Manually apply a concluded experiment's winning candidate config.
+
+    This is the human-in-the-loop half of the self-improvement loop. When
+    autonomous auto-apply is disabled (``enable_self_improvement_auto_apply``
+    off — the default), a winning candidate is left pending; an operator applies
+    it explicitly here. Fails closed: 404 for unknown experiments, 409 when the
+    experiment is not an applicable winner (not a candidate win, or already
+    applied).
+    """
+    ctx = _require_tenant(request)
+    self_opt_v2 = getattr(request.app.state, "self_optimizer_v2", None)
+    if self_opt_v2 is None:
+        from fastapi import HTTPException as _HTTPException
+        from fastapi import status as _status
+
+        raise _HTTPException(
+            status_code=_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Self-optimizer v2 not available",
+        )
+    result = await self_opt_v2.apply_pending(
+        tenant_id=ctx.tenant_id, experiment_id=experiment_id
+    )
+    if not result.get("applied"):
+        from fastapi import HTTPException as _HTTPException
+
+        reason = result.get("reason")
+        if reason == "not_found":
+            raise _HTTPException(status_code=404, detail=f"Experiment {experiment_id!r} not found")
+        raise _HTTPException(status_code=409, detail=f"Cannot apply experiment: {reason}")
+    return {
+        "experiment_id": experiment_id,
+        "agent_id": result.get("agent_id"),
+        "status": "applied",
+    }
+
+
 @intelligence_router.get("/suggestions")
 async def list_suggestions(request: Request, applied: bool | None = None) -> list[dict[str, Any]]:
     """Return suggestions shaped to match the frontend Suggestion interface:
@@ -1917,7 +1955,7 @@ async def _get_scim_handler(request: Request) -> SCIMHandler:  # noqa: F821
 
 @scim_router.get("/Users")
 async def scim_list_users(
-    request: Request, startIndex: int = 1, count: int = 100
+    request: Request, startIndex: int = 1, count: int = 100  # noqa: N803  # SCIM RFC 7644 mandates this exact query param name
 ) -> dict[str, Any]:
     handler = await _get_scim_handler(request)
     return await handler.list_users(start_index=startIndex, count=count)

@@ -128,9 +128,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "limit": arguments.get("limit", 50),
                     "offset": arguments.get("offset", 0),
                 }
-                if status := arguments.get("status", "active"):
-                    if status != "all":
-                        params["status"] = status
+                if (status := arguments.get("status", "active")) and status != "all":
+                    params["status"] = status
                 if ctype := arguments.get("type"):
                     params["type"] = ctype
                 r = await c.get("/contracts", params=params)

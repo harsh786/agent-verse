@@ -52,7 +52,7 @@ class ReflexionStore:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     # Schedule hydration asynchronously (best-effort)
-                    asyncio.ensure_future(
+                    asyncio.ensure_future(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                         self.load_from_db(tenant_id=tenant_id, db_factory=self._db_factory)
                     )
                 else:

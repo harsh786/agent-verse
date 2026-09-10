@@ -28,8 +28,8 @@ def test_reflexion_store_can_be_seeded_from_db() -> None:
 
 
 def test_tool_trust_store_survives_restart() -> None:
-    from app.tool_runtime.tool_trust_store import ToolTrustStore
     from app.tool_runtime.tool_score import ToolScorer
+    from app.tool_runtime.tool_trust_store import ToolTrustStore
 
     store = ToolTrustStore()
     for _ in range(10):

@@ -1,9 +1,9 @@
 """
 Coverage gate: every UC listed in domain docs must map to ≥1 content record.
 """
-import re
-import pytest
 from pathlib import Path
+
+import pytest
 
 BACKEND_ROOT = Path(__file__).parent.parent.parent  # agent-verse-backend
 
@@ -44,7 +44,7 @@ class TestContentCoverage:
         loader.load_all()
         if loader.errors:
             pytest.fail(
-                f"Content validation errors:\n" + "\n".join(loader.errors[:10])
+                "Content validation errors:\n" + "\n".join(loader.errors[:10])
             )
 
     def test_minimum_agent_count(self):

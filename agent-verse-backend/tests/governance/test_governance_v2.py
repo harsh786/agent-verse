@@ -18,32 +18,32 @@ class TestTimePolicyEngine:
 
     def test_blocks_delete_during_night(self) -> None:
         engine = self._make()
-        night_time = datetime.datetime(2026, 7, 5, 23, 0, 0, tzinfo=datetime.timezone.utc)
+        night_time = datetime.datetime(2026, 7, 5, 23, 0, 0, tzinfo=datetime.UTC)
         allowed, reason = engine.check_tool("delete_all_records", now=night_time)
         assert allowed is False
         assert len(reason) > 0
 
     def test_allows_delete_during_day(self) -> None:
         engine = self._make()
-        day_time = datetime.datetime(2026, 7, 7, 14, 0, 0, tzinfo=datetime.timezone.utc)  # Monday 2pm
+        day_time = datetime.datetime(2026, 7, 7, 14, 0, 0, tzinfo=datetime.UTC)  # Monday 2pm
         allowed, reason = engine.check_tool("delete_old_logs", now=day_time)
         assert allowed is True
 
     def test_blocks_prod_deploy_on_weekend(self) -> None:
         engine = self._make()
-        saturday = datetime.datetime(2026, 7, 4, 14, 0, 0, tzinfo=datetime.timezone.utc)
+        saturday = datetime.datetime(2026, 7, 4, 14, 0, 0, tzinfo=datetime.UTC)
         allowed, reason = engine.check_tool("deploy_to_prod", now=saturday)
         assert allowed is False
 
     def test_allows_prod_deploy_on_weekday(self) -> None:
         engine = self._make()
-        monday = datetime.datetime(2026, 7, 6, 14, 0, 0, tzinfo=datetime.timezone.utc)
+        monday = datetime.datetime(2026, 7, 6, 14, 0, 0, tzinfo=datetime.UTC)
         allowed, reason = engine.check_tool("deploy_to_prod", now=monday)
         assert allowed is True
 
     def test_blackout_window_blocks_all(self) -> None:
         engine = self._make()
-        now = datetime.datetime(2026, 7, 5, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        now = datetime.datetime(2026, 7, 5, 12, 0, 0, tzinfo=datetime.UTC)
         start = now - datetime.timedelta(hours=1)
         end = now + datetime.timedelta(hours=1)
         engine.add_blackout(start, end, "Maintenance window")
@@ -59,7 +59,7 @@ class TestTimePolicyEngine:
             reason="Billing changes blocked on weekends",
         )
         engine = TimePolicyEngine(custom_rules=[rule])
-        saturday = datetime.datetime(2026, 7, 4, 10, 0, 0, tzinfo=datetime.timezone.utc)
+        saturday = datetime.datetime(2026, 7, 4, 10, 0, 0, tzinfo=datetime.UTC)
         allowed, _ = engine.check_tool("update_billing_plan", now=saturday)
         assert allowed is False
 

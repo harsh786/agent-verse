@@ -1,9 +1,13 @@
 """Tests for GoalLifecycle cross-process signal bus."""
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from app.reliability.goal_lifecycle import (
-    signal_pause, signal_resume, signal_cancel, clear_signals,
-    is_paused_sync, is_cancelled_sync, GoalCancelledError, check_pause_cancel
+    check_pause_cancel,
+    clear_signals,
+    signal_pause,
+    signal_resume,
 )
 
 

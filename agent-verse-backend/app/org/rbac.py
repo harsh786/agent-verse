@@ -12,10 +12,12 @@ Enforced at FastAPI dependency level.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
+import hashlib
+import hmac
+import time
+from typing import Any, ClassVar
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from opentelemetry import trace
 
 from app.observability.logging import get_logger
@@ -35,7 +37,7 @@ class OrgRole:
     VIEWER = "viewer"
 
     # Permission sets per role
-    PERMISSIONS: dict[str, frozenset[str]] = {
+    PERMISSIONS: ClassVar[dict[str, frozenset[str]]] = {
         "org_admin": frozenset(
             {"read", "write", "delete", "approve", "admin", "change_settings", "change_autonomy"}
         ),
@@ -46,7 +48,7 @@ class OrgRole:
     }
 
     # Role hierarchy (higher index = more permissions)
-    HIERARCHY = ["viewer", "agent", "team_lead", "dept_admin", "org_admin"]
+    HIERARCHY: ClassVar[list[str]] = ["viewer", "agent", "team_lead", "dept_admin", "org_admin"]
 
     @classmethod
     def can(cls, role: str, permission: str) -> bool:
@@ -65,25 +67,95 @@ class OrgRole:
 # ── RBAC dependency factories ─────────────────────────────────────────────────
 
 
-def require_org_role(minimum_role: str = OrgRole.VIEWER) -> Callable:
+def _highest_org_role(roles: Any) -> str | None:
+    """Return the highest org role present in an iterable of role strings, or None."""
+    try:
+        present = [r for r in roles if r in OrgRole.HIERARCHY]
+    except TypeError:
+        return None
+    if not present:
+        return None
+    return max(present, key=OrgRole.HIERARCHY.index)
+
+
+def _resolve_actor_role(request: Request) -> str:
+    """Resolve the caller's org role from request state.
+
+    Resolution order (first hit wins):
+      1. an explicit ``request.state.org_role`` (test/override or a future
+         per-org membership middleware);
+      2. an explicit role on the tenant context (``org_role``/``role``);
+      3. the highest org role among ``TenantContext.roles`` (the api-key/SSO
+         roles resolved by ``TenantMiddleware``) — this is where an assigned
+         sub-role like ``viewer``/``team_lead`` comes from;
+      4. an ``org:admin`` scope.
+
+    The tenant OWNER key carries a broad ``admin`` role (issued at signup —
+    ``tenant_service``: "initial owner key gets full admin access"), which maps
+    to ``org_admin``; an ``org:admin`` scope does the same. Everything else is
+    **fail-closed**: a caller with no admin/org role — including an authenticated
+    key that was never granted one — resolves to the most restrictive ``viewer``
+    and is denied, never silently elevated to admin.
+    """
+    state = getattr(request, "state", None)
+    role = getattr(state, "org_role", None)
+    tenant = getattr(state, "tenant", None)
+    if not role:
+        role = getattr(tenant, "org_role", None) or getattr(tenant, "role", None)
+    if not role:
+        tenant_roles = tuple(getattr(tenant, "roles", ()) or ())
+        role = _highest_org_role(tenant_roles)
+        if not role and "admin" in tenant_roles:
+            role = OrgRole.ORG_ADMIN  # tenant owner key
+    if not role:
+        scopes = getattr(state, "scopes", None) or getattr(tenant, "scopes", None)
+        if scopes and "org:admin" in scopes:
+            role = OrgRole.ORG_ADMIN
+    # Fail-closed: no admin/org role → viewer (deny writes), never implicit admin.
+    return str(role) if role else OrgRole.VIEWER
+
+
+def enforce_org_role(request: Request, minimum_role: str) -> str:
+    """Raise 403 unless the request's actor meets ``minimum_role``. Returns the role."""
+    actor_role = _resolve_actor_role(request)
+    with _tracer.start_as_current_span("rbac.enforce_org_role") as span:
+        span.set_attribute("actor_role", actor_role)
+        span.set_attribute("minimum_role", minimum_role)
+        if not OrgRole.is_at_least(actor_role, minimum_role):
+            _log.warning(
+                "rbac.org_role_denied", actor_role=actor_role, minimum_role=minimum_role
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "type": "authorization-error",
+                    "title": "Insufficient org role",
+                    "status": 403,
+                    "detail": (
+                        f"Requires at least '{minimum_role}' org role, got '{actor_role}'"
+                    ),
+                },
+            )
+    return actor_role
+
+
+def require_org_role(minimum_role: str = OrgRole.VIEWER) -> Any:
     """
     FastAPI dependency that enforces org-level RBAC.
+
+    Reads the actor's org role from ``request.state`` (populated by the auth /
+    tenant middleware) and denies with 403 when it is below ``minimum_role``.
 
     Usage:
         @router.get("/missions")
         async def list_missions(
-            _: None = Depends(require_org_role(OrgRole.VIEWER)),
+            _: str = Depends(require_org_role(OrgRole.VIEWER)),
             ...
         ): ...
     """
 
-    async def _check(
-        # In production: extract from JWT / API key scopes
-        # Here: reads from request state (set by TenantMiddleware)
-    ) -> None:
-        # TODO: integrate with auth system — read role from request.state
-        # For now: pass through (roles enforced by API key scopes)
-        pass
+    async def _check(request: Request) -> str:
+        return enforce_org_role(request, minimum_role)
 
     return Depends(_check)
 
@@ -175,10 +247,6 @@ class OrgRBACGuard:
 
 
 # ── Cross-dept request signing (PART 18) ──────────────────────────────────────
-
-import hashlib
-import hmac
-import time
 
 
 def sign_cross_dept_request(

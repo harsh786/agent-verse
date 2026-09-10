@@ -1,8 +1,8 @@
 """Tests for Guardrails v3 — indirect injection, encoding attacks, domain policies."""
-import pytest
-from app.intelligence.indirect_injection import scan_tool_output, wrap_in_untrusted
-from app.intelligence.encoding_attacks import scan_for_encoding_attacks, normalize_homoglyphs
+
 from app.intelligence.domain_policies import apply_domain_policy, get_domain_policy
+from app.intelligence.encoding_attacks import normalize_homoglyphs, scan_for_encoding_attacks
+from app.intelligence.indirect_injection import scan_tool_output, wrap_in_untrusted
 from app.intelligence.output_anomaly import scan_output_for_anomalies
 
 

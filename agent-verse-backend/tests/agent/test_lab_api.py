@@ -1,5 +1,4 @@
 """Tests for Phase 9 Agent Lab API."""
-import pytest
 
 
 class TestLabAPI:

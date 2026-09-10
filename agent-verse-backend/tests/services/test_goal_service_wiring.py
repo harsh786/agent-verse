@@ -8,8 +8,8 @@ import pytest
 from app.agent.state import AgentState
 from app.governance.audit import AuditLog
 from app.governance.hitl import HITLGateway
-from app.rag.store import KnowledgeStore
 from app.rag.contracts import RAGCitation, RAGExecutionResult, RAGStrategy
+from app.rag.store import KnowledgeStore
 from app.services.goal_service import GoalService
 from app.tenancy.context import PlanTier, TenantContext
 

@@ -142,20 +142,23 @@ async def handle_create_mission(
             from app.db.rls import sqlalchemy_rls_context
             from app.org.service import OrgService
 
-            async with session_factory() as session, session.begin():
-                async with sqlalchemy_rls_context(session, tenant_id):
-                    svc = OrgService(session=session, tenant_id=tenant_id)
-                    mission = await svc.create_mission(
-                        org_id=org_id,
-                        title=str(spec.refined_goal)[:200],
-                        objective=str(spec.refined_goal),
-                        source="voice",
-                        autonomy_level=getattr(spec, "autonomy_level", 3),
-                        budget_usd=getattr(spec, "estimated_budget_usd", None) or None,
-                        success_criteria=getattr(spec, "success_criteria", []),
-                        tags=getattr(spec, "departments_involved", []),
-                    )
-                    mission_id = str(mission.id)
+            async with (
+                session_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                svc = OrgService(session=session, tenant_id=tenant_id)
+                mission = await svc.create_mission(
+                    org_id=org_id,
+                    title=str(spec.refined_goal)[:200],
+                    objective=str(spec.refined_goal),
+                    source="voice",
+                    autonomy_level=getattr(spec, "autonomy_level", 3),
+                    budget_usd=getattr(spec, "estimated_budget_usd", None) or None,
+                    success_criteria=getattr(spec, "success_criteria", []),
+                    tags=getattr(spec, "departments_involved", []),
+                )
+                mission_id = str(mission.id)
         except Exception as exc:
             log.error("voice.create_mission.failed", error=str(exc))
             return (
@@ -194,18 +197,21 @@ async def handle_approve(
         from app.db.rls import sqlalchemy_rls_context
         from app.org.service import OrgService
 
-        async with session_factory() as session, session.begin():
-            async with sqlalchemy_rls_context(session, tenant_id):
-                svc = OrgService(session=session, tenant_id=tenant_id)
-                await svc.record_decision(
-                    org_id=org_id,
-                    entity_type="mission",
-                    entity_id=pending_decision_id,
-                    decision_type="approval",
-                    description=f"Voice approval: {transcript}",
-                    why="Approved via voice command",
-                    approval_status="approved",
-                )
+        async with (
+            session_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            svc = OrgService(session=session, tenant_id=tenant_id)
+            await svc.record_decision(
+                org_id=org_id,
+                entity_type="mission",
+                entity_id=pending_decision_id,
+                decision_type="approval",
+                description=f"Voice approval: {transcript}",
+                why="Approved via voice command",
+                approval_status="approved",
+            )
         return "Approved. The mission is cleared to proceed."
     except Exception as exc:
         log.error("voice.approve.failed", error=str(exc))
@@ -276,9 +282,12 @@ async def _get_health(org_id: str, tenant_id: str, session_factory: Any) -> dict
         from app.db.rls import sqlalchemy_rls_context
         from app.org.service import OrgService
 
-        async with session_factory() as session, session.begin():
-            async with sqlalchemy_rls_context(session, tenant_id):
-                svc = OrgService(session=session, tenant_id=tenant_id)
-                return await svc.get_org_health(org_id)
+        async with (
+            session_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            svc = OrgService(session=session, tenant_id=tenant_id)
+            return await svc.get_org_health(org_id)
     except Exception:
         return {}

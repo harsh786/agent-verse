@@ -1,5 +1,5 @@
 """Tests for PolicyEngine DB loading on startup."""
-import pytest
+
 from app.governance.policies import PolicyEngine
 
 
@@ -15,7 +15,7 @@ def test_policy_engine_can_add_policy():
 
 def test_policy_engine_evaluate_respects_tenant():
     """Policy evaluation should respect tenant_id on policies."""
-    from app.governance.policies import Policy, PolicyResult
+    from app.governance.policies import Policy
     from app.tenancy.context import PlanTier, TenantContext
 
     engine = PolicyEngine()

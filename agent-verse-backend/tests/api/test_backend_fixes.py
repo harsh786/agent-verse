@@ -23,11 +23,12 @@ from app.api.mfa import (
     _generate_recovery_codes,
     _get_mfa_state,
     _hash_recovery_code,
-    _mfa_db_store,
     _mfa_store,
     _mfa_verified_sessions,
     _rate_limits,
     _used_totp_codes,
+)
+from app.api.mfa import (
     router as mfa_router,
 )
 from app.tenancy.context import PlanTier, TenantContext

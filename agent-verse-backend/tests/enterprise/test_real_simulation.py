@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import pytest
-from httpx import AsyncClient, ASGITransport
-from app.main import create_app
-from app.enterprise.simulation import SimulationRunner
-from app.tenancy.context import TenantContext, PlanTier
+from httpx import ASGITransport, AsyncClient
 
+from app.enterprise.simulation import SimulationRunner
+from app.main import create_app
+from app.tenancy.context import PlanTier, TenantContext
 
 _CTX = TenantContext(tenant_id="sim-test", plan=PlanTier.FREE, api_key_id="k1")
 

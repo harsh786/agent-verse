@@ -1,11 +1,9 @@
 # tests/agent/patterns/test_agent_patterns_complete.py
 """All 5 agent patterns must be IMPLEMENTED with working execute() methods."""
 from __future__ import annotations
-import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
-from app.providers.fake import FakeProvider
-from app.agent.patterns.base import PatternState
 
+from app.agent.patterns.base import PatternState
+from app.providers.fake import FakeProvider
 
 # ── Self-Refine ───────────────────────────────────────────────────────────────
 
@@ -150,7 +148,7 @@ async def test_peer_review_fallback_without_json():
 
 
 async def test_peer_review_low_quality_not_approved():
-    from app.agent.patterns.peer_review import PeerReviewPattern, PeerReviewResult
+    from app.agent.patterns.peer_review import PeerReviewPattern
     provider = FakeProvider(responses=['{"quality_score": 0.2, "critique": "Very incomplete", "suggestions": [], "approved": false}'])
     pattern = PeerReviewPattern()
     result = await pattern.execute(
@@ -216,7 +214,7 @@ def test_tree_of_thoughts_state_is_implemented():
 
 
 async def test_tree_of_thoughts_generates_thoughts():
-    from app.agent.patterns.tree_of_thoughts import TreeOfThoughtsPattern, ThoughtNode
+    from app.agent.patterns.tree_of_thoughts import TreeOfThoughtsPattern
     responses = [
         # Thought generation (3 thoughts)
         "Thought 1: Start by listing all factors",

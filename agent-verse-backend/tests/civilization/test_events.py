@@ -5,18 +5,17 @@ import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from app.civilization.events import CivEventType, emit_event, get_events_since
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
 class _noop_ctx:
-    async def __aenter__(self) -> "_noop_ctx":
+    async def __aenter__(self) -> _noop_ctx:
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -28,7 +27,7 @@ class _FakeSession:
         self.executions: list[Any] = []
         self._rows = rows or []
 
-    async def __aenter__(self) -> "_FakeSession":
+    async def __aenter__(self) -> _FakeSession:
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -102,13 +101,13 @@ async def test_emit_event_with_db_exception_still_returns_id():
     """DB errors are swallowed; emit still returns an event_id."""
 
     class _FailSession:
-        async def __aenter__(self) -> "_FailSession":
+        async def __aenter__(self) -> _FailSession:
             return self
 
         async def __aexit__(self, *args: Any) -> None:
             return None
 
-        def begin(self) -> "_FailBegin":
+        def begin(self) -> _FailBegin:
             return _FailBegin()
 
         async def execute(self, *args: Any, **kwargs: Any) -> Any:
@@ -147,7 +146,7 @@ async def test_emit_event_with_redis_publishes():
     mock_redis.publish.assert_called_once()
     call_args = mock_redis.publish.call_args
     channel = call_args[0][0]
-    assert "civ_sse:t1:civ-1" == channel
+    assert channel == "civ_sse:t1:civ-1"
     data = json.loads(call_args[0][1])
     assert data["id"] == event_id
     assert data["type"] == CivEventType.AGENT_SPAWNED
@@ -360,7 +359,7 @@ async def test_get_events_since_db_exception_returns_empty():
     """DB errors are swallowed and empty list is returned."""
 
     class _ExplodingSession:
-        async def __aenter__(self) -> "_ExplodingSession":
+        async def __aenter__(self) -> _ExplodingSession:
             return self
 
         async def __aexit__(self, *args: Any) -> None:

@@ -1,5 +1,4 @@
 """Test multi-modal goal submission with image attachments."""
-import base64
 
 
 def test_goal_request_accepts_image_url():

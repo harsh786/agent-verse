@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import pytest
+
 from app.agent.dynamic_graph import DynamicGraphAssembler
 from app.agent.goal_classifier import goal_classifier
 from app.agent.pattern_assembler import pattern_assembler
-from app.agent.pattern_config import PatternConfig, GoalProperties, Complexity, RiskLevel, Domain
+from app.agent.pattern_config import Complexity, GoalProperties, PatternConfig, RiskLevel
 from app.providers.fake import FakeProvider
 
 
@@ -96,8 +97,8 @@ def test_pattern_assembled_sse_event_shape(assembler, provider):
 
 
 def test_loop_engineering_pattern_maps_to_existing_node():
-    from app.agent.patterns.loop_engineering import LoopEngineeringPattern
     from app.agent.graph import AgentGraph
+    from app.agent.patterns.loop_engineering import LoopEngineeringPattern
     p = LoopEngineeringPattern()
     assert p.pattern_id == "loop_engineering"
     assert hasattr(AgentGraph, "_execute_step") or hasattr(AgentGraph, "execute_step")

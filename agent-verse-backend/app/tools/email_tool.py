@@ -8,6 +8,7 @@ Credentials: per-tenant configuration (SMTP host/port/user/pass)
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -212,8 +213,6 @@ class EmailTool:
 
 # ── Module-level convenience wrapper for simple SMTP sends ────────────────────
 
-import os as _os
-
 
 async def email_send(
     to: str | list[str],
@@ -238,11 +237,11 @@ async def email_send(
             "error": "aiosmtplib not installed. Run: pip install aiosmtplib",
         }
 
-    host = _os.getenv("SMTP_HOST", "localhost")
-    port = int(_os.getenv("SMTP_PORT", "1025"))
-    username = _os.getenv("SMTP_USER", "")
-    password = _os.getenv("SMTP_PASSWORD", "")
-    use_tls = _os.getenv("SMTP_TLS", "false").lower() in {"true", "1"}
+    host = os.getenv("SMTP_HOST", "localhost")
+    port = int(os.getenv("SMTP_PORT", "1025"))
+    username = os.getenv("SMTP_USER", "")
+    password = os.getenv("SMTP_PASSWORD", "")
+    use_tls = os.getenv("SMTP_TLS", "false").lower() in {"true", "1"}
 
     recipients = [to] if isinstance(to, str) else to
     sender = from_addr or username or "noreply@agentverse.local"

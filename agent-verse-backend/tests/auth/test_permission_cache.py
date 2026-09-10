@@ -4,10 +4,7 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from app.auth.permission_cache import PermissionCache
-
 
 # ---------------------------------------------------------------------------
 # Constants

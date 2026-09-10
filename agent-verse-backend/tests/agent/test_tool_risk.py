@@ -1,10 +1,7 @@
 """Tests for the comprehensive tool risk classifier."""
 from __future__ import annotations
 
-import pytest
-
 from app.agent.tool_risk import classify_tool_risk
-
 
 # ── destructive ───────────────────────────────────────────────────────────────
 

@@ -1,5 +1,6 @@
 """Tests for DocumentClassifier."""
 import pytest
+
 from app.ocr.classifier import DocumentClassifier
 from app.ocr.models import DocumentType
 

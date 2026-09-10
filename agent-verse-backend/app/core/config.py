@@ -87,10 +87,100 @@ class Settings(BaseSettings):
     ollama_default_model: str = "qwen3.8:latest"
     ollama_embed_model: str = "qwen3-embedding:latest"
     ollama_ocr_model: str = "glm-ocr:latest"
+    # Dedicated embedding endpoint (OpenAI-compatible /v1/embeddings), separate
+    # from the chat LLM base_url — e.g. a self-hosted Qwen3-Embedding on vLLM.
+    # When set, the embedder targets this endpoint/model instead of the chat one.
+    embedding_base_url: str = ""  # e.g. http://host:30082/v1
+    embedding_model: str = ""  # e.g. Qwen/Qwen3-Embedding-0.6B
+    embedding_api_key: str = ""  # optional; many self-hosted servers ignore it
     ollama_auto_pull: bool = False
 
     # --- Embedding vector dimension (must match the embed model) --------------
     embedding_dim: int = 2048  # qwen3-embedding uses 2048-d vectors
+    # Embedding quantization for stored/compared vectors: none|int8|binary.
+    # int8 = 4x smaller (close accuracy); binary = 32x smaller (coarse, good as a
+    # first-stage filter). ``none`` keeps full precision (default). Consumers opt
+    # in (e.g. the ingestion near-duplicate pass) — nothing is quantized globally.
+    embedding_quantization: str = "none"
+    # Binary first-stage retrieval: use the pgvector binary_quantize() Hamming
+    # index (migration 0120) to shortlist candidates cheaply, then rerank the
+    # shortlist by full-precision cosine. Off by default (exact search unchanged).
+    rag_binary_prefilter_enabled: bool = False
+    rag_binary_prefilter_shortlist: int = 200  # candidates the Hamming stage keeps
+
+    # --- RAG default-path reranking (WS-10) -----------------------------------
+    # Engage a reranking STAGE on the DEFAULT hybrid retrieval path (not only on
+    # explicit pattern branches). Uses the one RerankPolicy registry. ``auto``
+    # prefers the cross-encoder when its model is available and degrades to a
+    # deterministic score-sort otherwise; the stage is an honest passthrough when
+    # disabled or when the reranker backend is unavailable.
+    rag_default_rerank_enabled: bool = True
+    rag_default_rerank_strategy: str = "auto"  # score|rrf|diversity|cross_encoder|llm|hosted|auto
+    # --- Hosted reranker (first-class managed reranking provider) --------------
+    # A managed cross-encoder rerank API (Cohere-compatible ``/v1/rerank`` shape:
+    # Cohere, Voyage, Jina, or a self-hosted equivalent). When a URL is set the
+    # ``hosted`` rerank strategy calls it over HTTPS (SSRF-guarded, Bearer auth);
+    # unset/erroring, the stage degrades honestly to the local path. No vendor
+    # lock-in — any endpoint returning ``{"results":[{"index","relevance_score"}]}``.
+    rag_hosted_reranker_url: str = ""
+    rag_hosted_reranker_api_key: str = ""
+    rag_hosted_reranker_model: str = "rerank-english-v3.0"
+    rag_hosted_reranker_timeout_seconds: float = 10.0
+    # Allow the hosted reranker to target a private/internal host (e.g. a
+    # self-hosted reranker on a LAN IP). Off by default → the SSRF guard blocks
+    # RFC-1918/loopback. Set true ONLY for a trusted, operator-configured endpoint.
+    rag_hosted_reranker_allow_internal: bool = False
+    # Calibrated retrieval confidence below this [0,1] threshold flags a result as
+    # low-confidence and (when the fallback is on) triggers a real widening retry.
+    rag_low_confidence_threshold: float = 0.35
+    rag_low_confidence_fallback_enabled: bool = True
+    rag_low_confidence_widen_factor: int = 4  # widen candidate pool by this multiple
+
+    # --- Eval scoring (config-driven; NOTHING hardcoded in the scorer) --------
+    # The 7-dimension eval scorer (app/intelligence/eval_runner.py) and the
+    # self-improvement decision surfaces read every weight/threshold/budget from
+    # here. Defaults reproduce the historically shipped behaviour, so tuning is a
+    # config change, not a code change. See app/evals/scoring_config.py.
+    eval_pass_threshold: float = 0.70  # average score >= this passes
+    # efficiency dimension
+    eval_max_iterations_budget: float = 15.0  # iterations budget before efficiency decays
+    eval_cost_budget_usd: float = 2.0  # LLM cost at which cost-efficiency hits 0
+    eval_efficiency_iter_weight: float = 0.7  # iteration vs cost blend (must sum to 1.0)
+    eval_efficiency_cost_weight: float = 0.3
+    # accuracy dimension
+    eval_accuracy_partial_credit: float = 0.5  # credit when feedback says "partial"
+    # safety dimension
+    eval_safety_violation_penalty: float = 0.25  # score drop per DENY/blocked event
+    # coherence dimension
+    eval_coherence_output_weight: float = 0.6  # output-rate vs step-diversity blend
+    eval_coherence_diversity_weight: float = 0.4
+    # sla dimension
+    eval_sla_budget_seconds: float = 300.0  # default wall-clock budget per goal
+    eval_sla_iteration_seconds: float = 20.0  # per-iteration time proxy when no timing
+    # tool_relevance dimension
+    eval_tool_calls_per_step_target: float = 2.0  # ideal tool calls per step
+    eval_tool_efficiency_tolerance: float = 5.0  # calls-over-target that zeroes efficiency
+    eval_tool_relevance_success_weight: float = 0.6  # success-rate vs efficiency blend
+    eval_tool_relevance_efficiency_weight: float = 0.4
+    # neutral defaults when evidence is missing
+    eval_neutral_no_data_score: float = 0.5  # no step data at all
+    eval_neutral_no_tool_calls_score: float = 0.7  # steps exist but made no tool calls
+    # self-improvement decision floors (shared by both decision surfaces)
+    eval_improve_rag_quality_floor: float = 0.5
+    eval_improve_retrieval_confidence_floor: float = 0.4
+    eval_improve_goal_success_floor: float = 0.7
+    eval_improve_tool_success_floor: float = 0.5
+    eval_improve_tool_success_critical: float = 0.3
+    eval_improve_cost_efficiency_floor: float = 0.3
+    eval_improve_latency_floor: float = 0.3
+    eval_improve_regression_case_floor: float = 0.4
+
+    # --- Agent multi-agent auto-selection (WS-10) -----------------------------
+    # Default-off safety gate for the advanced multi-agent tier: when on, a goal's
+    # complexity/domain/risk can auto-route it to the in-graph supervisor /debate
+    # nodes (per-agent enable_* flags remain an explicit override that always wins).
+    # The distributed autonomous tier stays governed by ``coordination_ready``.
+    agent_auto_multi_agent_enabled: bool = False
 
     # --- default model names per task type (override via env vars) ---
     default_planning_model: str = "qwen3.8:latest"

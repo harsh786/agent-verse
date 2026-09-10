@@ -8,7 +8,6 @@ import importlib
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Server registry
 # ---------------------------------------------------------------------------
@@ -43,16 +42,16 @@ def _import_server(name: str):
 
 def test_communication_servers_importable():
     from app.mcp.servers import (
-        discord_server,
-        telegram_server,
-        microsoft_teams_server,
-        whatsapp_server,
-        intercom_server,
-        sendgrid_server,
-        mailchimp_server,
-        klaviyo_server,
-        twilio_server,
         brevo_server,
+        discord_server,
+        intercom_server,
+        klaviyo_server,
+        mailchimp_server,
+        microsoft_teams_server,
+        sendgrid_server,
+        telegram_server,
+        twilio_server,
+        whatsapp_server,
     )
 
     for s in [

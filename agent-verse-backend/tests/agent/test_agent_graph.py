@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 
 import pytest
 
@@ -298,7 +297,7 @@ def test_write_checkpoint_without_db_does_not_raise() -> None:
     import asyncio
 
     from app.agent.graph import AgentGraph
-    from app.agent.state import AgentState, GoalStatus
+    from app.agent.state import AgentState
     from app.intelligence.guardrails import GuardrailChecker
     from app.providers.fake import FakeProvider
     from app.reliability.dedup import DeduplicationCache

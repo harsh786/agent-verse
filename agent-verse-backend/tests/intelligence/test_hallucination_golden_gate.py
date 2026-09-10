@@ -5,9 +5,9 @@ These tests run against the fixed golden fixtures and FAIL if the grounding
 checker produces wrong verdicts. No LLM calls — purely deterministic.
 """
 import json
-import pytest
 from pathlib import Path
 
+import pytest
 
 GOLDEN_FIXTURES_PATH = Path(__file__).parent.parent / "fixtures" / "hallucination_golden.json"
 

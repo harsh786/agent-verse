@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock
 
 import pytest
-from unittest.mock import AsyncMock
 
 from app.governance.hitl import HITLGateway
 

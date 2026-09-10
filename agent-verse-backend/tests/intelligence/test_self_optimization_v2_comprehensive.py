@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,7 +28,6 @@ from app.intelligence.self_optimizer_v2 import (
     SelfOptimizerV2,
     TenantOptimizationState,
 )
-
 
 # ---------------------------------------------------------------------------
 # Constants — Fix 4 & domain metrics

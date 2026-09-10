@@ -4,9 +4,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.intelligence.improvement_action_executor import ImprovementActionExecutor
 from app.intelligence.learning_experiments import ExperimentOutcome, LearningExperimentService
-from app.memory.contracts import ExperimentSpec, ImprovementActionRecord
+from app.memory.contracts import ExperimentSpec
 from app.memory.knowledge_graph_memory import KnowledgeFact, KnowledgeGraphMemory
 from app.memory.procedural_validator import ProcedureContract, validate_procedure
 from app.memory.prospective import ProspectiveMemory, ProspectiveMemoryService, prospective_id
@@ -121,31 +120,3 @@ def test_experiment_assignment_is_sticky_and_promotion_requires_samples_and_guar
     service.record("tenant", ExperimentOutcome("a", "control", 0.5, True))
     service.record("tenant", ExperimentOutcome("b", "candidate", 0.8, True))
     assert service.promotion_ready(spec)
-
-
-@pytest.mark.asyncio
-async def test_improvement_actions_retry_are_idempotent_and_policy_bounded() -> None:
-    attempts = 0
-
-    async def handler(payload):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise RuntimeError("transient")
-        return {"version": payload["version"], "rollback_ref": "prompt://v1"}
-
-    executor = ImprovementActionExecutor(handlers={"update_prompt": handler})
-    record = ImprovementActionRecord(
-        action_id="action",
-        tenant_id="tenant",
-        goal_id="goal",
-        action_type="update_prompt",
-        payload={"version": "v2"},
-        state="pending",
-        idempotency_key="command",
-        attempts=0,
-        created_at=datetime.now(UTC),
-    )
-    completed = await executor.execute(record, policy_allowed=True)
-    assert completed.state == "completed" and completed.attempts == 2
-    assert await executor.execute(record, policy_allowed=True) == completed

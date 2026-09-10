@@ -324,7 +324,8 @@ class IngestionJobTracker:
                            AND sync_mode != 'streaming'
                            AND (
                                last_synced_at IS NULL
-                               OR last_synced_at + (sync_interval_seconds || ' seconds')::interval <= NOW()
+                               OR last_synced_at + (sync_interval_seconds || ' seconds')::interval
+                                  <= NOW()
                            )
                     """)
                 )
@@ -372,9 +373,30 @@ class IngestionJobTracker:
         error: str,
         raw_doc: object,
     ) -> None:
-        """Add a failed document to the DLQ."""
+        """Add a failed document to the DLQ.
+
+        ``raw_doc`` is serialized into ``raw_doc_json`` so the entry carries the
+        payload needed to retry (e.g. the repo-ingest parameters). It may be a
+        dataclass, a pydantic model, a mapping, or anything JSON-serializable;
+        non-serializable values fall back to a minimal ``{"doc_id": ...}`` record.
+        """
+        import dataclasses as _dc
         import json as _json
         import uuid as _uuid
+
+        def _serialize(obj: object) -> str:
+            payload: object = {"doc_id": doc_id}
+            if obj is not None:
+                if _dc.is_dataclass(obj) and not isinstance(obj, type):
+                    payload = _dc.asdict(obj)
+                elif hasattr(obj, "model_dump"):
+                    payload = obj.model_dump()  # type: ignore[attr-defined]
+                elif isinstance(obj, dict):
+                    payload = obj
+            try:
+                return _json.dumps(payload, default=str)
+            except (TypeError, ValueError):
+                return _json.dumps({"doc_id": doc_id})
 
         try:
             from sqlalchemy import text
@@ -383,9 +405,11 @@ class IngestionJobTracker:
                 await session.execute(
                     text("""
                         INSERT INTO ingestion_dlq
-                            (dlq_id, source_id, tenant_id, doc_id, error_message, raw_doc_json, retry_count, created_at)
+                            (dlq_id, source_id, tenant_id, doc_id, error_message,
+                             raw_doc_json, retry_count, created_at)
                         VALUES
-                            (:dlq_id, :source_id, :tenant_id, :doc_id, :error, :raw_doc_json, 0, NOW())
+                            (:dlq_id, :source_id, :tenant_id, :doc_id, :error,
+                             :raw_doc_json, 0, NOW())
                     """),
                     {
                         "dlq_id": str(_uuid.uuid4()),
@@ -393,7 +417,7 @@ class IngestionJobTracker:
                         "tenant_id": tenant_id,
                         "doc_id": doc_id,
                         "error": error,
-                        "raw_doc_json": _json.dumps({"doc_id": doc_id}),
+                        "raw_doc_json": _serialize(raw_doc),
                     },
                 )
         except Exception as exc:

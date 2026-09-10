@@ -20,12 +20,58 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.observability.logging import get_logger
 from app.org.models import (
     OrgDepartment,
+    OrgEvent,
     OrgMission,
     OrgTask,
 )
 
 _log = get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
+
+
+# ── Pure metric helpers (WS-2c: computed from real data, never fabricated) ────
+#
+# These are the honest replacements for the previously-hardcoded health-score
+# constants. Each returns ``None`` when there is no data to compute from, so the
+# caller can record an *indeterminate* factor (neutral, but flagged) rather than
+# inventing a mid-range number.
+
+
+def compute_cost_efficiency(estimated_usd: float, actual_usd: float) -> float | None:
+    """Efficiency = estimated / actual, capped to [0, 1].
+
+    1.0 = spent at-or-under the estimate; 0.5 = spent double. Returns ``None``
+    when no actual (or no estimated) spend has been recorded — indeterminate,
+    never a fabricated value.
+    """
+    if actual_usd <= 0 or estimated_usd <= 0:
+        return None
+    return max(0.0, min(1.0, estimated_usd / actual_usd))
+
+
+def compute_quality_avg(completed: int, failed: int) -> float | None:
+    """Quality proxy = completed / (completed + failed). ``None`` when no data."""
+    total = completed + failed
+    if total <= 0:
+        return None
+    return completed / total
+
+
+def compute_escalation_rate(escalations: int, total_tasks: int) -> float:
+    """Fraction of tasks that escalated (to human/other dept), capped to [0, 1]."""
+    if total_tasks <= 0:
+        return 0.0
+    return min(1.0, escalations / total_tasks)
+
+
+def compute_security_compliance(violations: int, total_tasks: int) -> float:
+    """Compliance = 1 - (violations / tasks), capped to [0, 1].
+
+    No activity → fully compliant (no violations possible).
+    """
+    if total_tasks <= 0:
+        return 1.0
+    return max(0.0, 1.0 - min(1.0, violations / total_tasks))
 
 
 # ── OrgHealthScore (spec PART 9, 8-factor formula) ───────────────────────────
@@ -53,6 +99,8 @@ class OrgHealthScore:
     escalation_rate: float = 0.0  # 0-1 (penalised)
     knowledge_freshness: float = 1.0  # 0-1
     security_compliance: float = 1.0  # 0-1
+    # Factors we had no data to compute (neutral default used, but disclosed).
+    indeterminate_factors: set[str] = field(default_factory=set)
 
     @property
     def score(self) -> float:
@@ -81,6 +129,7 @@ class OrgHealthScore:
                 "knowledge_freshness": self.knowledge_freshness,
                 "security_compliance": self.security_compliance,
             },
+            "indeterminate": sorted(self.indeterminate_factors),
         }
 
 
@@ -169,20 +218,119 @@ class OrgAnalyticsService:
                         OrgTask.created_at >= since_30d,
                     )
                 )
-                total_tasks = total_tasks_q.scalar() or 1
+                total_tasks_count = total_tasks_q.scalar() or 0
+                total_tasks = total_tasks_count or 1
                 blocked_ratio = min(1.0, blocked_tasks / total_tasks)
+
+                indeterminate: set[str] = set()
+
+                # ── cost efficiency: actual vs estimated spend (real) ────────
+                cost_q = await self._session.execute(
+                    select(
+                        func.coalesce(func.sum(OrgTask.cost_estimate_usd), 0.0),
+                        func.coalesce(func.sum(OrgTask.actual_cost_usd), 0.0),
+                    ).where(
+                        OrgTask.org_id == org_id,
+                        OrgTask.created_at >= since_30d,
+                    )
+                )
+                est_cost, act_cost = cost_q.one()
+                cost_efficiency = compute_cost_efficiency(float(est_cost), float(act_cost))
+                if cost_efficiency is None:
+                    cost_efficiency = 1.0  # neutral, but disclosed
+                    indeterminate.add("cost_efficiency")
+
+                # ── quality: completed vs failed task outcomes (real) ────────
+                completed_tasks_q = await self._session.execute(
+                    select(func.count(OrgTask.id)).where(
+                        OrgTask.org_id == org_id,
+                        OrgTask.status == "completed",
+                        OrgTask.created_at >= since_30d,
+                    )
+                )
+                completed_tasks = completed_tasks_q.scalar() or 0
+                failed_tasks_q = await self._session.execute(
+                    select(func.count(OrgTask.id)).where(
+                        OrgTask.org_id == org_id,
+                        OrgTask.status == "failed",
+                        OrgTask.created_at >= since_30d,
+                    )
+                )
+                failed_tasks = failed_tasks_q.scalar() or 0
+                quality_avg = compute_quality_avg(completed_tasks, failed_tasks)
+                if quality_avg is None:
+                    quality_avg = 0.0
+                    indeterminate.add("quality_avg")
+
+                # ── escalation rate: escalation/approval events (real) ───────
+                escalation_q = await self._session.execute(
+                    select(func.count(OrgEvent.id)).where(
+                        OrgEvent.org_id == org_id,
+                        OrgEvent.event_type.in_(
+                            [
+                                "agent.escalated",
+                                "org.agent.escalated",
+                                "approval.requested",
+                                "org.approval.requested",
+                            ]
+                        ),
+                        OrgEvent.created_at >= since_30d,
+                    )
+                )
+                escalations = escalation_q.scalar() or 0
+                escalation_rate = compute_escalation_rate(escalations, total_tasks_count)
+
+                # ── security compliance: policy-violation events (real) ──────
+                violation_q = await self._session.execute(
+                    select(func.count(OrgEvent.id)).where(
+                        OrgEvent.org_id == org_id,
+                        OrgEvent.event_type.in_(
+                            ["policy.violation", "org.policy.violation"]
+                        ),
+                        OrgEvent.created_at >= since_30d,
+                    )
+                )
+                violations = violation_q.scalar() or 0
+                security_compliance = compute_security_compliance(violations, total_tasks_count)
+
+                # ── agent utilization: running tasks / non-terminal tasks ────
+                running_q = await self._session.execute(
+                    select(func.count(OrgTask.id)).where(
+                        OrgTask.org_id == org_id,
+                        OrgTask.status.in_(["running", "assigned", "planned"]),
+                    )
+                )
+                running_tasks = running_q.scalar() or 0
+                active_pool_q = await self._session.execute(
+                    select(func.count(OrgTask.id)).where(
+                        OrgTask.org_id == org_id,
+                        OrgTask.status.not_in(
+                            ["archived", "cancelled", "completed", "failed", "expired"]
+                        ),
+                    )
+                )
+                active_pool = active_pool_q.scalar() or 0
+                if active_pool > 0:
+                    agent_utilization = min(1.0, running_tasks / active_pool)
+                else:
+                    agent_utilization = 0.0
+                    indeterminate.add("agent_utilization")
+
+                # ── knowledge freshness: no org-owned freshness source yet ───
+                # Honest neutral (no penalty) but disclosed as indeterminate.
+                knowledge_freshness = 1.0
+                indeterminate.add("knowledge_freshness")
 
                 return OrgHealthScore(
                     mission_completion_rate=mission_completion_rate,
-                    agent_utilization=min(
-                        1.0, (total_missions / 10) if total_missions > 0 else 0.0
-                    ),
-                    cost_efficiency=0.85,  # TODO: compute from actual vs estimated
-                    quality_avg=0.82,  # TODO: from EvalRunner
+                    agent_utilization=agent_utilization,
+                    cost_efficiency=cost_efficiency,
+                    quality_avg=quality_avg,
                     blocked_ratio=blocked_ratio,
-                    escalation_rate=0.05,  # TODO: from HITL events
-                    knowledge_freshness=0.90,  # TODO: from knowledge freshness tracker
-                    security_compliance=0.98,  # TODO: from policy engine
+                    escalation_rate=escalation_rate,
+                    knowledge_freshness=knowledge_freshness,
+                    security_compliance=security_compliance,
+                    indeterminate_factors=indeterminate,
                 )
 
             except Exception as exc:
@@ -272,14 +420,52 @@ class OrgAnalyticsService:
             return results
 
     async def get_cost_breakdown(self, org_id: str) -> dict[str, Any]:
-        """Cost breakdown by department and mission type."""
+        """Cost breakdown by department, computed from real ``OrgTask`` spend."""
         with _tracer.start_as_current_span("org_analytics.cost") as span:
             span.set_attribute("org_id", org_id)
-            # TODO: integrate with cost tracking service
+            since_30d = datetime.now(UTC) - timedelta(days=30)
+
+            # Total actual spend across all tasks in the window.
+            total_q = await self._session.execute(
+                select(func.coalesce(func.sum(OrgTask.actual_cost_usd), 0.0)).where(
+                    OrgTask.org_id == org_id,
+                    OrgTask.created_at >= since_30d,
+                )
+            )
+            total_usd = float(total_q.scalar() or 0.0)
+
+            # Per-department spend: task → mission → dept.
+            dept_q = await self._session.execute(
+                select(
+                    OrgDepartment.id,
+                    OrgDepartment.name,
+                    func.coalesce(func.sum(OrgTask.actual_cost_usd), 0.0),
+                )
+                .select_from(OrgTask)
+                .join(OrgMission, OrgTask.mission_id == OrgMission.id)
+                .join(OrgDepartment, OrgMission.dept_id == OrgDepartment.id)
+                .where(
+                    OrgTask.org_id == org_id,
+                    OrgTask.created_at >= since_30d,
+                )
+                .group_by(OrgDepartment.id, OrgDepartment.name)
+            )
+            by_department = [
+                {
+                    "department_id": str(dept_id),
+                    "department_name": str(dept_name),
+                    "actual_cost_usd": round(float(cost), 4),
+                }
+                for dept_id, dept_name, cost in dept_q.all()
+            ]
+
             return {
-                "total_usd_30d": 0.0,
-                "by_department": [],
+                "total_usd_30d": round(total_usd, 4),
+                "by_department": by_department,
+                # Org missions have no discrete "type" column; expose the count
+                # of missions instead of a fabricated per-type breakdown.
                 "by_mission_type": [],
+                "indeterminate": ["by_mission_type"],
                 "generated_at": datetime.now(UTC).isoformat(),
             }
 
@@ -317,11 +503,25 @@ class OrgAnalyticsService:
             return bottlenecks
 
     async def get_model_performance(self, org_id: str) -> dict[str, Any]:
-        """Per-model usage and performance metrics."""
-        # TODO: integrate with model gateway telemetry
+        """Per-model usage and performance metrics.
+
+        The org layer does not own per-model token telemetry — that lives in the
+        model gateway / cost service keyed by goal, not by org. Rather than
+        fabricate figures, this reports the honest actual task spend it *can*
+        see and flags the token-level breakdown as unavailable at this layer.
+        """
+        since_24h = datetime.now(UTC) - timedelta(hours=24)
+        cost_q = await self._session.execute(
+            select(func.coalesce(func.sum(OrgTask.actual_cost_usd), 0.0)).where(
+                OrgTask.org_id == org_id,
+                OrgTask.created_at >= since_24h,
+            )
+        )
+        total_cost_24h = float(cost_q.scalar() or 0.0)
         return {
             "models": [],
-            "total_tokens_24h": 0,
-            "total_cost_usd_24h": 0.0,
+            "total_tokens_24h": None,  # not tracked at org layer — indeterminate
+            "total_cost_usd_24h": round(total_cost_24h, 4),
+            "indeterminate": ["models", "total_tokens_24h"],
             "generated_at": datetime.now(UTC).isoformat(),
         }

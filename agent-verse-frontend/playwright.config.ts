@@ -117,6 +117,18 @@ export default defineConfig({
       testMatch: ['**/observability-live/**', '**/*.observability.spec.ts'],
       use: { ...devices['Desktop Chrome'] },
     },
+    // REAL-BACKEND suite: drives the app against a genuinely running backend
+    // (a real :8000 API + Postgres + Redis), NOT mocked. Selected explicitly via
+    // `--project=real-backend`; the CI job (nightly `playwright-real-backend`)
+    // starts the backend + services + frontend first. API base defaults to
+    // http://localhost:8000 (override with API_BASE_URL).
+    {
+      name: 'real-backend',
+      testMatch: ['**/real-backend/**', '**/*.realbe.spec.ts'],
+      // Use the full chromium build (channel) rather than the headless-shell so
+      // a plain `npx playwright install chromium` is sufficient.
+      use: { ...devices['Desktop Chrome'], channel: 'chromium' },
+    },
   ],
 
   webServer: {

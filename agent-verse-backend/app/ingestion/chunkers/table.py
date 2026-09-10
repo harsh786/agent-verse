@@ -8,7 +8,7 @@ class TableChunker(ChunkerBase):
         self._rows_per_chunk = rows_per_chunk
 
     def chunk(self, content: str) -> list[Chunk]:
-        lines = [l for l in content.splitlines() if l.strip()]
+        lines = [line for line in content.splitlines() if line.strip()]
         if not lines:
             return [Chunk(content=content.strip(), chunk_index=0)]
         header = lines[0]

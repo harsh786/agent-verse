@@ -1,14 +1,18 @@
 """Internal agent-to-agent dispatch for civilization members.
 
-Uses A2A data model + HMAC signing but dispatches through the
-tenant-scoped Celery path (NOT the public POST /a2a/tasks ingress).
+Uses the A2A durable-intent data model (idempotency + goal digest) but
+dispatches through the tenant-scoped Celery path (NOT the public
+POST /a2a/tasks ingress). Because this path never crosses an untrusted
+network boundary — GoalService already enforces per-tenant budget,
+isolation and the PolicyEngine — it carries no HMAC envelope of its own.
+Cross-boundary HMAC signing/verification lives in ``a2a_security`` (see
+``sign_a2a`` / ``A2ASecurityService``) and guards the public ingress.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
-import hmac as _hmac
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -16,12 +20,6 @@ from typing import Any
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
-
-
-def _sign_payload(payload: bytes, secret: str) -> str:
-    """Produce HMAC-SHA256 signature for an A2A payload."""
-    expected = _hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
-    return f"sha256={expected}"
 
 
 async def dispatch_internal_task(

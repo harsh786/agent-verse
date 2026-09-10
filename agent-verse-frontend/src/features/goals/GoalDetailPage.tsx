@@ -34,6 +34,8 @@ import { toast } from "@/stores/toast";
 import { LiveCostTicker } from "@/components/live/LiveCostTicker";
 import { GoalFeedback } from "./components/GoalFeedback";
 import { GoalExplainPanel } from "./components/GoalExplainPanel";
+import { PatternSelectionPanel } from "./components/PatternSelectionPanel";
+import { EvalSuggestionsPanel } from "./components/EvalSuggestionsPanel";
 import { normalizeAdaptiveResult } from "./adaptiveResult";
 import { AdaptiveResultPanel } from "./components/AdaptiveResultPanel";
 import { artifactToCsv, artifactToMarkdown } from "./resultArtifact";
@@ -47,7 +49,7 @@ import { GuardrailShield } from '@/components/neural/GuardrailShield';
 import { TokenWaterfall } from '@/components/neural/TokenWaterfall';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Tab = "results" | "evidence" | "execution" | "events" | "eval" | "explain";
+type Tab = "results" | "evidence" | "execution" | "events" | "eval" | "explain" | "pattern";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -656,7 +658,7 @@ export function GoalDetailPage() {
   } | null>(null);
   const [sseGuardrail, setSseGuardrail] = useState<{ rule: string } | null>(null);
   const tabRefs = useRef<Record<Tab, HTMLButtonElement | null>>({
-    results: null, evidence: null, execution: null, events: null, eval: null, explain: null,
+    results: null, evidence: null, execution: null, events: null, eval: null, explain: null, pattern: null,
   });
 
   const { data: goal, isLoading, refetch: refetchGoal } = useQuery({
@@ -739,6 +741,7 @@ export function GoalDetailPage() {
     { tab: "evidence",  label: "Evidence",   icon: <ListTree className="h-3.5 w-3.5" aria-hidden="true" /> },
     { tab: "execution", label: "Execution",  icon: <Terminal className="h-3.5 w-3.5" aria-hidden="true" /> },
     { tab: "events",    label: "Dev Log",    icon: <BookOpen className="h-3.5 w-3.5" aria-hidden="true" /> },
+    { tab: "pattern",   label: "Pattern",    icon: <Layers className="h-3.5 w-3.5" aria-hidden="true" /> },
     ...(isTerminal ? [{ tab: "eval" as Tab,    label: "Eval",     icon: <FlaskConical className="h-3.5 w-3.5" aria-hidden="true" /> }] : []),
     ...(isTerminal ? [{ tab: "explain" as Tab, label: "Why?",     icon: <Zap className="h-3.5 w-3.5" aria-hidden="true" /> }] : []),
   ];
@@ -1238,6 +1241,7 @@ export function GoalDetailPage() {
                   </div>
                 </div>
               )}
+              <EvalSuggestionsPanel goalId={goalId!} enabled={isTerminal} />
             </div>
           )}
         </div>
@@ -1247,6 +1251,13 @@ export function GoalDetailPage() {
       {activeTab === "explain" && (
         <div id="goal-tabpanel-explain" role="tabpanel" aria-labelledby="goal-tab-explain">
           <GoalExplainPanel goalId={goalId!} />
+        </div>
+      )}
+
+      {/* Pattern selection */}
+      {activeTab === "pattern" && (
+        <div id="goal-tabpanel-pattern" role="tabpanel" aria-labelledby="goal-tab-pattern">
+          <PatternSelectionPanel goalId={goalId!} goalText={goal?.goal} />
         </div>
       )}
 

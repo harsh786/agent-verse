@@ -1,10 +1,7 @@
 """Tests for app/governance/pricing.py — 8 tests."""
 from __future__ import annotations
 
-import pytest
-
 from app.governance.pricing import estimate_cost, format_cost
-
 
 # ---------------------------------------------------------------------------
 # Cost comparisons

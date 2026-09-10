@@ -16,6 +16,7 @@ Integration point (Amendment 9.4):
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -138,11 +139,20 @@ Respond with ONLY valid JSON:
         redis: Any,
         db_factory: Any,
         llm_provider_factory: Any,
+        auto_apply: bool = True,
     ) -> None:
         self._redis = redis
         self._db = db_factory
         self._llm_factory = llm_provider_factory
         self._state = TenantOptimizationState(redis)
+        # Closed-loop control: when True (the default, and what unit tests use),
+        # a winning candidate is written back to the agent automatically. When
+        # False, the experiment still concludes and records its winner, but the
+        # config is left pending a manual apply (apply_pending()/the API). The
+        # production wiring in app.main sources this from the opt-in runtime flag
+        # ``enable_self_improvement_auto_apply`` (default False), so autonomous
+        # writes to a live agent's config never happen unless a deployment opts in.
+        self._auto_apply = auto_apply
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -166,9 +176,9 @@ Respond with ONLY valid JSON:
         This is the pure, DB-free entry point that makes the optimizer runnable
         in isolation: given a per-dimension ``scores`` mapping (as produced by
         the eval scorecard), it returns a list of ``ImprovementActionRecord``
-        objects ready to hand to ``ImprovementActionExecutor.execute``.  Each
-        record has a deterministic ``idempotency_key`` so re-planning the same
-        goal yields the same actions (the executor then dedupes).
+        objects describing the improvement actions. Each record has a
+        deterministic ``idempotency_key`` so re-planning the same goal yields
+        the same actions.
 
         Thresholds mirror ``app.evals.self_improvement_engine.SelfImprovementEngine``
         so the two decision surfaces stay consistent.  Returns ``[]`` when the
@@ -321,14 +331,14 @@ Respond with ONLY valid JSON:
         """
         from sqlalchemy import text as _t
 
+        # ── CRITICAL: the live apply, in its OWN committed transaction ──────────
+        # The improved config is what the next agent run reads back — it must NOT
+        # be rolled back by a failure in the history/experiment bookkeeping below.
         try:
             async with self._db() as db:
-                # Read current config for history record (Fix 2)
                 current_config = await self._read_current_agent_config_with_session(
                     db, tenant_id, agent_id
                 )
-
-                # Apply the candidate config (Fix 1)
                 await db.execute(
                     _t("""
                         UPDATE agents
@@ -341,8 +351,20 @@ Respond with ONLY valid JSON:
                         "tenant_id": tenant_id,
                     },
                 )
+                await db.commit()
+        except Exception as exc:
+            logger.error(
+                "optimization_apply_error",
+                error=str(exc),
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+            )
+            return False
 
-                # Record in optimization history
+        # ── BEST-EFFORT: history + experiment bookkeeping (separate txn) ────────
+        # A failure here is logged but never negates the already-applied config.
+        try:
+            async with self._db() as db:
                 await db.execute(
                     _t("""
                         INSERT INTO agent_optimization_history
@@ -366,8 +388,6 @@ Respond with ONLY valid JSON:
                         ),
                     },
                 )
-
-                # Mark experiment applied
                 await db.execute(
                     _t("""
                         UPDATE improvement_experiments
@@ -376,10 +396,16 @@ Respond with ONLY valid JSON:
                     """),
                     {"exp_id": experiment_id},
                 )
-
                 await db.commit()
+        except Exception as exc:
+            logger.warning(
+                "optimization_history_record_failed",
+                error=str(exc),
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+            )
 
-            # Reset tenant state for next optimization cycle
+        with contextlib.suppress(Exception):
             await self._state.update(
                 tenant_id,
                 agent_id,
@@ -390,22 +416,58 @@ Respond with ONLY valid JSON:
                 },
             )
 
-            logger.info(
-                "optimization_applied",
-                tenant_id=tenant_id,
-                agent_id=agent_id,
-                experiment_id=experiment_id,
-            )
-            return True
+        logger.info(
+            "optimization_applied",
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            experiment_id=experiment_id,
+        )
+        return True
 
-        except Exception as exc:
-            logger.error(
-                "optimization_apply_error",
-                error=str(exc),
-                tenant_id=tenant_id,
-                agent_id=agent_id,
-            )
-            return False
+    async def apply_pending(self, tenant_id: str, experiment_id: str) -> dict[str, Any]:
+        """Manually apply a concluded experiment whose winner was never auto-applied.
+
+        This is the human-in-the-loop half of the self-improvement loop: when
+        ``auto_apply`` is off, a winning candidate is left pending, and an
+        operator applies it explicitly through the API. Returns a small status
+        dict; ``applied`` is False (with a ``reason``) when the experiment is not
+        in an applicable state (unknown, not a candidate win, or already applied).
+        """
+        from sqlalchemy import text as _t
+
+        async with self._db() as db:
+            row = (
+                await db.execute(
+                    _t("""
+                        SELECT agent_id, candidate_config, winner, applied_at
+                        FROM improvement_experiments
+                        WHERE id = :id AND tenant_id = :tid
+                    """),
+                    {"id": experiment_id, "tid": tenant_id},
+                )
+            ).fetchone()
+
+        if not row:
+            return {"applied": False, "reason": "not_found"}
+        agent_id_str = str(row[0])
+        raw_cfg = row[1]
+        winner = row[2]
+        applied_at = row[3]
+        if winner != "candidate":
+            return {"applied": False, "reason": f"winner_is_{winner or 'unset'}"}
+        if applied_at is not None:
+            return {"applied": False, "reason": "already_applied"}
+
+        candidate_config = raw_cfg if isinstance(raw_cfg, dict) else json.loads(raw_cfg or "{}")
+        ok = await self.apply_suggestion(
+            tenant_id, agent_id_str, experiment_id, candidate_config
+        )
+        return {
+            "applied": ok,
+            "agent_id": agent_id_str,
+            "experiment_id": experiment_id,
+            "reason": None if ok else "apply_failed",
+        }
 
     async def rollback(
         self,
@@ -736,9 +798,22 @@ Respond with ONLY valid JSON:
                 },
             )
             await db.commit()
-        # Apply suggestion OUTSIDE the session (fresh connection) — Fix 5
+        # Apply suggestion OUTSIDE the session (fresh connection) — Fix 5.
+        # Gated by the auto-apply flag: when off, the experiment is concluded
+        # (winner recorded above) but the config is left pending a manual apply.
         if winner == "candidate" and agent_id_str and candidate_config is not None:
-            await self.apply_suggestion(tenant_id, agent_id_str, experiment_id, candidate_config)
+            if self._auto_apply:
+                await self.apply_suggestion(
+                    tenant_id, agent_id_str, experiment_id, candidate_config
+                )
+            else:
+                logger.info(
+                    "optimization_pending_manual_apply",
+                    tenant_id=tenant_id,
+                    agent_id=agent_id_str,
+                    experiment_id=experiment_id,
+                    reason="auto_apply_disabled",
+                )
 
     @staticmethod
     def _bayesian_prob_better(

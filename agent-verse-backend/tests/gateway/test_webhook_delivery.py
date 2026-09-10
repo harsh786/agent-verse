@@ -12,7 +12,7 @@ import hashlib
 import hmac
 import json
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -187,7 +187,7 @@ class TestWebhookDeliverySystem:
             assert BACKOFF_SCHEDULE[i] < BACKOFF_SCHEDULE[i + 1]
 
     def test_max_retries_matches_schedule_length(self) -> None:
-        assert MAX_RETRIES == len(BACKOFF_SCHEDULE)
+        assert len(BACKOFF_SCHEDULE) == MAX_RETRIES
 
     @pytest.mark.asyncio
     async def test_deliver_sets_signature_header(

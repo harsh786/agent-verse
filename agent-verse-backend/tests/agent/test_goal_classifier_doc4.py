@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from app.agent.goal_classifier import GoalClassifier, goal_classifier
-from app.agent.pattern_config import Complexity, Domain, GoalProperties, RiskLevel
+from app.agent.pattern_config import Complexity, Domain, RiskLevel
 
 
 @pytest.fixture

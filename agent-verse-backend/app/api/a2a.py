@@ -24,9 +24,7 @@ router = APIRouter(tags=["a2a"])
 _tasks: dict[str, dict[str, Any]] = {}
 
 # ── startup check: warn loudly when HMAC auth is disabled ─────────────────────
-import os as _os
-
-if not _os.getenv("A2A_SHARED_SECRET", ""):
+if not os.getenv("A2A_SHARED_SECRET", ""):
     logger.warning(
         "a2a_hmac_disabled",
         message=(
@@ -290,7 +288,7 @@ async def receive_a2a_task(
             await _update_task_status(task_id, final_status, final_result, db)
             await _send_callback(body.callback_url or "", task_id, final_status, final_result)
 
-        asyncio.create_task(execute_and_callback())
+        asyncio.create_task(execute_and_callback())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
 
     return {
         "task_id": task_id,

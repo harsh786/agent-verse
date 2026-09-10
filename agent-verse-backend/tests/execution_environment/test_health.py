@@ -1,8 +1,6 @@
 """Tests for health-check interfaces."""
 from __future__ import annotations
 
-import pytest
-
 from app.execution_environment.health import (
     AlwaysHealthyCheck,
     AlwaysUnhealthyCheck,

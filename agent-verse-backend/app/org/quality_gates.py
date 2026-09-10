@@ -100,6 +100,7 @@ class QualityGateSystem:
         run_peer_review: bool = False,
         run_policy_check: bool = True,
         require_human_approval: bool = False,
+        llm_provider: Any | None = None,
     ) -> None:
         self._run_self_check = run_self_check
         self._run_deterministic = run_deterministic
@@ -107,6 +108,10 @@ class QualityGateSystem:
         self._run_peer_review = run_peer_review
         self._run_policy_check = run_policy_check
         self._require_human = require_human_approval
+        # Optional LLM provider powering the specialized-evaluator (Gate 3) and
+        # peer-review (Gate 4) judges. When absent those gates degrade honestly
+        # (heuristic evaluator / explicit peer-review SKIP) rather than faking.
+        self._llm = llm_provider
 
     async def evaluate(self, output: str, context: dict[str, Any]) -> QualityScore:
         """Run all configured quality gates and return composite score."""
@@ -241,23 +246,44 @@ class QualityGateSystem:
         return GateOutcome(2, "deterministic", GateResult.PASS, score, details, cost_usd=0.0)
 
     async def _run_gate_3(self, output: str, context: dict) -> GateOutcome:
-        """Gate 3: Specialized evaluator (LLM-as-judge stub)."""
-        # TODO: integrate with LLM evaluator when available
-        # For now: heuristic-based quality estimation
+        """Gate 3: Specialized evaluator — LLM-as-judge when a provider is wired.
+
+        With an LLM provider, asks the model to score the output 0-1 against the
+        task and returns the parsed score. Without one (or on parse failure), it
+        degrades to a transparent length/structure heuristic.
+        """
+        if self._llm is not None:
+            judged = await self._llm_score(
+                output,
+                context,
+                system=(
+                    "You are a strict quality evaluator. Score how well the OUTPUT "
+                    "satisfies the task on a 0.0-1.0 scale. Respond ONLY with a JSON "
+                    'object: {"score": <float 0-1>, "reason": "<short>"}.'
+                ),
+                gate_label="specialized_evaluator (llm judge)",
+            )
+            if judged is not None:
+                score, reason = judged
+                return GateOutcome(
+                    3,
+                    "specialized_evaluator",
+                    GateResult.PASS if score > 0.5 else GateResult.FAIL,
+                    score,
+                    f"LLM judge: {reason}"[:300],
+                    cost_usd=0.08,
+                )
+
+        # Heuristic fallback (no provider / unparseable response).
         word_count = len(output.split())
-        score = 0.0
         if word_count < 10:
-            score = 0.30
-            details = "Output too brief for domain requirements"
+            score, details = 0.30, "Output too brief for domain requirements (heuristic)"
         elif word_count < 50:
-            score = 0.65
-            details = "Output somewhat brief"
+            score, details = 0.65, "Output somewhat brief (heuristic)"
         elif word_count < 500:
-            score = 0.85
-            details = "Adequate output length"
+            score, details = 0.85, "Adequate output length (heuristic)"
         else:
-            score = 0.80
-            details = "Detailed output (may need conciseness review)"
+            score, details = 0.80, "Detailed output — may need conciseness review (heuristic)"
 
         return GateOutcome(
             3,
@@ -265,15 +291,107 @@ class QualityGateSystem:
             GateResult.PASS if score > 0.5 else GateResult.FAIL,
             score,
             details,
-            cost_usd=0.08,
+            cost_usd=0.0,
         )
 
     async def _run_gate_4(self, output: str, context: dict) -> GateOutcome:
-        """Gate 4: Peer review (requires another agent)."""
-        # TODO: spawn peer reviewer agent
-        return GateOutcome(
-            4, "peer_review", GateResult.SKIP, 0.0, "Peer review deferred", cost_usd=0.0
+        """Gate 4: Peer review by a *different* agent (LLM peer reviewer).
+
+        Runs a real peer-review LLM pass when a provider is wired. Without one it
+        SKIPs explicitly (score 0.0, excluded from the weighted total) — honest
+        that no independent review happened, never a fabricated pass.
+        """
+        if self._llm is None:
+            return GateOutcome(
+                4,
+                "peer_review",
+                GateResult.SKIP,
+                0.0,
+                "Peer review skipped — no reviewer provider configured",
+                cost_usd=0.0,
+            )
+
+        judged = await self._llm_score(
+            output,
+            context,
+            system=(
+                "You are an independent peer reviewer from the same department, "
+                "reviewing a colleague's work. Rate correctness and completeness "
+                'on a 0.0-1.0 scale. Respond ONLY with JSON: {"score": <float>, '
+                '"reason": "<short critique>"}.'
+            ),
+            gate_label="peer_review",
         )
+        if judged is None:
+            return GateOutcome(
+                4,
+                "peer_review",
+                GateResult.SKIP,
+                0.0,
+                "Peer review inconclusive — reviewer response unparseable",
+                cost_usd=0.02,
+            )
+        score, reason = judged
+        return GateOutcome(
+            4,
+            "peer_review",
+            GateResult.PASS if score > 0.5 else GateResult.FAIL,
+            score,
+            f"Peer reviewer: {reason}"[:300],
+            cost_usd=0.05,
+        )
+
+    async def _llm_score(
+        self,
+        output: str,
+        context: dict,
+        *,
+        system: str,
+        gate_label: str,
+    ) -> tuple[float, str] | None:
+        """Run an LLM judge and parse a ``{score, reason}`` verdict.
+
+        Returns ``(score, reason)`` or ``None`` when no usable score could be
+        parsed (so the caller can degrade honestly).
+        """
+        import json
+
+        try:
+            from app.providers.base import CompletionRequest, Message
+
+            task = str(context.get("task") or context.get("objective") or "the task")
+            prompt = (
+                f"TASK: {task}\n\nOUTPUT TO EVALUATE:\n{output[:4000]}\n\n"
+                "Return only the JSON verdict."
+            )
+            req = CompletionRequest(
+                messages=[
+                    Message(role="system", content=system),
+                    Message(role="user", content=prompt),
+                ],
+                model="claude-sonnet-4-5",
+                max_tokens=200,
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "score": {"type": "number"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["score"],
+                },
+            )
+            resp = await self._llm.complete(req)
+            raw = (resp.content or "").strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
+            data = json.loads(raw)
+            score = float(data.get("score"))
+            score = max(0.0, min(1.0, score))
+            reason = str(data.get("reason", ""))[:200] or gate_label
+            return score, reason
+        except Exception as exc:
+            _log.warning("quality_gates.llm_judge_failed", gate=gate_label, error=str(exc))
+            return None
 
     async def _run_gate_5(self, output: str, context: dict) -> GateOutcome:
         """Gate 5: Policy check — no PII, no policy violations."""

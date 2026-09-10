@@ -1,9 +1,12 @@
 # tests/ingestion/test_vision_parser.py
 """Vision parser must describe images using GPT-4V or Claude Vision."""
 from __future__ import annotations
+
 import base64
-import pytest
 from unittest.mock import AsyncMock, patch
+
+import pytest
+
 from app.ingestion.parsers.vision_parser import VisionParser, VisionParseResult
 
 

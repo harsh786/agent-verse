@@ -5,16 +5,11 @@ Runs without real API keys — all HTTP calls are mocked via unittest.mock.
 
 from __future__ import annotations
 
-import asyncio
-import json
-from collections.abc import AsyncIterator
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.providers.base import CompletionRequest, EmbedRequest, Message
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -213,7 +208,6 @@ class TestComplete:
 class TestModelRouter:
     def test_all_task_types_have_cloud_route(self) -> None:
         from app.providers.model_router import (
-            CLOUD_TASK_ROUTING,
             ModelRouter,
             TaskType,
         )

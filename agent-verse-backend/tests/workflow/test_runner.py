@@ -1,7 +1,7 @@
 """Tests for WorkflowRunner — trigger validation and dispatch logic."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -9,7 +9,6 @@ from app.workflow.compiler import WorkflowCompiler
 from app.workflow.context import ContextResolver
 from app.workflow.dsl import InputDefinition, WorkflowDefinition
 from app.workflow.runner import WorkflowRunner, WorkflowValidationError
-from app.workflow.state import WorkflowRunStatus
 
 
 @pytest.fixture

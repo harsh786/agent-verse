@@ -1,7 +1,7 @@
 """Tests for CostController daily reset."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from unittest.mock import patch
 
 import pytest

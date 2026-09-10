@@ -49,3 +49,45 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
+  # WS-4: a REAL, out-of-process Celery worker for the workflow queues, for CI
+  # parity with the subprocess worker that tests/e2e_full/test_workflow_run_e2e
+  # launches on the host. It subscribes to every per-plan workflow queue the
+  # WorkflowRunner may dispatch onto (default tenant plan -> workflows.free) plus
+  # workflows.maintenance for the workflow beat tasks. The worker runs on its own
+  # per-process MemorySaver checkpointer (LangGraph's async-capable in-memory
+  # saver, the default _WORKER_CHECKPOINTER), so it needs no RediSearch — plain
+  # redis:7-alpine above is sufficient. Fresh runs reconstruct their initial
+  # state from the persisted run record (WorkflowRunner.execute_fresh).
+  #
+  # NOTE: the schema must already be applied to the postgres service (the
+  # e2e_full conftest runs `alembic upgrade head`); bring the app/tests up first,
+  # or run alembic against localhost:55432, before this worker does useful work.
+  workflow-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command:
+      - "celery"
+      - "-A"
+      - "app.scaling.celery_app"
+      - "worker"
+      - "--loglevel=info"
+      - "--concurrency=1"
+      - "-Q"
+      - "workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@postgres:5432/agentverse
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.scaling.celery_app inspect ping -d celery@$(hostname) || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s

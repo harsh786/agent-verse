@@ -526,7 +526,13 @@ async def suggest_schedule(request: Request, body: SuggestScheduleRequest) -> di
                 max_tokens=600,
             )
         )
-        raw = resp.content.strip().lstrip("```json").lstrip("```").rstrip("```")
+        raw = (
+            resp.content.strip()
+            .removeprefix("```json")
+            .removeprefix("```")
+            .removesuffix("```")
+            .strip()
+        )
         data = _json.loads(raw)
         suggestions = data.get("suggestions", [])
     except Exception:
@@ -564,42 +570,41 @@ async def get_schedule_history(
             if db:
                 from app.db.rls import sqlalchemy_rls_context
 
-                async with db() as session:
-                    async with sqlalchemy_rls_context(session, tenant.tenant_id):
-                        rows = (
-                            await session.execute(
-                                _t("""
-                                    SELECT id, status, created_at,
-                                           execution_context->>'duration_s' as duration_s,
-                                           execution_context->>'error' as error
-                                    FROM goals
-                                    WHERE tenant_id = :tid
-                                      AND execution_context->>'schedule_id' = :sid
-                                    ORDER BY created_at DESC
-                                    LIMIT :limit
-                                """),
-                                {
-                                    "tid": tenant.tenant_id,
-                                    "sid": schedule_id,
-                                    "limit": limit,
-                                },
-                            )
-                        ).fetchall()
-                        runs = [
+                async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
+                    rows = (
+                        await session.execute(
+                            _t("""
+                                SELECT id, status, created_at,
+                                       execution_context->>'duration_s' as duration_s,
+                                       execution_context->>'error' as error
+                                FROM goals
+                                WHERE tenant_id = :tid
+                                  AND execution_context->>'schedule_id' = :sid
+                                ORDER BY created_at DESC
+                                LIMIT :limit
+                            """),
                             {
-                                "run_id": str(row[0]),
-                                "goal_id": str(row[0]),
-                                "status": (
-                                    "success"
-                                    if row[1] == "complete"
-                                    else ("failed" if row[1] == "failed" else row[1])
-                                ),
-                                "started_at": row[2].isoformat() if row[2] else None,
-                                "duration_ms": (int(float(row[3] or 0) * 1000) if row[3] else None),
-                                "error": row[4],
-                            }
-                            for row in rows
-                        ]
+                                "tid": tenant.tenant_id,
+                                "sid": schedule_id,
+                                "limit": limit,
+                            },
+                        )
+                    ).fetchall()
+                    runs = [
+                        {
+                            "run_id": str(row[0]),
+                            "goal_id": str(row[0]),
+                            "status": (
+                                "success"
+                                if row[1] == "complete"
+                                else ("failed" if row[1] == "failed" else row[1])
+                            ),
+                            "started_at": row[2].isoformat() if row[2] else None,
+                            "duration_ms": (int(float(row[3] or 0) * 1000) if row[3] else None),
+                            "error": row[4],
+                        }
+                        for row in rows
+                    ]
         except Exception:
             pass
 

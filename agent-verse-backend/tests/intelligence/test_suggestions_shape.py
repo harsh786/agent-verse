@@ -4,12 +4,7 @@ expected by the frontend Suggestion interface:
 """
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import MagicMock, patch
-
-import pytest
-from fastapi.testclient import TestClient
-
+from unittest.mock import MagicMock
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -193,7 +188,6 @@ def test_experiment_shape_fields():
 
 def test_experiment_status_mapping():
     """DB status 'completed' should map to frontend status 'concluded'."""
-    from app.intelligence.self_optimizer_v2 import SelfOptimizerV2
 
     raw_status = "completed"
     if raw_status in ("completed", "rolled_back", "failed"):
@@ -220,6 +214,7 @@ def test_experiment_status_running_passthrough():
 def test_experiment_no_wrong_column_names():
     """The SELECT query must NOT reference non-existent columns."""
     import inspect
+
     from app.intelligence import self_optimizer_v2
 
     source = inspect.getsource(self_optimizer_v2.SelfOptimizerV2.list_experiments)
@@ -235,6 +230,7 @@ def test_experiment_no_wrong_column_names():
 def test_experiment_uses_correct_column_names():
     """The SELECT query must reference the correct DB column names."""
     import inspect
+
     from app.intelligence import self_optimizer_v2
 
     source = inspect.getsource(self_optimizer_v2.SelfOptimizerV2.list_experiments)

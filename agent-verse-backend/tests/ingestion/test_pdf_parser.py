@@ -1,8 +1,10 @@
 # tests/ingestion/test_pdf_parser.py
 """PDF parser must extract text with page numbers and layout metadata."""
 from __future__ import annotations
+
 import pytest
-from app.ingestion.parsers.pdf_parser import PDFParser, PDFParseResult, PDFPage
+
+from app.ingestion.parsers.pdf_parser import PDFPage, PDFParser, PDFParseResult
 
 
 @pytest.fixture

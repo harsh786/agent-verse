@@ -1,13 +1,12 @@
 """Comprehensive tests for DocumentParserTool — all formats, truncation, error paths."""
 from __future__ import annotations
 
-import io
 import json
-import pytest
 from unittest.mock import MagicMock, patch
 
-from app.tools.document_parser import DocumentParserTool, ParsedDocument, _MAX_CHARS
+import pytest
 
+from app.tools.document_parser import _MAX_CHARS, DocumentParserTool
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -100,7 +99,7 @@ def test_parse_yaml_valid():
     parser = _parser()
     yaml_data = b"key: value\nnum: 42\n"
     try:
-        import yaml
+        import yaml  # noqa: F401  # import used only to skip the test when PyYAML isn't installed
         doc = parser._parse_yaml(yaml_data, filename="config.yaml")
         assert doc.format == "yaml"
         assert "key" in doc.content

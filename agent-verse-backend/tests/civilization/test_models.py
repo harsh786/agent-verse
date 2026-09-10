@@ -1,8 +1,6 @@
 """Tests for civilization domain models — pure data types."""
 from __future__ import annotations
 
-import pytest
-
 from app.civilization.models import (
     BreachContext,
     BreachVerdict,
@@ -15,7 +13,6 @@ from app.civilization.models import (
     SpawnDecision,
     SpawnVerdict,
 )
-
 
 # ── Enums ─────────────────────────────────────────────────────────────────────
 

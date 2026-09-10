@@ -3,7 +3,8 @@
 Environment:
   WORDPRESS_URL:              Site URL (e.g. 'https://myblog.com')
   WORDPRESS_USERNAME:         WordPress admin username
-  WORDPRESS_APP_PASSWORD:     WordPress Application Password (Settings > User > Application Passwords)
+  WORDPRESS_APP_PASSWORD:     WordPress Application Password
+                              (Settings > User > Application Passwords)
 """
 
 from __future__ import annotations

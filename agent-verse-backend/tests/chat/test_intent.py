@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.chat.intent import Intent, IntentRouter, ClarifyRequest, ScheduleConfirmation
+from app.chat.intent import ClarifyRequest, Intent, IntentRouter, ScheduleConfirmation
 
 
 @pytest.fixture()

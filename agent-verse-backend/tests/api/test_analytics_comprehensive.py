@@ -32,7 +32,7 @@ def _make_app(goal_service: Any = None, aggregator: Any = None) -> FastAPI:
 
 
 def _make_mock_aggregator() -> Any:
-    from app.analytics.aggregator import GoalMetrics, ToolMetrics, AgentMetrics
+    from app.analytics.aggregator import AgentMetrics, GoalMetrics, ToolMetrics
 
     agg = MagicMock()
 

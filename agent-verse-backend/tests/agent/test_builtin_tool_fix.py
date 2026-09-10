@@ -6,10 +6,9 @@ Tests for the builtin tool handler fix:
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -209,7 +208,6 @@ async def test_worker_discovers_all_tools_without_connector_ids():
     The worker context factory must fall back to discovering ALL tenant tools
     (Fix 4 in tasks.py) so the planner has tool context.
     """
-    from app.mcp.registry import MCPRegistry
 
     # Simulate what the worker's _build_worker_mcp_context does
     cfg = make_jira_server_config(with_handler=False)

@@ -64,15 +64,38 @@ class PlannerMixin:
             if not retrieved_chunks and rag_context:
                 retrieved_chunks = [{"content": rag_context, "score": 0.7, "chunk_id": "rag_0"}]
             if retrieved_chunks:
-                pipeline = ContextPipeline(max_tokens=6000, rerank_strategy=rerank_strategy)
+                # BK3 (D-20 follow-up): wrap the already-injected knowledge-graph
+                # store / semantic cache (two-phase app.state wiring, same as every
+                # other optional service on self) as ContextPipeline's duck-typed
+                # producers. Absent deps -> None -> pipeline behaves exactly as
+                # before (empty graph_facts / semantic_cache_hits branches).
+                _graph_source = None
+                _semantic_cache_source = None
+                if self._knowledge_graph_store is not None:
+                    from app.context.context_sources import KnowledgeGraphFactsSource
+
+                    _graph_source = KnowledgeGraphFactsSource(self._knowledge_graph_store)
+                if self._semantic_cache is not None:
+                    from app.context.context_sources import SemanticCacheHitsSource
+
+                    _semantic_cache_source = SemanticCacheHitsSource(self._semantic_cache)
+                pipeline = ContextPipeline(
+                    max_tokens=6000,
+                    rerank_strategy=rerank_strategy,
+                    graph_source=_graph_source,
+                    semantic_cache=_semantic_cache_source,
+                )
                 reflexion_lessons = agent_state.context.get("_reflexion_lessons", [])
                 # D-20: forward structured prompt-builder sources fetched by rag_mixin
                 # (execution/long-term memory) plus graph_facts + semantic_cache_hits
-                # when present in state. Each defaults to [] so this stays additive.
+                # when present in state. execution_memory/long_term_memory default to
+                # [] (unconditionally additive); graph_facts/semantic_cache_hits are
+                # left None when absent from state so ContextPipeline's own
+                # best-effort producers (above) get a chance to fill them in.
                 _exec_mem = agent_state.context.get("_execution_memory_records", [])
                 _ltm = agent_state.context.get("_long_term_memory_records", [])
-                _graph_facts = agent_state.context.get("_graph_facts", [])
-                _sem_cache_hits = agent_state.context.get("_semantic_cache_hits", [])
+                _graph_facts = agent_state.context.get("_graph_facts")
+                _sem_cache_hits = agent_state.context.get("_semantic_cache_hits")
                 pipeline_result = pipeline.run(
                     chunks=retrieved_chunks,
                     query=agent_state.goal,
@@ -81,9 +104,10 @@ class PlannerMixin:
                     execution_memory=_exec_mem if isinstance(_exec_mem, list) else [],
                     long_term_memory=_ltm if isinstance(_ltm, list) else [],
                     semantic_cache_hits=(
-                        _sem_cache_hits if isinstance(_sem_cache_hits, list) else []
+                        _sem_cache_hits if isinstance(_sem_cache_hits, list) else None
                     ),
-                    graph_facts=_graph_facts if isinstance(_graph_facts, list) else [],
+                    graph_facts=_graph_facts if isinstance(_graph_facts, list) else None,
+                    tenant_id=tenant_ctx.tenant_id,
                 )
                 if pipeline_result.planner_context:
                     rag_context = pipeline_result.planner_context

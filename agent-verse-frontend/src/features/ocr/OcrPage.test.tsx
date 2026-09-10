@@ -39,6 +39,11 @@ vi.mock('@/lib/api/client', async (importOriginal) => {
       extractBase64: vi.fn(),
       batch: vi.fn(),
     },
+    knowledgeApi: {
+      ...actual.knowledgeApi,
+      listCollections: vi.fn().mockResolvedValue([]),
+      ingest: vi.fn(),
+    },
   };
 });
 
@@ -65,7 +70,7 @@ Object.assign(URL, {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-import { ocrApi } from '@/lib/api/client';
+import { ocrApi, knowledgeApi } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 
 const mockOcrResult = {
@@ -383,10 +388,54 @@ describe('OcrPage — history tab', () => {
     await userEvent.upload(screen.getByTestId('file-input'), makeFile('myid.jpg'));
     await userEvent.click(await screen.findByTestId('extract-btn'));
     await waitFor(() => screen.getByTestId('ocr-result'));
-    await userEvent.click(screen.getByRole('button', { name: /Save/i }));
+    // Exact match: distinct from the "Save to Knowledge Base" button (WS-13).
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(toast).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }));
 
     await userEvent.click(screen.getByTestId('tab-history'));
     expect(await screen.findByText('myid.jpg')).toBeInTheDocument();
+  });
+});
+
+describe('OcrPage — Save to Knowledge Base (WS-13: link OCR extracts into the unified KB)', () => {
+  test('shows an honest empty state when no knowledge collections exist', async () => {
+    vi.mocked(knowledgeApi.listCollections).mockResolvedValue([]);
+    vi.mocked(ocrApi.extractFile).mockResolvedValue(mockOcrResult);
+    renderPage();
+    await userEvent.upload(screen.getByTestId('file-input'), makeFile('id.jpg'));
+    await userEvent.click(await screen.findByTestId('extract-btn'));
+    await waitFor(() => screen.getByTestId('ocr-result'));
+
+    expect(await screen.findByTestId('kb-no-collections')).toHaveTextContent(/no knowledge collections yet/i);
+    expect(screen.queryByTestId('kb-save-btn')).not.toBeInTheDocument();
+  });
+
+  test('saves the real extracted text to the selected real collection via POST /knowledge/ingest', async () => {
+    vi.mocked(knowledgeApi.listCollections).mockResolvedValue([
+      { collection_id: 'col-1', name: 'Onboarding Docs', document_count: 3, created_at: '2026-01-01T00:00:00Z' },
+    ]);
+    vi.mocked(knowledgeApi.ingest).mockResolvedValue({
+      document_id: 'doc-1', collection_id: 'col-1', chunks_created: 2, content_hash: 'abc',
+    });
+    vi.mocked(ocrApi.extractFile).mockResolvedValue(mockOcrResult);
+    renderPage();
+    await userEvent.upload(screen.getByTestId('file-input'), makeFile('id.jpg'));
+    await userEvent.click(await screen.findByTestId('extract-btn'));
+    await waitFor(() => screen.getByTestId('ocr-result'));
+
+    const select = await screen.findByLabelText('Knowledge collection');
+    await userEvent.selectOptions(select, 'col-1');
+    await userEvent.click(screen.getByTestId('kb-save-btn'));
+
+    await waitFor(() => {
+      expect(knowledgeApi.ingest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          collection_id: 'col-1',
+          source_type: 'ocr',
+          content: mockOcrResult.raw_text,
+        })
+      );
+    });
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success', message: expect.stringContaining('2 chunks') }));
   });
 });

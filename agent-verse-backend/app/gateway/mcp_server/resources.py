@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from app.observability.logging import get_logger
 
@@ -88,7 +88,7 @@ class OrgMCPResources:
     Compatible with: Claude Desktop, Cursor, any MCP client.
     """
 
-    ORG_RESOURCES: list[MCPResource] = [
+    ORG_RESOURCES: ClassVar[list[MCPResource]] = [
         MCPResource(
             uri="org://{org_id}/status",
             name="Org Status",
@@ -221,7 +221,7 @@ class OrgMCPPrompts:
     QA11 — Exposes templated prompts the org can answer.
     """
 
-    ORG_PROMPTS: list[MCPPrompt] = [
+    ORG_PROMPTS: ClassVar[list[MCPPrompt]] = [
         MCPPrompt(
             name="analyze_mission_risk",
             description="Analyze the risk level of a mission goal before execution",

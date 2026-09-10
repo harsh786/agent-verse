@@ -174,9 +174,10 @@ class ParserRegistry:
         Returns a single string of extracted text.
         Falls back to UTF-8 decode if parser raises.
         """
-        from app.ingestion.content_classifier import ContentType as CT
+        from app.ingestion.content_classifier import ContentType
 
-        ct = content_type if isinstance(content_type, CT) else CT.TEXT  # fixed: was CT.PLAIN_TEXT
+        # fixed: was ContentType.PLAIN_TEXT
+        ct = content_type if isinstance(content_type, ContentType) else ContentType.TEXT
         parser = self._parsers.get(ct, TextParser())
 
         # Most parsers take str, but pipeline gives bytes
@@ -233,6 +234,8 @@ class ParserRegistry:
                 return await self._parse_image(content, name, meta, ocr_engine, vision_provider)
             if ct == ContentType.AUDIO:
                 return await self._parse_audio(content, name, mime_type, meta)
+            if ct == ContentType.VIDEO:
+                return await self._parse_video(content, name, meta)
         except Exception as exc:  # never leak binary garbage on unexpected failure
             meta["parse_error"] = str(exc)[:200]
             return "", meta
@@ -344,5 +347,20 @@ class ParserRegistry:
         )
         if result.error:
             meta["audio_degraded"] = result.error
+            return "", meta
+        return result.transcript, meta
+
+    async def _parse_video(
+        self,
+        content: bytes,
+        name: str,
+        meta: dict[str, object],
+    ) -> tuple[str, dict[str, object]]:
+        """Transcribe video via the Whisper-backed VideoParser (extract audio → ASR)."""
+        from app.ingestion.parsers.video_parser import VideoParser
+
+        result = await VideoParser().parse_bytes(content, name)
+        if result.error:
+            meta["video_degraded"] = result.error
             return "", meta
         return result.transcript, meta

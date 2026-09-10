@@ -13,9 +13,7 @@ import pytest
 
 from app.intelligence.self_optimizer_v2 import (
     SelfOptimizerV2,
-    TenantOptimizationState,
 )
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

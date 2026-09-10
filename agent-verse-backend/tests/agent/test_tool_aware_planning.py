@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 
-
 def _agent_source() -> str:
     """Read combined source of graph.py and all node mixin files."""
     import pathlib
@@ -13,9 +12,7 @@ def _agent_source() -> str:
 
 def test_graph_injects_tool_schemas_into_planner():
     """graph.py _node_plan must inject tool schemas into system prompt."""
-    import inspect
 
-    from app.agent import graph
 
     src = _agent_source()
     assert (
@@ -27,9 +24,7 @@ def test_graph_injects_tool_schemas_into_planner():
 
 def test_workflow_plan_validates_tools():
     """Plan validation should warn about unknown tools."""
-    import inspect
 
-    from app.agent import graph
 
     src = _agent_source()
     assert "_validate_plan_tools" in src, (

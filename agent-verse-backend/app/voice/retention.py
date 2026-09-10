@@ -17,7 +17,7 @@ from __future__ import annotations
 import datetime as _dt
 import re
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any
 
 _REDACTION = "[REDACTED]"
 
@@ -105,16 +105,13 @@ def apply_retention(
     )
 
 
-_Record = TypeVar("_Record", bound=dict[str, Any])
-
-
-def purge_expired(
-    records: list[_Record],
+def purge_expired[Record: dict[str, Any]](
+    records: list[Record],
     policy: VoiceRetentionPolicy,
     *,
     now: _dt.datetime | None = None,
     timestamp_key: str = "created_at",
-) -> list[_Record]:
+) -> list[Record]:
     """Return the subset of ``records`` still within ``policy.max_transcript_age``.
 
     Each record is a mapping carrying a timezone-aware ``created_at`` (or

@@ -14,7 +14,6 @@ import pytest
 
 from app.providers.base import CompletionRequest, EmbedRequest, Message, ToolDefinition
 
-
 # ---------------------------------------------------------------------------
 # Helpers: build mock openai module and mock response objects
 # ---------------------------------------------------------------------------
@@ -95,12 +94,14 @@ def test_constructor_stores_default_model() -> None:
 def test_constructor_raises_import_error_when_openai_missing() -> None:
     with patch.dict(sys.modules, {"openai": None}):  # type: ignore[dict-item]
         import importlib
+
         import app.providers.openai_compatible as _mod
         importlib.reload(_mod)
         with pytest.raises(ImportError, match="openai"):
             _mod.OpenAICompatibleProvider(api_key="key")
     # Restore
     import importlib
+
     import app.providers.openai_compatible as _mod2
     importlib.reload(_mod2)
 
@@ -419,6 +420,33 @@ async def test_embed_uses_default_model() -> None:
 
 
 @pytest.mark.asyncio
+async def test_embed_uses_configured_embed_model_not_chat_default() -> None:
+    """A self-hosted embed_model must be used; the chat default is never sent to
+    /embeddings (regression: embed_batch previously hardcoded text-embedding-3-small)."""
+    mock_openai, mock_client = _make_openai_module()
+    captured: list[dict] = []
+
+    async def _capture(**kw: object) -> MagicMock:
+        captured.append(dict(kw))
+        return _make_embed_response([[0.0]])
+
+    mock_client.embeddings.create = _capture
+
+    with patch.dict(sys.modules, {"openai": mock_openai}):
+        from app.providers.openai_compatible import OpenAICompatibleProvider
+
+        provider = OpenAICompatibleProvider(
+            api_key="key", default_model="gpt-5.2", embed_model="Qwen/Qwen3-Embedding-0.6B"
+        )
+        await provider.embed(EmbedRequest(texts=["a"]))
+        await provider.embed_batch(["b", "c"])
+
+    # Both embed() and embed_batch() use the configured embed_model, never gpt-5.2.
+    assert all(c["model"] == "Qwen/Qwen3-Embedding-0.6B" for c in captured)
+    assert all(c["model"] != "gpt-5.2" for c in captured)
+
+
+@pytest.mark.asyncio
 async def test_embed_no_usage_returns_zero_tokens() -> None:
     mock_openai, mock_client = _make_openai_module()
     mock_embed_resp = _make_embed_response([[0.1]])
@@ -531,11 +559,11 @@ class _AsyncIterator:
     def __init__(self, items: list) -> None:
         self._items = iter(items)
 
-    def __aiter__(self) -> "_AsyncIterator":
+    def __aiter__(self) -> _AsyncIterator:
         return self
 
     async def __anext__(self) -> object:
         try:
             return next(self._items)
         except StopIteration:
-            raise StopAsyncIteration
+            raise StopAsyncIteration from None

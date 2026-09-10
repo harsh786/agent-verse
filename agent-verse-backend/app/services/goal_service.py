@@ -166,18 +166,18 @@ def _resolve_checkpointer(app_state: Any) -> Any:
         # langgraph-checkpoint-redis versions; validate the return value is a real
         # BaseCheckpointSaver before using it, otherwise fall through to sync saver.
         try:
-            from langgraph.checkpoint.base import BaseCheckpointSaver as _BCS
+            from langgraph.checkpoint.base import BaseCheckpointSaver
             from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 
             _saver = AsyncRedisSaver.from_conn_string(redis_url)
-            if not isinstance(_saver, _BCS):
+            if not isinstance(_saver, BaseCheckpointSaver):
                 raise TypeError(
                     f"AsyncRedisSaver.from_conn_string returned {type(_saver).__name__}, "
                     "not a BaseCheckpointSaver — needs async with pattern"
                 )
             try:
                 _loop = asyncio.get_running_loop()
-                _loop.create_task(_saver.setup())
+                _loop.create_task(_saver.setup())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
             except RuntimeError:
                 pass
             _svc_logger.info("checkpointer_redis_async_wired")
@@ -193,16 +193,16 @@ def _resolve_checkpointer(app_state: Any) -> Any:
         # async saver absent) invisible to MemorySaver-based tests. Reject such a
         # saver and fall through to MemorySaver instead of shipping a broken one.
         try:
-            from langgraph.checkpoint.base import BaseCheckpointSaver as _BCS2
+            from langgraph.checkpoint.base import BaseCheckpointSaver
             from langgraph.checkpoint.redis import RedisSaver
 
             _saver2 = RedisSaver.from_conn_string(redis_url)
-            if not isinstance(_saver2, _BCS2):
+            if not isinstance(_saver2, BaseCheckpointSaver):
                 raise TypeError(
                     f"RedisSaver.from_conn_string returned {type(_saver2).__name__}, "
                     "not a BaseCheckpointSaver"
                 )
-            if type(_saver2).aget_tuple is _BCS2.aget_tuple:
+            if type(_saver2).aget_tuple is BaseCheckpointSaver.aget_tuple:
                 raise TypeError(
                     "sync RedisSaver does not implement the async checkpoint API "
                     "(aget_tuple); it is unusable by the async agent graph"
@@ -404,7 +404,7 @@ class GoalService:
         """Start the HITL rejection note subscriber as a background asyncio task."""
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(
+            loop.create_task(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 self._subscribe_hitl_rejections(redis_url),
                 name="hitl-rejection-subscriber",
             )
@@ -535,26 +535,24 @@ class GoalService:
                                         with suppress(Exception):
                                             record.subscribers.remove(q)
                                     # Send end-of-stream sentinel on terminal events
-                                    _TERMINAL_BRIDGE = {
+                                    _terminal_bridge = {
                                         "goal_complete",
                                         "worker_complete",
                                         "goal_failed",
                                         "worker_failed",
                                         "goal_cancelled",
                                     }
-                                    if event_type in _TERMINAL_BRIDGE:
+                                    if event_type in _terminal_bridge:
                                         for q in list(record.subscribers):
                                             with suppress(Exception):
                                                 q.put_nowait(_SENTINEL)
                                         # Update record status
-                                        from app.agent.state import GoalStatus as _GS
-
                                         if event_type in {"goal_complete", "worker_complete"}:
-                                            record.status = _GS.COMPLETE
+                                            record.status = GoalStatus.COMPLETE
                                         elif event_type in {"goal_failed", "worker_failed"}:
-                                            record.status = _GS.FAILED
+                                            record.status = GoalStatus.FAILED
                                         elif event_type == "goal_cancelled":
-                                            record.status = _GS.CANCELLED
+                                            record.status = GoalStatus.CANCELLED
                         except Exception as exc:
                             self._logger.warning("celery_event_bridge_parse_failed", error=str(exc))
             except Exception as exc:
@@ -758,6 +756,7 @@ class GoalService:
         *,
         agent_id: str | None = None,
         runtime_profile: Any | None = None,
+        execution_context: dict[str, Any] | None = None,
     ) -> Any:
         """Build an AgentGraph using the tenant's configured LLM provider AND all
         governance/RAG/memory services from app.state.
@@ -895,6 +894,11 @@ class GoalService:
         # ── Extract RAG/routing/intelligence services from app.state ─────────────
         _embedder = getattr(app_state, "embedder", None) if app_state else None
         _semantic_cache = getattr(app_state, "semantic_cache", None) if app_state else None
+        # BK3 (D-20 follow-up): knowledge-graph store for the planner's
+        # graph_facts producer (ContextPipeline). Optional — None when unset.
+        _knowledge_graph_store = (
+            getattr(app_state, "knowledge_graph_store", None) if app_state else None
+        )
         _model_router = None  # built after _agent_config is loaded below
         _prompt_optimizer = getattr(app_state, "prompt_optimizer", None) if app_state else None
         _bulkhead_registry = getattr(app_state, "bulkhead_registry", None) if app_state else None
@@ -939,10 +943,8 @@ class GoalService:
 
         # Apply model override to the model router before building the graph
         if _model_override and _model_router is not None:
-            try:
+            with suppress(Exception):  # Model router may not support override — use default
                 _model_router = _model_router.with_override(_model_override)  # copy-on-write
-            except Exception:
-                pass  # Model router may not support override — use default
 
         # ── Phase 22: Wire per-connector circuit breakers ─────────────────────────
         from app.reliability.circuit_breaker import CircuitBreaker
@@ -1022,6 +1024,7 @@ class GoalService:
             "cost_controller": cost_controller,
             "hitl_gateway": hitl_gateway,
             "knowledge_store": knowledge_store,
+            "knowledge_graph_store": _knowledge_graph_store,
             "retrieval_gateway": retrieval_gateway,
             "long_term_memory": long_term_memory,
             "mcp_client": mcp_client,
@@ -1051,7 +1054,16 @@ class GoalService:
             "enable_cot": _agent_config.get("enable_cot", False),
             "enable_reflection": _agent_config.get("enable_reflection", False),
             "enable_goal_tree": _agent_config.get("enable_goal_tree", False),
-            "autonomy_mode": _agent_config.get("autonomy_mode", "bounded-autonomous"),
+            # WS-3: a caller-supplied execution_context override (currently used
+            # by OrgService.create_mission_and_execute to force "supervised" when
+            # its MetaOrchestrator flags the mission as needing an approval gate)
+            # takes precedence over the agent's own configured autonomy_mode, so
+            # a mission-level HITL requirement cannot be silently downgraded by
+            # whatever agent auto-routing happens to pick.
+            "autonomy_mode": (
+                (execution_context or {}).get("autonomy_mode")
+                or _agent_config.get("autonomy_mode", "bounded-autonomous")
+            ),
             # N1: pattern flags passed at construction so _build() includes them in the graph
             "enable_self_refine": _enable_self_refine,
             "enable_self_consistency": _enable_self_consistency,
@@ -1654,8 +1666,8 @@ class GoalService:
         if record is None:
             return
         sanitized_event = sanitize_event(event)
-        _EPHEMERAL_EVENT_TYPES = {"token_chunk", "heartbeat"}
-        _is_ephemeral = sanitized_event.get("type") in _EPHEMERAL_EVENT_TYPES
+        _ephemeral_event_types = {"token_chunk", "heartbeat"}
+        _is_ephemeral = sanitized_event.get("type") in _ephemeral_event_types
         if not _is_ephemeral:
             record.events.append(sanitized_event)
             await self._persist_event(goal_id, sanitized_event, record, tenant_ctx)
@@ -1799,6 +1811,19 @@ class GoalService:
             record.status = GoalStatus.CANCELLED
             record.completed_at = datetime.now(UTC).isoformat()
             self._record_terminal_goal_metrics(record, "cancelled")
+        elif etype in ("waiting_approval", "tool_call_pending_approval"):
+            # WS-3: reflect an in-flight HITL gate on the goal's own status so
+            # GET /goals/{id} shows "waiting_human" while the executor blocks on
+            # HITLGateway.wait_for_approval — previously the record stayed
+            # "executing" for the whole pause, which hid the gate from anyone
+            # polling goal status instead of the approvals inbox.
+            if record.status not in _TERMINAL_STATUSES:
+                record.status = GoalStatus.WAITING_HUMAN
+        elif etype == "approval_granted":
+            # Approval resolved and the executor is about to resume — flip the
+            # goal back to EXECUTING so status reporting matches reality.
+            if record.status == GoalStatus.WAITING_HUMAN:
+                record.status = GoalStatus.EXECUTING
         # Decrement the per-tenant concurrent-goal counter for every terminal event.
         if etype in {"goal_complete", "goal_failed", "goal_cancelled"}:
             from app.tenancy.limits import decrement_concurrent_goals
@@ -1956,6 +1981,9 @@ class GoalService:
                 tenant_ctx,
                 self._app_state,
                 agent_id=_persist_record.agent_id if _persist_record is not None else None,
+                execution_context=(
+                    _persist_record.execution_context if _persist_record is not None else None
+                ),
                 **_persist_profile_kwargs,
             )
             _persist_collection_ids: list[str] = []
@@ -1982,7 +2010,7 @@ class GoalService:
 
                 class _WrappedAgent:
                     async def run(
-                        self_inner: _WrappedAgent,
+                        self: _WrappedAgent,
                         goal: str,
                         tenant_ctx: TenantContext,
                         event_callback: Any = None,
@@ -2079,9 +2107,7 @@ class GoalService:
                     if _gf2().isolated_execution_required:
                         record = self._goals.get(goal_id)
                         if record is not None:
-                            from app.agent.state import GoalStatus as _GS
-
-                            record.status = _GS.FAILED
+                            record.status = GoalStatus.FAILED
                             record.error_message = str(_iso_import_exc)
                         await self._dispatch_event(
                             goal_id,
@@ -2108,6 +2134,7 @@ class GoalService:
                 tenant_ctx,
                 self._app_state,
                 agent_id=record.agent_id if record is not None else None,
+                execution_context=record.execution_context if record is not None else None,
                 **_profile_kwargs,
             )
             # Store graph instance on record so HITL resume can re-invoke from checkpoint
@@ -2123,11 +2150,14 @@ class GoalService:
                         _agent_collection_ids = list(_agent_rec.get("allowed_collection_ids", []))
             loop._agent_collection_ids = _agent_collection_ids
             # Detect FakeProvider so get_goal() can surface a warning to callers
-            if hasattr(loop, "_planner") and type(loop._planner).__name__ == "FakeProvider":
-                if record is not None:
-                    record.execution_context["provider_warning"] = (
-                        "No real LLM provider configured. Results are simulated."
-                    )
+            if (
+                hasattr(loop, "_planner")
+                and type(loop._planner).__name__ == "FakeProvider"
+                and record is not None
+            ):
+                record.execution_context["provider_warning"] = (
+                    "No real LLM provider configured. Results are simulated."
+                )
 
             # Guarantee tool_context is always available: fall back to building
             # a basic context (RPA tools) when the caller didn't pass one.
@@ -2575,9 +2605,9 @@ class GoalService:
                                 _all_agents = await _all_agents
                             if _all_agents:
                                 # Use router scoring to pick the best agent
-                                from app.agent.router import AgentRouter as _AR
+                                from app.agent.router import AgentRouter
 
-                                _fallback_router = _AR(agent_store=agent_store)
+                                _fallback_router = AgentRouter(agent_store=agent_store)
                                 _fallback_agents = [
                                     a if isinstance(a, dict) else a.__dict__ for a in _all_agents
                                 ]
@@ -2660,6 +2690,25 @@ class GoalService:
             except Exception:
                 pass
 
+            # Always-on pattern selection record: which agent pattern this goal was
+            # routed to (+ why), in plain language — independent of the heavy
+            # dynamic_orchestration flag — so the choice is real, traceable and
+            # retrievable for every goal (see GET /goals/{id}/pattern-selection).
+            try:
+                from app.orchestration.pattern_selection_summary import (
+                    summarize_pattern_selection,
+                )
+
+                _pattern_selection = summarize_pattern_selection(
+                    goal,
+                    goal_id=goal_id,
+                    tenant_id=tenant_ctx.tenant_id,
+                    agent_config=record.execution_context.get("strategy_runtime"),
+                )
+                record.execution_context["pattern_selection"] = _pattern_selection
+            except Exception:
+                pass
+
             # Agent Runtime 2.0: auto-create AgentExecutionPlan + AgentRunTrace per goal
             try:
                 from app.agent_runtime.models import AgentExecutionPlan, AgentRunTrace
@@ -2700,7 +2749,7 @@ class GoalService:
             now = time.monotonic()
             if now - self._last_eviction_time > _EVICTION_INTERVAL_SECONDS:
                 self._last_eviction_time = now
-                asyncio.create_task(self._evict_async())
+                asyncio.create_task(self._evict_async())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
 
             # Fix 6: record that a new goal has been started.
             record_goal_started(tenant_id=tenant_ctx.tenant_id, priority=priority)
@@ -2892,6 +2941,37 @@ class GoalService:
             "result_artifact": result_artifact,
         }
 
+    async def get_pattern_selection(
+        self, goal_id: str, tenant_ctx: TenantContext
+    ) -> dict[str, Any]:
+        """Return the agent pattern this goal was routed to (+ why).
+
+        Reads the ``pattern_selection`` record persisted at goal creation (which
+        reflects any explicit strategy override); recomputes the summary on demand
+        for goals persisted before the record existed. ``get_goal`` intentionally
+        does not surface ``execution_context``, so this reads the record directly.
+        """
+        record = self._goals.get(goal_id)
+        if record is None or record.tenant_id != tenant_ctx.tenant_id:
+            record = await self._db_get_goal_record(goal_id, tenant_ctx)
+        else:
+            record = await self._refresh_goal_from_db_if_needed(record, tenant_ctx)
+        if record is None:
+            raise NotFoundError(f"Goal not found: {goal_id}")
+        ctx = record.execution_context if isinstance(record.execution_context, dict) else {}
+        selection = ctx.get("pattern_selection")
+        if not isinstance(selection, dict) or not selection:
+            from app.orchestration.pattern_selection_summary import summarize_pattern_selection
+
+            strategy_runtime = ctx.get("strategy_runtime")
+            selection = summarize_pattern_selection(
+                record.goal_text,
+                goal_id=goal_id,
+                tenant_id=tenant_ctx.tenant_id,
+                agent_config=strategy_runtime if isinstance(strategy_runtime, dict) else None,
+            )
+        return {"goal_id": goal_id, "status": record.status.value, **selection}
+
     async def list_goals(self, tenant_ctx: TenantContext) -> dict[str, list[dict[str, Any]]]:
         """Return all goals visible to the tenant, newest first."""
         tenant_records = []
@@ -2941,10 +3021,18 @@ class GoalService:
                         SELECT
                           COUNT(*) FILTER (WHERE status IN ('complete','completed')) AS completed,
                           COUNT(*) FILTER (WHERE status IN ('failed','error')) AS failed,
-                          COUNT(*) FILTER (WHERE status IN ('planning','executing','waiting_human')) AS active,  # noqa: E501
+                          COUNT(*) FILTER (
+                            WHERE status IN ('planning','executing','waiting_human')
+                          ) AS active,
                           COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
-                          COUNT(*) FILTER (WHERE status IN ('complete','completed') AND created_at::date = CURRENT_DATE) AS completed_today,  # noqa: E501
-                          AVG(EXTRACT(EPOCH FROM (completed_at - created_at))*1000) FILTER (WHERE status IN ('complete','completed') AND completed_at IS NOT NULL) AS avg_latency_ms,  # noqa: E501
+                          COUNT(*) FILTER (
+                            WHERE status IN ('complete','completed')
+                              AND created_at::date = CURRENT_DATE
+                          ) AS completed_today,
+                          AVG(EXTRACT(EPOCH FROM (completed_at - created_at))*1000) FILTER (
+                            WHERE status IN ('complete','completed')
+                              AND completed_at IS NOT NULL
+                          ) AS avg_latency_ms,
                           COUNT(*) FILTER (WHERE created_at::date = CURRENT_DATE) AS submitted_today
                         FROM goals WHERE tenant_id = :tid
                     """),
@@ -3063,6 +3151,78 @@ class GoalService:
             "iterations": scorecard.iterations,
         }
 
+    async def get_eval_suggestions(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
+        """Auto-suggest improvement actions for a goal from its real eval scores.
+
+        Every dimension scoring below the config-driven pass threshold
+        (``EvalScoringConfig.pass_threshold``, env-overridable) yields one
+        actionable suggestion. Deterministic from the real scorecard — no
+        fabricated data; honest empty when the goal is unevaluated or all
+        dimensions pass. This is the read side of the self-improvement surface.
+        """
+        self._get_record(goal_id, tenant_ctx)  # raises if not found / wrong tenant
+        scorecard = self._eval_scores.get(goal_id)
+        if scorecard is None:
+            return {"goal_id": goal_id, "status": "not_evaluated", "pass_threshold": None,
+                    "suggestions": [], "count": 0}
+
+        from app.evals.scoring_config import EvalScoringConfig
+
+        threshold = EvalScoringConfig.from_settings().pass_threshold
+        # Advisory copy per dimension (UI guidance, not data) — the trigger + score
+        # are real; the phrasing points the operator at the right lever.
+        _completion_advice = (
+            "Goal wasn't fully achieved — tighten the planner prompt or decompose "
+            "into smaller verifiable sub-goals."
+        )
+        advice = {
+            "task_completion": _completion_advice,
+            "completion": _completion_advice,
+            "efficiency": (
+                "Used more iterations/cost than budget — enable goal-tree parallelism "
+                "or a cheaper executor model for simple steps."
+            ),
+            "accuracy": (
+                "Low grounding/accuracy — attach a knowledge collection (RAG) or raise "
+                "the retrieval top-k so claims are evidence-backed."
+            ),
+            "safety": (
+                "Safety/guardrail signal — review the guardrail profile and add HITL "
+                "gating for the risky tool/step."
+            ),
+            "coherence": (
+                "Output coherence was low — add a reflection node or strengthen the "
+                "verifier's rubric."
+            ),
+            "sla": (
+                "Ran slower than the SLA — cache retrieval, reduce tool round-trips, "
+                "or route to a faster model."
+            ),
+            "tool_relevance": (
+                "Tool calls weren't relevant/efficient — refine tool descriptions or "
+                "restrict the tool set for this agent."
+            ),
+        }
+        suggestions: list[dict[str, Any]] = []
+        for dim, score in (scorecard.scores or {}).items():
+            if isinstance(score, int | float) and score < threshold:
+                suggestions.append({
+                    "dimension": dim,
+                    "score": round(float(score), 4),
+                    "threshold": threshold,
+                    "suggestion": advice.get(
+                        dim, f"'{dim}' scored below the pass threshold — review this dimension."
+                    ),
+                })
+        suggestions.sort(key=lambda s: s["score"])  # worst first
+        return {
+            "goal_id": goal_id,
+            "status": "evaluated",
+            "pass_threshold": threshold,
+            "suggestions": suggestions,
+            "count": len(suggestions),
+        }
+
     async def run_eval(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
         """Score a goal on demand and cache the result.
 
@@ -3075,15 +3235,12 @@ class GoalService:
         state = getattr(record, "agent_state", None)
         if state is None:
             # Reconstruct minimal state from record data
-            from app.agent.state import AgentState as _AS
-            from app.agent.state import GoalStatus as _GS
-
             try:
-                goal_status = _GS(record.status.value)
+                goal_status = GoalStatus(record.status.value)
             except (ValueError, AttributeError):
-                goal_status = _GS.COMPLETE
+                goal_status = GoalStatus.COMPLETE
 
-            state = _AS(
+            state = AgentState(
                 goal_id=goal_id,
                 goal=record.goal_text,
                 tenant_ctx=tenant_ctx,
@@ -3223,7 +3380,7 @@ class GoalService:
                         if evt is not None:
                             evt.set()
 
-                _asyncio.create_task(_resume_graph())
+                _asyncio.create_task(_resume_graph())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 record.status = GoalStatus.EXECUTING
                 # C4 fix: clear Redis pause flag on checkpoint-based resume path too
                 try:
@@ -3231,7 +3388,7 @@ class GoalService:
 
                     _redis_cp = getattr(self, "_redis", None)
                     if _redis_cp is not None:
-                        _asyncio.ensure_future(_signal_resume_cp(goal_id, _redis_cp))
+                        _asyncio.ensure_future(_signal_resume_cp(goal_id, _redis_cp))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 except Exception:
                     pass
                 await self._dispatch_event(
@@ -3257,7 +3414,7 @@ class GoalService:
             if _redis is not None:
                 import asyncio as _c4_asyncio
 
-                _c4_asyncio.ensure_future(_signal_resume(goal_id, _redis))
+                _c4_asyncio.ensure_future(_signal_resume(goal_id, _redis))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
         except Exception:
             pass
         await self._dispatch_event(goal_id, {"type": "goal_resumed"}, tenant_ctx=tenant_ctx)
@@ -3302,10 +3459,8 @@ class GoalService:
         """
         # ── Try local record first ─────────────────────────────────────────────
         local_record: GoalRecord | None = None
-        try:
+        with suppress(Exception):  # goal is on another replica — cross-replica path below
             local_record = self._get_record(goal_id, tenant_ctx)
-        except Exception:
-            pass  # goal is on another replica — cross-replica path below
 
         # ── Cross-replica path: subscribe via Redis pub/sub ────────────────────
         if local_record is None:

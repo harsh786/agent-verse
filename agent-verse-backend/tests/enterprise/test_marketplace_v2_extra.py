@@ -6,20 +6,14 @@ Targets uncovered lines: 82, 88-89, 114-117, 184-185, 211-216,
 from __future__ import annotations
 
 import json
-import uuid
-from contextlib import asynccontextmanager
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.enterprise.marketplace_v2 import (
-    CRITICAL_SCOPES,
-    HIGH_RISK_SCOPES,
-    PREAPPROVED_SCOPES,
+    _BUILTIN_TEMPLATES,
     MarketplaceV2,
     TemplateSecurityReviewer,
-    _BUILTIN_TEMPLATES,
 )
 from app.tenancy.context import PlanTier, TenantContext
 

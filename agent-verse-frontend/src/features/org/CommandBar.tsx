@@ -6,13 +6,14 @@
  *   2. AI suggests intent (create mission / search / find artifact)
  *   3. User confirms → 3-step wizard:
  *        Step 1: Goal refinement (AI shows proposed mission spec)
- *        Step 2: Team preview (cost, agents, departments)
+ *        Step 2: Honest preview — no pre-submit estimate endpoint exists yet,
+ *                so this shows the refined goal only (see TODO(api) below)
  *        Step 3: Autonomy level + confirm → mission starts
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Command, Sparkles, Target, Users, DollarSign,
+  Command, Sparkles, Target, Info,
   ChevronRight, Loader2, X, Zap,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -22,14 +23,12 @@ import { useCreateMission } from './hooks/useOrg';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
+// No pre-submit mission preview/estimate endpoint exists yet — see the
+// TODO(api) note by handleSubmit below. Only the refined goal (the user's
+// own input) is real at this stage; team size, cost, and risk are not
+// fabricated and are shown honestly as "estimated on submit".
 interface MissionPreview {
   refined_goal: string;
-  departments: string[];
-  estimated_agents: number;
-  estimated_cost_usd: number;
-  estimated_duration_hours: number;
-  risk_level: string;
-  success_probability: number;
 }
 
 interface CommandBarProps {
@@ -45,13 +44,6 @@ const AUTONOMY_LABELS: Record<number, { label: string; description: string; colo
   3: { label: 'L3 Standard', description: 'Runs autonomously with configurable gates', color: 'text-emerald-400' },
   4: { label: 'L4 Autonomous', description: 'Highly autonomous within policy', color: 'text-emerald-500' },
   5: { label: 'L5 Full', description: 'End-to-end autonomous execution', color: 'text-blue-400' },
-};
-
-const RISK_COLOR: Record<string, string> = {
-  low: 'text-emerald-400',
-  medium: 'text-yellow-400',
-  high: 'text-orange-400',
-  critical: 'text-red-400',
 };
 
 // ── Suggestion engine (local heuristic) ───────────────────────────────────
@@ -101,25 +93,20 @@ export function CommandBar({ orgId, onClose }: CommandBarProps) {
 
   const suggestions = getSuggestions(query);
 
-  const handleSubmit = useCallback(async () => {
+  // Step 1 → Step 2: no pre-submit mission preview/estimate endpoint exists
+  // yet, so there's no async work to do here — just carry the refined goal
+  // (the user's own input, which is real) forward to the preview step.
+  //
+  // TODO(api): wire this to a real mission preview/estimate endpoint once
+  // one exists — e.g. a lightweight sibling of `POST /v1/org/{org_id}/missions/execute`
+  // that returns team size / cost / risk without dispatching, or an HTTP
+  // endpoint over `OrgService.compose_from_nl` (app/org/service.py) /
+  // `OrgSimulationEngine.estimate_mission` (app/org/loop_detector.py) — both
+  // exist in the backend today but are not exposed over HTTP for missions.
+  const handleSubmit = useCallback(() => {
     if (!query.trim()) return;
-    setIsLoading(true);
-    try {
-      // Step 1 → Step 2: Get mission preview (stub for now)
-      await new Promise(r => setTimeout(r, 800));
-      setPreview({
-        refined_goal: query,
-        departments: ['research', 'engineering', 'marketing'].slice(0, Math.ceil(Math.random() * 3) + 1),
-        estimated_agents: Math.floor(Math.random() * 8) + 3,
-        estimated_cost_usd: parseFloat((Math.random() * 45 + 5).toFixed(2)),
-        estimated_duration_hours: Math.floor(Math.random() * 40) + 8,
-        risk_level: ['low', 'medium', 'high'][Math.floor(Math.random() * 3)],
-        success_probability: parseFloat((0.75 + Math.random() * 0.20).toFixed(2)),
-      });
-      setStep('preview');
-    } finally {
-      setIsLoading(false);
-    }
+    setPreview({ refined_goal: query });
+    setStep('preview');
   }, [query]);
 
   const handleConfirmMission = useCallback(async () => {
@@ -129,7 +116,7 @@ export function CommandBar({ orgId, onClose }: CommandBarProps) {
       await createMission.mutateAsync({
         org_id: orgId,
         title: preview.refined_goal.slice(0, 200),
-        priority: preview.risk_level === 'critical' ? 'critical' : 'medium',
+        priority: 'medium',
         autonomy_level: autonomyLevel,
       });
       onClose();
@@ -242,51 +229,19 @@ export function CommandBar({ orgId, onClose }: CommandBarProps) {
                   </p>
                 </div>
 
-                {/* Stats grid */}
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="bg-[var(--bg-surface)] rounded-lg p-3 text-center">
-                    <Users className="h-4 w-4 mx-auto mb-1 text-[var(--accent-blue)]" aria-hidden="true" />
-                    <div className="text-lg font-semibold text-[var(--text-primary)]">{preview.estimated_agents}</div>
-                    <div className="text-[10px] text-[var(--text-muted)]">Agents</div>
-                  </div>
-                  <div className="bg-[var(--bg-surface)] rounded-lg p-3 text-center">
-                    <DollarSign className="h-4 w-4 mx-auto mb-1 text-emerald-400" aria-hidden="true" />
-                    <div className="text-lg font-semibold text-[var(--text-primary)]">${preview.estimated_cost_usd}</div>
-                    <div className="text-[10px] text-[var(--text-muted)]">Est. cost</div>
-                  </div>
-                  <div className="bg-[var(--bg-surface)] rounded-lg p-3 text-center">
-                    <Zap className="h-4 w-4 mx-auto mb-1 text-yellow-400" aria-hidden="true" />
-                    <div className={`text-lg font-semibold ${RISK_COLOR[preview.risk_level] ?? ''}`}>
-                      {preview.risk_level.toUpperCase()}
-                    </div>
-                    <div className="text-[10px] text-[var(--text-muted)]">Risk</div>
-                  </div>
-                </div>
-
-                {/* Departments */}
-                <div>
-                  <div className="text-xs text-[var(--text-muted)] mb-1.5">Departments involved</div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {preview.departments.map(d => (
-                      <Badge key={d} variant="secondary" className="text-[10px] capitalize">{d}</Badge>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Success probability */}
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-[var(--text-muted)]">Success probability</span>
-                    <span className="text-emerald-400 font-medium">
-                      {Math.round(preview.success_probability * 100)}%
-                    </span>
-                  </div>
-                  <div className="h-1.5 rounded-full bg-[var(--bg-surface)] overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-emerald-400 transition-all"
-                      style={{ width: `${preview.success_probability * 100}%` }}
-                    />
-                  </div>
+                {/* Honest placeholder: no pre-submit estimate endpoint exists yet
+                    (see TODO(api) note by handleSubmit), so team size, cost, and
+                    risk are never fabricated here — only shown once the mission
+                    actually launches and dispatch reports real numbers. */}
+                <div
+                  className="flex items-start gap-2.5 rounded-lg border border-dashed border-[var(--border)] bg-[var(--bg-surface)] px-3 py-3"
+                  role="status"
+                >
+                  <Info className="h-4 w-4 mt-0.5 text-[var(--text-muted)] flex-shrink-0" aria-hidden="true" />
+                  <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+                    Team size, cost, and risk aren&apos;t estimated yet — AgentVerse will
+                    size and dispatch the mission when you launch it.
+                  </p>
                 </div>
               </div>
 

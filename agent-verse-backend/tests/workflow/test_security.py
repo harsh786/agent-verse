@@ -1,11 +1,11 @@
 """Tests for security utilities: SSRFGuard and SecretMasker."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import patch
 
-from app.workflow.security import SSRFGuard, SSRFBlockedError, SecretMasker
+import pytest
 
+from app.workflow.security import SecretMasker, SSRFBlockedError, SSRFGuard
 
 # ── SSRFGuard ─────────────────────────────────────────────────────────────────
 

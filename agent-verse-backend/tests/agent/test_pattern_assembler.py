@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from app.agent.pattern_assembler import PatternAssembler, pattern_assembler
-from app.agent.pattern_config import Complexity, Domain, GoalProperties, PatternConfig, RiskLevel
+from app.agent.pattern_config import Complexity, Domain, GoalProperties, RiskLevel
 
 
 @pytest.fixture

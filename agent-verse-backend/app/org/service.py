@@ -11,6 +11,7 @@ infrastructure. It delegates to existing services where possible:
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast
@@ -38,6 +39,34 @@ from app.org.models import (
 
 _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
+
+
+def resolve_llm_provider(app_state: Any) -> Any | None:
+    """Resolve the real LLM provider from the request's wired ``app.state``.
+
+    The org layer is meant to be genuinely LLM-driven (generic composer + generic
+    mission decomposition), degrading to a deterministic heuristic only when no
+    usable model is available. Earlier code read ``app_state.planner_provider``,
+    an attribute that is *never* set on ``app.state`` — so the LLM path was dead
+    and every org ran the template/heuristic fallback. The real provider that
+    ``create_app`` binds is ``app.state._app_provider`` (see app/main.py). This
+    helper prefers an explicit ``planner_provider`` (tests may inject one), then
+    the canonical ``_app_provider``, then a per-request ``_llm_provider_override``,
+    returning ``None`` when nothing is wired so the caller degrades honestly.
+
+    A ``FakeProvider`` is intentionally returned as-is (not treated as ``None``):
+    it exercises the real LLM code path deterministically, and the JSON-parse
+    guards in the composer/decomposer degrade cleanly when its canned output is
+    not a usable plan.
+    """
+    if app_state is None:
+        return None
+    for attr in ("planner_provider", "_app_provider", "_llm_provider_override"):
+        provider = getattr(app_state, attr, None)
+        if provider is not None:
+            return provider
+    return None
+
 
 # ── Task status constants ─────────────────────────────────────────────────────
 TASK_STATUSES = frozenset(
@@ -349,6 +378,50 @@ class OrgService:
                 existing.add(dept[0].lower())
         return depts
 
+    async def _compose_departments_llm(
+        self, description: str, industry: str, llm_provider: Any
+    ) -> list[tuple[str, str, list[str]]]:
+        """LLM-driven department composition for ANY objective. [] on failure.
+
+        This is what makes the composer generalize beyond the hardcoded industry
+        blueprints. The caller degrades to ``_compose_departments`` when this
+        returns nothing (no provider, FakeProvider, or unparseable output).
+        """
+        import json
+
+        from app.providers.base import CompletionRequest, Message
+
+        prompt = (
+            "Design a lean org department structure for the objective below. "
+            "Return ONLY a JSON array (3-6 items) of objects: "
+            '{"name": "<dept>", "purpose": "<one line>", '
+            '"capability_domains": ["<domain>", ...]}.\n\n'
+            f"INDUSTRY: {industry or 'general'}\nOBJECTIVE: {description}"
+        )
+        req = CompletionRequest(
+            messages=[Message(role="user", content=prompt)],
+            model="claude-sonnet-4-5",
+            max_tokens=600,
+        )
+        resp = await llm_provider.complete(req)
+        raw = (resp.content or "").strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            return []
+        out: list[tuple[str, str, list[str]]] = []
+        for item in data:
+            if isinstance(item, dict) and item.get("name"):
+                out.append(
+                    (
+                        str(item["name"])[:80],
+                        str(item.get("purpose") or "")[:200],
+                        [str(d) for d in (item.get("capability_domains") or [])],
+                    )
+                )
+        return out
+
     async def compose_from_nl(
         self,
         *,
@@ -358,14 +431,17 @@ class OrgService:
         autonomy_level: int = 2,
         budget_usd: float = 0.0,
         constraints: list[str] | None = None,
+        llm_provider: Any | None = None,
     ) -> dict[str, Any]:
         """Compose a whole organisation from a natural-language description.
 
-        Template-based composition: derives a name and an industry-appropriate
-        department structure (with keyword-driven extras), creates the org, its
-        departments, and one initial mission per stated goal, then returns a
-        summary. Deterministic and provider-free so it works on every deployment;
-        an LLM refinement pass can layer on top later without changing this contract.
+        Generalized composition for ANY objective: when an ``llm_provider`` is
+        supplied it drives an LLM department design; otherwise (or when the model
+        yields nothing usable — e.g. FakeProvider) it degrades to a deterministic
+        industry-appropriate blueprint with keyword-driven extras. Then it creates
+        the org, its departments, and one initial mission per stated goal. This is
+        the single reachable org composer — the per-mission team composer lives in
+        MetaOrchestrator/TeamFormationEngine (also LLM-driven, generic).
         """
         goals = goals or []
         constraints = constraints or []
@@ -385,8 +461,26 @@ class OrgService:
             org_id = str(org.id)
             span.set_attribute("org.id", org_id)
 
+            # Generalized composition: prefer the LLM design, degrade to template.
+            composition_method = "template"
+            dept_specs: list[tuple[str, str, list[str]]] = []
+            if llm_provider is not None:
+                try:
+                    dept_specs = await self._compose_departments_llm(
+                        description, industry, llm_provider
+                    )
+                    if len(dept_specs) >= 2:
+                        composition_method = "llm"
+                    else:
+                        dept_specs = []
+                except Exception as exc:  # pragma: no cover - provider variance
+                    _log.warning("org.compose_from_nl.llm_failed", error=str(exc)[:120])
+                    dept_specs = []
+            if not dept_specs:
+                dept_specs = self._compose_departments(industry, description)
+
             departments: list[dict[str, Any]] = []
-            for name, purpose, domains in self._compose_departments(industry, description):
+            for name, purpose, domains in dept_specs:
                 dept = await self.create_department(
                     org_id=org_id, name=name, purpose=purpose, capability_domains=list(domains)
                 )
@@ -430,7 +524,7 @@ class OrgService:
                 "initial_missions": initial_missions,
                 "autonomy_level": org.autonomy_level,
                 "status": "ready",
-                "composition_method": "template",
+                "composition_method": composition_method,
             }
 
     # ── Department CRUD ───────────────────────────────────────────────────────
@@ -941,7 +1035,12 @@ class OrgService:
                 depth=depth,
                 linked_goal_id=linked_goal_id,
                 expires_at=expires_at,
-                metadata=metadata or {},
+                # NOTE: OrgTask has no "metadata" column — that name is the
+                # SQLAlchemy declarative Base.metadata registry. The JSONB scratch
+                # field is "extra_data"; passing metadata= only set a transient
+                # shadow attribute that was NEVER persisted (so task metadata was
+                # silently lost on reload). Write the real column.
+                extra_data=metadata or {},
             )
             self._session.add(task)
             await self._session.flush()
@@ -1305,6 +1404,426 @@ class OrgService:
         )
         return list(result.scalars().all())
 
+    # ── WS-2b: Mission decomposition → real subtasks → handoff → deliverable ──
+    #
+    # A mission is dispatched to the agent loop as a real goal (the fine-grained
+    # plan→execute→verify happens there). ALONGSIDE that, the org layer records a
+    # real decomposition: one OrgTask per subtask, assigned to the formed team,
+    # with task.decomposed / task.assigned / agent.working / task.handoff /
+    # mission.progress events so the console animates genuine activity, and a
+    # finalize step that reconciles the subtasks against the real goal outcome
+    # and aggregates a real deliverable/report.
+
+    # Deterministic phase templates for the no-LLM / single-department fallback.
+    _DECOMP_PHASES: ClassVar[list[tuple[str, str]]] = [
+        ("Research & context", "Gather the context, constraints and information needed for: {obj}"),
+        ("Execute core work", "Carry out the core work required to accomplish: {obj}"),
+        ("Verify & deliver", "Verify the result and compile the final deliverable for: {obj}"),
+    ]
+
+    async def decompose_mission(
+        self,
+        *,
+        objective: str,
+        title: str = "",
+        team_departments: list[str] | None = None,
+        llm_provider: Any | None = None,
+        max_subtasks: int = 6,
+    ) -> list[dict[str, Any]]:
+        """Break a mission objective into ordered, real subtasks.
+
+        LLM-driven when a provider is supplied (and returns a usable plan);
+        otherwise degrades to a deterministic decomposition derived from the
+        formed team's departments (one subtask per department) or, for a
+        single-department team, a 3-phase research→execute→verify plan. Always
+        returns at least two subtasks for a non-trivial objective.
+        """
+        obj = " ".join((objective or title).strip().split()) or "the mission objective"
+
+        # 1. LLM-driven decomposition (best effort).
+        if llm_provider is not None:
+            try:
+                llm_subtasks = await self._decompose_mission_llm(obj, llm_provider, max_subtasks)
+                if len(llm_subtasks) >= 2:
+                    return [
+                        {**st, "order": i} for i, st in enumerate(llm_subtasks[:max_subtasks])
+                    ]
+            except Exception as exc:  # pragma: no cover - provider variance
+                _log.warning("org.decompose_mission.llm_failed", error=str(exc)[:120])
+
+        # 2. Deterministic fallback.
+        depts = [d for d in dict.fromkeys(team_departments or []) if d]
+        subtasks: list[dict[str, Any]] = []
+        if len(depts) >= 2:
+            for dept in depts[:max_subtasks]:
+                label = str(dept).replace("_", " ").title()
+                subtasks.append(
+                    {
+                        "title": f"{label} workstream",
+                        "objective": f"{label} contribution to: {obj}",
+                        "department": dept,
+                        "capabilities": [],
+                    }
+                )
+        else:
+            only_dept = depts[0] if depts else None
+            for name, tmpl in self._DECOMP_PHASES:
+                subtasks.append(
+                    {
+                        "title": name,
+                        "objective": tmpl.format(obj=obj),
+                        "department": only_dept,
+                        "capabilities": [],
+                    }
+                )
+        return [{**st, "order": i} for i, st in enumerate(subtasks)]
+
+    async def _decompose_mission_llm(
+        self, objective: str, llm_provider: Any, max_subtasks: int
+    ) -> list[dict[str, Any]]:
+        """Ask the LLM for an ordered subtask plan. Returns [] on parse failure."""
+        import json
+
+        from app.providers.base import CompletionRequest, Message
+
+        prompt = (
+            "Decompose this mission objective into 2-"
+            f"{max_subtasks} ordered, concrete subtasks that different team "
+            "members could own. Respond ONLY with a JSON array of objects, each "
+            '{"title": "<short>", "objective": "<what to do>"}.\n\n'
+            f"OBJECTIVE: {objective}"
+        )
+        req = CompletionRequest(
+            messages=[Message(role="user", content=prompt)],
+            model="claude-sonnet-4-5",
+            max_tokens=600,
+        )
+        resp = await llm_provider.complete(req)
+        raw = (resp.content or "").strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for item in data:
+            if isinstance(item, dict) and item.get("title"):
+                out.append(
+                    {
+                        "title": str(item["title"])[:200],
+                        "objective": str(item.get("objective") or item["title"])[:1000],
+                        "department": item.get("department"),
+                        "capabilities": list(item.get("capabilities") or []),
+                    }
+                )
+        return out
+
+    async def decompose_and_assign(
+        self,
+        *,
+        mission: Any,
+        org_id: str,
+        objective: str,
+        title: str,
+        team_id: str | None,
+        team_departments: list[str] | None = None,
+        viz_agent_ids: list[str] | None = None,
+        llm_provider: Any | None = None,
+    ) -> list[OrgTask]:
+        """Create real OrgTask subtasks for a mission and emit the rich events.
+
+        Emits: ``task.decomposed`` (once), then per subtask ``task.assigned`` +
+        ``agent.working``, ``task.handoff`` between consecutive subtasks owned by
+        different agents, and a final ``mission.progress`` (0%).
+        """
+        subtasks = await self.decompose_mission(
+            objective=objective,
+            title=title,
+            team_departments=team_departments,
+            llm_provider=llm_provider,
+        )
+        org_uuid = uuid.UUID(str(mission.org_id))
+        mission_id = str(mission.id)
+        viz_agent_ids = list(viz_agent_ids or [])
+        n_agents = len(viz_agent_ids) or 1
+
+        await self._emit_event(
+            org_uuid,
+            "task.decomposed",
+            title=f"Mission '{title}' decomposed into {len(subtasks)} subtasks",
+            entity_type="mission",
+            entity_id=mission_id,
+            payload={
+                "mission_id": mission_id,
+                "subtasks": [s["title"] for s in subtasks],
+                "count": len(subtasks),
+            },
+            source="orchestrator",
+        )
+
+        tasks: list[OrgTask] = []
+        prev_agent: str | None = None
+        prev_task_id: str | None = None
+        prev_dept: str | None = None
+        for idx, st in enumerate(subtasks):
+            task = await self.create_task(
+                org_id=org_id,
+                mission_id=mission_id,
+                title=str(st["title"]),
+                objective=str(st.get("objective") or st["title"]),
+                required_capabilities=list(st.get("capabilities") or []),
+                assigned_team_id=team_id,
+                depth=1,
+                metadata={
+                    "subtask_index": idx,
+                    "department": st.get("department"),
+                    "task_kind": "subtask",
+                },
+            )
+            await self.update_task_status(str(task.id), "assigned")
+            agent_id = (
+                viz_agent_ids[idx % n_agents]
+                if viz_agent_ids
+                else f"{mission_id[:8]}-agent-{idx + 1}"
+            )
+            await self._emit_event(
+                org_uuid,
+                "task.assigned",
+                title=f"'{st['title']}' assigned",
+                entity_type="task",
+                entity_id=str(task.id),
+                payload={
+                    "task_id": str(task.id),
+                    "mission_id": mission_id,
+                    "agent_id": agent_id,
+                    "team_id": team_id,
+                    "order": idx,
+                    "department": st.get("department"),
+                },
+                source="orchestrator",
+            )
+            await self._emit_event(
+                org_uuid,
+                "agent.working",
+                title=f"Agent {agent_id} working on '{st['title']}'",
+                entity_type="agent",
+                entity_id=agent_id,
+                payload={
+                    "agent_id": agent_id,
+                    "task_id": str(task.id),
+                    "mission_id": mission_id,
+                    "title": st["title"],
+                },
+                source="orchestrator",
+            )
+            # A decomposed mission is a pipeline: each subtask hands its result
+            # to the next. Emit a handoff for every consecutive pair, carrying the
+            # real owner/department transition (which may or may not change).
+            cur_dept = st.get("department")
+            if prev_task_id is not None:
+                await self._emit_event(
+                    org_uuid,
+                    "task.handoff",
+                    title=f"Handoff {prev_agent} → {agent_id}",
+                    entity_type="task",
+                    entity_id=str(task.id),
+                    payload={
+                        "from_agent": prev_agent,
+                        "to_agent": agent_id,
+                        "from_task": prev_task_id,
+                        "to_task": str(task.id),
+                        "from_department": prev_dept,
+                        "to_department": cur_dept,
+                        "mission_id": mission_id,
+                    },
+                    source="orchestrator",
+                )
+            prev_agent = agent_id
+            prev_task_id = str(task.id)
+            prev_dept = cur_dept
+            tasks.append(task)
+
+        await self._emit_event(
+            org_uuid,
+            "mission.progress",
+            title=f"Mission '{title}' dispatched",
+            entity_type="mission",
+            entity_id=mission_id,
+            payload={
+                "mission_id": mission_id,
+                "progress": 0.0,
+                "subtasks_total": len(tasks),
+                "subtasks_done": 0,
+                "phase": "dispatched",
+            },
+            source="orchestrator",
+        )
+        return tasks
+
+    async def reassign_task(
+        self,
+        *,
+        task_id: str,
+        to_team_id: str | None = None,
+        to_agent_id: str | None = None,
+        reason: str = "",
+    ) -> OrgTask | None:
+        """Reassign a task to a different team/agent and emit ``task.handoff``."""
+        task = await self.get_task(task_id)
+        if not task:
+            return None
+        from_team = str(task.assigned_team_id) if task.assigned_team_id else None
+        from_agent = (list(task.assigned_agent_ids or []) or [None])[0]
+        if to_team_id:
+            task.assigned_team_id = uuid.UUID(to_team_id)
+        if to_agent_id:
+            task.assigned_agent_ids = [to_agent_id]
+        task.updated_at = datetime.now(UTC)
+        await self._session.flush()
+        await self._emit_event(
+            cast(uuid.UUID, task.org_id),
+            "task.handoff",
+            title=f"Task '{task.title}' handed off",
+            entity_type="task",
+            entity_id=task_id,
+            payload={
+                "task_id": task_id,
+                "from_team": from_team,
+                "to_team": to_team_id,
+                "from_agent": from_agent,
+                "to_agent": to_agent_id,
+                "reason": reason,
+            },
+            source="orchestrator",
+        )
+        return task
+
+    async def finalize_mission(
+        self,
+        mission_id: str,
+        *,
+        app_state: Any = None,
+        tenant_ctx: Any | None = None,
+    ) -> dict[str, Any]:
+        """Reconcile a mission's subtasks against its real goal outcome.
+
+        Reads the dispatched goal's terminal status from the wired GoalService,
+        marks the org subtasks completed/failed to match, aggregates a real
+        deliverable/report onto the mission, and transitions the mission —
+        emitting ``mission.progress`` (100%) and (via update_mission_status)
+        ``mission.completed`` / ``mission.failed``. When the goal is not yet
+        terminal it emits partial progress and returns ``finalized=False``.
+        """
+        mission = await self.get_mission(mission_id)
+        if not mission:
+            return {"error": "mission_not_found", "finalized": False}
+        org_uuid = cast(uuid.UUID, mission.org_id)
+
+        goal_id = (mission.extra_data or {}).get("goal_id")
+        goal_status: str | None = None
+        goal_result: Any = None
+        goal_service = getattr(app_state, "goal_service", None)
+        if goal_id and goal_service is not None:
+            try:
+                if tenant_ctx is None:
+                    from app.tenancy.context import PlanTier, TenantContext
+
+                    tenant_ctx = TenantContext(
+                        tenant_id=self._tenant_id,
+                        plan=PlanTier.PROFESSIONAL,
+                        api_key_id="org_mission_finalize",
+                    )
+                goal = await goal_service.get_goal(str(goal_id), tenant_ctx)
+                goal_status = str(goal.get("status"))
+                goal_result = goal.get("result_artifact")
+            except Exception as exc:
+                _log.warning(
+                    "org.finalize_mission.goal_read_failed",
+                    mission_id=mission_id,
+                    error=str(exc)[:120],
+                )
+
+        all_tasks = await self.list_tasks(str(org_uuid), mission_id=mission_id, limit=200)
+        subtasks = [
+            t for t in all_tasks if (t.extra_data or {}).get("task_kind") == "subtask"
+        ] or all_tasks
+
+        terminal_ok = goal_status in ("complete", "completed", "succeeded", "success")
+        terminal_fail = goal_status in ("failed", "error", "cancelled")
+
+        if not (terminal_ok or terminal_fail):
+            done = sum(1 for t in subtasks if t.status == "completed")
+            total = len(subtasks) or 1
+            await self._emit_event(
+                org_uuid,
+                "mission.progress",
+                title=f"Mission '{mission.title}' in progress",
+                entity_type="mission",
+                entity_id=mission_id,
+                payload={
+                    "mission_id": mission_id,
+                    "progress": round(done / total, 3),
+                    "subtasks_total": len(subtasks),
+                    "subtasks_done": done,
+                    "phase": "running",
+                    "goal_status": goal_status,
+                },
+                source="orchestrator",
+            )
+            return {
+                "mission_id": mission_id,
+                "status": str(mission.status),
+                "goal_status": goal_status,
+                "finalized": False,
+            }
+
+        new_task_status = "completed" if terminal_ok else "failed"
+        for t in subtasks:
+            if t.status not in ("completed", "failed", "cancelled", "expired"):
+                await self.update_task_status(str(t.id), new_task_status)
+
+        report: dict[str, Any] = {
+            "objective": mission.objective or mission.title,
+            "goal_id": goal_id,
+            "goal_status": goal_status,
+            "subtasks": [{"title": t.title, "status": new_task_status} for t in subtasks],
+            "deliverable": goal_result,
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
+        mission.outputs = [*list(mission.outputs or []), report]
+        new_meta = dict(mission.extra_data or {})
+        new_meta["result"] = report
+        mission.extra_data = new_meta
+        mission.updated_at = datetime.now(UTC)
+        await self._session.flush()
+
+        final_status = "completed" if terminal_ok else "failed"
+        # update_mission_status emits mission.completed / mission.failed.
+        await self.update_mission_status(mission_id, final_status)
+        await self._emit_event(
+            org_uuid,
+            "mission.progress",
+            title=f"Mission '{mission.title}' finalized",
+            entity_type="mission",
+            entity_id=mission_id,
+            payload={
+                "mission_id": mission_id,
+                "progress": 1.0,
+                "subtasks_total": len(subtasks),
+                "subtasks_done": len(subtasks) if terminal_ok else 0,
+                "phase": "completed" if terminal_ok else "failed",
+                "result": report,
+            },
+            source="orchestrator",
+        )
+        return {
+            "mission_id": mission_id,
+            "status": final_status,
+            "goal_status": goal_status,
+            "result": report,
+            "finalized": True,
+        }
+
     # ── Integration Point 1: Mission → Agent Execution Bridge ────────────────
     #
     # This is the critical wiring that connects the Org OS layer to the existing
@@ -1401,11 +1920,12 @@ class OrgService:
                 from app.org.meta_orchestrator import MetaOrchestrator
 
                 # Resolve LLM provider from the request's wired app.state.
+                # (Reads _app_provider — the attribute create_app actually binds —
+                # so mission decomposition is genuinely LLM-driven, not always the
+                # heuristic fallback.)
                 _llm_provider: Any | None = None
-                try:
-                    _llm_provider = getattr(app_state, "planner_provider", None)
-                except Exception:
-                    pass
+                with contextlib.suppress(Exception):
+                    _llm_provider = resolve_llm_provider(app_state)
 
                 orchestrator = MetaOrchestrator(llm_provider=_llm_provider)
                 orch_plan = await orchestrator.plan_mission(
@@ -1476,7 +1996,7 @@ class OrgService:
                                 or role_obj
                             )[:60]
                         await self._emit_event(
-                            mission.org_id,
+                            uuid.UUID(str(mission.org_id)),
                             "agent.activated",
                             title=f"Agent {viz_agent_id} joined the team",
                             entity_type="agent",
@@ -1490,7 +2010,7 @@ class OrgService:
                             source="orchestrator",
                         )
                     await self._emit_event(
-                        mission.org_id,
+                        uuid.UUID(str(mission.org_id)),
                         "team.formed",
                         title=f"Team formed for '{mission.title}'",
                         entity_type="team",
@@ -1503,6 +2023,27 @@ class OrgService:
                         },
                         source="orchestrator",
                     )
+
+                    # WS-2b: real decomposition into org subtasks assigned to the
+                    # formed team, with task.decomposed / task.assigned /
+                    # agent.working / task.handoff / mission.progress events.
+                    try:
+                        await self.decompose_and_assign(
+                            mission=mission,
+                            org_id=org_id,
+                            objective=objective or title,
+                            title=title,
+                            team_id=resolved_team_id,
+                            team_departments=list(orch_plan.departments or []),
+                            viz_agent_ids=viz_agent_ids,
+                            llm_provider=_llm_provider,
+                        )
+                    except Exception as decomp_exc:
+                        _log.warning(
+                            "org.create_mission_and_execute.decomposition_failed",
+                            mission_id=str(mission.id),
+                            error=str(decomp_exc)[:120],
+                        )
 
                 span.set_attribute("topology", orch_plan.topology)
                 span.set_attribute("dept_count", len(orch_plan.departments))
@@ -1558,7 +2099,13 @@ class OrgService:
 
                         _engine = get_approval_engine()
                         _publisher = get_org_event_publisher()
-                        _notif = getattr(getattr(_app, "state", None), "notification_service", None)
+                        # WS-3 fix: this referenced an undefined ``_app`` name,
+                        # which raised NameError on every single mission that
+                        # computed any approval_gates — silently swallowed by
+                        # the broad except below as "approval_gate_wiring_failed"
+                        # and skipping task/approval-request/notification
+                        # creation *and* the supervised-autonomy override below.
+                        _notif = getattr(app_state, "notification_service", None)
 
                         for gate in (
                             approval_gates[:3] if isinstance(approval_gates, list) else []
@@ -1600,6 +2147,41 @@ class OrgService:
                             )
                             # G-22: Set task status to approval_required
                             await self.update_task_status(str(task.id), "approval_required")
+
+                            # WS-3b: register a paired HITLGateway request so the
+                            # org task-level approve/reject endpoint resolves the
+                            # SAME gateway a blocked agent waits on (one gateway,
+                            # no parallel mechanism). Store its id on the task.
+                            _gateway = getattr(app_state, "hitl_gateway", None)
+                            if _gateway is not None:
+                                try:
+                                    _hitl_req = _gateway.request_approval(
+                                        goal_id=str(mission.id),
+                                        action=f"Org approval gate: {gate_title}",
+                                        risk_level=getattr(_chain, "risk_threshold", "high")
+                                        if _chain
+                                        else "high",
+                                        tenant_ctx=tenant_ctx,
+                                        context={
+                                            "org_id": org_id,
+                                            "mission_id": str(mission.id),
+                                            "task_id": str(task.id),
+                                            "gate": gate_title,
+                                        },
+                                    )
+                                    _hitl_rid = getattr(
+                                        _hitl_req, "request_id", str(_hitl_req)
+                                    )
+                                    await self.update_task_status(
+                                        str(task.id),
+                                        "approval_required",
+                                        outputs=[{"hitl_request_id": _hitl_rid}],
+                                    )
+                                except Exception as _hg_exc:
+                                    _log.warning(
+                                        "org.approval_gate_hitl_register_failed",
+                                        error=str(_hg_exc)[:100],
+                                    )
 
                             # Record req id on the task for the approve/reject path.
                             if _chain is not None:
@@ -1688,6 +2270,16 @@ class OrgService:
                     execution_ctx["dept_id"] = dept_id
                 if assigned_team_id:
                     execution_ctx["team_id"] = assigned_team_id
+                if approval_gates:
+                    # WS-3: MetaOrchestrator already flagged this mission as
+                    # needing human oversight (high/critical risk, legal/finance
+                    # involvement, or over the cost threshold — see
+                    # _compute_approval_gates). Force the dispatched goal into
+                    # "supervised" autonomy so its agent actually BLOCKS on a
+                    # gated action via the shared HITLGateway (bounded-autonomous,
+                    # the default, only logs and proceeds) instead of relying on
+                    # whichever agent auto-routing happens to pick.
+                    execution_ctx["autonomy_mode"] = "supervised"
 
                 workflow_mode = dispatch_result.get("topology", "sequential")
                 # Map org topologies → GoalService workflow modes

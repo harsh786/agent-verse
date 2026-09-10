@@ -1,6 +1,7 @@
 """Behavioral tests for DPDP endpoints — actual request creation and retrieval."""
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 @pytest.mark.asyncio
@@ -25,8 +26,8 @@ async def test_erasure_request_stored_with_pending_status():
     def fake_db():
         return fake_session
 
-    from app.api.dpdp import request_erasure, ErasureRequest
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.api.dpdp import ErasureRequest, request_erasure
+    from app.tenancy.context import PlanTier, TenantContext
     tenant = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")
 
     request = MagicMock()
@@ -61,8 +62,8 @@ async def test_consent_stored_correctly():
     def fake_db():
         return fake_session
 
-    from app.api.dpdp import record_consent, ConsentRequest
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.api.dpdp import ConsentRequest, record_consent
+    from app.tenancy.context import PlanTier, TenantContext
     tenant = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")
 
     request = MagicMock()

@@ -7,6 +7,7 @@ decision, allowing the `_on_token` callback in AgentGraph to redact output.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from collections import deque
 from dataclasses import dataclass
@@ -41,10 +42,8 @@ class StreamingGuard:
         self._buffer_len: int = 0
         self._patterns: list[re.Pattern[str]] = []
         for p in patterns or []:
-            try:
+            with contextlib.suppress(re.error):  # skip invalid patterns
                 self._patterns.append(re.compile(p, re.IGNORECASE | re.DOTALL))
-            except re.error:
-                pass  # skip invalid patterns
 
     # ------------------------------------------------------------------
     # Public API

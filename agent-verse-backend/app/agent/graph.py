@@ -72,7 +72,7 @@ _RM_COMMAND_PATTERN = re.compile(r"\brm\b")
 
 # GraphState and RetrievalEntryPointError now live in graph_types
 # to avoid circular imports from mixin modules.
-from app.agent.graph_types import GraphState, RetrievalEntryPointError
+from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # AgentGraph — thin orchestrator, all node logic lives in nodes/
@@ -112,6 +112,10 @@ class AgentGraph(
         exec_memory: ExecutionMemory | None = None,
         long_term_memory: LongTermMemoryStore | None = None,
         knowledge_store: KnowledgeStore | None = None,
+        # BK3 (D-20 follow-up): tenant-scoped knowledge-graph store, used to
+        # produce graph_facts for the planner prompt. Optional — Any to avoid
+        # a hard dependency on app.knowledge_graph from the agent loop.
+        knowledge_graph_store: Any | None = None,
         retrieval_gateway: Any | None = None,
         mcp_client: Any | None = None,
         # Intelligence
@@ -176,6 +180,7 @@ class AgentGraph(
         self._exec_memory = exec_memory
         self._long_term_memory = long_term_memory
         self._knowledge_store = knowledge_store
+        self._knowledge_graph_store = knowledge_graph_store
         self._retrieval_gateway = retrieval_gateway
         self._mcp_client = mcp_client
         self._guardrail_checker = guardrail_checker
@@ -204,8 +209,21 @@ class AgentGraph(
         self._enable_peer_review = enable_peer_review or "peer_review" in selected_strategy_ids
         # D-1/D-2: multi-agent patterns — enabled per-agent via ctor flag or a
         # runtime-profile strategy id, mirroring the other optional reasoning nodes.
-        self._enable_supervisor = enable_supervisor or "supervisor" in selected_strategy_ids
-        self._enable_debate = enable_debate or "debate" in selected_strategy_ids
+        # WS-10: additionally AUTO-select supervisor/debate from the goal's own
+        # characteristics (one reachable selector) when the default-off safety gate
+        # is open. The explicit ctor flag remains an override that always wins.
+        auto_multi_agent = self._auto_select_multi_agent(runtime_profile)
+        self._auto_multi_agent = auto_multi_agent
+        self._enable_supervisor = (
+            enable_supervisor
+            or "supervisor" in selected_strategy_ids
+            or "supervisor" in auto_multi_agent
+        )
+        self._enable_debate = (
+            enable_debate
+            or "debate" in selected_strategy_ids
+            or "debate" in auto_multi_agent
+        )
         self._autonomy_mode = autonomy_mode
         self._enable_goal_tree = enable_goal_tree
         self._goal_tree_threshold = goal_tree_threshold
@@ -271,6 +289,53 @@ class AgentGraph(
     @property
     def runtime_profile(self) -> Any | None:
         return self._runtime_profile
+
+    @staticmethod
+    def _auto_select_multi_agent(runtime_profile: Any | None) -> frozenset[str]:
+        """Consume the ONE selector's multi-agent decision for this goal.
+
+        Returns an empty set unless the default-off ``agent_auto_multi_agent_enabled``
+        safety gate is open AND the runtime profile carries goal properties.
+
+        The multi-agent topology is decided once, by ``PatternSelector`` during
+        profile assembly, and recorded in the DecisionTrace. This seam therefore
+        *reads* that already-traced decision from ``profile.agent_patterns.multi_agent``
+        rather than re-deriving it — so the pattern that runs is exactly the pattern
+        that was surfaced. It falls back to the shared pure rule only when a caller
+        passes a profile that carries goal properties but no assembled patterns.
+        """
+        props = getattr(runtime_profile, "properties", None)
+        if props is None:
+            return frozenset()
+        try:
+            from app.core.config import get_settings
+
+            if not get_settings().agent_auto_multi_agent_enabled:
+                return frozenset()
+        except Exception:  # pragma: no cover - defensive; fail safe (no auto-select)
+            return frozenset()
+
+        # Preferred path: the unified, already-traced decision from profile assembly.
+        agent_patterns = getattr(runtime_profile, "agent_patterns", None)
+        selected = getattr(agent_patterns, "multi_agent", None)
+        if selected:
+            return frozenset(p for p in selected if p != "single_agent")
+
+        # Fallback: re-derive from properties via the same shared rule (keeps any
+        # execution seam identical even without a fully-assembled profile).
+        from app.agent.multi_agent_selector import select_multi_agent_patterns
+
+        def _val(name: str, default: str = "") -> str:
+            raw = getattr(props, name, None)
+            return str(getattr(raw, "value", raw) or default).lower()
+
+        selection = select_multi_agent_patterns(
+            complexity=_val("complexity"),
+            domain=_val("domain"),
+            multi_step=bool(getattr(props, "multi_step", True)),
+            risk=_val("risk"),
+        )
+        return selection.patterns
 
     # ------------------------------------------------------------------
     # Graph construction

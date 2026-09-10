@@ -1,19 +1,19 @@
 """Tests for StateMachine model and API."""
 from __future__ import annotations
 
-import pytest
-from fastapi.testclient import TestClient
-from fastapi import FastAPI
 from types import SimpleNamespace
 
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from app.api.state_machines import router
 from app.triggers.state_machine import (
+    StateDefinition,
     StateMachine,
     StateMachineDefinition,
-    StateDefinition,
     TransitionDefinition,
 )
-from app.api.state_machines import router
-
 
 # ── StateMachine unit tests ───────────────────────────────────────────────────
 

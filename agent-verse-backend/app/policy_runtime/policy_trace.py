@@ -20,7 +20,7 @@ class PolicyDecision:
 
 @dataclass
 class PolicyTrace:
-    """Trace of PolicyCompiler decisions for a goal execution."""
+    """Trace of policy-compilation decisions for a goal execution."""
 
     goal_id: str
     tenant_id: str

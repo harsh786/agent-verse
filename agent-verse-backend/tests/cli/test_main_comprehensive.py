@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 from typer.testing import CliRunner
 
 from app.cli.main import app as cli_app
@@ -246,8 +245,9 @@ def test_api_key_from_env():
 
 
 def test_api_key_missing_env_exits():
-    from app.cli.main import _api_key
     import typer
+
+    from app.cli.main import _api_key
     env_clean = {k: v for k, v in os.environ.items() if k != "AGENTVERSE_API_KEY"}
     with (
         patch.dict("os.environ", env_clean, clear=True),
@@ -256,7 +256,7 @@ def test_api_key_missing_env_exits():
         # typer.Exit is not a SystemExit; catch BaseException
         try:
             _api_key()
-            assert False, "Should have raised"
+            raise AssertionError("Should have raised")
         except (SystemExit, typer.Exit, BaseException):
             pass  # expected — AGENTVERSE_API_KEY not set
 

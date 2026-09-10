@@ -4,8 +4,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.workflow.dsl import WorkflowDefinition, StepDefinition
-
+from app.workflow.dsl import WorkflowDefinition
 
 MINIMAL_YAML = """
 name: Test Workflow

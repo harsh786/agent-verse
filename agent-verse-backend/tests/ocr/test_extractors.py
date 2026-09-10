@@ -1,5 +1,5 @@
 """Tests for OCR field extractors."""
-import pytest
+
 from app.ocr.extractors import get_extractor
 from app.ocr.extractors.general import GeneralExtractor
 from app.ocr.models import DocumentType

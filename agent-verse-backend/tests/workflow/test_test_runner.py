@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.workflow.dsl import ConditionalBranch, StepDefinition, WorkflowDefinition
+from app.workflow.dsl import StepDefinition, WorkflowDefinition
 from app.workflow.test_runner import (
     MockToolAdapter,
     WorkflowScenario,

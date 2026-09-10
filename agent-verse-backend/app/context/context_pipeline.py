@@ -43,6 +43,14 @@ class ContextPipeline:
         rerank_strategy: RerankStrategy = RerankStrategy.SCORE,
         citation_required: bool = True,
         deduplication_enabled: bool = True,
+        # BK3 (D-20 follow-up): optional, best-effort producers for the two
+        # PromptBuilder branches that graph/rerank alone can't fill in.
+        # Duck-typed and injected — the pipeline never hard-imports a
+        # concrete store, so it behaves identically when neither is given.
+        #   graph_source:   object with get_facts(query, tenant_id, top_k)
+        #   semantic_cache: object with get_hits(query, tenant_id, top_k)
+        graph_source: Any | None = None,
+        semantic_cache: Any | None = None,
     ) -> None:
         self._budget = ContextBudget(max_tokens=max_tokens, max_chunks=max_chunks)
         self._reranker = RerankPolicy(
@@ -53,6 +61,8 @@ class ContextPipeline:
         )
         self._citations_mgr = CitationManager()
         self._prompt_builder = PromptBuilder(max_context_tokens=max_tokens)
+        self._graph_source = graph_source
+        self._semantic_cache_source = semantic_cache
 
     def run(
         self,
@@ -67,6 +77,7 @@ class ContextPipeline:
         execution_memory: list[dict[str, Any]] | None = None,
         long_term_memory: list[dict[str, Any]] | None = None,
         semantic_cache_hits: list[dict[str, Any]] | None = None,
+        tenant_id: str | None = None,
     ) -> PipelineResult:
         original_count = len(chunks)
         reranked = self._reranker.rerank(chunks, query=query)
@@ -89,19 +100,27 @@ class ContextPipeline:
             pass
 
         cited_chunks, citations = self._citations_mgr.attach_citations(included)
+
+        # BK3 (D-20 follow-up): when the caller doesn't supply graph_facts /
+        # semantic_cache_hits explicitly (i.e. leaves them None), ask the
+        # injected producers for them, best-effort. An explicit argument
+        # (including []) always wins — the producers only fill a genuine gap.
+        if graph_facts is None:
+            graph_facts = self._fetch_graph_facts(query, tenant_id)
+        if semantic_cache_hits is None:
+            semantic_cache_hits = self._fetch_semantic_cache_hits(query, tenant_id)
+
         # D-20: thread the previously-unpopulated context sources into the bundle so
         # PromptBuilder's graph_facts / execution_memory / long_term_memory /
         # semantic_cache_hits branches actually render at runtime. Callers that omit
         # them get the historical chunks/reflexion/web behavior unchanged.
-        # TODO(D-20 wiring): app/agent/nodes/planner_mixin.py `_node_plan` (the
-        #   `pipeline.run(...)` call ~L69) should forward these four sources, which
-        #   app/agent/nodes/rag_mixin.py already fetches but currently flattens into
-        #   free-text `context_parts`: execution_memory from `_exec_memory.recall_async`
-        #   (rag_mixin ~L93 "[Past winning plans]"), long_term_memory from
-        #   `_long_term_memory.recall_async` (rag_mixin ~L127 "[Domain knowledge]"),
-        #   graph_facts from the knowledge-graph recall, and semantic_cache_hits from
-        #   the SemanticCache. Passing them structured here keeps the unified builder as
-        #   the single injection point instead of ad-hoc prompt concatenation.
+        # execution_memory / long_term_memory are forwarded by
+        # app/agent/nodes/planner_mixin.py `_node_plan` from records
+        # app/agent/nodes/rag_mixin.py stashes on agent_state.context. graph_facts /
+        # semantic_cache_hits are, as of BK3, forwarded the same way when present on
+        # agent_state.context, and otherwise fall back to the best-effort producers
+        # above (graph_source / semantic_cache) when the pipeline was constructed
+        # with them.
         bundle = PromptContextBundle(
             goal_context=goal_context,
             knowledge_chunks=cited_chunks,
@@ -128,3 +147,29 @@ class ContextPipeline:
             # P1-6: chunks dropped by the token-budget filter (was always 0).
             filtered_removed=budget_result.excluded_count,
         )
+
+    def _fetch_graph_facts(self, query: str, tenant_id: str | None) -> list[dict[str, Any]]:
+        """Best-effort: ask the injected knowledge-graph source for facts
+        relevant to *query*, tenant-scoped, top-K. Mirrors the try/except
+        style of the execution_memory / long_term_memory branches — an
+        absent source, no data, or any failure all degrade to []."""
+        if self._graph_source is None:
+            return []
+        try:
+            facts = self._graph_source.get_facts(query, tenant_id=tenant_id, top_k=5)
+            return list(facts) if facts else []
+        except Exception:
+            return []
+
+    def _fetch_semantic_cache_hits(
+        self, query: str, tenant_id: str | None
+    ) -> list[dict[str, Any]]:
+        """Best-effort: tenant-scoped lookup against the injected semantic
+        cache. An absent source, a miss, or any failure all degrade to []."""
+        if self._semantic_cache_source is None:
+            return []
+        try:
+            hits = self._semantic_cache_source.get_hits(query, tenant_id=tenant_id, top_k=2)
+            return list(hits) if hits else []
+        except Exception:
+            return []

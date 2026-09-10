@@ -6,7 +6,6 @@ import pytest
 from app.workflow.compiler import CompiledWorkflow, WorkflowCompiler
 from app.workflow.context import ContextResolver
 from app.workflow.dsl import StepDefinition, WorkflowDefinition
-from app.workflow.registry import StepTypeRegistry
 
 
 @pytest.fixture

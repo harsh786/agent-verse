@@ -1,8 +1,9 @@
 """Tests for Phase 2 performance optimizations."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 class TestCapabilitySearchWiring:
@@ -31,7 +32,7 @@ class TestCapabilitySearchWiring:
 
         # Capability search is tried when embedder is set
         # Just verify the graph can run without error
-        from app.tenancy.context import TenantContext, PlanTier
+        from app.tenancy.context import PlanTier, TenantContext
         T = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1", roles=())
 
         from app.agent.state import GoalStatus
@@ -67,8 +68,8 @@ class TestCapabilitySearchDirect:
     @pytest.mark.asyncio
     async def test_semantic_mode_uses_embedder(self):
         """When embedder is provided, semantic search is attempted."""
-        from app.providers.fake import FakeProvider
         from app.mcp.capability_search import CapabilitySearch
+        from app.providers.fake import FakeProvider
 
         embedder = FakeProvider()
         tools = [
@@ -130,9 +131,9 @@ class TestCostBreakdown:
 
     def test_module_functions(self):
         from app.observability.cost_breakdown import (
-            record_role_cost,
-            get_breakdown,
             finalize_breakdown,
+            get_breakdown,
+            record_role_cost,
         )
         record_role_cost("test-goal-x", "planner", "gpt-4", 500, 100, 0.01)
         bd = get_breakdown("test-goal-x")
@@ -156,8 +157,8 @@ class TestBudget80PctAlert:
 
     @pytest.mark.asyncio
     async def test_80pct_alert_logged(self):
-        from app.governance.cost import RedisCostController, BudgetConfig
-        from app.tenancy.context import TenantContext, PlanTier
+        from app.governance.cost import BudgetConfig, RedisCostController
+        from app.tenancy.context import PlanTier, TenantContext
 
         T = TenantContext(tenant_id="alert-t1", plan=PlanTier.ENTERPRISE, api_key_id="k1", roles=())
 
@@ -201,8 +202,8 @@ class TestBudget80PctAlert:
     @pytest.mark.asyncio
     async def test_in_memory_controller_alert_at_boundary(self):
         """CostController (in-memory) emits alert when daily spend crosses 80%."""
-        from app.governance.cost import CostController, BudgetConfig
-        from app.tenancy.context import TenantContext, PlanTier
+        from app.governance.cost import BudgetConfig, CostController
+        from app.tenancy.context import PlanTier, TenantContext
 
         T = TenantContext(tenant_id="mem-alert", plan=PlanTier.FREE, api_key_id="k1", roles=())
         ctrl = CostController(config=BudgetConfig(

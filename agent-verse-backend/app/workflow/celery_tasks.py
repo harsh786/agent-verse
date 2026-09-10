@@ -28,15 +28,39 @@ def _build_worker_runner() -> Any:
     from app.scaling.tasks import _WORKER_CHECKPOINTER
     from app.workflow.compiler import WorkflowCompiler
     from app.workflow.context import ContextResolver
+    from app.workflow.hitl_extension import HITLWorkflowGateway
     from app.workflow.run_store import PostgresWorkflowRunStore
     from app.workflow.runner import WorkflowRunner
 
     db_factory = get_session_factory()
     run_store = PostgresWorkflowRunStore(db_factory)
+    # WS-3: reuse the API server's hitl_workflow_gateway when this worker
+    # shares process state with it (e.g. tests, single-process deployments);
+    # otherwise fall back to a worker-local instance so HITLStepNode at least
+    # gets a working gateway instead of silently skipping approval creation.
+    hitl_workflow_gateway: Any = None
+    try:
+        from app.main import app as _fastapi_app  # type: ignore[import]
+
+        hitl_workflow_gateway = getattr(_fastapi_app.state, "hitl_workflow_gateway", None)
+    except Exception:
+        hitl_workflow_gateway = None
+    if hitl_workflow_gateway is None:
+        hitl_workflow_gateway = HITLWorkflowGateway()
+    # Cross-process HITL (gap #2): give the worker's gateway the same durable,
+    # RLS-scoped Postgres approval store the API uses, so a pending approval the
+    # worker creates when a run suspends at a HITL step is visible to the API's
+    # /approvals endpoints (and a decision the API writes is visible here). The
+    # FastAPI lifespan — which normally wires this — never runs in a worker.
+    if getattr(hitl_workflow_gateway, "_approval_store", None) is None:
+        from app.workflow.approval_store import PostgresWorkflowApprovalStore
+
+        hitl_workflow_gateway._approval_store = PostgresWorkflowApprovalStore(db_factory)
     compiler = WorkflowCompiler(
         context_resolver=ContextResolver(),
         checkpointer=_WORKER_CHECKPOINTER,
         run_store=run_store,
+        hitl_workflow_gateway=hitl_workflow_gateway,
     )
     _WORKER_RUNNER = WorkflowRunner(compiler=compiler, run_store=run_store, celery_app=celery_app)
     return _WORKER_RUNNER
@@ -96,6 +120,7 @@ def execute_workflow_run(
     is_test_run: bool = False,
     mock_overrides: dict | None = None,
     resume: bool = False,
+    hitl_decision: dict | None = None,
 ) -> None:
     """Execute a workflow run (or resume after HITL)."""
     runner = _get_runner()
@@ -104,8 +129,24 @@ def execute_workflow_run(
         return
 
     async def _execute() -> None:
-        if resume:
-            # State was already updated via aupdate_state; just re-invoke
+        if resume and hitl_decision:
+            # Cross-process HITL resume (gap #2): the run suspended in a worker
+            # whose per-process checkpointer this process cannot read, so the
+            # reviewer's decision travels in the task payload. Reconstruct the
+            # run from the persisted record + decision and advance to terminal.
+            await runner.execute_resume_fresh(
+                run_id,
+                workflow_id,
+                tenant_id,
+                step_id=hitl_decision["step_id"],
+                action=hitl_decision["action"],
+                actor_id=hitl_decision.get("actor_id", ""),
+                note=hitl_decision.get("note"),
+                form_data=hitl_decision.get("form_data"),
+            )
+        elif resume:
+            # Legacy same-process resume: state was updated via aupdate_state on
+            # this process's checkpointer; just re-invoke.
             definition = await runner._load_definition(workflow_id, tenant_id)
             compiled = runner._compiler.compile(definition)
             config = {"configurable": {"thread_id": run_id}}
@@ -113,13 +154,18 @@ def execute_workflow_run(
             if hasattr(current, "values"):
                 await compiled.ainvoke(dict(current.values), config)
         else:
-            # Fresh run — state already in checkpointer from runner.run()
-            definition = await runner._load_definition(workflow_id, tenant_id)
-            compiled = runner._compiler.compile(definition)
-            config = {"configurable": {"thread_id": run_id}}
-            current = await compiled.aget_state(config)
-            if hasattr(current, "values"):
-                await compiled.ainvoke(dict(current.values), config)
+            # Fresh run. runner.run()'s Celery-dispatch branch persists the run
+            # row but never seeds the LangGraph checkpointer, and this worker
+            # runs on its own per-process checkpointer — so there is nothing to
+            # read back. Reconstruct the initial state from the persisted run
+            # record + definition and execute it, so the worker runs real steps.
+            await runner.execute_fresh(
+                run_id,
+                workflow_id,
+                tenant_id,
+                is_test_run=is_test_run,
+                mock_overrides=mock_overrides or {},
+            )
 
     try:
         _run_async(_execute())

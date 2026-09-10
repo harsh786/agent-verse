@@ -43,15 +43,6 @@ from app.tenancy.context import TenantContext
 if TYPE_CHECKING:
     from app.rag.indexing import IndexingDependency
 
-# Check if Playwright is available at module load time
-try:
-    import playwright.async_api as _playwright_api  # type: ignore[import-not-found]
-
-    _check_playwright = _playwright_api.async_playwright
-    _PLAYWRIGHT_AVAILABLE = True
-except ImportError:
-    _PLAYWRIGHT_AVAILABLE = False
-
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
 # Embedding dimension used for random dummy embeddings when no real embedder is present.
@@ -97,7 +88,7 @@ class UrlIngestRequest(BaseModel):
 
 
 class RpaUrlIngestRequest(BaseModel):
-    """Ingest one or more URLs using headless Playwright for JS-rendered content."""
+    """Ingest one or more URLs scraped via the RPA executor (browser or httpx)."""
 
     collection_id: str
     urls: list[str]  # supports batch ingestion (max 20)
@@ -798,6 +789,7 @@ async def ingest_repository(request: Request, body: RepoIngestRequest) -> dict[s
             curl_resolve=repository_source.curl_resolve,
             lease_seconds=settings.repo_ingest_lease_seconds,
             heartbeat_seconds=settings.repo_ingest_heartbeat_seconds,
+            job_tracker=getattr(request.app.state, "ingestion_job_tracker", None),
         )
     )
     tasks = getattr(request.app.state, "repository_ingestion_tasks", None)
@@ -852,12 +844,17 @@ async def _ingest_repo_background(
     curl_resolve: str | None = None,
     lease_seconds: int = 60,
     heartbeat_seconds: int = 5,
+    job_tracker: Any = None,
 ) -> None:
     """Clone and atomically ingest under a disk/file quota and durable lease.
 
     Git/libcurl does not expose reliable aggregate network-byte accounting here.
     The worker therefore fails closed on continuously monitored clone disk bytes,
     clone file count, wall-clock timeout, selected bytes, and selected file count.
+
+    On terminal failure the job is dead-lettered (via ``job_tracker``) with the
+    parameters needed to retry it, matching the durable DLQ guarantee the
+    scheduled connector-sync path already has.
     """
     import asyncio
     import pathlib
@@ -868,6 +865,33 @@ async def _ingest_repo_background(
     from app.observability.logging import get_logger
 
     logger = get_logger(__name__)
+
+    async def _dead_letter(error_message: str) -> None:
+        """Best-effort: record the failed repo ingest in the DLQ for later retry.
+
+        Never masks the original failure — any DLQ error is swallowed and logged.
+        """
+        if job_tracker is None:
+            return
+        try:
+            await job_tracker.add_to_dlq(
+                source_id=f"repo:{repo_url}",
+                tenant_id=getattr(tenant_ctx, "tenant_id", ""),
+                doc_id=job_id,
+                error=error_message,
+                raw_doc={
+                    "kind": "repository",
+                    "job_id": job_id,
+                    "repo_url": repo_url,
+                    "collection_id": collection_id,
+                    "branch": branch,
+                    "file_patterns": file_patterns,
+                    "max_files": max_files,
+                },
+            )
+        except Exception as dlq_exc:
+            logger.error("repo_ingest_dlq_failed", job_id=job_id, error=type(dlq_exc).__name__)
+
     if limits is None:
         settings = get_settings()
         limits = RepositoryLimits(
@@ -1083,6 +1107,7 @@ async def _ingest_repo_background(
                 tenant_ctx=tenant_ctx,
             )
         )
+        await asyncio.shield(_dead_letter("Repository ingestion cancelled"))
         raise
     except Exception as exc:
         logger.warning("repo_ingest_failed", repo=repo_url, error=type(exc).__name__)
@@ -1099,6 +1124,7 @@ async def _ingest_repo_background(
                 job_id=job_id,
                 error=type(status_exc).__name__,
             )
+        await _dead_letter("Repository ingestion failed")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
         shutil.rmtree(config_dir, ignore_errors=True)
@@ -1787,7 +1813,7 @@ async def get_collection_stats(request: Request, collection_id: str) -> dict[str
 
 
 # ---------------------------------------------------------------------------
-# RPA-backed URL ingestion (JavaScript-rendered pages via Playwright)
+# RPA-backed URL ingestion (via the one reachable RPAExecutor scraper)
 # ---------------------------------------------------------------------------
 
 
@@ -1796,14 +1822,15 @@ async def ingest_from_rpa_url(
     request: Request,
     body: RpaUrlIngestRequest,
 ) -> dict[str, Any]:
-    """Ingest one or more URLs using headless Playwright (Chromium).
+    """Scrape one or more URLs via the RPA subsystem and ingest them into the KB.
 
-    Unlike /ingest/url (httpx), this endpoint renders JavaScript, supports
-    batch URLs, and optionally captures screenshots. Falls back to httpx
-    when Playwright is not installed.
+    WS-13: this routes through the ONE reachable scraper — ``RPAExecutor`` (real
+    Chromium when Playwright is installed, a real httpx fetch otherwise) — instead
+    of a duplicated ad-hoc browser block. Scraped content is chunked with
+    ``source_type``/``source_url`` provenance and a ``doc_content_hash``, and
+    cross-source deduped against the one store via ``exists_by_hash`` before
+    indexing.
     """
-    import re as _re
-
     tenant_ctx = _require_tenant(request)
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
@@ -1820,21 +1847,24 @@ async def ingest_from_rpa_url(
                 detail=f"URL must start with http:// or https://: {url}",
             )
 
-    # Use module-level flag and import playwright inside if available
-    _playwright_ok = _PLAYWRIGHT_AVAILABLE
-    if _playwright_ok:
-        from playwright.async_api import async_playwright as _async_playwright
+    from app.rpa.kb_emit import scrape_url_to_chunks
+
+    executor = getattr(request.app.state, "rpa_executor", None)
+    if executor is None:
+        from app.rpa.executor import RPAExecutor
+
+        executor = RPAExecutor()
+        request.app.state.rpa_executor = executor
+
+    # A non-default selector is passed through to the scraper (honoured by the
+    # real browser path); "body" means the whole page.
+    selectors = [body.selector] if body.selector and body.selector != "body" else None
 
     total_chunks = 0
     results: list[dict[str, Any]] = []
 
     for url in body.urls:
-        content: str = ""
-        screenshot_b64: str = ""
-        links: list[str] = []
-        playwright_used = False
-
-        # SSRF guard — reject internal/metadata URLs before fetching
+        # SSRF guard — reject internal/metadata URLs before fetching.
         try:
             assert_public_url(url, context="/ingest/rpa-url")
         except SSRFError as exc:
@@ -1844,136 +1874,55 @@ async def ingest_from_rpa_url(
                     "success": False,
                     "error": f"URL blocked for security reasons: {exc}",
                     "chunks_ingested": 0,
-                    "playwright_used": False,
                 }
             )
             continue
 
-        if _playwright_ok:
-            try:
-                async with _async_playwright() as _pw:
-                    _browser = await _pw.chromium.launch(headless=True)
-                    _ctx = await _browser.new_context(
-                        viewport={"width": 1280, "height": 900},
-                        user_agent="AgentVerse-Knowledge/1.0",
-                    )
-                    _page = await _ctx.new_page()
-                    _page.set_default_timeout(30_000)
-                    await _page.goto(url, wait_until="networkidle", timeout=30_000)
+        try:
+            scraped = await scrape_url_to_chunks(
+                executor,
+                url=url,
+                selectors=selectors,
+                source_type=body.source_type,
+                max_chars=body.max_chars,
+            )
+        except Exception as exc:
+            results.append(
+                {"url": url, "success": False, "error": str(exc), "chunks_ingested": 0}
+            )
+            continue
 
-                    content = await _page.inner_text(body.selector)
-                    content = content[: body.max_chars]
-
-                    if body.include_links:
-                        _anchors = await _page.evaluate(
-                            "Array.from(document.querySelectorAll('a[href]'))"
-                            ".map(a => a.href).filter(h => h.startsWith('http'))"
-                        )
-                        links = list(dict.fromkeys(_anchors))[:50]
-
-                    if body.screenshot:
-                        import base64 as _b64
-
-                        _ss_bytes = await _page.screenshot(full_page=False)
-                        screenshot_b64 = _b64.b64encode(_ss_bytes).decode()
-
-                    await _browser.close()
-                playwright_used = True
-            except Exception as exc:
-                import httpx as _httpx
-
-                try:
-                    async with _httpx.AsyncClient(timeout=30.0) as _client:
-                        _resp = await _client.get(url, headers={"User-Agent": "AgentVerse/1.0"})
-                        _resp.raise_for_status()
-                        raw = _resp.text
-                        content = _re.sub(r"<[^>]+>", " ", raw)
-                        content = _re.sub(r"\s+", " ", content).strip()[: body.max_chars]
-                except Exception:
-                    results.append(
-                        {
-                            "url": url,
-                            "success": False,
-                            "error": str(exc),
-                            "chunks_ingested": 0,
-                            "playwright_used": False,
-                        }
-                    )
-                    continue
-        else:
-            import httpx as _httpx
-
-            try:
-                async with _httpx.AsyncClient(timeout=30.0) as _client:
-                    _resp = await _client.get(url, headers={"User-Agent": "AgentVerse/1.0"})
-                    _resp.raise_for_status()
-                    raw = _resp.text
-                    content = _re.sub(r"<[^>]+>", " ", raw)
-                    content = _re.sub(r"\s+", " ", content).strip()[: body.max_chars]
-            except Exception as exc:
-                results.append(
-                    {
-                        "url": url,
-                        "success": False,
-                        "error": str(exc),
-                        "chunks_ingested": 0,
-                        "playwright_used": False,
-                    }
-                )
-                continue
-
-        if not content.strip():
+        if not scraped.content.strip():
             results.append(
                 {
                     "url": url,
                     "success": False,
                     "error": "No content extracted",
                     "chunks_ingested": 0,
-                    "playwright_used": playwright_used,
                 }
             )
             continue
 
-        from app.knowledge.chunker_v2 import chunk_by_tokens
-
-        raw_chunks = chunk_by_tokens(content, max_tokens=512, overlap_tokens=64)
-        if not raw_chunks:
-            raw_chunks = [content.strip()]
-
-        chunk_dicts: list[dict[str, Any]] = []
-        for i, chunk_text in enumerate(raw_chunks):
-            chunk_dicts.append(
+        # Cross-source dedup: skip content already in the store (any source).
+        if await store.exists_by_hash(
+            content_hash=scraped.content_hash,
+            tenant_id=tenant_ctx.tenant_id,
+            collection_id=body.collection_id,
+        ):
+            results.append(
                 {
-                    "content": chunk_text,
-                    "source_url": url,
-                    "source_type": body.source_type,
-                    "source_doc_id": url,
-                    "page_number": None,
-                    "metadata": {
-                        "source_url": url,
-                        "source_type": body.source_type,
-                        "playwright_used": str(playwright_used),
-                        "selector": body.selector,
-                        "chunk_index": str(i),
-                    },
+                    "url": url,
+                    "success": True,
+                    "chunks_ingested": 0,
+                    "deduplicated": True,
+                    "total_chars": len(scraped.content),
+                    "content_hash": scraped.content_hash,
                 }
             )
-
-        if links:
-            link_content = f"Page links from {url}:\n" + "\n".join(links)
-            chunk_dicts.append(
-                {
-                    "content": link_content,
-                    "source_url": url,
-                    "source_type": f"{body.source_type}-links",
-                    "source_doc_id": f"{url}#links",
-                    "page_number": None,
-                    "metadata": {"source_url": url, "source_type": f"{body.source_type}-links"},
-                }
-            )
+            continue
 
         ingested = await _ingest_chunks_from_source(
-            store, chunk_dicts, body.collection_id, tenant_ctx, embedder
+            store, scraped.chunks, body.collection_id, tenant_ctx, embedder
         )
         total_chunks += ingested
         results.append(
@@ -1981,20 +1930,19 @@ async def ingest_from_rpa_url(
                 "url": url,
                 "success": True,
                 "chunks_ingested": ingested,
-                "total_chars": len(content),
-                "playwright_used": playwright_used,
-                "screenshot_captured": bool(screenshot_b64),
-                "links_extracted": len(links),
+                "deduplicated": False,
+                "total_chars": len(scraped.content),
+                "content_hash": scraped.content_hash,
             }
         )
 
     return {
         "collection_id": body.collection_id,
         "source_type": body.source_type,
+        "scraper": "rpa-executor",
         "urls_processed": len(body.urls),
         "urls_succeeded": sum(1 for r in results if r.get("success")),
         "total_chunks_ingested": total_chunks,
-        "playwright_available": _playwright_ok,
         "results": results,
     }
 

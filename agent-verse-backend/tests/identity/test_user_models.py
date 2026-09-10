@@ -4,13 +4,14 @@ import pytest
 
 class TestUserModel:
     def test_user_model_importable(self):
-        from app.db.models.user import User, TenantMembership
+        from app.db.models.user import TenantMembership, User
         assert User.__tablename__ == "users"
         assert TenantMembership.__tablename__ == "tenant_memberships"
 
     def test_user_has_google_sub(self):
-        from app.db.models.user import User
         from sqlalchemy.inspection import inspect
+
+        from app.db.models.user import User
         mapper = inspect(User)
         col_names = [c.key for c in mapper.columns]
         assert "google_sub" in col_names
@@ -18,8 +19,8 @@ class TestUserModel:
 
     def test_tenant_membership_has_rls_in_migration(self):
         """Migration must enable RLS on tenant_memberships."""
-        import inspect as ins
         import importlib
+        import inspect as ins
         try:
             mod = importlib.import_module(
                 "app.db.migrations.versions.0072_users_and_memberships"
@@ -49,5 +50,5 @@ class TestGoogleOAuthRouter:
 
 class TestEntitlementsModule:
     def test_entitlements_importable(self):
-        from app.tenancy.entitlements import has_feature, assert_feature
+        from app.tenancy.entitlements import has_feature
         assert callable(has_feature)

@@ -1,7 +1,8 @@
 """Regression tests for 0C.3 async safety fixes."""
 import asyncio
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import AsyncMock, patch
 
 
 class TestJiraResolverAsync:
@@ -10,6 +11,7 @@ class TestJiraResolverAsync:
     def test_no_sync_httpx_in_tool_calls(self):
         """H6: tool_calls.py must not use httpx.Client (sync) in async context."""
         import inspect
+
         from app.agent import tool_calls
         source = inspect.getsource(tool_calls)
 
@@ -21,6 +23,7 @@ class TestJiraResolverAsync:
     async def test_jira_resolver_is_async_coroutine(self):
         """H6: _resolve_jira_account_id (or equivalent) must be a coroutine."""
         import inspect
+
         from app.agent import tool_calls
 
         # Find any Jira-related async resolution function
@@ -69,7 +72,7 @@ class TestCheckpointGoalId:
         )
 
         with patch.object(g._graph, "ainvoke", side_effect=capture_thread_id):
-            from app.tenancy.context import TenantContext, PlanTier
+            from app.tenancy.context import PlanTier, TenantContext
             T = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1", roles=())
             try:
                 await g.run(goal="test", tenant_ctx=T, goal_id="test-goal-123")

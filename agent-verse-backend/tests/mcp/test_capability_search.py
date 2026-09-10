@@ -1,7 +1,6 @@
 """Tests for CapabilitySearch — semantic and keyword tool matching."""
 from __future__ import annotations
 
-import math
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

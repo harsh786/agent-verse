@@ -3,7 +3,6 @@ import os
 from unittest.mock import patch
 
 
-
 def _agent_source() -> str:
     """Read combined source of graph.py and all node mixin files."""
     import pathlib
@@ -26,7 +25,6 @@ def test_write_high_bypassed_when_flag_set():
 
 def test_hitl_gate_source_contains_env_flag():
     """graph.py must gate the write_high bypass behind ALLOW_FULLY_AUTONOMOUS_WRITE_HIGH."""
-    import pathlib
     src = _agent_source()
     assert "ALLOW_FULLY_AUTONOMOUS_WRITE_HIGH" in src, (
         "graph.py must check ALLOW_FULLY_AUTONOMOUS_WRITE_HIGH env flag"

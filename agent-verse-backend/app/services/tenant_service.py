@@ -267,7 +267,7 @@ class TenantService:
 
         # ── Populate Redis cache ───────────────────────────────────────────
         if self._redis is not None:
-            try:
+            with suppress(Exception):  # caching is best-effort
                 await self._redis.setex(
                     cache_key,
                     300,
@@ -280,8 +280,6 @@ class TenantService:
                         }
                     ),
                 )
-            except Exception:
-                pass  # caching is best-effort
 
         return ctx
 
@@ -295,10 +293,13 @@ class TenantService:
             from app.db.models.tenant import Tenant
             from app.db.rls import sqlalchemy_rls_context
 
-            async with self._db() as session, session.begin():
-                async with sqlalchemy_rls_context(session, tenant_id):
-                    t = Tenant(id=tenant_id, name=name, email=email, plan_tier=plan)
-                    session.add(t)
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                t = Tenant(id=tenant_id, name=name, email=email, plan_tier=plan)
+                session.add(t)
         except Exception as exc:
             logging.getLogger(__name__).warning("DB persist tenant failed: %s", exc)
 
@@ -319,20 +320,23 @@ class TenantService:
             from app.db.models.tenant import ApiKey, Tenant
             from app.db.rls import sqlalchemy_rls_context
 
-            async with self._db() as session, session.begin():
-                async with sqlalchemy_rls_context(session, tenant_id):
-                    tenant = Tenant(id=tenant_id, name=name, email=email, plan_tier=plan)
-                    session.add(tenant)
-                    session.add(
-                        ApiKey(
-                            id=key_id,
-                            tenant_id=tenant_id,
-                            name="Default",
-                            key_hash=key_hash,
-                            scopes=[],
-                            roles=["admin"],  # initial owner key gets full admin access
-                        )
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                tenant = Tenant(id=tenant_id, name=name, email=email, plan_tier=plan)
+                session.add(tenant)
+                session.add(
+                    ApiKey(
+                        id=key_id,
+                        tenant_id=tenant_id,
+                        name="Default",
+                        key_hash=key_hash,
+                        scopes=[],
+                        roles=["admin"],  # initial owner key gets full admin access
                     )
+                )
         except Exception as exc:
             logging.getLogger(__name__).warning("DB persist tenant/default api_key failed: %s", exc)
 
@@ -352,17 +356,20 @@ class TenantService:
             from app.db.models.tenant import ApiKey
             from app.db.rls import sqlalchemy_rls_context
 
-            async with self._db() as session, session.begin():
-                async with sqlalchemy_rls_context(session, tenant_id):
-                    k = ApiKey(
-                        id=key_id,
-                        tenant_id=tenant_id,
-                        name=name,
-                        key_hash=key_hash,
-                        scopes=scopes,
-                        expires_at=expires_at,
-                    )
-                    session.add(k)
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                k = ApiKey(
+                    id=key_id,
+                    tenant_id=tenant_id,
+                    name=name,
+                    key_hash=key_hash,
+                    scopes=scopes,
+                    expires_at=expires_at,
+                )
+                session.add(k)
         except Exception as exc:
             logging.getLogger(__name__).warning("DB persist api_key failed: %s", exc)
 
@@ -376,11 +383,14 @@ class TenantService:
             from app.db.models.tenant import ApiKey
             from app.db.rls import sqlalchemy_rls_context
 
-            async with self._db() as session, session.begin():
-                async with sqlalchemy_rls_context(session, tenant_id):
-                    await session.execute(
-                        update(ApiKey).where(ApiKey.id == key_id).values(is_active=False)
-                    )
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                await session.execute(
+                    update(ApiKey).where(ApiKey.id == key_id).values(is_active=False)
+                )
         except Exception as exc:
             logging.getLogger(__name__).warning("DB revoke api_key failed: %s", exc)
 
@@ -484,13 +494,11 @@ class TenantService:
                         },
                     )
                     # Store sso_sub if the column exists
-                    try:
+                    with suppress(Exception):  # sso_sub column may not exist yet
                         await session.execute(
                             text("UPDATE tenants SET sso_sub = :sub WHERE id = :id"),
                             {"sub": sso_sub, "id": tenant_id},
                         )
-                    except Exception:
-                        pass  # sso_sub column may not exist yet
 
                     # Create initial API key
                     key_hash = _hash_key(api_key)

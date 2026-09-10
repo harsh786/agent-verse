@@ -11,10 +11,8 @@ import uuid
 import pytest
 
 from app.agent.graph import AgentGraph
-from app.agent.state import GoalStatus
 from app.governance.audit import AuditEvent, AuditLog
-from app.governance.hitl import ApprovalRequest, ApprovalStatus, HITLGateway
-from app.governance.permissions import ActionLevel
+from app.governance.hitl import ApprovalStatus, HITLGateway
 from app.providers.fake import FakeProvider
 from app.tenancy.context import PlanTier, TenantContext
 

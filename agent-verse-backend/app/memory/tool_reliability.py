@@ -55,7 +55,8 @@ class ToolReliabilityStore:
                 await session.execute(
                     text("""
                     INSERT INTO tool_reliability_memory
-                        (tenant_id, tool_name, success_count, failure_count, total_latency_ms, last_used_at)
+                        (tenant_id, tool_name, success_count, failure_count,
+                         total_latency_ms, last_used_at)
                     VALUES (:tid, :tool, :sc, :fc, :lat, NOW())
                     ON CONFLICT (tenant_id, tool_name) DO UPDATE SET
                         success_count = tool_reliability_memory.success_count + :sc,

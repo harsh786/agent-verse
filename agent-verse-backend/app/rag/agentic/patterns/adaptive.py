@@ -164,6 +164,32 @@ def select_adaptive_strategy(
             )
         unavailable_reason += "fusion_unavailable; "
 
+    # RAPTOR (D-6): a request for a broad, hierarchical roll-up over an entire
+    # corpus is better served by tree-summary retrieval than a flat lookup. The
+    # gateway dispatches RAPTOR through the precomputed-index core-strategy path
+    # (DIRECT_CORE_RAG_STRATEGIES), so this is safe to auto-select once certified.
+    if any(
+        term in normalized
+        for term in (
+            "overview of",
+            "high-level summary",
+            "high level summary",
+            "hierarchical summary",
+            "bird's-eye view",
+            "bird's eye view",
+            "roll-up summary",
+            "rollup summary",
+            "summarize the entire",
+            "condense the whole",
+        )
+    ):
+        if RAGStrategy.RAPTOR in available:
+            return AdaptiveDecision(
+                RAGStrategy.RAPTOR,
+                "hierarchical_summary_query; raptor_available",
+            )
+        unavailable_reason += "raptor_unavailable; "
+
     # Agentic RAG: an explicit multi-step research/investigation intent benefits
     # from an iterative retrieve-reason-retrieve loop over a single lookup. The
     # gateway has a dispatchable AgenticRAGRuntimeAdapter, so this becomes
@@ -187,6 +213,58 @@ def select_adaptive_strategy(
             )
         unavailable_reason += "agentic_unavailable; "
 
+    # Agentic chunking (D-6): a comparative/tabular query benefits from
+    # proposition-level retrieval over discrete structured facts rather than a
+    # plain document-chunk lookup. Checked before the broader MULTI_HOP
+    # "compare" signal so the more specific tabular shape wins.
+    if any(
+        term in normalized
+        for term in (
+            "tabular",
+            "side-by-side",
+            "side by side",
+            "row-by-row",
+            "row by row",
+            "table format",
+            "spreadsheet",
+            "field-by-field",
+            "field by field",
+            "line-by-line",
+            "line by line",
+        )
+    ):
+        if RAGStrategy.AGENTIC_CHUNKING in available:
+            return AdaptiveDecision(
+                RAGStrategy.AGENTIC_CHUNKING,
+                "tabular_comparison_query; agentic_chunking_available",
+            )
+        unavailable_reason += "agentic_chunking_unavailable; "
+
+    # RAFT (D-6): an explicit request to answer from a trained/fine-tuned model
+    # with grounding is what RAFT was built for. Checked before HYDE so the more
+    # specific "explain ... grounding/fine-tuned" shape wins over HYDE's plain
+    # "explain"/"what is" prefix match. Guarded: only selected when a completed,
+    # compatible RAFT model is certified for the tenant (RAFT_MODEL readiness);
+    # otherwise it falls through and the runtime adapter itself degrades to
+    # hybrid retrieval rather than raising (D-8).
+    if any(
+        term in normalized
+        for term in (
+            "with grounding",
+            "fine-tuned model",
+            "fine tuned model",
+            "trained model",
+            "raft model",
+            "grounded training",
+        )
+    ):
+        if RAGStrategy.RAFT in available:
+            return AdaptiveDecision(
+                RAGStrategy.RAFT,
+                "grounded_training_query; raft_available",
+            )
+        unavailable_reason += "raft_unavailable; "
+
     if any(term in normalized for term in ("compare", "contrast", "across")):
         if RAGStrategy.MULTI_HOP in available:
             return AdaptiveDecision(RAGStrategy.MULTI_HOP, "comparison_query; multi_hop_available")
@@ -202,6 +280,54 @@ def select_adaptive_strategy(
                 "verification_query; corrective_available",
             )
         unavailable_reason += "corrective_unavailable; "
+
+    # ColBERT (D-6): a request for an exact/verbatim phrase or precise keyword
+    # match benefits from token-level late-interaction scoring over plain
+    # semantic similarity. Dependency-gated (RAGatouille + a locally cached
+    # checkpoint, see `app/rag/readiness.py`) — `available_strategies` already
+    # excludes COLBERT when that dependency probe fails, so this branch only
+    # ever fires when the capability is truly ready; otherwise it falls through
+    # to the next-best strategy rather than raising.
+    if any(
+        term in normalized
+        for term in (
+            "exact phrase",
+            "exact wording",
+            "exact term",
+            "verbatim",
+            "precise keyword match",
+            "precise match",
+        )
+    ):
+        if RAGStrategy.COLBERT in available:
+            return AdaptiveDecision(
+                RAGStrategy.COLBERT,
+                "precision_keyword_query; colbert_available",
+            )
+        unavailable_reason += "colbert_unavailable; "
+
+    # Modular RAG (D-6): a query that explicitly asks to run through a
+    # structured, multi-module retrieval pipeline gets a richer, validated
+    # pipeline instead of a single fixed strategy.
+    if any(
+        term in normalized
+        for term in (
+            "modular pipeline",
+            "multi-module",
+            "multi module",
+            "pipeline stages",
+            "chain the modules",
+            "module graph",
+            "through the pipeline",
+        )
+    ):
+        if RAGStrategy.MODULAR in available:
+            return AdaptiveDecision(
+                RAGStrategy.MODULAR,
+                "structured_pipeline_query; modular_available",
+            )
+        unavailable_reason += "modular_unavailable; "
+
     if RAGStrategy.HYBRID in available:
         return AdaptiveDecision(
             RAGStrategy.HYBRID,

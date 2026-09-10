@@ -5,7 +5,6 @@ Targets uncovered lines: 77-78, 108, 139-142, 240-278, 287-328.
 from __future__ import annotations
 
 import time
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx

@@ -135,7 +135,7 @@ class PromptOptimizer:
 
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(self.persist_variant(variant, tenant_id, db))
+                loop.create_task(self.persist_variant(variant, tenant_id, db))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
             except RuntimeError:
                 pass  # Not in async context — caller can persist separately
 

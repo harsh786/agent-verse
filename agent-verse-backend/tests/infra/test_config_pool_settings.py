@@ -1,8 +1,6 @@
 """Verify database pool settings are configurable via environment."""
 from __future__ import annotations
 
-import os
-
 
 def test_config_has_database_url():
     from app.core.config import Settings

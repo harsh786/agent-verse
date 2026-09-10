@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -99,7 +98,7 @@ def test_delete_artifact_no_db_returns_404() -> None:
 # ---------------------------------------------------------------------------
 
 def _make_artifact_row(artifact_id: str = "art-1") -> MagicMock:
-    from datetime import datetime, UTC
+    from datetime import UTC, datetime
     row = MagicMock()
     row.id = artifact_id
     row.name = "output.py"

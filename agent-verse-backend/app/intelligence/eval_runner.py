@@ -11,13 +11,19 @@ from sqlalchemy import text
 
 from app.agent.state import AgentState, GoalStatus
 from app.db.rls import sqlalchemy_rls_context
+from app.evals.scoring_config import EvalScoringConfig
 from app.intelligence.eval import EvalScorecard
 from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
 
 
 class EvalRunner:
-    """Scores a completed AgentState on the 7 evaluation dimensions."""
+    """Scores a completed AgentState on the 7 evaluation dimensions.
+
+    Every weight, threshold and budget is sourced from
+    :class:`app.evals.scoring_config.EvalScoringConfig` (backed by ``Settings``),
+    so nothing about how a run is scored is hardcoded in this class.
+    """
 
     EVALUATOR_VERSION = "eval-runner-v2"
 
@@ -32,6 +38,16 @@ class EvalRunner:
         "tool_relevance",
     ]
 
+    def __init__(self, config: EvalScoringConfig | None = None) -> None:
+        # Resolve lazily per-instance so env overrides picked up at construction.
+        self._config = config
+
+    @property
+    def config(self) -> EvalScoringConfig:
+        if self._config is None:
+            self._config = EvalScoringConfig.from_settings()
+        return self._config
+
     @property
     def score_dimensions(self) -> list[str]:
         """Return all 7 dimension names scored by this runner."""
@@ -40,20 +56,19 @@ class EvalRunner:
     def _score_tool_relevance(self, steps: list[Any], iterations: int) -> float:
         """Score tool call efficiency: redundant/failed calls lower the score.
 
-        Returns a float in [0.0, 1.0].
-        - 0.5 when no step data (neutral)
-        - 0.7 when steps exist but contain no tool calls
-        - Higher for efficient, successful tool usage; lower for failures/redundancy
+        Returns a float in [0.0, 1.0]. Neutral defaults, the per-step target and
+        the success/efficiency blend are all config-driven.
         """
+        cfg = self.config
         if not steps:
-            return 0.5
+            return cfg.neutral_no_data_score
 
         all_calls: list[Any] = []
         for s in steps:
             all_calls.extend(getattr(s, "tool_calls", None) or [])
 
         if not all_calls:
-            return 0.7  # steps exist but no tool calls — mild positive
+            return cfg.neutral_no_tool_calls_score  # steps exist but no tool calls
 
         # Count failed calls
         failed = sum(
@@ -64,11 +79,15 @@ class EvalRunner:
         total = len(all_calls)
         success_rate = max(0.0, 1.0 - failed / total)
 
-        # Efficiency: ideal ~2 tool calls per step; penalize above that
+        # Efficiency: penalize tool calls per step above the configured target.
         avg_per_step = total / max(len(steps), 1)
-        efficiency = max(0.0, 1.0 - max(0.0, avg_per_step - 2.0) / 5.0)
+        over_target = max(0.0, avg_per_step - cfg.tool_calls_per_step_target)
+        efficiency = max(0.0, 1.0 - over_target / cfg.tool_efficiency_tolerance)
 
-        return 0.6 * success_rate + 0.4 * efficiency
+        return (
+            cfg.tool_relevance_success_weight * success_rate
+            + cfg.tool_relevance_efficiency_weight * efficiency
+        )
 
     def score(self, *, state: AgentState, tenant_ctx: TenantContext) -> EvalScorecard:
         """Produce a scorecard for a completed goal run."""
@@ -76,25 +95,36 @@ class EvalRunner:
         if state.tenant_ctx.tenant_id != tenant_ctx.tenant_id:
             raise PermissionError("evaluation tenant does not match goal tenant")
 
+        cfg = self.config
+
         # 1. task_completion — did the goal reach COMPLETE?
         task_completion = 1.0 if state.status == GoalStatus.COMPLETE else 0.0
 
         # 2. efficiency — combines iteration count + LLM cost
-        max_iter = 15.0
+        max_iter = cfg.max_iterations_budget
         iter_efficiency = max(0.0, 1.0 - (state.iterations - 1) / max_iter)
 
         # Get accumulated LLM cost from state context (guard against non-dict context)
         _ctx = getattr(state, "context", None)
         llm_cost_usd = float(_ctx.get("total_cost_usd", 0.0)) if isinstance(_ctx, dict) else 0.0
-        # Cost efficiency: 1.0 if cost is zero, scales down to 0 at $2.00
-        cost_efficiency = max(0.0, 1.0 - llm_cost_usd / 2.0) if llm_cost_usd > 0 else 1.0
+        # Cost efficiency: 1.0 if cost is zero, scales down to 0 at the configured budget
+        cost_efficiency = (
+            max(0.0, 1.0 - llm_cost_usd / cfg.cost_budget_usd) if llm_cost_usd > 0 else 1.0
+        )
 
-        # Combined efficiency: 70% iteration + 30% cost
-        efficiency = 0.7 * iter_efficiency + 0.3 * cost_efficiency
+        # Combined efficiency: config-driven iteration vs cost blend
+        efficiency = (
+            cfg.efficiency_iter_weight * iter_efficiency
+            + cfg.efficiency_cost_weight * cost_efficiency
+        )
 
         # 3. accuracy — heuristic placeholder (replaced by LLM scoring in score_async)
         feedback = (state.verification_feedback or "").lower()
-        accuracy = 1.0 if state.verification_success else (0.5 if "partial" in feedback else 0.0)
+        accuracy = (
+            1.0
+            if state.verification_success
+            else (cfg.accuracy_partial_credit if "partial" in feedback else 0.0)
+        )
 
         # 4. safety — count DENY/policy-blocked events in the execution trace
         deny_events = [
@@ -108,17 +138,20 @@ class EvalRunner:
                 or "injection" in str(e.get("type", "")).lower()
             )
         ]
-        safety = max(0.0, 1.0 - (len(deny_events) * 0.25))
+        safety = max(0.0, 1.0 - (len(deny_events) * cfg.safety_violation_penalty))
 
         # 5. coherence — heuristic placeholder (replaced by LLM scoring in score_async)
         if not state.steps:
-            coherence = 0.5
+            coherence = cfg.neutral_no_data_score
         else:
             steps_with_output = sum(1 for s in state.steps if getattr(s, "output", ""))
             output_rate = steps_with_output / len(state.steps)
             unique_descriptions = len({getattr(s, "description", "") for s in state.steps})
             diversity = min(1.0, unique_descriptions / max(len(state.steps), 1))
-            coherence = 0.6 * output_rate + 0.4 * diversity
+            coherence = (
+                cfg.coherence_output_weight * output_rate
+                + cfg.coherence_diversity_weight * diversity
+            )
 
         # 6. sla — did the goal complete within SLA budget?
         _ctx2 = getattr(state, "context", None)
@@ -126,14 +159,16 @@ class EvalRunner:
             float(_ctx2.get("execution_started_at", 0.0)) if isinstance(_ctx2, dict) else 0.0
         )
         sla_budget_s = (
-            float(_ctx2.get("sla_budget_seconds", 300.0)) if isinstance(_ctx2, dict) else 300.0
+            float(_ctx2.get("sla_budget_seconds", cfg.sla_budget_seconds))
+            if isinstance(_ctx2, dict)
+            else cfg.sla_budget_seconds
         )
         if started_at > 0:  # valid monotonic or epoch timestamp
             duration_s = time.monotonic() - started_at
             sla_score = max(0.0, 1.0 - max(0.0, duration_s - sla_budget_s) / max(sla_budget_s, 1))
         elif state.iterations and state.iterations > 1:
-            # Proxy: use iteration count as a time proxy — each iteration ~20s average
-            estimated_duration_s = state.iterations * 20.0
+            # Proxy: use iteration count as a time proxy at the configured per-iter cost
+            estimated_duration_s = state.iterations * cfg.sla_iteration_seconds
             over_budget = max(0.0, estimated_duration_s - sla_budget_s)
             sla_score = max(0.0, 1.0 - over_budget / max(sla_budget_s, 1))
         else:
@@ -321,50 +356,53 @@ class EvalRunner:
             )
             eval_id = uuid.uuid5(uuid.NAMESPACE_URL, identity).hex
             try:
-                async with db() as session, session.begin():
-                    async with sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
-                        await session.execute(
-                            text("""
-                            INSERT INTO evaluations
-                                (id, goal_id, tenant_id, scores, average_score, passed,
-                                 primary_strategy_id, primary_strategy_version,
-                                 auxiliary_strategy_versions, profile_id, profile_version,
-                                 strategy_execution_id, evaluator_version,
-                                 evidence_completeness, correlation_id, causation_id, created_at)
-                            VALUES
-                                (:id, :gid, :tid, CAST(:scores AS json), :avg, :passed,
-                                 :primary_strategy_id, :primary_strategy_version,
-                                 CAST(:auxiliary_strategy_versions AS jsonb), :profile_id,
-                                 :profile_version, :strategy_execution_id, :evaluator_version,
-                                 CAST(:evidence_completeness AS jsonb), :correlation_id,
-                                 :causation_id, NOW())
-                            ON CONFLICT
-                                (tenant_id, goal_id, strategy_execution_id, evaluator_version)
-                            DO NOTHING
-                            """),
-                            {
-                                "id": eval_id,
-                                "gid": state.goal_id,
-                                "tid": tenant_ctx.tenant_id,
-                                "scores": json.dumps(scorecard.scores),
-                                "avg": round(scorecard.average_score(), 6),
-                                "passed": scorecard.passed(),
-                                "primary_strategy_id": scorecard.primary_strategy_id,
-                                "primary_strategy_version": scorecard.primary_strategy_version,
-                                "auxiliary_strategy_versions": json.dumps(
-                                    scorecard.auxiliary_strategy_versions
-                                ),
-                                "profile_id": scorecard.profile_id,
-                                "profile_version": scorecard.profile_version,
-                                "strategy_execution_id": scorecard.strategy_execution_id,
-                                "evaluator_version": scorecard.evaluator_version,
-                                "evidence_completeness": json.dumps(
-                                    scorecard.evidence_completeness
-                                ),
-                                "correlation_id": scorecard.correlation_id,
-                                "causation_id": scorecard.causation_id,
-                            },
-                        )
+                async with (
+                    db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+                ):
+                    await session.execute(
+                        text("""
+                        INSERT INTO evaluations
+                            (id, goal_id, tenant_id, scores, average_score, passed,
+                             primary_strategy_id, primary_strategy_version,
+                             auxiliary_strategy_versions, profile_id, profile_version,
+                             strategy_execution_id, evaluator_version,
+                             evidence_completeness, correlation_id, causation_id, created_at)
+                        VALUES
+                            (:id, :gid, :tid, CAST(:scores AS json), :avg, :passed,
+                             :primary_strategy_id, :primary_strategy_version,
+                             CAST(:auxiliary_strategy_versions AS jsonb), :profile_id,
+                             :profile_version, :strategy_execution_id, :evaluator_version,
+                             CAST(:evidence_completeness AS jsonb), :correlation_id,
+                             :causation_id, NOW())
+                        ON CONFLICT
+                            (tenant_id, goal_id, strategy_execution_id, evaluator_version)
+                        DO NOTHING
+                        """),
+                        {
+                            "id": eval_id,
+                            "gid": state.goal_id,
+                            "tid": tenant_ctx.tenant_id,
+                            "scores": json.dumps(scorecard.scores),
+                            "avg": round(scorecard.average_score(), 6),
+                            "passed": scorecard.passed(),
+                            "primary_strategy_id": scorecard.primary_strategy_id,
+                            "primary_strategy_version": scorecard.primary_strategy_version,
+                            "auxiliary_strategy_versions": json.dumps(
+                                scorecard.auxiliary_strategy_versions
+                            ),
+                            "profile_id": scorecard.profile_id,
+                            "profile_version": scorecard.profile_version,
+                            "strategy_execution_id": scorecard.strategy_execution_id,
+                            "evaluator_version": scorecard.evaluator_version,
+                            "evidence_completeness": json.dumps(
+                                scorecard.evidence_completeness
+                            ),
+                            "correlation_id": scorecard.correlation_id,
+                            "causation_id": scorecard.causation_id,
+                        },
+                    )
             except Exception as exc:
                 get_logger(__name__).warning("eval_persist_failed", error=str(exc))
 

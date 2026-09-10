@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import sys
 import pytest
 
-from app.chat.execution import ChatCodeExecutor, SUPPORTED_LANGUAGES
+from app.chat.execution import ChatCodeExecutor
 
 
 @pytest.fixture()

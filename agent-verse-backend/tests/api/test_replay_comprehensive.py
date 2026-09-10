@@ -5,13 +5,13 @@ import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.replay import router as replay_router, _require_tenant, _get_db
+from app.api.replay import _get_db
+from app.api.replay import router as replay_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import TenantMiddleware
 

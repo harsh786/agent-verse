@@ -6,6 +6,7 @@ Any service that speaks the OpenAI Chat Completions + Embeddings API works here.
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import Awaitable, Callable
 
 from app.providers.base import (
@@ -15,6 +16,80 @@ from app.providers.base import (
     EmbedResponse,
     TokenUsage,
 )
+
+
+def _extract_json_objects(text: str) -> list[dict]:
+    """Extract top-level JSON objects from free text via a balanced-brace scan.
+
+    Tolerates a leading reasoning block (everything up to the last ``</think>``
+    is dropped) and surrounding prose / ```json fences. Returns parsed dict
+    objects in order; malformed candidates are skipped.
+    """
+    if not text:
+        return []
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[-1]
+    objects: list[dict] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        depth = 0
+        in_str = False
+        escape = False
+        for j in range(i, n):
+            ch = text[j]
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+            else:
+                if ch == '"':
+                    in_str = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[i : j + 1]
+                        try:
+                            parsed = json.loads(candidate)
+                            if isinstance(parsed, dict):
+                                objects.append(parsed)
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                        i = j
+                        break
+        i += 1
+    return objects
+
+
+def parse_prompted_tool_calls(content: str, tool_names: set[str]) -> list[dict]:
+    """Parse prompted-format tool calls from a model's text response.
+
+    Recognises ``{"tool"|"name": <name>, "arguments"|"input"|"parameters": {...}}``
+    for any name in ``tool_names``. Returns provider tool_calls
+    (``{"name", "input", "id"}``); empty when the model answered without a tool.
+    """
+    calls: list[dict] = []
+    for obj in _extract_json_objects(content):
+        name = obj.get("tool") or obj.get("name") or obj.get("function")
+        if not isinstance(name, str) or name not in tool_names:
+            continue
+        args = obj.get("arguments")
+        if args is None:
+            args = obj.get("input")
+        if args is None:
+            args = obj.get("parameters")
+        if not isinstance(args, dict):
+            args = {}
+        calls.append({"name": name, "input": args, "id": f"call_{uuid.uuid4().hex[:12]}"})
+    return calls
 
 
 class OpenAICompatibleProvider:
@@ -33,6 +108,7 @@ class OpenAICompatibleProvider:
         *,
         base_url: str | None = None,
         default_model: str = "gpt-5.2",
+        embed_model: str | None = None,
         supports_vision_flag: bool = True,
     ) -> None:
         try:
@@ -42,6 +118,9 @@ class OpenAICompatibleProvider:
 
         self._client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._default_model = default_model
+        # Embedding model is tracked separately from the chat model: a chat
+        # default like "gpt-5.2" must never be sent to the embeddings endpoint.
+        self._embed_model_name = embed_model
         self._vision = supports_vision_flag
 
     # Models in the gpt-5.x series use max_completion_tokens; older models use max_tokens.
@@ -153,7 +232,26 @@ class OpenAICompatibleProvider:
                     str(_strict_err)[:200],
                 )
                 kwargs["tool_choice"] = "auto"
-                response = await self._client.chat.completions.create(**kwargs)
+                try:
+                    response = await self._client.chat.completions.create(**kwargs)
+                except Exception as _auto_err:
+                    # The server has no native tool parser at all (e.g. a vLLM
+                    # started without --enable-auto-tool-choice/--tool-call-parser).
+                    # Last resort: prompted tool-calling — describe the tools in the
+                    # prompt and parse the tool call out of the plain text response.
+                    _auto_str = str(_auto_err).lower()
+                    if request.tools and (
+                        "tool" in _auto_str
+                        or "400" in _auto_str
+                        or "auto" in _auto_str
+                        or "parser" in _auto_str
+                    ):
+                        _log2.getLogger(__name__).warning(
+                            "native_tool_calling_unavailable_using_prompted_fallback: %s",
+                            str(_auto_err)[:200],
+                        )
+                        return await self._prompted_tool_complete(request, model, _token_key)
+                    raise
             else:
                 raise
 
@@ -211,6 +309,59 @@ class OpenAICompatibleProvider:
                 prompt_tokens=_prompt_tokens,
                 completion_tokens=_completion_tokens,
                 total_tokens=_prompt_tokens + _completion_tokens,
+            ),
+        )
+
+    async def _prompted_tool_complete(
+        self, request: CompletionRequest, model: str, token_key: str
+    ) -> CompletionResponse:
+        """Prompted tool-calling fallback for servers without a native tool parser.
+
+        Describes the available tools in a system instruction, calls plain chat
+        (no ``tools=``/``tool_choice``), and parses the tool call out of the text.
+        The synthesized ``tool_calls`` are identical in shape to the native path,
+        so the agent loop is unaffected. When the model answers without a tool,
+        ``tool_calls`` is empty and the text is returned as-is.
+        """
+        tool_lines = []
+        for t in request.tools:
+            props = ""
+            if isinstance(t.input_schema, dict):
+                props = ", ".join((t.input_schema.get("properties") or {}).keys())
+            tool_lines.append(f"- {t.name}({props}): {t.description}")
+        instruction = (
+            "You have access to these tools:\n"
+            + "\n".join(tool_lines)
+            + "\n\nWhen a tool is needed, respond with ONLY a JSON object and nothing else:\n"
+            '{"tool": "<tool_name>", "arguments": { <arg>: <value>, ... }}\n'
+            "If no tool is needed, answer the user normally in plain text."
+        )
+        messages = [{"role": "system", "content": instruction}]
+        messages += [{"role": m.role, "content": m.content} for m in request.messages]
+        kwargs: dict = {
+            "model": model,
+            "messages": messages,
+            token_key: request.max_tokens,
+            "temperature": request.temperature,
+        }
+        response = await self._client.chat.completions.create(**kwargs)
+        choice = response.choices[0]
+        content = choice.message.content or ""
+        tool_calls = parse_prompted_tool_calls(content, {t.name for t in request.tools})
+
+        prompt_tokens = response.usage.prompt_tokens if response.usage else 0
+        completion_tokens = response.usage.completion_tokens if response.usage else 0
+        return CompletionResponse(
+            content="" if tool_calls else content,
+            model=response.model,
+            input_tokens=prompt_tokens,
+            output_tokens=completion_tokens,
+            tool_calls=tool_calls,
+            stop_reason="tool_use" if tool_calls else (choice.finish_reason or "stop"),
+            usage=TokenUsage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
             ),
         )
 
@@ -305,8 +456,18 @@ class OpenAICompatibleProvider:
             output_tokens=completion_tokens,
         )
 
+    def _embed_model(self, requested: str | None = None) -> str:
+        """Resolve the embedding model: explicit request → configured embed_model.
+
+        Falls back to ``text-embedding-3-small`` only when neither is set, so a
+        self-hosted endpoint configured with its own embed_model (e.g. a
+        Qwen3-Embedding on vLLM) is used instead of a hardcoded OpenAI name — and
+        the chat default_model (e.g. "gpt-5.2") is NEVER sent to /embeddings.
+        """
+        return requested or self._embed_model_name or "text-embedding-3-small"
+
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
-        model = request.model or "text-embedding-3-small"
+        model = self._embed_model(request.model)
         response = await self._client.embeddings.create(
             model=model,
             input=request.texts,
@@ -326,7 +487,7 @@ class OpenAICompatibleProvider:
         if not texts:
             return []
 
-        model = "text-embedding-3-small"
+        model = self._embed_model()
         all_embeddings: list[list[float]] = []
         batch_size = 2048  # OpenAI API limit per request
 

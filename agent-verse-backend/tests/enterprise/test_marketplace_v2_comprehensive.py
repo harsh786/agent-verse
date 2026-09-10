@@ -17,18 +17,15 @@ Covers the 45% gap remaining from the existing test_marketplace_v2.py:
 """
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
 from app.enterprise.marketplace_v2 import (
+    _BUILTIN_TEMPLATES,
+    CRITICAL_SCOPES,
     HIGH_RISK_SCOPES,
     PREAPPROVED_SCOPES,
-    CRITICAL_SCOPES,
     MarketplaceV2,
     TemplateSecurityReviewer,
-    _BUILTIN_TEMPLATES,
 )
 from app.tenancy.context import PlanTier, TenantContext
 

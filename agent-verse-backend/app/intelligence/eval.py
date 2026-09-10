@@ -14,9 +14,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+# Fallback default only — the authoritative pass threshold is
+# ``Settings.eval_pass_threshold`` (see app/evals/scoring_config.py). This
+# constant is used when Settings cannot be loaded (e.g. isolated unit imports).
 PASS_THRESHOLD = 0.70
 
-EVAL_DIMENSIONS = ["task_completion", "accuracy", "efficiency", "safety", "coherence", "sla"]
+EVAL_DIMENSIONS = [
+    "task_completion",
+    "accuracy",
+    "efficiency",
+    "safety",
+    "coherence",
+    "sla",
+    "tool_relevance",
+]
+
+
+def _pass_threshold() -> float:
+    """Resolve the configured pass threshold, falling back to PASS_THRESHOLD."""
+    try:
+        from app.core.config import get_settings
+
+        return float(get_settings().eval_pass_threshold)
+    except Exception:
+        return PASS_THRESHOLD
 
 
 @dataclass
@@ -48,8 +69,9 @@ class EvalScorecard:
             return 0.0
         return sum(self.scores.values()) / len(self.scores)
 
-    def passed(self) -> bool:
-        return self.average_score() >= PASS_THRESHOLD
+    def passed(self, *, threshold: float | None = None) -> bool:
+        thr = threshold if threshold is not None else _pass_threshold()
+        return self.average_score() >= thr
 
     def dimension_results(self) -> list[EvalResult]:
         return [EvalResult(dimension=k, score=v) for k, v in self.scores.items()]

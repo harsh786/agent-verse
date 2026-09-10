@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -327,8 +327,9 @@ def test_agents_require_auth() -> None:
 @pytest.mark.asyncio
 async def test_agent_snapshot_and_list():
     """Can snapshot an agent and list versions."""
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
-    from httpx import AsyncClient, ASGITransport
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         r = await c.post("/tenants/signup", json={"name": "V", "email": "v@v.com"})
@@ -355,8 +356,9 @@ async def test_agent_snapshot_and_list():
 @pytest.mark.asyncio
 async def test_agent_rollback():
     """Can roll back agent to a snapshot."""
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
-    from httpx import AsyncClient, ASGITransport
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         r = await c.post("/tenants/signup", json={"name": "V2", "email": "v2@v.com"})
@@ -377,8 +379,9 @@ async def test_agent_rollback():
 
 @pytest.mark.asyncio
 async def test_agent_rollback_unknown_snapshot():
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
-    from httpx import AsyncClient, ASGITransport
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         r = await c.post("/tenants/signup", json={"name": "V3", "email": "v3@v.com"})
@@ -393,8 +396,9 @@ async def test_agent_rollback_unknown_snapshot():
 
 @pytest.mark.asyncio
 async def test_export_agent_openai_format() -> None:
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
-    from httpx import AsyncClient, ASGITransport
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         r = await c.post("/tenants/signup", json={"name": "E", "email": "e@e.com"})
@@ -411,8 +415,9 @@ async def test_export_agent_openai_format() -> None:
 
 @pytest.mark.asyncio
 async def test_export_agent_anthropic_format() -> None:
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
-    from httpx import AsyncClient, ASGITransport
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         r = await c.post("/tenants/signup", json={"name": "EA", "email": "ea@e.com"})
@@ -428,8 +433,9 @@ async def test_export_agent_anthropic_format() -> None:
 
 @pytest.mark.asyncio
 async def test_export_agent_unknown_format() -> None:
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
-    from httpx import AsyncClient, ASGITransport
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         r = await c.post("/tenants/signup", json={"name": "EF", "email": "ef@e.com"})

@@ -5,12 +5,11 @@ import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
-from app.civilization.bus import CivilizationBus, _nullctx
-
+from app.civilization.bus import CivilizationBus
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -18,7 +17,7 @@ from app.civilization.bus import CivilizationBus, _nullctx
 class _noop_ctx:
     """Null async context manager."""
 
-    async def __aenter__(self) -> "_noop_ctx":
+    async def __aenter__(self) -> _noop_ctx:
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -32,7 +31,7 @@ class _FakeSession:
         self.executions: list[Any] = []
         self._rows = rows or []
 
-    async def __aenter__(self) -> "_FakeSession":
+    async def __aenter__(self) -> _FakeSession:
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -412,23 +411,23 @@ async def test_emit_civilization_event_db_exception_is_swallowed():
     assert msg_id
 
 
-# ── _nullctx ──────────────────────────────────────────────────────────────────
+# ── _NullCtx ──────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_nullctx_as_context_manager():
-    from app.civilization.bus import _nullctx
+async def test_NullCtx_as_context_manager():
+    from app.civilization.bus import _NullCtx
 
     value = object()
-    async with _nullctx(value) as v:
+    async with _NullCtx(value) as v:
         assert v is value
 
 
 @pytest.mark.asyncio
-async def test_nullctx_exit_returns_none():
-    from app.civilization.bus import _nullctx
+async def test_NullCtx_exit_returns_none():
+    from app.civilization.bus import _NullCtx
 
-    ctx = _nullctx("test-value")
+    ctx = _NullCtx("test-value")
     result = await ctx.__aenter__()
     assert result == "test-value"
     exit_result = await ctx.__aexit__(None, None, None)

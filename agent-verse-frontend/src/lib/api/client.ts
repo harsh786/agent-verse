@@ -253,6 +253,21 @@ export interface GoalEvent {
   ts?: string;
 }
 
+export interface EvalSuggestion {
+  dimension: string;
+  score: number;
+  threshold: number;
+  suggestion: string;
+}
+
+export interface EvalSuggestions {
+  goal_id: string;
+  status: "evaluated" | "not_evaluated";
+  pass_threshold: number | null;
+  suggestions: EvalSuggestion[];
+  count: number;
+}
+
 export interface EvalScorecard {
   goal_id: string;
   score?: number;
@@ -274,6 +289,51 @@ export interface EvalScorecard {
   iterations?: number;
 }
 
+// ── Pattern selection types ────────────────────────────────────────────────────
+
+export interface PatternRationale {
+  pattern: string;
+  name: string;
+  category: 'reasoning' | 'multi_agent' | 'safety' | string;
+  why: string;
+}
+
+export interface AgentPatternCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  state: string;
+  available: boolean;
+  cost_class: string;
+  latency_class: string;
+}
+
+export interface PatternSelectionResponse {
+  goal_id: string;
+  status?: string;
+  source: 'auto' | 'override' | string;
+  override?: string | null;
+  primary_pattern: string;
+  primary_pattern_name: string;
+  reasoning_patterns: string[];
+  multi_agent_patterns: string[];
+  safety_patterns: string[];
+  autonomy_mode: string;
+  max_iterations: number;
+  advanced_tier_enabled: boolean;
+  advanced_tier_gated: boolean;
+  goal_properties: {
+    complexity: string;
+    domain: string;
+    risk: string;
+    multi_step: boolean;
+    requires_code: boolean;
+    classifier_confidence: number;
+  };
+  rationale: PatternRationale[];
+  available_patterns: AgentPatternCatalogEntry[];
+}
+
 export const goalsApi = {
   list: (params?: { status?: string; search?: string; page?: number; page_size?: number }) => {
     const q = new URLSearchParams();
@@ -287,6 +347,9 @@ export const goalsApi = {
   submit: (body: GoalRequest) =>
     request<GoalResponse>("/goals", { method: "POST", body: JSON.stringify(body) }),
   get: (id: string) => request<GoalResponse>(`/goals/${id}`),
+  /** The agent pattern this goal was routed to (auto-selected or overridden) + why. */
+  getPatternSelection: (id: string) =>
+    request<PatternSelectionResponse>(`/goals/${id}/pattern-selection`),
   cancel: (id: string) =>
     request<GoalResponse>(`/goals/${id}/cancel`, { method: "POST" }),
   submitBatch: (goals: string[], priority = "normal", agentId?: string) =>
@@ -307,6 +370,10 @@ export const goalsApi = {
     request<EvalScorecard>(`/goals/${id}/eval`),
   triggerEvaluation: (id: string) =>
     request<EvalScorecard>(`/goals/${id}/eval`, { method: "POST" }),
+  /** Auto-suggested improvement actions derived from the goal's real eval scores
+   *  (each dimension below the config-driven pass threshold, worst first). */
+  getEvalSuggestions: (id: string) =>
+    request<EvalSuggestions>(`/goals/${id}/eval/suggestions`),
   ghostRun: (body: { goal: string; strategies: GhostRunStrategy[] }) =>
     request<GhostRunResponse>("/goals/ghost-run", {
       method: "POST",
@@ -476,7 +543,7 @@ export const connectorsApi = {
       body: JSON.stringify({ code, state, connector_name: connectorName }),
     }),
   getUsage: (connectorId: string) =>
-    request<{ goals: any[]; total: number; success_rate: number | null; filtered: boolean }>(
+    request<{ goals: GoalResponse[]; total: number; success_rate: number | null; filtered: boolean }>(
       `/connectors/${connectorId}/usage`
     ),
 };
@@ -818,8 +885,17 @@ export interface KnowledgeCollection {
 export interface IngestRequest {
   collection_id: string;
   content: string;
-  source?: string;
+  /** Matches the backend `IngestRequest.source_type` field exactly (freeform —
+   *  e.g. "text" | "ocr" | "rpa-web" | any source label). */
+  source_type?: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface IngestResult {
+  document_id: string;
+  collection_id: string;
+  chunks_created: number;
+  content_hash: string;
 }
 
 export interface SearchResult {
@@ -879,7 +955,7 @@ export const knowledgeApi = {
   deleteCollection: (id: string) =>
     request<void>(`/knowledge/collections/${id}`, { method: "DELETE" }),
   ingest: (data: IngestRequest) =>
-    request<void>("/knowledge/ingest", { method: "POST", body: JSON.stringify(data) }),
+    request<IngestResult>("/knowledge/ingest", { method: "POST", body: JSON.stringify(data) }),
   search: (collectionId: string, query: string, limit = 10) =>
     request<SearchResult[]>(
       `/knowledge/search?collection_id=${collectionId}&q=${encodeURIComponent(query)}&limit=${limit}`
@@ -1053,6 +1129,36 @@ export interface ToolReliabilityRow {
   [key: string]: unknown;
 }
 
+/** Canonical governed memory kinds (backend `MemoryKind`). */
+export type MemoryKind =
+  | "execution" | "reflexion" | "long_term" | "episodic"
+  | "procedural" | "knowledge_graph" | "prospective";
+
+/** One row from GET /memory/records (canonical `memory_records` table). */
+export interface MemoryRecordItem {
+  memory_id: string;
+  memory_kind: MemoryKind;
+  content: string;
+  source_goal_id: string;
+  source_execution_id: string;
+  classification: string;
+  confidence: number;
+  lifecycle_state: string;
+  evidence_refs: string[];
+  recall_count: number;
+  helpful_count: number;
+  harmful_count: number;
+  expires_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface MemoryRecordsResponse {
+  records: MemoryRecordItem[];
+  total: number;
+  kinds: Record<string, number>;
+}
+
 export const memoryApi = {
   list: (opts: { limit?: number; offset?: number; memoryType?: string } = {}) => {
     const params = new URLSearchParams();
@@ -1074,6 +1180,89 @@ export const memoryApi = {
   clearAll: () => request<void>("/memory", { method: "DELETE" }),
   toolReliability: () => request<ToolReliabilityRow[]>("/memory/tool-reliability"),
   listExecution: () => request<Array<{ goal_text: string; success: boolean; recorded_at: string }>>("/memory/execution"),
+  /** Canonical governed records categorized by memory_kind with goal-linkage + TTL. */
+  listRecords: (opts: { kind?: MemoryKind; goalId?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    params.set("limit", String(opts.limit ?? 50));
+    if (opts.kind) params.set("kind", opts.kind);
+    if (opts.goalId) params.set("goal_id", opts.goalId);
+    return request<MemoryRecordsResponse>(`/memory/records?${params.toString()}`);
+  },
+};
+
+// ── Knowledge Graph (tenant KG — app/api/knowledge_graph.py) ──────────────────
+
+/** One of the backend's `NodeType` enum values (app/knowledge_graph/models.py). */
+export type KGNodeType =
+  | "document" | "chunk" | "entity" | "concept" | "goal"
+  | "tool" | "memory" | "artifact" | "agent" | "workflow";
+
+/** One of the backend's `EdgeType` enum values. */
+export type KGEdgeType =
+  | "mentions" | "supports" | "contradicts" | "caused_by" | "depends_on"
+  | "used_tool" | "produced_artifact" | "similar_to" | "parent_of" | "references";
+
+/** Node shape as returned by GET /knowledge-graph/export (summary fields only). */
+export interface KGNode {
+  node_id: string;
+  node_type: KGNodeType;
+  label: string;
+  confidence: number;
+  source_id?: string | null;
+}
+
+/** Edge shape as returned by GET /knowledge-graph/export. */
+export interface KGEdge {
+  edge_id: string;
+  edge_type: KGEdgeType;
+  source: string;
+  target: string;
+  confidence: number;
+}
+
+export interface KGGraph {
+  tenant_id: string;
+  exported_at: string;
+  nodes: KGNode[];
+  edges: KGEdge[];
+  stats: { nodes: number; edges: number };
+  format: string;
+}
+
+export interface KGStats {
+  total_nodes: number;
+  total_edges: number;
+  node_types: Record<string, number>;
+  avg_confidence: number;
+}
+
+/** Full node detail (content/metadata) plus its incident edges — GET /knowledge-graph/nodes/{id}. */
+export interface KGNodeDetail {
+  node: {
+    node_id: string;
+    node_type: KGNodeType;
+    label: string;
+    content: string;
+    confidence: number;
+    source_id: string | null;
+    metadata: Record<string, unknown>;
+  };
+  edges: Array<{
+    edge_id: string;
+    edge_type: KGEdgeType;
+    source_node_id: string;
+    target_node_id: string;
+    label: string;
+    confidence: number;
+    evidence: string;
+  }>;
+}
+
+export const knowledgeGraphApi = {
+  /** Full node+edge export for the tenant — the data source for the graph view. */
+  getGraph: () => request<KGGraph>("/knowledge-graph/export"),
+  getStats: () => request<KGStats>("/knowledge-graph/stats"),
+  getNode: (nodeId: string) => request<KGNodeDetail>(`/knowledge-graph/nodes/${nodeId}`),
 };
 
 // ── Artifacts ──────────────────────────────────────────────────────────────────
@@ -2146,8 +2335,8 @@ export interface GuardrailStats {
 export const guardrailsApi = {
   list: () =>
     request<{ configs: GuardrailConfig[]; total: number } | GuardrailConfig[]>("/guardrails").then(
-      (res) => (Array.isArray(res) ? res : (res as any).configs ?? [])
-    ) as Promise<GuardrailConfig[]>,
+      (res) => (Array.isArray(res) ? res : res.configs ?? [])
+    ),
   create: (body: CreateGuardrailRequest) =>
     request<GuardrailConfig>("/guardrails", { method: "POST", body: JSON.stringify(body) }),
   update: (id: string, body: Partial<CreateGuardrailRequest> & { enabled?: boolean }) =>
@@ -2164,8 +2353,8 @@ export const guardrailsApi = {
     return request<{ violations: GuardrailViolation[]; total: number } | GuardrailViolation[]>(
       `/guardrails/violations${q ? `?${q}` : ""}`
     ).then(
-      (res) => (Array.isArray(res) ? res : (res as any).violations ?? [])
-    ) as Promise<GuardrailViolation[]>;
+      (res) => (Array.isArray(res) ? res : res.violations ?? [])
+    );
   },
   getStats: () => request<GuardrailStats>("/guardrails/stats"),
 };
@@ -2341,6 +2530,17 @@ export const selfImprovementApi = {
         method: "POST",
         body: JSON.stringify({ reason }),
       }
+    ),
+  /**
+   * Manually apply a concluded experiment's winning candidate config — the
+   * human-in-the-loop half of the self-improvement loop, used when autonomous
+   * auto-apply is disabled (the default). Fails closed on the backend: 404 for
+   * unknown experiments, 409 when not an applicable winner.
+   */
+  applyExperiment: (id: string) =>
+    request<{ experiment_id: string; agent_id: string; status: string }>(
+      `/intelligence/experiments/${id}/apply`,
+      { method: "POST" }
     ),
   getBenchmarks: (days = 30) =>
     request<BenchmarkMetrics>(`/intelligence/benchmarks?days=${days}`),
@@ -2543,18 +2743,33 @@ export const ocrApi = {
 // Admin auth is enforced server-side: the backend checks the calling tenant's
 // role for "admin" or "system" — no admin secret is needed in the frontend.
 
+export interface AdminTenant {
+  tenant_id: string;
+  name?: string;
+  plan: string;
+  created_at?: string;
+  goal_count?: number;
+}
+
+export interface PlatformUsage {
+  active_goals: number;
+  total_tenants: number;
+  goals_today?: number;
+  avg_latency_ms?: number;
+}
+
 export const adminApi = {
   listTenants: (params?: { search?: string; limit?: number }) => {
     const qs = new URLSearchParams({ limit: String(params?.limit ?? 100) });
     if (params?.search) qs.set('search', params.search);
-    return request<{ tenants: any[]; total: number }>(`/admin/tenants?${qs}`);
+    return request<{ tenants: AdminTenant[]; total: number }>(`/admin/tenants?${qs}`);
   },
   updatePlan: (tenantId: string, plan: string) =>
-    request<any>(`/admin/tenants/${tenantId}/plan`, {
+    request<unknown>(`/admin/tenants/${tenantId}/plan`, {
       method: 'PUT',
       body: JSON.stringify({ plan }),
     }),
-  getPlatformUsage: () => request<any>('/admin/usage'),
+  getPlatformUsage: () => request<PlatformUsage>('/admin/usage'),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2586,6 +2801,31 @@ export interface WERun {
   duration_ms?: number;
   step_count: number;
   cost_usd: number;
+}
+
+export interface WEWorkflowTemplate {
+  slug: string;
+  name: string;
+  description: string;
+  category: string;
+  tags: string[];
+  complexity: string;
+  popularity_score: number;
+  definition?: Record<string, unknown>;
+}
+
+export interface WEApprovalRequest {
+  request_id: string;
+  run_id: string;
+  step_id: string;
+  workflow_id: string;
+  priority: string;
+  status: string;
+  context: Array<{ display_type: string; title: string; data: unknown }>;
+  actions: Array<{ id: string; label: string }>;
+  deadline_at: string | null;
+  created_at: string;
+  note?: string;
 }
 
 export interface WEStepResult {
@@ -2673,7 +2913,7 @@ export const workflowEngineApi = {
 
   // ── Versions ─────────────────────────────────────────────────────────────
 
-  listVersions: (id: string) => request<any[]>(`${V1}/workflows/${id}/versions`),
+  listVersions: (id: string) => request<unknown[]>(`${V1}/workflows/${id}/versions`),
 
   // ── NL trigger preview ────────────────────────────────────────────────────
 
@@ -2691,10 +2931,10 @@ export const workflowEngineApi = {
     if (params?.q) qs.set('q', params.q);
     if (params?.page) qs.set('page', String(params.page));
     if (params?.per_page) qs.set('per_page', String(params.per_page));
-    return request<{ items: any[]; total: number }>(`${V1}/workflow-templates?${qs}`);
+    return request<{ items: WEWorkflowTemplate[]; total: number }>(`${V1}/workflow-templates?${qs}`);
   },
 
-  getTemplate: (slug: string) => request<any>(`${V1}/workflow-templates/${slug}`),
+  getTemplate: (slug: string) => request<WEWorkflowTemplate>(`${V1}/workflow-templates/${slug}`),
 
   forkTemplate: (slug: string, overrides?: Record<string, unknown>) =>
     request<WEWorkflow>(`${V1}/workflow-templates/${slug}/fork`, {
@@ -2712,14 +2952,14 @@ export const workflowEngineApi = {
     if (params?.priority) qs.set('priority', params.priority);
     if (params?.page) qs.set('page', String(params.page));
     if (params?.per_page) qs.set('per_page', String(params.per_page));
-    return request<{ items: any[]; total: number }>(`${V1}/approvals?${qs}`);
+    return request<{ items: WEApprovalRequest[]; total: number }>(`${V1}/approvals?${qs}`);
   },
 
   decideApproval: (requestId: string, body: { action: string; note?: string; form_data?: Record<string, unknown> }) =>
-    request<any>(`${V1}/approvals/${requestId}/decide`, { method: 'POST', body: JSON.stringify(body) }),
+    request<unknown>(`${V1}/approvals/${requestId}/decide`, { method: 'POST', body: JSON.stringify(body) }),
 
   delegateApproval: (requestId: string, toUserId: string, note?: string) =>
-    request<any>(`${V1}/approvals/${requestId}/delegate`, {
+    request<unknown>(`${V1}/approvals/${requestId}/delegate`, {
       method: 'POST', body: JSON.stringify({ to_user_id: toUserId, note: note ?? '' }),
     }),
 

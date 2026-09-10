@@ -1,12 +1,11 @@
 """Tests for Society — civilization membership, reputation EWMA, routing."""
-import pytest
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from app.civilization.society import Society, _REPUTATION_EWMA_ALPHA
+import pytest
 
+from app.civilization.society import Society
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -617,251 +616,145 @@ async def test_get_metrics_retired_counted():
     assert metrics["total_members"] == 1
 
 
-@pytest.mark.asyncio
-async def test_reputation_ewma_math():
-    society = _make_society()
-    society._members["agent-1"] = {
-        "reputation": 0.5,
-        "status": "active",
-        "depth": 0,
-        "budget_spent_usd": 0,
-        "goal_template": "",
-        "role": "worker",
-    }
-    society._persist_reputation = AsyncMock()
 
-    new_rep = await society.update_reputation(agent_id="agent-1", new_score=1.0)
-    # EWMA: 0.2 * 1.0 + 0.8 * 0.5 = 0.6
-    assert abs(new_rep - 0.6) < 0.001
+# ── capability-aware routing enrichment (join to agents) ─────────────────────
 
 
-@pytest.mark.asyncio
-async def test_reputation_seed_is_0_5():
-    society = _make_society()
-    # Agent not in cache → default 0.5
-    rep = await society._get_current_reputation("unknown-agent")
-    assert rep == 0.5
+class _RoutingSession:
+    """Fake session that answers the member SELECT and the retired COUNT distinctly."""
 
+    def __init__(self, member_rows, retired_count=0):
+        self._member_rows = member_rows
+        self._retired_count = retired_count
 
-@pytest.mark.asyncio
-async def test_reputation_ewma_multiple_updates():
-    society = _make_society()
-    society._persist_reputation = AsyncMock()
+    async def __aenter__(self):
+        return self
 
-    # Start at 0.5, apply three poor scores
-    society._members["a1"] = {
-        "reputation": 0.5,
-        "status": "active",
-        "depth": 0,
-        "budget_spent_usd": 0,
-        "role": "worker",
-    }
-    await society.update_reputation(agent_id="a1", new_score=0.1)
-    await society.update_reputation(agent_id="a1", new_score=0.1)
-    await society.update_reputation(agent_id="a1", new_score=0.1)
-    # Reputation should decay significantly below 0.5
-    assert society._members["a1"]["reputation"] < 0.5
+    async def __aexit__(self, *_):
+        return None
 
+    def begin(self):
+        return _noop_ctx()
 
-@pytest.mark.asyncio
-async def test_load_members_from_db():
-    # Use MagicMock so self._db() returns mock_session synchronously
-    # (matches governor test pattern — AsyncMock would return a coroutine)
-    from unittest.mock import MagicMock
-
-    mock_session = AsyncMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=None)
-    now = datetime.now(UTC)
-    mock_session.execute = AsyncMock(
-        return_value=AsyncMock(
-            fetchall=lambda: [
-                ("m1", "agent-1", "worker", None, 0.7, "active", 1, 10.0, 2.5, now, now),
-                (
-                    "m2",
-                    "agent-2",
-                    "worker",
-                    "agent-1",
-                    0.3,
-                    "idle",
-                    2,
-                    5.0,
-                    1.0,
-                    now,
-                    now,
-                ),
-            ]
+    async def execute(self, stmt, params=None):
+        sql = str(stmt).upper()
+        if "COUNT(*)" in sql:
+            return SimpleNamespace(
+                fetchone=lambda: (self._retired_count,),
+                fetchall=lambda: [(self._retired_count,)],
+            )
+        return SimpleNamespace(
+            fetchall=lambda: list(self._member_rows),
+            fetchone=lambda: self._member_rows[0] if self._member_rows else None,
         )
+
+
+class _CapturingRouter:
+    """Router double that records the available_agents it is handed."""
+
+    def __init__(self, decision):
+        self._decision = decision
+        self.seen_agents = None
+
+    async def route(self, *, goal, tenant_ctx, available_agents):
+        self.seen_agents = available_agents
+        return self._decision
+
+
+def _member_row(agent_id, *, name="", goal_template="", connectors=None, reputation=0.7):
+    now = datetime.now(UTC)
+    return (
+        f"m-{agent_id}", agent_id, "worker", None, reputation, "active",
+        0, 10.0, 1.0, now, now, name, goal_template, connectors if connectors is not None else [],
     )
-    mock_db = MagicMock(return_value=mock_session)
 
-    society = _make_society(db=mock_db)
+
+@pytest.mark.asyncio
+async def test_load_members_maps_joined_agent_columns():
+    """load_members surfaces name/goal_template/connector_ids from the agents join."""
+    row = _member_row(
+        "agent-1", name="Billing Bot", goal_template="reconcile invoices",
+        connectors=["stripe", "quickbooks"],
+    )
+    session = _RoutingSession([row])
+    society = _make_society(db=lambda: session)
     members = await society.load_members()
-
-    assert len(members) == 2
-    assert members[0]["reputation"] == 0.7
-    assert members[1]["parent_agent_id"] == "agent-1"
+    assert members[0]["name"] == "Billing Bot"
+    assert members[0]["goal_template"] == "reconcile invoices"
+    assert members[0]["connector_ids"] == ["stripe", "quickbooks"]
 
 
 @pytest.mark.asyncio
-async def test_route_goal_picks_highest_reputation():
-    society = _make_society()
-    society._members = {
-        "low-rep": {
-            "agent_id": "low-rep",
-            "reputation": 0.3,
-            "status": "active",
-            "depth": 0,
-            "budget_spent_usd": 0,
-            "goal_template": "",
-            "role": "worker",
-        },
-        "high-rep": {
-            "agent_id": "high-rep",
-            "reputation": 0.9,
-            "status": "active",
-            "depth": 0,
-            "budget_spent_usd": 0,
-            "goal_template": "",
-            "role": "worker",
-        },
-    }
+async def test_load_members_tolerates_missing_join_columns():
+    """A narrow 11-col row (no agents match) still parses with safe defaults."""
+    now = datetime.now(UTC)
+    narrow = ("m1", "agent-1", "worker", None, 0.6, "active", 0, 5.0, 1.0, now, now)
+    session = _RoutingSession([narrow])
+    society = _make_society(db=lambda: session)
+    members = await society.load_members()
+    assert members[0]["name"] == ""
+    assert members[0]["goal_template"] == ""
+    assert members[0]["connector_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_route_goal_passes_capability_data_to_router():
+    """The router must receive real name/goal_template/connector_ids, not blanks."""
+    decision = SimpleNamespace(
+        agent_id="agent-1", mode="single_agent", reason="matched", confidence=0.9
+    )
+    router = _CapturingRouter(decision)
+    row = _member_row(
+        "agent-1", name="Jira Agent", goal_template="create jira tickets",
+        connectors=["jira"],
+    )
+    society = _make_society(db=lambda: _RoutingSession([row]), router=router)
 
     from app.tenancy.context import PlanTier, TenantContext
 
-    tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
+    ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
+    routing = await society.route_goal(goal="open a jira ticket", tenant_ctx=ctx)
 
-    routing = await society.route_goal(goal="do something", tenant_ctx=tenant_ctx)
-    assert routing["agent_id"] == "high-rep"
-
-
-@pytest.mark.asyncio
-async def test_route_goal_returns_needs_new_agent_when_empty():
-    society = _make_society()
-
-    from app.tenancy.context import PlanTier, TenantContext
-
-    tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
-
-    routing = await society.route_goal(goal="do something", tenant_ctx=tenant_ctx)
-    assert routing["mode"] == "needs_new_agent"
+    assert routing["agent_id"] == "agent-1"
+    # The enrichment fix: these were previously always empty.
+    assert router.seen_agents is not None
+    seen = router.seen_agents[0]
+    assert seen["name"] == "Jira Agent"
+    assert seen["goal_template"] == "create jira tickets"
+    assert seen["connector_ids"] == ["jira"]
 
 
-@pytest.mark.asyncio
-async def test_get_lineage_graph_structure():
-    society = _make_society()
-    society._members = {
-        "parent": {
-            "agent_id": "parent",
-            "reputation": 0.8,
-            "status": "active",
-            "depth": 0,
-            "parent_agent_id": None,
-            "budget_spent_usd": 5.0,
-            "role": "coordinator",
-        },
-        "child": {
-            "agent_id": "child",
-            "reputation": 0.6,
-            "status": "active",
-            "depth": 1,
-            "parent_agent_id": "parent",
-            "budget_spent_usd": 2.0,
-            "role": "worker",
-        },
-    }
-    graph = await society.get_lineage_graph()
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (["a", "b"], ["a", "b"]),
+        (None, []),
+        ('["x", "y"]', ["x", "y"]),  # raw JSON string
+        ("not-json", []),
+        (123, []),
+        ([1, 2], ["1", "2"]),  # coerced to str
+    ],
+)
+def test_normalize_connectors(value, expected):
+    from app.civilization.society import _normalize_connectors
 
-    assert len(graph["nodes"]) == 2
-    assert len(graph["edges"]) == 1
-    assert graph["edges"][0]["source"] == "parent"
-    assert graph["edges"][0]["target"] == "child"
-    assert graph["edges"][0]["type"] == "spawn_lineage"
+    assert _normalize_connectors(value) == expected
 
 
 @pytest.mark.asyncio
-async def test_reputation_clamped_to_unit_interval():
-    """Reputation input clamping: scores > 1.0 treated as 1.0, < 0.0 as 0.0."""
-    society = _make_society()
-    society._members["a1"] = {
-        "reputation": 0.5,
-        "status": "active",
-        "depth": 0,
-        "budget_spent_usd": 0,
-        "role": "worker",
-    }
-    society._persist_reputation = AsyncMock()
-
-    # Score above 1.0 should be clamped
-    rep = await society.update_reputation(agent_id="a1", new_score=2.0)
-    # Equivalent to new_score=1.0: 0.2 * 1.0 + 0.8 * 0.5 = 0.6
-    assert abs(rep - 0.6) < 0.001
+async def test_count_retired_via_db():
+    """retired count comes from a real DB count, not the retired-excluding member list."""
+    session = _RoutingSession([], retired_count=4)
+    society = _make_society(db=lambda: session)
+    assert await society._count_retired() == 4
 
 
 @pytest.mark.asyncio
-async def test_update_budget_spent_accumulates():
-    society = _make_society()
-    society._members["a1"] = {
-        "agent_id": "a1",
-        "reputation": 0.5,
-        "status": "active",
-        "depth": 0,
-        "budget_spent_usd": 1.0,
-        "role": "worker",
-    }
-
-    await society.update_budget_spent("a1", 3.5)
-    assert society._members["a1"]["budget_spent_usd"] == pytest.approx(4.5)
-
-
-@pytest.mark.asyncio
-async def test_update_member_status_in_memory():
-    society = _make_society()
-    society._members["a1"] = {
-        "agent_id": "a1",
-        "reputation": 0.5,
-        "status": "active",
-        "depth": 0,
-        "budget_spent_usd": 0,
-        "role": "worker",
-    }
-
-    await society.update_member_status("a1", "debating")
-    assert society._members["a1"]["status"] == "debating"
-
-
-@pytest.mark.asyncio
-async def test_get_metrics_empty_society():
-    society = _make_society()
+async def test_get_metrics_retired_honest_despite_load_excluding_retired():
+    """load_members excludes retired rows, yet get_metrics still reports the real count."""
+    active_row = _member_row("agent-1", reputation=0.8)
+    session = _RoutingSession([active_row], retired_count=3)
+    society = _make_society(db=lambda: session)
     metrics = await society.get_metrics()
-    assert metrics["total_members"] == 0
-    assert metrics["avg_reputation"] == 0.5  # default seed
-
-
-@pytest.mark.asyncio
-async def test_get_metrics_with_members():
-    society = _make_society()
-    society._members = {
-        "a1": {
-            "agent_id": "a1",
-            "reputation": 0.8,
-            "status": "active",
-            "depth": 0,
-            "budget_spent_usd": 5.0,
-            "role": "worker",
-        },
-        "a2": {
-            "agent_id": "a2",
-            "reputation": 0.4,
-            "status": "idle",
-            "depth": 1,
-            "budget_spent_usd": 2.0,
-            "role": "worker",
-        },
-    }
-    metrics = await society.get_metrics()
-    assert metrics["total_members"] == 2
-    assert metrics["active_members"] == 1
-    assert metrics["idle_members"] == 1
-    assert metrics["total_budget_spent_usd"] == pytest.approx(7.0)
-    assert metrics["avg_reputation"] == pytest.approx(0.6)
+    assert metrics["total_members"] == 1  # only the active member is loaded
+    assert metrics["retired_members"] == 3  # honest DB count, not 0

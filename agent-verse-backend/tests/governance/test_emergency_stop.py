@@ -75,9 +75,10 @@ def test_legal_hold_endpoint_exists():
 
 def test_hitl_rejection_note_stored_on_resume_rejected():
     """Phase 12: rejection note is persisted to execution_context for replanning."""
-    from app.services.goal_service import GoalService
-    from app.tenancy.context import TenantContext, PlanTier
     import asyncio
+
+    from app.services.goal_service import GoalService
+    from app.tenancy.context import PlanTier, TenantContext
 
     svc = GoalService()
     ctx = TenantContext(tenant_id="t-rej", plan=PlanTier.FREE, api_key_id="k1")

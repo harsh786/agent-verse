@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from opentelemetry import trace
 
@@ -56,7 +56,7 @@ class GoalRefinementPipeline:
     """
 
     # Dangerous goal pattern detection (PART 19 / PART 48)
-    INJECTION_PATTERNS = [
+    INJECTION_PATTERNS: ClassVar[list[str]] = [
         r"ignore.*above.*instructions",
         r"pretend.*you.*are",
         r"jailbreak",
@@ -68,7 +68,7 @@ class GoalRefinementPipeline:
     ]
 
     # Goal keywords → departments
-    DEPT_HEURISTICS: dict[str, list[str]] = {
+    DEPT_HEURISTICS: ClassVar[dict[str, list[str]]] = {
         "strategy": ["strategy", "strategic", "competitive", "market", "vision", "plan"],
         "engineering": ["code", "build", "develop", "engineer", "api", "software", "architecture"],
         "marketing": ["campaign", "brand", "content", "seo", "social", "launch", "promote"],
@@ -85,7 +85,7 @@ class GoalRefinementPipeline:
     }
 
     # Risk keywords
-    HIGH_RISK_KEYWORDS = [
+    HIGH_RISK_KEYWORDS: ClassVar[list[str]] = [
         "production",
         "deploy",
         "delete",

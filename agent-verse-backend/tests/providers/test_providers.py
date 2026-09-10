@@ -124,8 +124,8 @@ def test_tool_definition_has_schema() -> None:
 @pytest.mark.asyncio
 async def test_fake_provider_stream_complete():
     """FakeProvider.stream_complete yields word tokens."""
-    from app.providers.fake import FakeProvider
     from app.providers.base import CompletionRequest, Message
+    from app.providers.fake import FakeProvider
 
     provider = FakeProvider(responses=["Hello world from stream"])
     req = CompletionRequest(
@@ -145,8 +145,9 @@ async def test_fake_provider_stream_complete():
 @pytest.mark.asyncio
 async def test_stream_complete_endpoint_exists():
     """GET /goals/{id}/stream/tokens returns SSE stream."""
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
-    from httpx import AsyncClient, ASGITransport
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         r = await c.post("/tenants/signup", json={"name": "T", "email": "st@t.com"})

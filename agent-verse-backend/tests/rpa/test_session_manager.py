@@ -1,14 +1,12 @@
 """Tests for BrowserSessionManager and BrowserSession."""
 from __future__ import annotations
 
-import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.rpa.session_manager import BrowserSession, BrowserSessionManager
-
 
 # ── BrowserSession unit tests ─────────────────────────────────────────────────
 

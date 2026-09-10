@@ -6,6 +6,8 @@ Ticks the society, checks breaches, emits events, manages the lifecycle.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -155,14 +157,12 @@ class CivilizationOrchestrator:
         # — first, enrich execution_context with blackboard knowledge
         blackboard_context: list[dict] = []
         if self._blackboard is not None:
-            try:
+            with contextlib.suppress(Exception):
                 blackboard_context = await self._blackboard.query(
                     topic=None,  # all topics
                     min_confidence=0.65,
                     limit=5,
                 )
-            except Exception:
-                pass
 
         result_goal_id = goal_id
         if self._goal_service is not None:
@@ -288,21 +288,113 @@ class CivilizationOrchestrator:
             payload=result,
         )
 
-        # GAP 4: Record debate metric
+        # GAP 4: Record debate metric (single reachable path via metrics helper)
         try:
-            from app.civilization.metrics import civ_debates_total
+            from app.civilization.metrics import record_debate
 
-            civ_debates_total().labels(tenant_id=self._tenant_id).inc()
+            record_debate(tenant_id=self._tenant_id)
         except Exception:
             pass
 
         return result
 
+    # ── WS-1: tick throttle (distributed lock + min-interval guard) ────────────
+
+    def _tick_lock_key(self) -> str:
+        return f"civ_tick_lock:{self._tenant_id}:{self._civ_id}"
+
+    def _tick_interval_key(self) -> str:
+        return f"civ_tick_interval:{self._tenant_id}:{self._civ_id}"
+
+    def _record_tick_skip(self, reason: str) -> None:
+        try:
+            from app.civilization.metrics import record_tick_skipped
+
+            record_tick_skipped(tenant_id=self._tenant_id, reason=reason)
+        except Exception:
+            pass
+
+    async def _acquire_tick_slot(self) -> dict | None:
+        """Guard a tick against beat backlog / concurrent overlap.
+
+        Returns a skip-result dict (caller returns it and does NOT run the tick)
+        when the tick should be skipped, or ``None`` when the slot is acquired
+        (the caller MUST release the run-lock via :meth:`_release_tick_lock` in a
+        ``finally``).
+
+        Two guards, both engaged only when a Redis client is present (single
+        process / no-redis runs are intentionally unthrottled):
+          * **run-lock** — ``SET NX`` a per-civilization lock so only one tick
+            executes at a time; a concurrent tick skips with ``reason="locked"``.
+          * **min-interval** — ``SET NX EX=<interval>`` a window key so at most
+            one tick runs per interval; a too-soon tick skips with
+            ``reason="too_soon"``. Guards a piled-up beat backlog from all firing.
+        """
+        if self._redis is None:
+            return None
+
+        try:
+            min_interval = int(os.getenv("CIV_TICK_MIN_INTERVAL_SECONDS", "25"))
+        except ValueError:
+            min_interval = 25
+        try:
+            lock_ttl = int(os.getenv("CIV_TICK_LOCK_TTL_SECONDS", "300"))
+        except ValueError:
+            lock_ttl = 300
+
+        try:
+            got_lock = await self._redis.set(
+                self._tick_lock_key(), "1", nx=True, ex=max(lock_ttl, 1)
+            )
+            if not got_lock:
+                self._record_tick_skip("locked")
+                return {
+                    "tick_ts": datetime.now(UTC).isoformat(),
+                    "skipped": True,
+                    "reason": "locked",
+                }
+            if min_interval > 0:
+                fresh = await self._redis.set(
+                    self._tick_interval_key(), "1", nx=True, ex=min_interval
+                )
+                if not fresh:
+                    # Too soon — hand back the run-lock we just took and skip.
+                    with contextlib.suppress(Exception):
+                        await self._redis.delete(self._tick_lock_key())
+                    self._record_tick_skip("too_soon")
+                    return {
+                        "tick_ts": datetime.now(UTC).isoformat(),
+                        "skipped": True,
+                        "reason": "too_soon",
+                    }
+            return None
+        except Exception as exc:
+            # Fail-open: throttle infra problems must never break the tick itself.
+            logger.warning("civ_tick_throttle_failed", error=str(exc))
+            return None
+
+    async def _release_tick_lock(self) -> None:
+        if self._redis is None:
+            return
+        with contextlib.suppress(Exception):
+            await self._redis.delete(self._tick_lock_key())
+
     async def tick(self) -> dict:
         """Periodic tick — breach check + auto-retire + learning pipeline.
 
-        Called by Celery beat every 30s.
+        Called by Celery beat every 30s. Throttled by a Redis run-lock +
+        min-interval guard (WS-1) so a piled-up beat backlog does not stack
+        overlapping ticks; skipped ticks return ``{"skipped": True, ...}``.
         """
+        slot_skip = await self._acquire_tick_slot()
+        if slot_skip is not None:
+            return slot_skip
+        try:
+            return await self._run_tick_body()
+        finally:
+            await self._release_tick_lock()
+
+    async def _run_tick_body(self) -> dict:
         results: dict = {"tick_ts": datetime.now(UTC).isoformat()}
 
         # 1. Check Constitution breach

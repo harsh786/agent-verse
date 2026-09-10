@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import pytest
+
 from app.workflow.expression_engine import (
     ExpressionEngine,
     ExpressionSecurityError,
-    ExpressionEvalError,
 )
 
 

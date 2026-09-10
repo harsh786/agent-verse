@@ -1,5 +1,4 @@
 """P1.1 advanced DAG tests: conditional branches and loop fields."""
-import pytest
 
 
 def test_structured_step_has_condition_field():
@@ -53,6 +52,7 @@ def test_structured_step_has_runtime_fields():
 def test_from_llm_response_parses_condition():
     """from_llm_response extracts condition field from JSON."""
     import json
+
     from app.agent.structured_plan import StructuredPlan
     data = {
         "steps": [
@@ -68,6 +68,7 @@ def test_from_llm_response_parses_condition():
 def test_from_llm_response_parses_loop_fields():
     """from_llm_response extracts loop_until and max_loop_iter from JSON."""
     import json
+
     from app.agent.structured_plan import StructuredPlan
     data = {
         "steps": [

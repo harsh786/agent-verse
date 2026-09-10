@@ -1,8 +1,6 @@
 """Tests for tool inverse registry."""
 from __future__ import annotations
 
-import pytest
-
 from app.reliability.tool_inverses import (
     _INVERSE_REGISTRY,
     get_inverse_fn,

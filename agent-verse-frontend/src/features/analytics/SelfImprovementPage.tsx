@@ -302,6 +302,15 @@ export function SelfImprovementPage(): JSX.Element {
     onError: (e) => toast({ kind: "error", message: `Rollback failed: ${String(e)}` }),
   });
 
+  const applyExperimentMutation = useMutation({
+    mutationFn: (id: string) => selfImprovementApi.applyExperiment(id),
+    onSuccess: () => {
+      toast({ kind: "success", message: "Applied — agent now uses the winning configuration" });
+      qc.invalidateQueries({ queryKey: ["experiments"] });
+    },
+    onError: (e) => toast({ kind: "error", message: `Apply failed: ${String(e)}` }),
+  });
+
   const allExperiments: Experiment[] = experimentsQuery.data ?? [];
   const allSuggestions: Suggestion[] = suggestionsQuery.data ?? [];
 
@@ -443,19 +452,33 @@ export function SelfImprovementPage(): JSX.Element {
                   <div className="px-5 pb-4 border-t border-border pt-4 flex items-center justify-between">
                     <p className="text-xs text-muted-foreground">
                       {exp.lift_pct !== null && exp.lift_pct > 0
-                        ? `Challenger improved by +${exp.lift_pct.toFixed(1)}% — rollback to restore control`
+                        ? `Challenger improved by +${exp.lift_pct.toFixed(1)}% — apply it, or rollback to restore control`
                         : "Rollback to restore the original agent configuration"}
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => rollbackMutation.mutate({ id: exp.id, reason: `Rolled back from UI. Lift: ${exp.lift_pct?.toFixed(1) ?? "N/A"}%.` })}
-                      disabled={rollbackMutation.isPending}
-                      aria-label={`Roll back experiment ${exp.name}`}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-orange-300 bg-orange-50 text-orange-700 hover:bg-orange-100 dark:border-orange-700/60 dark:bg-orange-950/30 dark:text-orange-300 disabled:opacity-50 transition-colors"
-                    >
-                      <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-                      {rollbackMutation.isPending ? "Rolling back…" : "Rollback"}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {exp.lift_pct !== null && exp.lift_pct > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => applyExperimentMutation.mutate(exp.id)}
+                          disabled={applyExperimentMutation.isPending}
+                          aria-label={`Apply winning configuration from experiment ${exp.name}`}
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-green-300 bg-green-50 text-green-700 hover:bg-green-100 dark:border-green-700/60 dark:bg-green-950/30 dark:text-green-300 disabled:opacity-50 transition-colors"
+                        >
+                          <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          {applyExperimentMutation.isPending ? "Applying…" : "Apply winner"}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => rollbackMutation.mutate({ id: exp.id, reason: `Rolled back from UI. Lift: ${exp.lift_pct?.toFixed(1) ?? "N/A"}%.` })}
+                        disabled={rollbackMutation.isPending}
+                        aria-label={`Roll back experiment ${exp.name}`}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-orange-300 bg-orange-50 text-orange-700 hover:bg-orange-100 dark:border-orange-700/60 dark:bg-orange-950/30 dark:text-orange-300 disabled:opacity-50 transition-colors"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                        {rollbackMutation.isPending ? "Rolling back…" : "Rollback"}
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>

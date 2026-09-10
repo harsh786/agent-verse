@@ -1,8 +1,7 @@
 """Extra coverage for app/api/governance.py — SSE streams, DB helpers, advanced endpoints."""
 from __future__ import annotations
 
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI

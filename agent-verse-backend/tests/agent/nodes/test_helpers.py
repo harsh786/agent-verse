@@ -1,8 +1,6 @@
 """Unit tests for app.agent.nodes._helpers — pure utility functions."""
 from __future__ import annotations
 
-import pytest
-
 from app.agent.nodes._helpers import (
     _build_verifier_summary,
     _extract_scope_value,
@@ -12,7 +10,6 @@ from app.agent.nodes._helpers import (
     _parse_json,
     _parse_verifier_response,
 )
-
 
 # ─── _is_high_risk_step ──────────────────────────────────────────────────────
 

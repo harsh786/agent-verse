@@ -64,7 +64,10 @@ class TestRegisterBuiltinServers:
     @pytest.mark.asyncio
     async def test_registers_server_when_env_present(self):
         """When required env vars are set, the server gets registered."""
-        from app.mcp.servers.registry_wiring import register_builtin_servers, get_builtin_server_configs
+        from app.mcp.servers.registry_wiring import (
+            get_builtin_server_configs,
+            register_builtin_servers,
+        )
 
         # Find a config that has requires_env
         configs = get_builtin_server_configs()
@@ -80,7 +83,7 @@ class TestRegisterBuiltinServers:
 
         # Patch MCPRegistry.register_builtin_handler
         with patch("app.mcp.registry.MCPRegistry.register_builtin_handler"):
-            env_patch = {var: "dummy_value" for var in target["requires_env"]}
+            env_patch = dict.fromkeys(target["requires_env"], "dummy_value")
             with patch.dict(os.environ, env_patch):
                 count = await register_builtin_servers(mock_registry, MagicMock())
 
@@ -89,7 +92,10 @@ class TestRegisterBuiltinServers:
     @pytest.mark.asyncio
     async def test_handles_registration_exception_gracefully(self):
         """If registry.register raises, error is swallowed and count not incremented."""
-        from app.mcp.servers.registry_wiring import register_builtin_servers, get_builtin_server_configs
+        from app.mcp.servers.registry_wiring import (
+            get_builtin_server_configs,
+            register_builtin_servers,
+        )
 
         configs = get_builtin_server_configs()
         target = next(

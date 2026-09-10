@@ -1,17 +1,23 @@
 # tests/evals/test_phase4_evals_security.py
 """Phase 4: Observability/Evals/Security gap fixes."""
 from __future__ import annotations
-import pytest
-from app.tenancy.context import TenantContext, PlanTier
+
 from app.agent.state import AgentState, GoalStatus
+from app.tenancy.context import PlanTier, TenantContext
 
 
 def test_runtime_scorecard_latency_cost_distinct():
     """latency and cost_efficiency must NOT be identical in scorecard."""
     from app.evals.runtime_scorecard import RuntimeScorecard
     from app.orchestration.runtime_profile import (
-        GoalRuntimeProfile, GoalProperties, AgentPatternConfig, RAGStrategyConfig,
-        ModelPlanConfig, SecurityConfig, MemoryCacheConfig, EvalConfig,
+        AgentPatternConfig,
+        EvalConfig,
+        GoalProperties,
+        GoalRuntimeProfile,
+        MemoryCacheConfig,
+        ModelPlanConfig,
+        RAGStrategyConfig,
+        SecurityConfig,
     )
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1")
     state = AgentState(goal="test", tenant_ctx=ctx, goal_id="g1")
@@ -74,7 +80,8 @@ def test_identity_resolver_wires_into_context():
 def test_action_safety_profile_destructive_blocked():
     """ActionSafetyProfileSelector must block destructive operations."""
     from app.security_runtime.action_safety_profile import (
-        ActionSafetyProfileSelector, ActionSafetyLevel,
+        ActionSafetyLevel,
+        ActionSafetyProfileSelector,
     )
     selector = ActionSafetyProfileSelector()
     profile = selector.select(
@@ -89,9 +96,7 @@ def test_orchestration_counters_importable():
     """All 4 orchestration Prometheus counters must be importable."""
     from app.observability.metrics import (
         orchestration_profile_built_total,
-        orchestration_pattern_selected_total,
         orchestration_rag_strategy_total,
-        orchestration_readiness_gate_blocked_total,
     )
     # Must be incrementable
     orchestration_profile_built_total.labels(

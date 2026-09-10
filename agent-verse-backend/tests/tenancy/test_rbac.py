@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import pytest
+
+from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.rbac import (
     ROLE_ADMIN,
     ROLE_APPROVER,
@@ -11,8 +13,6 @@ from app.tenancy.rbac import (
     has_any_role,
     has_role,
 )
-from app.tenancy.context import PlanTier, TenantContext
-
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -84,7 +84,8 @@ def test_multiple_roles_viewer_and_approver():
 
 @pytest.mark.asyncio
 async def test_ip_allowlist_list_requires_auth():
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
 
     app = create_app()
@@ -95,7 +96,8 @@ async def test_ip_allowlist_list_requires_auth():
 
 @pytest.mark.asyncio
 async def test_ip_allowlist_add_and_list():
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
 
     app = create_app()
@@ -118,7 +120,8 @@ async def test_ip_allowlist_add_and_list():
 
 @pytest.mark.asyncio
 async def test_ip_allowlist_invalid_cidr():
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
+
     from app.main import create_app
 
     app = create_app()

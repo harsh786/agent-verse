@@ -1,8 +1,6 @@
 """Comprehensive tests for SelfOptimizer — all suggestion types, apply, reject, history."""
 from __future__ import annotations
 
-import pytest
-
 from app.intelligence.eval import EvalScorecard
 from app.intelligence.self_optimization import OptimizationSuggestion, SelfOptimizer
 from app.tenancy.context import PlanTier, TenantContext

@@ -11,9 +11,9 @@ import uuid
 import pytest
 
 from app.governance.cost import BudgetConfig, CostController
-from app.reliability.bulkhead import Bulkhead, BulkheadRegistry, RedisBulkhead
+from app.reliability.bulkhead import Bulkhead, BulkheadRegistry
 from app.reliability.circuit_breaker import CircuitBreaker, CircuitState
-from app.reliability.dedup import DeduplicationCache, RedisDeduplicationCache
+from app.reliability.dedup import DeduplicationCache
 from app.reliability.idempotency import IdempotencyStore
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.rate_limiter import RateLimiter

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from app.workflow.context import ContextResolver
 from app.workflow.dsl import StepDefinition
 
@@ -103,8 +104,8 @@ async def test_wait_step_test_mode():
 
 @pytest.mark.asyncio
 async def test_conditional_step_true_branch():
-    from app.workflow.steps.conditional_step import ConditionalStepNode
     from app.workflow.dsl import ConditionalBranch
+    from app.workflow.steps.conditional_step import ConditionalStepNode
     step = StepDefinition(
         id="c1", type="conditional",
         branches=[
@@ -121,8 +122,8 @@ async def test_conditional_step_true_branch():
 
 @pytest.mark.asyncio
 async def test_conditional_step_default_branch():
-    from app.workflow.steps.conditional_step import ConditionalStepNode
     from app.workflow.dsl import ConditionalBranch
+    from app.workflow.steps.conditional_step import ConditionalStepNode
     step = StepDefinition(
         id="c2", type="conditional",
         branches=[
@@ -156,8 +157,8 @@ async def test_emit_event_step_no_redis():
 
 @pytest.mark.asyncio
 async def test_http_step_ssrf_blocked():
-    from app.workflow.steps.http_step import HTTPStepNode
     from app.workflow.security import SSRFBlockedError
+    from app.workflow.steps.http_step import HTTPStepNode
     step = StepDefinition(id="h1", type="http", url="http://169.254.169.254/", method="GET")
     ctx = ContextResolver()
     node = HTTPStepNode(step, ctx)
@@ -175,3 +176,64 @@ async def test_http_step_mock_override():
     state = make_state(is_test_run=True, mock_overrides={"h2": {"status": "ok"}})
     result = await node.execute(state)
     assert result["step_outputs"]["h2"] == {"status": "ok"}
+
+
+# ── OcrStepNode (WS-14: OCR as a workflow step, one engine) ────────────────────
+
+import base64 as _b64_ocr
+
+_PNG_OCR = _b64_ocr.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def test_ocr_step_type_is_registered():
+    """The 'ocr' step type is registered (DSL-valid) and maps to OcrStepNode."""
+    from app.workflow.registry import StepTypeRegistry
+    from app.workflow.steps.ocr_step import OcrStepNode
+
+    assert StepTypeRegistry.is_registered("ocr")
+    assert StepTypeRegistry.get("ocr") is OcrStepNode
+
+
+@pytest.mark.asyncio
+async def test_ocr_step_routes_document_through_extract_any():
+    """The step calls the one OcrEngine.extract_any and returns its result."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.ocr.models import DocumentType, OcrResult
+    from app.workflow.steps.ocr_step import OcrStepNode
+
+    engine = MagicMock()
+    engine.extract_any = AsyncMock(
+        return_value=OcrResult(
+            raw_text="INVOICE total 42",
+            document_type=DocumentType.INVOICE,
+            overall_confidence=0.9,
+            page_count=1,
+            source_format="image",
+        )
+    )
+    step = StepDefinition(
+        id="o1", type="ocr", input={"image_base64": _b64_ocr.b64encode(_PNG_OCR).decode()}
+    )
+    node = OcrStepNode(step, ContextResolver(), ocr_engine=engine)
+    result = await node.execute(make_state())
+
+    engine.extract_any.assert_awaited_once()
+    out = result["step_outputs"]["o1"]
+    assert out["raw_text"] == "INVOICE total 42"
+    assert out["source_format"] == "image"
+    assert out["document_type"] == "invoice"
+
+
+@pytest.mark.asyncio
+async def test_ocr_step_missing_input_degrades_not_crashes():
+    from app.workflow.steps.ocr_step import OcrStepNode
+
+    step = StepDefinition(id="o2", type="ocr", input={})
+    node = OcrStepNode(step, ContextResolver())
+    result = await node.execute(make_state())
+    out = result["step_outputs"]["o2"]
+    assert out["degraded"] is True
+    assert out["raw_text"] == ""

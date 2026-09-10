@@ -21,10 +21,11 @@ def _req(request_id: str = "req-1") -> WorkflowHITLRequest:
     )
 
 
-def make_app(gateway: MagicMock) -> "TestClient":
+def make_app(gateway: MagicMock) -> TestClient:
     from fastapi import FastAPI, Request
+
+    from app.tenancy.context import PlanLimits, PlanTier, TenantContext
     from app.workflow.router_hitl import router
-    from app.tenancy.context import TenantContext, PlanTier, PlanLimits
 
     app = FastAPI()
 
@@ -81,14 +82,14 @@ def gateway() -> MagicMock:
 
 
 @pytest.fixture
-def client(gateway: MagicMock) -> "TestClient":
+def client(gateway: MagicMock) -> TestClient:
     return make_app(gateway)
 
 
 # ── List approvals ────────────────────────────────────────────────────────────
 
 
-def test_list_approvals(client: "TestClient") -> None:
+def test_list_approvals(client: TestClient) -> None:
     resp = client.get("/api/v1/approvals")
     assert resp.status_code == 200
     data = resp.json()
@@ -96,7 +97,7 @@ def test_list_approvals(client: "TestClient") -> None:
     assert data["total"] == 1
 
 
-def test_list_approvals_with_priority_filter(client: "TestClient") -> None:
+def test_list_approvals_with_priority_filter(client: TestClient) -> None:
     resp = client.get("/api/v1/approvals?priority=critical")
     assert resp.status_code == 200
 
@@ -104,7 +105,7 @@ def test_list_approvals_with_priority_filter(client: "TestClient") -> None:
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
 
-def test_approval_stats(client: "TestClient") -> None:
+def test_approval_stats(client: TestClient) -> None:
     resp = client.get("/api/v1/approvals/stats")
     assert resp.status_code == 200
     data = resp.json()
@@ -115,14 +116,14 @@ def test_approval_stats(client: "TestClient") -> None:
 # ── Get approval ──────────────────────────────────────────────────────────────
 
 
-def test_get_approval(client: "TestClient") -> None:
+def test_get_approval(client: TestClient) -> None:
     resp = client.get("/api/v1/approvals/req-1")
     assert resp.status_code == 200
     data = resp.json()
     assert data["request_id"] == "req-1"
 
 
-def test_get_approval_not_found(client: "TestClient", gateway: MagicMock) -> None:
+def test_get_approval_not_found(client: TestClient, gateway: MagicMock) -> None:
     gateway.get_request.return_value = None
     resp = client.get("/api/v1/approvals/bad-req")
     assert resp.status_code == 404
@@ -131,7 +132,7 @@ def test_get_approval_not_found(client: "TestClient", gateway: MagicMock) -> Non
 # ── Decide ────────────────────────────────────────────────────────────────────
 
 
-def test_decide_approve(client: "TestClient") -> None:
+def test_decide_approve(client: TestClient) -> None:
     resp = client.post("/api/v1/approvals/req-1/decide", json={
         "action": "approved", "note": "Looks good"
     })
@@ -141,7 +142,7 @@ def test_decide_approve(client: "TestClient") -> None:
     assert data["reviewed_by"] == "user-1"
 
 
-def test_decide_reject(client: "TestClient", gateway: MagicMock) -> None:
+def test_decide_reject(client: TestClient, gateway: MagicMock) -> None:
     gateway.decide.return_value = WorkflowHITLRequest(
         request_id="req-1", run_id="run-1", workflow_id="wf-1",
         tenant_id="test-tenant", step_id="review",
@@ -153,7 +154,7 @@ def test_decide_reject(client: "TestClient", gateway: MagicMock) -> None:
     assert data["status"] == "rejected"
 
 
-def test_decide_not_found(client: "TestClient", gateway: MagicMock) -> None:
+def test_decide_not_found(client: TestClient, gateway: MagicMock) -> None:
     gateway.decide.side_effect = ValueError("not found")
     resp = client.post("/api/v1/approvals/bad/decide", json={"action": "approved"})
     assert resp.status_code == 404
@@ -162,7 +163,7 @@ def test_decide_not_found(client: "TestClient", gateway: MagicMock) -> None:
 # ── Delegate ──────────────────────────────────────────────────────────────────
 
 
-def test_delegate(client: "TestClient") -> None:
+def test_delegate(client: TestClient) -> None:
     resp = client.post("/api/v1/approvals/req-1/delegate", json={
         "to_user_id": "user-2", "note": "OOO"
     })
@@ -171,7 +172,7 @@ def test_delegate(client: "TestClient") -> None:
     assert data["assigned_to"] == "user-2"
 
 
-def test_delegate_non_pending(client: "TestClient", gateway: MagicMock) -> None:
+def test_delegate_non_pending(client: TestClient, gateway: MagicMock) -> None:
     gateway.delegate.side_effect = ValueError("Cannot delegate a non-pending request")
     resp = client.post("/api/v1/approvals/req-1/delegate", json={"to_user_id": "u"})
     assert resp.status_code == 409
@@ -180,7 +181,7 @@ def test_delegate_non_pending(client: "TestClient", gateway: MagicMock) -> None:
 # ── Escalate ──────────────────────────────────────────────────────────────────
 
 
-def test_escalate(client: "TestClient") -> None:
+def test_escalate(client: TestClient) -> None:
     resp = client.post("/api/v1/approvals/req-1/escalate")
     assert resp.status_code == 200
     data = resp.json()
@@ -190,7 +191,7 @@ def test_escalate(client: "TestClient") -> None:
 # ── Bulk decide ───────────────────────────────────────────────────────────────
 
 
-def test_bulk_decide(client: "TestClient") -> None:
+def test_bulk_decide(client: TestClient) -> None:
     resp = client.post("/api/v1/approvals/bulk-decide", json={
         "request_ids": ["req-1", "req-2"],
         "action": "approved",
@@ -204,14 +205,14 @@ def test_bulk_decide(client: "TestClient") -> None:
 # ── Magic link ────────────────────────────────────────────────────────────────
 
 
-def test_magic_link_valid(client: "TestClient", gateway: MagicMock) -> None:
+def test_magic_link_valid(client: TestClient, gateway: MagicMock) -> None:
     gateway.decide.return_value = _req("req-1")
     gateway.decide.return_value.status = "approved"
     resp = client.get("/api/v1/approvals/magic/tok123?action=approve")
     assert resp.status_code == 200
 
 
-def test_magic_link_expired(client: "TestClient", gateway: MagicMock) -> None:
+def test_magic_link_expired(client: TestClient, gateway: MagicMock) -> None:
     gateway.consume_magic_link.return_value = None
     resp = client.get("/api/v1/approvals/magic/bad-token?action=approve")
     assert resp.status_code == 410

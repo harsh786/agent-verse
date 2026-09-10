@@ -47,9 +47,9 @@ def _build_verifier_summary(steps: list) -> str:  # type: ignore[type-arg]
     def _step_line(s: Any) -> str:
         parts = [f"- {getattr(s, 'description', '?')}: {getattr(s, 'output', '')}"]
         if getattr(s, "status", None) is not None:
-            from app.agent.state import StepStatus as _SS
+            from app.agent.state import StepStatus
 
-            if s.status == _SS.UNGROUNDED:
+            if s.status == StepStatus.UNGROUNDED:
                 parts.append(
                     "  [UNGROUNDED CLAIM] Step output contains claims not found in tool outputs"
                 )
@@ -87,26 +87,90 @@ def _build_verifier_summary(steps: list) -> str:  # type: ignore[type-arg]
     return "\n".join(parts) if parts else "(no steps executed)"
 
 
+def _strip_reasoning(text: str) -> str:
+    """Drop a leading reasoning block from a reasoning model's output.
+
+    Reasoning models (Qwen3, DeepSeek-R1, etc.) emit ``<think>…</think>`` before
+    the real answer. Everything up to and including the last ``</think>`` is
+    discarded. An unterminated ``<think>`` (the model never closed it) is left
+    as-is so we don't throw away a partial answer.
+    """
+    if "</think>" in text:
+        return text.rsplit("</think>", 1)[-1].strip()
+    return text
+
+
+def _first_json_object(text: str) -> dict[str, Any] | None:
+    """Return the first balanced top-level JSON object in *text*, or None.
+
+    String-aware balanced-brace scan, so braces inside string values don't
+    confuse it. Tolerates surrounding prose (a reasoning model that adds a
+    sentence around the JSON).
+    """
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_str = False
+        escape = False
+        for j in range(start, len(text)):
+            ch = text[j]
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(text[start : j + 1])
+                        if isinstance(obj, dict):
+                            return obj
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    break  # this candidate failed; look for the next '{'
+        start = text.find("{", start + 1)
+    return None
+
+
 def _parse_json(text: str, key: str | None = None) -> dict[str, Any]:
-    """Extract JSON from LLM text, tolerating markdown code-block wrappers."""
-    text = re.sub(r"```(?:json)?\n?", "", text).strip()
+    """Extract JSON from LLM text, tolerating code fences and reasoning blocks.
+
+    Order: strip ```json fences and any ``<think>…</think>`` block, try a direct
+    parse, then fall back to extracting the first balanced JSON object from the
+    surrounding prose. Only when no JSON is recoverable is the raw text returned.
+    """
+    cleaned = _strip_reasoning(re.sub(r"```(?:json)?\n?", "", text).strip())
     try:
-        obj: dict[str, Any] = json.loads(text)
+        obj: dict[str, Any] = json.loads(cleaned)
         return obj
     except json.JSONDecodeError:
+        extracted = _first_json_object(cleaned)
+        if extracted is not None:
+            return extracted
         if key == "steps":
-            return {"steps": [text]}
-        return {"success": True, "reason": text}
+            return {"steps": [cleaned]}
+        return {"success": True, "reason": cleaned}
 
 
 def _parse_verifier_response(text: str) -> dict[str, Any]:
-    """Parse verifier LLM response — handles both JSON and legacy text formats."""
-    clean = re.sub(r"```(?:json)?\n?", "", text).strip()
+    """Parse verifier LLM response — handles JSON, reasoning blocks, and legacy text."""
+    clean = _strip_reasoning(re.sub(r"```(?:json)?\n?", "", text).strip())
     try:
         obj: dict[str, Any] = json.loads(clean)
         return obj
     except json.JSONDecodeError:
         pass
+
+    extracted = _first_json_object(clean)
+    if extracted is not None and ("success" in extracted or "reason" in extracted):
+        return extracted
 
     upper = clean.upper()
     if upper.startswith("SUCCESS"):

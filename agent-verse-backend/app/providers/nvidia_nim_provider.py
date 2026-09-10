@@ -11,6 +11,7 @@ Environment variables:
 from __future__ import annotations
 
 import os
+from typing import ClassVar
 
 from app.providers.openai_compatible import OpenAICompatibleProvider
 
@@ -24,7 +25,7 @@ class NvidiaNIMProvider(OpenAICompatibleProvider):
 
     provider_name = "nvidia_nim"
 
-    CLOUD_MODELS: list[str] = [
+    CLOUD_MODELS: ClassVar[list[str]] = [
         "nvidia/llama-3.1-nemotron-70b-instruct",
         "nvidia/mistral-nemo-minitron-8b-8k-instruct",
         "meta/llama-3.1-405b-instruct",

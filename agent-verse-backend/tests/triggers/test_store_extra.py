@@ -6,15 +6,13 @@ Targets uncovered lines: 69-74, 79-85, 121-123, 136-138,
 from __future__ import annotations
 
 import asyncio
-import json
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.tenancy.context import PlanTier, TenantContext
 from app.triggers.models import TriggerSpec, TriggerType
-from app.triggers.store import ScheduleStore, _strip_secret_redis_fields
+from app.triggers.store import ScheduleStore
 
 T = TenantContext(tenant_id="sc-extra2-t1", plan=PlanTier.ENTERPRISE, api_key_id="e2")
 T2 = TenantContext(tenant_id="sc-extra2-t2", plan=PlanTier.PROFESSIONAL, api_key_id="e2b")

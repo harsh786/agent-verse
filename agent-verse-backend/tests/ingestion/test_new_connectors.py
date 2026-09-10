@@ -30,8 +30,9 @@ def _make_config(source_type: str, conn_config: dict | None = None) -> SourceCon
 
 class TestGCSConnector:
     def test_register(self):
-        from app.ingestion.connector_registry import get_connector
         import importlib
+
+        from app.ingestion.connector_registry import get_connector
         importlib.import_module("app.ingestion.connectors.gcs_connector")
         cls = get_connector("gcs")
         assert cls is not None
@@ -50,8 +51,9 @@ class TestGCSConnector:
 
 class TestAzureBlobConnector:
     def test_register(self):
-        from app.ingestion.connector_registry import get_connector
         import importlib
+
+        from app.ingestion.connector_registry import get_connector
         importlib.import_module("app.ingestion.connectors.azure_blob_connector")
         cls = get_connector("azure_blob")
         assert cls is not None
@@ -70,8 +72,9 @@ class TestAzureBlobConnector:
 
 class TestMinIOConnector:
     def test_register(self):
-        from app.ingestion.connector_registry import get_connector
         import importlib
+
+        from app.ingestion.connector_registry import get_connector
         importlib.import_module("app.ingestion.connectors.minio_connector")
         cls = get_connector("minio")
         assert cls is not None
@@ -86,8 +89,9 @@ class TestMinIOConnector:
 
 class TestRSSConnector:
     def test_register(self):
-        from app.ingestion.connector_registry import get_connector
         import importlib
+
+        from app.ingestion.connector_registry import get_connector
         importlib.import_module("app.ingestion.connectors.rss_connector")
         assert get_connector("rss") is not None
         assert get_connector("atom") is not None
@@ -137,13 +141,14 @@ class TestRSSConnector:
 
 class TestArXivConnector:
     def test_register(self):
-        from app.ingestion.connector_registry import get_connector
         import importlib
+
+        from app.ingestion.connector_registry import get_connector
         importlib.import_module("app.ingestion.connectors.arxiv_connector")
         assert get_connector("arxiv") is not None
 
     def test_get_delta_parses_atom(self):
-        import httpx
+
         from app.ingestion.connectors.arxiv_connector import ArXivConnector
 
         sample_xml = """<?xml version="1.0" encoding="UTF-8"?>
@@ -186,8 +191,9 @@ class TestArXivConnector:
 
 class TestKafkaConnector:
     def test_register(self):
-        from app.ingestion.connector_registry import get_connector
         import importlib
+
+        from app.ingestion.connector_registry import get_connector
         importlib.import_module("app.ingestion.connectors.kafka_connector")
         assert get_connector("kafka") is not None
 
@@ -200,15 +206,16 @@ class TestKafkaConnector:
 
 class TestElasticsearchConnector:
     def test_register(self):
-        from app.ingestion.connector_registry import get_connector
         import importlib
+
+        from app.ingestion.connector_registry import get_connector
         importlib.import_module("app.ingestion.connectors.elasticsearch_connector")
         assert get_connector("elasticsearch") is not None
         assert get_connector("opensearch") is not None
 
     def test_get_delta_pagination(self):
+
         from app.ingestion.connectors.elasticsearch_connector import ElasticsearchConnector
-        import json
 
         config = _make_config("elasticsearch", {"url": "http://es:9200", "index": "logs", "batch_size": 2})
         connector = ElasticsearchConnector()
@@ -243,8 +250,9 @@ class TestElasticsearchConnector:
 
 class TestNeo4jConnector:
     def test_register(self):
-        from app.ingestion.connector_registry import get_connector
         import importlib
+
+        from app.ingestion.connector_registry import get_connector
         importlib.import_module("app.ingestion.connectors.neo4j_connector")
         assert get_connector("neo4j") is not None
 

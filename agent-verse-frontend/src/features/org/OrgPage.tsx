@@ -14,12 +14,12 @@
  *   - impeccable-ui:    clear section hierarchy, 3-level visual system
  *   - ui-ux-pro-max:    reduced motion, accessible layout, URL state
  */
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISBootScreen } from '@/components/ui/JARVISBootScreen';
-import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal, BookOpen } from 'lucide-react';
+import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal, BookOpen, Volume2, VolumeX } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { OrgHealthWidget }      from './components/OrgHealthWidget';
 import { MissionsList }          from './components/MissionsList';
@@ -41,7 +41,9 @@ import { MissionOrbit }           from './components/MissionOrbit';
 import { ApprovalCenter }         from './ApprovalCenter';
 import { LoginGreetingPlayer }   from '@/components/voice/LoginGreetingPlayer';
 import { useVoiceAlerts }        from '@/lib/voice/useVoiceAlerts';
-import { useOrgRealtimeManager } from './OrgRealtimeManager';
+import { useJarvisSpeech }       from '@/lib/voice/useJarvisSpeech';
+import { useVoicePrefsStore }    from '@/stores/voicePrefs';
+import { useOrgRealtimeManager, type OrgEvent } from './OrgRealtimeManager';
 import { useOrgNeuralState } from './hooks/useOrgNeuralState';
 import { AgentConstellation } from './components/AgentConstellation';
 import { useOrganization, useOrgHealth, useMissions } from './hooks/useOrg';
@@ -57,11 +59,33 @@ export function OrgPage() {
   // force-graph's node/edge model so bots spawn and light up as work happens.
   const neural = useOrgNeuralState(orgId ?? null);
 
+  // WS-7 item 4 — "JARVIS speaking". Opt-in (persisted, default OFF), skips
+  // itself under prefers-reduced-motion, and debounces bursts of events —
+  // see useJarvisSpeech for the guardrails.
+  const jarvis = useJarvisSpeech();
+  const jarvisSpeechEnabled = useVoicePrefsStore(s => s.jarvisSpeechEnabled);
+  const toggleJarvisSpeech  = useVoicePrefsStore(s => s.toggleJarvisSpeech);
+
+  // useOrgRealtimeManager only re-subscribes `onEvent` when orgId/apiKey
+  // change (see OrgRealtimeManager.ts), so this wrapper must have a stable
+  // identity — but jarvis.handleEvent's identity legitimately changes when
+  // the mute toggle flips. Route through refs kept fresh every render so the
+  // stable callback always calls whatever handler is current.
+  const neuralApplyEventRef = useRef(neural.applyEvent);
+  neuralApplyEventRef.current = neural.applyEvent;
+  const jarvisHandleEventRef = useRef(jarvis.handleEvent);
+  jarvisHandleEventRef.current = jarvis.handleEvent;
+  const handleOrgEvent = useCallback((event: OrgEvent) => {
+    neuralApplyEventRef.current(event);
+    jarvisHandleEventRef.current(event);
+  }, []);
+
   // Live org event stream — missions forming, teams assembling, agents activating,
   // approvals — pushed over SSE. It invalidates the query cache so the whole
-  // console updates in real time, AND feeds the constellation (onEvent) so new
-  // agents animate into the graph as they spawn.
-  useOrgRealtimeManager(orgId, { onEvent: neural.applyEvent });
+  // console updates in real time, feeds the constellation (onEvent) so new
+  // agents animate into the graph as they spawn, and drives JARVIS's spoken
+  // narration of key events.
+  useOrgRealtimeManager(orgId, { onEvent: handleOrgEvent });
 
   // JARVIS boot screen — play the full cinematic boot ONCE per browser session
   // (it's a delight the first time, a 3s tax on every subsequent org visit), and
@@ -182,6 +206,27 @@ export function OrgPage() {
               )}
             >
               <Mic className="h-4 w-4" aria-hidden />
+            </button>
+
+            {/* WS-7 item 4: JARVIS speaking mute/unmute — opt-in, persisted, default OFF */}
+            <button
+              onClick={toggleJarvisSpeech}
+              aria-pressed={jarvisSpeechEnabled}
+              aria-label={jarvisSpeechEnabled ? 'Mute JARVIS voice narration' : 'Unmute JARVIS voice narration'}
+              title={jarvisSpeechEnabled ? 'JARVIS voice: on' : 'JARVIS voice: off'}
+              style={{ touchAction: 'manipulation' }}
+              className={cn(
+                'p-2 rounded-lg transition-colors duration-150',
+                'min-w-[44px] min-h-[44px] flex items-center justify-center',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
+                jarvisSpeechEnabled
+                  ? 'text-[#00D4FF] bg-[#00D4FF]/10'
+                  : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
+              )}
+            >
+              {jarvisSpeechEnabled
+                ? <Volume2 className="h-4 w-4" aria-hidden />
+                : <VolumeX className="h-4 w-4" aria-hidden />}
             </button>
 
             {/* Graphify */}

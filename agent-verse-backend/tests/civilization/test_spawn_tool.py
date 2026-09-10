@@ -1,8 +1,10 @@
 """Tests for execute_spawn_tool — governed spawn tool exposed to agents."""
+from unittest.mock import AsyncMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+
+from app.civilization.models import SpawnDecision, SpawnVerdict
 from app.civilization.spawn_tool import execute_spawn_tool
-from app.civilization.models import SpawnVerdict, SpawnDecision
 
 
 def _approved_verdict(**kwargs) -> SpawnVerdict:
@@ -30,7 +32,7 @@ def _denied_verdict(**kwargs) -> SpawnVerdict:
 
 
 def _make_tenant_ctx():
-    from app.tenancy.context import TenantContext, PlanTier
+    from app.tenancy.context import PlanTier, TenantContext
     return TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
 
 

@@ -24,7 +24,10 @@ import re
 from collections import Counter, defaultdict
 from typing import Any
 
+from app.observability.logging import get_logger
 from app.rag.score_calibration import CalibrationMethod, calibrate_scores, retrieval_confidence
+
+logger = get_logger(__name__)
 
 
 class RerankStrategy(enum.StrEnum):
@@ -33,6 +36,10 @@ class RerankStrategy(enum.StrEnum):
     DIVERSITY = "diversity"
     CROSS_ENCODER = "cross_encoder"
     LLM = "llm"
+    # HOSTED calls a managed rerank API (Cohere/Voyage/Jina-compatible). It is an
+    # async strategy: on the sync path it degrades to SCORE; on rerank_async it
+    # calls the endpoint and falls back to the local path on any failure.
+    HOSTED = "hosted"
     # AUTO uses the cross-encoder when the optional sentence-transformers lib +
     # model are present, otherwise degrades to SCORE. SCORE stays the safe
     # default; AUTO makes the choice explicit and records it (last_reason).
@@ -174,7 +181,9 @@ class RerankPolicy:
         self.last_strategy_used = effective
         self.last_reason = reason
 
-        if effective == RerankStrategy.SCORE:
+        if effective == RerankStrategy.SCORE or effective == RerankStrategy.HOSTED:
+            # HOSTED is async-only (an HTTP call); on the sync path degrade to a
+            # deterministic score-sort. Use rerank_async for the real hosted call.
             filtered = sorted(filtered, key=lambda c: c.get("score", 0.0), reverse=True)
         elif effective == RerankStrategy.DIVERSITY:
             filtered = self._diversity_rerank(filtered, query_embedding=query_embedding)
@@ -421,7 +430,57 @@ class RerankPolicy:
         if s == RerankStrategy.DIVERSITY:
             return self._diversity_rerank(chunks, query_embedding=query_embedding)
 
+        if s == RerankStrategy.HOSTED:
+            return await self._hosted_rerank(chunks, query)
+
         return self.rerank(chunks, query=query)
+
+    async def _hosted_rerank(
+        self, chunks: list[dict[str, Any]], query: str
+    ) -> list[dict[str, Any]]:
+        """Rerank via the managed hosted reranker; honest fallback on any failure.
+
+        Reorders chunks by the endpoint's relevance score and reflects that score
+        (preserving the pre-rerank score). If the endpoint is unconfigured or
+        errors, degrades to the local TF-IDF/cross-encoder path — never drops
+        results.
+        """
+        if not chunks:
+            return []
+        try:
+            from app.core.config import get_settings
+            from app.rag_platform.hosted_reranker import (
+                HostedRerankerError,
+                hosted_reranker_from_settings,
+            )
+
+            reranker = hosted_reranker_from_settings(get_settings())
+            if reranker is None:
+                return self._tfidf_rerank(chunks, query)
+            documents = [str(c.get("content", "")) for c in chunks]
+            pairs = await reranker.rerank(query, documents)
+        except HostedRerankerError as exc:
+            logger.debug("hosted_rerank_failed_fallback", error=str(exc)[:120])
+            return self._tfidf_rerank(chunks, query)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("hosted_rerank_error_fallback", error=str(exc)[:120])
+            return self._tfidf_rerank(chunks, query)
+
+        if len(pairs) != len(chunks):
+            # Endpoint returned a different count than sent → don't trust it.
+            return self._tfidf_rerank(chunks, query)
+        reordered: list[dict[str, Any]] = []
+        for original_index, score in pairs:
+            chunk = chunks[original_index]
+            reordered.append(
+                {
+                    **chunk,
+                    "score": float(score),
+                    "pre_rerank_score": float(chunk.get("score", 0.0)),
+                    "hosted_rerank_score": float(score),
+                }
+            )
+        return reordered
 
     def _tfidf_rerank(self, chunks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
         """TF-IDF weighted token overlap reranking (improved fallback)."""

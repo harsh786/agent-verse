@@ -123,8 +123,6 @@ class KnowledgeGraphStore:
         is undirected: both outgoing (``source == node_id``) and incoming
         (``target == node_id``) edges are followed, which is what multi-hop
         reasoning and ego-network extraction need.
-
-        Backs :class:`~app.knowledge_graph.multi_hop.MultiHopReasoner` (D-16).
         """
         neighbors: list[dict[str, Any]] = []
         for edge in self.get_edges_for_node(node_id, tenant_id):

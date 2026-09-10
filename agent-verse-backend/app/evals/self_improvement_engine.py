@@ -6,6 +6,8 @@ import enum
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.evals.scoring_config import ImprovementThresholds
+
 if TYPE_CHECKING:
     from app.agent.state import AgentState
     from app.evals.runtime_scorecard import ScorecardResult
@@ -36,24 +38,35 @@ class SelfImprovementEngine:
         scorecard: ScorecardResult,
         profile: GoalRuntimeProfile,
         state: AgentState | None = None,
+        thresholds: ImprovementThresholds | None = None,
     ) -> list[ImprovementDecision]:
         actions: list[ImprovementDecision] = []
         scores = scorecard.scores
         threshold = profile.eval_config.score_threshold
+        thr = thresholds if thresholds is not None else ImprovementThresholds.from_settings()
 
         if scorecard.overall_score >= threshold:
             return []
 
-        if scores.get("rag_quality", 1.0) < 0.5 or scores.get("retrieval_confidence", 1.0) < 0.4:
+        if (
+            scores.get("rag_quality", 1.0) < thr.rag_quality_floor
+            or scores.get("retrieval_confidence", 1.0) < thr.retrieval_confidence_floor
+        ):
             actions.append(
                 ImprovementDecision(
                     action_type=ImprovementAction.UPDATE_RAG_STRATEGY,
-                    reason=f"rag_quality={scores.get('rag_quality', 0):.2f} below 0.5",
+                    reason=(
+                        f"rag_quality={scores.get('rag_quality', 0):.2f} "
+                        f"below {thr.rag_quality_floor}"
+                    ),
                     metadata={"current_rag_strategy": profile.rag_strategy.strategy},
                 )
             )
 
-        if scores.get("goal_success", 1.0) < 0.7 or scores.get("tool_success_rate", 1.0) < 0.5:
+        if (
+            scores.get("goal_success", 1.0) < thr.goal_success_floor
+            or scores.get("tool_success_rate", 1.0) < thr.tool_success_floor
+        ):
             if state and (state.verification_feedback or "").strip():
                 actions.append(
                     ImprovementDecision(
@@ -65,11 +78,14 @@ class SelfImprovementEngine:
             actions.append(
                 ImprovementDecision(
                     action_type=ImprovementAction.UPDATE_PROMPT_VARIANT,
-                    reason=f"goal_success={scores.get('goal_success', 0):.2f} below 0.7",
+                    reason=(
+                        f"goal_success={scores.get('goal_success', 0):.2f} "
+                        f"below {thr.goal_success_floor}"
+                    ),
                 )
             )
 
-        if scores.get("tool_success_rate", 1.0) < 0.3:
+        if scores.get("tool_success_rate", 1.0) < thr.tool_success_critical:
             actions.append(
                 ImprovementDecision(
                     action_type=ImprovementAction.BLACKLIST_TOOL_PATTERN,
@@ -77,7 +93,10 @@ class SelfImprovementEngine:
                 )
             )
 
-        if scores.get("cost_efficiency", 1.0) < 0.3 or scores.get("latency", 1.0) < 0.3:
+        if (
+            scores.get("cost_efficiency", 1.0) < thr.cost_efficiency_floor
+            or scores.get("latency", 1.0) < thr.latency_floor
+        ):
             actions.append(
                 ImprovementDecision(
                     action_type=ImprovementAction.UPDATE_MODEL_ROUTING,
@@ -85,11 +104,14 @@ class SelfImprovementEngine:
                 )
             )
 
-        if scorecard.overall_score < 0.4:
+        if scorecard.overall_score < thr.regression_case_floor:
             actions.append(
                 ImprovementDecision(
                     action_type=ImprovementAction.CREATE_REGRESSION_CASE,
-                    reason=f"overall_score={scorecard.overall_score:.2f} below 0.4",
+                    reason=(
+                        f"overall_score={scorecard.overall_score:.2f} "
+                        f"below {thr.regression_case_floor}"
+                    ),
                 )
             )
 

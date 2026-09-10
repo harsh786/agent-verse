@@ -1,11 +1,11 @@
 """Tests for content schema and loader."""
+
 import pytest
-from pathlib import Path
 
 
 class TestContentSchema:
     def test_marketplace_agent_content_valid(self) -> None:
-        from app.content.schema import MarketplaceAgentContent, EvalFixture
+        from app.content.schema import EvalFixture, MarketplaceAgentContent
 
         agent = MarketplaceAgentContent(
             template_id="tpl-legal-contract-review-v2",
@@ -26,8 +26,9 @@ class TestContentSchema:
         assert agent.autonomy_mode == "bounded-autonomous"
 
     def test_template_id_must_start_with_tpl(self) -> None:
-        from app.content.schema import MarketplaceAgentContent
         from pydantic import ValidationError
+
+        from app.content.schema import MarketplaceAgentContent
 
         with pytest.raises(ValidationError):
             MarketplaceAgentContent(
@@ -40,8 +41,9 @@ class TestContentSchema:
             )
 
     def test_slug_must_be_kebab(self) -> None:
-        from app.content.schema import MarketplaceAgentContent
         from pydantic import ValidationError
+
+        from app.content.schema import MarketplaceAgentContent
 
         with pytest.raises(ValidationError):
             MarketplaceAgentContent(
@@ -54,8 +56,9 @@ class TestContentSchema:
             )
 
     def test_autonomy_mode_validated(self) -> None:
-        from app.content.schema import MarketplaceAgentContent
         from pydantic import ValidationError
+
+        from app.content.schema import MarketplaceAgentContent
 
         with pytest.raises(ValidationError):
             MarketplaceAgentContent(
@@ -106,7 +109,7 @@ class TestContentLoader:
         )
 
     def test_schema_importable(self) -> None:
-        from app.content.schema import MarketplaceAgentContent, GoalTemplateContent, EvalFixture
+        from app.content.schema import EvalFixture, GoalTemplateContent, MarketplaceAgentContent
 
         assert MarketplaceAgentContent is not None
         assert GoalTemplateContent is not None
@@ -160,6 +163,7 @@ class TestInstallFix:
     def test_install_sets_connector_ids(self) -> None:
         """install() must populate connector_ids from required_connectors."""
         import inspect
+
         from app.enterprise.marketplace_v2 import MarketplaceV2
 
         source = inspect.getsource(MarketplaceV2.install)
@@ -171,6 +175,7 @@ class TestInstallFix:
     def test_install_sets_system_prompt(self) -> None:
         """install() must populate system_prompt."""
         import inspect
+
         from app.enterprise.marketplace_v2 import MarketplaceV2
 
         source = inspect.getsource(MarketplaceV2.install)

@@ -7,7 +7,6 @@ from app.intelligence.eval_suite import (
     EvalSuiteResult,
     EvalSuiteRunner,
     GoldenTask,
-    GoldenTaskResult,
 )
 from app.tenancy.context import PlanTier, TenantContext
 

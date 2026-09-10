@@ -8,4 +8,3 @@ def test_memory_learning_services_are_explicitly_wired_for_test_path() -> None:
     assert app.state.reflexion_service is not None
     assert app.state.prospective_memory_service is not None
     assert app.state.learning_experiment_service is not None
-    assert app.state.improvement_action_executor is not None

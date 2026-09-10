@@ -1,10 +1,8 @@
 """Tests for ProvenanceLedger with claim-level source chain — 6 tests."""
 from __future__ import annotations
 
-import pytest
-from app.provenance.source_ref import SourceRef
-from app.provenance.claim_trace import ProvenanceRecord
 from app.provenance.ledger import ProvenanceLedger
+from app.provenance.source_ref import SourceRef
 
 
 def _make_source(source_type: str = "knowledge_base", url: str = "https://example.com") -> SourceRef:
