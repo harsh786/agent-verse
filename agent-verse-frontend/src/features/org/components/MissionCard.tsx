@@ -23,6 +23,13 @@ interface MissionCardProps {
   mission:    OrgMission;
   /** Org the mission belongs to — needed to fetch real task progress. Omit to skip the progress fetch (e.g. isolated previews). */
   orgId?:     string;
+  /**
+   * Pre-resolved task progress supplied by the parent. When set, the card
+   * renders these counts and skips its own /tasks fetch — this is how the
+   * missions list avoids one request per card (a burst that trips the
+   * per-tenant rate limit). Omit to let the card fetch its own progress.
+   */
+  progress?:  { done: number; total: number };
   isSelected?: boolean;
   onClick?:   (id: string) => void;
   className?: string;
@@ -84,6 +91,7 @@ function PulseDot({ dot }: { dot: string }) {
 export const MissionCard = React.memo(function MissionCard({
   mission,
   orgId,
+  progress,
   isSelected = false,
   onClick,
   className,
@@ -102,16 +110,19 @@ export const MissionCard = React.memo(function MissionCard({
     'text-[#94A3B8]';
 
   // Real task progress — OrgMission carries no task/subtask counts of its own
-  // (see app/org/schemas.py MissionResponse), so derive it from the tasks
-  // actually scoped to this mission via the tasks endpoint. When orgId isn't
-  // supplied, or the fetch hasn't resolved yet, show an honest unknown state
-  // rather than a fabricated 0%.
-  const { data: tasksResp } = useOrgTasks(orgId, { mission_id: mission.id });
+  // (see app/org/schemas.py MissionResponse), so it's derived from the tasks
+  // scoped to this mission. Two supply paths:
+  //   1. The parent passes `progress` (the missions list fetches all org tasks
+  //      in ONE request and groups them) — no per-card fetch, no request burst.
+  //   2. No `progress` (isolated previews / standalone use): the card fetches
+  //      its own tasks. Passing orgId=undefined here disables that query.
+  const external    = progress !== undefined;
+  const { data: tasksResp } = useOrgTasks(external ? undefined : orgId, { mission_id: mission.id });
   const tasks       = (tasksResp as { data?: OrgTask[] } | undefined)?.data;
-  const total       = tasks?.length ?? 0;
-  const done        = tasks?.filter(t => t.status === 'completed').length ?? 0;
+  const total       = external ? progress.total : (tasks?.length ?? 0);
+  const done        = external ? progress.done  : (tasks?.filter(t => t.status === 'completed').length ?? 0);
   const pct         = total > 0 ? Math.round((done / total) * 100) : 0;
-  const progressUnknown = !!orgId && tasks === undefined;
+  const progressUnknown = !external && !!orgId && tasks === undefined;
 
   const handleClick = useCallback(() => onClick?.(mission.id), [mission.id, onClick]);
   const handleKey   = useCallback((e: React.KeyboardEvent) => {
@@ -219,5 +230,7 @@ export const MissionCard = React.memo(function MissionCard({
   prev.mission.title            === next.mission.title            &&
   prev.mission.completed_at     === next.mission.completed_at     &&
   prev.orgId                    === next.orgId                    &&
+  prev.progress?.done           === next.progress?.done           &&
+  prev.progress?.total          === next.progress?.total          &&
   prev.isSelected               === next.isSelected,
 );

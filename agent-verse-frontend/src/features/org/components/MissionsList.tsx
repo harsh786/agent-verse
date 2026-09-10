@@ -8,13 +8,13 @@
  *   - impeccable-ui:   skeleton shimmer, meaningful empty state, error with fix
  *   - ui-ux-pro-max:   44×44px targets, prefers-reduced-motion
  */
-import { useRef, useCallback } from 'react';
+import { useRef, useCallback, useMemo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { Plus, Loader2, Zap } from 'lucide-react';
 import { MissionCard } from './MissionCard';
-import { useMissions } from '../hooks/useOrg';
-import type { OrgMission } from '../types';
+import { useMissions, useOrgTasks } from '../hooks/useOrg';
+import type { OrgMission, OrgTask } from '../types';
 
 interface MissionsListProps {
   orgId: string;
@@ -47,6 +47,25 @@ export function MissionsList({
   const missions = (data?.pages.flatMap((p) => p.data) ?? []).filter(
     (m) => !deptFilter || m.dept_id === deptFilter,
   );
+
+  // One org-wide tasks query feeds every card's progress bar. Fetching tasks
+  // per card (one /tasks request each) burst past the per-tenant rate limit
+  // with more than a handful of missions; this collapses it to a single call
+  // we group by mission_id. `undefined` for a mission means "not loaded yet",
+  // so cards can show an honest loading state instead of a fake 0%.
+  const { data: tasksResp, isLoading: tasksLoading } = useOrgTasks(orgId, { limit: 200 });
+  const progressByMission = useMemo(() => {
+    const rows = (tasksResp as { data?: OrgTask[] } | undefined)?.data ?? [];
+    const map = new Map<string, { done: number; total: number }>();
+    for (const t of rows) {
+      if (!t.mission_id) continue;
+      const cur = map.get(t.mission_id) ?? { done: 0, total: 0 };
+      cur.total += 1;
+      if (t.status === 'completed') cur.done += 1;
+      map.set(t.mission_id, cur);
+    }
+    return map;
+  }, [tasksResp]);
 
   const virtualizer = useVirtualizer({
     count:            missions.length,
@@ -141,7 +160,13 @@ export function MissionsList({
                 >
                   <MissionCard
                     mission={mission}
-                    orgId={orgId}
+                    // Progress comes from the single org-wide tasks query above,
+                    // not a per-card fetch. `undefined` while that query loads.
+                    progress={
+                      tasksLoading
+                        ? undefined
+                        : progressByMission.get(mission.id) ?? { done: 0, total: 0 }
+                    }
                     onClick={handleMissionClick}
                   />
                 </div>
