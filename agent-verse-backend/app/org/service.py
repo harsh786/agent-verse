@@ -1707,6 +1707,57 @@ class OrgService:
         )
         return task
 
+    async def _disband_team_if_idle(
+        self, team_id: str | uuid.UUID | None, org_id: uuid.UUID
+    ) -> None:
+        """Disband a mission's team once no non-terminal mission still needs it.
+
+        Teams are formed per mission (1:1) and were never torn down, so the
+        dashboard's 'Active Teams' count kept climbing while active missions
+        dropped to zero. When a mission finalizes we disband its team — unless
+        another still-running mission is assigned to the same team (defensive:
+        teams may be shared in future) — and emit ``org.team.disbanded`` so
+        dashboards and the activity feed track the change.
+        """
+        if not team_id:
+            return
+        team = (
+            await self._session.execute(
+                select(OrgTeam).where(
+                    OrgTeam.id == team_id,
+                    OrgTeam.tenant_id == self._tenant_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if team is None or team.status != "active":
+            return
+        # Is any OTHER non-terminal mission still assigned to this team?
+        still_in_use = (
+            await self._session.execute(
+                select(func.count(OrgMission.id)).where(
+                    OrgMission.tenant_id == self._tenant_id,
+                    OrgMission.assigned_team_id == team_id,
+                    OrgMission.status.not_in(
+                        ("completed", "failed", "cancelled", "archived")
+                    ),
+                )
+            )
+        ).scalar() or 0
+        if still_in_use > 0:
+            return
+        team.status = "disbanded"
+        team.updated_at = datetime.now(UTC)
+        await self._session.flush()
+        await self._emit_event(
+            org_id,
+            "org.team.disbanded",
+            title=f"Team '{team.name}' disbanded",
+            entity_type="team",
+            entity_id=str(team.id),
+            payload={"team_id": str(team.id), "reason": "mission_finalized"},
+            source="orchestrator",
+        )
+
     async def finalize_mission(
         self,
         mission_id: str,
@@ -1809,6 +1860,11 @@ class OrgService:
         final_status = "completed" if terminal_ok else "failed"
         # update_mission_status emits mission.completed / mission.failed.
         await self.update_mission_status(mission_id, final_status)
+        # Team lifecycle: disband the mission's team so 'Active Teams' tracks
+        # active missions instead of climbing forever.
+        await self._disband_team_if_idle(
+            cast("uuid.UUID | None", mission.assigned_team_id), org_uuid
+        )
         await self._emit_event(
             org_uuid,
             "mission.progress",
