@@ -101,7 +101,20 @@ function normalize(output: unknown): Deliverable {
 }
 
 function bodyText(d: Deliverable): string {
-  return (d.summary ?? d.content ?? d.text ?? '') as string;
+  let s = (d.summary ?? d.content ?? d.text ?? '') as string;
+  if (typeof s !== 'string') return String(s ?? '');
+  // The summary is sometimes a wrapped tool result — `{"tool": ..., "result": "…"}`.
+  // Unwrap it so the reader sees the answer, not JSON plumbing.
+  const trimmed = s.trim();
+  if (trimmed.startsWith('{') && trimmed.includes('"result"')) {
+    try {
+      const parsed = JSON.parse(trimmed) as { result?: unknown };
+      if (parsed && typeof parsed.result === 'string') s = parsed.result;
+    } catch {
+      /* not valid JSON — leave as-is */
+    }
+  }
+  return s;
 }
 
 export function MissionDeliverable({

@@ -54,6 +54,7 @@ export function VoiceModal({
   const [agentResponse, setAgentResponse] = useState('');
   const [bars,          setBars]          = useState<number[]>(Array(BARS).fill(0.1));
   const [micActive,     setMicActive]    = useState(false);
+  const [errorMsg,      setErrorMsg]     = useState('');
 
   // When no orgId, voice stream will not connect (noop mode)
   const hasNative = !!orgId;
@@ -67,7 +68,19 @@ export function VoiceModal({
       },
       onAgentResponse: (text) => setAgentResponse(text),
       onTtsDone:       ()     => { setMicActive(false); },
-      onError:         ()     => { setMicActive(false); },
+      onError:         (msg)  => {
+        setMicActive(false);
+        // Surface the real cause. A denied mic permission is by far the most
+        // common reason speech-to-text "doesn't work" — say so plainly.
+        const m = String(msg ?? '');
+        setErrorMsg(
+          /NotAllowed|Permission|denied/i.test(m)
+            ? 'Microphone access blocked. Click the mic/lock icon in the address bar and allow the microphone, then retry.'
+            : /NotFound|Devices/i.test(m)
+              ? 'No microphone found. Connect a mic and retry.'
+              : m || 'Voice error — tap the mic to retry.',
+        );
+      },
     },
   );
 
@@ -103,7 +116,7 @@ export function VoiceModal({
   const handleMicToggle = useCallback(async () => {
     if (!hasNative) return;
     if (micActive) { stopMic(); setMicActive(false); }
-    else           { await startMic(); setMicActive(true); }
+    else           { setErrorMsg(''); await startMic(); setMicActive(true); }
   }, [hasNative, micActive, startMic, stopMic]);
 
   const handleConfirm = useCallback(() => {
@@ -195,6 +208,16 @@ export function VoiceModal({
             <p className="text-center text-xs text-[#64748B] font-medium tracking-widest uppercase">
               {label}
             </p>
+
+            {/* Error detail — tells the user the real reason (usually mic permission) */}
+            {errorMsg && (
+              <p
+                className="text-center text-[12px] text-rose-300 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2 leading-snug"
+                role="alert"
+              >
+                {errorMsg}
+              </p>
+            )}
 
             {/* Mic button */}
             <div className="flex justify-center">
