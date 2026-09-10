@@ -10,6 +10,8 @@ Input keys (resolved from the step ``input`` dict):
   * ``document_base64`` (+ optional ``content_type`` / ``filename``) — any format
   * ``image_base64`` — an image
   * ``pdf_base64`` — a PDF
+  * ``file_path`` — a server-local file, allowed ONLY under the directories in
+    ``WORKFLOW_FILE_ALLOWED_DIRS`` (secure-by-default: refused when unset)
 Output (``step_outputs[step_id]``): ``raw_text``, ``document_type``,
 ``source_format``, ``degraded``, ``degradation_reason``, ``page_count``.
 """
@@ -24,6 +26,42 @@ from app.observability.logging import get_logger
 from app.workflow.context import ContextResolver
 from app.workflow.dsl import StepDefinition
 from app.workflow.state import WorkflowState
+
+_log_mod = get_logger(__name__)
+
+
+def _resolve_allowed_file(path: str) -> str | None:
+    """Return the real path only if it is a regular file under a configured
+    allowlist directory; otherwise ``None``.
+
+    ``file_path`` can be templated from external (webhook) inputs, so reading it
+    unrestricted is arbitrary file access. Reads are confined to the directories
+    in ``WORKFLOW_FILE_ALLOWED_DIRS`` (os.pathsep-separated absolute paths),
+    resolved through symlinks so ``..`` and symlink escapes cannot leave the root.
+    Secure-by-default: an empty/unset allowlist refuses every ``file_path``.
+    """
+    import os
+
+    raw = os.getenv("WORKFLOW_FILE_ALLOWED_DIRS", "") or ""
+    allowed = [d for d in raw.split(os.pathsep) if d.strip()]
+    if not allowed:
+        _log_mod.warning("ocr_file_path_denied_no_allowlist", path=path[:120])
+        return None
+    try:
+        real = os.path.realpath(path)
+    except Exception:
+        return None
+    if not os.path.isfile(real):
+        return None
+    for base in allowed:
+        try:
+            base_real = os.path.realpath(base)
+        except Exception:
+            continue
+        if real == base_real or real.startswith(base_real + os.sep):
+            return real
+    _log_mod.warning("ocr_file_path_denied_outside_allowlist", path=real[:120])
+    return None
 
 _log = get_logger(__name__)
 
@@ -105,15 +143,22 @@ class OcrStepNode:
                     return base64.b64decode(b64), ct, filename
                 except Exception:
                     return None, None, None
-        # file_path — a server-local file (documented input; previously ignored,
-        # so a workflow OCR step pointed at a file silently degraded to no text).
+        # file_path — a server-local file. SECURITY: file_path can be templated
+        # from external (webhook) inputs, so an unrestricted read is arbitrary
+        # file access (e.g. /etc/passwd, another tenant's data). Only read files
+        # under an explicitly-configured allowlist of directories, resolved
+        # through symlinks to block traversal. Secure-by-default: with no
+        # allowlist set, file_path is refused entirely (base64 inputs still work).
         file_path = resolved.get("file_path")
         if file_path:
+            safe = _resolve_allowed_file(str(file_path))
+            if safe is None:
+                return None, None, None
             try:
                 import os as _os
 
-                with open(file_path, "rb") as _f:
-                    return _f.read(), content_type, filename or _os.path.basename(file_path)
+                with open(safe, "rb") as _f:
+                    return _f.read(), content_type, filename or _os.path.basename(safe)
             except Exception:
                 return None, None, None
         return None, None, None
