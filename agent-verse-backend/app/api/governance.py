@@ -384,6 +384,81 @@ async def simulate_policy_for_goal(
 # ---------------------------------------------------------------------------
 
 
+async def _org_gate_approvals(
+    tenant_ctx: TenantContext,
+    org_id: str | None,
+    *,
+    resolved: bool,
+) -> list[dict[str, Any]]:
+    """Return org approval-gate tasks shaped like HITL approval requests.
+
+    ``resolved=False`` returns still-pending gates for the Inbox; ``True`` returns
+    decided gates (approved/rejected) for History. Durable and DB-backed, so they
+    survive restarts and carry a real risk_level for the risk buckets and sort.
+    """
+    from sqlalchemy import text
+
+    from app.db.session import get_session_factory
+
+    status_clause = (
+        "AND t.status != 'approval_required'" if resolved else "AND t.status = 'approval_required'"
+    )
+    org_clause = "AND t.org_id = CAST(:o AS uuid)" if org_id else ""
+    sql = text(
+        "SELECT t.id, t.org_id, t.mission_id, t.title, t.why, t.risk_level, t.status, "
+        "t.created_at, t.updated_at, t.outputs "
+        "FROM org_tasks t "
+        "WHERE t.tenant_id = CAST(:t AS uuid) "
+        "AND t.extra_data->>'task_kind' = 'approval_gate' "
+        f"{status_clause} {org_clause} "
+        "ORDER BY t.updated_at DESC LIMIT 200"
+    )
+    params: dict[str, Any] = {"t": str(tenant_ctx.tenant_id)}
+    if org_id:
+        params["o"] = org_id
+    out: list[dict[str, Any]] = []
+    try:
+        db = get_session_factory()
+        async with db() as sess:
+            rows = (await sess.execute(sql, params)).mappings().all()
+    except Exception:
+        return out
+    for row in rows:
+        approver: str | None = None
+        note: str = ""
+        for o in row["outputs"] or []:
+            if isinstance(o, dict):
+                approver = o.get("approved_by") or o.get("rejected_by") or approver
+                note = o.get("approval_note") or o.get("rejection_note") or note
+        raw = str(row["status"])
+        status = (
+            "pending"
+            if raw == "approval_required"
+            else ("rejected" if raw == "cancelled" else "approved")
+        )
+        ts = row["updated_at"] if resolved else row["created_at"]
+        out.append(
+            {
+                "request_id": str(row["id"]),
+                "goal_id": str(row["mission_id"]) if row["mission_id"] else None,
+                "org_id": str(row["org_id"]),
+                "action": row["why"] or row["title"],
+                "risk_level": row["risk_level"] or "high",
+                "status": status,
+                "created_at": ts.isoformat() if ts else "",
+                "resolved_at": (
+                    row["updated_at"].isoformat() if (resolved and row["updated_at"]) else None
+                ),
+                "note": note,
+                "approver": approver,
+                "required_approvers": 1,
+                "approvals_received": 1 if status == "approved" else 0,
+                "source": "org_gate",
+            }
+        )
+    return out
+
+
 @router.get("/approvals")
 async def list_approvals(
     request: Request,
@@ -422,7 +497,7 @@ async def list_approvals(
                 continue
         pending = scoped
 
-    return [
+    results: list[dict[str, Any]] = [
         {
             "request_id": r.request_id,
             "goal_id": r.goal_id,
@@ -438,6 +513,96 @@ async def list_approvals(
         for r in pending
     ]
 
+    # Bridge durable org approval gates (OrgTasks) into the global inbox so they
+    # show up with risk buckets/sort like any HITL request — the in-memory gateway
+    # loses its requests on restart, but the gate tasks persist in the DB.
+    results.extend(await _org_gate_approvals(tenant_ctx, org_id, resolved=False))
+    return results
+
+
+async def _resolve_org_gate(
+    request: Request,
+    tenant_ctx: TenantContext,
+    task_id: str,
+    decision: str,
+    approver: str,
+    note: str,
+) -> bool:
+    """Resolve an org approval-gate task from the global inbox.
+
+    Returns True if ``task_id`` was an org gate and got resolved. Approve flips it
+    to 'running' and — when it was the last pending gate — launches the paused
+    mission's goal; reject cancels it and fails the guarded mission.
+    """
+    from datetime import UTC, datetime
+
+    from app.db.rls import sqlalchemy_rls_context
+    from app.db.session import get_session_factory
+    from app.org.service import OrgService
+
+    tid = str(tenant_ctx.tenant_id)
+    # `found` gates error handling: any failure while *looking up* the gate
+    # (no DB configured, an id that isn't a valid task, a connection error)
+    # means "this id is not a resolvable org gate" → return False so the caller
+    # can 404. Once a real gate is confirmed we re-raise, because a failure to
+    # apply the decision is a genuine 500 worth surfacing, not a silent no-op.
+    found = False
+    try:
+        db = get_session_factory()
+        async with db() as sess, sqlalchemy_rls_context(sess, tid):
+            svc = OrgService(sess, tid)
+            task = await svc.get_task(task_id)
+            if task is None or (task.extra_data or {}).get("task_kind") != "approval_gate":
+                return False
+            found = True
+            now = datetime.now(UTC).isoformat()
+            if decision == "approve":
+                await svc.update_task_status(
+                    task_id,
+                    "running",
+                    outputs=[{"approved_by": approver, "approval_note": note, "decided_at": now}],
+                )
+                if task.mission_id:
+                    remaining = [
+                        t
+                        for t in await svc.list_tasks(
+                            str(task.org_id), mission_id=str(task.mission_id)
+                        )
+                        if (t.extra_data or {}).get("task_kind") == "approval_gate"
+                        and t.status == "approval_required"
+                    ]
+                    if not remaining:
+                        await svc.dispatch_mission_goal(
+                            str(task.mission_id), app_state=request.app.state
+                        )
+            else:
+                await svc.update_task_status(
+                    task_id,
+                    "cancelled",
+                    outputs=[
+                        {
+                            "rejected_by": approver,
+                            "rejection_note": note or "Rejected",
+                            "decided_at": now,
+                        }
+                    ],
+                )
+                if task.mission_id:
+                    mission = await svc.get_mission(str(task.mission_id))
+                    if mission and str(mission.status) not in (
+                        "completed",
+                        "failed",
+                        "cancelled",
+                        "archived",
+                    ):
+                        await svc.update_mission_status(str(task.mission_id), "failed")
+            await sess.commit()
+            return True
+    except Exception:
+        if found:
+            raise
+        return False
+
 
 @router.post("/approvals/{request_id}/approve")
 async def approve_request(
@@ -449,11 +614,14 @@ async def approve_request(
     tenant_ctx: TenantContext = _require_tenant(request)
     gateway = _hitl(request)
     ok = gateway.approve(request_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx)
-    if not ok:
+    # Not a live gateway request — maybe a durable org approval gate.
+    if not ok and not await _resolve_org_gate(
+        request, tenant_ctx, request_id, "approve", body.approver, body.note
+    ):
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Approval request {request_id} not found",
-        )
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Approval request {request_id} not found",
+            )
     return {"request_id": request_id, "status": "approved", "approver": body.approver}
 
 
@@ -469,7 +637,9 @@ async def reject_request(
     ok = await gateway.reject(
         request_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
     )
-    if not ok:
+    if not ok and not await _resolve_org_gate(
+        request, tenant_ctx, request_id, "reject", body.approver, body.note
+    ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Approval request {request_id} not found",
@@ -1404,7 +1574,7 @@ async def list_approval_history(
         async with db() as session:
             rows = (await session.execute(_text(sql), params)).fetchall()
 
-        return [
+        history = [
             {
                 "request_id": r[0],
                 "goal_id": r[1],
@@ -1419,7 +1589,13 @@ async def list_approval_history(
             for r in rows
         ]
     except Exception:
-        return []
+        history = []
+
+    # Include resolved org approval gates (durable OrgTasks) in the History tab.
+    gate_history = await _org_gate_approvals(tenant_ctx, None, resolved=True)
+    if status_filter:
+        gate_history = [g for g in gate_history if g["status"] == status_filter]
+    return (history + gate_history)[: min(limit, 200)]
 
 
 @router.get("/approvals/sla-stats")
