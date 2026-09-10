@@ -76,6 +76,24 @@ export const orgApi = {
 
   // ── Missions ──────────────────────────────────────────────────────────────
 
+  /** Upload a file an agent can OCR/process at run time. Returns a server path
+   *  to reference from the mission objective (multipart; apiFetch handles the
+   *  FormData boundary + auth). */
+  uploadAttachment(
+    orgId: string,
+    file: File,
+  ): Promise<{
+    attachment_id: string;
+    path: string;
+    filename: string;
+    content_type: string;
+    size: number;
+  }> {
+    const fd = new FormData();
+    fd.append('file', file);
+    return apiFetch(`${BASE}/${orgId}/attachments`, { method: 'POST', body: fd });
+  },
+
   createMission(orgId: string, req: CreateMissionRequest): Promise<OrgMission> {
     // Use /missions/execute which triggers MetaOrchestrator team formation
     // + dispatches to AgentGraph via GoalService — not just a DB record create.

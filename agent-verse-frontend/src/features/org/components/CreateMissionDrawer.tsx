@@ -7,12 +7,13 @@
  *   - web-guidelines:  form labels, aria-required, aria-invalid, touch-action
  *   - ui-ux-pro-max:   44px submit, useReducedMotion, focus trap
  */
-import { useCallback, useId, useRef, useEffect } from 'react';
+import { useCallback, useId, useRef, useEffect, useState } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { X, Zap } from 'lucide-react';
+import { X, Zap, Paperclip, FileText, Loader2 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { cn } from '@/lib/utils';
 import { useCreateMission } from '../hooks/useOrg';
+import { orgApi } from '../api';
 import type { CreateMissionRequest } from '../types';
 
 interface CreateMissionDrawerProps {
@@ -30,6 +31,9 @@ export function CreateMissionDrawer({ orgId, open, onClose }: CreateMissionDrawe
   const createMission = useCreateMission(orgId);
   const formId = useId();
   const firstInputRef = useRef<HTMLInputElement>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [uploadError, setUploadError] = useState('');
+  const [busy, setBusy] = useState(false);
 
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } =
     useForm<CreateMissionRequest>({
@@ -49,10 +53,35 @@ export function CreateMissionDrawer({ orgId, open, onClose }: CreateMissionDrawe
   }, [open, onClose]);
 
   const onSubmit = useCallback(async (data: CreateMissionRequest) => {
-    await createMission.mutateAsync(data);
-    reset();
-    onClose();
-  }, [createMission, reset, onClose]);
+    setUploadError('');
+    setBusy(true);
+    try {
+      // Upload any attachments first, then tell the agent where to find them.
+      // The extract_document OCR/vision tool reads these server paths at run time.
+      let objective = data.objective ?? '';
+      if (files.length > 0) {
+        const uploaded = await Promise.all(files.map((f) => orgApi.uploadAttachment(orgId, f)));
+        const lines = uploaded.map((u) => `- ${u.filename} → ${u.path}`).join('\n');
+        objective =
+          `${objective}\n\nAttached files (use the extract_document tool to read them ` +
+          `when the task needs their contents):\n${lines}`.trim();
+      }
+      await createMission.mutateAsync({ ...data, objective });
+      reset();
+      setFiles([]);
+      onClose();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Could not upload attachment.');
+    } finally {
+      setBusy(false);
+    }
+  }, [createMission, reset, onClose, files, orgId]);
+
+  const addFiles = useCallback((incoming: FileList | null) => {
+    if (!incoming) return;
+    setUploadError('');
+    setFiles((prev) => [...prev, ...Array.from(incoming)].slice(0, 5));
+  }, []);
 
   return (
     <AnimatePresence>
@@ -186,6 +215,58 @@ export function CreateMissionDrawer({ orgId, open, onClose }: CreateMissionDrawe
                 />
               </div>
 
+              {/* Attachments — files the agent can OCR / vision-process at run time */}
+              <div className="space-y-1.5">
+                <label className="block text-sm font-medium text-[#F1F5F9]">
+                  Attachments <span className="text-[#64748B] font-normal">(optional)</span>
+                </label>
+                <label
+                  className={cn(
+                    'flex items-center justify-center gap-2 w-full px-3 py-3 rounded-lg cursor-pointer',
+                    'border border-dashed border-[#2D3748] bg-[#252B3B]/40 text-[13px] text-[#94A3B8]',
+                    'hover:border-blue-500/40 hover:bg-[#252B3B] transition-colors',
+                  )}
+                >
+                  <Paperclip className="h-4 w-4 text-[#64748B]" aria-hidden />
+                  Add an image, PDF, or document to process
+                  <input
+                    type="file"
+                    className="sr-only"
+                    multiple
+                    accept="image/*,.pdf,.txt,.csv,.md,.json,.docx"
+                    onChange={(e) => addFiles(e.target.files)}
+                    aria-label="Add attachments"
+                  />
+                </label>
+                {files.length > 0 && (
+                  <ul className="space-y-1.5">
+                    {files.map((f, i) => (
+                      <li
+                        key={`${f.name}-${i}`}
+                        className="flex items-center gap-2 rounded-lg bg-[#252B3B] border border-[#2D3748] px-2.5 py-1.5"
+                      >
+                        <FileText className="h-3.5 w-3.5 shrink-0 text-[#00D4FF]" aria-hidden />
+                        <span className="flex-1 min-w-0 truncate text-[12px] text-[#CBD5E1]">{f.name}</span>
+                        <span className="shrink-0 text-[11px] text-[#475569] tabular-nums">
+                          {(f.size / 1024).toFixed(0)} KB
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setFiles((prev) => prev.filter((_, idx) => idx !== i))}
+                          aria-label={`Remove ${f.name}`}
+                          className="shrink-0 p-1 rounded text-[#64748B] hover:text-rose-300 hover:bg-white/5 transition-colors"
+                        >
+                          <X className="h-3.5 w-3.5" aria-hidden />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {uploadError && (
+                  <p role="alert" className="text-xs text-rose-400">{uploadError}</p>
+                )}
+              </div>
+
               {/* Priority + autonomy row */}
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
@@ -232,11 +313,11 @@ export function CreateMissionDrawer({ orgId, open, onClose }: CreateMissionDrawe
               {/* Submit (web-guidelines: stays enabled until request starts) */}
               <button
                 type="submit"
-                aria-label={isSubmitting ? 'Creating mission…' : 'Create mission'}
-                disabled={isSubmitting}
+                aria-label={busy || isSubmitting ? 'Creating mission…' : 'Create mission'}
+                disabled={busy || isSubmitting}
                 style={{ touchAction: 'manipulation' }}
                 className={cn(
-                  'w-full py-3 rounded-xl text-[15px] font-semibold',
+                  'flex w-full items-center justify-center gap-2 py-3 rounded-xl text-[15px] font-semibold',
                   'bg-blue-600 hover:bg-blue-500 text-white',
                   'disabled:opacity-50 disabled:cursor-not-allowed',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
@@ -244,8 +325,13 @@ export function CreateMissionDrawer({ orgId, open, onClose }: CreateMissionDrawe
                   'active:scale-[0.98] transition-[background-color,transform] duration-150',
                 )}
               >
+                {(busy || isSubmitting) && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
                 {/* web-guidelines: loading state ends with … */}
-                {isSubmitting ? 'Creating…' : 'Create Mission'}
+                {files.length > 0 && busy
+                  ? 'Uploading & launching…'
+                  : busy || isSubmitting
+                    ? 'Creating…'
+                    : 'Create Mission'}
               </button>
             </form>
           </motion.div>
