@@ -941,14 +941,23 @@ class OrgService:
             if status in ("completed", "failed", "cancelled"):
                 mission.completed_at = datetime.now(UTC)
             await self._session.flush()
+            # The canonical lifecycle event for a mission going active is
+            # ``mission.started`` (→ org.mission.started), which the UI/JARVIS
+            # narrate — not ``mission.active``. Map active→started here and carry
+            # the clean mission title in the payload so consumers can render it.
+            event_action = "started" if status == "active" else status
             await self._emit_event(
                 cast(uuid.UUID, mission.org_id),
-                f"mission.{status}",
+                f"mission.{event_action}",
                 title=f"Mission '{mission.title}' -> {status}",
                 entity_type="mission",
                 entity_id=mission_id,
                 severity="warning" if status == "failed" else "info",
-                payload={"old_status": old_status, "new_status": status},
+                payload={
+                    "old_status": old_status,
+                    "new_status": status,
+                    "title": mission.title,
+                },
             )
             span.set_attribute("old_status", old_status)
             return mission
