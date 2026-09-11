@@ -58,6 +58,28 @@ def _get_builtin_handler_for_name(connector_name: str):
     return _BUILTIN_HANDLER_CACHE.get(connector_name.lower().strip())
 
 
+_BUILTIN_CONFIG_CACHE: dict[str, dict] | None = None
+
+
+def _get_builtin_config_for_name(connector_name: str) -> dict | None:
+    """Return the builtin server config (canonical server_id, tool_definitions)
+    for connector_name, or None. Used so a UI-registered builtin connector adopts
+    the canonical server_id — otherwise its randomly-generated UUID never matches
+    the startup-wired handler / tool-definition lookup (both keyed on the
+    canonical id), leaving the connector with no usable tools after a restart."""
+    global _BUILTIN_CONFIG_CACHE
+    if _BUILTIN_CONFIG_CACHE is None:
+        try:
+            from app.mcp.servers.registry_wiring import get_builtin_server_configs
+
+            _BUILTIN_CONFIG_CACHE = {
+                cfg["name"].lower(): cfg for cfg in get_builtin_server_configs()
+            }
+        except Exception:
+            _BUILTIN_CONFIG_CACHE = {}
+    return _BUILTIN_CONFIG_CACHE.get(connector_name.lower().strip())
+
+
 class RegisterConnectorRequest(BaseModel):
     name: str
     url: str
@@ -341,19 +363,29 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
     )
     pending_secrets: dict[str, str] = {}
 
+    # When the connector matches a built-in server, adopt its canonical
+    # server_id and tool definitions so the startup-wired handler and tool
+    # lookup (both keyed on the canonical id) resolve it — a random UUID would
+    # leave the connector with no usable tools after a process restart.
+    _builtin_cfg = _get_builtin_config_for_name(body.name)
+    _canonical_id = str(_builtin_cfg.get("server_id")) if _builtin_cfg else ""
+    _builtin_tool_defs = list(_builtin_cfg.get("tool_definitions", [])) if _builtin_cfg else []
+
     def _config_for(server_id: str) -> MCPServerConfig:
+        sid = _canonical_id or server_id
         return MCPServerConfig(
-            server_id=server_id,  # preserve the registry-generated ID
+            server_id=sid,  # canonical builtin id when known, else generated
             name=body.name,
             url=body.url,
             auth_type=body.auth_type,
             auth_config=_store_sensitive_auth_refs(
-                server_id,
+                sid,
                 body.auth_config,
                 pending_secrets,
             ),
             description=body.description,
             priority=body.priority,
+            tool_definitions=_builtin_tool_defs,
         )
 
     server_id = await reg.register(_config_for, tenant_ctx=tenant_ctx)
