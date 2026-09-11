@@ -109,14 +109,18 @@ export function ConnectorMarketplace({ orgId: _orgId, onClose, className }: Conn
 
   const handleConnect = useCallback((c: CatalogConnector) => {
     if (c.auth_type === 'oauth_ac') {
-      // Real OAuth: ask the backend for the provider authorize URL, open it in a
-      // popup. Completion happens via the provider's redirect to the callback.
+      // Try real server-side OAuth: get the provider authorize URL + open a
+      // popup. If the server has no OAuth app configured for this connector,
+      // the endpoint 400s — fall back to the credential form so the user can
+      // enter their own OAuth app's client id/secret.
       setOauthBusy(c.name);
       connectorsApi.oauthStart(c.name)
         .then(({ auth_url }) => {
           window.open(auth_url, `oauth_${c.name}`, 'width=560,height=720,menubar=no,toolbar=no');
         })
-        .catch(() => { /* surfaced by the disabled/idle state; user can retry */ })
+        .catch(() => {
+          setFormConnector(c);
+        })
         .finally(() => setOauthBusy(null));
       return;
     }

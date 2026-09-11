@@ -1053,11 +1053,34 @@ async def start_oauth_popup(request: Request, body: OAuthStartBody) -> dict[str,
         ),
     }
 
+    # Which env var holds each connector's OAuth client id. If it's unset the
+    # authorize URL would carry an empty client_id and the provider would reject
+    # it — so fail clearly instead of opening a doomed popup.
+    _client_id_env = {
+        "github": "GITHUB_CLIENT_ID",
+        "slack": "SLACK_CLIENT_ID",
+        "google": "GOOGLE_CLIENT_ID",
+        "gmail": "GOOGLE_CLIENT_ID",
+        "jira": "JIRA_CLIENT_ID",
+    }
+    env_key = _client_id_env.get(connector_name)
     auth_url = oauth_urls.get(connector_name)
-    if not auth_url:
-        # Generic placeholder so the popup flow still works for unknown connectors
-        auth_url = "https://example.com/oauth?" + urllib.parse.urlencode(
-            {"state": state, "redirect_uri": redirect_uri}
+    if not auth_url or not env_key or not _client_id(env_key):
+        _oauth_states.pop(state, None)  # don't leak the unused CSRF state
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "type": "oauth-not-configured",
+                "title": "OAuth not configured",
+                "status": 400,
+                "detail": (
+                    f"OAuth sign-in for '{connector_name}' isn't configured on this "
+                    f"server. An admin must set {env_key or connector_name.upper() + '_CLIENT_ID'} "
+                    "(and the matching client secret), or you can connect this "
+                    "connector by entering your own credentials instead."
+                ),
+                "connector": connector_name,
+            },
         )
 
     return {"auth_url": auth_url, "state": state}
