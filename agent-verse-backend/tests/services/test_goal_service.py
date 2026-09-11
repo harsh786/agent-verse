@@ -1116,6 +1116,30 @@ async def test_cancel_nonexistent_goal_raises(svc: GoalService) -> None:
         await svc.cancel_goal(goal_id="no-such-goal", tenant_ctx=_CTX_A)
 
 
+async def test_cancel_goal_persists_status_to_db() -> None:
+    """Regression: cancel must write 'cancelled' to the DB, not only in memory.
+
+    Otherwise _refresh_goal_from_db_if_needed reloads the stale 'executing' row on
+    the next read and the goal becomes an un-cancellable zombie holding a plan
+    concurrency slot (its worker may already be dead, so nothing else persists it).
+    """
+    captured: list[tuple[str, str, str]] = []
+
+    class _SpyService(GoalService):
+        async def _db_update_goal_status(  # type: ignore[override]
+            self, goal_id: str, tenant_id: str, status: str, *a: Any, **k: Any
+        ) -> None:
+            captured.append((goal_id, tenant_id, status))
+
+    svc = _SpyService(db_session_factory=object())
+    created = await svc.submit_goal(
+        goal="Long running analysis", priority="normal", dry_run=True, tenant_ctx=_CTX_A
+    )
+    await svc.cancel_goal(goal_id=created["goal_id"], tenant_ctx=_CTX_A)
+
+    assert (created["goal_id"], _CTX_A.tenant_id, GoalStatus.CANCELLED.value) in captured
+
+
 # ── get_events ────────────────────────────────────────────────────────────────
 
 

@@ -176,10 +176,21 @@ class VerifierMixin:
             try:
                 from app.agent.consensus import requires_consensus
 
-                tool_risks = [
-                    tc.risk_level
+                # tool_calls may be dataclasses OR plain dicts (e.g. deserialized
+                # from a checkpoint / provider payload), so read risk_level both
+                # ways — a bare tc.risk_level raised AttributeError on dicts and
+                # silently disabled consensus verification for the whole goal.
+                def _risk_of(tc: Any) -> str | None:
+                    raw = tc.get("risk_level") if isinstance(tc, dict) else getattr(
+                        tc, "risk_level", None
+                    )
+                    return str(raw) if raw is not None else None
+
+                tool_risks: list[str] = [
+                    risk
                     for step in agent_state.steps
                     for tc in getattr(step, "tool_calls", [])
+                    if (risk := _risk_of(tc)) is not None
                 ]
                 if requires_consensus(
                     agent_state.goal,

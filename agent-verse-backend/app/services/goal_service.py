@@ -3295,6 +3295,14 @@ class GoalService:
             await signal_cancel(goal_id, redis)
 
         record.status = GoalStatus.CANCELLED
+        # Persist to the DB directly. The worker normally writes terminal status,
+        # but a cancelled goal whose worker already died (or a stuck/zombie
+        # "executing" row) would otherwise be refreshed straight back to its old
+        # status by _refresh_goal_from_db_if_needed on the next read — leaving the
+        # goal un-cancellable and holding a plan concurrency slot forever.
+        await self._db_update_goal_status(
+            goal_id, tenant_ctx.tenant_id, GoalStatus.CANCELLED.value
+        )
         cancelled_event: dict[str, Any] = {"type": "goal_cancelled"}
         await self._dispatch_event(goal_id, cancelled_event, tenant_ctx=tenant_ctx)
         return {"goal_id": goal_id, "status": GoalStatus.CANCELLED.value}

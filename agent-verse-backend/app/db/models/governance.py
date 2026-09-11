@@ -28,6 +28,14 @@ class AuditLog(Base):
     step_id: Mapped[str | None] = mapped_column(String(32), nullable=True, default="")
     approver: Mapped[str | None] = mapped_column(String(200), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
+    # SOC2 fields (migration 0016) — the table has these columns, so the model
+    # must declare them or every AuditLog(...) insert raises "invalid keyword
+    # argument" and the whole audit write is dropped.
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    api_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    connector_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
