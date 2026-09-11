@@ -108,8 +108,27 @@ export function CursorPresence({ orgId, className }: CursorPresenceProps) {
       } catch {}
     }
 
-    connect();
-    return () => { stopped = true; wsRef.current?.close(1000); setUsers([]); };
+    // Defer the first connect a tick so React StrictMode's dev mount→unmount→
+    // remount cancels it before any socket exists — avoids the noisy
+    // "WebSocket is closed before the connection is established" churn. In prod
+    // (no double-invoke) this is just a harmless 1-tick delay.
+    const startTimer = setTimeout(connect, 0);
+    return () => {
+      stopped = true;
+      clearTimeout(startTimer);
+      const ws = wsRef.current;
+      if (ws) {
+        ws.onclose = null;  // don't let the close handler schedule a reconnect
+        // Closing a still-CONNECTING socket logs a benign warning; wait for
+        // open, then close cleanly.
+        if (ws.readyState === WebSocket.CONNECTING) {
+          ws.onopen = () => ws.close(1000);
+        } else {
+          ws.close(1000);
+        }
+      }
+      setUsers([]);
+    };
   }, [orgId, apiKey]);
 
   if (users.length === 0) return null;
