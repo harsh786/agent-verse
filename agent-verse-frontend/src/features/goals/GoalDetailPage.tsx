@@ -57,6 +57,22 @@ function readStr(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
 }
 
+// The result/summary is sometimes a wrapped tool payload — `{"tool": …, "result": "…"}`.
+// Unwrap it so the reader sees the actual answer, not the JSON plumbing.
+function unwrapToolResult(v: unknown): string {
+  if (typeof v !== "string") return v == null ? "" : String(v);
+  const trimmed = v.trim();
+  if (trimmed.startsWith("{") && trimmed.includes('"result"')) {
+    try {
+      const parsed = JSON.parse(trimmed) as { result?: unknown };
+      if (typeof parsed.result === "string") return parsed.result;
+    } catch {
+      /* not valid JSON — leave as-is */
+    }
+  }
+  return v;
+}
+
 function goalTitle(text: string): string {
   if (!text) return "Untitled goal";
   const line = text.split("\n").find((l) => l.trim()) ?? text;
@@ -135,7 +151,7 @@ function RichResultPanel({
   status: string;
 }) {
   const verificationFeedback = artifact?.evidence?.verification;
-  const summary = artifact?.summary;
+  const summary = artifact?.summary ? unwrapToolResult(artifact.summary) : artifact?.summary;
   const kind = artifact?.kind ?? artifact?.status ?? "unknown";
   const downloads = artifact?.downloads ?? [];
   const hasTable = (artifact?.tables ?? []).length > 0;
@@ -162,7 +178,7 @@ function RichResultPanel({
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i];
       const content = readStr(e.result) ?? readStr(e.content) ?? readStr(e.summary);
-      if (content && content.length > 20) return content;
+      if (content && content.length > 20) return unwrapToolResult(content);
     }
     return null;
   }, [events]);
@@ -746,6 +762,8 @@ export function GoalDetailPage() {
     ...(isTerminal ? [{ tab: "explain" as Tab, label: "Why?",     icon: <Zap className="h-3.5 w-3.5" aria-hidden="true" /> }] : []),
   ];
 
+  // Terminal goals default to Results (which synthesises event-derived output
+  // even without an artifact); live goals open on the Execution timeline.
   const defaultTab: Tab = hasArtifact || isTerminal ? "results" : "execution";
   const activeTab: Tab = visibleTabs.some(({ tab }) => tab === selectedTab)
     ? selectedTab! : defaultTab;

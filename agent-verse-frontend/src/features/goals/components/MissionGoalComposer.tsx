@@ -41,12 +41,11 @@ interface Attachment {
   name?: string;
 }
 
-interface ModelInfo {
+interface ActiveModel {
+  provider?: string;
+  model_id?: string;
   display_name?: string;
-}
-
-interface ModelsResponse {
-  models?: ModelInfo[];
+  configured?: boolean;
 }
 
 const LIMIT_FIELDS = [
@@ -95,10 +94,11 @@ export function MissionGoalComposer({ onSuccess, initialGoal }: { onSuccess?: (g
   const defaultAgentId = agents.length > 0 ? agents[0].agent_id : 'auto';
   const [agentId, setAgentId] = useState<string>('auto');
 
-  const { data: modelRec } = useQuery({
-    queryKey: ['model-rec-planning'],
-    queryFn: () =>
-      apiFetch<ModelsResponse>('/models?capability=text_generation&limit=1').catch(() => null),
+  // The model the platform will ACTUALLY run this goal with (configured default),
+  // not the top of the static quality-ranked catalogue.
+  const { data: activeModel } = useQuery({
+    queryKey: ['active-model'],
+    queryFn: () => apiFetch<ActiveModel>('/models/active').catch(() => null),
     staleTime: 5 * 60_000,
   });
   const { data: strategyCatalogue } = useQuery({
@@ -144,7 +144,7 @@ export function MissionGoalComposer({ onSuccess, initialGoal }: { onSuccess?: (g
     onError: (e) => toast({ kind: 'error', message: String(e) }),
   });
 
-  const recommendedModel = modelRec?.models?.[0];
+  const modelLabel = activeModel?.display_name || activeModel?.model_id;
 
   const [isFocused, setIsFocused] = useState(false);
 
@@ -152,22 +152,25 @@ export function MissionGoalComposer({ onSuccess, initialGoal }: { onSuccess?: (g
     <>
       <motion.div
         animate={{
-          boxShadow: isFocused
-            ? '0 0 0 2px rgba(0,212,255,0.4), 0 0 20px rgba(0,212,255,0.15)'
-            : '0 0 0 1px rgba(255,255,255,0.07)'
+          borderColor: isFocused ? 'var(--primary)' : 'var(--border)',
         }}
         transition={{ type: 'spring', stiffness: 280, damping: 26 }}
-        className="bg-[#1A1F2E] rounded-2xl overflow-hidden"
+        className={`bg-card border rounded-2xl overflow-hidden transition-shadow ${
+          isFocused ? 'shadow-lg shadow-primary/10' : ''
+        }`}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-muted/30">
           <div className="flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-[#00D4FF] animate-pulse" aria-hidden="true" />
+            <span className="h-2 w-2 rounded-full bg-primary animate-pulse" aria-hidden="true" />
             <span className="text-xs font-semibold text-foreground">New Goal</span>
-            {recommendedModel?.display_name && (
-              <span className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full flex items-center gap-1 font-medium">
+            {modelLabel && (
+              <span
+                className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full flex items-center gap-1 font-medium"
+                title={activeModel?.provider ? `${modelLabel} · ${activeModel.provider}` : modelLabel}
+              >
                 <Brain className="h-2.5 w-2.5" aria-hidden="true" />
-                {recommendedModel.display_name}
+                {modelLabel}
               </span>
             )}
             {/* Show which agent will run this goal */}
@@ -213,7 +216,7 @@ export function MissionGoalComposer({ onSuccess, initialGoal }: { onSuccess?: (g
             }}
             rows={3}
             placeholder="Describe your goal in natural language… (⌘↵ to submit)"
-            className="w-full bg-transparent text-sm text-[#F1F5F9] placeholder:text-[#475569] focus:outline-none resize-none pr-10"
+            className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none resize-none pr-10"
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
             aria-label="Goal text"
