@@ -704,8 +704,32 @@ class MCPClient:
                 _restored = _MCPReg.get_builtin_handler(
                     cfg.server_id
                 ) or _MCPReg.get_builtin_handler(server_id)
+                # The process-local handler registry is only populated when THIS
+                # process registered the connector (or wired it at startup with a
+                # valid env key). A Celery worker that runs the goal has neither,
+                # so fall back to the module-level built-in configs — matching by
+                # canonical server_id or connector name — and cache the result.
+                if _restored is None:
+                    try:
+                        from app.mcp.servers.registry_wiring import (
+                            get_builtin_server_configs as _gbsc,
+                        )
+
+                        _name = (cfg.name or "").strip().lower()
+                        for _bcfg in _gbsc():
+                            if _bcfg.get("server_id") in (cfg.server_id, server_id) or (
+                                _name and _bcfg.get("name", "").strip().lower() == _name
+                            ):
+                                _restored = _bcfg.get("handler")
+                                break
+                    except Exception:
+                        pass
                 if _restored is not None:
                     cfg = cfg.model_copy(update={"builtin_handler": _restored})
+                    import contextlib as _contextlib
+
+                    with _contextlib.suppress(Exception):
+                        _MCPReg.register_builtin_handler(cfg.server_id, _restored)
                     logger.info(
                         "builtin_handler_restored",
                         cfg_server_id=cfg.server_id,
