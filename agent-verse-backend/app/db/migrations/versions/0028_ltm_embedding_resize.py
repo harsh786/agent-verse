@@ -25,15 +25,22 @@ def upgrade() -> None:
     # Drop old column and recreate at new dimension
     op.execute("ALTER TABLE long_term_memory DROP COLUMN IF EXISTS embedding")
     op.execute(f"ALTER TABLE long_term_memory ADD COLUMN IF NOT EXISTS embedding vector({_DIM})")
-    # Recreate HNSW index at new dimension
-    op.execute(
-        """
-        CREATE INDEX IF NOT EXISTS ix_ltm_embedding_hnsw
-        ON long_term_memory
-        USING hnsw (embedding vector_cosine_ops)
-        WITH (m = 16, ef_construction = 64)
-        """
-    )
+    # Recreate the HNSW index ONLY when the dimension fits pgvector's ANN limit.
+    # _DIM comes from EMBEDDING_DIM, and a 2048-d embedder (NVIDIA nemotron) makes
+    # the column exceed pgvector's 2000-dim hnsw/ivfflat cap — building the index
+    # then raises "column cannot have more than 2000 dimensions for hnsw index"
+    # and aborts a fresh `alembic upgrade head` entirely. Above 2000 the column is
+    # created index-less (exact scan); migration 0122 later settles LTM at 2048
+    # and likewise keeps it index-less.
+    if _DIM <= 2000:
+        op.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_ltm_embedding_hnsw
+            ON long_term_memory
+            USING hnsw (embedding vector_cosine_ops)
+            WITH (m = 16, ef_construction = 64)
+            """
+        )
 
 
 def downgrade() -> None:
