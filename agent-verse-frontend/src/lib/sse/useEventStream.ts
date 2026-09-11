@@ -107,6 +107,11 @@ export function useEventStream(
               if (!data) continue;
               try {
                 const parsed = JSON.parse(data) as StreamEvent;
+                // A frame actually arrived → the stream is healthy, so reset the
+                // retry budget. (Reset on *data*, not on connect: a server that
+                // accepts then immediately closes keeps backing off instead of
+                // hot-looping reconnects that pile up connections.)
+                retryCountRef.current = 0;
                 // Dedup by event_id when present; cap array at 1000 entries.
                 setEvents((prev) => {
                   const eventId = parsed["event_id"] as string | undefined;

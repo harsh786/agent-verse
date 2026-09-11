@@ -1,20 +1,21 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Bell } from "lucide-react";
 import { governanceApi } from "@/lib/api/client";
-import { useEventStream } from "@/lib/sse/useEventStream";
 
 export function PendingApprovalsBadge() {
-  const qc = useQueryClient();
   const navigate = useNavigate();
+  // This badge lives in the TopBar, so it renders on EVERY page. It used to also
+  // hold an always-on SSE stream to /governance/approvals/stream — an app-wide
+  // persistent connection that (with the goal/org/voice streams) saturated the
+  // browser's ~6-connections-per-host limit and starved regular fetches, leaving
+  // pages stuck on loading spinners. A header badge doesn't need sub-second
+  // latency, so a light poll is enough; the dedicated Approvals page keeps its
+  // own live stream.
   const { data: approvals = [] } = useQuery({
     queryKey: ["approvals"],
     queryFn: () => governanceApi.listApprovals(),
-    refetchInterval: 30_000,
-  });
-
-  useEventStream(governanceApi.approvalsStreamPath(), {
-    onEvent: () => qc.invalidateQueries({ queryKey: ["approvals"] }),
+    refetchInterval: 20_000,
   });
 
   const pending = approvals.filter((a) => a.status === "pending").length;
