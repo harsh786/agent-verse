@@ -11,6 +11,15 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { useAuthStore } from '@/stores/auth';
+
+/** Encode the API key as the backend's WS subprotocol (matches useCollabSocket
+ *  and _resolve_ws_tenant): browsers can't set WS headers, so auth rides the
+ *  Sec-WebSocket-Protocol value as `av.v1.<base64url(apiKey)>`. */
+function encodeProtocolToken(value: string): string {
+  const encoded = btoa(value).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  return `av.v1.${encoded}`;
+}
 
 interface Presence {
   userId:   string;
@@ -46,19 +55,24 @@ const AVATAR_SPRING = { type: 'spring', stiffness: 400, damping: 30 } as const;
 
 export function CursorPresence({ orgId, className }: CursorPresenceProps) {
   const reduce = useReducedMotion();
+  const apiKey = useAuthStore(s => s.apiKey);
   const [users, setUsers] = useState<Presence[]>([]);
   const wsRef  = useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    // Use the existing WS collab channel
-    const wsUrl = `${window.location.origin.replace('http', 'ws')}/ws/collab/${orgId}`;
+    // Nothing to authenticate with yet — don't attempt a doomed connection.
+    if (!apiKey) return;
+    // Real org-presence channel, same-origin so Vite's dev proxy (and prod)
+    // forward it to the backend. Auth rides the WS subprotocol.
+    const wsUrl = `${window.location.origin.replace('http', 'ws')}/collab/presence/${orgId}/ws`;
+    const protocol = encodeProtocolToken(apiKey);
     let stopped = false;
     let delay   = 1000;
 
     function connect() {
       if (stopped) return;
       try {
-        const ws = new WebSocket(wsUrl);
+        const ws = new WebSocket(wsUrl, [protocol]);
         wsRef.current = ws;
 
         ws.onmessage = (e) => {
@@ -96,7 +110,7 @@ export function CursorPresence({ orgId, className }: CursorPresenceProps) {
 
     connect();
     return () => { stopped = true; wsRef.current?.close(1000); setUsers([]); };
-  }, [orgId]);
+  }, [orgId, apiKey]);
 
   if (users.length === 0) return null;
 

@@ -66,6 +66,14 @@ export default defineConfig(({ command, mode }) => {
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
+      // Proxy the collaboration WebSockets (org viewer presence, doc sessions)
+      // same-origin so the browser connects to :5173 and Vite forwards to the
+      // backend — no separate WS host/port to configure, works in prod too.
+      '/collab': {
+        target: apiTarget,
+        changeOrigin: true,
+        ws: true,
+      },
     },
   },
   test: {

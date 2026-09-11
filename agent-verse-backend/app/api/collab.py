@@ -265,6 +265,98 @@ async def _resolve_ws_tenant(websocket: WebSocket) -> TenantContext | None:
     return cast(TenantContext | None, await resolver(api_key))
 
 
+# ---------------------------------------------------------------------------
+# Org viewer presence — "who else is looking at this org right now"
+# ---------------------------------------------------------------------------
+# Lightweight, best-effort presence powering the CursorPresence avatar stack.
+# In-process only (a presence hint, not a source of truth): it is not fanned
+# out across replicas and is dropped on restart. Keyed by (tenant_id, org_id)
+# so one tenant's viewers are never visible to another. Speaks the exact
+# protocol the frontend expects: presence.update / presence.leave.
+_presence_conns: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+
+async def _presence_send(ws: WebSocket, payload: dict[str, Any]) -> None:
+    with contextlib.suppress(Exception):
+        await ws.send_text(json.dumps(payload))
+
+
+@router.websocket("/presence/{org_id}/ws")
+async def org_presence_websocket(websocket: WebSocket, org_id: str) -> None:
+    """Track viewers of an org and broadcast join/leave to the others."""
+    tenant_ctx = await _resolve_ws_tenant(websocket)
+    if tenant_ctx is None:
+        await websocket.close(code=4401)
+        return
+    # The browser offers auth as a required `av.v1.<token>` subprotocol. When a
+    # client offers subprotocols the server MUST echo the selected one back, or
+    # the browser aborts the handshake ("WebSocket ... failed"). Echo it.
+    offered = [
+        p.strip()
+        for p in websocket.headers.get("sec-websocket-protocol", "").split(",")
+        if p.strip()
+    ]
+    selected = next((p for p in offered if p.startswith("av.v1.")), None)
+    await websocket.accept(subprotocol=selected)
+
+    key = (tenant_ctx.tenant_id, org_id)
+    user_id = uuid.uuid4().hex[:12]
+    me: dict[str, Any] = {
+        "ws": websocket,
+        "userId": user_id,
+        "name": f"Viewer {user_id[:4]}",
+        "section": None,
+    }
+    peers = _presence_conns.setdefault(key, [])
+
+    # Tell the newcomer who is already here, then announce the newcomer.
+    for p in peers:
+        await _presence_send(
+            websocket,
+            {
+                "type": "presence.update",
+                "userId": p["userId"],
+                "name": p["name"],
+                "section": p["section"],
+            },
+        )
+    peers.append(me)
+    joined = {"type": "presence.update", "userId": user_id, "name": me["name"], "section": None}
+    for p in peers:
+        if p is not me:
+            await _presence_send(p["ws"], joined)
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            # The only client→server message is a section change.
+            if isinstance(msg, dict) and msg.get("type") == "presence.update":
+                me["section"] = msg.get("section")
+                update = {
+                    "type": "presence.update",
+                    "userId": user_id,
+                    "name": me["name"],
+                    "section": me["section"],
+                }
+                for p in peers:
+                    if p is not me:
+                        await _presence_send(p["ws"], update)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        with contextlib.suppress(ValueError):
+            peers.remove(me)
+        leave = {"type": "presence.leave", "userId": user_id}
+        for p in peers:
+            await _presence_send(p["ws"], leave)
+        if not peers:
+            _presence_conns.pop(key, None)
+
+
 @router.get("/sessions")
 async def list_sessions(request: Request) -> list[dict[str, Any]]:
     tenant_ctx = _require_tenant(request)
