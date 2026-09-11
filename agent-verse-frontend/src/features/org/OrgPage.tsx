@@ -505,12 +505,66 @@ export function OrgPage() {
         {/* ── Main content area ───────────────────────────────────────────── */}
         <div className="flex-1 flex overflow-hidden">
 
-          {/* Left (main): Active Missions — the star of the page */}
+          {/* Center (main): the JARVIS visualization is the hero — shown first,
+              centered — then the mission list beneath it. */}
           <main
-            className="flex-1 min-w-0 flex flex-col overflow-hidden"
-            aria-label="Missions panel"
+            className="flex-1 min-w-0 flex flex-col overflow-y-auto"
+            aria-label="Live agent network and missions"
           >
-            {/* Filter tabs */}
+            {/* ── JARVIS centerpiece: Live Agent Network ── */}
+            <section
+              className="relative shrink-0 border-b border-[#1E2535] bg-[radial-gradient(ellipse_at_top,rgba(0,212,255,0.08),transparent_72%)]"
+              aria-label="Live agent network"
+            >
+              <div className="flex items-center justify-between px-6 pt-4 pb-1">
+                <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#00D4FF]/85">
+                  <Network className="h-3 w-3" aria-hidden />
+                  Live Agent Network
+                  {constellationIsLive ? (
+                    <span className="font-normal normal-case tracking-normal text-[#64748B]">
+                      · {liveAgents.length} agent{liveAgents.length !== 1 ? 's' : ''} active
+                    </span>
+                  ) : departmentAgents.length > 0 ? (
+                    <span className="font-normal normal-case tracking-normal text-[#64748B]">
+                      · {departmentAgents.length} department{departmentAgents.length !== 1 ? 's' : ''} standing by
+                    </span>
+                  ) : null}
+                </p>
+                <button
+                  onClick={() => setShowConstellation(v => !v)}
+                  className="min-h-[32px] px-2 text-[10px] text-[#475569] transition-colors hover:text-[#94A3B8]"
+                  aria-expanded={showConstellation}
+                  aria-label={showConstellation ? 'Hide agent network' : 'Show agent network'}
+                >
+                  {showConstellation ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              <AnimatePresence initial={false}>
+                {showConstellation && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
+                    className="overflow-hidden"
+                  >
+                    <div className="flex items-center justify-center overflow-x-auto px-3 pb-5 pt-1">
+                      <AgentConstellation
+                        orgId={orgId}
+                        missions={activeMissions}
+                        agents={constellationAgents}
+                        // Real message beams only — never fabricated when the
+                        // scene is showing idle departments.
+                        communicatingPairs={constellationIsLive ? neural.communicatingPairs : []}
+                        className="max-w-full"
+                      />
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </section>
+
+            {/* ── Missions — beneath the visualization ── */}
             <StatusFilterBar value={statusFilter} onChange={setStatusFilter} />
 
             {/* Active department filter chip */}
@@ -531,7 +585,7 @@ export function OrgPage() {
             )}
 
             {/* Virtualized missions list */}
-            <div className="flex-1 overflow-hidden p-4">
+            <div className="min-h-0 p-4">
               <MissionsList
                 orgId={orgId}
                 statusFilter={statusFilter}
@@ -562,82 +616,11 @@ export function OrgPage() {
             className="shrink-0 hidden lg:flex flex-col overflow-y-auto border-l border-[#1E2535] bg-[#0B0E14]"
             aria-label="Command panel"
           >
-            {/* Command deck — agent network + mission orbit. Side by side when the
-                panel is dragged wide (≥560px), stacked when narrow. */}
-            <div
-              className={cn(
-                'shrink-0',
-                rightWidth >= 560
-                  ? 'flex items-stretch border-b border-[#1E2535]'
-                  : 'flex flex-col',
-              )}
-            >
-            {/* Live agent constellation — Obsidian-style force graph where each
-                team member lights up as it works. */}
-            <section
-              className={cn(
-                'min-w-0',
-                rightWidth >= 560 && activeMissions.length > 0
-                  ? 'flex-1 border-r border-[#1E2535]'
-                  : 'border-b border-[#1E2535] shrink-0',
-              )}
-              aria-label="Live agent network"
-            >
-              <div className="flex items-center justify-between px-4 pt-3 pb-1">
-                <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-[#00D4FF]/70 flex items-center gap-1.5">
-                  <Network className="h-2.5 w-2.5" aria-hidden />
-                  Live Agent Network
-                  {constellationIsLive ? (
-                    <span className="text-[#475569] normal-case tracking-normal">
-                      · {liveAgents.length} agent{liveAgents.length !== 1 ? 's' : ''} active
-                    </span>
-                  ) : departmentAgents.length > 0 ? (
-                    <span className="text-[#475569] normal-case tracking-normal">
-                      · {departmentAgents.length} department{departmentAgents.length !== 1 ? 's' : ''} standing by
-                    </span>
-                  ) : null}
-                </p>
-                <button
-                  onClick={() => setShowConstellation(v => !v)}
-                  className="text-[10px] text-[#475569] hover:text-[#94A3B8] transition-colors min-h-[32px] px-2"
-                  aria-expanded={showConstellation}
-                  aria-label={showConstellation ? 'Hide agent network' : 'Show agent network'}
-                >
-                  {showConstellation ? 'Hide' : 'Show'}
-                </button>
-              </div>
-              <AnimatePresence initial={false}>
-                {showConstellation && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
-                    className="overflow-hidden"
-                  >
-                    <div className="flex items-center justify-center p-3 overflow-auto min-h-[300px] bg-[radial-gradient(ellipse_at_center,rgba(0,212,255,0.06),transparent_70%)]">
-                      <AgentConstellation
-                        orgId={orgId}
-                        missions={activeMissions}
-                        agents={constellationAgents}
-                        // Real message beams only — never fabricated when the
-                        // scene is showing idle departments.
-                        communicatingPairs={constellationIsLive ? neural.communicatingPairs : []}
-                        className="max-w-full"
-                      />
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </section>
-
-            {/* Mission Orbit — beside the agent view when wide, beneath when narrow. */}
+            {/* Mission Orbit — active missions as orbiting nodes. The full
+                agent constellation now lives in the center column as the hero. */}
             {activeMissions.length > 0 && (
               <section
-                className={cn(
-                  'flex flex-col items-center justify-center py-4 min-w-0',
-                  rightWidth >= 560 ? 'flex-1' : 'border-b border-[#1E2535] shrink-0',
-                )}
+                className="flex flex-col items-center justify-center border-b border-[#1E2535] py-4 min-w-0 shrink-0"
                 aria-label="Active mission orbit visualization"
               >
                 <p className="text-[10px] font-medium uppercase tracking-[0.1em] text-[#00D4FF]/60 mb-2 flex items-center gap-1.5">
@@ -647,7 +630,6 @@ export function OrgPage() {
                 <MissionOrbit missions={activeMissions} />
               </section>
             )}
-            </div>
 
             {/* Live activity feed — the JARVIS event stream, kept prominent right
                 under the agent network so both are visible without scrolling. */}
