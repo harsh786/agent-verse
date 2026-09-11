@@ -2,7 +2,7 @@
  * Tests for WorkflowListPage component.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import WorkflowListPage from '../WorkflowListPage';
@@ -100,11 +100,12 @@ describe('WorkflowListPage', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /new workflow/i })).toBeInTheDocument());
   });
 
-  it('has accessible article roles for workflow cards', async () => {
+  it('has accessible list/listitem roles for workflow cards', async () => {
     renderPage();
     await waitFor(() => screen.getByText('KYC Workflow'));
-    const articles = screen.getAllByRole('article');
-    expect(articles.length).toBe(2);
+    const list = screen.getByRole('list', { name: /workflow list/i });
+    const items = within(list).getAllByRole('listitem');
+    expect(items.length).toBe(2);
   });
 
   it('shows loading skeletons initially', () => {

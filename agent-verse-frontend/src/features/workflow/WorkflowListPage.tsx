@@ -11,16 +11,15 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plus, Search, Zap, LayoutTemplate, Play, Edit2, Trash2,
-  CheckCircle, Clock, Archive, AlertCircle, Filter, RefreshCw,
+  CheckCircle, Clock, Archive, AlertCircle, Filter, RefreshCw, FileCode2,
 } from 'lucide-react';
 import { workflowEngineApi, type WEWorkflow } from '../../lib/api/client';
 import { getStatusClasses } from './design/tokens';
-import { nodeBounce, emptyStateFade } from './design/motion';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { WorkflowYamlCreateModal } from './builder/WorkflowYamlCreateModal';
 
 // ── Status badge ──────────────────────────────────────────────────────────────
 
@@ -46,22 +45,21 @@ function StatusBadge({ status }: { status: string }) {
 function WorkflowCard({
   wf,
   onDelete,
+  index = 0,
 }: {
   wf: WEWorkflow;
   onDelete: (id: string) => void;
+  index?: number;
 }) {
 
   return (
-    <motion.article
-      layout
-      variants={nodeBounce}
-      initial="initial"
-      animate="animate"
-      exit="exit"
-      className="group relative rounded-2xl border border-white/10 bg-[#0F1826]/5 hover:bg-[#0A0D14]/8
-                 backdrop-blur-sm p-5 flex flex-col gap-3 transition-colors
+    <article
+      style={{ animationDelay: `${Math.min(index, 8) * 0.04}s` }}
+      className="jarvis-pop-in group relative rounded-2xl border border-white/10 bg-white/[0.03]
+                 hover:bg-white/[0.06] hover:border-white/20 backdrop-blur-sm p-5 flex flex-col gap-3
+                 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-sky-500/5
                  focus-within:ring-2 focus-within:ring-sky-500"
-      role="article"
+      role="listitem"
       aria-label={`Workflow: ${wf.name}`}
     >
       {/* Header */}
@@ -126,22 +124,20 @@ function WorkflowCard({
           <Trash2 className="h-3.5 w-3.5" />
         </button>
       </div>
-    </motion.article>
+    </article>
   );
 }
 
 // ── Empty state ───────────────────────────────────────────────────────────────
 
-function EmptyState({ onCreateBlank, onBrowseTemplates }: {
+function EmptyState({ onCreateBlank, onBrowseTemplates, onCreateYaml }: {
   onCreateBlank: () => void;
   onBrowseTemplates: () => void;
+  onCreateYaml: () => void;
 }) {
   return (
-    <motion.div
-      variants={emptyStateFade}
-      initial="initial"
-      animate="animate"
-      className="flex flex-col items-center justify-center py-24 px-8 text-center"
+    <div
+      className="jarvis-rise-in flex flex-col items-center justify-center py-24 px-8 text-center"
       role="status"
       aria-label="No workflows found"
     >
@@ -172,6 +168,14 @@ function EmptyState({ onCreateBlank, onBrowseTemplates }: {
           <Plus className="h-4 w-4" /> Create blank workflow
         </button>
         <button
+          onClick={onCreateYaml}
+          className="flex items-center gap-2 px-5 py-2.5 rounded-xl border border-white/15
+                     hover:border-white/25 text-[#F1F5F9]/70 hover:text-[#F1F5F9] text-sm font-medium
+                     transition-colors"
+        >
+          <FileCode2 className="h-4 w-4" /> Create from YAML
+        </button>
+        <button
           onClick={onBrowseTemplates}
           className="flex items-center gap-2 px-5 py-2.5 rounded-xl border border-white/15
                      hover:border-white/25 text-[#F1F5F9]/70 hover:text-[#F1F5F9] text-sm font-medium
@@ -180,7 +184,7 @@ function EmptyState({ onCreateBlank, onBrowseTemplates }: {
           <LayoutTemplate className="h-4 w-4" /> Browse templates
         </button>
       </div>
-    </motion.div>
+    </div>
   );
 }
 
@@ -193,6 +197,7 @@ export default function WorkflowListPage() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [, setShowTemplates] = useState(false);
+  const [showYamlCreate, setShowYamlCreate] = useState(false);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['workflow-engine', 'list', statusFilter],
@@ -245,6 +250,14 @@ export default function WorkflowListPage() {
               aria-label="Browse workflow templates"
             >
               <LayoutTemplate className="h-4 w-4" /> Templates
+            </button>
+            <button
+              onClick={() => setShowYamlCreate(true)}
+              className="flex items-center gap-2 px-3.5 py-2 rounded-xl border border-white/15
+                         hover:border-white/25 text-[#F1F5F9]/70 hover:text-[#F1F5F9] text-sm transition-colors"
+              aria-label="Create workflow from YAML"
+            >
+              <FileCode2 className="h-4 w-4" /> From YAML
             </button>
             <button
               onClick={createBlank}
@@ -321,23 +334,23 @@ export default function WorkflowListPage() {
           <EmptyState
             onCreateBlank={createBlank}
             onBrowseTemplates={() => setShowTemplates(true)}
+            onCreateYaml={() => setShowYamlCreate(true)}
           />
         ) : (
-          <AnimatePresence mode="popLayout">
-            <div
-              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
-              role="list"
-              aria-label="Workflow list"
-            >
-              {filtered.map((wf) => (
-                <WorkflowCard
-                  key={wf.id}
-                  wf={wf}
-                  onDelete={(id) => deleteMutation.mutate(id)}
-                />
-              ))}
-            </div>
-          </AnimatePresence>
+          <div
+            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
+            role="list"
+            aria-label="Workflow list"
+          >
+            {filtered.map((wf, i) => (
+              <WorkflowCard
+                key={wf.id}
+                wf={wf}
+                index={i}
+                onDelete={(id) => deleteMutation.mutate(id)}
+              />
+            ))}
+          </div>
         )}
 
         {/* Count */}
@@ -347,6 +360,17 @@ export default function WorkflowListPage() {
           </p>
         )}
       </main>
+
+      {showYamlCreate && (
+        <WorkflowYamlCreateModal
+          onClose={() => setShowYamlCreate(false)}
+          onCreated={(wfId) => {
+            setShowYamlCreate(false);
+            qc.invalidateQueries({ queryKey: ['workflow-engine', 'list'] });
+            navigate(`/workflows/${wfId}/edit`);
+          }}
+        />
+      )}
     </JARVISStagger>
     </JARVISPageShell>
   );

@@ -44,7 +44,7 @@ import { workflowNodeTypes } from './builder/nodes/AllNodes';
 import { WorkflowToolPalette } from './builder/WorkflowToolPalette';
 import { WorkflowStepConfig } from './builder/WorkflowStepConfig';
 import { WorkflowExecutionOverlay } from './builder/WorkflowExecutionOverlay';
-import { useYamlSync } from './builder/canvas-utils/useYamlSync';
+import { useYamlSync, parseWorkflowYaml } from './builder/canvas-utils/useYamlSync';
 import { useCanvasKeyboardShortcuts } from './builder/canvas-utils/useCanvasKeyboardShortcuts';
 import { useAutoLayout } from './builder/canvas-utils/useAutoLayout';
 import { panelSlide, toolbarButton, modalBackdrop, modalContent, edgeFlow } from './design/motion';
@@ -217,8 +217,9 @@ function BuilderCanvas({
   const handleSave = () => {
     updateFromCanvas(nodes, edges);
     try {
-      const def = JSON.parse(yaml || '{}');
-      onSave(def);
+      // yaml may be real YAML or JSON — parseWorkflowYaml handles both.
+      const def = parseWorkflowYaml(yaml || '');
+      onSave(Object.keys(def).length ? def : { name: wf.name, steps: [] });
     } catch {
       onSave({ name: wf.name, steps: [] });
     }
@@ -369,15 +370,48 @@ function BuilderCanvas({
             className="bg-[#0F1117]/80 border border-white/10 rounded-xl shadow-lg"
             aria-label="Canvas controls"
           />
-          <MiniMap
-            className="bg-[#0F1117]/80 border border-white/10 rounded-xl"
-            nodeColor={() => '#2D3748'}
-            aria-label="Workflow minimap"
-          />
+          {nodes.length > 0 && (
+            <MiniMap
+              className="!bg-[#0F1117] border border-white/10 rounded-xl overflow-hidden"
+              style={{ backgroundColor: '#0F1117' }}
+              maskColor="rgba(6, 8, 16, 0.72)"
+              bgColor="#0F1117"
+              nodeColor="#38bdf8"
+              nodeStrokeColor="#0ea5e9"
+              nodeBorderRadius={4}
+              pannable
+              zoomable
+              aria-label="Workflow minimap"
+            />
+          )}
 
           {/* Execution overlay */}
           <WorkflowExecutionOverlay stepStatuses={runStatus} />
         </ReactFlow>
+
+        {/* Empty-canvas guidance */}
+        {nodes.length === 0 && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center z-[5]">
+            <div className="jarvis-rise-in pointer-events-auto text-center max-w-sm px-8">
+              <div className="mx-auto mb-5 w-16 h-16 rounded-2xl bg-sky-500/10 border border-sky-500/20
+                              flex items-center justify-center">
+                <Layout className="h-7 w-7 text-sky-400/70" />
+              </div>
+              <h3 className="text-[#F1F5F9] font-semibold text-base mb-1.5">Start building</h3>
+              <p className="text-[#F1F5F9]/45 text-sm leading-relaxed mb-5">
+                Drag a step from the left palette onto the canvas, or open the
+                YAML editor to author the whole workflow as code.
+              </p>
+              <button
+                onClick={() => setShowYaml(true)}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-sky-600
+                           hover:bg-sky-500 text-white text-sm font-medium transition-colors"
+              >
+                <Code2 className="h-4 w-4" /> Open YAML editor
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* YAML editor panel */}
         <AnimatePresence>

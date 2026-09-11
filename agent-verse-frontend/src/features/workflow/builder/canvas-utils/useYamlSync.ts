@@ -7,6 +7,7 @@
  */
 import { useCallback, useState } from 'react';
 import type { Node, Edge } from '@xyflow/react';
+import jsYaml from 'js-yaml';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -154,19 +155,28 @@ function layoutNodes(definition: Record<string, unknown>): { nodes: Node[]; edge
 
 function definitionToYaml(definition: Record<string, unknown>): string {
   try {
-    // Dynamic import for YAML serialization
-    // In production this would use js-yaml
-    return JSON.stringify(definition, null, 2);
+    // Real YAML output (js-yaml). lineWidth:-1 keeps long prompt strings on one
+    // line rather than folding them, which round-trips more predictably.
+    return jsYaml.dump(definition, { indent: 2, lineWidth: -1, noRefs: true });
   } catch {
     return '';
   }
 }
 
+export function parseWorkflowYaml(text: string): Record<string, unknown> {
+  // js-yaml load() is safe in v4 (no code execution) and also accepts JSON,
+  // since JSON is a subset of YAML — so pasted JSON definitions still parse.
+  const parsed = jsYaml.load(text);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { name: 'Untitled', steps: [] };
+  }
+  return parsed as Record<string, unknown>;
+}
+
 function parseYaml(yaml: string): Record<string, unknown> {
   try {
-    return JSON.parse(yaml);
+    return parseWorkflowYaml(yaml);
   } catch {
-    // Fallback: return empty definition
     return { name: 'Untitled', steps: [] };
   }
 }

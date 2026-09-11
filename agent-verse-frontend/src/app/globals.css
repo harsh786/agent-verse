@@ -426,3 +426,55 @@ html { scroll-behavior: smooth; }
   outline: 2px solid hsl(var(--ring));
   outline-offset: 3px;
 }
+
+/* ===================================================================
+ *  JARVIS entrance animations — CSS-driven (StrictMode-immune).
+ *  Framer-motion spring entrances froze under React 19 StrictMode,
+ *  leaving whole pages stuck at opacity 0. CSS keyframes always run to
+ *  completion and end at the visible resting state no matter how the
+ *  component re-mounts, so page/content visibility never depends on a
+ *  JS animation frame loop.
+ * =================================================================== */
+@keyframes jarvisPageIn {
+  from { opacity: 0; transform: translateY(14px); filter: blur(4px); }
+  to   { opacity: 1; transform: translateY(0);    filter: blur(0); }
+}
+@keyframes jarvisRiseIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes jarvisPopIn {
+  0%   { opacity: 0; transform: scale(0.94); }
+  60%  { opacity: 1; transform: scale(1.01); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+.jarvis-page-in {
+  animation: jarvisPageIn 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.jarvis-rise-in {
+  animation: jarvisRiseIn 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.jarvis-pop-in {
+  animation: jarvisPopIn 0.36s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+/* Stagger: children animate in sequence via nth-child delays. */
+.jarvis-stagger > * {
+  animation: jarvisRiseIn 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.jarvis-stagger > *:nth-child(1)  { animation-delay: 0.02s; }
+.jarvis-stagger > *:nth-child(2)  { animation-delay: 0.06s; }
+.jarvis-stagger > *:nth-child(3)  { animation-delay: 0.10s; }
+.jarvis-stagger > *:nth-child(4)  { animation-delay: 0.14s; }
+.jarvis-stagger > *:nth-child(5)  { animation-delay: 0.18s; }
+.jarvis-stagger > *:nth-child(6)  { animation-delay: 0.22s; }
+.jarvis-stagger > *:nth-child(n+7) { animation-delay: 0.26s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-page-in,
+  .jarvis-rise-in,
+  .jarvis-pop-in,
+  .jarvis-stagger > * {
+    animation: none !important;
+  }
+}

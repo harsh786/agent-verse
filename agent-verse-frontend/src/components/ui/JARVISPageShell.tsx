@@ -1,21 +1,19 @@
 /**
  * JARVISPageShell — world-class JARVIS page wrapper.
  *
- * Applies all 5 design skills on every page that uses it:
- *   frontend-design:   JARVIS dark bg, blur-in entrance
- *   emil-design-eng:   spring 280/26 page entry (never duration/ease)
- *   impeccable-ui:     stagger children, consistent spacing
- *   web-guidelines:    aria-live region, focus management, reduced-motion
- *   ui-ux-pro-max:     useReducedMotion, graceful fallback
+ * Entrance animations are CSS-driven (see globals.css `.jarvis-*`) rather than
+ * framer-motion springs. Under React 19 StrictMode the framer spring entrances
+ * froze mid-flight and left whole pages stuck at opacity 0 (invisible content).
+ * CSS keyframes always run to completion and rest at the visible end state no
+ * matter how the component re-mounts, so page visibility never depends on a JS
+ * animation loop. Hover/press micro-interactions stay as cheap CSS transforms.
  *
- * Usage:
- *   import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
- *   return <JARVISPageShell><YourContent /></JARVISPageShell>
+ * The spring presets remain exported for components that still tune framer
+ * transitions locally.
  */
 import type { ReactNode } from 'react';
-import { motion, useReducedMotion } from 'framer-motion';
 
-// ── Spring presets (emil-design-eng — NEVER duration/ease) ─────────────────
+// ── Spring presets (kept for local framer transitions elsewhere) ───────────
 export const SPRING_PAGE   = { type: 'spring', stiffness: 280, damping: 26 } as const;
 export const SPRING_PANEL  = { type: 'spring', stiffness: 300, damping: 28 } as const;
 export const SPRING_FAST   = { type: 'spring', stiffness: 600, damping: 35 } as const;
@@ -32,51 +30,34 @@ interface JARVISPageShellProps {
 }
 
 export function JARVISPageShell({ children, className = '', delay = 0 }: JARVISPageShellProps) {
-  const reduce = useReducedMotion();
-
   return (
-    <motion.div
-      initial={reduce ? { opacity: 0 } : { opacity: 0, y: 16, filter: 'blur(4px)' }}
-      animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-      exit={reduce ? { opacity: 0 } : { opacity: 0, y: -8, filter: 'blur(2px)' }}
-      transition={{ ...SPRING_PAGE, delay }}
-      className={className}
+    <div
+      className={`jarvis-page-in ${className}`}
+      style={delay ? { animationDelay: `${delay}s` } : undefined}
     >
       {children}
-    </motion.div>
+    </div>
   );
 }
 
 /**
- * Stagger container — animates children in sequence.
- * Use for lists, cards, grid items.
+ * Stagger container — children animate in sequence via CSS nth-child delays
+ * (see `.jarvis-stagger` in globals.css). `staggerMs` is accepted for API
+ * compatibility; the cadence is defined in CSS.
  */
 export function JARVISStagger({
   children,
   className = '',
-  staggerMs = 50,
+  staggerMs: _staggerMs,
 }: {
   children:  ReactNode;
   className?: string;
   staggerMs?: number;
 }) {
-  const reduce = useReducedMotion();
-  return (
-    <motion.div
-      variants={reduce ? {} : {
-        hidden:  { opacity: 0 },
-        visible: { opacity: 1, transition: { staggerChildren: staggerMs / 1000 } },
-      }}
-      initial="hidden"
-      animate="visible"
-      className={className}
-    >
-      {children}
-    </motion.div>
-  );
+  return <div className={`jarvis-stagger ${className}`}>{children}</div>;
 }
 
-/** Single stagger item — use inside JARVISStagger */
+/** Single stagger item — a CSS rise-in, plus optional hover/press transform. */
 export function JARVISStaggerItem({
   children,
   className = '',
@@ -84,26 +65,16 @@ export function JARVISStaggerItem({
 }: {
   children:     ReactNode;
   className?:   string;
-  /** When true, adds whileHover (y:-3) + whileTap (scale:0.98) spring physics */
+  /** When true, adds a subtle hover-lift + press-scale (CSS transforms). */
   interactive?: boolean;
 }) {
-  const reduce = useReducedMotion();
-  return (
-    <motion.div
-      variants={reduce ? {} : {
-        hidden:  { opacity: 0, y: 12 },
-        visible: { opacity: 1, y: 0, transition: SPRING_FAST },
-      }}
-      whileHover={interactive && !reduce ? { y: -3, transition: SPRING_SLOW } : undefined}
-      whileTap={interactive && !reduce ? { scale: 0.98, transition: SPRING_FAST } : undefined}
-      className={className}
-    >
-      {children}
-    </motion.div>
-  );
+  const interactiveCls = interactive
+    ? 'transition-transform duration-200 will-change-transform hover:-translate-y-0.5 active:scale-[0.98]'
+    : '';
+  return <div className={`jarvis-rise-in ${interactiveCls} ${className}`}>{children}</div>;
 }
 
-/** JARVIS button with spring press state (whileTap) */
+/** JARVIS button with CSS press state. */
 export function JARVISButton({
   children,
   className = '',
@@ -119,20 +90,17 @@ export function JARVISButton({
   type?:       'button' | 'submit' | 'reset';
   'aria-label'?: string;
 }) {
-  const reduce = useReducedMotion();
   return (
-    <motion.button
+    <button
       type={type}
       onClick={onClick}
       disabled={disabled}
       aria-label={ariaLabel}
-      whileTap={reduce ? {} : { scale: 0.96 }}
-      transition={SPRING_FAST}
       style={{ touchAction: 'manipulation' }}
-      className={className}
+      className={`transition-transform duration-150 active:scale-[0.96] ${className}`}
     >
       {children}
-    </motion.button>
+    </button>
   );
 }
 
