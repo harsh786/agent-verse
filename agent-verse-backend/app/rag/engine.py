@@ -44,7 +44,11 @@ logger = get_logger(__name__)
 
 # RRF constant (standard: 60)
 _RRF_K = 60
-_SUPPORTED_EMBEDDING_DIMENSIONS = frozenset({768, 1024, 1536, 3072})
+# Must match app.rag.store.SUPPORTED_EMBEDDING_DIMENSIONS and the
+# ck_knowledge_collections_embedding_dim DB constraint. 2048 (NVIDIA nemotron)
+# has its own dimension table (knowledge_chunks_2048) but no ANN index — it
+# exceeds pgvector's 2000-d index limit, so its vector leg is an exact scan.
+_SUPPORTED_EMBEDDING_DIMENSIONS = frozenset({768, 1024, 1536, 2048, 3072})
 _BM25_PAGE_SIZE = 500
 _MAX_HOPS = 5
 _MAX_VARIANTS = 5

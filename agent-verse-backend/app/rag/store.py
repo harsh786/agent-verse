@@ -140,8 +140,15 @@ class KnowledgeStore:
             return
         from sqlalchemy import text
 
+        from app.core.config import get_settings
         from app.db.rls import sqlalchemy_rls_context
 
+        # Size the collection's vector column to the CONFIGURED embedder, not a
+        # hardcoded 768 — the active embedder (e.g. NVIDIA nemotron @ 2048-d)
+        # must match or every chunk/query insert fails on a dimension mismatch.
+        dim = int(getattr(get_settings(), "embedding_dim", 768) or 768)
+        if dim not in SUPPORTED_EMBEDDING_DIMENSIONS:
+            dim = 768
         async with (
             self._db() as session,
             session.begin(),
@@ -152,7 +159,7 @@ class KnowledgeStore:
                     text(
                         "INSERT INTO knowledge_collections "
                         "(id, tenant_id, name, description, embedder, embedding_dim) "
-                        "SELECT :id, :tid, :name, :description, :embedder, 768 "
+                        "SELECT :id, :tid, :name, :description, :embedder, :dim "
                         "FROM tenants WHERE id = :tid AND is_active IS TRUE "
                         "RETURNING id"
                     ),
@@ -162,6 +169,7 @@ class KnowledgeStore:
                         "name": collection.name,
                         "description": collection.description,
                         "embedder": collection.embedder,
+                        "dim": dim,
                     },
                 )
             ).scalar_one_or_none()
@@ -1079,6 +1087,73 @@ class KnowledgeStore:
                 )
         results.sort(key=lambda r: r["score"], reverse=True)
         return results[:top_k]
+
+    async def _resolve_collection_id(
+        self, name_or_id: str, tenant_ctx: TenantContext
+    ) -> str | None:
+        """Resolve a collection reference that may be either an id or a name."""
+        by_id = await self.get_collection_async(name_or_id, tenant_ctx=tenant_ctx)
+        if by_id is not None:
+            return by_id.collection_id
+        for coll in await self.list_collections_async(tenant_ctx=tenant_ctx):
+            if coll.name == name_or_id:
+                return coll.collection_id
+        return None
+
+    async def retrieve(
+        self,
+        *,
+        query: str,
+        collection_name: str,
+        top_k: int = 5,
+        tenant_id: str,
+        embedder: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Retrieve knowledge chunks for a query — the entrypoint the workflow
+        LLM/RAG steps call.
+
+        ``collection_name`` may be a collection id or its human name. When an
+        ``embedder`` (any ``LLMProvider`` with embedding support) is supplied the
+        query is embedded for semantic hybrid retrieval (pgvector + FTS + trigram
+        RRF fusion); without one it degrades to lexical search rather than
+        failing. Returns plain dicts with a ``content`` key (plus ``score``,
+        ``metadata``, ``chunk_id``), the shape the steps consume.
+        """
+        from app.tenancy.context import PlanTier, TenantContext
+
+        ctx = TenantContext(tenant_id=tenant_id, api_key_id="workflow-rag", plan=PlanTier.FREE)
+        collection_id = await self._resolve_collection_id(collection_name, ctx)
+        if collection_id is None:
+            return []
+
+        query_embedding: list[float] = []
+        if embedder is not None:
+            try:
+                from app.providers.base import embed_texts
+
+                vectors = await embed_texts([query], provider=embedder)
+                query_embedding = vectors[0] if vectors else []
+            except Exception:
+                query_embedding = []
+
+        mode = "hybrid" if query_embedding else "lexical"
+        hits = await self.hybrid_search_db(
+            query,
+            query_embedding,
+            collection_id,
+            ctx,
+            top_k=top_k,
+            retrieval_mode=mode,
+        )
+        return [
+            {
+                "content": hit.content,
+                "score": hit.score,
+                "metadata": hit.metadata,
+                "chunk_id": hit.chunk_id,
+            }
+            for hit in hits
+        ]
 
     def delete_document(
         self,

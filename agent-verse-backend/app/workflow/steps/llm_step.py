@@ -44,6 +44,10 @@ class LLMStepNode:
                     collection_name=self.step.rag.collection,
                     top_k=self.step.rag.top_k,
                     tenant_id=state.get("tenant_id", ""),
+                    # The chat provider also embeds (NVIDIA/OpenAI-compatible),
+                    # so the query is embedded for semantic retrieval; without it
+                    # retrieve() degrades to lexical rather than silently failing.
+                    embedder=self.llm_provider,
                 )
                 if results:
                     rag_context = "\n\nRelevant context:\n" + "\n---\n".join(
