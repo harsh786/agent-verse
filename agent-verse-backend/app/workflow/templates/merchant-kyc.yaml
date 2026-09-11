@@ -1,0 +1,187 @@
+slug: merchant-kyc
+name: "Merchant KYC & Onboarding Verification"
+description: >-
+  Deterministic KYC pipeline for merchant onboarding: OCR the merchant's
+  documents, RPA-scan their website, cross-check consistency, score risk, gate
+  ambiguous cases through a human reviewer, and POST the decision back to the
+  onboarding portal.
+category: "Compliance"
+version: "1.0.0"
+author: "AgentVerse Team"
+complexity: "high"
+tags: ['kyc', 'onboarding', 'compliance', 'ocr', 'rpa', 'merchant']
+popularity_score: 0.0
+sample_input:
+  merchant_id: "mch_demo_001"
+  application:
+    business_name: "Acme Widgets LLC"
+    registration_number: "REG-99887766"
+    address: "1 Market St, San Francisco, CA"
+    owner_name: "Jordan Lee"
+  registration_doc: "<base64 image of the business registration>"
+  owner_id_doc: "<base64 image of the owner government ID>"
+  website_url: "https://acme-widgets.example.com"
+  callback_url: "https://onboarding.portal.example.com/webhooks/kyc-result"
+definition:
+  name: "Merchant KYC & Onboarding Verification"
+  description: "OCR + RPA + risk-tiered decision, with callback to the onboarding portal."
+  # ── Trigger: the onboarding portal POSTs here to start a run ──────────────
+  trigger:
+    type: webhook
+    webhook:
+      path: "/webhooks/merchant-kyc"
+  inputs:
+    merchant_id: {type: string, required: true}
+    application: {type: object, required: true}
+    registration_doc: {type: string, required: true}
+    owner_id_doc: {type: string, required: true}
+    website_url: {type: string, required: true}
+    callback_url: {type: string, required: true}
+  steps:
+    # ── Lane A: documents ─────────────────────────────────────────────────
+    - id: ocr_registration
+      name: "OCR business registration"
+      type: ocr
+      input:
+        image_base64: "{{inputs.registration_doc}}"
+      timeout: "120s"
+
+    - id: parse_registration
+      name: "Parse registration fields"
+      type: llm
+      depends_on: ['ocr_registration']
+      prompt: >-
+        Extract the following fields from this business-registration document
+        text and return ONLY a JSON object with keys business_name,
+        registration_number, address. Text:
+        {{steps.ocr_registration.output.raw_text}}
+
+    - id: ocr_owner_id
+      name: "OCR owner government ID"
+      type: ocr
+      depends_on: ['parse_registration']
+      input:
+        image_base64: "{{inputs.owner_id_doc}}"
+      timeout: "120s"
+
+    - id: parse_owner_id
+      name: "Parse owner ID fields"
+      type: llm
+      depends_on: ['ocr_owner_id']
+      prompt: >-
+        Extract owner_name, id_number and expiry_date from this government-ID
+        text and return ONLY a JSON object. Text:
+        {{steps.ocr_owner_id.output.raw_text}}
+
+    # ── Website lane (sequential after the document lane) ─────────────────
+    - id: scan_website
+      name: "RPA scan merchant website"
+      type: rpa
+      depends_on: ['parse_owner_id']
+      input:
+        url: "{{inputs.website_url}}"
+      timeout: "180s"
+
+    - id: assess_website
+      name: "Assess website legitimacy"
+      type: llm
+      depends_on: ['scan_website']
+      prompt: >-
+        From this website scan report, return ONLY a JSON object with keys
+        live (bool), matches_business (bool), has_contact_page (bool),
+        has_privacy_page (bool), prohibited_flags (array of strings for any
+        adult/gambling/crypto/weapons signals). Report:
+        {{steps.scan_website.output.report}}
+
+    # ── Join: cross-consistency + risk tier ───────────────────────────────
+    - id: risk_assessment
+      name: "Cross-consistency & risk scoring"
+      type: llm
+      depends_on: ['assess_website']
+      prompt: >-
+        You are a KYC risk analyst. Compare the application, the parsed
+        registration, the parsed owner ID, and the website assessment for
+        consistency (business name, address, owner) and risk. Return ONLY a JSON
+        object with keys risk_tier ("low"|"medium"|"high"), risk_score (0-1),
+        consistency_ok (bool), flags (array of strings), recommendation
+        ("approve"|"reject"|"refer").
+        Application: {{inputs.application}}
+        Registration: {{steps.parse_registration.output}}
+        OwnerID: {{steps.parse_owner_id.output}}
+        Website: {{steps.assess_website.output}}
+
+    # ── Decision gate: low risk auto-approves, else human review ───────────
+    - id: decide
+      name: "Risk-tier decision gate"
+      type: conditional
+      depends_on: ['risk_assessment']
+      branches:
+        - condition: "'{{steps.risk_assessment.output.risk_tier}}' == 'low'"
+          next: set_decision_auto
+        - condition: "default"
+          next: human_review
+
+    - id: set_decision_auto
+      name: "Auto-approve (low risk)"
+      type: set_variable
+      depends_on: ['decide']
+      var_name: "decision"
+      var_value: "auto_approved"
+
+    - id: human_review
+      name: "Compliance officer review"
+      type: hitl
+      depends_on: ['decide']
+      assignee: {role: "compliance_officer"}
+      timeout_action: "escalate"
+      # No per-action `next`: both approve and reject flow to the downstream
+      # `set_decision_human` step (via depends_on), which records whichever
+      # decision the reviewer took and passes it to the portal callback.
+      actions:
+        - {id: "approve"}
+        - {id: "reject"}
+      context:
+        - {label: "Merchant", value: "{{inputs.merchant_id}}", display_type: "text"}
+        - {label: "Risk", value: "{{steps.risk_assessment.output}}", display_type: "json"}
+        - {label: "Registration", value: "{{steps.parse_registration.output}}", display_type: "json"}
+        - {label: "Website", value: "{{steps.assess_website.output}}", display_type: "json"}
+
+    - id: set_decision_human
+      name: "Record reviewer decision"
+      type: set_variable
+      depends_on: ['human_review']
+      var_name: "decision"
+      var_value: "{{steps.human_review.output.action}}"
+
+    # ── Assemble the result package (reconverges both branches) ────────────
+    - id: assemble
+      name: "Assemble KYC result"
+      type: transform
+      depends_on: ['set_decision_auto', 'set_decision_human']
+      depends_on_any: true
+      input:
+        merchant_id: "{{inputs.merchant_id}}"
+        decision: "{{vars.decision}}"
+        risk: "{{steps.risk_assessment.output}}"
+        evidence:
+          registration: "{{steps.parse_registration.output}}"
+          owner_id: "{{steps.parse_owner_id.output}}"
+          website: "{{steps.assess_website.output}}"
+
+    # ── Callback: hand the result back to the onboarding portal ────────────
+    - id: callback
+      name: "Callback onboarding portal"
+      type: http
+      depends_on: ['assemble']
+      url: "{{inputs.callback_url}}"
+      method: "POST"
+      request_body:
+        merchant_id: "{{steps.assemble.output.merchant_id}}"
+        decision: "{{steps.assemble.output.decision}}"
+        risk: "{{steps.assemble.output.risk}}"
+        evidence: "{{steps.assemble.output.evidence}}"
+      retry:
+        max_attempts: 3
+  outputs:
+    decision: {source: "{{steps.assemble.output.decision}}"}
+    callback_status: {source: "{{steps.callback.output.status_code}}"}
