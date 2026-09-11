@@ -63,6 +63,17 @@ class Settings(BaseSettings):
     db_pool_timeout: float = 30.0
     db_pool_recycle: int = 1800
     db_pool_pre_ping: bool = True
+    # Postgres reclaims a connection left "idle in transaction" past this many ms.
+    # Custom Starlette BaseHTTPMiddleware cancels the request task on client
+    # disconnect (SSE, polling, navigation) without always rolling back the DB
+    # session, leaking a pooled connection stuck idle-in-transaction; without a
+    # server-side timeout these accumulate until the pool exhausts and requests
+    # hang for db_pool_timeout — the intermittent "blip". 0 disables.
+    db_idle_in_transaction_timeout_ms: int = 30_000
+    # Safety cap on any single statement so a hung query can't hold a connection
+    # indefinitely. Generous so legitimate heavy analytics / vector scans aren't
+    # killed. 0 disables.
+    db_statement_timeout_ms: int = 120_000
     db_pool_max: int = Field(default=20, description="Max asyncpg pool connections")
     db_pool_min: int = Field(default=5, description="Min asyncpg pool connections")
     redis_max_connections: int = Field(default=50, description="Max Redis pool connections")
