@@ -67,8 +67,137 @@ class GatewayConfig(BaseModel):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
+def _tenant_ctx_for(command: OrgCommand) -> Any:
+    """Build a TenantContext for a gateway command. The webhook caller supplies
+    the tenant via the ``x-tenant-id`` header (adapters put it on the command);
+    fall back to org_id when a deployment maps 1:1 org→tenant."""
+    from app.tenancy.context import PlanTier, TenantContext
+
+    tenant_id = command.tenant_id or command.org_id
+    return TenantContext(tenant_id=tenant_id, api_key_id="gateway", plan=PlanTier.FREE), tenant_id
+
+
+async def _download_command_file(cf: Any) -> bytes | None:
+    if getattr(cf, "data", None):
+        return cf.data
+    url = getattr(cf, "url", None)
+    if not url:
+        return None
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            return r.content
+    except Exception as exc:
+        _log.warning("gateway.file_download_failed", error=str(exc)[:120])
+        return None
+
+
+async def _ensure_inbox_collection(state: Any, ctx: Any, channel: str) -> str | None:
+    """Return the id of the per-tenant '{channel}-inbox' collection, creating it
+    once so chat-delivered documents have a durable home in knowledge."""
+    ks = getattr(state, "knowledge_store", None)
+    if ks is None:
+        return None
+    name = f"{channel}-inbox"
+    try:
+        for coll in await ks.list_collections_async(tenant_ctx=ctx):
+            if coll.name == name:
+                return coll.collection_id
+        from app.rag.models import KnowledgeCollection
+
+        created = KnowledgeCollection(
+            name=name, description=f"Documents received via {channel}", embedder="nvidia"
+        )
+        return await ks.create_collection_async(created, tenant_ctx=ctx)
+    except Exception as exc:
+        _log.warning("gateway.inbox_collection_failed", error=str(exc)[:120])
+        return None
+
+
+async def _ingest_command_files(command: OrgCommand, state: Any, ctx: Any, tenant_id: str) -> int:
+    """Ingest each attached document into the tenant's chat inbox collection via
+    the real ingestion pipeline (binary parse + OCR + chunk + embed)."""
+    pipeline = getattr(state, "ingestion_pipeline", None)
+    if pipeline is None or not command.files:
+        return 0
+    collection_id = await _ensure_inbox_collection(state, ctx, command.actor_channel)
+    if not collection_id:
+        return 0
+    from app.ingestion.source_config import RawDocument, SourceConfig, SourceFamily
+
+    source = SourceConfig(
+        source_id=f"chat-{command.command_id}",
+        tenant_id=tenant_id,
+        name=f"{command.actor_channel} chat",
+        family=SourceFamily.COMMUNICATION,
+        source_type="webhook",
+        collection_id=collection_id,
+        pii_action="allow",
+    )
+    indexed = 0
+    for cf in command.files:
+        data = await _download_command_file(cf)
+        if not data:
+            continue
+        raw = RawDocument(
+            doc_id=f"{command.command_id}-{getattr(cf, 'filename', 'file')}",
+            source_id=source.source_id,
+            tenant_id=tenant_id,
+            content=data,
+            content_type=getattr(cf, "content_type", "application/octet-stream"),
+            title=getattr(cf, "filename", ""),
+            source_url=getattr(cf, "url", "") or "",
+        )
+        try:
+            result = await pipeline.ingest(raw, source)
+            if result.status == "indexed":
+                indexed += 1
+        except Exception as exc:
+            _log.warning("gateway.file_ingest_failed", error=str(exc)[:120])
+    return indexed
+
+
+async def _submit_goal_from_command(
+    command: OrgCommand, state: Any, ctx: Any, text: str
+) -> str | None:
+    """Submit the message text as a natural-language goal — this is how an
+    external chat 'command' actually drives the platform."""
+    gs = getattr(state, "goal_service", None)
+    if gs is None:
+        return None
+    try:
+        result = await gs.submit_goal(
+            goal=text,
+            priority="normal" if command.urgency != "urgent" else "high",
+            dry_run=False,
+            tenant_ctx=ctx,
+        )
+        return result.get("goal_id") or result.get("id")
+    except Exception as exc:
+        _log.warning("gateway.goal_submit_failed", error=str(exc)[:160])
+        return None
+
+
+async def _reply_to_channel(command: OrgCommand, text: str) -> None:
+    """Send an acknowledgement back to the originating chat, when the channel
+    supports outbound messages and is configured with a token."""
+    resp = OrgResponse(command_id=command.command_id, text=text, status="accepted")
+    conv = command.conversation_id or command.actor_id or ""
+    try:
+        if command.actor_channel == "telegram" and conv:
+            await _telegram.send_message(conv, resp)
+        elif command.actor_channel == "whatsapp" and conv:
+            await _whatsapp.send_message(conv, resp)
+    except Exception as exc:
+        _log.warning("gateway.reply_failed", error=str(exc)[:120])
+
+
 async def _process_command(command: OrgCommand) -> OrgResponse:
-    """Route command to org brain and return response."""
+    """Turn an inbound chat command into real platform work: ingest any attached
+    documents into knowledge, submit the text as a goal, and reply to the chat."""
     with _tracer.start_as_current_span("gateway.process_command") as span:
         span.set_attribute("channel", command.actor_channel)
         span.set_attribute("org_id", command.org_id)
@@ -77,16 +206,44 @@ async def _process_command(command: OrgCommand) -> OrgResponse:
             "gateway.command_received",
             channel=command.actor_channel,
             org_id=command.org_id,
+            has_files=bool(command.files),
             text_preview=command.text[:60],
         )
-        # Delegate to org command endpoint via internal call
-        # In production this calls the OrgService.process_command()
-        # For now: stub response acknowledging receipt
+
+        try:
+            from app.main import app as _fastapi_app
+
+            state = _fastapi_app.state
+        except Exception:
+            state = None
+
+        ctx, tenant_id = _tenant_ctx_for(command)
+        parts: list[str] = []
+        goal_id: str | None = None
+
+        if state is not None and command.files:
+            n = await _ingest_command_files(command, state, ctx, tenant_id)
+            if n:
+                parts.append(f"📎 Ingested {n} document(s) into '{command.actor_channel}-inbox'.")
+
+        text = (command.text or "").strip()
+        is_command = bool(text) and text != "(attachment)" and not text.startswith("/callback")
+        if state is not None and is_command:
+            goal_id = await _submit_goal_from_command(command, state, ctx, text)
+            if goal_id:
+                parts.append(
+                    f"🎯 Started goal `{goal_id[:8]}` — I'll follow up here when it's done."
+                )
+
+        reply_text = "\n".join(parts) if parts else f"Received: {text[:120]}"
+        span.set_attribute("goal_id", goal_id or "")
+        await _reply_to_channel(command, reply_text)
+
         return OrgResponse(
             command_id=command.command_id,
-            text=f"Processing: {command.text[:100]}",
-            status="processing",
-            mission_id=None,
+            text=reply_text,
+            status="accepted",
+            mission_id=goal_id,
             requires_action=False,
         )
 

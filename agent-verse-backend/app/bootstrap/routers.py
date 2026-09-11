@@ -129,6 +129,16 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     app.include_router(nl_router)
     app.include_router(webhooks_router)
     app.include_router(events_router)
+    # Multi-channel gateway (telegram/whatsapp/slack/teams webhooks → goals +
+    # document ingestion). Router carries its own /v1/gateway prefix and uses
+    # per-channel signature auth (bypassed from tenant API-key middleware).
+    try:
+        from app.gateway.router import router as gateway_router
+
+        app.include_router(gateway_router)
+        logger.info("gateway_router_registered")
+    except Exception as _gw_exc:  # pragma: no cover - defensive
+        logger.warning("gateway_router_failed", error=str(_gw_exc))
     # Memory + Artifacts
     app.include_router(memory_router)
     app.include_router(artifacts_router)
