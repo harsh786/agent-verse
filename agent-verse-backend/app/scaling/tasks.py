@@ -512,7 +512,15 @@ class _WorkerMCPAgentRunner:
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]
-    name="app.scaling.tasks.execute_org_mission", bind=True, max_retries=0
+    name="app.scaling.tasks.execute_org_mission",
+    bind=True,
+    max_retries=0,
+    # At-least-once: ack only after the task finishes, and redeliver (don't drop)
+    # if the worker is lost mid-task — so a worker restart/deploy can't leave a
+    # mission stuck on "planned". The idempotency guard below makes the redeliver
+    # safe (it no-ops once the mission has moved past "planned").
+    acks_late=True,
+    reject_on_worker_lost=True,
 )
 def execute_org_mission(
     self: Any,
@@ -573,6 +581,18 @@ def execute_org_mission(
             if mission is None:
                 logger.warning("execute_org_mission.mission_missing", mission_id=mission_id)
                 return
+            # Idempotency: a redelivered task (worker was lost after committing the
+            # dispatch) must not form a second team / dispatch a second goal. Only
+            # a mission still sitting at its initial status is unprocessed — the
+            # commit of form_team_and_dispatch is atomic, so a crash mid-formation
+            # rolls back to 'planned' and is safe to retry.
+            if mission.status not in ("planned", "draft"):
+                logger.info(
+                    "execute_org_mission.already_processed",
+                    mission_id=mission_id,
+                    status=mission.status,
+                )
+                return
             await svc.form_team_and_dispatch(
                 mission=mission,
                 org_id=org_id,
@@ -595,7 +615,13 @@ def execute_org_mission(
                 session.begin(),
                 sqlalchemy_rls_context(session, tenant_id),
             ):
-                await OrgService(session, tenant_id).update_mission_status(mission_id, "failed")
+                svc = OrgService(session, tenant_id)
+                m = await svc.get_mission(mission_id)
+                # Only fail a mission still awaiting dispatch — a transient error
+                # in a duplicate/redelivered task must never clobber a mission
+                # that already went active/review/completed.
+                if m is not None and m.status in ("planned", "draft"):
+                    await svc.update_mission_status(mission_id, "failed")
         logger.error("execute_org_mission.failed", mission_id=mission_id, error=err[:200])
 
     try:
@@ -604,6 +630,68 @@ def execute_org_mission(
     except Exception as exc:
         _run_async(_mark_failed(str(exc)))
         return {"status": "failed", "mission_id": mission_id, "error": str(exc)[:200]}
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="app.scaling.tasks.resweep_stuck_missions", bind=True, max_retries=0
+)
+def resweep_stuck_missions(self: Any) -> dict[str, Any]:
+    """Re-enqueue missions stuck in 'planned' past the normal dispatch window.
+
+    A worker crash (hard kill) can drop an in-flight execute_org_mission task —
+    the Redis broker only redelivers acks_late tasks after its visibility
+    timeout (an hour by default). This sweep is the deterministic safety net:
+    any mission still 'planned'/'draft' with no goal after 3 minutes is
+    re-enqueued. execute_org_mission's idempotency guard (and GoalService goal
+    dedup) make a re-enqueue safe. The 3-minute floor is well beyond a normal
+    dispatch (~30-90s) so genuinely in-flight missions are never swept.
+    """
+    from sqlalchemy import text
+
+    from app.db.rls import system_session
+    from app.db.session import get_session_factory
+
+    async def _sweep() -> int:
+        db = get_session_factory()
+        async with db() as session, session.begin(), system_session(session):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT id, tenant_id, org_id, title, objective, "
+                        "expected_outcome, dept_id, assigned_team_id, "
+                        "autonomy_level, priority "
+                        "FROM org_missions "
+                        "WHERE status IN ('planned', 'draft') "
+                        "AND (extra_data->>'goal_id') IS NULL "
+                        "AND created_at < now() - interval '3 minutes' "
+                        "LIMIT 50"
+                    )
+                )
+            ).fetchall()
+        for r in rows:
+            # These columns are UUID type; asyncpg returns them as uuid.UUID.
+            # The tenant system keys on the 32-char hex form (no dashes), while
+            # org/dept/team ids are used as dashed UUID strings elsewhere.
+            execute_org_mission.apply_async(
+                kwargs={
+                    "mission_id": str(r.id),
+                    "tenant_id": r.tenant_id.hex if r.tenant_id else "",
+                    "org_id": str(r.org_id),
+                    "objective": r.objective or "",
+                    "title": r.title or "",
+                    "expected_outcome": r.expected_outcome or "",
+                    "dept_id": str(r.dept_id) if r.dept_id else None,
+                    "assigned_team_id": str(r.assigned_team_id) if r.assigned_team_id else None,
+                    "autonomy_level": r.autonomy_level,
+                    "priority": r.priority or "medium",
+                },
+            )
+        return len(rows)
+
+    count = _run_async(_sweep())
+    if count:
+        logger.info("resweep_stuck_missions.reenqueued", count=count)
+    return {"reenqueued": count}
 
 
 @celery_app.task(name="app.scaling.tasks.run_goal_dlq", bind=True, max_retries=0)

@@ -76,6 +76,7 @@ celery_app.conf.update(
         "app.scaling.tasks.run_goal": {"queue": "goals.free"},
         # Org mission team-formation + dispatch — worker subscribes to "goals".
         "app.scaling.tasks.execute_org_mission": {"queue": "goals"},
+        "app.scaling.tasks.resweep_stuck_missions": {"queue": "maintenance"},
         "app.scaling.tasks.run_goal_dlq": {"queue": "goals_dlq"},
         "app.scaling.tasks.run_scheduled_goal": {"queue": "schedules"},
         "app.scaling.tasks.fire_due_schedules": {"queue": "schedules"},
@@ -143,6 +144,11 @@ celery_app.conf.update(
         "detect-stuck-goals": {
             "task": "app.scaling.tasks.detect_stuck_goals",
             "schedule": 300.0,  # every 5 minutes
+            "options": {"queue": "maintenance"},
+        },
+        "resweep-stuck-missions": {
+            "task": "app.scaling.tasks.resweep_stuck_missions",
+            "schedule": 120.0,  # every 2 minutes — recover missions whose dispatch task was lost
             "options": {"queue": "maintenance"},
         },
         "execute-retention-policy": {
