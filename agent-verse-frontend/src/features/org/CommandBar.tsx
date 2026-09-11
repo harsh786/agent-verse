@@ -20,15 +20,25 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { useCreateMission } from './hooks/useOrg';
+import { orgApi } from './api';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-// No pre-submit mission preview/estimate endpoint exists yet — see the
-// TODO(api) note by handleSubmit below. Only the refined goal (the user's
-// own input) is real at this stage; team size, cost, and risk are not
-// fabricated and are shown honestly as "estimated on submit".
+// The refined goal is the user's own input; the estimate fields come from the
+// backend's fast pre-flight heuristic (POST /v1/org/{id}/missions/preview —
+// team size, cost, risk without dispatching). The real team is formed by the
+// MetaOrchestrator when the mission actually launches.
 interface MissionPreview {
   refined_goal: string;
+  estimate?: {
+    departments: string[];
+    estimated_agents: number;
+    estimated_duration_hours: number;
+    estimated_cost_usd: number;
+    estimated_risk: string;
+    success_probability: number;
+    potential_blockers: string[];
+  };
 }
 
 interface CommandBarProps {
@@ -93,21 +103,21 @@ export function CommandBar({ orgId, onClose }: CommandBarProps) {
 
   const suggestions = getSuggestions(query);
 
-  // Step 1 → Step 2: no pre-submit mission preview/estimate endpoint exists
-  // yet, so there's no async work to do here — just carry the refined goal
-  // (the user's own input, which is real) forward to the preview step.
-  //
-  // TODO(api): wire this to a real mission preview/estimate endpoint once
-  // one exists — e.g. a lightweight sibling of `POST /v1/org/{org_id}/missions/execute`
-  // that returns team size / cost / risk without dispatching, or an HTTP
-  // endpoint over `OrgService.compose_from_nl` (app/org/service.py) /
-  // `OrgSimulationEngine.estimate_mission` (app/org/loop_detector.py) — both
-  // exist in the backend today but are not exposed over HTTP for missions.
+  // Step 1 → Step 2: fetch a fast pre-flight estimate (team size / cost / risk)
+  // from the backend heuristic and show it. Move to the preview step
+  // immediately; the estimate fills in when it returns (it's near-instant).
   const handleSubmit = useCallback(() => {
     if (!query.trim()) return;
-    setPreview({ refined_goal: query });
+    const goal = query;
+    setPreview({ refined_goal: goal });
     setStep('preview');
-  }, [query]);
+    setIsLoading(true);
+    orgApi
+      .previewMission(orgId, goal)
+      .then((estimate) => setPreview({ refined_goal: goal, estimate }))
+      .catch(() => { /* keep the goal-only preview if the estimate fails */ })
+      .finally(() => setIsLoading(false));
+  }, [query, orgId]);
 
   const handleConfirmMission = useCallback(async () => {
     if (!preview) return;
@@ -229,20 +239,66 @@ export function CommandBar({ orgId, onClose }: CommandBarProps) {
                   </p>
                 </div>
 
-                {/* Honest placeholder: no pre-submit estimate endpoint exists yet
-                    (see TODO(api) note by handleSubmit), so team size, cost, and
-                    risk are never fabricated here — only shown once the mission
-                    actually launches and dispatch reports real numbers. */}
-                <div
-                  className="flex items-start gap-2.5 rounded-lg border border-dashed border-[var(--border)] bg-[var(--bg-surface)] px-3 py-3"
-                  role="status"
-                >
-                  <Info className="h-4 w-4 mt-0.5 text-[var(--text-muted)] flex-shrink-0" aria-hidden="true" />
-                  <p className="text-xs text-[var(--text-muted)] leading-relaxed">
-                    Team size, cost, and risk aren&apos;t estimated yet — AgentVerse will
-                    size and dispatch the mission when you launch it.
-                  </p>
-                </div>
+                {/* Fast pre-flight estimate from the backend heuristic. */}
+                {isLoading && !preview.estimate ? (
+                  <div className="flex items-center gap-2 px-1 py-3 text-xs text-[var(--text-muted)]" role="status">
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    Estimating team, cost, and risk…
+                  </div>
+                ) : preview.estimate ? (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { label: 'Agents', value: String(preview.estimate.estimated_agents) },
+                        { label: 'Est. cost', value: `$${preview.estimate.estimated_cost_usd.toFixed(2)}` },
+                        { label: 'Est. time', value: `${preview.estimate.estimated_duration_hours}h` },
+                      ].map((m) => (
+                        <div key={m.label} className="rounded-lg bg-[var(--bg-surface)] px-3 py-2 text-center">
+                          <div className="text-sm font-semibold text-[var(--text-primary)] tabular-nums">{m.value}</div>
+                          <div className="text-[10px] text-[var(--text-muted)]">{m.label}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[10px] text-[var(--text-muted)]">Departments:</span>
+                      {preview.estimate.departments.map((d) => (
+                        <Badge key={d} variant="outline" className="text-[10px] capitalize">{d}</Badge>
+                      ))}
+                      <span
+                        className={`ml-auto text-[10px] font-medium capitalize ${
+                          preview.estimate.estimated_risk === 'high' ? 'text-rose-400'
+                          : preview.estimate.estimated_risk === 'medium' ? 'text-amber-400'
+                          : 'text-emerald-400'
+                        }`}
+                      >
+                        {preview.estimate.estimated_risk} risk
+                      </span>
+                    </div>
+
+                    {preview.estimate.potential_blockers.length > 0 && (
+                      <ul className="space-y-1">
+                        {preview.estimate.potential_blockers.map((b) => (
+                          <li key={b} className="flex items-start gap-1.5 text-[11px] text-[var(--text-muted)]">
+                            <Info className="h-3 w-3 mt-0.5 flex-shrink-0 text-amber-400/70" aria-hidden="true" />
+                            {b}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+
+                    <p className="text-[10px] text-[var(--text-muted)]">
+                      Rough estimate — AgentVerse forms the real team when you launch.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-2.5 rounded-lg border border-dashed border-[var(--border)] bg-[var(--bg-surface)] px-3 py-3" role="status">
+                    <Info className="h-4 w-4 mt-0.5 text-[var(--text-muted)] flex-shrink-0" aria-hidden="true" />
+                    <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+                      AgentVerse will size and dispatch the mission when you launch it.
+                    </p>
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-2 px-4 pb-4">

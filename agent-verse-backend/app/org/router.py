@@ -2954,6 +2954,45 @@ class _MissionExecuteRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class _MissionPreviewRequest(BaseModel):
+    goal: str = Field(min_length=1, max_length=2000)
+
+
+@router.post(
+    "/{org_id}/missions/preview",
+    operation_id="org_preview_mission",
+    summary="Fast pre-flight estimate for a mission goal (no dispatch)",
+)
+async def org_preview_mission(
+    org_id: str,
+    body: _MissionPreviewRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """Return an instant heuristic estimate for a goal — team size, departments,
+    cost, duration, and risk — WITHOUT creating or dispatching a mission.
+
+    Powers the Cmd+K command bar's preview step. This is a fast keyword
+    heuristic (no LLM, no DB writes); the real team is formed by the
+    MetaOrchestrator when the mission is actually launched.
+    """
+    _require_tenant(request)  # authn/tenant scoping only; estimate is stateless
+    from app.org.loop_detector import OrgSimulationEngine
+
+    est = await OrgSimulationEngine().estimate_mission(body.goal, org_id=org_id)
+    # NB: `similar_missions_count` is a random placeholder in the engine — omit it
+    # so the preview never shows a fabricated number.
+    return {
+        "departments": est.departments_needed,
+        "estimated_agents": est.estimated_agents,
+        "estimated_duration_hours": est.estimated_duration_hours,
+        "estimated_cost_usd": est.estimated_cost_usd,
+        "estimated_risk": est.estimated_risk,
+        "confidence": est.confidence,
+        "success_probability": est.success_probability,
+        "potential_blockers": est.potential_blockers,
+    }
+
+
 @router.post(
     "/{org_id}/missions/execute",
     operation_id="org_create_mission_execute",

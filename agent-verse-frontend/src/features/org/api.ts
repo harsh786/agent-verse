@@ -94,6 +94,26 @@ export const orgApi = {
     return apiFetch(`${BASE}/${orgId}/attachments`, { method: 'POST', body: fd });
   },
 
+  /** Instant heuristic pre-flight estimate for a goal (no mission created). */
+  previewMission(
+    orgId: string,
+    goal: string,
+  ): Promise<{
+    departments: string[];
+    estimated_agents: number;
+    estimated_duration_hours: number;
+    estimated_cost_usd: number;
+    estimated_risk: string;
+    confidence: number;
+    success_probability: number;
+    potential_blockers: string[];
+  }> {
+    return apiFetch(`${BASE}/${orgId}/missions/preview`, {
+      method: 'POST',
+      body: JSON.stringify({ goal }),
+    });
+  },
+
   createMission(orgId: string, req: CreateMissionRequest): Promise<OrgMission> {
     // Use /missions/execute which triggers MetaOrchestrator team formation
     // + dispatches to AgentGraph via GoalService — not just a DB record create.
