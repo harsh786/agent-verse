@@ -44,7 +44,7 @@ import { workflowNodeTypes } from './builder/nodes/AllNodes';
 import { WorkflowToolPalette } from './builder/WorkflowToolPalette';
 import { WorkflowStepConfig } from './builder/WorkflowStepConfig';
 import { WorkflowExecutionOverlay } from './builder/WorkflowExecutionOverlay';
-import { useYamlSync, parseWorkflowYaml } from './builder/canvas-utils/useYamlSync';
+import { useYamlSync, parseWorkflowYaml, canvasToDefinition } from './builder/canvas-utils/useYamlSync';
 import { useCanvasKeyboardShortcuts } from './builder/canvas-utils/useCanvasKeyboardShortcuts';
 import { useAutoLayout } from './builder/canvas-utils/useAutoLayout';
 import { panelSlide, toolbarButton, modalBackdrop, modalContent, edgeFlow } from './design/motion';
@@ -215,10 +215,32 @@ function BuilderCanvas({
 
   // ── Save ────────────────────────────────────────────────────────────────────
   const handleSave = () => {
-    updateFromCanvas(nodes, edges);
     try {
-      // yaml may be real YAML or JSON — parseWorkflowYaml handles both.
-      const def = parseWorkflowYaml(yaml || '');
+      let def: Record<string, unknown>;
+      if (showYaml) {
+        // The YAML editor is the active surface and holds the full definition —
+        // save it verbatim (parseWorkflowYaml accepts YAML or JSON).
+        def = parseWorkflowYaml(yamlText || '');
+      } else {
+        // Serialize the CURRENT canvas synchronously. updateFromCanvas sets
+        // state asynchronously, so reading `yaml` here would be one render
+        // behind and silently drop the latest edit (e.g. a just-set schedule).
+        const canvasDef = canvasToDefinition(nodes, edges);
+        // Preserve the top-level fields the visual canvas doesn't model
+        // (inputs, outputs, vars, error_handling, concurrency, callback, …) so
+        // a visual save never strips a rich workflow down to bare steps. The
+        // canvas is authoritative for trigger + steps, so drop those first.
+        const preserved: Record<string, unknown> = { ...(initDef as Record<string, unknown>) };
+        delete preserved.trigger;
+        delete preserved.steps;
+        def = { ...preserved, ...canvasDef };
+        // The canvas serializer defaults name to "Untitled" (there is no name
+        // field on the canvas), so keep the authoritative workflow name — the
+        // DB record's name, falling back to a non-default definition name.
+        const preservedName = typeof preserved.name === 'string' ? preserved.name : '';
+        def.name = wf.name || (preservedName && preservedName !== 'Untitled' ? preservedName : 'Untitled');
+        updateFromCanvas(nodes, edges); // keep the YAML tab current for next open
+      }
       onSave(Object.keys(def).length ? def : { name: wf.name, steps: [] });
     } catch {
       onSave({ name: wf.name, steps: [] });
@@ -486,6 +508,12 @@ function BuilderCanvas({
                       ? { ...n, data: { ...(n.data as WorkflowNodeData), ...updates } }
                       : n
                   )
+                );
+                // Keep the selected node in sync so the config panel reflects
+                // the edit — the panel reads from `selectedNode`, so without
+                // this every field change visually reverts on re-render.
+                setSelectedNode((prev) =>
+                  prev ? { ...prev, data: { ...(prev.data as WorkflowNodeData), ...updates } } : prev
                 );
               }}
               onClose={() => setSelectedNode(null)}

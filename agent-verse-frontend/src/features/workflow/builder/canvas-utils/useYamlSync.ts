@@ -42,13 +42,36 @@ function nodeToStep(node: Node): Record<string, unknown> {
   return step;
 }
 
+// Serialize a trigger node's data into a DSL trigger object, preserving the
+// schedule cron / webhook path so the visual builder round-trips them (the DSL
+// nests these under `schedule` / `webhook`, not on the trigger itself).
+function triggerFromData(data: Record<string, unknown>): Record<string, unknown> {
+  const type = (data.triggerType as string) ?? 'api';
+  if (type === 'schedule') {
+    const cron = String(data.cron ?? '').trim();
+    return {
+      type,
+      schedule: { cron, timezone: String(data.timezone ?? 'UTC') },
+    };
+  }
+  if (type === 'webhook') {
+    return { type, webhook: { path: String(data.webhook_path ?? '') } };
+  }
+  return { type };
+}
+
+// The trigger is a synthetic canvas node, not a real step, so an edge from it
+// must NOT become a `depends_on` entry — the DSL validator rejects a step that
+// depends on the unknown step id `__trigger__`.
+const TRIGGER_NODE_ID = '__trigger__';
+
 function edgesToDepends(nodeId: string, edges: Edge[]): string[] {
   return edges
-    .filter((e) => e.target === nodeId)
+    .filter((e) => e.target === nodeId && e.source !== TRIGGER_NODE_ID)
     .map((e) => e.source);
 }
 
-function canvasToDefinition(nodes: Node[], edges: Edge[]): Record<string, unknown> {
+export function canvasToDefinition(nodes: Node[], edges: Edge[]): Record<string, unknown> {
   const steps = nodes
     .filter((n) => n.type !== 'trigger')
     .map((n) => ({
@@ -58,7 +81,7 @@ function canvasToDefinition(nodes: Node[], edges: Edge[]): Record<string, unknow
 
   const triggerNode = nodes.find((n) => n.type === 'trigger');
   const trigger = triggerNode
-    ? { type: (triggerNode.data as Record<string, unknown>).triggerType ?? 'api' }
+    ? triggerFromData(triggerNode.data as Record<string, unknown>)
     : { type: 'api' };
 
   return {
@@ -87,6 +110,8 @@ function layoutNodes(definition: Record<string, unknown>): { nodes: Node[]; edge
 
   // Trigger node
   if (trigger) {
+    const schedule = trigger.schedule as Record<string, unknown> | undefined;
+    const webhook = trigger.webhook as Record<string, unknown> | undefined;
     nodes.push({
       id: '__trigger__',
       type: 'trigger',
@@ -95,6 +120,11 @@ function layoutNodes(definition: Record<string, unknown>): { nodes: Node[]; edge
         label: 'Trigger',
         triggerType: trigger.type,
         stepType: 'trigger',
+        // Surface the nested schedule/webhook config so the Trigger config
+        // panel shows and edits it (round-trips back via triggerFromData).
+        cron: schedule?.cron ?? '',
+        timezone: schedule?.timezone ?? 'UTC',
+        webhook_path: webhook?.path ?? '',
       },
     });
   }

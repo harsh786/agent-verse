@@ -9,7 +9,7 @@
 
 import { motion } from 'framer-motion';
 import { springs } from '../design/motion';
-import { X, Settings } from 'lucide-react';
+import { X, Settings, Clock, Info } from 'lucide-react';
 import type { Node } from '@xyflow/react';
 import { NODE_ICONS, NODE_LABELS } from '../design/tokens';
 import type { WorkflowNodeData } from './nodes/BaseWorkflowNode';
@@ -90,7 +90,131 @@ function SelectField({
   );
 }
 
+// ── Cron humanizer (shared by the Trigger panel) ──────────────────────────────
+
+function humanCron(cron: string): string {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length < 5) return '';
+  const [min, hr, dom, , dow] = parts;
+  const at = (h: string, m: string) => {
+    const hh = Number(h), mm = Number(m);
+    if (Number.isNaN(hh) || Number.isNaN(mm)) return `${h}:${m}`;
+    const ampm = hh < 12 ? 'AM' : 'PM';
+    const h12 = hh % 12 === 0 ? 12 : hh % 12;
+    return `${h12}:${String(mm).padStart(2, '0')} ${ampm}`;
+  };
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  if (min === '*' && hr === '*') return 'Every minute';
+  if (min.startsWith('*/') && hr === '*') return `Every ${min.slice(2)} minutes`;
+  if (hr.startsWith('*/') && min !== '*') return `Every ${hr.slice(2)} hours at :${min.padStart(2, '0')}`;
+  if (dom === '*' && dow === '*') return `Every day at ${at(hr, min)}`;
+  if (dow !== '*' && dom === '*') {
+    const label = dow.split(',').map((d) => days[Number(d)] ?? d).join(', ');
+    return `Every ${label} at ${at(hr, min)}`;
+  }
+  if (dom !== '*' && dow === '*') return `Day ${dom} of each month at ${at(hr, min)}`;
+  return `At ${at(hr, min)}`;
+}
+
+const CRON_PRESETS: { label: string; value: string }[] = [
+  { label: 'Every 15 minutes', value: '*/15 * * * *' },
+  { label: 'Hourly', value: '0 * * * *' },
+  { label: 'Daily at 9 AM', value: '0 9 * * *' },
+  { label: 'Weekdays at 8 AM', value: '0 8 * * 1-5' },
+  { label: 'Weekly (Mon 9 AM)', value: '0 9 * * 1' },
+  { label: 'Monthly (1st, 2 AM)', value: '0 2 1 * *' },
+];
+
 // ── Type-specific config panels ───────────────────────────────────────────────
+
+function TriggerConfig({ data, onUpdate }: { data: WorkflowNodeData; onUpdate: (u: Partial<WorkflowNodeData>) => void }) {
+  const triggerType = String(data.triggerType ?? 'api');
+  const cron = String(data.cron ?? '');
+  const human = cron ? humanCron(cron) : '';
+  return (
+    <>
+      <SelectField
+        label="How does this workflow start?"
+        value={triggerType}
+        onChange={(v) => onUpdate({ triggerType: v })}
+        options={[
+          { label: '▶ Manual / API', value: 'api' },
+          { label: '🕑 Schedule (cron)', value: 'schedule' },
+          { label: '🔗 Webhook (URL)', value: 'webhook' },
+        ]}
+      />
+
+      {triggerType === 'schedule' && (
+        <>
+          <div>
+            <span className="block text-xs font-medium text-white/50 mb-1">Presets</span>
+            <div className="flex flex-wrap gap-1.5">
+              {CRON_PRESETS.map((p) => (
+                <button
+                  key={p.value}
+                  type="button"
+                  onClick={() => onUpdate({ cron: p.value })}
+                  className={`px-2 py-1 rounded-lg text-xs border transition-colors ${
+                    cron === p.value
+                      ? 'border-sky-500 bg-sky-500/15 text-sky-300'
+                      : 'border-white/10 text-white/50 hover:border-white/25 hover:text-white/80'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <TextField
+            label="Cron expression"
+            mono
+            value={cron}
+            onChange={(v) => onUpdate({ cron: v })}
+            placeholder="0 9 * * *"
+            description="minute hour day-of-month month day-of-week (UTC)"
+          />
+          {cron && (
+            <p className={`text-xs flex items-center gap-1.5 ${human ? 'text-emerald-400' : 'text-amber-400'}`}>
+              <Clock className="h-3.5 w-3.5" />
+              {human || 'Unrecognized cron — will be validated on publish'}
+            </p>
+          )}
+          <TextField
+            label="Timezone"
+            value={String(data.timezone ?? 'UTC')}
+            onChange={(v) => onUpdate({ timezone: v })}
+            placeholder="UTC"
+          />
+          <p className="text-xs text-white/30 flex items-start gap-1.5">
+            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            Scheduled runs fire with empty inputs. Use a webhook if the workflow
+            needs per-run data.
+          </p>
+        </>
+      )}
+
+      {triggerType === 'webhook' && (
+        <>
+          <TextField
+            label="Webhook path"
+            mono
+            value={String(data.webhook_path ?? '')}
+            onChange={(v) => onUpdate({ webhook_path: v })}
+            placeholder="/webhooks/my-workflow"
+            description="A signed trigger URL is minted on publish; POST its body as the run inputs."
+          />
+        </>
+      )}
+
+      {triggerType === 'api' && (
+        <p className="text-xs text-white/30 flex items-start gap-1.5">
+          <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          Runs are started manually (Test / Run) or via the API. No schedule.
+        </p>
+      )}
+    </>
+  );
+}
 
 function LLMConfig({ data, onUpdate }: { data: WorkflowNodeData; onUpdate: (u: Partial<WorkflowNodeData>) => void }) {
   return (
@@ -345,10 +469,101 @@ function EmitEventConfig({ data, onUpdate }: { data: WorkflowNodeData; onUpdate:
   );
 }
 
+function OcrConfig({ data, onUpdate }: { data: WorkflowNodeData; onUpdate: (u: Partial<WorkflowNodeData>) => void }) {
+  return (
+    <TextField
+      label="Image mapping (JSON)"
+      multiline mono
+      value={String(data.input ? JSON.stringify(data.input, null, 2) : '')}
+      onChange={(v) => { try { onUpdate({ input: JSON.parse(v) }); } catch { /* ignore */ } }}
+      placeholder='{"image_base64": "{{inputs.registration_doc}}"}'
+      description="Document image to OCR. Reference a run input or a prior step's output."
+    />
+  );
+}
+
+function RpaConfig({ data, onUpdate }: { data: WorkflowNodeData; onUpdate: (u: Partial<WorkflowNodeData>) => void }) {
+  return (
+    <TextField
+      label="Target mapping (JSON)"
+      multiline mono
+      value={String(data.input ? JSON.stringify(data.input, null, 2) : '')}
+      onChange={(v) => { try { onUpdate({ input: JSON.parse(v) }); } catch { /* ignore */ } }}
+      placeholder='{"url": "{{inputs.website_url}}"}'
+      description="URL to scan. Internal/loopback hosts are blocked (SSRF guard)."
+    />
+  );
+}
+
+function ParallelConfig() {
+  return (
+    <p className="text-xs text-white/40 flex items-start gap-1.5">
+      <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+      Runs its branch steps concurrently and merges their outputs. Branch steps
+      are authored in the YAML editor (nested <code className="text-white/60">parallel_branches</code>).
+    </p>
+  );
+}
+
+function RagConfig({ data, onUpdate }: { data: WorkflowNodeData; onUpdate: (u: Partial<WorkflowNodeData>) => void }) {
+  const rag = (data.rag as Record<string, unknown> | undefined) ?? {};
+  const setRag = (patch: Record<string, unknown>) => onUpdate({ rag: { ...rag, ...patch } });
+  return (
+    <>
+      <TextField
+        label="Prompt / query"
+        multiline mono
+        value={String(data.prompt ?? '')}
+        onChange={(v) => onUpdate({ prompt: v })}
+        placeholder="Answer using retrieved context: {{inputs.question}}"
+      />
+      <TextField
+        label="Collection"
+        value={String(rag.collection ?? '')}
+        onChange={(v) => setRag({ collection: v })}
+        placeholder="knowledge collection name"
+      />
+      <TextField
+        label="Top K"
+        value={String(rag.top_k ?? '5')}
+        onChange={(v) => setRag({ top_k: Number(v) || 5 })}
+        placeholder="5"
+      />
+    </>
+  );
+}
+
+function SubWorkflowConfig({ data, onUpdate }: { data: WorkflowNodeData; onUpdate: (u: Partial<WorkflowNodeData>) => void }) {
+  return (
+    <>
+      <TextField
+        label="Workflow ID"
+        mono
+        value={String(data.workflow_id ?? '')}
+        onChange={(v) => onUpdate({ workflow_id: v })}
+        placeholder="uuid of the workflow to call"
+      />
+      <TextField
+        label="Inputs mapping (JSON)"
+        multiline mono
+        value={String(data.workflow_inputs ? JSON.stringify(data.workflow_inputs, null, 2) : '')}
+        onChange={(v) => { try { onUpdate({ workflow_inputs: JSON.parse(v) }); } catch { /* ignore */ } }}
+        placeholder='{"merchant_id": "{{inputs.merchant_id}}"}'
+      />
+    </>
+  );
+}
+
 // ── Config router ─────────────────────────────────────────────────────────────
 
 const TYPE_CONFIGS: Record<string, (p: { data: WorkflowNodeData; onUpdate: (u: Partial<WorkflowNodeData>) => void }) => React.ReactNode> = {
+  trigger:      TriggerConfig,
   llm:          LLMConfig,
+  ocr:          OcrConfig,
+  rpa:          RpaConfig,
+  parallel:     ParallelConfig,
+  rag:          RagConfig,
+  sub_workflow: SubWorkflowConfig,
   tool:         ToolConfig,
   http:         HTTPConfig,
   hitl:         HITLConfig,
