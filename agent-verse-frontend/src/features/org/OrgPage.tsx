@@ -19,7 +19,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISBootScreen } from '@/components/ui/JARVISBootScreen';
-import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal, BookOpen, Volume2, VolumeX, X } from 'lucide-react';
+import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal, BookOpen, Volume2, VolumeX, X, CalendarClock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { OrgHealthWidget }      from './components/OrgHealthWidget';
 import { MissionsList }          from './components/MissionsList';
@@ -36,6 +36,7 @@ import { NowNextWhy }            from './components/NowNextWhy';
 import { OrgHistoryNav }         from './components/OrgHistoryNav';
 import { DigitalTwinPanel }      from './components/DigitalTwinPanel';
 import { CommandHistoryPanel }   from './components/CommandHistoryPanel';
+import { MissionSchedules }       from './components/MissionSchedules';
 import { ObsidianVaultExplorer } from './components/ObsidianVaultExplorer';
 import { MissionOrbit }           from './components/MissionOrbit';
 import { ApprovalCenter }         from './ApprovalCenter';
@@ -50,10 +51,11 @@ import { useOrganization, useOrgHealth, useMissions, useDepartments } from './ho
 import type { OrgMission }       from './types';
 
 // Toolbar side-panels — each opens in the one right slide-over drawer.
-type PanelKey = 'graphify' | 'connectors' | 'twin' | 'commands' | 'history' | 'obsidian' | 'approvals';
+type PanelKey = 'graphify' | 'connectors' | 'twin' | 'commands' | 'history' | 'obsidian' | 'approvals' | 'schedules';
 const PANEL_META: Record<PanelKey, { title: string; subtitle: string; Icon: typeof Network }> = {
   graphify:   { title: 'Knowledge Graph',    subtitle: 'Graphify build & progress',      Icon: Network },
   connectors: { title: 'Connectors',         subtitle: 'Integrations & tool marketplace', Icon: Plug },
+  schedules:  { title: 'Scheduled Missions',  subtitle: 'Autonomous cron-driven missions',  Icon: CalendarClock },
   twin:       { title: 'Digital Twin',        subtitle: 'Capacity & load simulation',      Icon: Cpu },
   commands:   { title: 'Command History',     subtitle: 'Gateway command log',             Icon: Terminal },
   history:    { title: 'Org History',         subtitle: 'Timeline & navigation',           Icon: Clock },
@@ -421,6 +423,24 @@ export function OrgPage() {
               <Clock className="h-4 w-4" aria-hidden />
             </button>
 
+            {/* Scheduled Missions */}
+            <button
+              onClick={() => togglePanel('schedules')}
+              aria-label="Scheduled missions"
+              title="Scheduled autonomous missions"
+              style={{ touchAction: 'manipulation' }}
+              className={cn(
+                'p-2 rounded-lg transition-colors duration-150',
+                'min-w-[44px] min-h-[44px] flex items-center justify-center',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60',
+                activePanel === 'schedules'
+                  ? 'text-violet-300 bg-violet-500/10'
+                  : 'text-[#475569] hover:text-[#94A3B8] hover:bg-[#1A1F2E]',
+              )}
+            >
+              <CalendarClock className="h-4 w-4" aria-hidden />
+            </button>
+
             {/* Obsidian Vault */}
             <button
               onClick={() => togglePanel('obsidian')}
@@ -751,6 +771,9 @@ export function OrgPage() {
                 )}
                 {activePanel === 'connectors' && (
                   <div className="h-full"><ConnectorMarketplace orgId={orgId} onClose={() => setActivePanel(null)} /></div>
+                )}
+                {activePanel === 'schedules' && (
+                  <div className="h-full"><MissionSchedules orgId={orgId} /></div>
                 )}
                 {activePanel === 'twin' && <div className="p-4"><DigitalTwinPanel orgId={orgId} /></div>}
                 {activePanel === 'commands' && <div className="p-4"><CommandHistoryPanel orgId={orgId} /></div>}

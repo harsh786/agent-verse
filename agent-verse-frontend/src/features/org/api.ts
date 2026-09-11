@@ -7,6 +7,7 @@ import type {
   Organization,
   OrgDepartment,
   OrgMission,
+  OrgSchedule,
   OrgTask,
   OrgEvent,
   OrgHealthResponse,
@@ -112,6 +113,33 @@ export const orgApi = {
       method: 'POST',
       body: JSON.stringify({ goal }),
     });
+  },
+
+  // ── Mission schedules (autonomous, cron-driven) ───────────────────────────
+
+  listSchedules(orgId: string): Promise<OrgSchedule[]> {
+    return apiFetch<OrgSchedule[]>(`${BASE}/${orgId}/schedules`);
+  },
+
+  createSchedule(orgId: string, body: {
+    title: string; objective?: string; cron_expression: string; timezone?: string;
+    priority?: string; autonomy_level?: number | null; name?: string;
+  }): Promise<OrgSchedule> {
+    return apiFetch<OrgSchedule>(`${BASE}/${orgId}/schedules`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  toggleSchedule(orgId: string, scheduleId: string, enabled: boolean): Promise<OrgSchedule> {
+    return apiFetch<OrgSchedule>(`${BASE}/${orgId}/schedules/${scheduleId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    });
+  },
+
+  deleteSchedule(orgId: string, scheduleId: string): Promise<void> {
+    return apiFetch<void>(`${BASE}/${orgId}/schedules/${scheduleId}`, { method: 'DELETE' });
   },
 
   createMission(orgId: string, req: CreateMissionRequest): Promise<OrgMission> {

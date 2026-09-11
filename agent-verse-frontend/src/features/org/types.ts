@@ -100,6 +100,24 @@ export interface OrgMission {
   metadata?:        Record<string, unknown>;
 }
 
+export interface OrgSchedule {
+  id:               string;
+  org_id:           string;
+  name:             string;
+  title:            string;
+  objective:        string;
+  priority:         string;
+  autonomy_level:   number | null;
+  cron_expression:  string;
+  timezone:         string;
+  enabled:          boolean;
+  next_fire_at:     string | null;
+  last_fired_at:    string | null;
+  last_mission_id:  string | null;
+  fire_count:       number;
+  created_at:       string | null;
+}
+
 export interface OrgTask {
   id:             string;
   tenant_id:      string;
