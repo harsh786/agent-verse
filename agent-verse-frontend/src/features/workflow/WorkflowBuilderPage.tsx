@@ -503,10 +503,12 @@ export default function WorkflowBuilderPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
-  const { data: wf, isLoading, error } = useQuery({
+  const { data: wf, isLoading, error, refetch } = useQuery({
     queryKey: ['workflow-engine', 'get', id],
     queryFn: () => workflowEngineApi.get(id!),
     enabled: !!id,
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 4000),
   });
 
   const qc = useQueryClient();
@@ -529,12 +531,35 @@ export default function WorkflowBuilderPage() {
 
   if (error || !wf) {
     return (
-      <div className="min-h-screen bg-[#060810] flex items-center justify-center text-red-400"
+      <div className="min-h-screen bg-[#060810] flex flex-col items-center justify-center gap-4 px-6"
         role="alert">
-        Failed to load workflow.{' '}
-        <button onClick={() => navigate('/workflows')} className="underline ml-2">
-          Back to list
-        </button>
+        <div className="w-14 h-14 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center
+                        justify-center">
+          <AlertCircle className="h-7 w-7 text-red-400/80" />
+        </div>
+        <div className="text-center">
+          <p className="text-[#F1F5F9] font-semibold">Couldn't load this workflow</p>
+          <p className="text-[#F1F5F9]/45 text-sm mt-1">
+            The server may be briefly unavailable. Try again in a moment.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => refetch()}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500
+                       text-white text-sm font-medium transition-colors"
+          >
+            <Loader2 className={`h-4 w-4 ${isLoading ? 'animate-spin' : 'hidden'}`} />
+            Retry
+          </button>
+          <button
+            onClick={() => navigate('/workflows')}
+            className="px-4 py-2 rounded-xl border border-white/15 hover:border-white/25
+                       text-[#F1F5F9]/70 hover:text-[#F1F5F9] text-sm transition-colors"
+          >
+            Back to list
+          </button>
+        </div>
       </div>
     );
   }

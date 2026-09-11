@@ -62,8 +62,16 @@ function WorkflowCard({
       role="listitem"
       aria-label={`Workflow: ${wf.name}`}
     >
+      {/* Stretched link — the whole card opens the builder. Action buttons below
+          sit above it (relative z-10) and handle their own clicks. */}
+      <Link
+        to={`/workflows/${wf.id}/edit`}
+        className="absolute inset-0 z-0 rounded-2xl"
+        aria-label={`Open workflow ${wf.name}`}
+      />
+
       {/* Header */}
-      <div className="flex items-start justify-between gap-3">
+      <div className="relative z-10 pointer-events-none flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
           <h3 className="text-[#F1F5F9] font-semibold truncate text-sm leading-tight">
             {wf.name}
@@ -91,8 +99,8 @@ function WorkflowCard({
         </span>
       </div>
 
-      {/* Actions */}
-      <div className="flex items-center gap-2 pt-1 border-t border-white/5">
+      {/* Actions — above the stretched link so they capture their own clicks */}
+      <div className="relative z-10 flex items-center gap-2 pt-1 border-t border-white/5">
         <Link
           to={`/workflows/${wf.id}/edit`}
           className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium

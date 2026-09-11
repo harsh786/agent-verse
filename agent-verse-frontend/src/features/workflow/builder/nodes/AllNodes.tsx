@@ -8,21 +8,22 @@
  */
 import type { NodeProps } from '@xyflow/react';
 import { Handle, Position } from '@xyflow/react';
-import { motion } from 'framer-motion';
 import { BaseWorkflowNode, type WorkflowNodeData } from './BaseWorkflowNode';
 import { NODE_COLORS, type NodeType } from '../../design/tokens';
-import { nodeBounce } from '../../design/motion';
 
 // ── Shared base wrapper ───────────────────────────────────────────────────────
 
+// NO entrance animation on nodes. The previous framer spring (nodeBounce,
+// initial opacity 0) froze under React 19 StrictMode and left every node stuck
+// at opacity 0 — a blank canvas. React Flow already re-renders nodes constantly
+// (pan/zoom/select) and handles its own node appearance, so nodes render at full
+// opacity immediately, which is what guarantees the canvas is never blank.
 function makeNode(stepType: NodeType | string) {
   const NodeComponent = (props: NodeProps) => (
-    <motion.div variants={nodeBounce} initial="initial" animate="animate" exit="exit">
-      <BaseWorkflowNode
-        {...props}
-        data={{ ...(props.data as WorkflowNodeData), stepType }}
-      />
-    </motion.div>
+    <BaseWorkflowNode
+      {...props}
+      data={{ ...(props.data as WorkflowNodeData), stepType }}
+    />
   );
   NodeComponent.displayName = `${stepType}Node`;
   return NodeComponent;
@@ -184,6 +185,15 @@ export const WaitNode = (props: NodeProps) => {
 export const CodeNode = makeNode('code');
 export const SetVariableNode = makeNode('set_variable');
 export const EmitEventNode = makeNode('emit_event');
+// Previously-missing types — a workflow using any of these (e.g. the invoice
+// OCR demo, or the new RPA report step) rendered nothing for that node because
+// React Flow had no component registered for the type.
+export const OcrNode = makeNode('ocr');
+export const RpaNode = makeNode('rpa');
+export const OrgDecisionNode = makeNode('org_decision');
+export const DepartmentHandoffNode = makeNode('department_handoff');
+export const CrossTeamReviewNode = makeNode('cross_team_review');
+export const ParallelDepartmentsNode = makeNode('parallel_departments');
 
 // ── Node types registry (pass to ReactFlow) ───────────────────────────────────
 
@@ -193,6 +203,8 @@ export const workflowNodeTypes = {
   llm:          LLMNode,
   rag:          RAGNode,
   http:         HTTPNode,
+  ocr:          OcrNode,
+  rpa:          RpaNode,
   conditional:  ConditionalNode,
   parallel:     ParallelNode,
   hitl:         HITLNode,
@@ -203,4 +215,8 @@ export const workflowNodeTypes = {
   code:         CodeNode,
   set_variable: SetVariableNode,
   emit_event:   EmitEventNode,
+  org_decision:         OrgDecisionNode,
+  department_handoff:   DepartmentHandoffNode,
+  cross_team_review:    CrossTeamReviewNode,
+  parallel_departments: ParallelDepartmentsNode,
 } as const;

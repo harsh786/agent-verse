@@ -75,7 +75,12 @@ const V_SPACING = 100;
 
 function layoutNodes(definition: Record<string, unknown>): { nodes: Node[]; edges: Edge[] } {
   const steps = (definition.steps as Record<string, unknown>[] | undefined) ?? [];
-  const trigger = definition.trigger as Record<string, unknown> | undefined;
+  // Accept both the DSL's singular `trigger` and the builder/stored plural
+  // `triggers` array, so an existing workflow always shows its trigger node.
+  const pluralTriggers = definition.triggers as Record<string, unknown>[] | undefined;
+  const trigger =
+    (definition.trigger as Record<string, unknown> | undefined) ??
+    (Array.isArray(pluralTriggers) && pluralTriggers.length ? pluralTriggers[0] : undefined);
 
   const nodes: Node[] = [];
   const edges: Edge[] = [];
