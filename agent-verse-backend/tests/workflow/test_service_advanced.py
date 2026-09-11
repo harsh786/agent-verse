@@ -219,3 +219,30 @@ async def test_marketplace_list_accepts_q_without_typeerror() -> None:
     items, total = await svc.marketplace_list(category=None, q="anything", page=1, per_page=20)
     assert isinstance(items, list)
     assert isinstance(total, int)
+
+
+# ── _enrich_trigger: derive trigger_type / schedule_cron from the definition ──
+
+
+async def test_enrich_trigger_schedule() -> None:
+    item = {
+        "id": "w1",
+        "definition": {"trigger": {"type": "schedule", "schedule": {"cron": "0 9 * * *"}}},
+    }
+    out = WorkflowService._enrich_trigger(item)
+    assert out["trigger_type"] == "schedule"
+    assert out["schedule_cron"] == "0 9 * * *"
+
+
+async def test_enrich_trigger_webhook_has_no_cron() -> None:
+    item = {"id": "w2", "definition": {"trigger": {"type": "webhook", "webhook": {"path": "/x"}}}}
+    out = WorkflowService._enrich_trigger(item)
+    assert out["trigger_type"] == "webhook"
+    assert out.get("schedule_cron") is None
+
+
+async def test_enrich_trigger_no_definition_is_noop() -> None:
+    item = {"id": "w3"}
+    out = WorkflowService._enrich_trigger(item)
+    assert out.get("trigger_type") is None
+    assert out.get("schedule_cron") is None

@@ -59,6 +59,23 @@ class WorkflowService:
             labels=labels or {},
         )
 
+    @staticmethod
+    def _enrich_trigger(item: dict[str, Any]) -> dict[str, Any]:
+        """Derive ``trigger_type`` (and ``schedule_cron`` for schedules) from the
+        workflow's definition so list/detail responses can badge how each
+        workflow starts. No-op when the definition isn't on the item."""
+        from app.workflow.trigger_extract import extract_triggers, schedule_cron
+
+        defn = item.get("definition") or {}
+        triggers = extract_triggers(defn if isinstance(defn, dict) else {})
+        if triggers:
+            first = triggers[0]
+            item["trigger_type"] = first.get("type")
+            if first.get("type") == "schedule":
+                cron, _tz = schedule_cron(first)
+                item["schedule_cron"] = cron or None
+        return item
+
     async def list(
         self,
         tenant_id: str,
@@ -67,7 +84,7 @@ class WorkflowService:
         status_filter: str | None = None,
         label_filter: str | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
-        items = await self._store.list(tenant_id=tenant_id)
+        items = [self._enrich_trigger(i) for i in await self._store.list(tenant_id=tenant_id)]
         # Apply filters
         if status_filter:
             items = [i for i in items if i.get("status") == status_filter]
@@ -79,7 +96,8 @@ class WorkflowService:
         return items[start : start + per_page], total
 
     async def get(self, tenant_id: str, workflow_id: str) -> dict[str, Any] | None:
-        return await self._store.get(tenant_id=tenant_id, workflow_id=workflow_id)
+        item = await self._store.get(tenant_id=tenant_id, workflow_id=workflow_id)
+        return self._enrich_trigger(item) if item else item
 
     async def update(
         self,

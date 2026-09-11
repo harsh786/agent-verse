@@ -42,6 +42,46 @@ function StatusBadge({ status }: { status: string }) {
 
 // ── Workflow card ─────────────────────────────────────────────────────────────
 
+function shortCron(cron: string): string {
+  const p = cron.trim().split(/\s+/);
+  if (p.length < 5) return cron;
+  const [min, hr, dom, , dow] = p;
+  const at = (h: string, m: string) => {
+    const hh = Number(h);
+    if (Number.isNaN(hh)) return `${h}:${m}`;
+    const ampm = hh < 12 ? 'am' : 'pm';
+    return `${hh % 12 === 0 ? 12 : hh % 12}${m === '0' || m === '00' ? '' : ':' + m.padStart(2, '0')}${ampm}`;
+  };
+  if (min.startsWith('*/') && hr === '*') return `every ${min.slice(2)}m`;
+  if (min === '0' && hr === '*') return 'hourly';
+  if (dom === '*' && dow === '*') return `daily ${at(hr, min)}`;
+  if (dow !== '*') return `weekly ${at(hr, min)}`;
+  return `monthly ${at(hr, min)}`;
+}
+
+function TriggerBadge({ type, cron }: { type: string; cron?: string }) {
+  if (type === 'schedule') {
+    return (
+      <span className="flex items-center gap-1" title={cron ? `cron: ${cron}` : 'scheduled'}>
+        <Clock className="h-3 w-3" />
+        {cron ? shortCron(cron) : 'schedule'}
+      </span>
+    );
+  }
+  if (type === 'webhook') {
+    return (
+      <span className="flex items-center gap-1" title="Started by an inbound webhook URL">
+        <Zap className="h-3 w-3" /> webhook
+      </span>
+    );
+  }
+  return (
+    <span className="flex items-center gap-1" title="Started manually or via API">
+      <Play className="h-3 w-3" /> manual
+    </span>
+  );
+}
+
 function WorkflowCard({
   wf,
   onDelete,
@@ -87,12 +127,7 @@ function WorkflowCard({
 
       {/* Meta */}
       <div className="flex items-center gap-3 text-xs text-[#F1F5F9]/40">
-        {wf.trigger_type && (
-          <span className="flex items-center gap-1">
-            <Zap className="h-3 w-3" />
-            {wf.trigger_type}
-          </span>
-        )}
+        {wf.trigger_type && <TriggerBadge type={wf.trigger_type} cron={wf.schedule_cron} />}
         <span>v{wf.version}</span>
         <span className="ml-auto">
           {new Date(wf.updated_at).toLocaleDateString()}

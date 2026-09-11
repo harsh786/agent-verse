@@ -2784,6 +2784,7 @@ export interface WEWorkflow {
   version: string;
   labels: Record<string, string>;
   trigger_type?: string;
+  schedule_cron?: string;
   created_at: string;
   updated_at: string;
 }

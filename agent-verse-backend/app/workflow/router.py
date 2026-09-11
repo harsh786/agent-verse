@@ -136,6 +136,9 @@ class WorkflowResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     trigger_type: str | None = None
+    # Cron expression when the workflow's trigger is a schedule (else None), so
+    # the UI can badge scheduled workflows with their cadence.
+    schedule_cron: str | None = None
     # Populated by /publish for webhook/api-triggered workflows: the stable signed
     # URL an external system (e.g. the onboarding portal) POSTs to in order to
     # start a run by URL. None on draft/list/get responses.
