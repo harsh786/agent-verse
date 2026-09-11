@@ -48,8 +48,9 @@ class TestMetaAgentPlannerFallback:
     """Tests for JSON decode failure fallback path (previously 0% covered)."""
 
     @pytest.mark.asyncio
-    async def test_invalid_json_falls_back_to_unnamed_agent(self):
-        """When LLM returns garbage, fall back to unnamed-agent with original command."""
+    async def test_invalid_json_derives_name_from_command(self):
+        """When the LLM returns garbage, derive a readable name from the command
+        instead of the generic 'unnamed-agent'."""
         provider = FakeProvider(responses=["not valid JSON at all!!!"])
         planner = MetaAgentPlanner(provider=provider)
 
@@ -57,18 +58,43 @@ class TestMetaAgentPlannerFallback:
             command="Create an agent for data pipeline monitoring",
             tenant_ctx=_CTX,
         )
-        assert config.name == "unnamed-agent"
+        assert config.name == "Agent Data Pipeline"
+        assert config.name != "unnamed-agent"
         assert config.goal_template == "Create an agent for data pipeline monitoring"
         assert config.connectors == []
 
     @pytest.mark.asyncio
-    async def test_partial_json_falls_back(self):
-        """Partial/truncated JSON should also trigger fallback."""
+    async def test_partial_json_derives_name(self):
+        """Partial/truncated JSON also derives a name rather than falling back."""
         provider = FakeProvider(responses=['{"name": "my-agent", "goal_temp'])  # truncated
         planner = MetaAgentPlanner(provider=provider)
 
         config = await planner.plan(command="Partial JSON test command", tenant_ctx=_CTX)
-        assert config.name == "unnamed-agent"
+        assert config.name == "Partial JSON Test Agent"
+        assert config.name != "unnamed-agent"
+
+    @pytest.mark.asyncio
+    async def test_placeholder_name_from_llm_is_replaced(self):
+        """If the LLM echoes the schema placeholder as the name, derive a real one."""
+        llm_response = json.dumps({"name": "unnamed-agent", "goal_template": "x"})
+        provider = FakeProvider(responses=[llm_response])
+        planner = MetaAgentPlanner(provider=provider)
+
+        config = await planner.plan(
+            command="You are a research agent for market trends", tenant_ctx=_CTX
+        )
+        assert config.name == "Research Agent"
+        assert config.name != "unnamed-agent"
+
+    @pytest.mark.asyncio
+    async def test_real_llm_name_is_preserved(self):
+        """A genuine LLM-supplied name is kept as-is (not overridden by derivation)."""
+        llm_response = json.dumps({"name": "Invoice Reconciler", "goal_template": "x"})
+        provider = FakeProvider(responses=[llm_response])
+        planner = MetaAgentPlanner(provider=provider)
+
+        config = await planner.plan(command="reconcile invoices nightly", tenant_ctx=_CTX)
+        assert config.name == "Invoice Reconciler"
 
     @pytest.mark.asyncio
     async def test_markdown_wrapped_json_is_parsed(self):
@@ -212,7 +238,8 @@ class TestMetaAgentPlannerFallback:
 
         config = await planner.plan(command="Create a Jira agent", tenant_ctx=_CTX)
 
-        assert config.name == "unnamed-agent"
+        assert config.name == "Jira Agent"
+        assert config.name != "unnamed-agent"
         assert config.goal_template == "Create a Jira agent"
         assert config.connectors == []
 
@@ -223,5 +250,6 @@ class TestMetaAgentPlannerFallback:
         planner = MetaAgentPlanner(provider=provider)
 
         config = await planner.plan(command="Empty JSON test", tenant_ctx=_CTX)
-        assert config.name == "unnamed-agent"
+        assert config.name == "Empty JSON Test Agent"
+        assert config.name != "unnamed-agent"
         assert config.connectors == []
