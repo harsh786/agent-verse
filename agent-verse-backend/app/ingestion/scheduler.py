@@ -69,14 +69,37 @@ def sync_source_task(
     )
 
 
-async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_by: str) -> dict:
-    """Async body of sync_source_task."""
-    from app.ingestion.connector_registry import get_connector
+def _build_worker_ingestion() -> tuple[object, object, object]:
+    """Build DB-backed (tracker, pipeline, source_store) for the Celery worker.
+
+    The FastAPI lifespan never runs in a worker, so the pipeline must be wired
+    with the real KnowledgeStore + embedder here (previously ``IngestionPipeline()``
+    with no deps silently skipped embedding — Stage 10 ``no_embedder`` — so no
+    scheduled document was ever indexed), and the source store must be DB-backed
+    so the config actually loads cross-process.
+    """
+    from app.db.session import get_session_factory
     from app.ingestion.job_tracker import IngestionJobTracker
     from app.ingestion.pipeline import IngestionPipeline
+    from app.ingestion.source_store import SourceConfigStore
+    from app.providers.registry import resolve_provider
+    from app.rag.store import KnowledgeStore
 
-    tracker = IngestionJobTracker()
-    pipeline = IngestionPipeline()
+    db_factory = get_session_factory()
+    provider = resolve_provider()
+    knowledge_store = KnowledgeStore(db_factory)
+    pipeline = IngestionPipeline(knowledge_store=knowledge_store, embedder=provider)
+    tracker = IngestionJobTracker(db=db_factory)
+    source_store = SourceConfigStore(db=db_factory)
+    return tracker, pipeline, source_store
+
+
+async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_by: str) -> dict:
+    """Async body of sync_source_task."""
+    from app.ingestion.connector_registry import get_connector, load_all_connectors
+
+    load_all_connectors()  # ensure the @register registry is populated in the worker
+    tracker, pipeline, source_store = _build_worker_ingestion()
 
     # ── Distributed lock (LAW-14) ────────────────────────────────────────────
     lock_acquired = await tracker.acquire_lock(source_id, tenant_id, ttl_seconds=3600)
@@ -84,8 +107,8 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
         _log.info("source=%s already locked — skipping duplicate sync", source_id)
         return {"skipped": True, "reason": "already_running"}
 
-    # ── Load SourceConfig ────────────────────────────────────────────────────
-    config = await tracker.load_config(source_id, tenant_id)
+    # ── Load SourceConfig (durable, cross-process store) ─────────────────────
+    config = await source_store.get_system(source_id, tenant_id)
     if config is None:
         await tracker.release_lock(source_id, tenant_id)
         return {"error": "source_not_found"}
@@ -153,9 +176,12 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
 
                 result = await pipeline.ingest(raw_doc, config)
 
-                if result.success:
+                # PipelineResult exposes a ``status`` string, not success/skipped
+                # booleans — the old attributes raised AttributeError on the first
+                # document, killing every scheduled sync.
+                if result.status == "indexed":
                     docs_indexed += 1
-                elif result.skipped:
+                elif result.status == "skipped":
                     docs_skipped += 1
                 else:
                     docs_failed += 1
@@ -163,14 +189,16 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
                         "pipeline failed: source=%s doc=%s error=%s",
                         source_id,
                         raw_doc.doc_id,
-                        result.error,
+                        getattr(result, "error", None) or getattr(result, "skip_reason", ""),
                     )
                     # DLQ (LAW-17)
                     await tracker.add_to_dlq(
                         source_id=source_id,
                         tenant_id=tenant_id,
                         doc_id=raw_doc.doc_id,
-                        error=result.error or "pipeline_failure",
+                        error=getattr(result, "error", None)
+                        or getattr(result, "skip_reason", "")
+                        or "pipeline_failure",
                         raw_doc=raw_doc,
                     )
 
@@ -198,6 +226,13 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
         await tracker.complete_job(job)
         # Reset failure counter on success
         await tracker.reset_failure_counter(source_id, tenant_id)
+        # Advance last_synced_at + cursor on the durable source row so the beat
+        # due-scan reschedules the next sync one interval out (item 6).
+        await source_store.mark_synced(
+            source_id, tenant_id, docs_indexed=docs_indexed, chunks=0, failed=docs_failed
+        )
+        if new_cursor and new_cursor != (config.cursor_value or ""):
+            await source_store.update(source_id, tenant_id, cursor_value=new_cursor)
 
         return {
             "job_id": job.job_id,
@@ -213,6 +248,9 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
         job.docs_failed = docs_failed
         await tracker.complete_job(job, error=str(exc))
         await tracker.increment_failure_counter(source_id, tenant_id)
+        await source_store.mark_synced(
+            source_id, tenant_id, docs_indexed=docs_indexed, chunks=0, failed=1
+        )
         # Celery retry
         raise task.retry(exc=exc, countdown=int(_backoff_seconds(1))) from exc
 
@@ -231,13 +269,16 @@ def dispatch_due_sources_task(self) -> dict:
 
 
 async def _dispatch_due_sources_async() -> dict:
-    """Find sources whose next_sync_at <= now and enqueue sync tasks."""
+    """Find sources whose next sync is due and enqueue sync tasks."""
     import datetime
 
-    from app.ingestion.job_tracker import IngestionJobTracker
+    from app.db.session import get_session_factory
+    from app.ingestion.source_store import SourceConfigStore
 
-    tracker = IngestionJobTracker()
-    due_sources = await tracker.get_due_sources()
+    # DB-backed, cross-tenant scan of the durable source_configs table (the old
+    # in-memory IngestionJobTracker().get_due_sources() always returned []).
+    source_store = SourceConfigStore(db=get_session_factory())
+    due_sources = await source_store.list_due()
 
     dispatched = 0
     for source_id, tenant_id in due_sources:

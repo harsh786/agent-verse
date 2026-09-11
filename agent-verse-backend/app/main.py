@@ -550,12 +550,16 @@ def create_app(
             kg_hook=_kg_ingestion_hook,
         )
         _ingestion_job_tracker = IngestionJobTracker()
+        from app.ingestion.source_store import SourceConfigStore
+
+        _ingestion_source_store: Any = SourceConfigStore()  # DB-upgraded in lifespan
     except Exception as _ing_exc:
         import logging as _lg
 
         _lg.getLogger(__name__).warning("ingestion_framework_init_error: %s", _ing_exc)
         _ingestion_pipeline = None
         _ingestion_job_tracker = None
+        _ingestion_source_store = None
     # In-memory ToolResultCache (upgraded with Redis in lifespan)
     try:
         from app.mcp.tool_cache import ToolResultCache
@@ -1298,6 +1302,18 @@ def create_app(
             if _ing_pipe_kb is not None:
                 _ing_pipe_kb._kb = _knowledge_store_db
                 logger.info("ingestion_pipeline_knowledge_store_rewired")
+
+            # Item 6: DB-back the ingestion Source store + job tracker so Sources
+            # persist and are visible cross-process (the Celery worker/scheduler
+            # reads them for scheduled sync). Without this they lived only in the
+            # API process's memory and vanished on restart.
+            from app.ingestion.source_store import SourceConfigStore as _SourceConfigStore
+
+            app.state.ingestion_source_store = _SourceConfigStore(db=db_factory)
+            _ing_tracker = getattr(app.state, "ingestion_job_tracker", None)
+            if _ing_tracker is not None and getattr(_ing_tracker, "_db", None) is None:
+                _ing_tracker._db = db_factory
+                logger.info("ingestion_job_tracker_db_wired")
 
             # WT-3: wire the TriggerDispatcher so trigger fires actually create
             # goals (previously never instantiated -> every fire returned 503).
@@ -2271,6 +2287,7 @@ def create_app(
     # Ingestion framework
     app.state.ingestion_pipeline = _ingestion_pipeline
     app.state.ingestion_job_tracker = _ingestion_job_tracker
+    app.state.ingestion_source_store = _ingestion_source_store
     app.state.retrieval_gateway = _retrieval_gateway
     app.state.raft_service = _raft_service
     app.state.safe_web_search_capability = _web_search_capability

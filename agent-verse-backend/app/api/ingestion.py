@@ -50,6 +50,19 @@ def _get_tracker(request: Request) -> Any:
     return getattr(request.app.state, "ingestion_job_tracker", None)
 
 
+def _get_source_store(request: Request) -> Any:
+    """Durable Source store (DB-backed in prod). None → legacy in-memory dict."""
+    return getattr(request.app.state, "ingestion_source_store", None)
+
+
+async def _load_source(request: Request, source_id: str, tenant_id: str) -> Any:
+    store = _get_source_store(request)
+    if store is not None:
+        return await store.get(source_id, tenant_id)
+    src = _SOURCES.get(source_id)
+    return src if (src and src.tenant_id == tenant_id) else None
+
+
 # ── Request / Response models ─────────────────────────────────────────────────
 
 
@@ -104,6 +117,9 @@ def _serialize_source(s: SourceConfig) -> dict:
 @router.get("", response_model=list[dict])
 async def list_sources(request: Request) -> list[dict]:
     tenant = _require_tenant(request)
+    store = _get_source_store(request)
+    if store is not None:
+        return [_serialize_source(s) for s in await store.list(tenant.tenant_id)]
     return [_serialize_source(s) for s in _SOURCES.values() if s.tenant_id == tenant.tenant_id]
 
 
@@ -134,15 +150,19 @@ async def create_source(request: Request, body: CreateSourceRequest) -> dict:
         include_patterns=body.include_patterns,
         exclude_patterns=body.exclude_patterns,
     )
-    _SOURCES[source_id] = config
+    store = _get_source_store(request)
+    if store is not None:
+        await store.create(config)
+    else:
+        _SOURCES[source_id] = config
     return _serialize_source(config)
 
 
 @router.get("/{source_id}", response_model=dict)
 async def get_source(source_id: str, request: Request) -> dict:
     tenant = _require_tenant(request)
-    source = _SOURCES.get(source_id)
-    if source is None or source.tenant_id != tenant.tenant_id:
+    source = await _load_source(request, source_id, tenant.tenant_id)
+    if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
     return _serialize_source(source)
 
@@ -150,10 +170,14 @@ async def get_source(source_id: str, request: Request) -> dict:
 @router.patch("/{source_id}", response_model=dict)
 async def update_source(source_id: str, request: Request, body: UpdateSourceRequest) -> dict:
     tenant = _require_tenant(request)
-    source = _SOURCES.get(source_id)
-    if source is None or source.tenant_id != tenant.tenant_id:
+    source = await _load_source(request, source_id, tenant.tenant_id)
+    if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
     update_data = body.model_dump(exclude_none=True)
+    store = _get_source_store(request)
+    if store is not None:
+        updated = await store.update(source_id, tenant.tenant_id, **update_data)
+        return _serialize_source(updated or source)
     for key, val in update_data.items():
         if hasattr(source, key):
             setattr(source, key, val)
@@ -163,8 +187,13 @@ async def update_source(source_id: str, request: Request, body: UpdateSourceRequ
 @router.delete("/{source_id}", status_code=204)
 async def delete_source(source_id: str, request: Request) -> None:
     tenant = _require_tenant(request)
-    source = _SOURCES.get(source_id)
-    if source is None or source.tenant_id != tenant.tenant_id:
+    store = _get_source_store(request)
+    if store is not None:
+        if not await store.delete(source_id, tenant.tenant_id):
+            raise HTTPException(status_code=404, detail="Source not found")
+        return
+    source = await _load_source(request, source_id, tenant.tenant_id)
+    if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
     del _SOURCES[source_id]
 
@@ -176,8 +205,8 @@ async def delete_source(source_id: str, request: Request) -> None:
 async def health_check(source_id: str, request: Request) -> dict:
     """Test connection to the source (LAW-21: health probe per connector)."""
     tenant = _require_tenant(request)
-    source = _SOURCES.get(source_id)
-    if source is None or source.tenant_id != tenant.tenant_id:
+    source = await _load_source(request, source_id, tenant.tenant_id)
+    if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
 
     try:
@@ -209,8 +238,8 @@ async def trigger_sync(
 ) -> dict:
     """Trigger a manual sync (LAW-14: acquires distributed lock first)."""
     tenant = _require_tenant(request)
-    source = _SOURCES.get(source_id)
-    if source is None or source.tenant_id != tenant.tenant_id:
+    source = await _load_source(request, source_id, tenant.tenant_id)
+    if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
 
     tracker = _get_tracker(request)
@@ -224,15 +253,17 @@ async def trigger_sync(
     if job_id is None:
         return {"status": "already_running", "message": "Sync already in progress for this source"}
 
-    background_tasks.add_task(_run_sync, source, pipeline, tracker, job_id)
+    background_tasks.add_task(
+        _run_sync, source, pipeline, tracker, job_id, _get_source_store(request)
+    )
     return {"status": "queued", "job_id": job_id}
 
 
 @router.get("/{source_id}/sync/status", response_model=dict)
 async def sync_status(source_id: str, request: Request) -> dict:
     tenant = _require_tenant(request)
-    source = _SOURCES.get(source_id)
-    if source is None or source.tenant_id != tenant.tenant_id:
+    source = await _load_source(request, source_id, tenant.tenant_id)
+    if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
     tracker = _get_tracker(request)
     if tracker is None:
@@ -264,8 +295,8 @@ async def get_catalogue(request: Request) -> list[dict]:
 async def preview_source(source_id: str, request: Request) -> dict:
     """Dry-run: parse + chunk without embedding (LAW-22)."""
     tenant = _require_tenant(request)
-    source = _SOURCES.get(source_id)
-    if source is None or source.tenant_id != tenant.tenant_id:
+    source = await _load_source(request, source_id, tenant.tenant_id)
+    if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
 
     pipeline = _get_pipeline(request)
@@ -307,8 +338,8 @@ async def preview_source(source_id: str, request: Request) -> dict:
 @router.get("/{source_id}/stats", response_model=dict)
 async def source_stats(source_id: str, request: Request) -> dict:
     tenant = _require_tenant(request)
-    source = _SOURCES.get(source_id)
-    if source is None or source.tenant_id != tenant.tenant_id:
+    source = await _load_source(request, source_id, tenant.tenant_id)
+    if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
     return {
         "source_id": source_id,
@@ -363,6 +394,7 @@ async def _run_sync(
     pipeline: Any,
     tracker: Any,
     job_id: str,
+    source_store: Any = None,
 ) -> None:
     """Background task: run incremental sync for a source."""
     import logging
@@ -370,6 +402,8 @@ async def _run_sync(
     _log = logging.getLogger(__name__)
     job = await tracker.create_job(source, job_id=job_id, triggered_by="manual")
 
+    indexed = skipped = failed = chunks = 0
+    last_cursor = source.cursor_value or ""
     try:
         from app.ingestion.connector_registry import get_connector
 
@@ -379,6 +413,10 @@ async def _run_sync(
         async for raw_doc, new_cursor in connector.get_delta(source, source.cursor_value or None):
             if pipeline is not None:
                 result = await pipeline.ingest(raw_doc, source)
+                indexed += 1 if result.status == "indexed" else 0
+                skipped += 1 if result.status == "skipped" else 0
+                failed += 1 if result.status == "failed" else 0
+                chunks += result.chunks_created
                 await tracker.increment_counters(
                     job,
                     indexed=1 if result.status == "indexed" else 0,
@@ -388,11 +426,27 @@ async def _run_sync(
                     tokens=result.tokens_consumed,
                 )
                 await tracker.update_cursor(job, new_cursor, source)
+                last_cursor = new_cursor or last_cursor
 
         await tracker.complete_job(job)
 
     except Exception as exc:
         _log.error("sync_error source=%s: %s", source.source_id, exc)
+        failed += 1
         await tracker.complete_job(job, error=str(exc))
     finally:
+        # Persist stats + advance last_synced_at/cursor so the beat due-scan
+        # reschedules the next sync one interval out (item 6 durability).
+        if source_store is not None:
+            try:
+                await source_store.mark_synced(
+                    source.source_id, source.tenant_id,
+                    docs_indexed=indexed, chunks=chunks, failed=failed,
+                )
+                if last_cursor and last_cursor != (source.cursor_value or ""):
+                    await source_store.update(
+                        source.source_id, source.tenant_id, cursor_value=last_cursor
+                    )
+            except Exception as _stat_exc:
+                _log.warning("source_stats_update_failed: %s", _stat_exc)
         await tracker.release_lock(source.source_id, source.tenant_id, job_id)
