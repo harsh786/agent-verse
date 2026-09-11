@@ -304,6 +304,7 @@ async def _finalize_owning_mission(goal_id: str, tenant_id: str) -> None:
                 api_key_id="worker_mission_finalize",
             )
             svc = OrgService(session, tenant_id)
+            to_publish: list[str] = []
             for row in rows:
                 mission_id = str(row[0])
                 result = await svc.finalize_mission(
@@ -318,7 +319,26 @@ async def _finalize_owning_mission(goal_id: str, tenant_id: str) -> None:
                     finalized=result.get("finalized"),
                     mission_status=result.get("status"),
                 )
+                # Scheduled→publish hook: a completed mission carrying a publish
+                # target either publishes now (approved) or waits at the gate.
+                if result.get("status") == "completed":
+                    m = await svc.get_mission(mission_id)
+                    extra = (m.extra_data if m else None) or {}
+                    pub = extra.get("publish")
+                    if isinstance(pub, dict) and not extra.get("published"):
+                        if pub.get("approved"):
+                            to_publish.append(mission_id)
+                        elif not extra.get("publish_pending"):
+                            # Hold the deliverable — first run for this schedule
+                            # needs a one-time publish approval.
+                            m.extra_data = {**extra, "publish_pending": True}  # type: ignore[union-attr]
+                            await session.flush()
             await session.commit()
+            # Enqueue publish only after the finalize commit is durable.
+            for mid in to_publish:
+                publish_mission_deliverable.apply_async(
+                    kwargs={"mission_id": mid, "tenant_id": tenant_id},
+                )
     except Exception as exc:  # never let mission reconciliation break the goal task
         logger.warning("worker mission finalize failed (non-fatal): %s", exc)
 
@@ -554,9 +574,18 @@ def execute_org_mission(
 
     async def _execute() -> None:
         db_factory = get_session_factory()
+        # The bridge MUST carry a task queue: form_team_and_dispatch → submit_goal
+        # only enqueues the run_goal worker task when task_queue is set. Without
+        # it the goal is created but never runs, leaving the mission stuck
+        # 'active' forever (and its deliverable never produced, so the
+        # finalize→publish hook can never fire). CeleryGoalTaskQueue is a
+        # stateless apply_async adapter — safe to build in the worker.
+        from app.services.goal_queue import CeleryGoalTaskQueue
+
         goal_bridge = GoalService(
             db_session_factory=db_factory,
             event_store=EventStore(db_factory),
+            task_queue=CeleryGoalTaskQueue(),
         )
         provider: Any = None
         try:
@@ -578,6 +607,16 @@ def execute_org_mission(
             session.begin(),
             sqlalchemy_rls_context(session, tenant_id),
         ):
+            # This transaction deliberately spans the LLM-heavy team-formation
+            # planning (plan_mission, decompose_and_assign, agent routing) — each
+            # a multi-second call during which the transaction sits idle. The
+            # engine sets idle_in_transaction_session_timeout=30s by default to
+            # reclaim connections from cancelled requests; that timer would kill
+            # this connection mid-planning (Postgres then rejects the next
+            # statement with "Can't operate on closed transaction"). Disable it
+            # for THIS transaction only — SET LOCAL reverts when the transaction
+            # ends, so other transactions keep the 30s reclaim guard.
+            await session.execute(text("SET LOCAL idle_in_transaction_session_timeout = 0"))
             svc = OrgService(session, tenant_id)
             # Atomic claim: lock the mission row FOR UPDATE and check its status
             # under the lock. Two tasks racing the same mission (a sweep
@@ -733,7 +772,8 @@ def fire_due_org_mission_schedules(self: Any) -> dict[str, Any]:
                 await s.execute(
                     text(
                         "SELECT id, tenant_id, org_id, title, objective, priority, "
-                        "autonomy_level, dept_id, cron_expression, timezone "
+                        "autonomy_level, dept_id, cron_expression, timezone, "
+                        "publish_config "
                         "FROM org_mission_schedules "
                         "WHERE enabled IS TRUE AND next_fire_at IS NOT NULL "
                         "AND next_fire_at <= now() "
@@ -766,6 +806,16 @@ def fire_due_org_mission_schedules(self: Any) -> dict[str, Any]:
                         source="schedule",
                     )
                     mission_id = str(mission.id)
+                    # Stamp the schedule's publish target onto the mission so the
+                    # finalize→publish hook knows where to send the deliverable.
+                    # We snapshot the schedule's publish_config (approval flag and
+                    # all) at fire time and record the owning schedule id, so a
+                    # later per-schedule approval can release this exact mission.
+                    pub_cfg = r.publish_config if isinstance(r.publish_config, dict) else None
+                    if pub_cfg and pub_cfg.get("connector_server_id") and pub_cfg.get("tool_name"):
+                        stamped = {**pub_cfg, "schedule_id": str(r.id)}
+                        mission.extra_data = {**(mission.extra_data or {}), "publish": stamped}
+                        await s2.flush()
                     await svc.update_mission_status(mission_id, "planned")
                     next_fire = _next_cron_fire(r.cron_expression, r.timezone or "UTC")
                     await s2.execute(
@@ -801,6 +851,227 @@ def fire_due_org_mission_schedules(self: Any) -> dict[str, Any]:
         return fired
 
     return {"fired": _run_async(_fire())}
+
+
+def _deliverable_text(extra: dict[str, Any]) -> str:
+    """Best-effort human-readable text of a finalized mission's deliverable."""
+    result = extra.get("result") if isinstance(extra, dict) else None
+    deliverable: Any = result.get("deliverable") if isinstance(result, dict) else None
+    if deliverable is None:
+        deliverable = result
+    if deliverable is None:
+        return ""
+    if isinstance(deliverable, str):
+        return deliverable
+    if isinstance(deliverable, dict):
+        # Common shapes: {"output": ...}, {"content": ...}, {"text": ...}.
+        for key in ("output", "content", "text", "result", "summary"):
+            val = deliverable.get(key)
+            if isinstance(val, str) and val.strip():
+                return val
+        import json as _json
+
+        return _json.dumps(deliverable, ensure_ascii=False, indent=2)
+    return str(deliverable)
+
+
+def _render_publish_args(value: Any, ctx: dict[str, str]) -> Any:
+    """Substitute ``{{deliverable}}`` / ``{{title}}`` / ``{{objective}}`` tokens.
+
+    Walks the argument template recursively so a placeholder can live anywhere —
+    a top-level string, a nested object field, or a list item.
+    """
+    if isinstance(value, str):
+        out = value
+        for token, repl in ctx.items():
+            out = out.replace("{{" + token + "}}", repl)
+        return out
+    if isinstance(value, dict):
+        return {k: _render_publish_args(v, ctx) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_render_publish_args(v, ctx) for v in value]
+    return value
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="app.scaling.tasks.publish_mission_deliverable",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=30,
+    acks_late=True,
+)
+def publish_mission_deliverable(
+    self: Any,
+    mission_id: str,
+    tenant_id: str,
+) -> dict[str, Any]:
+    """Publish a finalized scheduled mission's deliverable via its connector.
+
+    Enqueued by the finalize→publish hook only once the mission's stamped
+    ``extra_data['publish']`` is approved (per-schedule one-time gate). Builds a
+    worker-local MCP client — builtins and real (Redis/vault-backed) connectors
+    both resolve here — calls the configured tool with the deliverable
+    substituted into the argument template, and records a receipt on the mission
+    (``extra_data['published']``) plus a ``mission.published`` org event.
+
+    Idempotent: a redelivery after a successful publish no-ops on the receipt.
+    """
+    from app.db.rls import sqlalchemy_rls_context
+    from app.db.session import get_session_factory
+    from app.org.service import OrgService
+    from app.tenancy.context import PlanTier, TenantContext
+
+    async def _publish() -> dict[str, Any]:
+        db_factory = get_session_factory()
+        tenant_ctx = TenantContext(
+            tenant_id=tenant_id,
+            plan=PlanTier.PROFESSIONAL,
+            api_key_id="worker_mission_publish",
+        )
+        # ── Phase A: load + validate under RLS, capture what we need to publish ──
+        async with (
+            db_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            svc = OrgService(session, tenant_id)
+            mission = await svc.get_mission(mission_id)
+            if mission is None:
+                logger.warning("publish_mission.mission_missing", mission_id=mission_id)
+                return {"status": "missing"}
+            extra = dict(mission.extra_data or {})
+            pub = extra.get("publish")
+            if not isinstance(pub, dict) or not pub.get("connector_server_id"):
+                return {"status": "no_publish_config"}
+            if extra.get("published"):
+                return {"status": "already_published"}  # idempotent redelivery
+            if str(mission.status) != "completed":
+                return {"status": "not_completed", "mission_status": str(mission.status)}
+            if not pub.get("approved"):
+                # Distinguish two cases:
+                #  - publish_pending still set → an approve/release just enqueued
+                #    us, but its DB commit may not be visible yet (the approve
+                #    endpoint commits after it enqueues). Retry to let it land.
+                #  - no publish_pending → genuinely unapproved; nothing to do.
+                if extra.get("publish_pending"):
+                    raise RuntimeError("publish approval commit not yet visible; retrying")
+                return {"status": "not_approved"}
+            server_id = str(pub["connector_server_id"])
+            tool_name = str(pub["tool_name"])
+            arg_template = pub.get("arguments") or {}
+            ctx = {
+                "deliverable": _deliverable_text(extra),
+                "title": str(mission.title or ""),
+                "objective": str(mission.objective or ""),
+            }
+            import uuid as _uuid
+
+            org_uuid = cast("_uuid.UUID", mission.org_id)
+
+        arguments = _render_publish_args(arg_template, ctx)
+
+        # ── Phase B: build a worker MCP client and dispatch the tool call ────────
+        import redis.asyncio as aioredis
+
+        from app.mcp.client import MCPClient
+        from app.mcp.registry import MCPRegistry
+        from app.providers.vault import (
+            RedisConnectorSecretStore,
+            get_vault,
+            resolve_connector_secret_ref_for_tenant,
+        )
+
+        # Builtins are registered at module import; re-register defensively so a
+        # fresh worker always has the Python handlers (not just Redis records).
+        try:
+            from app.mcp.servers.registry_wiring import get_builtin_server_configs
+
+            for _bcfg in get_builtin_server_configs():
+                if _bcfg.get("handler") is not None:
+                    MCPRegistry.register_builtin_handler(_bcfg["server_id"], _bcfg["handler"])
+        except Exception as _bh_exc:
+            logger.warning("publish_mission.builtin_restore_failed: %s", _bh_exc)
+
+        redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
+        try:
+            secret_store = RedisConnectorSecretStore(redis=redis_client, vault=get_vault())
+
+            async def _resolve_secret(ref: str, tctx: Any = None) -> str | None:
+                return await resolve_connector_secret_ref_for_tenant(
+                    ref, store=secret_store, tenant_ctx=tctx
+                )
+
+            registry = MCPRegistry(redis_client)
+            mcp_client = MCPClient(
+                registry,
+                secret_resolver=_resolve_secret,
+                redis=redis_client,
+            )
+            call = await mcp_client.call_tool(
+                server_id=server_id,
+                tool_name=tool_name,
+                arguments=arguments if isinstance(arguments, dict) else {},
+                tenant_ctx=tenant_ctx,
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                await redis_client.aclose()
+
+        receipt = {
+            "server_id": server_id,
+            "tool_name": tool_name,
+            "success": bool(call.success),
+            "error": call.error or "",
+            "output": call.output,
+            "published_at": datetime.datetime.now(datetime.UTC).isoformat(),
+        }
+
+        # ── Phase C: record the receipt + emit the org event (fresh RLS session) ─
+        async with (
+            db_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            svc = OrgService(session, tenant_id)
+            mission = await svc.get_mission(mission_id)
+            if mission is not None:
+                extra = dict(mission.extra_data or {})
+                extra["published"] = receipt
+                extra.pop("publish_pending", None)
+                mission.extra_data = extra
+                await session.flush()
+                await svc._emit_event(
+                    org_uuid,
+                    "mission.published",
+                    title=(
+                        f"Deliverable published via {tool_name}"
+                        if call.success
+                        else f"Publish failed via {tool_name}"
+                    ),
+                    entity_type="mission",
+                    entity_id=mission_id,
+                    severity="info" if call.success else "warning",
+                    payload={"mission_id": mission_id, **receipt},
+                    source="orchestrator",
+                )
+
+        if not call.success:
+            # Retry transient connector failures; the receipt above is overwritten
+            # on the next attempt. exc carries the connector error for visibility.
+            raise RuntimeError(f"publish tool call failed: {call.error}")
+        logger.info(
+            "publish_mission.published",
+            mission_id=mission_id,
+            server_id=server_id,
+            tool_name=tool_name,
+        )
+        return {"status": "published", "receipt": receipt}
+
+    try:
+        return cast("dict[str, Any]", _run_async(_publish()))
+    except Exception as exc:
+        logger.warning("publish_mission.retry", mission_id=mission_id, error=str(exc)[:200])
+        raise self.retry(exc=exc) from exc
 
 
 @celery_app.task(name="app.scaling.tasks.run_goal_dlq", bind=True, max_retries=0)

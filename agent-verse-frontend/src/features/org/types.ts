@@ -116,6 +116,16 @@ export interface OrgSchedule {
   last_mission_id:  string | null;
   fire_count:       number;
   created_at:       string | null;
+  publish:          OrgSchedulePublish | null;
+}
+
+/** Where a scheduled mission auto-publishes its deliverable each run. */
+export interface OrgSchedulePublish {
+  connector_server_id: string;
+  tool_name:           string;
+  arguments:           Record<string, unknown>;
+  /** One-time gate: false until the org approves autonomous publishing. */
+  approved:            boolean;
 }
 
 export interface OrgTask {

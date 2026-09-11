@@ -932,9 +932,28 @@ class OrgService:
         dept_id: str | None = None,
         name: str = "",
         enabled: bool = True,
+        publish_config: dict[str, Any] | None = None,
     ) -> OrgMissionSchedule:
-        """Create a cron schedule that autonomously launches an org mission."""
+        """Create a cron schedule that autonomously launches an org mission.
+
+        ``publish_config`` (optional) makes each run publish its deliverable via
+        a connector: ``{connector_server_id, tool_name, arguments}`` where any
+        argument value equal to ``"{{deliverable}}"`` is replaced with the
+        mission's deliverable text. It starts unapproved (``approved=False``) —
+        the first run is held until the org approves publishing for this
+        schedule, after which runs publish autonomously.
+        """
         next_fire = _next_cron_fire(cron_expression, timezone) if enabled else None
+        pub: dict[str, Any] | None = None
+        if publish_config and publish_config.get("connector_server_id") and publish_config.get(
+            "tool_name"
+        ):
+            pub = {
+                "connector_server_id": str(publish_config["connector_server_id"]),
+                "tool_name": str(publish_config["tool_name"]),
+                "arguments": publish_config.get("arguments") or {},
+                "approved": bool(publish_config.get("approved", False)),
+            }
         sched = OrgMissionSchedule(
             tenant_id=uuid.UUID(self._tenant_id),
             org_id=uuid.UUID(org_id),
@@ -948,6 +967,7 @@ class OrgService:
             timezone=timezone,
             enabled=enabled,
             next_fire_at=next_fire,
+            publish_config=pub,
         )
         self._session.add(sched)
         await self._session.flush()
@@ -1021,6 +1041,85 @@ class OrgService:
         await self._session.delete(sched)
         await self._session.flush()
         return True
+
+    async def get_mission_schedule(
+        self, org_id: str, schedule_id: str
+    ) -> OrgMissionSchedule | None:
+        return (
+            await self._session.execute(
+                select(OrgMissionSchedule).where(
+                    and_(
+                        OrgMissionSchedule.tenant_id == self._tenant_id,
+                        OrgMissionSchedule.org_id == uuid.UUID(org_id),
+                        OrgMissionSchedule.id == uuid.UUID(schedule_id),
+                    )
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def approve_schedule_publishing(
+        self, org_id: str, schedule_id: str, approved: bool = True
+    ) -> OrgMissionSchedule | None:
+        """Flip the one-time publish approval gate for a schedule.
+
+        The first scheduled run holds its deliverable at an approval gate rather
+        than publishing. Approving here lets this run's held deliverable (and all
+        future runs) publish autonomously via the configured connector. Revoking
+        (``approved=False``) re-arms the gate for subsequent runs.
+        """
+        sched = await self.get_mission_schedule(org_id, schedule_id)
+        if sched is None:
+            return None
+        pub = dict(sched.publish_config or {})
+        if not pub.get("connector_server_id") or not pub.get("tool_name"):
+            # Nothing to approve — this schedule has no publish target configured.
+            return sched
+        pub["approved"] = bool(approved)
+        sched.publish_config = pub
+        sched.updated_at = datetime.now(UTC)
+        await self._session.flush()
+        return sched
+
+    async def release_pending_publish_missions(
+        self, org_id: str, schedule_id: str
+    ) -> list[str]:
+        """Approve + return finished missions of this schedule held at the gate.
+
+        The first scheduled run finalizes while its publish is still unapproved,
+        so its deliverable waits with ``extra_data.publish_pending = true``.
+        Approving the schedule releases those held missions: we flip each one's
+        stamped ``publish.approved`` to true and clear the pending flag, then
+        return their ids so the caller can enqueue the publish task. Scoped by
+        org + schedule id (IDOR guard) and idempotent (already-published missions
+        are skipped).
+        """
+        rows = (
+            await self._session.execute(
+                select(OrgMission).where(
+                    and_(
+                        OrgMission.tenant_id == self._tenant_id,
+                        OrgMission.org_id == uuid.UUID(org_id),
+                        OrgMission.status == "completed",
+                        OrgMission.extra_data["publish"]["schedule_id"].astext == schedule_id,
+                        OrgMission.extra_data["publish_pending"].astext == "true",
+                    )
+                )
+            )
+        ).scalars().all()
+        released: list[str] = []
+        for m in rows:
+            extra = dict(m.extra_data or {})
+            pub = extra.get("publish")
+            if not isinstance(pub, dict) or extra.get("published"):
+                continue
+            pub = {**pub, "approved": True}
+            extra["publish"] = pub
+            extra.pop("publish_pending", None)
+            m.extra_data = extra
+            released.append(str(m.id))
+        if released:
+            await self._session.flush()
+        return released
 
     async def list_missions(
         self,

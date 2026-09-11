@@ -124,6 +124,11 @@ export const orgApi = {
   createSchedule(orgId: string, body: {
     title: string; objective?: string; cron_expression: string; timezone?: string;
     priority?: string; autonomy_level?: number | null; name?: string;
+    publish?: {
+      connector_server_id: string;
+      tool_name: string;
+      arguments?: Record<string, unknown>;
+    };
   }): Promise<OrgSchedule> {
     return apiFetch<OrgSchedule>(`${BASE}/${orgId}/schedules`, {
       method: 'POST',
@@ -136,6 +141,17 @@ export const orgApi = {
       method: 'PATCH',
       body: JSON.stringify({ enabled }),
     });
+  },
+
+  /** Approve (or revoke) autonomous publishing for a schedule. Approving also
+   *  releases any earlier run whose deliverable is waiting at the gate. */
+  approveSchedulePublishing(
+    orgId: string, scheduleId: string, approved = true,
+  ): Promise<OrgSchedule & { released_missions: string[] }> {
+    return apiFetch<OrgSchedule & { released_missions: string[] }>(
+      `${BASE}/${orgId}/schedules/${scheduleId}/approve-publishing`,
+      { method: 'POST', body: JSON.stringify({ approved }) },
+    );
   },
 
   deleteSchedule(orgId: string, scheduleId: string): Promise<void> {

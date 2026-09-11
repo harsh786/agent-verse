@@ -78,6 +78,8 @@ celery_app.conf.update(
         "app.scaling.tasks.execute_org_mission": {"queue": "goals"},
         "app.scaling.tasks.resweep_stuck_missions": {"queue": "maintenance"},
         "app.scaling.tasks.fire_due_org_mission_schedules": {"queue": "schedules"},
+        # Scheduled-mission deliverable publishing (event-driven, no beat entry).
+        "app.scaling.tasks.publish_mission_deliverable": {"queue": "goals"},
         "app.scaling.tasks.run_goal_dlq": {"queue": "goals_dlq"},
         "app.scaling.tasks.run_scheduled_goal": {"queue": "schedules"},
         "app.scaling.tasks.fire_due_schedules": {"queue": "schedules"},

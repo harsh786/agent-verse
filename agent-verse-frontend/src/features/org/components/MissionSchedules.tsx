@@ -12,7 +12,7 @@
 import { useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
-import { CalendarClock, Loader2, Trash2, Plus, Zap, Play, Pause } from 'lucide-react';
+import { CalendarClock, Loader2, Trash2, Plus, Zap, Play, Pause, Send, ShieldCheck, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { orgApi } from '../api';
 import type { OrgSchedule } from '../types';
@@ -61,24 +61,60 @@ export function MissionSchedules({ orgId }: MissionSchedulesProps) {
   const [custom, setCustom] = useState(false);
   const [error, setError] = useState('');
 
+  // Optional auto-publish target. Off by default; when on, each run's
+  // deliverable is sent through a connector tool. Publishing stays gated until
+  // the org approves it on the created schedule's card (a separate, deliberate
+  // step), so turning this on here never publishes anything on its own.
+  const [publishOn, setPublishOn] = useState(false);
+  const [connectorId, setConnectorId] = useState('builtin-utility');
+  const [toolName, setToolName] = useState('http_request');
+  const [argsText, setArgsText] = useState(
+    '{\n  "method": "POST",\n  "url": "https://httpbin.org/post",\n  "body": "{{deliverable}}"\n}',
+  );
+
   const invalidate = useCallback(
     () => qc.invalidateQueries({ queryKey: ['org-schedules', orgId] }),
     [qc, orgId],
   );
 
   const createMut = useMutation({
-    mutationFn: () =>
-      orgApi.createSchedule(orgId, {
+    mutationFn: () => {
+      let publish;
+      if (publishOn) {
+        let args: Record<string, unknown>;
+        try {
+          args = JSON.parse(argsText) as Record<string, unknown>;
+        } catch {
+          throw new Error('Publish arguments must be valid JSON.');
+        }
+        if (!connectorId.trim() || !toolName.trim()) {
+          throw new Error('Add a connector and a tool to publish the result.');
+        }
+        publish = {
+          connector_server_id: connectorId.trim(),
+          tool_name: toolName.trim(),
+          arguments: args,
+        };
+      }
+      return orgApi.createSchedule(orgId, {
         title: title.trim(),
         objective: objective.trim(),
         cron_expression: custom ? customCron.trim() : cron,
         timezone: BROWSER_TZ,
-      }),
+        publish,
+      });
+    },
     onSuccess: () => {
       setTitle(''); setObjective(''); setError('');
       invalidate();
     },
     onError: (e) => setError(e instanceof Error ? e.message : 'Could not create the schedule.'),
+  });
+
+  const approveMut = useMutation({
+    mutationFn: ({ id, approved }: { id: string; approved: boolean }) =>
+      orgApi.approveSchedulePublishing(orgId, id, approved),
+    onSuccess: invalidate,
   });
 
   const toggleMut = useMutation({
@@ -147,6 +183,50 @@ export function MissionSchedules({ orgId }: MissionSchedulesProps) {
             className="w-full px-3 py-2 rounded-lg text-[13px] font-mono bg-[#0F1420] border border-[#2D3748] text-[#F1F5F9] placeholder:text-[#475569] focus:outline-none focus:ring-2 focus:ring-blue-500/60"
           />
         )}
+        {/* Auto-publish (optional) */}
+        <div className="rounded-lg border border-[#1E2535] bg-[#0F1420]/60 p-2.5 space-y-2">
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={publishOn}
+              onChange={(e) => setPublishOn(e.target.checked)}
+              className="h-4 w-4 rounded border-[#2D3748] bg-[#0F1420] accent-blue-500"
+            />
+            <Send className="h-3.5 w-3.5 text-blue-400" aria-hidden />
+            <span className="text-[12px] font-medium text-[#CBD5E1]">Publish each result automatically</span>
+          </label>
+          {publishOn && (
+            <div className="space-y-2 pt-1">
+              <div className="flex gap-2">
+                <input
+                  value={connectorId}
+                  onChange={(e) => setConnectorId(e.target.value)}
+                  placeholder="Connector (e.g. builtin-utility)"
+                  aria-label="Publish connector server id"
+                  className="flex-1 px-2.5 py-1.5 rounded-lg text-[12px] bg-[#0F1420] border border-[#2D3748] text-[#F1F5F9] placeholder:text-[#475569] focus:outline-none focus:ring-2 focus:ring-blue-500/60"
+                />
+                <input
+                  value={toolName}
+                  onChange={(e) => setToolName(e.target.value)}
+                  placeholder="Tool (e.g. http_request)"
+                  aria-label="Publish tool name"
+                  className="flex-1 px-2.5 py-1.5 rounded-lg text-[12px] bg-[#0F1420] border border-[#2D3748] text-[#F1F5F9] placeholder:text-[#475569] focus:outline-none focus:ring-2 focus:ring-blue-500/60"
+                />
+              </div>
+              <textarea
+                value={argsText}
+                onChange={(e) => setArgsText(e.target.value)}
+                rows={4}
+                aria-label="Publish arguments (JSON)"
+                spellCheck={false}
+                className="w-full px-2.5 py-1.5 rounded-lg text-[12px] font-mono bg-[#0F1420] border border-[#2D3748] text-[#F1F5F9] placeholder:text-[#475569] resize-none focus:outline-none focus:ring-2 focus:ring-blue-500/60"
+              />
+              <p className="text-[11px] text-[#64748B]">
+                Use <code className="text-[#94A3B8]">{'{{deliverable}}'}</code>, <code className="text-[#94A3B8]">{'{{title}}'}</code> or <code className="text-[#94A3B8]">{'{{objective}}'}</code> in the arguments. The first run waits for your approval before it publishes.
+              </p>
+            </div>
+          )}
+        </div>
         {error && <p role="alert" className="text-[12px] text-rose-400">{error}</p>}
         <button
           onClick={() => canCreate && createMut.mutate()}
@@ -216,6 +296,30 @@ export function MissionSchedules({ orgId }: MissionSchedulesProps) {
                     <span>{s.enabled ? `next ${relative(s.next_fire_at)}` : 'paused'}</span>
                     {s.fire_count > 0 && <><span>·</span><span>{s.fire_count} run{s.fire_count !== 1 ? 's' : ''}</span></>}
                   </div>
+                  {s.publish && (
+                    <div className="flex items-center gap-2 mt-2 pl-8">
+                      <Send className="h-3 w-3 text-blue-400 shrink-0" aria-hidden />
+                      <span className="text-[11px] text-[#64748B] truncate flex-1 min-w-0">
+                        Publishes via <span className="text-[#94A3B8] font-mono">{s.publish.tool_name}</span>
+                      </span>
+                      {s.publish.approved ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 shrink-0">
+                          <CheckCircle2 className="h-3 w-3" aria-hidden /> auto
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => approveMut.mutate({ id: s.id, approved: true })}
+                          disabled={approveMut.isPending}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 border border-amber-500/20 disabled:opacity-50 transition-colors shrink-0"
+                        >
+                          {approveMut.isPending && approveMut.variables?.id === s.id
+                            ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+                            : <ShieldCheck className="h-3 w-3" aria-hidden />}
+                          Approve publishing
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </motion.li>
               ))}
             </AnimatePresence>

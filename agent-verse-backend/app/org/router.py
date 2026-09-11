@@ -3082,6 +3082,21 @@ async def org_create_mission_execute(
 # ── Mission schedules — autonomous cron-driven missions ──────────────────────
 
 
+class _SchedulePublishConfig(BaseModel):
+    """Where a scheduled mission publishes its deliverable each run.
+
+    ``arguments`` is a tool-argument template; any string value may contain the
+    tokens ``{{deliverable}}``, ``{{title}}`` or ``{{objective}}``, substituted
+    at publish time. Publishing starts gated — the first run holds until the org
+    approves it via the approve-publishing endpoint (``approved`` cannot be set
+    to true at creation; that is a deliberate, separate confirmation step).
+    """
+
+    connector_server_id: str = Field(min_length=1, max_length=200)
+    tool_name: str = Field(min_length=1, max_length=200)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
 class _MissionScheduleRequest(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     objective: str = Field(default="", max_length=2000)
@@ -3092,10 +3107,15 @@ class _MissionScheduleRequest(BaseModel):
     dept_id: str | None = None
     name: str = Field(default="", max_length=200)
     enabled: bool = True
+    publish: _SchedulePublishConfig | None = None
 
 
 class _ScheduleToggleRequest(BaseModel):
     enabled: bool
+
+
+class _SchedulePublishApproval(BaseModel):
+    approved: bool = True
 
 
 def _schedule_to_dict(s: Any) -> dict[str, Any]:
@@ -3115,6 +3135,25 @@ def _schedule_to_dict(s: Any) -> dict[str, Any]:
         "last_mission_id": str(s.last_mission_id) if s.last_mission_id else None,
         "fire_count": s.fire_count,
         "created_at": s.created_at.isoformat() if s.created_at else None,
+        "publish": _publish_config_to_dict(s.publish_config),
+    }
+
+
+def _publish_config_to_dict(cfg: Any) -> dict[str, Any] | None:
+    """Expose a schedule's publish target without leaking argument secrets.
+
+    Argument values are templates the org authored (they may embed the
+    deliverable placeholder), so they are safe to echo; but we never echo any
+    resolved secret — connectors resolve their own credentials at call time from
+    the vault, so none live here. We surface only the shape + approval state.
+    """
+    if not isinstance(cfg, dict) or not cfg.get("connector_server_id"):
+        return None
+    return {
+        "connector_server_id": str(cfg.get("connector_server_id", "")),
+        "tool_name": str(cfg.get("tool_name", "")),
+        "arguments": cfg.get("arguments") or {},
+        "approved": bool(cfg.get("approved", False)),
     }
 
 
@@ -3146,6 +3185,16 @@ async def org_create_schedule(
     # tenant-scoped via RLS) before we create a schedule under it.
     if await service.get_organization(org_id) is None:
         raise HTTPException(status_code=404, detail="Organization not found")
+    publish_config = None
+    if body.publish is not None:
+        # Starts unapproved regardless of client input — approval is a separate,
+        # deliberate step (POST …/approve-publishing), never granted at creation.
+        publish_config = {
+            "connector_server_id": body.publish.connector_server_id,
+            "tool_name": body.publish.tool_name,
+            "arguments": body.publish.arguments,
+            "approved": False,
+        }
     sched = await service.create_mission_schedule(
         org_id=org_id,
         title=body.title,
@@ -3157,6 +3206,7 @@ async def org_create_schedule(
         dept_id=body.dept_id,
         name=body.name,
         enabled=body.enabled,
+        publish_config=publish_config,
     )
     return _schedule_to_dict(sched)
 
@@ -3200,6 +3250,45 @@ async def org_delete_schedule(
     _require_tenant(request)
     if not await service.delete_mission_schedule(org_id, schedule_id):
         raise HTTPException(status_code=404, detail="Schedule not found")
+
+
+@router.post(
+    "/{org_id}/schedules/{schedule_id}/approve-publishing",
+    operation_id="org_approve_schedule_publishing",
+    summary="Approve (or revoke) autonomous publishing for a schedule",
+)
+async def org_approve_schedule_publishing(
+    org_id: str,
+    schedule_id: str,
+    body: _SchedulePublishApproval,
+    request: Request,
+    service: OrgService = Depends(get_org_service),
+) -> dict[str, Any]:
+    """One-time gate: approve a schedule so its runs publish autonomously.
+
+    Approving also releases any earlier run whose deliverable is waiting at the
+    gate — those missions publish immediately. Revoking (``approved=false``)
+    re-arms the gate for future runs without unpublishing anything already sent.
+    """
+    _require_tenant(request)
+    sched = await service.approve_schedule_publishing(org_id, schedule_id, body.approved)
+    if sched is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    released: list[str] = []
+    if body.approved:
+        released = await service.release_pending_publish_missions(org_id, schedule_id)
+        if released:
+            from app.scaling.tasks import publish_mission_deliverable
+
+            # Use the service's tenant id — the exact format the worker's RLS
+            # context expects (matches what the beat/execute tasks pass).
+            for mid in released:
+                publish_mission_deliverable.apply_async(
+                    kwargs={"mission_id": mid, "tenant_id": service._tenant_id},
+                )
+    out = _schedule_to_dict(sched)
+    out["released_missions"] = released
+    return out
 
 
 # ── WS-2b: Mission finalize — reconcile subtasks vs real goal + aggregate ─────
