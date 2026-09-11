@@ -49,6 +49,9 @@ class CompletionRequest:
     response_schema: dict[str, Any] | None = None  # JSON Schema; when set, provider MUST
     # return content that is a single valid
     # JSON object matching it
+    json_object: bool = False  # request plain JSON-object mode (no schema): the model
+    # must return a single JSON object. Weaker than response_schema (no shape
+    # enforcement) but reliably suppresses prose / chain-of-thought preambles.
     cache_prefix: str | None = None  # stable prefix for Anthropic ephemeral caching
 
 

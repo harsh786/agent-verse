@@ -223,6 +223,11 @@ class OpenAICompatibleProvider:
                     "schema": request.response_schema,
                 },
             }
+        elif request.json_object:
+            # Plain JSON-object mode: no schema to enforce, just force the model to
+            # emit a single JSON object (suppresses prose / chain-of-thought that a
+            # reasoning model otherwise wraps around the answer).
+            kwargs["response_format"] = {"type": "json_object"}
 
         try:
             response = await self._client.chat.completions.create(**kwargs)

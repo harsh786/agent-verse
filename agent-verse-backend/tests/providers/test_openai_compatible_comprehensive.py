@@ -152,6 +152,41 @@ async def test_complete_uses_default_model_when_empty() -> None:
 
 
 @pytest.mark.asyncio
+async def test_json_object_sets_response_format() -> None:
+    """CompletionRequest.json_object=True asks the provider for JSON mode so a
+    (reasoning) model returns a clean JSON object instead of prose/chain-of-thought."""
+    mock_openai, mock_client = _make_openai_module()
+    mock_client.chat.completions.create = AsyncMock(return_value=_make_chat_response('{"a":1}'))
+
+    with patch.dict(sys.modules, {"openai": mock_openai}):
+        from app.providers.openai_compatible import OpenAICompatibleProvider
+        provider = OpenAICompatibleProvider(api_key="key")
+        await provider.complete(
+            CompletionRequest(
+                messages=[Message(role="user", content="Return JSON")],
+                model="m",
+                json_object=True,
+            )
+        )
+
+    call_kw = mock_client.chat.completions.create.call_args.kwargs
+    assert call_kw["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_no_response_format_by_default() -> None:
+    mock_openai, mock_client = _make_openai_module()
+    mock_client.chat.completions.create = AsyncMock(return_value=_make_chat_response("hi"))
+    with patch.dict(sys.modules, {"openai": mock_openai}):
+        from app.providers.openai_compatible import OpenAICompatibleProvider
+        provider = OpenAICompatibleProvider(api_key="key")
+        await provider.complete(
+            CompletionRequest(messages=[Message(role="user", content="hi")], model="m")
+        )
+    assert "response_format" not in mock_client.chat.completions.create.call_args.kwargs
+
+
+@pytest.mark.asyncio
 async def test_complete_no_usage_returns_zero_tokens() -> None:
     """When response.usage is None, tokens default to 0."""
     mock_openai, mock_client = _make_openai_module()

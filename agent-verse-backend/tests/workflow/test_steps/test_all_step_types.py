@@ -92,6 +92,40 @@ async def test_llm_step_resolves_template() -> None:
     assert result["step_outputs"]["llm1"] is not None
 
 
+@pytest.mark.asyncio
+async def test_llm_step_json_output_sets_json_object_on_request() -> None:
+    """json_output on the step must flow through to request.json_object so the
+    provider is asked for clean JSON-object mode (no prose / chain-of-thought)."""
+    from app.workflow.steps.llm_step import LLMStepNode
+
+    provider = AsyncMock()
+    provider.complete.return_value = MagicMock(
+        content='{"ok": true}', prompt_tokens=1, completion_tokens=1, cost_usd=0.0
+    )
+    step = StepDefinition(id="llm1", type="llm", prompt="x", json_output=True)
+    node = LLMStepNode(step, _ctx(), llm_provider=provider)
+    await node.execute(_state())  # type: ignore[arg-type]
+
+    req = provider.complete.call_args.args[0]
+    assert req.json_object is True
+
+
+@pytest.mark.asyncio
+async def test_llm_step_json_object_false_by_default() -> None:
+    from app.workflow.steps.llm_step import LLMStepNode
+
+    provider = AsyncMock()
+    provider.complete.return_value = MagicMock(
+        content='{"ok": true}', prompt_tokens=1, completion_tokens=1, cost_usd=0.0
+    )
+    step = StepDefinition(id="llm1", type="llm", prompt="x")
+    node = LLMStepNode(step, _ctx(), llm_provider=provider)
+    await node.execute(_state())  # type: ignore[arg-type]
+
+    req = provider.complete.call_args.args[0]
+    assert req.json_object is False
+
+
 # ── HTTPStepNode ──────────────────────────────────────────────────────────────
 
 

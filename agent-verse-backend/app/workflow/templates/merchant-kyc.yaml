@@ -74,6 +74,7 @@ definition:
         - id: parse_registration
           name: "Parse registration fields"
           type: llm
+          json_output: true
           prompt: >-
             Extract the following fields from this business-registration document
             text and return ONLY a JSON object with keys business_name,
@@ -82,6 +83,7 @@ definition:
         - id: parse_owner_id
           name: "Parse owner ID fields"
           type: llm
+          json_output: true
           prompt: >-
             Extract owner_name, id_number and expiry_date from this government-ID
             text and return ONLY a JSON object. Text:
@@ -89,6 +91,7 @@ definition:
         - id: assess_website
           name: "Assess website legitimacy"
           type: llm
+          json_output: true
           prompt: >-
             From this website scan report, return ONLY a JSON object with keys
             live (bool), matches_business (bool), has_contact_page (bool),
@@ -100,6 +103,7 @@ definition:
     - id: risk_assessment
       name: "Cross-consistency & risk scoring"
       type: llm
+      json_output: true
       depends_on: ['analyze']
       prompt: >-
         You are a KYC risk analyst. Compare the application, the parsed

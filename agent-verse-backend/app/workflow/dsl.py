@@ -184,6 +184,11 @@ class StepDefinition(BaseModel):
     temperature: float = 0.1
     max_tokens: int = 2000
     rag: RAGConfig | None = None
+    # When true, ask the provider for JSON-object mode so the step returns a clean
+    # JSON object regardless of the model (a reasoning model otherwise wraps the
+    # answer in prose / chain-of-thought). Pair with a prompt that says "return
+    # ONLY a JSON object with keys ...".
+    json_output: bool = False
 
     # HTTP step config
     url: str = ""

@@ -82,6 +82,9 @@ class LLMStepNode:
                 model=self.step.model or configured_default_model("gpt-4o"),
                 temperature=self.step.temperature,
                 max_tokens=self.step.max_tokens,
+                # JSON-object mode for structured steps → clean JSON out even from
+                # a reasoning model that would otherwise emit a prose preamble.
+                json_object=self.step.json_output,
             )
             response = await self.llm_provider.complete(req)
             raw_text = response.content.strip()
