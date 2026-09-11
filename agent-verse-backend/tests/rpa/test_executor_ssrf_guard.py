@@ -23,6 +23,23 @@ import pytest
 from app.rpa.executor import RPAExecutor
 
 
+@pytest.fixture(autouse=True)
+def _force_browserless(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the browser-less (http-fallback / simulation) execution path.
+
+    As the module docstring states, these tests exercise the SSRF guard on the
+    WS-13 http-fallback path and mock ``httpx.AsyncClient``. That assumes
+    Playwright is absent. Playwright is, however, in this repo's dev deps and may
+    be installed in the running env — in which case ``execute()`` routes into the
+    real-browser paths (``_execute_playwright_standalone``), the mocked httpx is
+    never used, and the guard-logic assertions (simulation exemption, allowlist
+    override) break on environment rather than on behaviour. Forcing
+    ``_check_playwright`` to report unavailable makes the guard LOGIC the thing
+    under test, deterministically, without weakening the guard itself.
+    """
+    monkeypatch.setattr(RPAExecutor, "_check_playwright", staticmethod(lambda: False))
+
+
 def _explode_httpx() -> Any:
     """A fake httpx.AsyncClient that fails the test if instantiated at all."""
 
