@@ -2044,11 +2044,58 @@ class OrgService:
                 metadata=metadata,
             )
 
+            # Reads as "Planned" (queued for execution) the instant the mission
+            # appears in the UI over SSE — nicer than the default "draft" while
+            # the team forms. form_team_and_dispatch flips it to active/review.
+            await self.update_mission_status(str(mission.id), "planned")
+
+            dispatch_result = await self.form_team_and_dispatch(
+                mission=mission,
+                org_id=org_id,
+                objective=objective,
+                title=title,
+                expected_outcome=expected_outcome,
+                dept_id=dept_id,
+                assigned_team_id=assigned_team_id,
+                autonomy_level=autonomy_level,
+                priority=priority,
+                tenant_ctx=tenant_ctx,
+                app_state=app_state,
+            )
+            span.set_attribute("dispatched", dispatch_result.get("goal_id") is not None)
+            return mission, dispatch_result
+
+    async def form_team_and_dispatch(
+        self,
+        *,
+        mission: OrgMission,
+        org_id: str,
+        objective: str = "",
+        title: str = "",
+        expected_outcome: str = "",
+        dept_id: str | None = None,
+        assigned_team_id: str | None = None,
+        autonomy_level: int | None = None,
+        priority: str = "medium",
+        tenant_ctx: Any | None = None,
+        app_state: Any = None,
+    ) -> dict[str, Any]:
+        """Form the team (MetaOrchestrator), decompose into tasks, and dispatch
+        the goal to the AgentGraph.
+
+        Split out of ``create_mission_and_execute`` so the API can persist and
+        return the mission row immediately, then run this — the slow part (LLM
+        team formation + decomposition) — in the background.
+        """
+        with _tracer.start_as_current_span("org.form_team_and_dispatch") as span:
+            span.set_attribute("tenant_id", self._tenant_id)
+            span.set_attribute("org_id", org_id)
+
             # ── Step 2: Load org entity for MetaOrchestrator ─────────────────
             org = await self.get_organization(org_id)
             if org is None:
                 _log.warning("org.create_mission_and_execute.org_not_found", org_id=org_id)
-                return mission, {"goal_id": None, "error": "org_not_found"}
+                return {"goal_id": None, "error": "org_not_found"}
 
             # ── Step 3: Form the team + produce execution plan ────────────────
             dispatch_result: dict[str, Any] = {
@@ -2521,4 +2568,4 @@ class OrgService:
                 await self.update_mission_status(str(mission.id), "active")
 
             span.set_attribute("dispatched", goal_id is not None)
-            return mission, dispatch_result
+            return dispatch_result

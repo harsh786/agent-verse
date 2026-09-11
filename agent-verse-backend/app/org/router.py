@@ -2966,10 +2966,13 @@ async def org_create_mission_execute(
     request: Request,
     service: OrgService = Depends(get_org_service),
 ) -> dict[str, Any]:
-    """Creates an OrgMission record, runs MetaOrchestrator team formation,
-    and dispatches the goal to the AgentGraph via GoalService (Celery).
+    """Create an OrgMission, form the team (MetaOrchestrator), and dispatch the
+    goal to the AgentGraph.
 
-    Returns immediately with mission_id + goal_id for tracking.
+    Team formation runs an LLM and can take 30-90s. The ``mission.created`` event
+    is emitted at the very start (before team formation), so the UI shows the
+    mission over SSE almost immediately and the New Mission drawer no longer
+    waits on this response — see the frontend's fire-and-forget submit.
     """
     ctx = _require_tenant(request)
     tenant_ctx = ctx if hasattr(ctx, "tenant_id") else None

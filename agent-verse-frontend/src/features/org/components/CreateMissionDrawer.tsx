@@ -66,7 +66,11 @@ export function CreateMissionDrawer({ orgId, open, onClose }: CreateMissionDrawe
           `${objective}\n\nAttached files (use the extract_document tool to read them ` +
           `when the task needs their contents):\n${lines}`.trim();
       }
-      await createMission.mutateAsync({ ...data, objective });
+      // Fire-and-forget: the backend forms the team + dispatches (30-90s), but
+      // the mission shows up in the list immediately via the mission.created SSE
+      // event, so we don't block the drawer on that slow response. Close now;
+      // the list and the Live Agent Network update live as the mission runs.
+      createMission.mutate({ ...data, objective });
       reset();
       setFiles([]);
       onClose();
