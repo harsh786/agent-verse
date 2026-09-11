@@ -816,6 +816,7 @@ class PostgresWorkflowRunStore:
             "step_id": row["step_id"],
             "step_type": row["step_type"],
             "status": row["status"],
+            "input": _as_obj(row["resolved_input"]),
             "output": _as_obj(row["output"]),
             "error": row["error"],
             "started_at": _iso(row["started_at"]),

@@ -127,3 +127,29 @@ def test_invalidate_removes_all_versions(compiler: WorkflowCompiler) -> None:
     compiler.compile(wf2)
     compiler.invalidate(wf1.id)
     assert all(not k.startswith(f"{wf1.id}:") for k in compiler._cache)
+
+
+# ── Per-step resolved input capture (_step_input_payload) ─────────────────────
+
+
+def test_step_input_payload_collects_generic_input() -> None:
+    step = StepDefinition(id="s", type="ocr", input={"image_base64": "{{inputs.doc}}"})
+    assert WorkflowCompiler._step_input_payload(step) == {"image_base64": "{{inputs.doc}}"}
+
+
+def test_step_input_payload_collects_llm_prompt_and_http_fields() -> None:
+    llm = StepDefinition(id="l", type="llm", prompt="Summarize {{inputs.text}}")
+    assert WorkflowCompiler._step_input_payload(llm) == {"prompt": "Summarize {{inputs.text}}"}
+
+    http = StepDefinition(
+        id="h", type="http", url="{{inputs.cb}}", request_body={"x": "{{steps.a.output}}"}
+    )
+    payload = WorkflowCompiler._step_input_payload(http)
+    assert payload["url"] == "{{inputs.cb}}"
+    assert payload["request_body"] == {"x": "{{steps.a.output}}"}
+
+
+def test_step_input_payload_empty_for_bare_step() -> None:
+    # A conditional carries no input-bearing fields → empty payload (nothing to show).
+    step = StepDefinition(id="c", type="conditional")
+    assert WorkflowCompiler._step_input_payload(step) == {}

@@ -39,6 +39,7 @@ class StepResultResponse(BaseModel):
     step_id: str
     step_type: str
     status: str
+    input: dict[str, Any] | None = None
     output: dict[str, Any] | None = None
     error: str | None = None
     started_at: str | None = None

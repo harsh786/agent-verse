@@ -53,6 +53,15 @@ function StepResultRow({ step }: { step: WEStepResult }) {
               <p className="text-xs text-red-400 font-mono leading-relaxed">{step.error}</p>
             </div>
           )}
+          {step.input && Object.keys(step.input).length > 0 && (
+            <div className="mb-3">
+              <p className="text-xs text-[#F1F5F9]/40 font-semibold uppercase tracking-wide mb-2">Input</p>
+              <pre className="text-xs font-mono text-[#CBD5E1] bg-[#0F1117]/60 rounded-lg p-3
+                              overflow-auto max-h-60 leading-relaxed">
+                {JSON.stringify(step.input, null, 2)}
+              </pre>
+            </div>
+          )}
           {step.output && (
             <div>
               <p className="text-xs text-[#F1F5F9]/40 font-semibold uppercase tracking-wide mb-2">Output</p>
@@ -61,6 +70,9 @@ function StepResultRow({ step }: { step: WEStepResult }) {
                 {JSON.stringify(step.output, null, 2)}
               </pre>
             </div>
+          )}
+          {!step.input && !step.output && !step.error && (
+            <p className="text-xs text-[#F1F5F9]/30">No input or output recorded for this step.</p>
           )}
         </div>
       )}

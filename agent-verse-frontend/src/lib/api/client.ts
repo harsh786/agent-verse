@@ -2832,6 +2832,7 @@ export interface WEStepResult {
   step_id: string;
   step_type: string;
   status: string;
+  input?: Record<string, unknown>;
   output?: Record<string, unknown>;
   error?: string;
   started_at?: string;

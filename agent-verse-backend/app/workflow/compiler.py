@@ -226,7 +226,42 @@ class WorkflowCompiler:
         return node_fn
 
     @staticmethod
-    async def _record_step_start(run_store: Any, state: WorkflowState, step: Any) -> None:
+    def _step_input_payload(step: Any) -> dict[str, Any]:
+        """Collect the step's declared input-bearing fields (still templated).
+
+        Different step types carry their input in different fields; gather the
+        ones that are populated so the run viewer can show what each step
+        consumed. Resolution of ``{{...}}`` templates happens in the caller.
+        """
+        payload: dict[str, Any] = {}
+        generic = getattr(step, "input", None)
+        if isinstance(generic, dict) and generic:
+            payload.update(generic)
+        # Type-specific input fields (only when set).
+        if getattr(step, "prompt", ""):
+            payload["prompt"] = step.prompt
+        if getattr(step, "url", ""):
+            payload["url"] = step.url
+        if getattr(step, "request_body", None):
+            payload["request_body"] = step.request_body
+        if getattr(step, "var_value", ""):
+            payload["var_value"] = step.var_value
+        if getattr(step, "iterate_over", ""):
+            payload["iterate_over"] = step.iterate_over
+        return payload
+
+    async def _record_step_start(
+        self, run_store: Any, state: WorkflowState, step: Any
+    ) -> None:
+        resolved_input: dict[str, Any] | None = None
+        try:
+            raw = self._step_input_payload(step)
+            if raw:
+                resolved = self._ctx.resolve_all(raw, state)
+                if isinstance(resolved, dict) and resolved:
+                    resolved_input = resolved
+        except Exception:  # input capture is best-effort, never break the run
+            resolved_input = None
         try:
             await run_store.record_step_start(
                 run_id=state["run_id"],
@@ -234,6 +269,7 @@ class WorkflowCompiler:
                 step_id=step.id,
                 step_type=step.type,
                 step_name=getattr(step, "name", None) or None,
+                resolved_input=resolved_input,
             )
         except Exception as exc:  # persistence must never break execution
             _log.warning("step_start_persist_failed", step_id=step.id, error=str(exc))
