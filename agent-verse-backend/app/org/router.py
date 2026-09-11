@@ -3142,6 +3142,10 @@ async def org_create_schedule(
 ) -> dict[str, Any]:
     _require_tenant(request)
     _validate_cron(body.cron_expression)
+    # IDOR guard: the org must belong to this tenant (get_organization is
+    # tenant-scoped via RLS) before we create a schedule under it.
+    if await service.get_organization(org_id) is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
     sched = await service.create_mission_schedule(
         org_id=org_id,
         title=body.title,
@@ -3176,7 +3180,7 @@ async def org_toggle_schedule(
     service: OrgService = Depends(get_org_service),
 ) -> dict[str, Any]:
     _require_tenant(request)
-    sched = await service.set_mission_schedule_enabled(schedule_id, body.enabled)
+    sched = await service.set_mission_schedule_enabled(org_id, schedule_id, body.enabled)
     if sched is None:
         raise HTTPException(status_code=404, detail="Schedule not found")
     return _schedule_to_dict(sched)
@@ -3194,7 +3198,7 @@ async def org_delete_schedule(
     service: OrgService = Depends(get_org_service),
 ) -> None:
     _require_tenant(request)
-    if not await service.delete_mission_schedule(schedule_id):
+    if not await service.delete_mission_schedule(org_id, schedule_id):
         raise HTTPException(status_code=404, detail="Schedule not found")
 
 

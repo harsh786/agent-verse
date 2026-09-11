@@ -977,13 +977,16 @@ class OrgService:
         return list(result.scalars().all())
 
     async def set_mission_schedule_enabled(
-        self, schedule_id: str, enabled: bool
+        self, org_id: str, schedule_id: str, enabled: bool
     ) -> OrgMissionSchedule | None:
         sched = (
             await self._session.execute(
                 select(OrgMissionSchedule).where(
                     and_(
                         OrgMissionSchedule.tenant_id == self._tenant_id,
+                        # Scope by org_id too — the path org must own the schedule,
+                        # so one org can't toggle another org's schedule (IDOR).
+                        OrgMissionSchedule.org_id == uuid.UUID(org_id),
                         OrgMissionSchedule.id == uuid.UUID(schedule_id),
                     )
                 )
@@ -1000,12 +1003,14 @@ class OrgService:
         await self._session.flush()
         return sched
 
-    async def delete_mission_schedule(self, schedule_id: str) -> bool:
+    async def delete_mission_schedule(self, org_id: str, schedule_id: str) -> bool:
         sched = (
             await self._session.execute(
                 select(OrgMissionSchedule).where(
                     and_(
                         OrgMissionSchedule.tenant_id == self._tenant_id,
+                        # Scope by org_id too (IDOR guard — see set_..._enabled).
+                        OrgMissionSchedule.org_id == uuid.UUID(org_id),
                         OrgMissionSchedule.id == uuid.UUID(schedule_id),
                     )
                 )
