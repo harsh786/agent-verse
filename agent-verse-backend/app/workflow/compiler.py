@@ -109,28 +109,40 @@ class WorkflowCompiler:
 
                 graph.add_conditional_edges(step.id, make_router(), branch_map)  # type: ignore[arg-type]
 
+            elif step.type == "hitl" and any(a.next for a in step.actions):
+                # After the reviewer decides, route by the ACTION they took. The
+                # router returns the action *id* (step_outputs[gate].action), so the
+                # path map must be keyed by action id → target step — NOT by
+                # ``a.next`` (that mismatched the router's return value and made
+                # LangGraph KeyError, so per-action `next` never worked). An action
+                # with no explicit `next` falls through to the step's normal
+                # downstream; a fallback bucket keeps a missing/empty action from
+                # KeyError-ing.
+                downstream = self._find_downstream(step.id, definition)
+                default_next: Any = downstream[0] if downstream else END
+                action_targets: dict[str, Any] = {
+                    a.id: (a.next or default_next) for a in step.actions
+                }
+                action_targets["__end__"] = END  # target for the WAITING_HITL pause
+                action_targets["__default__"] = default_next
+                valid_ids = {a.id for a in step.actions}
+
+                def make_hitl_router(s: Any = step, valid: set[str] = valid_ids) -> Any:
+                    async def router(state: WorkflowState) -> str:
+                        if state.get("status") == WorkflowRunStatus.WAITING_HITL:
+                            return "__end__"
+                        out = (state.get("step_outputs") or {}).get(s.id, {})
+                        action = str(out.get("action", ""))
+                        return action if action in valid else "__default__"
+
+                    return router
+
+                graph.add_conditional_edges(step.id, make_hitl_router(), action_targets)  # type: ignore[arg-type]
             elif step.type == "hitl":
-                # After HITL step: route based on _hitl_next_step
-                action_targets = {a.next: a.next for a in step.actions if a.next}
-                if action_targets:
-
-                    def make_hitl_router(s: Any = step) -> Any:
-                        async def router(state: WorkflowState) -> str:
-                            if state.get("status") == WorkflowRunStatus.WAITING_HITL:
-                                return "__end__"
-                            out = (state.get("step_outputs") or {}).get(s.id, {})
-                            return str(out.get("action", ""))
-
-                        return router
-
-                    # Add END as a valid target for the waiting state
-                    action_targets["__end__"] = END
-                    graph.add_conditional_edges(step.id, make_hitl_router(), action_targets)  # type: ignore[arg-type]
-                else:
-                    # No explicit actions — just route to downstream steps
-                    downstream = self._find_downstream(step.id, definition)
-                    for ds in downstream:
-                        graph.add_edge(step.id, ds)
+                # No per-action routing — just route to downstream steps.
+                downstream = self._find_downstream(step.id, definition)
+                for ds in downstream:
+                    graph.add_edge(step.id, ds)
             else:
                 # Standard edges: step → all steps that depend on it
                 downstream = self._find_downstream(step.id, definition)

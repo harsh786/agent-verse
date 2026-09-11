@@ -173,3 +173,73 @@ async def test_workflow_hitl_reject_does_not_advance_as_approved() -> None:
     state = await compiled.aget_state(config)
     assert state.values["step_outputs"]["gate"]["action"] == "reject"
     assert state.values["status"] != WorkflowRunStatus.WAITING_HITL
+
+
+def _hitl_branching_definition() -> WorkflowDefinition:
+    """A HITL gate whose actions route to DIFFERENT next steps via `next`."""
+    return WorkflowDefinition(
+        id="wf-hitl-branch",
+        name="hitl-branch",
+        steps=[
+            StepDefinition(
+                id="gate",
+                type="hitl",
+                actions=[
+                    HITLAction(id="approve", next="on_approve"),
+                    HITLAction(id="reject", next="on_reject"),
+                ],
+            ),
+            StepDefinition(
+                id="on_approve",
+                type="set_variable",
+                depends_on=["gate"],
+                var_name="outcome",
+                var_value="APPROVED_PATH",
+            ),
+            StepDefinition(
+                id="on_reject",
+                type="set_variable",
+                depends_on=["gate"],
+                var_name="outcome",
+                var_value="REJECTED_PATH",
+            ),
+        ],
+    )
+
+
+async def test_hitl_action_next_routes_to_its_own_branch() -> None:
+    """Regression: per-action `next` on a HITL step must route to that action's
+    branch. The compiler used to key the router map by ``a.next`` while the router
+    returned the action *id*, so a decided action KeyError'd / never routed."""
+    definition = _hitl_branching_definition()
+    runner, compiler, hitl_gateway, _store = _build_runner(definition)
+
+    run_id = await runner.run(workflow_id=definition.id, tenant_id="t-3", inputs={})
+    pending, _ = await hitl_gateway.list_pending(tenant_id="t-3")
+    req = pending[0]
+
+    await hitl_gateway.decide(req.request_id, action="approve", actor_id="reviewer-3")
+
+    config = {"configurable": {"thread_id": run_id}}
+    compiled = compiler.compile(definition)
+    outs = (await compiled.aget_state(config)).values["step_outputs"]
+    # Approve routed to on_approve only; on_reject never ran.
+    assert "on_approve" in outs
+    assert "on_reject" not in outs
+
+
+async def test_hitl_action_next_reject_routes_to_reject_branch() -> None:
+    definition = _hitl_branching_definition()
+    runner, compiler, hitl_gateway, _store = _build_runner(definition)
+
+    run_id = await runner.run(workflow_id=definition.id, tenant_id="t-4", inputs={})
+    pending, _ = await hitl_gateway.list_pending(tenant_id="t-4")
+    req = pending[0]
+
+    await hitl_gateway.decide(req.request_id, action="reject", actor_id="reviewer-4")
+
+    config = {"configurable": {"thread_id": run_id}}
+    compiled = compiler.compile(definition)
+    outs = (await compiled.aget_state(config)).values["step_outputs"]
+    assert "on_reject" in outs
+    assert "on_approve" not in outs

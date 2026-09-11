@@ -11,9 +11,9 @@ def store() -> SystemTemplateStore:
     return SystemTemplateStore()
 
 
-def test_load_all_25_templates(store: SystemTemplateStore) -> None:
+def test_load_all_templates(store: SystemTemplateStore) -> None:
     slugs = store.all_slugs()
-    assert len(slugs) == 25, f"Expected 25 templates, got {len(slugs)}: {slugs}"
+    assert len(slugs) == 26, f"Expected 26 templates, got {len(slugs)}: {slugs}"
 
 
 def test_each_template_has_required_fields(store: SystemTemplateStore) -> None:
@@ -44,7 +44,7 @@ def test_get_nonexistent_raises(store: SystemTemplateStore) -> None:
 
 def test_list_no_filter_returns_all(store: SystemTemplateStore) -> None:
     items, total = store.list()
-    assert total == 25
+    assert total == 26
     assert len(items) <= 20  # default per_page
 
 
@@ -76,7 +76,7 @@ def test_categories_returns_all(store: SystemTemplateStore) -> None:
 def test_categories_counts_correct(store: SystemTemplateStore) -> None:
     cats = store.categories()
     total_in_cats = sum(c["count"] for c in cats)
-    assert total_in_cats == 25
+    assert total_in_cats == 26
 
 
 def test_fork_creates_new_id(store: SystemTemplateStore) -> None:
@@ -103,7 +103,7 @@ def test_reload_clears_cache(store: SystemTemplateStore) -> None:
     assert store._cache is None
     # Re-load works
     items, total = store.list()
-    assert total == 25
+    assert total == 26
 
 
 def test_template_tags_are_list(store: SystemTemplateStore) -> None:

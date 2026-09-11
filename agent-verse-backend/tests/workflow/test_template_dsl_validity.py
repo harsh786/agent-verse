@@ -19,7 +19,7 @@ _SLUGS = SystemTemplateStore().all_slugs()
 
 
 def test_templates_present() -> None:
-    assert len(_SLUGS) == 25
+    assert len(_SLUGS) == 26
 
 
 @pytest.mark.parametrize("slug", _SLUGS)
