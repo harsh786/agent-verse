@@ -571,27 +571,41 @@ def execute_org_mission(
             plan=PlanTier.PROFESSIONAL,
             api_key_id="worker_mission_execute",
         )
+        from sqlalchemy import text
+
         async with (
             db_factory() as session,
             session.begin(),
             sqlalchemy_rls_context(session, tenant_id),
         ):
             svc = OrgService(session, tenant_id)
-            mission = await svc.get_mission(mission_id)
-            if mission is None:
+            # Atomic claim: lock the mission row FOR UPDATE and check its status
+            # under the lock. Two tasks racing the same mission (a sweep
+            # re-enqueue overlapping the original/redelivery) are serialized —
+            # the loser blocks on the lock until the winner's transaction commits,
+            # then reads the now-dispatched status and skips. A plain
+            # read-then-check was a TOCTOU race: the status only flips to 'active'
+            # at the END of form_team_and_dispatch (~30-90s later), so both tasks
+            # would see 'planned' and each dispatch a duplicate team + goal.
+            locked = (
+                await session.execute(
+                    text("SELECT status FROM org_missions WHERE id = :mid FOR UPDATE"),
+                    {"mid": mission_id},
+                )
+            ).first()
+            if locked is None:
                 logger.warning("execute_org_mission.mission_missing", mission_id=mission_id)
                 return
-            # Idempotency: a redelivered task (worker was lost after committing the
-            # dispatch) must not form a second team / dispatch a second goal. Only
-            # a mission still sitting at its initial status is unprocessed — the
-            # commit of form_team_and_dispatch is atomic, so a crash mid-formation
-            # rolls back to 'planned' and is safe to retry.
-            if mission.status not in ("planned", "draft"):
+            if locked.status not in ("planned", "draft"):
                 logger.info(
                     "execute_org_mission.already_processed",
                     mission_id=mission_id,
-                    status=mission.status,
+                    status=locked.status,
                 )
+                return
+            mission = await svc.get_mission(mission_id)
+            if mission is None:
+                logger.warning("execute_org_mission.mission_missing", mission_id=mission_id)
                 return
             await svc.form_team_and_dispatch(
                 mission=mission,
