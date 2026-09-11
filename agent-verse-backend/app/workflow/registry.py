@@ -123,6 +123,7 @@ def _register_built_ins() -> None:
     )
     from app.workflow.steps.parallel_step import ParallelStepNode
     from app.workflow.steps.rag_step import RAGStepNode
+    from app.workflow.steps.rpa_step import RPAStepNode
     from app.workflow.steps.set_variable_step import SetVariableStepNode
     from app.workflow.steps.sub_workflow_step import SubWorkflowStepNode
     from app.workflow.steps.tool_step import ToolStepNode
@@ -184,6 +185,20 @@ def _register_built_ins() -> None:
                 {},
                 "Extract text from any document/image via the OCR engine",
                 color="#ECFEFF",
+            ),
+        ),
+        (
+            "rpa",
+            RPAStepNode,
+            StepTypeMeta(
+                "rpa",
+                "RPA + Report",
+                "AI",
+                "globe",
+                {},
+                {},
+                "Automate a page (open/extract/screenshot) and produce a PDF report",
+                color="#EEF2FF",
             ),
         ),
         (
