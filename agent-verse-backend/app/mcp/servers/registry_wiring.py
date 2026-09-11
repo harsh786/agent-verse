@@ -3383,10 +3383,19 @@ async def register_builtin_servers(registry: Any, tenant_ctx: Any) -> int:
                     "builtin_server_register_failed: %s %s", cfg["name"], exc
                 )
         else:
-            # Env no longer valid for this server — remove any stale registration
-            # (the catalog persists to Redis, so a server registered under an old
-            # env otherwise lingers, e.g. builtin-openai after OPENAI_API_KEY is
-            # repurposed to a non-OpenAI key).
+            # Env not set for this server. Preserve a user-registered connector
+            # that carries its own credentials in auth_config (added via the
+            # Connectors UI) — its key comes from the connector, not the env, so
+            # it must survive restarts. Re-wire its handler + tool defs so it
+            # stays usable. Only remove a stale registration that has NO user
+            # creds (e.g. builtin-openai lingering after OPENAI_API_KEY changed).
             with contextlib.suppress(Exception):
-                await registry.unregister(cfg["server_id"], tenant_ctx=tenant_ctx)
+                existing = await registry.get(cfg["server_id"], tenant_ctx=tenant_ctx)
+                if existing is not None and existing.auth_config:
+                    MCPRegistry.register_builtin_handler(cfg["server_id"], cfg["handler"])
+                    if not existing.tool_definitions:
+                        existing.tool_definitions = cfg["tool_definitions"]
+                        await registry.register(existing, tenant_ctx=tenant_ctx)
+                else:
+                    await registry.unregister(cfg["server_id"], tenant_ctx=tenant_ctx)
     return count
