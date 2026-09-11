@@ -23,7 +23,7 @@ const STATUS_ICONS: Record<string, React.ReactNode> = {
   waiting_hitl:  <Clock className="h-3.5 w-3.5" />,
 };
 
-function RunRow({ run }: { run: WERun }) {
+function RunRow({ run, workflowId }: { run: WERun; workflowId?: string }) {
   const statusKey = run.status === 'complete' ? 'complete' : run.status;
   const statusCls = getStatusClasses(statusKey);
   const duration = run.duration_ms
@@ -38,7 +38,7 @@ function RunRow({ run }: { run: WERun }) {
       whileHover={{ x: 2 }}
     >
     <Link
-      to={`/workflow-runs/${run.run_id}`}
+      to={`/workflows/${workflowId}/runs/${run.run_id}`}
       className="flex items-center gap-4 px-4 py-3 rounded-xl border border-white/8
                  bg-[#0F1826]/3 hover:bg-[#0A0D14]/6 transition-colors group"
       aria-label={`Run ${run.run_id}, status: ${run.status}`}
@@ -114,7 +114,7 @@ export default function WorkflowRunsPage() {
             aria-label="Workflow runs"
           >
             {(runs?.items ?? []).map((run) => (
-              <RunRow key={run.run_id} run={run} />
+              <RunRow key={run.run_id} run={run} workflowId={id} />
             ))}
           </div>
         )}
