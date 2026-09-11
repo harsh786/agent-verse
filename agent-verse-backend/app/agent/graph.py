@@ -724,20 +724,71 @@ class AgentGraph(
                 "iterations": getattr(state, "iterations", 0),
                 "completed_at": datetime.now(UTC).isoformat(),
             }
+            checkpoint_key = f"step_{step_index}"
             async with (
                 self._db_session_factory() as session,
                 session.begin(),
                 sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
             ):
-                ck = GoalCheckpoint(
-                    goal_id=goal_id,
-                    tenant_id=tenant_ctx.tenant_id,
-                    checkpoint_key=f"step_{step_index}",
-                    sequence=step_index,
-                    payload=payload,
-                    recovery_status="checkpointed",
-                )
-                session.add(ck)
+                # Upsert, not insert: the agent loop re-checkpoints the same step
+                # on every replan, so a plain INSERT collides with
+                # uq_goal_checkpoints_key (tenant_id, goal_id, checkpoint_key) and
+                # the replanned state is never persisted (crash-recovery would then
+                # restore a stale checkpoint). On Postgres use an atomic
+                # ON CONFLICT DO UPDATE; elsewhere (SQLite unit tests) fall back to
+                # a read-then-write — safe because a single worker owns a goal's
+                # checkpoints, so there is no concurrent writer for the same key.
+                dialect = session.bind.dialect.name if session.bind is not None else ""
+                if dialect == "postgresql":
+                    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                    stmt = pg_insert(GoalCheckpoint).values(
+                        id=uuid.uuid4().hex,
+                        goal_id=goal_id,
+                        tenant_id=tenant_ctx.tenant_id,
+                        checkpoint_key=checkpoint_key,
+                        sequence=step_index,
+                        payload=payload,
+                        recovery_status="checkpointed",
+                    )
+                    stmt = stmt.on_conflict_do_update(
+                        constraint="uq_goal_checkpoints_key",
+                        set_={
+                            "sequence": step_index,
+                            "payload": payload,
+                            "recovery_status": "checkpointed",
+                            "updated_at": datetime.now(UTC),
+                        },
+                    )
+                    await session.execute(stmt)
+                else:
+                    from sqlalchemy import select
+
+                    existing = (
+                        await session.execute(
+                            select(GoalCheckpoint).where(
+                                GoalCheckpoint.tenant_id == tenant_ctx.tenant_id,
+                                GoalCheckpoint.goal_id == goal_id,
+                                GoalCheckpoint.checkpoint_key == checkpoint_key,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if existing is not None:
+                        existing.sequence = step_index
+                        existing.payload = payload
+                        existing.recovery_status = "checkpointed"
+                        existing.updated_at = datetime.now(UTC)
+                    else:
+                        session.add(
+                            GoalCheckpoint(
+                                goal_id=goal_id,
+                                tenant_id=tenant_ctx.tenant_id,
+                                checkpoint_key=checkpoint_key,
+                                sequence=step_index,
+                                payload=payload,
+                                recovery_status="checkpointed",
+                            )
+                        )
         except Exception as exc:
             from app.observability.logging import get_logger
 
