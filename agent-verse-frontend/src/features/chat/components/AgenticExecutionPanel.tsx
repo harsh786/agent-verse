@@ -78,7 +78,7 @@ export function AgenticExecutionPanel({ events, isActive, className }: AgenticEx
 
   return (
     <motion.div
-      initial={{ opacity: 0, x: 16 }}
+      initial={false}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 16 }}
       transition={{ type: 'spring', stiffness: 300, damping: 28 }}
@@ -102,7 +102,7 @@ export function AgenticExecutionPanel({ events, isActive, className }: AgenticEx
               <motion.div
                 key={item.id}
                 layout
-                initial={reduce ? { opacity: 0 } : { opacity: 0, x: 8 }}
+                initial={false}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0 }}
                 transition={{ type: 'spring', stiffness: 500, damping: 35 }}

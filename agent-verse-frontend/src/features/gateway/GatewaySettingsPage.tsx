@@ -118,7 +118,6 @@ const CHANNEL_ICONS: Record<string, React.ComponentType<{ className?: string }>>
 // ── Spring constants ──────────────────────────────────────────────────────────
 
 const SPRING_FAST  = { type: 'spring', stiffness: 600, damping: 35 } as const;
-const SPRING_MODAL = { type: 'spring', stiffness: 300, damping: 28 } as const;
 
 // ── Channel Card ──────────────────────────────────────────────────────────────
 
@@ -132,11 +131,9 @@ function ChannelCard({ channel, index, onConnect }: {
   const isConn = channel.status === 'connected';
 
   return (
-    <motion.div
-      initial={reduce ? { opacity: 0 } : { opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ ...SPRING_FAST, delay: index * 0.04 }}
-      className="bg-[#1A1F2E] border border-[#2D3748] rounded-xl p-4 flex items-start gap-3"
+    <div
+      style={{ animationDelay: `${Math.min(index, 8) * 0.04}s` }}
+      className="jarvis-pop-in bg-[#1A1F2E] border border-[#2D3748] rounded-xl p-4 flex items-start gap-3"
     >
       {/* Status dot */}
       <div className="mt-0.5 relative">
@@ -196,7 +193,7 @@ function ChannelCard({ channel, index, onConnect }: {
           <ExternalLink className="h-3 w-3" aria-hidden />
         </div>
       )}
-    </motion.div>
+    </div>
   );
 }
 
@@ -220,12 +217,8 @@ function ConnectModal({ channelId, onClose }: { channelId: string; onClose: () =
       className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
         className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <motion.div
-        initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.95, y: 20 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.95 }}
-        transition={SPRING_MODAL}
-        className="relative bg-[#0F1117] border border-[#2D3748] rounded-2xl w-full max-w-md shadow-2xl p-6"
+      <div
+        className="jarvis-pop-in relative bg-[#0F1117] border border-[#2D3748] rounded-2xl w-full max-w-md shadow-2xl p-6"
       >
         <div className="flex items-center gap-3 mb-6">
           <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center">
@@ -277,7 +270,7 @@ function ConnectModal({ channelId, onClose }: { channelId: string; onClose: () =
             >Cancel</motion.button>
           </div>
         </div>
-      </motion.div>
+      </div>
     </div>
   );
 }

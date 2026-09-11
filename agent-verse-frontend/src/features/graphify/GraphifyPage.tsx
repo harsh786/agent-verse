@@ -128,11 +128,8 @@ export function GraphifyPage() {
 
         {done && (
           <JARVISStaggerItem>
-            <motion.div
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={SPRING_FAST}
-              className="p-5 bg-green-500/10 border border-green-500/30 rounded-2xl text-center"
+            <div
+              className="jarvis-pop-in p-5 bg-green-500/10 border border-green-500/30 rounded-2xl text-center"
             >
               <div className="text-2xl mb-2">✅</div>
               <p className="text-sm font-semibold text-green-400">Knowledge graph built successfully!</p>
@@ -147,7 +144,7 @@ export function GraphifyPage() {
               >
                 Run again
               </motion.button>
-            </motion.div>
+            </div>
           </JARVISStaggerItem>
         )}
 

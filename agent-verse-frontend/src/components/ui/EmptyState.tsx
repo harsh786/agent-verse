@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
-import { springs } from '@/lib/design/motion';
 
 export type EmptyStateVariant = 'float' | 'pulse' | 'static';
 
@@ -32,11 +31,8 @@ export function EmptyState({
   })();
 
   return (
-    <motion.div
-      initial={reduce ? {} : { opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ ...springs.page, delay: 0.1 }}
-      className={`flex flex-col items-center justify-center py-14 px-6 text-center gap-3 ${className}`}
+    <div
+      className={`jarvis-rise-in flex flex-col items-center justify-center py-14 px-6 text-center gap-3 ${className}`}
     >
       {icon && (
         <motion.div
@@ -52,6 +48,6 @@ export function EmptyState({
         <p className="text-xs text-[#475569] max-w-xs leading-relaxed">{description}</p>
       )}
       {action && <div className="mt-2">{action}</div>}
-    </motion.div>
+    </div>
   );
 }

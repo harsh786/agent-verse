@@ -18,7 +18,7 @@ import { AlertTriangle, Trash2, X } from "lucide-react";
 import { SPRING_PAGE, JARVISButton } from "@/components/ui/JARVISPageShell";
 
 const BACKDROP = { hidden: { opacity: 0 }, visible: { opacity: 1, transition: { duration: 0.18 } }, exit: { opacity: 0, transition: { duration: 0.14 } } };
-const PANEL = { hidden: { opacity: 0, scale: 0.93, y: 12 }, visible: { opacity: 1, scale: 1, y: 0, transition: SPRING_PAGE }, exit: { opacity: 0, scale: 0.96, y: 8, transition: { duration: 0.14 } } };
+const PANEL = { hidden: { opacity: 1, scale: 0.93, y: 12 }, visible: { opacity: 1, scale: 1, y: 0, transition: SPRING_PAGE }, exit: { opacity: 0, scale: 0.96, y: 8, transition: { duration: 0.14 } } };
 
 interface ConfirmModalProps {
   open: boolean;

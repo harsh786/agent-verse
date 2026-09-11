@@ -46,7 +46,7 @@ function KanbanCardItem({ card }: { card: KanbanCard; onDrop?: (id: string, stat
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, y: 8 }}
+      initial={{ opacity: 1, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.96 }}
       transition={reduce ? { duration: 0 } : SPRING_PAGE}
@@ -142,13 +142,11 @@ function KanbanColumn({ column, cards, onDrop, onAdd }: {
           ))}
         </AnimatePresence>
         {dragOver && cards.length === 0 && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
+          <div
             className="h-16 rounded-xl border-2 border-dashed border-[rgba(0,212,255,0.30)] flex items-center justify-center"
           >
             <span className="text-[11px] text-[#00D4FF]">Drop here</span>
-          </motion.div>
+          </div>
         )}
       </div>
     </div>

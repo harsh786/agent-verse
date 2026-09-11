@@ -149,7 +149,7 @@ export function CommandBar({ orgId, onClose }: CommandBarProps) {
       {/* Backdrop */}
       <motion.div
         className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/60 backdrop-blur-sm"
-        initial={{ opacity: 0 }}
+        initial={false}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         onClick={onClose}
@@ -159,7 +159,7 @@ export function CommandBar({ orgId, onClose }: CommandBarProps) {
       >
         <motion.div
           className="w-full max-w-[620px] mx-4 bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl shadow-2xl overflow-hidden"
-          initial={{ opacity: 0, y: -20, scale: 0.97 }}
+          initial={false}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: -20, scale: 0.97 }}
           transition={{ type: 'spring', damping: 20, stiffness: 300 }}

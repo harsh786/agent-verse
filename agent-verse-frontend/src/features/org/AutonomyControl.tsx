@@ -7,7 +7,7 @@
  *   - layout: smooth bar resize
  */
 import { useState, useCallback } from 'react';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   Shield, Eye, ClipboardCheck, Zap, Cpu, Rocket,
   AlertTriangle, CheckCircle2, Info,
@@ -111,7 +111,6 @@ interface AutonomyControlProps {
 }
 
 export function AutonomyControl({ org, className }: AutonomyControlProps) {
-  const reduce   = useReducedMotion();
   const updateOrg = useUpdateOrganization(org.id);
 
   const [pending, setPending] = useState<number | null>(null);
@@ -194,7 +193,7 @@ export function AutonomyControl({ org, className }: AutonomyControlProps) {
       <AnimatePresence mode="wait">
         <motion.div
           key={preview}
-          initial={reduce ? { opacity: 0 } : { opacity: 0, y: 6 }}
+          initial={false}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0 }}
           transition={SPRING_FAST}
@@ -237,11 +236,7 @@ export function AutonomyControl({ org, className }: AutonomyControlProps) {
 
       {/* ── Save button ── */}
       {pending !== null && pending !== current && (
-        <motion.div
-          initial={reduce ? { opacity: 0 } : { opacity: 0, y: 4 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={SPRING_FAST}
-        >
+        <div className="jarvis-rise-in">
           <button
             onClick={handleSave}
             disabled={saving}
@@ -261,7 +256,7 @@ export function AutonomyControl({ org, className }: AutonomyControlProps) {
               <>Set to {LEVELS[pending]?.label}</>
             )}
           </button>
-        </motion.div>
+        </div>
       )}
 
       {/* ── Info footer ── */}

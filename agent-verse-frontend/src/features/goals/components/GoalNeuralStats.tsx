@@ -25,11 +25,8 @@ export function GoalNeuralStats({
   if (totalTokens === 0 && guardrailFired === 0 && hitlPending === 0 && hitlApproved === 0) return null;
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: -8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ type: 'spring', stiffness: 280, damping: 26 }}
-      className={cn('flex flex-wrap items-center gap-2', className)}
+    <div
+      className={cn('jarvis-rise-in flex flex-wrap items-center gap-2', className)}
       aria-label="Goal execution statistics"
     >
       {/* Token count */}
@@ -82,6 +79,6 @@ export function GoalNeuralStats({
           <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400">{hitlApproved} approved</span>
         </div>
       )}
-    </motion.div>
+    </div>
   );
 }

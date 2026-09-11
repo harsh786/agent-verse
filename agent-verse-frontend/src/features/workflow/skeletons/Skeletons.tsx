@@ -1,5 +1,4 @@
-import { motion } from 'framer-motion';
-import { springs, SKELETON_SHIMMER_CLASS } from '../design/motion';
+import { SKELETON_SHIMMER_CLASS } from '../design/motion';
 
 /**
  * Skeleton loading components for workflow pages.
@@ -16,10 +15,7 @@ function SkeletonBox({ className = '' }: { className?: string }) {
 
 export function WorkflowListSkeleton() {
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={springs.gentle}
+    <div
       role="status"
       aria-label="Loading workflows…"
       className="space-y-4"
@@ -51,7 +47,7 @@ export function WorkflowListSkeleton() {
         ))}
       </div>
       <span className="sr-only">Loading workflows…</span>
-    </motion.div>
+    </div>
   );
 }
 

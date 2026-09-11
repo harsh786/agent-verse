@@ -70,19 +70,16 @@ const HEALTH_COLORS = {
 } as const;
 
 function PriorityItem({ item, index }: { item: BriefPriority; index: number }) {
-  const reduce = useReducedMotion();
   const meta   = URGENCY_META[item.urgency];
   const Icon   = meta.icon;
   return (
-    <motion.div
-      initial={reduce ? { opacity: 0 } : { opacity: 0, x: -8 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ ...SPRING_FAST, delay: index * 0.06 }}
-      className={`flex items-start gap-2.5 p-2.5 rounded-lg ${meta.bg}`}
+    <div
+      style={{ animationDelay: `${Math.min(index, 8) * 0.04}s` }}
+      className={`jarvis-rise-in flex items-start gap-2.5 p-2.5 rounded-lg ${meta.bg}`}
     >
       <Icon className={`h-4 w-4 flex-shrink-0 mt-0.5 ${meta.color}`} aria-hidden />
       <p className="text-[13px] text-[#E2E8F0] leading-snug">{item.text}</p>
-    </motion.div>
+    </div>
   );
 }
 
@@ -164,7 +161,7 @@ export function MorningBrief({ orgId, compact = false }: MorningBriefProps) {
       <AnimatePresence>
         {expanded && (
           <motion.div
-            initial={{ height: 0, opacity: 0 }}
+            initial={{ height: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={SPRING_PANEL}

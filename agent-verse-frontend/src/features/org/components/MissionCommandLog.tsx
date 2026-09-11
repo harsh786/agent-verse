@@ -3,7 +3,7 @@
  * Spec §3.3: Tool calls, step progress, approvals, token flow. Virtualized.
  */
 import { useEffect, useRef, useState } from 'react';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   Zap, CheckCircle2, XCircle, Clock, Shield, BookOpen,
   AlertTriangle, RefreshCw, MessageSquare, Activity,
@@ -71,7 +71,6 @@ const MAX = 200;
 export function MissionCommandLog({
   maxItems = MAX, className, externalEntries = [],
 }: MissionCommandLogProps) {
-  const reduce  = useReducedMotion();
   const [entries, setEntries] = useState<CommandLogEntry[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastExt   = useRef(0);
@@ -131,7 +130,7 @@ export function MissionCommandLog({
               <motion.div
                 key={entry.id}
                 layout
-                initial={reduce ? { opacity: 0 } : { opacity: 0, x: -8 }}
+                initial={false}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: 4 }}
                 transition={{ type: 'spring', stiffness: 400, damping: 35 }}

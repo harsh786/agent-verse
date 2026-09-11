@@ -58,15 +58,12 @@ export function KpiCard({
         {isLoading ? (
           <div className="h-7 w-16 bg-[#252B3B] rounded animate-pulse mb-1" />
         ) : (
-          <motion.p
+          <p
             key={String(value)}
-            initial={{ scale: 0.85, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{ type: 'spring', stiffness: 500, damping: 25 }}
-            className={cn('text-2xl font-bold tabular-nums', colors.text)}
+            className={cn('jarvis-pop-in text-2xl font-bold tabular-nums', colors.text)}
           >
             {value}
-          </motion.p>
+          </p>
         )}
         {sub && <p className="text-[11px] text-[#475569] mt-0.5">{sub}</p>}
         {trend && !isLoading && (

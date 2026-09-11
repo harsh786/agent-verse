@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { workflowEngineApi } from '../../lib/api/client';
 import { PRIORITY_COLORS } from './design/tokens';
-import { nodeBounce, emptyStateFade, slaPulse, swipeTint, springs } from './design/motion';
+import { nodeBounce, slaPulse, swipeTint, springs } from './design/motion';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
@@ -101,7 +101,7 @@ function ApprovalCard({
     <motion.article
       layout
       variants={nodeBounce}
-      initial="initial"
+      initial={false}
       animate="animate"
       exit="exit"
       className={`
@@ -370,16 +370,13 @@ export default function ApprovalInboxPage() {
             <Loader2 className="h-6 w-6 text-sky-400 animate-spin" />
           </div>
         ) : items.length === 0 ? (
-          <motion.div
-            variants={emptyStateFade}
-            initial="initial"
-            animate="animate"
-            className="text-center py-20"
+          <div
+            className="jarvis-rise-in text-center py-20"
             role="status"
           >
             <CheckCircle className="h-14 w-14 mx-auto mb-4 text-emerald-400/30" aria-hidden />
             <p className="text-[#F1F5F9]/50 text-sm">All caught up! No pending approvals.</p>
-          </motion.div>
+          </div>
         ) : (
           <AnimatePresence mode="popLayout">
             <div className="space-y-3" role="list" aria-label="Pending approvals">

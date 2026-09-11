@@ -72,7 +72,7 @@ export function ActivityFeed({ orgId, maxItems = 20, className }: ActivityFeedPr
                   key={event.id}
                   layout
                   variants={reduce ? {} : itemVariants}
-                  initial="hidden"
+                  initial={false}
                   animate="visible"
                   exit="exit"
                   // emil-design-eng: stagger 60ms between items

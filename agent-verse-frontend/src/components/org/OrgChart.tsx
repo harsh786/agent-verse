@@ -8,7 +8,7 @@ import { useId, useState } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { Bot, Building2, ChevronDown, ChevronRight, User, Zap } from 'lucide-react';
 import { StatusOrb } from '@/components/ui/StatusOrb';
-import { SPRING_FAST, SPRING_PAGE } from '@/components/ui/JARVISPageShell';
+import { SPRING_FAST } from '@/components/ui/JARVISPageShell';
 
 export interface OrgNode {
   id: string;
@@ -42,11 +42,9 @@ function OrgTreeNode({ node, depth = 0, onNodeClick }: { node: OrgNode; depth?: 
   return (
     <div className="flex flex-col items-center">
       {/* Node */}
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={reduce ? { duration: 0 } : { ...SPRING_PAGE, delay: depth * 0.06 }}
-        className="relative"
+      <div
+        className="jarvis-rise-in relative"
+        style={{ animationDelay: `${Math.min(depth, 8) * 0.06}s` }}
       >
         <button
           onClick={() => { onNodeClick?.(node); if (hasChildren) setExpanded(x => !x); }}
@@ -74,12 +72,12 @@ function OrgTreeNode({ node, depth = 0, onNodeClick }: { node: OrgNode; depth?: 
             </div>
           )}
         </button>
-      </motion.div>
+      </div>
 
       {/* Children */}
       {hasChildren && expanded && (
         <motion.div
-          initial={reduce ? { opacity: 0 } : { opacity: 0, height: 0 }}
+          initial={reduce ? { opacity: 1 } : { opacity: 1, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
           exit={reduce ? { opacity: 0 } : { opacity: 0, height: 0 }}
           transition={SPRING_FAST}

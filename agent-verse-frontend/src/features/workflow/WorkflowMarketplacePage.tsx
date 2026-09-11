@@ -7,7 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, GitFork, Loader2, LayoutTemplate, Tag } from 'lucide-react';
 import { workflowEngineApi } from '../../lib/api/client';
-import { nodeBounce, emptyStateFade } from './design/motion';
+import { nodeBounce } from './design/motion';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
@@ -41,7 +41,7 @@ function TemplateCard({
     <motion.article
       layout
       variants={nodeBounce}
-      initial="initial"
+      initial={false}
       animate="animate"
       exit="exit"
       className="rounded-2xl border border-white/8 bg-[#0F1826]/3 hover:bg-[#0A0D14]/5 p-5
@@ -208,16 +208,13 @@ export default function WorkflowMarketplacePage() {
             ))}
           </div>
         ) : (templates?.items ?? []).length === 0 ? (
-          <motion.div
-            variants={emptyStateFade}
-            initial="initial"
-            animate="animate"
-            className="text-center py-20"
+          <div
+            className="jarvis-rise-in text-center py-20"
             role="status"
           >
             <Search className="h-12 w-12 mx-auto mb-4 text-[#F1F5F9]/10" aria-hidden />
             <p className="text-[#F1F5F9]/40 text-sm">No templates found for "{search}"</p>
-          </motion.div>
+          </div>
         ) : (
           <AnimatePresence mode="popLayout">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"

@@ -81,11 +81,8 @@ export function AgentReputation({
   }
 
   return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={reduce ? { duration: 0 } : SPRING_SLOW}
-      className={`bg-[#0F1826] border border-white/[0.08] rounded-xl p-5 ${className}`}
+    <div
+      className={`jarvis-pop-in bg-[#0F1826] border border-white/[0.08] rounded-xl p-5 ${className}`}
       role="region"
       aria-label="Agent reputation"
     >
@@ -150,6 +147,6 @@ export function AgentReputation({
           transition={reduce ? { duration: 0 } : { ...SPRING_SLOW, delay: 0.4 }}
         />
       </div>
-    </motion.div>
+    </div>
   );
 }

@@ -149,7 +149,7 @@ export function CursorPresence({ orgId, className }: CursorPresenceProps) {
             <motion.div
               key={user.userId}
               layout
-              initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.6, x: -8 }}
+              initial={false}
               animate={{ opacity: 1, scale: 1, x: 0 }}
               exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.5 }}
               transition={{ ...AVATAR_SPRING, delay: reduce ? 0 : i * 0.06 }}

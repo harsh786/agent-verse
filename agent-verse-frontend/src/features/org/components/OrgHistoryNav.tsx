@@ -59,21 +59,17 @@ const EVENT_META: Record<string, { icon: React.ComponentType<{ className?: strin
 const FALLBACK_META = { icon: Clock, color: 'text-[#64748B]', group: 'system' as const };
 
 const SPRING_FAST  = { type: 'spring', stiffness: 600, damping: 35 } as const;
-const SPRING_ENTER = { type: 'spring', stiffness: 280, damping: 26 } as const;
 
 // ── Event row ─────────────────────────────────────────────────────────────────
 
 function EventRow({ event, index }: { event: OrgEvent; index: number }) {
-  const reduce = useReducedMotion();
   const meta   = EVENT_META[event.event_type] ?? FALLBACK_META;
   const Icon   = meta.icon;
 
   return (
-    <motion.div
-      initial={reduce ? { opacity: 0 } : { opacity: 0, x: -8 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ ...SPRING_ENTER, delay: index * 0.03 }}
-      className="flex items-start gap-3 py-3 border-b border-[#1E2535] last:border-0"
+    <div
+      style={{ animationDelay: `${Math.min(index, 8) * 0.04}s` }}
+      className="jarvis-rise-in flex items-start gap-3 py-3 border-b border-[#1E2535] last:border-0"
     >
       {/* Timeline dot + connector */}
       <div className="flex flex-col items-center pt-0.5 flex-shrink-0">
@@ -109,7 +105,7 @@ function EventRow({ event, index }: { event: OrgEvent; index: number }) {
           )}
         </div>
       </div>
-    </motion.div>
+    </div>
   );
 }
 

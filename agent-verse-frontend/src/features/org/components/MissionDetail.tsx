@@ -114,7 +114,7 @@ export function MissionDetail({ orgId, missionId, onClose }: MissionDetailProps)
       key="mission-detail"
       role="complementary"
       aria-label={`Mission details: ${mission?.title ?? '…'}`}
-      initial={{ x: reduce ? 0 : '100%', opacity: reduce ? 0 : 1 }}
+      initial={{ x: reduce ? 0 : '100%', opacity: 1 }}
       animate={{ x: 0, opacity: 1 }}
       exit={{ x: reduce ? 0 : '80%', opacity: 0 }}  // Emil: exit shorter
       transition={reduce ? { duration: 0.15 } : PANEL_SPRING}
@@ -315,12 +315,10 @@ function MissionBody({
                   const isDone = execStep?.status === 'complete';
                   const isRunning = !isDone && i === (goalState?.steps ?? []).filter(s => s.status === 'complete').length;
                   return (
-                    <motion.li
+                    <li
                       key={i}
-                      initial={reduce ? {} : { opacity: 0, x: -4 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: i * 0.05, type: 'spring', stiffness: 400, damping: 30 }}
-                      className={cn('flex items-start gap-2.5 px-3 py-2.5 text-[12px]',
+                      style={{ animationDelay: `${Math.min(i, 8) * 0.04}s` }}
+                      className={cn('jarvis-rise-in flex items-start gap-2.5 px-3 py-2.5 text-[12px]',
                         isDone   && 'bg-emerald-500/5',
                         isRunning && 'bg-[#00D4FF]/5',
                       )}
@@ -340,7 +338,7 @@ function MissionBody({
                       )}>
                         {step}
                       </span>
-                    </motion.li>
+                    </li>
                   );
                 })}
               </ul>
@@ -487,7 +485,7 @@ function MissionBody({
                 <motion.li
                   key={ev.id}
                   layout
-                  initial={reduce ? {} : { opacity: 0, x: -8 }}
+                  initial={false}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0 }}
                   transition={{ type: 'spring', stiffness: 400, damping: 30 }}

@@ -109,7 +109,7 @@ export function AgentProfile({ agent, onClose }: AgentProfileProps) {
           {/* Panel */}
           <motion.aside
             key="panel"
-            initial={reduce ? { opacity: 0 } : { x: '100%', opacity: 0 }}
+            initial={reduce ? false : { x: '100%' }}
             animate={{ x: 0, opacity: 1 }}
             exit={reduce ? { opacity: 0 } : { x: '100%', opacity: 0 }}
             transition={SPRING_PANEL}
@@ -200,7 +200,7 @@ export function AgentProfile({ agent, onClose }: AgentProfileProps) {
                 {tab === 'overview' && (
                   <motion.div
                     key="overview"
-                    initial={reduce ? { opacity: 0 } : { opacity: 0, y: 6 }}
+                    initial={false}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0 }}
                     transition={SPRING_FAST}
@@ -273,7 +273,7 @@ export function AgentProfile({ agent, onClose }: AgentProfileProps) {
                 {tab === 'memory' && (
                   <motion.div
                     key="memory"
-                    initial={reduce ? { opacity: 0 } : { opacity: 0, y: 6 }}
+                    initial={false}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0 }}
                     transition={SPRING_FAST}
@@ -308,7 +308,7 @@ export function AgentProfile({ agent, onClose }: AgentProfileProps) {
                 {tab === 'tools' && (
                   <motion.div
                     key="tools"
-                    initial={reduce ? { opacity: 0 } : { opacity: 0, y: 6 }}
+                    initial={false}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0 }}
                     transition={SPRING_FAST}

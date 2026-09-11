@@ -12,7 +12,6 @@ interface OrgHealthWidgetProps {
   orgId: string;
 }
 
-const SPRING = { type: 'spring', stiffness: 380, damping: 28 } as const;
 
 export function OrgHealthWidget({ orgId }: OrgHealthWidgetProps) {
   const { data: health, isLoading, error } = useOrgHealth(orgId);
@@ -70,16 +69,13 @@ export function OrgHealthWidget({ orgId }: OrgHealthWidgetProps) {
             >
               <Icon className={cn('h-3.5 w-3.5', active ? color : 'text-[#475569]')} aria-hidden />
             </motion.span>
-            <motion.span
+            <span
               key={value}
-              initial={{ scale: 0.85, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={SPRING}
-              className={cn('text-[17px] font-semibold tabular-nums leading-none', active ? color : 'text-[#94A3B8]')}
+              className={cn('jarvis-pop-in text-[17px] font-semibold tabular-nums leading-none', active ? color : 'text-[#94A3B8]')}
               aria-live="polite"
             >
               {value}
-            </motion.span>
+            </span>
             <span className="text-[12px] text-[#64748B] leading-none">{label}</span>
           </div>
         );

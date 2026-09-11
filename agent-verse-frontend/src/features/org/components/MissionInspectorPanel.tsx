@@ -35,7 +35,7 @@ export function MissionInspectorPanel({ orgId, missionId, agentId, onClose, clas
     <AnimatePresence>
       {isOpen && (
         <motion.aside
-          initial={reduce ? { opacity: 0 } : { opacity: 0, x: '100%' }}
+          initial={false}
           animate={{ opacity: 1, x: 0 }}
           exit={reduce ? { opacity: 0 } : { opacity: 0, x: '100%' }}
           transition={{ type: 'spring', stiffness: 300, damping: 28 }}

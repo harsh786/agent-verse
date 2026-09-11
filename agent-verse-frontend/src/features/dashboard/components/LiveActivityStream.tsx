@@ -72,7 +72,7 @@ export function LiveActivityStream({ goals, maxItems = 12 }: LiveActivityStreamP
             <motion.button
               key={goal.id}
               layout
-              initial={{ opacity: 0, y: -10, scale: 0.97 }}
+              initial={false}
               animate={{ opacity: 1, y: 0,   scale: 1 }}
               exit={{    opacity: 0, x: 20,  scale: 0.95 }}
               transition={{ ...SPRING_PAGE, delay: i * 0.03 }}

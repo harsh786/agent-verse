@@ -85,7 +85,7 @@ function ArtifactCard({ artifact }: { artifact: Artifact }) {
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, y: 6 }}
+      initial={false}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
       className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-4 hover:border-[var(--accent-blue)]/30 hover:shadow-glow-electric transition-all group"

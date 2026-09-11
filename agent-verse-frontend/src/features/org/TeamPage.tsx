@@ -9,7 +9,7 @@
  */
 import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft, Users,
   User, Clock, Zap,
@@ -48,7 +48,7 @@ function MemberCard({ member, onClick }: { member: TeamMember; onClick?: () => v
   return (
     <motion.button
       layout
-      initial={{ opacity: 0, y: 8 }}
+      initial={false}
       animate={{ opacity: 1, y: 0 }}
       transition={SPRING_FAST}
       onClick={onClick}
@@ -86,7 +86,6 @@ function MemberCard({ member, onClick }: { member: TeamMember; onClick?: () => v
 export function TeamPage() {
   const { orgId, teamId } = useParams<{ orgId: string; teamId: string }>();
   const navigate = useNavigate();
-  const reduce   = useReducedMotion();
 
   const [tab, setTab] = useState<'members' | 'kanban' | 'feed'>('members');
 
@@ -180,7 +179,7 @@ export function TeamPage() {
           {tab === 'members' && (
             <motion.div
               key="members"
-              initial={reduce ? { opacity: 0 } : { opacity: 0, y: 8 }}
+              initial={false}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
               transition={SPRING_FAST}
@@ -203,7 +202,7 @@ export function TeamPage() {
           {tab === 'kanban' && orgId && (
             <motion.div
               key="kanban"
-              initial={reduce ? { opacity: 0 } : { opacity: 0, y: 8 }}
+              initial={false}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
               transition={SPRING_FAST}
@@ -216,7 +215,7 @@ export function TeamPage() {
           {tab === 'feed' && orgId && (
             <motion.div
               key="feed"
-              initial={reduce ? { opacity: 0 } : { opacity: 0, y: 8 }}
+              initial={false}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
               transition={SPRING_FAST}

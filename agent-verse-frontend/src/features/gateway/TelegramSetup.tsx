@@ -88,7 +88,7 @@ export function TelegramSetup({ orgId, onConnected }: TelegramSetupProps) {
         {step === 1 && (
           <motion.div
             key="step1"
-            initial={{ opacity: 0, x: 20 }}
+            initial={false}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -20 }}
             transition={SPRING_FAST}
@@ -124,7 +124,7 @@ export function TelegramSetup({ orgId, onConnected }: TelegramSetupProps) {
         {step === 2 && (
           <motion.div
             key="step2"
-            initial={{ opacity: 0, x: 20 }}
+            initial={false}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -20 }}
             transition={SPRING_FAST}
@@ -156,7 +156,7 @@ export function TelegramSetup({ orgId, onConnected }: TelegramSetupProps) {
         {step === 3 && (
           <motion.div
             key="step3"
-            initial={{ opacity: 0, x: 20 }}
+            initial={false}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -20 }}
             transition={SPRING_FAST}
@@ -212,7 +212,7 @@ export function TelegramSetup({ orgId, onConnected }: TelegramSetupProps) {
         {step === 4 && (
           <motion.div
             key="step4"
-            initial={{ opacity: 0, scale: 0.96 }}
+            initial={false}
             animate={{ opacity: 1, scale: 1 }}
             transition={SPRING_PANEL}
             className="text-center py-8 space-y-4"

@@ -106,7 +106,7 @@ export function ConnectorCredentialForm({ connector, onClose, onInstalled }: Con
       role="dialog"
       aria-modal="true"
       aria-label={`Connect ${connector.display_name}`}
-      initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 8 }}
+      initial={false}
       animate={{ opacity: 1, scale: 1, y: 0 }}
       exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 8 }}
       transition={{ type: 'spring', stiffness: 380, damping: 30 }}

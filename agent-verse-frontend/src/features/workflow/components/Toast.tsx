@@ -102,7 +102,7 @@ function ToastItem({
     <motion.div
       layout
       variants={toastEnter}
-      initial="initial"
+      initial={false}
       animate="animate"
       exit="exit"
       role={toast.type === 'error' ? 'alert' : 'status'}

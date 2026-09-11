@@ -9,7 +9,7 @@
  */
 import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft, Users, Target, Activity, CheckCircle2, Clock,
   ChevronRight, Building2, RefreshCw, Zap,
@@ -69,7 +69,7 @@ function MissionRow({ mission }: { mission: OrgMission }) {
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, x: -8 }}
+      initial={false}
       animate={{ opacity: 1, x: 0 }}
       transition={SPRING_FAST}
       className="flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-[#1A1F2E] transition-colors cursor-pointer group"
@@ -97,7 +97,6 @@ function MissionRow({ mission }: { mission: OrgMission }) {
 export function DepartmentPage() {
   const { orgId, deptId } = useParams<{ orgId: string; deptId: string }>();
   const navigate  = useNavigate();
-  const reduce    = useReducedMotion();
 
   const [activeTab, setActiveTab] = useState<'overview' | 'missions' | 'tasks'>('overview');
 
@@ -225,7 +224,7 @@ export function DepartmentPage() {
           {activeTab === 'overview' && (
             <motion.div
               key="overview"
-              initial={reduce ? { opacity: 0 } : { opacity: 0, y: 8 }}
+              initial={false}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
               transition={SPRING_FAST}
@@ -283,7 +282,7 @@ export function DepartmentPage() {
           {activeTab === 'missions' && (
             <motion.div
               key="missions"
-              initial={reduce ? { opacity: 0 } : { opacity: 0, y: 8 }}
+              initial={false}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
               transition={SPRING_FAST}
@@ -310,7 +309,7 @@ export function DepartmentPage() {
           {activeTab === 'tasks' && (
             <motion.div
               key="tasks"
-              initial={reduce ? { opacity: 0 } : { opacity: 0, y: 8 }}
+              initial={false}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
               transition={SPRING_FAST}

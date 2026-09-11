@@ -122,14 +122,10 @@ function DeptNode({
             style={{ overflow: 'hidden' }}
           >
             {children.map((child, i) => (
-              <motion.div
+              <div
                 key={child.id}
-                initial={reduce ? {} : { opacity: 0, x: -6 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{
-                  type: 'spring', stiffness: 400, damping: 30,
-                  delay: reduce ? 0 : i * 0.04,
-                }}
+                className="jarvis-rise-in"
+                style={{ animationDelay: `${Math.min(i, 8) * 0.04}s` }}
               >
                 <DeptNode
                   dept={child}
@@ -137,7 +133,7 @@ function DeptNode({
                   depth={depth + 1}
                   onSelect={onSelect}
                 />
-              </motion.div>
+              </div>
             ))}
           </motion.ul>
         )}

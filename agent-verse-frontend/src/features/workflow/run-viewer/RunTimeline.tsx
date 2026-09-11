@@ -59,27 +59,6 @@ const STEP_STATUS = {
 
 // ── Step row ──────────────────────────────────────────────────────────────────
 
-// Stagger container for the list
-const listVariants = {
-  hidden: {},
-  show: { transition: { staggerChildren: 0.08 } },
-};
-
-// Each row slides up + fades in
-const rowVariants = {
-  hidden: { opacity: 0, y: 12 },
-  show: { opacity: 1, y: 0, transition: springs.gentle },
-};
-
-// Failed row shakes horizontally
-const failedShake = {
-  hidden: { x: 0 },
-  show: {
-    x: [0, -6, 6, -4, 4, 0],
-    transition: { duration: 0.4, delay: 0.15 },
-  },
-};
-
 function StepRow({
   step,
   isLast,
@@ -102,14 +81,12 @@ function StepRow({
 
   const isRunning = step.status === 'running';
   const isComplete = step.status === 'complete';
-  const isFailed = step.status === 'failed';
 
   return (
-    <motion.li
-      className="relative flex gap-4"
+    <li
+      className="jarvis-rise-in relative flex gap-4"
       role="listitem"
-      variants={isFailed ? failedShake : rowVariants}
-      custom={index}
+      style={{ animationDelay: `${Math.min(index, 8) * 0.04}s` }}
     >
       {/* Vertical line */}
       {!isLast && (
@@ -158,7 +135,7 @@ function StepRow({
           </motion.span>
         </div>
       </button>
-    </motion.li>
+    </li>
   );
 }
 
@@ -201,22 +178,17 @@ export function RunTimeline({ steps }: { steps: WEStepResult[] }) {
 
   if (!steps.length) {
     return (
-      <motion.p
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        className="text-xs text-white/30 py-4"
+      <p
+        className="jarvis-rise-in text-xs text-white/30 py-4"
         role="status"
       >
         No steps recorded yet.
-      </motion.p>
+      </p>
     );
   }
 
   return (
-    <motion.ul
-      variants={listVariants}
-      initial="hidden"
-      animate="show"
+    <ul
       className="space-y-0"
       role="list"
       aria-label="Step execution timeline"
@@ -241,6 +213,6 @@ export function RunTimeline({ steps }: { steps: WEStepResult[] }) {
           </div>
         );
       })}
-    </motion.ul>
+    </ul>
   );
 }

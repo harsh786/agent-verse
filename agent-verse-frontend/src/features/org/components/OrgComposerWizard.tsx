@@ -135,7 +135,7 @@ export function OrgComposerWizard({ onComplete, onClose }: OrgComposerWizardProp
         className="absolute inset-0 bg-black/60" onClick={onClose} />
 
       <motion.div
-        initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.94, y: 24 }}
+        initial={false}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.94 }}
         transition={SPRING_STEP}
@@ -190,7 +190,7 @@ export function OrgComposerWizard({ onComplete, onClose }: OrgComposerWizardProp
             {/* ── STEP 1: Describe ── */}
             {step === 1 && (
               <motion.div key="step1"
-                initial={reduce ? { opacity: 0 } : { opacity: 0, x: 30 }}
+                initial={false}
                 animate={{ opacity: 1, x: 0 }}
                 exit={reduce ? { opacity: 0 } : { opacity: 0, x: -30 }}
                 transition={SPRING_STEP}
@@ -265,7 +265,7 @@ export function OrgComposerWizard({ onComplete, onClose }: OrgComposerWizardProp
                   <AnimatePresence>
                     {goals.map((g, i) => (
                       <motion.div key={i}
-                        initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                        initial={false} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
                         transition={SPRING_FAST}
                         className="flex items-center gap-2 mb-1.5 px-3 py-1.5 bg-[#1A1F2E] rounded-lg"
                       >
@@ -283,7 +283,7 @@ export function OrgComposerWizard({ onComplete, onClose }: OrgComposerWizardProp
             {/* ── STEP 2: Review AI structure ── */}
             {step === 2 && (
               <motion.div key="step2"
-                initial={reduce ? { opacity: 0 } : { opacity: 0, x: 30 }}
+                initial={false}
                 animate={{ opacity: 1, x: 0 }}
                 exit={reduce ? { opacity: 0 } : { opacity: 0, x: -30 }}
                 transition={SPRING_STEP}
@@ -319,11 +319,9 @@ export function OrgComposerWizard({ onComplete, onClose }: OrgComposerWizardProp
                       </div>
                       <div className="space-y-1.5">
                         {result.departments.map((d, i) => (
-                          <motion.div key={d.id}
-                            initial={reduce ? {} : { opacity: 0, x: -8 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            transition={{ ...SPRING_FAST, delay: i * 0.04 }}
-                            className="p-2.5 bg-[#1A1F2E] border border-[#2D3748] rounded-lg"
+                          <div key={d.id}
+                            style={{ animationDelay: `${Math.min(i, 8) * 0.04}s` }}
+                            className="jarvis-rise-in p-2.5 bg-[#1A1F2E] border border-[#2D3748] rounded-lg"
                           >
                             <p className="text-[13px] font-medium text-[#F1F5F9]">{d.name}</p>
                             <p className="text-[11px] text-[#64748B] mt-0.5">{d.purpose}</p>
@@ -334,7 +332,7 @@ export function OrgComposerWizard({ onComplete, onClose }: OrgComposerWizardProp
                                 ))}
                               </div>
                             )}
-                          </motion.div>
+                          </div>
                         ))}
                       </div>
                     </div>
@@ -363,7 +361,7 @@ export function OrgComposerWizard({ onComplete, onClose }: OrgComposerWizardProp
             {/* ── STEP 3: Confirm ── */}
             {step === 3 && result && (
               <motion.div key="step3"
-                initial={reduce ? { opacity: 0 } : { opacity: 0, x: 30 }}
+                initial={false}
                 animate={{ opacity: 1, x: 0 }}
                 transition={SPRING_STEP}
                 className="p-6 text-center"

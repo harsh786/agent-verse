@@ -5,8 +5,6 @@
  */
 import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { springs } from './design/motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronLeft, Settings, Lock, Key, Sliders, Bell, Globe, Loader2,
@@ -267,15 +265,12 @@ export default function WorkflowSettingsPage() {
 
         {/* Panel content — animates when switching panels */}
         <main className="flex-1 min-w-0">
-          <motion.div
+          <div
             key={activePanel}
-            initial={{ opacity: 0, x: 8 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -8 }}
-            transition={springs.snappy}
+            className="jarvis-rise-in"
           >
             <PanelComponent wf={wf} />
-          </motion.div>
+          </div>
         </main>
       </div>
     </JARVISStagger>

@@ -80,7 +80,6 @@ function useRequestDeletion() {
 // ── Spring constants ──────────────────────────────────────────────────────────
 
 const SPRING_FAST  = { type: 'spring', stiffness: 600, damping: 35 } as const;
-const SPRING_MODAL = { type: 'spring', stiffness: 300, damping: 28 } as const;
 
 // ── Toggle component ──────────────────────────────────────────────────────────
 
@@ -130,12 +129,8 @@ function DeleteConfirmModal({ onConfirm, onClose }: { onConfirm: () => void; onC
       className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
         className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <motion.div
-        initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.93, y: 20 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.93 }}
-        transition={SPRING_MODAL}
-        className="relative bg-[#0F1117] border border-red-500/30 rounded-2xl w-full max-w-md shadow-2xl"
+      <div
+        className="jarvis-pop-in relative bg-[#0F1117] border border-red-500/30 rounded-2xl w-full max-w-md shadow-2xl"
       >
         <div className="p-6 text-center">
           <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center mx-auto mb-4">
@@ -195,7 +190,7 @@ function DeleteConfirmModal({ onConfirm, onClose }: { onConfirm: () => void; onC
             )}
           </div>
         </div>
-      </motion.div>
+      </div>
     </div>
   );
 }
@@ -248,11 +243,8 @@ export function PrivacySettings() {
   }
 
   return (
-    <motion.div
-      initial={reduce ? { opacity: 0 } : { opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={SPRING_MODAL}
-      className="max-w-2xl mx-auto px-6 py-8"
+    <div
+      className="jarvis-page-in max-w-2xl mx-auto px-6 py-8"
     >
       <h1 className="text-[24px] font-bold text-[#F1F5F9] [text-wrap:balance] mb-2">Privacy &amp; Data</h1>
       <p className="text-[14px] text-[#64748B] mb-8">Manage your personal data and privacy preferences.</p>
@@ -365,7 +357,7 @@ export function PrivacySettings() {
           <DeleteConfirmModal onConfirm={handleDelete} onClose={() => setShowDelete(false)} />
         )}
       </AnimatePresence>
-    </motion.div>
+    </div>
   );
 }
 

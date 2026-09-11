@@ -2,8 +2,6 @@
  * WorkflowRunDetailPage — step-by-step run timeline with outputs.
  */
 import { useParams, Link } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { springs } from './design/motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronLeft, CheckCircle, XCircle, Clock, Loader2,
@@ -157,11 +155,8 @@ export default function WorkflowRunDetailPage() {
         )}
       </header>
 
-      <motion.main
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={springs.gentle}
-        className="max-w-3xl mx-auto px-6 py-8 space-y-6"
+      <main
+        className="jarvis-rise-in max-w-3xl mx-auto px-6 py-8 space-y-6"
       >
         {/* Summary cards */}
         <div className="grid grid-cols-3 gap-3">
@@ -232,7 +227,7 @@ export default function WorkflowRunDetailPage() {
             </div>
           )}
         </section>
-      </motion.main>
+      </main>
     </JARVISStagger>
     </JARVISPageShell>
   );

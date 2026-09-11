@@ -87,7 +87,7 @@ function ApprovalCard({ approval, orgId }: { approval: Approval; orgId: string }
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, y: 6 }}
+      initial={false}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
       className={`bg-[var(--bg-card)] border rounded-xl overflow-hidden

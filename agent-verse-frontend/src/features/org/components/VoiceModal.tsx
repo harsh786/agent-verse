@@ -163,7 +163,7 @@ export function VoiceModal({
               'bg-[#0D1117] border border-[#1E2535] rounded-2xl p-6 shadow-2xl',
               'flex flex-col gap-5',
             )}
-            initial={{ opacity: 0, y: 40, scale: 0.96 }}
+            initial={false}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 40, scale: 0.96 }}
             transition={MODAL_SPRING}
@@ -280,29 +280,24 @@ export function VoiceModal({
 
             {/* Agent response */}
             {agentResponse && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                className="rounded-xl bg-[#0D1526]/80 border border-[#1E2D4A] px-4 py-3 overflow-hidden"
+              <div
+                className="jarvis-rise-in rounded-xl bg-[#0D1526]/80 border border-[#1E2D4A] px-4 py-3 overflow-hidden"
                 aria-live="assertive"
               >
                 <div className="flex items-start gap-2">
                   <Zap className="h-3.5 w-3.5 text-[#00D4FF]/60 mt-0.5 shrink-0" aria-hidden />
                   <p className="text-[11px] text-[#94A3B8] leading-relaxed">{agentResponse}</p>
                 </div>
-              </motion.div>
+              </div>
             )}
 
             {/* Confirm / submit button */}
             {(transcript || interimText) && (
-              <motion.button
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={MODAL_SPRING}
+              <button
                 onClick={handleConfirm}
                 style={{ touchAction: 'manipulation' }}
                 className={cn(
-                  'w-full py-3 rounded-xl text-sm font-semibold text-white',
+                  'jarvis-rise-in w-full py-3 rounded-xl text-sm font-semibold text-white',
                   'bg-blue-600 hover:bg-blue-500',
                   'active:scale-[0.98] transition-all duration-150',
                   'flex items-center justify-center gap-2',
@@ -311,7 +306,7 @@ export function VoiceModal({
               >
                 <CheckCircle2 className="h-4 w-4" aria-hidden />
                 Use This
-              </motion.button>
+              </button>
             )}
           </motion.div>
         </>

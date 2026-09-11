@@ -122,7 +122,7 @@ function NodeDetailPanel({ nodeId, nodesById, onClose }: {
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+      initial={false} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
       transition={SPRING_PANEL}
       className="mt-2 p-3 bg-[#0F1117] border border-[#2D3748] rounded-xl space-y-2"
       aria-label="Node detail"
@@ -292,7 +292,6 @@ function GraphView() {
 // ── File Tree — same real KG nodes, grouped by type ────────────────────────────
 
 function FileTree() {
-  const reduce = useReducedMotion();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
 
@@ -337,10 +336,9 @@ function FileTree() {
       </div>
       <div className="space-y-1 max-h-52 overflow-y-auto">
         {folders.map((folder, fi) => (
-          <motion.div key={folder}
-            initial={reduce ? {} : { opacity: 0, x: -6 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ ...SPRING_NODE, delay: fi * 0.04 }}
+          <div key={folder}
+            style={{ animationDelay: `${Math.min(fi, 8) * 0.04}s` }}
+            className="jarvis-rise-in"
           >
             <button
               onClick={() => setExpanded(s => { const n = new Set(s); n.has(folder) ? n.delete(folder) : n.add(folder); return n; })}
@@ -362,23 +360,21 @@ function FileTree() {
                   style={{ overflow: 'hidden' }} className="pl-6"
                 >
                   {filtered.filter(n => n.node_type === folder).map((n, ni) => (
-                    <motion.div key={n.node_id}
-                      initial={reduce ? {} : { opacity: 0, x: -4 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ ...SPRING_FAST, delay: ni * 0.04 }}
-                      className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] text-[#64748B] hover:text-[#F1F5F9] hover:bg-[#1A1F2E] cursor-pointer"
+                    <div key={n.node_id}
+                      style={{ animationDelay: `${Math.min(ni, 8) * 0.04}s` }}
+                      className="jarvis-rise-in flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] text-[#64748B] hover:text-[#F1F5F9] hover:bg-[#1A1F2E] cursor-pointer"
                     >
                       <FileCode className="h-3 w-3 text-blue-400" aria-hidden />
                       <span className="truncate">{n.label}</span>
                       <span className="ml-auto text-[10px] text-[#374151] tabular-nums shrink-0">
                         {Math.round(n.confidence * 100)}%
                       </span>
-                    </motion.div>
+                    </div>
                   ))}
                 </motion.div>
               )}
             </AnimatePresence>
-          </motion.div>
+          </div>
         ))}
       </div>
     </div>
@@ -394,7 +390,6 @@ function FileTree() {
 type BaseRow = { id: string; title: string; status: string; priority: string; owner: string; created_at: string };
 
 function BasesTab({ orgId }: { orgId: string }) {
-  const reduce = useReducedMotion();
   const [kind, setKind] = useState<'tasks' | 'missions'>('tasks');
 
   const tasksQuery = useQuery({
@@ -474,12 +469,10 @@ function BasesTab({ orgId }: { orgId: string }) {
             </thead>
             <tbody>
               {rows.slice(0, 20).map((row, i) => (
-                <motion.tr
+                <tr
                   key={row.id}
-                  initial={reduce ? {} : { opacity: 0, y: -4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ ...SPRING_NODE, delay: i * 0.03 }}
-                  className="border-b border-[#1E2535] last:border-0 hover:bg-[#1A1F2E]/60"
+                  style={{ animationDelay: `${Math.min(i, 8) * 0.04}s` }}
+                  className="jarvis-rise-in border-b border-[#1E2535] last:border-0 hover:bg-[#1A1F2E]/60"
                 >
                   <td className="px-3 py-2 text-[11px] text-[#F1F5F9] max-w-[160px] truncate">{row.title}</td>
                   <td className="px-3 py-2">
@@ -496,7 +489,7 @@ function BasesTab({ orgId }: { orgId: string }) {
                   <td className="px-3 py-2 text-[10px] text-[#475569] tabular-nums">
                     <time dateTime={row.created_at}>{ageLabel(row.created_at)}</time>
                   </td>
-                </motion.tr>
+                </tr>
               ))}
             </tbody>
           </table>
@@ -708,12 +701,10 @@ function TimelineTab({ orgId }: { orgId: string }) {
 
       <div className="space-y-1 max-h-52 overflow-y-auto">
         {rows.slice(0, 30).map((e, i) => (
-          <motion.div
+          <div
             key={e.id}
-            initial={reduce ? {} : { opacity: 0, x: -6 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ ...SPRING_NODE, delay: i * 0.02 }}
-            className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-[#1A1F2E]"
+            style={{ animationDelay: `${Math.min(i, 8) * 0.04}s` }}
+            className="jarvis-rise-in flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-[#1A1F2E]"
           >
             <span
               className={`w-1.5 h-1.5 rounded-full shrink-0 ${
@@ -724,7 +715,7 @@ function TimelineTab({ orgId }: { orgId: string }) {
             />
             <span className="text-[11px] text-[#94A3B8] truncate flex-1">{e.title || e.event_type}</span>
             <time dateTime={e.created_at} className="text-[10px] text-[#475569] font-mono shrink-0">{ageLabel(e.created_at)}</time>
-          </motion.div>
+          </div>
         ))}
       </div>
     </div>
@@ -796,7 +787,7 @@ export function ObsidianVaultExplorer({ orgId, compact = false }: ObsidianVaultE
           id={`vault-panel-${activeTab}`}
           role="tabpanel"
           aria-labelledby={`vault-tab-${activeTab}`}
-          initial={reduce ? { opacity: 0 } : { opacity: 0, x: 10 }}
+          initial={false}
           animate={{ opacity: 1, x: 0 }}
           exit={reduce ? { opacity: 0 } : { opacity: 0, x: -10 }}
           transition={SPRING_PANEL}

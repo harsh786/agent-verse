@@ -142,7 +142,7 @@ export function DigestPanel({ orgId, onClose }: DigestPanelProps) {
   return (
     <motion.div
       className="bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl overflow-hidden w-full max-w-md shadow-2xl"
-      initial={{ opacity: 0, y: 10, scale: 0.97 }}
+      initial={false}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 10, scale: 0.97 }}
       role="complementary"

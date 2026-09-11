@@ -39,18 +39,15 @@ export function AutonomyControl({ value, onChange, disabled = false, className =
           <p id={`${id}-label`} className="text-[13px] font-semibold text-[#F0F6FF]">Autonomy Level</p>
           <p className="text-[11px] text-[#5A7494] mt-0.5">{current.desc}</p>
         </div>
-        <motion.div
+        <div
           key={value}
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          transition={reduce ? { duration: 0 } : SPRING_FAST}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold"
+          className="jarvis-pop-in flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold"
           style={{ color: current.color, background: `${current.color}22` }}
           aria-live="polite"
         >
           <CurrentIcon size={11} aria-hidden />
           {current.label}
-        </motion.div>
+        </div>
       </div>
 
       {/* Track + steps */}
@@ -106,11 +103,8 @@ export function AutonomyControl({ value, onChange, disabled = false, className =
 
       {/* Risk warning for high autonomy */}
       {value >= 3 && (
-        <motion.p
-          initial={{ opacity: 0, y: 4 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={SPRING_FAST}
-          className="mt-3 text-[11px] px-3 py-2 rounded-lg"
+        <p
+          className="jarvis-rise-in mt-3 text-[11px] px-3 py-2 rounded-lg"
           style={{
             color: value === 4 ? '#FF3366' : '#FFB300',
             background: value === 4 ? 'rgba(255,51,102,0.10)' : 'rgba(255,179,0,0.10)',
@@ -120,7 +114,7 @@ export function AutonomyControl({ value, onChange, disabled = false, className =
           {value === 4
             ? '⚠ Fully autonomous — agent will execute without any approvals'
             : '⚡ Proactive mode — monitor logs regularly for unintended actions'}
-        </motion.p>
+        </p>
       )}
     </div>
   );

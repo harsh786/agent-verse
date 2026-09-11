@@ -26,7 +26,7 @@ export function GuardrailShield({ ruleName, visible, className = '' }: Guardrail
     <AnimatePresence>
       {visible && (
         <motion.div
-          initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0 }}
+          initial={reduce ? { opacity: 1 } : { opacity: 1, scale: 0 }}
           animate={{ opacity: dimmed ? 0.3 : 1, scale: 1 }}
           exit={{ opacity: 0, scale: 0.7 }}
           transition={{ type: 'spring', stiffness: 450, damping: 18 }}
@@ -45,7 +45,7 @@ export function GuardrailShield({ ruleName, visible, className = '' }: Guardrail
 
           {ruleName && (
             <motion.span
-              initial={{ opacity: 0, y: 4 }}
+              initial={{ opacity: 1, y: 4 }}
               animate={{ opacity: dimmed ? 0.3 : 1, y: 0 }}
               transition={{ delay: 0.15, type: 'spring', stiffness: 380, damping: 30 }}
               className="text-[10px] text-[#FF3366] font-medium text-center max-w-[120px] leading-tight"

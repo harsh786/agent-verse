@@ -54,7 +54,6 @@ function useRefreshBrief(orgId: string) {
 // ── Spring constants ──────────────────────────────────────────────────────────
 
 const SPRING_FAST  = { type: 'spring', stiffness: 600, damping: 35 } as const;
-const SPRING_PANEL = { type: 'spring', stiffness: 280, damping: 26 } as const;
 
 // ── Section component ─────────────────────────────────────────────────────────
 
@@ -73,15 +72,9 @@ function BriefSection({
   bgColor:   string;
   delay:     number;
 }) {
-  const reduce = useReducedMotion();
   if (!items.length) return null;
   return (
-    <motion.div
-      initial={reduce ? { opacity: 0 } : { opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ ...SPRING_PANEL, delay }}
-      className="bg-[#1A1F2E] border border-[#2D3748] rounded-xl p-4"
-    >
+    <div className="bg-[#1A1F2E] border border-[#2D3748] rounded-xl p-4">
       <div className="flex items-center gap-2.5 mb-3">
         <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${bgColor}`}>
           <Icon className={`h-3.5 w-3.5 ${iconColor}`} aria-hidden />
@@ -90,19 +83,17 @@ function BriefSection({
       </div>
       <ul className="space-y-2">
         {items.map((item, i) => (
-          <motion.li
+          <li
             key={i}
-            initial={reduce ? {} : { opacity: 0, x: -6 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ ...SPRING_FAST, delay: delay + i * 0.04 }}
-            className="flex items-start gap-2 text-[13px] text-[#94A3B8]"
+            style={{ animationDelay: `${Math.min(delay + i * 0.04, 0.5)}s` }}
+            className="jarvis-rise-in flex items-start gap-2 text-[13px] text-[#94A3B8]"
           >
             <span className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${iconColor.replace('text-', 'bg-')}`} />
             {item}
-          </motion.li>
+          </li>
         ))}
       </ul>
-    </motion.div>
+    </div>
   );
 }
 

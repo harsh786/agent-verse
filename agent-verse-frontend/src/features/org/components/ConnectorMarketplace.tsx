@@ -14,7 +14,7 @@
  *   - ui-ux-pro-max:     empty states, loading skeletons, real error surfaces
  */
 import { useState, useCallback, useMemo } from 'react';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Plug, CheckCircle2, Search, Loader2, X, Zap, Trash2, Activity, KeyRound, ShieldCheck, AlertTriangle,
@@ -47,7 +47,6 @@ const AUTH_LABEL: Record<string, string> = {
 };
 
 export function ConnectorMarketplace({ orgId: _orgId, onClose, className }: ConnectorMarketplaceProps) {
-  const reduce = useReducedMotion();
   const qc = useQueryClient();
   const [search, setSearch] = useState('');
   const [cat, setCat] = useState<string>('all');
@@ -231,7 +230,7 @@ export function ConnectorMarketplace({ orgId: _orgId, onClose, className }: Conn
           </div>
         ) : (
           <div className="space-y-2">
-            {filtered.map((connector, i) => {
+            {filtered.map((connector) => {
               const installed = installedByName.get(connector.name.toLowerCase());
               const isConnected = connector.is_configured || !!installed;
               const testResult = installed ? testResults[installed.server_id] : undefined;
@@ -239,9 +238,9 @@ export function ConnectorMarketplace({ orgId: _orgId, onClose, className }: Conn
                 <motion.div
                   key={connector.name}
                   layout
-                  initial={reduce ? { opacity: 0 } : { opacity: 0, y: 6 }}
+                  initial={false}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ ...CARD_SPRING, delay: reduce ? 0 : Math.min(i, 12) * 0.03 }}
+                  transition={CARD_SPRING}
                   className={cn(
                     'rounded-xl bg-[#1A1F2E] border transition-colors duration-150',
                     isConnected ? 'border-emerald-500/20' : 'border-[#1E2535] hover:border-[#2D3748]',
@@ -362,7 +361,7 @@ export function ConnectorMarketplace({ orgId: _orgId, onClose, className }: Conn
         {formConnector && (
           <motion.div
             className="absolute inset-0 z-20 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-            initial={{ opacity: 0 }}
+            initial={false}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setFormConnector(null)}

@@ -204,12 +204,9 @@ export function DigitalTwinPanel({ orgId }: DigitalTwinPanelProps) {
   const utilEntries = Object.entries(data?.current_utilisation ?? {});
 
   return (
-    <motion.section
+    <section
       aria-label="Digital Twin — org capacity and simulation"
-      initial={reduce ? { opacity: 0 } : { opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={SPRING_PANEL}
-      className="space-y-3"
+      className="jarvis-rise-in space-y-3"
     >
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -274,16 +271,14 @@ export function DigitalTwinPanel({ orgId }: DigitalTwinPanelProps) {
           {data.recommendations.length > 0 && (
             <div className="space-y-1.5">
               {data.recommendations.map((rec, i) => (
-                <motion.p
+                <p
                   key={i}
-                  initial={reduce ? {} : { opacity: 0, x: -4 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ ...SPRING_FAST, delay: i * 0.06 }}
-                  className="text-[11px] text-[#94A3B8] flex items-start gap-1.5"
+                  className="jarvis-rise-in text-[11px] text-[#94A3B8] flex items-start gap-1.5"
+                  style={{ animationDelay: `${Math.min(i, 8) * 0.04}s` }}
                 >
                   <TrendingUp className="h-3 w-3 text-blue-400 flex-shrink-0 mt-0.5" aria-hidden />
                   {rec}
-                </motion.p>
+                </p>
               ))}
             </div>
           )}
@@ -294,7 +289,7 @@ export function DigitalTwinPanel({ orgId }: DigitalTwinPanelProps) {
 
       {/* Simulator */}
       <SimulatorForm orgId={orgId} />
-    </motion.section>
+    </section>
   );
 }
 

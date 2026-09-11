@@ -111,7 +111,7 @@ export function SourceCreateWizard({ onClose, onCreated }: Props) {
           <AnimatePresence mode="wait">
             <motion.div
               key={step}
-              initial={{ x: 60, opacity: 0 }}
+              initial={false}
               animate={{ x: 0, opacity: 1 }}
               exit={{ x: -60, opacity: 0 }}
               transition={SPRING_PAGE}

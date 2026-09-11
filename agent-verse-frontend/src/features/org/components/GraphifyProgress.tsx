@@ -52,7 +52,6 @@ const PHASE_ORDER: GraphifyPhase[] = ['queued', 'extracting', 'building', 'commu
 // ─── Spring configs ───────────────────────────────────────────────────────────
 
 const PANEL_SPRING  = { type: 'spring', stiffness: 280, damping: 26 } as const;
-const NODE_SPRING   = { type: 'spring', stiffness: 400, damping: 30 } as const;
 const COUNT_SPRING  = { type: 'spring', stiffness: 200, damping: 28 } as const;
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -175,7 +174,7 @@ export function GraphifyProgress({ orgId, onClose, onComplete }: GraphifyProgres
 
   return (
     <motion.div
-      initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 12 }}
+      initial={false}
       animate={{ opacity: 1, scale: 1, y: 0 }}
       exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 8 }}
       transition={reduce ? { duration: 0.15 } : PANEL_SPRING}
@@ -232,23 +231,18 @@ export function GraphifyProgress({ orgId, onClose, onComplete }: GraphifyProgres
             </motion.div>
           </div>
           <div className="flex-1 min-w-0">
-            <motion.p
+            <p
               key={phase}
-              initial={reduce ? {} : { opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={NODE_SPRING}
-              className={cn('text-[15px] font-semibold tracking-[-0.01em]', cfg.color)}
+              className={cn('jarvis-rise-in text-[15px] font-semibold tracking-[-0.01em]', cfg.color)}
             >
               {cfg.label}
-            </motion.p>
-            <motion.p
+            </p>
+            <p
               key={message || cfg.desc}
-              initial={reduce ? {} : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="text-[12px] text-[#475569] truncate"
+              className="jarvis-rise-in text-[12px] text-[#475569] truncate"
             >
               {message || cfg.desc}
-            </motion.p>
+            </p>
           </div>
         </div>
 
@@ -338,17 +332,14 @@ export function GraphifyProgress({ orgId, onClose, onComplete }: GraphifyProgres
         )}
 
         {phase === 'complete' && (
-          <motion.div
-            initial={reduce ? {} : { opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-            className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-3 py-2"
+          <div
+            className="jarvis-pop-in flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-3 py-2"
           >
             <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" aria-hidden />
             <p className="text-[13px] text-emerald-300 font-medium">
               Graph built — {stats.nodes} nodes, {stats.edges} edges
             </p>
-          </motion.div>
+          </div>
         )}
       </div>
     </motion.div>

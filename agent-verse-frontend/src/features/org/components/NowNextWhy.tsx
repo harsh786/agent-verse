@@ -55,7 +55,6 @@ interface NowNextWhyProps {
 // ── Spring constants ──────────────────────────────────────────────────────────
 
 const SPRING_FAST  = { type: 'spring', stiffness: 600, damping: 35 } as const;
-const SPRING_PANEL = { type: 'spring', stiffness: 280, damping: 26 } as const;
 
 // ── Panel Tab ─────────────────────────────────────────────────────────────────
 
@@ -117,12 +116,10 @@ function NowPanel({ health, missions }: { health?: OrgHealthData; missions?: Org
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-2">
         {stats.map((s, i) => (
-          <motion.div
+          <div
             key={s.label}
-            initial={reduce ? { opacity: 0 } : { opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ ...SPRING_PANEL, delay: i * 0.04 }}
-            className="bg-[#252B3B] rounded-lg p-3"
+            style={{ animationDelay: `${Math.min(i, 8) * 0.04}s` }}
+            className="jarvis-pop-in bg-[#252B3B] rounded-lg p-3"
           >
             <p className={`text-[20px] font-bold tabular-nums ${s.warn ? 'text-amber-400' : 'text-[#F1F5F9]'}`}>{s.value}</p>
             <p className="text-[11px] text-[#64748B]">{s.label}</p>
@@ -135,7 +132,7 @@ function NowPanel({ health, missions }: { health?: OrgHealthData; missions?: Org
                 needs attention
               </motion.span>
             )}
-          </motion.div>
+          </div>
         ))}
       </div>
 
@@ -145,12 +142,10 @@ function NowPanel({ health, missions }: { health?: OrgHealthData; missions?: Org
           <p className="text-[11px] font-semibold text-[#64748B] uppercase tracking-wider mb-2">Active Missions</p>
           <div className="space-y-1.5">
             {missions.filter(m => m.status === 'active').slice(0, 4).map((m, i) => (
-              <motion.div
+              <div
                 key={m.id}
-                initial={reduce ? { opacity: 0 } : { opacity: 0, x: -6 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ ...SPRING_FAST, delay: i * 0.05 }}
-                className="flex items-center gap-2.5 p-2.5 bg-[#252B3B] rounded-lg"
+                style={{ animationDelay: `${Math.min(i, 8) * 0.04}s` }}
+                className="jarvis-rise-in flex items-center gap-2.5 p-2.5 bg-[#252B3B] rounded-lg"
               >
                 <motion.span
                   animate={reduce ? {} : { scale: [1, 1.3, 1] }}
@@ -159,7 +154,7 @@ function NowPanel({ health, missions }: { health?: OrgHealthData; missions?: Org
                 />
                 <p className="text-[12px] text-[#E2E8F0] truncate">{m.title}</p>
                 <span className={`ml-auto text-[10px] flex-shrink-0 ${m.priority === 'critical' ? 'text-red-400' : 'text-[#475569]'}`}>{m.priority}</span>
-              </motion.div>
+              </div>
             ))}
           </div>
         </div>
@@ -178,7 +173,6 @@ function NowPanel({ health, missions }: { health?: OrgHealthData; missions?: Org
 // ── NEXT Panel ────────────────────────────────────────────────────────────────
 
 function NextPanel({ upcoming, pendingApprovals }: { upcoming?: UpcomingItem[]; pendingApprovals?: number }) {
-  const reduce = useReducedMotion();
   const items = upcoming ?? [];
 
   return (
@@ -196,12 +190,10 @@ function NextPanel({ upcoming, pendingApprovals }: { upcoming?: UpcomingItem[]; 
       {items.length > 0 ? (
         <div className="space-y-1.5">
           {items.map((item, i) => (
-            <motion.div
+            <div
               key={item.id}
-              initial={reduce ? { opacity: 0 } : { opacity: 0, x: -6 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ ...SPRING_FAST, delay: i * 0.05 }}
-              className="flex items-start gap-2.5 p-2.5 bg-[#252B3B] rounded-lg"
+              style={{ animationDelay: `${Math.min(i, 8) * 0.04}s` }}
+              className="jarvis-rise-in flex items-start gap-2.5 p-2.5 bg-[#252B3B] rounded-lg"
             >
               <Clock className={`h-3.5 w-3.5 flex-shrink-0 mt-0.5 ${item.urgency === 'high' ? 'text-red-400' : item.urgency === 'medium' ? 'text-amber-400' : 'text-[#475569]'}`} aria-hidden />
               <div className="flex-1 min-w-0">
@@ -213,7 +205,7 @@ function NextPanel({ upcoming, pendingApprovals }: { upcoming?: UpcomingItem[]; 
                 )}
               </div>
               <span className="text-[10px] text-[#475569] capitalize flex-shrink-0">{item.type}</span>
-            </motion.div>
+            </div>
           ))}
         </div>
       ) : (
@@ -229,7 +221,6 @@ function NextPanel({ upcoming, pendingApprovals }: { upcoming?: UpcomingItem[]; 
 // ── WHY Panel ─────────────────────────────────────────────────────────────────
 
 function WhyPanel({ decisions }: { decisions?: WhyItem[] }) {
-  const reduce = useReducedMotion();
   const items  = decisions ?? [];
 
   return (
@@ -241,17 +232,15 @@ function WhyPanel({ decisions }: { decisions?: WhyItem[] }) {
         </div>
       ) : (
         items.map((item, i) => (
-          <motion.div
+          <div
             key={item.id}
-            initial={reduce ? { opacity: 0 } : { opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ ...SPRING_PANEL, delay: i * 0.06 }}
-            className="p-3 bg-[#252B3B] rounded-lg"
+            style={{ animationDelay: `${Math.min(i, 8) * 0.04}s` }}
+            className="jarvis-rise-in p-3 bg-[#252B3B] rounded-lg"
           >
             <p className="text-[12px] font-semibold text-[#F1F5F9] mb-1">{item.action}</p>
             <p className="text-[11px] text-[#94A3B8] leading-snug mb-1.5">{item.reason}</p>
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 font-medium">{item.autonomy}</span>
-          </motion.div>
+          </div>
         ))
       )}
     </div>

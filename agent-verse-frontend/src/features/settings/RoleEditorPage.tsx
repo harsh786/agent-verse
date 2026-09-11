@@ -120,11 +120,9 @@ function RoleRow({ role, onEdit, onDelete, index }: { role: OrgRole; onEdit: (r:
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <motion.div
-      initial={reduce ? { opacity: 0 } : { opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ ...SPRING_FAST, delay: index * 0.04 }}
-      className="bg-[#1A1F2E] border border-[#2D3748] rounded-xl overflow-hidden"
+    <div
+      style={{ animationDelay: `${Math.min(index, 8) * 0.04}s` }}
+      className="jarvis-pop-in bg-[#1A1F2E] border border-[#2D3748] rounded-xl overflow-hidden"
     >
       {/* Header row */}
       <div className="flex items-center gap-3 px-4 py-3">
@@ -217,7 +215,7 @@ function RoleRow({ role, onEdit, onDelete, index }: { role: OrgRole; onEdit: (r:
           </motion.div>
         )}
       </AnimatePresence>
-    </motion.div>
+    </div>
   );
 }
 
@@ -263,12 +261,8 @@ function RoleModal({
         className="absolute inset-0 bg-black/60"
         onClick={onClose}
       />
-      <motion.div
-        initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.95, y: 16 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.95 }}
-        transition={SPRING_MODAL}
-        className="relative bg-[#0F1117] border border-[#2D3748] rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto shadow-2xl"
+      <div
+        className="jarvis-pop-in relative bg-[#0F1117] border border-[#2D3748] rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto shadow-2xl"
       >
         <div className="p-6">
           <h2 id={titleId} className="text-[18px] font-bold text-[#F1F5F9] [text-wrap:balance] mb-1">
@@ -348,7 +342,7 @@ function RoleModal({
             </motion.button>
           </div>
         </div>
-      </motion.div>
+      </div>
     </div>
   );
 }
@@ -408,7 +402,7 @@ export function RoleEditorPage({ orgId }: RoleEditorPageProps) {
         <AnimatePresence mode="popLayout">
           {customRoles.length === 0 ? (
             <motion.div
-              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               className="text-center py-10 text-[#475569] text-[13px]"
             >
               No custom roles yet. Create one to define granular permissions.

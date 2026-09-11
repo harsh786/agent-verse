@@ -99,7 +99,7 @@ function ScheduleCard({ schedule, onAction, index }: {
 
   return (
     <motion.article
-      initial={reduce ? { opacity: 0 } : { opacity: 0, y: 16 }}
+      initial={false}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.97 }}
       transition={{ ...SPRING_FAST, delay: index * 0.05 }}
@@ -204,7 +204,7 @@ function NewScheduleModal({ onClose }: { onClose: () => void }) {
         onClick={onClose}
       />
       <motion.div
-        initial={reduce ? { opacity: 0 } : { opacity: 0, y: 40 }}
+        initial={false}
         animate={{ opacity: 1, y: 0 }}
         exit={reduce ? { opacity: 0 } : { opacity: 0, y: 40 }}
         transition={SPRING_MODAL}
@@ -295,12 +295,7 @@ export function ScheduledMissions() {
   }, [action]);
 
   return (
-    <motion.div
-      initial={reduce ? { opacity: 0 } : { opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={SPRING_MODAL}
-      className="max-w-3xl mx-auto px-6 py-8"
-    >
+    <div className="jarvis-page-in max-w-3xl mx-auto px-6 py-8">
       {/* Header */}
       <div className="flex items-start justify-between mb-8">
         <div>
@@ -325,14 +320,14 @@ export function ScheduledMissions() {
       {/* Cards */}
       <AnimatePresence mode="popLayout">
         {isLoading ? (
-          <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+          <motion.div key="loading" initial={false} animate={{ opacity: 1 }}
             className="flex items-center gap-3 text-[#475569] py-10 justify-center">
             <Clock className="h-4 w-4 animate-spin" aria-hidden />
             <span>Loading schedules…</span>
           </motion.div>
         ) : schedules.length === 0 ? (
           <motion.div key="empty"
-            initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }}
+            initial={false} animate={{ opacity: 1, scale: 1 }}
             className="text-center py-16"
           >
             <Clock className="h-10 w-10 text-[#2D3748] mx-auto mb-4" aria-hidden />
@@ -357,7 +352,7 @@ export function ScheduledMissions() {
       <AnimatePresence>
         {showNew && <NewScheduleModal onClose={() => setShowNew(false)} />}
       </AnimatePresence>
-    </motion.div>
+    </div>
   );
 }
 

@@ -8,7 +8,7 @@
  *   - AnimatePresence:  section transitions
  */
 import { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import {
   Zap, AlertTriangle,
   Brain, ArrowRight, RefreshCw,
@@ -279,19 +279,13 @@ export function OrgIntelligence({ orgId, className }: OrgIntelligenceProps) {
             ))}
           </div>
         ) : filtered.length === 0 ? (
-          <AnimatePresence>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="flex flex-col items-center py-16 gap-3"
-            >
-              <Zap className="h-10 w-10 text-[#1E2535]" aria-hidden />
-              <p className="text-[#475569] text-sm">
-                {filter === 'all' ? 'No insights available yet.' : `No ${filter}s detected.`}
-              </p>
-              <p className="text-[11px] text-[#475569]">Insights appear after missions run.</p>
-            </motion.div>
-          </AnimatePresence>
+          <div className="jarvis-rise-in flex flex-col items-center py-16 gap-3">
+            <Zap className="h-10 w-10 text-[#1E2535]" aria-hidden />
+            <p className="text-[#475569] text-sm">
+              {filter === 'all' ? 'No insights available yet.' : `No ${filter}s detected.`}
+            </p>
+            <p className="text-[11px] text-[#475569]">Insights appear after missions run.</p>
+          </div>
         ) : (
           <JARVISStagger className="space-y-3" staggerMs={60}>
             {filtered.map(insight => (

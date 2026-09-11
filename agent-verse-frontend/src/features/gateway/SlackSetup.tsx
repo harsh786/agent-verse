@@ -40,7 +40,7 @@ export function SlackSetup({ orgId, onConnected }: SlackSetupProps) {
 
       <AnimatePresence mode="wait">
         {step === 1 && (
-          <motion.div key="s1" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} transition={SPRING_FAST} className="space-y-4">
+          <motion.div key="s1" initial={false} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} transition={SPRING_FAST} className="space-y-4">
             <div className="bg-[#0F1623] border border-[#1E2535] rounded-xl p-4 space-y-3">
               <p className="text-sm text-[#94A3B8]">Create a Slack app at api.slack.com/apps, then:</p>
               <ol className="space-y-1.5 text-sm text-[#94A3B8] list-decimal list-inside">
@@ -60,7 +60,7 @@ export function SlackSetup({ orgId, onConnected }: SlackSetupProps) {
         )}
 
         {step === 2 && (
-          <motion.div key="s2" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} transition={SPRING_FAST} className="space-y-4">
+          <motion.div key="s2" initial={false} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} transition={SPRING_FAST} className="space-y-4">
             <div className="space-y-3">
               <div className="space-y-1.5">
                 <label className="text-xs text-[#475569]" htmlFor="slack-bot-token">Bot Token</label>
@@ -88,7 +88,7 @@ export function SlackSetup({ orgId, onConnected }: SlackSetupProps) {
         )}
 
         {step === 3 && (
-          <motion.div key="s3" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} transition={SPRING_PANEL} className="text-center py-8 space-y-4">
+          <motion.div key="s3" initial={false} animate={{ opacity: 1, scale: 1 }} transition={SPRING_PANEL} className="text-center py-8 space-y-4">
             <div className="h-16 w-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mx-auto">
               <CheckCircle2 className="h-8 w-8 text-emerald-400" aria-hidden />
             </div>

@@ -19,11 +19,6 @@ interface CommandCenterProps {
   orgId: string;
 }
 
-const pageVariants = {
-  hidden:  { opacity: 0, y: 8, filter: 'blur(4px)' },
-  visible: { opacity: 1, y: 0, filter: 'blur(0px)' },
-};
-
 export function CommandCenter({ orgId }: CommandCenterProps) {
   const [missionFilter, setMissionFilter] = useState<string | undefined>();
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -76,12 +71,8 @@ export function CommandCenter({ orgId }: CommandCenterProps) {
   }
 
   return (
-    <motion.div
-      variants={pageVariants}
-      initial="hidden"
-      animate="visible"
-      transition={{ type: 'spring', stiffness: 280, damping: 26 }}
-      className="min-h-screen bg-[var(--bg-base)] text-[var(--text-primary)]"
+    <div
+      className="jarvis-page-in min-h-screen bg-[var(--bg-base)] text-[var(--text-primary)]"
       data-testid="command-center-loaded"
     >
       {/* Header */}
@@ -240,6 +231,6 @@ export function CommandCenter({ orgId }: CommandCenterProps) {
           aria-hidden="true"
         />
       )}
-    </motion.div>
+    </div>
   );
 }

@@ -49,7 +49,7 @@ export function TokenWaterfall({ stepName, tokens, isActive, model, className }:
 
   return (
     <motion.div
-      initial={{ opacity: 0, height: 0 }}
+      initial={{ opacity: 1, height: 0 }}
       animate={{ opacity: 1, height: 'auto' }}
       exit={{ opacity: 0, height: 0 }}
       transition={{ type: 'spring', stiffness: 280, damping: 26 }}

@@ -129,7 +129,7 @@ export function ConversationViewer({ orgId }: ConversationViewerProps) {
           <AnimatePresence mode="wait">
             <motion.div
               key={selectedConv.conversation_id}
-              initial={{ opacity: 0, x: 12 }}
+              initial={false}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0 }}
               transition={SPRING_FAST}

@@ -91,7 +91,7 @@ function TaskCard({ task }: { task: OrgTask; onStatusChange?: (id: string, statu
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, y: 4 }}
+      initial={false}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
       className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3 hover:border-[var(--accent-blue)]/30 hover:shadow-glow-electric transition-all cursor-pointer group"

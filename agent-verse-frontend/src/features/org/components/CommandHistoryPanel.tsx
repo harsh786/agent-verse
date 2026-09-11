@@ -12,7 +12,7 @@
  *   ui-ux-pro-max:     44px submit, useReducedMotion, keyboard nav
  */
 import { useState, useCallback } from 'react';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import { Terminal, Send, AlertTriangle, CheckCircle2, Loader2, Clock, Filter } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/api/client';
@@ -55,7 +55,6 @@ function useSendCommand(orgId: string) {
 // ── Spring constants ──────────────────────────────────────────────────────────
 
 const SPRING_FAST = { type: 'spring', stiffness: 600, damping: 35 } as const;
-const SPRING_ROW  = { type: 'spring', stiffness: 280, damping: 26 } as const;
 
 // ── Channel badge ─────────────────────────────────────────────────────────────
 
@@ -95,13 +94,10 @@ function StatusIcon({ status }: { status: CommandStatus }) {
 // ── Command row ───────────────────────────────────────────────────────────────
 
 function CommandRow({ cmd, index }: { cmd: OrgCommand; index: number }) {
-  const reduce = useReducedMotion();
   return (
-    <motion.div
-      initial={reduce ? { opacity: 0 } : { opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ ...SPRING_ROW, delay: index * 0.04 }}
-      className="flex items-start gap-2.5 p-3 bg-[#1A1F2E] border border-[#2D3748] rounded-xl"
+    <div
+      style={{ animationDelay: `${Math.min(index, 8) * 0.04}s` }}
+      className="jarvis-pop-in flex items-start gap-2.5 p-3 bg-[#1A1F2E] border border-[#2D3748] rounded-xl"
     >
       <StatusIcon status={cmd.status} />
       <div className="flex-1 min-w-0">
@@ -125,7 +121,7 @@ function CommandRow({ cmd, index }: { cmd: OrgCommand; index: number }) {
         )}
       </div>
       <ChannelBadge channel={cmd.channel} />
-    </motion.div>
+    </div>
   );
 }
 
@@ -228,11 +224,11 @@ export function CommandHistoryPanel({ orgId }: CommandHistoryPanelProps) {
             No commands yet. Send the first one above.
           </div>
         ) : (
-          <AnimatePresence mode="popLayout">
+          <>
             {commands.map((cmd, i) => (
               <CommandRow key={cmd.command_id} cmd={cmd} index={i} />
             ))}
-          </AnimatePresence>
+          </>
         )}
       </div>
 

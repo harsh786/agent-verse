@@ -40,7 +40,7 @@ export function HITLGateNode({
 
   return (
     <motion.div
-      initial={{ opacity: 0, scale: 0.7 }}
+      initial={{ opacity: 1, scale: 0.7 }}
       animate={{ opacity: 1, scale: 1, boxShadow: glow }}
       exit={{ opacity: 0, scale: 0.8 }}
       transition={{ type: 'spring', stiffness: 450, damping: 18 }}

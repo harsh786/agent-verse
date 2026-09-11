@@ -1,5 +1,3 @@
-import { motion } from 'framer-motion';
-import { springs } from '../design/motion';
 /**
  * HITLContextRenderer — dispatches to the correct renderer by display_type.
  *
@@ -171,16 +169,13 @@ const RENDERERS: Record<ContextItem['display_type'], React.FC<{ item: ContextIte
 export function HITLContextRenderer({ item }: { item: ContextItem }) {
   const Renderer = RENDERERS[item.display_type] ?? JsonRenderer;
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={springs.gentle}
-      className="rounded-xl border border-white/8 bg-[#0F1826]/3 p-4"
+    <div
+      className="jarvis-rise-in rounded-xl border border-white/8 bg-[#0F1826]/3 p-4"
       role="region"
       aria-label={`Context: ${item.title} (${item.display_type})`}
     >
       <Renderer item={item} />
-    </motion.div>
+    </div>
   );
 }
 
