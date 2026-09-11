@@ -3079,6 +3079,125 @@ async def org_create_mission_execute(
     }
 
 
+# ── Mission schedules — autonomous cron-driven missions ──────────────────────
+
+
+class _MissionScheduleRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    objective: str = Field(default="", max_length=2000)
+    cron_expression: str = Field(min_length=1, max_length=120)
+    timezone: str = Field(default="UTC", max_length=64)
+    priority: str = Field(default="medium")
+    autonomy_level: int | None = None
+    dept_id: str | None = None
+    name: str = Field(default="", max_length=200)
+    enabled: bool = True
+
+
+class _ScheduleToggleRequest(BaseModel):
+    enabled: bool
+
+
+def _schedule_to_dict(s: Any) -> dict[str, Any]:
+    return {
+        "id": str(s.id),
+        "org_id": str(s.org_id),
+        "name": s.name,
+        "title": s.title,
+        "objective": s.objective,
+        "priority": s.priority,
+        "autonomy_level": s.autonomy_level,
+        "cron_expression": s.cron_expression,
+        "timezone": s.timezone,
+        "enabled": s.enabled,
+        "next_fire_at": s.next_fire_at.isoformat() if s.next_fire_at else None,
+        "last_fired_at": s.last_fired_at.isoformat() if s.last_fired_at else None,
+        "last_mission_id": str(s.last_mission_id) if s.last_mission_id else None,
+        "fire_count": s.fire_count,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+    }
+
+
+def _validate_cron(expr: str) -> None:
+    from croniter import croniter
+
+    if not croniter.is_valid(expr):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid cron expression: {expr!r}",
+        )
+
+
+@router.post(
+    "/{org_id}/schedules",
+    operation_id="org_create_schedule",
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a cron schedule that autonomously launches a mission",
+)
+async def org_create_schedule(
+    org_id: str,
+    body: _MissionScheduleRequest,
+    request: Request,
+    service: OrgService = Depends(get_org_service),
+) -> dict[str, Any]:
+    _require_tenant(request)
+    _validate_cron(body.cron_expression)
+    sched = await service.create_mission_schedule(
+        org_id=org_id,
+        title=body.title,
+        objective=body.objective,
+        cron_expression=body.cron_expression,
+        timezone=body.timezone,
+        priority=body.priority,
+        autonomy_level=body.autonomy_level,
+        dept_id=body.dept_id,
+        name=body.name,
+        enabled=body.enabled,
+    )
+    return _schedule_to_dict(sched)
+
+
+@router.get("/{org_id}/schedules", operation_id="org_list_schedules")
+async def org_list_schedules(
+    org_id: str,
+    request: Request,
+    service: OrgService = Depends(get_org_service),
+) -> list[dict[str, Any]]:
+    _require_tenant(request)
+    return [_schedule_to_dict(s) for s in await service.list_mission_schedules(org_id)]
+
+
+@router.patch("/{org_id}/schedules/{schedule_id}", operation_id="org_toggle_schedule")
+async def org_toggle_schedule(
+    org_id: str,
+    schedule_id: str,
+    body: _ScheduleToggleRequest,
+    request: Request,
+    service: OrgService = Depends(get_org_service),
+) -> dict[str, Any]:
+    _require_tenant(request)
+    sched = await service.set_mission_schedule_enabled(schedule_id, body.enabled)
+    if sched is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return _schedule_to_dict(sched)
+
+
+@router.delete(
+    "/{org_id}/schedules/{schedule_id}",
+    operation_id="org_delete_schedule",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def org_delete_schedule(
+    org_id: str,
+    schedule_id: str,
+    request: Request,
+    service: OrgService = Depends(get_org_service),
+) -> None:
+    _require_tenant(request)
+    if not await service.delete_mission_schedule(schedule_id):
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+
 # ── WS-2b: Mission finalize — reconcile subtasks vs real goal + aggregate ─────
 
 

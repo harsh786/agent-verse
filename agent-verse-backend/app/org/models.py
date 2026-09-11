@@ -251,6 +251,49 @@ class OrgMission(Base):
     )
 
 
+# ── Mission Schedule ────────────────────────────────────────────────────────
+# A recurring/one-off cron schedule that autonomously launches an org mission.
+# Fired by the fire_due_org_mission_schedules Celery beat task, which creates the
+# mission and dispatches it through the crash-safe execute_org_mission worker.
+
+
+class OrgMissionSchedule(Base):
+    __tablename__ = "org_mission_schedules"
+    __table_args__ = (
+        Index("idx_org_sched_tenant_org", "tenant_id", "org_id"),
+        # The beat task scans due schedules across tenants by next_fire_at.
+        Index("idx_org_sched_due", "enabled", "next_fire_at"),
+        {"schema": None},
+    )
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=_uuid7)
+    tenant_id = Column(PG_UUID(as_uuid=True), nullable=False)
+    org_id = Column(
+        PG_UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    name = Column(String(200), nullable=False, default="")
+    # The mission this schedule launches each time it fires.
+    title = Column(String(500), nullable=False)
+    objective = Column(Text, default="")
+    priority = Column(String(20), nullable=False, default="medium")
+    autonomy_level = Column(Integer, nullable=True)
+    dept_id = Column(PG_UUID(as_uuid=True), nullable=True)
+    # Timing. cron_expression drives recurrence; timezone is the cron's frame.
+    cron_expression = Column(String(120), nullable=False, default="")
+    timezone = Column(String(64), nullable=False, default="UTC")
+    enabled = Column(Boolean, nullable=False, default=True)
+    next_fire_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    last_fired_at = Column(DateTime(timezone=True), nullable=True)
+    last_mission_id = Column(PG_UUID(as_uuid=True), nullable=True)
+    fire_count = Column(Integer, nullable=False, default=0)
+    # Reserved for Phase 2 — how to publish the deliverable (connector + gate).
+    publish_config = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 # ── Workstream ────────────────────────────────────────────────────────────────
 
 

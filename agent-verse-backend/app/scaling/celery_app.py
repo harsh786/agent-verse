@@ -77,6 +77,7 @@ celery_app.conf.update(
         # Org mission team-formation + dispatch — worker subscribes to "goals".
         "app.scaling.tasks.execute_org_mission": {"queue": "goals"},
         "app.scaling.tasks.resweep_stuck_missions": {"queue": "maintenance"},
+        "app.scaling.tasks.fire_due_org_mission_schedules": {"queue": "schedules"},
         "app.scaling.tasks.run_goal_dlq": {"queue": "goals_dlq"},
         "app.scaling.tasks.run_scheduled_goal": {"queue": "schedules"},
         "app.scaling.tasks.fire_due_schedules": {"queue": "schedules"},
@@ -150,6 +151,11 @@ celery_app.conf.update(
             "task": "app.scaling.tasks.resweep_stuck_missions",
             "schedule": 120.0,  # every 2 minutes — recover missions whose dispatch task was lost
             "options": {"queue": "maintenance"},
+        },
+        "fire-due-org-mission-schedules": {
+            "task": "app.scaling.tasks.fire_due_org_mission_schedules",
+            "schedule": 60.0,  # every 60s — launch autonomous missions for due schedules
+            "options": {"queue": "schedules"},
         },
         "execute-retention-policy": {
             "task": "app.scaling.tasks.execute_retention_policy",

@@ -32,6 +32,7 @@ from app.org.models import (
     OrgDepartment,
     OrgEvent,
     OrgMission,
+    OrgMissionSchedule,
     OrgTask,
     OrgTeam,
     OrgWorkstream,
@@ -106,6 +107,25 @@ MISSION_STATUSES = frozenset(
 # ── Max recursion / anti-runaway limits ───────────────────────────────────────
 MAX_TASK_DEPTH = 8
 MAX_TASKS_PER_MISSION = 200
+
+
+def _next_cron_fire(
+    cron_expression: str, tz: str = "UTC", after: datetime | None = None
+) -> datetime:
+    """Next fire time (UTC-aware) for a cron expression evaluated in ``tz``."""
+    from zoneinfo import ZoneInfo
+
+    from croniter import croniter
+
+    try:
+        zone = ZoneInfo(tz or "UTC")
+    except Exception:
+        zone = ZoneInfo("UTC")
+    base = (after or datetime.now(UTC)).astimezone(zone)
+    nxt = croniter(cron_expression, base).get_next(datetime)
+    if nxt.tzinfo is None:
+        nxt = nxt.replace(tzinfo=zone)
+    return nxt.astimezone(UTC)
 
 
 class OrgService:
@@ -896,6 +916,106 @@ class OrgService:
             )
         )
         return result.scalar_one_or_none()
+
+    # ── Mission schedules (autonomous, cron-driven) ──────────────────────────
+
+    async def create_mission_schedule(
+        self,
+        *,
+        org_id: str,
+        title: str,
+        objective: str = "",
+        cron_expression: str,
+        timezone: str = "UTC",
+        priority: str = "medium",
+        autonomy_level: int | None = None,
+        dept_id: str | None = None,
+        name: str = "",
+        enabled: bool = True,
+    ) -> OrgMissionSchedule:
+        """Create a cron schedule that autonomously launches an org mission."""
+        next_fire = _next_cron_fire(cron_expression, timezone) if enabled else None
+        sched = OrgMissionSchedule(
+            tenant_id=uuid.UUID(self._tenant_id),
+            org_id=uuid.UUID(org_id),
+            name=name or title,
+            title=title,
+            objective=objective,
+            priority=priority,
+            autonomy_level=autonomy_level,
+            dept_id=uuid.UUID(dept_id) if dept_id else None,
+            cron_expression=cron_expression,
+            timezone=timezone,
+            enabled=enabled,
+            next_fire_at=next_fire,
+        )
+        self._session.add(sched)
+        await self._session.flush()
+        await self._emit_event(
+            uuid.UUID(org_id),
+            "schedule.created",
+            title=f"Schedule '{sched.name}' created",
+            entity_type="schedule",
+            entity_id=str(sched.id),
+            payload={"cron": cron_expression, "timezone": timezone, "next_fire_at": (
+                next_fire.isoformat() if next_fire else None
+            )},
+        )
+        return sched
+
+    async def list_mission_schedules(self, org_id: str) -> list[OrgMissionSchedule]:
+        result = await self._session.execute(
+            select(OrgMissionSchedule)
+            .where(
+                and_(
+                    OrgMissionSchedule.tenant_id == self._tenant_id,
+                    OrgMissionSchedule.org_id == uuid.UUID(org_id),
+                )
+            )
+            .order_by(OrgMissionSchedule.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def set_mission_schedule_enabled(
+        self, schedule_id: str, enabled: bool
+    ) -> OrgMissionSchedule | None:
+        sched = (
+            await self._session.execute(
+                select(OrgMissionSchedule).where(
+                    and_(
+                        OrgMissionSchedule.tenant_id == self._tenant_id,
+                        OrgMissionSchedule.id == uuid.UUID(schedule_id),
+                    )
+                )
+            )
+        ).scalar_one_or_none()
+        if sched is None:
+            return None
+        sched.enabled = enabled
+        # Re-arm the next fire when enabling; clear it when pausing.
+        sched.next_fire_at = (
+            _next_cron_fire(str(sched.cron_expression), str(sched.timezone)) if enabled else None
+        )
+        sched.updated_at = datetime.now(UTC)
+        await self._session.flush()
+        return sched
+
+    async def delete_mission_schedule(self, schedule_id: str) -> bool:
+        sched = (
+            await self._session.execute(
+                select(OrgMissionSchedule).where(
+                    and_(
+                        OrgMissionSchedule.tenant_id == self._tenant_id,
+                        OrgMissionSchedule.id == uuid.UUID(schedule_id),
+                    )
+                )
+            )
+        ).scalar_one_or_none()
+        if sched is None:
+            return False
+        await self._session.delete(sched)
+        await self._session.flush()
+        return True
 
     async def list_missions(
         self,

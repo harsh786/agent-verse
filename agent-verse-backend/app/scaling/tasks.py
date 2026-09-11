@@ -708,6 +708,101 @@ def resweep_stuck_missions(self: Any) -> dict[str, Any]:
     return {"reenqueued": count}
 
 
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="app.scaling.tasks.fire_due_org_mission_schedules", bind=True, max_retries=0
+)
+def fire_due_org_mission_schedules(self: Any) -> dict[str, Any]:
+    """Launch org missions for every cron schedule that is now due.
+
+    Beat-scheduled (every 60s). Scans org_mission_schedules across tenants,
+    creates the mission for each due schedule, advances its next_fire_at, and
+    dispatches through the crash-safe execute_org_mission worker. This is how a
+    mission runs autonomously with no human in the loop.
+    """
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context, system_session
+    from app.db.session import get_session_factory
+    from app.org.service import OrgService, _next_cron_fire
+
+    async def _fire() -> int:
+        db = get_session_factory()
+        # 1. Cross-tenant scan for due schedules (RLS-bypassing system session).
+        async with db() as s, s.begin(), system_session(s):
+            due = (
+                await s.execute(
+                    text(
+                        "SELECT id, tenant_id, org_id, title, objective, priority, "
+                        "autonomy_level, dept_id, cron_expression, timezone "
+                        "FROM org_mission_schedules "
+                        "WHERE enabled IS TRUE AND next_fire_at IS NOT NULL "
+                        "AND next_fire_at <= now() "
+                        "ORDER BY next_fire_at LIMIT 100"
+                    )
+                )
+            ).fetchall()
+
+        fired = 0
+        for r in due:
+            tenant_id = r.tenant_id.hex
+            org_id = str(r.org_id)
+            dept_id = str(r.dept_id) if r.dept_id else None
+            try:
+                # 2. Create + commit the mission and advance the schedule, in the
+                # schedule's own tenant context (RLS), then dispatch after commit.
+                async with (
+                    db() as s2,
+                    s2.begin(),
+                    sqlalchemy_rls_context(s2, tenant_id),
+                ):
+                    svc = OrgService(s2, tenant_id)
+                    mission = await svc.create_mission(
+                        org_id=org_id,
+                        title=r.title,
+                        objective=r.objective or "",
+                        priority=r.priority or "medium",
+                        autonomy_level=r.autonomy_level,
+                        dept_id=dept_id,
+                        source="schedule",
+                    )
+                    mission_id = str(mission.id)
+                    await svc.update_mission_status(mission_id, "planned")
+                    next_fire = _next_cron_fire(r.cron_expression, r.timezone or "UTC")
+                    await s2.execute(
+                        text(
+                            "UPDATE org_mission_schedules "
+                            "SET next_fire_at = :n, last_fired_at = now(), "
+                            "last_mission_id = :m, fire_count = fire_count + 1, "
+                            "updated_at = now() WHERE id = :sid"
+                        ),
+                        {"n": next_fire, "m": mission.id, "sid": r.id},
+                    )
+                execute_org_mission.apply_async(
+                    kwargs={
+                        "mission_id": mission_id,
+                        "tenant_id": tenant_id,
+                        "org_id": org_id,
+                        "objective": r.objective or "",
+                        "title": r.title,
+                        "priority": r.priority or "medium",
+                        "autonomy_level": r.autonomy_level,
+                        "dept_id": dept_id,
+                    },
+                )
+                fired += 1
+            except Exception as exc:
+                logger.error(
+                    "fire_due_org_mission_schedules.failed",
+                    schedule_id=str(r.id),
+                    error=str(exc)[:200],
+                )
+        if fired:
+            logger.info("fire_due_org_mission_schedules.fired", count=fired)
+        return fired
+
+    return {"fired": _run_async(_fire())}
+
+
 @celery_app.task(name="app.scaling.tasks.run_goal_dlq", bind=True, max_retries=0)
 def run_goal_dlq(
     self: Any,
