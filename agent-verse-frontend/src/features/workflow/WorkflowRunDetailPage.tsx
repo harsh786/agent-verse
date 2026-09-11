@@ -191,6 +191,19 @@ export default function WorkflowRunDetailPage() {
           ))}
         </div>
 
+        {/* Inputs — the trigger payload this run started with */}
+        {Object.keys(run.inputs ?? {}).length > 0 && (
+          <section aria-labelledby="inputs-heading">
+            <h2 id="inputs-heading" className="text-sm font-semibold text-[#F1F5F9] mb-3">
+              Inputs
+            </h2>
+            <pre className="text-xs font-mono text-[#CBD5E1] bg-[#0F1117]/60 rounded-xl p-4
+                            overflow-auto max-h-48 leading-relaxed border border-white/8">
+              {JSON.stringify(run.inputs, null, 2)}
+            </pre>
+          </section>
+        )}
+
         {/* Outputs */}
         {Object.keys(run.outputs ?? {}).length > 0 && (
           <section aria-labelledby="outputs-heading">
