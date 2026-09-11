@@ -67,13 +67,38 @@ class GatewayConfig(BaseModel):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
+def trusted_gateway_tenant(headers: dict[str, str]) -> str:
+    """Resolve the tenant a gateway webhook is allowed to act for.
+
+    SECURITY: the channel webhooks are unauthenticated at the tenant layer (they
+    are in _BYPASS_PREFIXES and rely on per-channel signature checks), so the
+    ``x-tenant-id`` header is attacker-controllable. Acting on it directly is a
+    cross-tenant bypass — any caller could create goals / ingest documents for an
+    arbitrary tenant. We therefore trust ``x-tenant-id`` ONLY when the caller (the
+    operator's own relay that forwards Telegram/WhatsApp updates) presents the
+    shared ``GATEWAY_INGRESS_SECRET`` in ``x-gateway-secret``. With no secret
+    configured, no tenant is trusted and the command is acknowledged but performs
+    no tenant-scoped work — never a silent cross-tenant action.
+    """
+    import hmac
+    import os
+
+    secret = os.getenv("GATEWAY_INGRESS_SECRET", "")
+    if not secret:
+        return ""
+    presented = headers.get("x-gateway-secret", "")
+    if not presented or not hmac.compare_digest(secret, presented):
+        return ""
+    return (headers.get("x-tenant-id", "") or "").strip()
+
+
 def _tenant_ctx_for(command: OrgCommand) -> Any:
-    """Build a TenantContext for a gateway command. The webhook caller supplies
-    the tenant via the ``x-tenant-id`` header (adapters put it on the command);
-    fall back to org_id when a deployment maps 1:1 org→tenant."""
+    """Build a TenantContext from the command's already-trust-validated tenant_id
+    (set by the webhook handler via :func:`trusted_gateway_tenant`). Empty when no
+    tenant was trusted — callers must skip tenant-scoped work in that case."""
     from app.tenancy.context import PlanTier, TenantContext
 
-    tenant_id = command.tenant_id or command.org_id
+    tenant_id = command.tenant_id
     return TenantContext(tenant_id=tenant_id, api_key_id="gateway", plan=PlanTier.FREE), tenant_id
 
 
@@ -82,6 +107,16 @@ async def _download_command_file(cf: Any) -> bytes | None:
         return cf.data
     url = getattr(cf, "url", None)
     if not url:
+        return None
+    # SSRF guard: file URLs arrive from external chat payloads, so they must be
+    # confined to public hosts before any request (blocks localhost, link-local,
+    # cloud metadata, and private ranges).
+    try:
+        from app.net.ssrf_guard import assert_public_url
+
+        assert_public_url(str(url), context="gateway.file_download")
+    except Exception as exc:
+        _log.warning("gateway.file_url_blocked", error=str(exc)[:120])
         return None
     try:
         import httpx
@@ -218,6 +253,25 @@ async def _process_command(command: OrgCommand) -> OrgResponse:
             state = None
 
         ctx, tenant_id = _tenant_ctx_for(command)
+
+        # No trusted tenant → acknowledge only. Never create goals or ingest
+        # documents for a tenant derived from an unauthenticated, spoofable
+        # header (see trusted_gateway_tenant).
+        if not tenant_id:
+            _log.warning(
+                "gateway.untrusted_tenant_skipped",
+                channel=command.actor_channel,
+                org_id=command.org_id,
+            )
+            reply_text = "Received. (No tenant binding configured for this channel.)"
+            await _reply_to_channel(command, reply_text)
+            return OrgResponse(
+                command_id=command.command_id,
+                text=reply_text,
+                status="accepted",
+                requires_action=False,
+            )
+
         parts: list[str] = []
         goal_id: str | None = None
 
@@ -269,7 +323,7 @@ async def telegram_webhook(
     if not await _telegram.verify_auth(headers, raw):
         raise HTTPException(status_code=403, detail="Invalid Telegram webhook token")
 
-    tenant_id = headers.get("x-tenant-id", "")
+    tenant_id = trusted_gateway_tenant(headers)  # spoof-proof: gated by ingress secret
     command = await _telegram.normalize(raw, tenant_id=tenant_id, org_id=org_id)
 
     if command.text:
@@ -310,7 +364,7 @@ async def slack_events(
     if not await _slack.verify_auth(headers, raw):
         raise HTTPException(status_code=403, detail="Invalid Slack signature")
 
-    tenant_id = headers.get("x-tenant-id", "")
+    tenant_id = trusted_gateway_tenant(headers)  # spoof-proof: gated by ingress secret
     command = await _slack.normalize(raw, tenant_id=tenant_id, org_id=org_id)
 
     if command.text:
@@ -355,7 +409,7 @@ async def whatsapp_webhook(
     if not await _whatsapp.verify_auth(headers, raw):
         raise HTTPException(status_code=403, detail="Invalid WhatsApp signature")
 
-    tenant_id = headers.get("x-tenant-id", "")
+    tenant_id = trusted_gateway_tenant(headers)  # spoof-proof: gated by ingress secret
     command = await _whatsapp.normalize(raw, tenant_id=tenant_id, org_id=org_id)
 
     if command.text:
@@ -383,7 +437,7 @@ async def teams_messages(
     if not await _teams.verify_auth(headers, raw):
         raise HTTPException(status_code=403, detail="Invalid Teams auth")
 
-    tenant_id = headers.get("x-tenant-id", "")
+    tenant_id = trusted_gateway_tenant(headers)  # spoof-proof: gated by ingress secret
     command = await _teams.normalize(raw, tenant_id=tenant_id, org_id=org_id)
 
     if command.text:
@@ -411,7 +465,7 @@ async def generic_webhook(
     if not await _webhook.verify_auth(headers, raw):
         raise HTTPException(status_code=403, detail="Invalid webhook signature")
 
-    tenant_id = headers.get("x-tenant-id", "")
+    tenant_id = trusted_gateway_tenant(headers)  # spoof-proof: gated by ingress secret
     command = await _webhook.normalize(raw, tenant_id=tenant_id, org_id=org_id)
 
     background_tasks.add_task(_process_command, command)

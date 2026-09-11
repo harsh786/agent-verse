@@ -33,11 +33,27 @@ def _cmd(**kw):
     return OrgCommand(**base)
 
 
-async def test_tenant_ctx_prefers_tenant_id_then_org():
-    ctx, tid = gw._tenant_ctx_for(_cmd())
+async def test_tenant_ctx_uses_only_the_trusted_tenant_id():
+    # _tenant_ctx_for trusts ONLY command.tenant_id (already validated by the
+    # webhook handler); it must NOT fall back to the spoofable org_id.
+    _, tid = gw._tenant_ctx_for(_cmd())
     assert tid == TID
-    ctx2, tid2 = gw._tenant_ctx_for(_cmd(tenant_id="", org_id="orgAsTenant"))
-    assert tid2 == "orgAsTenant"
+    _, tid2 = gw._tenant_ctx_for(_cmd(tenant_id="", org_id="orgAsTenant"))
+    assert tid2 == ""
+
+
+async def test_trusted_gateway_tenant_requires_ingress_secret(monkeypatch):
+    # No secret configured → never trust x-tenant-id (anonymous cross-tenant hole).
+    monkeypatch.delenv("GATEWAY_INGRESS_SECRET", raising=False)
+    assert gw.trusted_gateway_tenant({"x-tenant-id": "victim"}) == ""
+    # Secret configured but not presented / wrong → still untrusted.
+    monkeypatch.setenv("GATEWAY_INGRESS_SECRET", "s3cret")
+    assert gw.trusted_gateway_tenant({"x-tenant-id": "victim"}) == ""
+    assert gw.trusted_gateway_tenant({"x-tenant-id": "victim", "x-gateway-secret": "wrong"}) == ""
+    # Correct secret → the header tenant is trusted.
+    assert (
+        gw.trusted_gateway_tenant({"x-tenant-id": "acme", "x-gateway-secret": "s3cret"}) == "acme"
+    )
 
 
 async def test_submit_goal_routes_text_to_goal_service():
