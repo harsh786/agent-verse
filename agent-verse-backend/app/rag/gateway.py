@@ -53,6 +53,7 @@ from app.rag.engine import (
 )
 from app.rag.raft import RAFTService
 from app.rag.rerank_stage import apply_default_rerank
+from app.rag.store import SUPPORTED_EMBEDDING_DIMENSIONS
 from app.rag_platform.reranker_contract import AsyncCloseableProtocol
 from app.tenancy.context import TenantContext
 
@@ -393,6 +394,87 @@ def _is_safe_web_capability(
     )
 
 
+# Columns every per-dimension knowledge_chunks_<dim> table must carry for the RAG
+# persistence layer to be considered ready. Kept in one place so the readiness probe
+# below stays in lock-step with the schema across ALL supported embedding dimensions.
+_CHUNK_REQUIRED_COLUMNS = (
+    "metadata",
+    "embedding",
+    "expires_at",
+    "parent_chunk_id",
+    "chunk_level",
+    "window_start",
+    "window_end",
+    "window_id",
+    "hierarchy_level",
+    "is_proposition",
+    "strategy_metadata",
+    "ingestion_job_id",
+)
+
+
+def _build_persistence_capability_sql() -> str:
+    """Build the persistence readiness probe from the canonical dimension set.
+
+    The probe MUST cover every dimension in ``SUPPORTED_EMBEDDING_DIMENSIONS`` —
+    previously it hardcoded the four original dims (768/1024/1536/3072) and required
+    exactly four indexed chunk tables. When the 2048-d (NVIDIA nemotron) table landed
+    the schema grew to five tables, so the hardcoded ``= 4`` counts turned false and
+    readiness reported ``persistence_unavailable`` for every tenant. Deriving the
+    checks from the constant keeps the probe correct as dimensions are added.
+    """
+    dims = tuple(SUPPORTED_EMBEDDING_DIMENSIONS)
+    n = len(dims)
+    tables = [f"knowledge_chunks_{dim}" for dim in dims]
+    regclass_checks = " AND ".join(
+        f"to_regclass('public.{table}') IS NOT NULL"
+        for table in ["knowledge_collections", *tables]
+    )
+    required_rows = [
+        "('knowledge_collections', 'tenant_id')",
+        "('knowledge_collections', 'is_active')",
+        "('knowledge_collections', 'embedding_dim')",
+    ]
+    required_rows.extend(
+        f"('{table}', '{column}')"
+        for table in tables
+        for column in _CHUNK_REQUIRED_COLUMNS
+    )
+    values_clause = ", ".join(required_rows)
+    return (
+        "SELECT "
+        f"{regclass_checks} "
+        "AND EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') "
+        "AND EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') "
+        "AND EXISTS (SELECT 1 FROM pg_operator WHERE oprname = '<=>') "
+        "AND EXISTS (SELECT 1 FROM pg_operator WHERE oprname = '%') "
+        "AND EXISTS (SELECT 1 FROM alembic_version) "
+        "AND NOT EXISTS ("
+        "  SELECT required.table_name, required.column_name FROM (VALUES "
+        f"  {values_clause}"
+        "  ) AS required(table_name, column_name) "
+        "  EXCEPT SELECT table_name, column_name "
+        "  FROM information_schema.columns WHERE table_schema = 'public'"
+        ") "
+        "AND (SELECT count(DISTINCT tablename) FROM pg_indexes "
+        "     WHERE schemaname = 'public' AND tablename LIKE 'knowledge_chunks_%' "
+        "     AND indexdef ILIKE '%hnsw%' "
+        f"     AND indexdef ILIKE '%cosine_ops%') = {n} "
+        "AND (SELECT count(DISTINCT tablename) FROM pg_indexes "
+        "     WHERE schemaname = 'public' AND tablename LIKE 'knowledge_chunks_%' "
+        f"     AND indexdef ILIKE '%gin_trgm_ops%') = {n} "
+        "AND (SELECT count(DISTINCT tablename) FROM pg_indexes "
+        "     WHERE schemaname = 'public' AND tablename LIKE 'knowledge_chunks_%' "
+        f"     AND indexdef ILIKE '%to_tsvector%') = {n} "
+        " AND (SELECT count(DISTINCT tablename) FROM pg_indexes "
+        "      WHERE schemaname = 'public' AND tablename LIKE 'knowledge_chunks_%' "
+        f"      AND indexdef ILIKE '%metadata jsonb_path_ops%') = {n}"
+    )
+
+
+_PERSISTENCE_CAPABILITY_SQL = _build_persistence_capability_sql()
+
+
 async def _probe_session_factory(factory: object | None, tenant_id: str) -> str | None:
     if not callable(factory):
         return "session_factory_unavailable"
@@ -421,90 +503,7 @@ async def _probe_session_factory(factory: object | None, tenant_id: str) -> str 
                 if await session.scalar(text("SELECT 1")) != 1:
                     return "persistence_unavailable"
                 persisted_capabilities = await session.scalar(
-                    text(
-                        "SELECT "
-                        "to_regclass('public.knowledge_collections') IS NOT NULL "
-                        "AND to_regclass('public.knowledge_chunks_768') IS NOT NULL "
-                        "AND to_regclass('public.knowledge_chunks_1024') IS NOT NULL "
-                        "AND to_regclass('public.knowledge_chunks_1536') IS NOT NULL "
-                        "AND to_regclass('public.knowledge_chunks_3072') IS NOT NULL "
-                        "AND "
-                        "EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') "
-                        "AND EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') "
-                        "AND EXISTS (SELECT 1 FROM pg_operator WHERE oprname = '<=>') "
-                        "AND EXISTS (SELECT 1 FROM pg_operator WHERE oprname = '%') "
-                        "AND EXISTS (SELECT 1 FROM alembic_version) "
-                        "AND NOT EXISTS ("
-                        "  SELECT required.table_name, required.column_name FROM (VALUES "
-                        "  ('knowledge_collections', 'tenant_id'), "
-                        "  ('knowledge_collections', 'is_active'), "
-                        "  ('knowledge_collections', 'embedding_dim'), "
-                        "  ('knowledge_chunks_768', 'metadata'), "
-                        "  ('knowledge_chunks_768', 'embedding'), "
-                        "  ('knowledge_chunks_768', 'expires_at'), "
-                        "  ('knowledge_chunks_768', 'parent_chunk_id'), "
-                        "  ('knowledge_chunks_768', 'chunk_level'), "
-                        "  ('knowledge_chunks_768', 'window_start'), "
-                        "  ('knowledge_chunks_768', 'window_end'), "
-                        "  ('knowledge_chunks_768', 'window_id'), "
-                        "  ('knowledge_chunks_768', 'hierarchy_level'), "
-                        "  ('knowledge_chunks_768', 'is_proposition'), "
-                        "  ('knowledge_chunks_768', 'strategy_metadata'), "
-                        "  ('knowledge_chunks_768', 'ingestion_job_id'), "
-                        "  ('knowledge_chunks_1024', 'metadata'), "
-                        "  ('knowledge_chunks_1024', 'embedding'), "
-                        "  ('knowledge_chunks_1024', 'expires_at'), "
-                        "  ('knowledge_chunks_1024', 'parent_chunk_id'), "
-                        "  ('knowledge_chunks_1024', 'chunk_level'), "
-                        "  ('knowledge_chunks_1024', 'window_start'), "
-                        "  ('knowledge_chunks_1024', 'window_end'), "
-                        "  ('knowledge_chunks_1024', 'window_id'), "
-                        "  ('knowledge_chunks_1024', 'hierarchy_level'), "
-                        "  ('knowledge_chunks_1024', 'is_proposition'), "
-                        "  ('knowledge_chunks_1024', 'strategy_metadata'), "
-                        "  ('knowledge_chunks_1024', 'ingestion_job_id'), "
-                        "  ('knowledge_chunks_1536', 'metadata'), "
-                        "  ('knowledge_chunks_1536', 'embedding'), "
-                        "  ('knowledge_chunks_1536', 'expires_at'), "
-                        "  ('knowledge_chunks_1536', 'parent_chunk_id'), "
-                        "  ('knowledge_chunks_1536', 'chunk_level'), "
-                        "  ('knowledge_chunks_1536', 'window_start'), "
-                        "  ('knowledge_chunks_1536', 'window_end'), "
-                        "  ('knowledge_chunks_1536', 'window_id'), "
-                        "  ('knowledge_chunks_1536', 'hierarchy_level'), "
-                        "  ('knowledge_chunks_1536', 'is_proposition'), "
-                        "  ('knowledge_chunks_1536', 'strategy_metadata'), "
-                        "  ('knowledge_chunks_1536', 'ingestion_job_id'), "
-                        "  ('knowledge_chunks_3072', 'metadata'), "
-                        "  ('knowledge_chunks_3072', 'embedding'), "
-                        "  ('knowledge_chunks_3072', 'expires_at'), "
-                        "  ('knowledge_chunks_3072', 'parent_chunk_id'), "
-                        "  ('knowledge_chunks_3072', 'chunk_level'), "
-                        "  ('knowledge_chunks_3072', 'window_start'), "
-                        "  ('knowledge_chunks_3072', 'window_end'), "
-                        "  ('knowledge_chunks_3072', 'window_id'), "
-                        "  ('knowledge_chunks_3072', 'hierarchy_level'), "
-                        "  ('knowledge_chunks_3072', 'is_proposition'), "
-                        "  ('knowledge_chunks_3072', 'strategy_metadata'), "
-                        "  ('knowledge_chunks_3072', 'ingestion_job_id')"
-                        "  ) AS required(table_name, column_name) "
-                        "  EXCEPT SELECT table_name, column_name "
-                        "  FROM information_schema.columns WHERE table_schema = 'public'"
-                        ") "
-                        "AND (SELECT count(DISTINCT tablename) FROM pg_indexes "
-                        "     WHERE schemaname = 'public' AND tablename LIKE 'knowledge_chunks_%' "
-                        "     AND indexdef ILIKE '%hnsw%' "
-                        "     AND indexdef ILIKE '%cosine_ops%') = 4 "
-                        "AND (SELECT count(DISTINCT tablename) FROM pg_indexes "
-                        "     WHERE schemaname = 'public' AND tablename LIKE 'knowledge_chunks_%' "
-                        "     AND indexdef ILIKE '%gin_trgm_ops%') = 4 "
-                        "AND (SELECT count(DISTINCT tablename) FROM pg_indexes "
-                        "     WHERE schemaname = 'public' AND tablename LIKE 'knowledge_chunks_%' "
-                        "     AND indexdef ILIKE '%to_tsvector%') = 4"
-                        " AND (SELECT count(DISTINCT tablename) FROM pg_indexes "
-                        "      WHERE schemaname = 'public' AND tablename LIKE 'knowledge_chunks_%' "
-                        "      AND indexdef ILIKE '%metadata jsonb_path_ops%') = 4"
-                    )
+                    text(_PERSISTENCE_CAPABILITY_SQL)
                 )
                 return None if persisted_capabilities is True else "persistence_unavailable"
     except Exception:
