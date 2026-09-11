@@ -953,6 +953,19 @@ class ExecutorMixin:
             _executor_prompt = (
                 _executor_prompt + f"\n\nALLOWED TOOLS (ONLY use these exact names):\n{_tool_lines}"
             )
+        elif not _tool_defs:
+            # No tools are available for this step. Weaker models, still steered by
+            # the tool-calling system prompt, otherwise emit a (usually
+            # hallucinated) tool call such as {"tool": "openai_chat_completion", …}
+            # whose raw JSON then leaks into the result. Make "answer directly" the
+            # only valid move so the model returns clean prose instead.
+            _executor_prompt = _executor_prompt + (
+                "\n\nNO TOOLS ARE AVAILABLE for this step. Do NOT emit a tool call or "
+                "any JSON — there is nothing to call. Answer the step directly in "
+                "plain, concise prose using the goal and provided context. Only if you "
+                'genuinely lack the information, reply exactly with: {"tool": null, '
+                '"result": "INSUFFICIENT DATA: <what is missing>"}.'
+            )
 
         # Resolve executor model via model_router when available (Bug 3 fix)
         _exec_model = ""

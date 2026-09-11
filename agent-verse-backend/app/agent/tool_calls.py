@@ -52,21 +52,53 @@ def extract_tool_call(text: str) -> ToolCall | None:
     """
     candidate = text.strip()
 
-    # A bare JSON array is never a valid tool call
+    obj: dict | None = None
     if candidate.startswith("["):
-        return None
-    match = re.search(r"```(?:json|tool_call)?\s*(.*?)```", candidate, flags=re.DOTALL)
-    if match:
-        candidate = match.group(1).strip()
+        # A JSON array is the OpenAI/native tool-call format:
+        # [{"name": "...", "parameters": {...}}]. Parse the first tool-call-shaped
+        # element instead of dropping the whole thing — dropping it let a weak
+        # model's hallucinated tool-call array leak verbatim into the result as the
+        # agent's "answer". Extracting it here means it flows through the normal
+        # tool-name validation (and gets rejected if the tool isn't real). A plain
+        # data array (no name+parameters shape) still returns None → direct answer.
+        try:
+            arr = json.loads(candidate)
+        except json.JSONDecodeError:
+            arr = None
+        if isinstance(arr, list):
+            # Flatten one level of nesting — some models double-wrap the call as
+            # [[{"name": …}]] rather than [{"name": …}].
+            flat: list[Any] = []
+            for el in arr:
+                if isinstance(el, list):
+                    flat.extend(el)
+                else:
+                    flat.append(el)
+            obj = next(
+                (
+                    el
+                    for el in flat
+                    if isinstance(el, dict)
+                    and (el.get("name") or el.get("tool") or el.get("function"))
+                    and any(k in el for k in ("parameters", "arguments", "input", "args"))
+                ),
+                None,
+            )
+        if not isinstance(obj, dict):
+            return None
+    else:
+        match = re.search(r"```(?:json|tool_call)?\s*(.*?)```", candidate, flags=re.DOTALL)
+        if match:
+            candidate = match.group(1).strip()
 
-    # Try direct JSON parse
-    obj = _try_parse_json(candidate)
+        # Try direct JSON parse
+        obj = _try_parse_json(candidate)
 
-    # If failed, try to extract JSON object from the text
-    if obj is None:
-        json_match = re.search(r"\{.*\}", candidate, re.DOTALL)
-        if json_match:
-            obj = _try_parse_json(json_match.group())
+        # If failed, try to extract JSON object from the text
+        if obj is None:
+            json_match = re.search(r"\{.*\}", candidate, re.DOTALL)
+            if json_match:
+                obj = _try_parse_json(json_match.group())
 
     if not isinstance(obj, dict):
         return None

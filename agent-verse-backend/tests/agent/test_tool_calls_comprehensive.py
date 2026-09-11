@@ -83,6 +83,30 @@ def test_extract_json_array_returns_none() -> None:
     assert result is None
 
 
+def test_extract_openai_array_tool_call() -> None:
+    """A model that emits the OpenAI/native tool-call array format —
+    [{"name": ..., "parameters": ...}] — must be parsed (not dropped as raw text,
+    which used to leak the JSON verbatim into the goal result)."""
+    result = extract_tool_call('[{"name": "web_search", "parameters": {"q": "hi"}}]')
+    assert result is not None
+    assert result.tool == "web_search"
+    assert result.arguments == {"q": "hi"}
+
+
+def test_extract_double_wrapped_array_tool_call() -> None:
+    """Some models double-wrap: [[{"name": ..., "parameters": ...}]]."""
+    result = extract_tool_call('[[{"name": "docker_ps", "parameters": {}}]]')
+    assert result is not None
+    assert result.tool == "docker_ps"
+
+
+def test_extract_plain_data_array_returns_none() -> None:
+    """A JSON array of plain data records (no name+parameters shape) is a direct
+    answer, not a tool call — must not be misread as one."""
+    assert extract_tool_call('[{"id": 1, "title": "x"}]') is None
+    assert extract_tool_call("[1, 2, 3]") is None
+
+
 def test_extract_missing_tool_key_returns_none() -> None:
     result = extract_tool_call('{"action": "fetch", "arguments": {}}')
     assert result is None

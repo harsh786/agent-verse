@@ -2,7 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
+
+# Some env vars are shared or repurposed and their mere presence is not enough to
+# activate the matching built-in server. The clearest case: OPENAI_API_KEY is set
+# to a NON-OpenAI key when the platform runs on an OpenAI-*compatible* provider
+# (e.g. NVIDIA/vLLM), yet the built-in OpenAI server hardcodes api.openai.com — so
+# activating it offers a dead, recursive `openai_chat_completion` tool that weaker
+# models call back on themselves, corrupting the agent's output. Validate the
+# VALUE (a real "sk-" OpenAI key), not just that the var is non-empty.
+_ENV_VALUE_VALIDATORS: dict[str, Callable[[str], bool]] = {
+    "OPENAI_API_KEY": lambda v: v.startswith("sk-"),
+}
 
 
 def get_builtin_server_configs() -> list[dict]:
@@ -3331,15 +3343,25 @@ async def register_builtin_servers(registry: Any, tenant_ctx: Any) -> int:
 
     Returns the number of servers successfully registered.
     """
+    import contextlib
     import logging
     import os
 
     from app.mcp.registry import MCPRegistry, MCPServerConfig
 
+    def _env_ok(env: str) -> bool:
+        val = os.getenv(env, "")
+        if not val:
+            return False
+        validator = _ENV_VALUE_VALIDATORS.get(env)
+        return validator(val) if validator else True
+
     count = 0
     for cfg in get_builtin_server_configs():
-        # Only register if all required env vars are present and non-empty
-        if all(os.getenv(env, "") for env in cfg.get("requires_env", [])):
+        # Only register if all required env vars are present, non-empty AND valid
+        # for that vendor (so a repurposed OPENAI_API_KEY does not activate a dead,
+        # recursive OpenAI tool — see _ENV_VALUE_VALIDATORS above).
+        if all(_env_ok(env) for env in cfg.get("requires_env", [])):
             try:
                 server_config = MCPServerConfig(
                     server_id=cfg["server_id"],
@@ -3360,4 +3382,11 @@ async def register_builtin_servers(registry: Any, tenant_ctx: Any) -> int:
                 logging.getLogger(__name__).warning(
                     "builtin_server_register_failed: %s %s", cfg["name"], exc
                 )
+        else:
+            # Env no longer valid for this server — remove any stale registration
+            # (the catalog persists to Redis, so a server registered under an old
+            # env otherwise lingers, e.g. builtin-openai after OPENAI_API_KEY is
+            # repurposed to a non-OpenAI key).
+            with contextlib.suppress(Exception):
+                await registry.unregister(cfg["server_id"], tenant_ctx=tenant_ctx)
     return count

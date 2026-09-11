@@ -90,6 +90,43 @@ class TestRegisterBuiltinServers:
         assert count >= 1
 
     @pytest.mark.asyncio
+    async def test_openai_server_needs_a_real_sk_key(self):
+        """A repurposed OPENAI_API_KEY (e.g. an NVIDIA key) must NOT activate the
+        built-in OpenAI server — its openai_chat_completion tool hardcodes
+        api.openai.com and only confuses the agent (it calls the LLM recursively).
+        Presence alone isn't enough; the value must be a real 'sk-' key."""
+        from app.mcp.servers.registry_wiring import register_builtin_servers
+
+        registered: list[str] = []
+        unregistered: list[str] = []
+
+        mock_registry = MagicMock()
+
+        async def _register(cfg, **_):
+            registered.append(cfg.server_id)
+
+        async def _unregister(server_id, **_):
+            unregistered.append(server_id)
+            return True
+
+        mock_registry.register = _register
+        mock_registry.unregister = _unregister
+
+        with patch("app.mcp.registry.MCPRegistry.register_builtin_handler"):
+            # Repurposed (non-OpenAI) key → server is NOT registered, and any stale
+            # registration is cleaned up.
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "nvapi-deadbeef"}):
+                await register_builtin_servers(mock_registry, MagicMock())
+            assert "builtin-openai" not in registered
+            assert "builtin-openai" in unregistered
+
+            # A genuine sk- key → server IS registered.
+            registered.clear()
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-realopenaikey123"}):
+                await register_builtin_servers(mock_registry, MagicMock())
+            assert "builtin-openai" in registered
+
+    @pytest.mark.asyncio
     async def test_handles_registration_exception_gracefully(self):
         """If registry.register raises, error is swallowed and count not incremented."""
         from app.mcp.servers.registry_wiring import (
