@@ -1147,20 +1147,48 @@ def test_create_app_marks_web_unavailable_without_safe_backend() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_app_retrieval_resolver_uses_actual_provider_fallback_model() -> None:
+async def test_create_app_retrieval_resolver_uses_actual_provider_fallback_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.agent.model_router import ModelRouter
-    from app.core.config import Settings
+    from app.core.config import Settings, get_settings
     from app.main import create_app
 
-    with patch.object(ModelRouter, "model_for", return_value=""):
-        app = create_app(settings=Settings(default_model="unrelated-model"))
-        resolver = app.state.retrieval_gateway.dependencies.llm_resolver
-        assert resolver is not None
-        resolved = resolver(TENANT, RAGStrategy.FUSION)
-        if inspect.isawaitable(resolved):
-            resolved = await resolved
-        assert isinstance(resolved, ResolvedLLM)
-        assert resolved.model == "fake-provider"
+    # This test asserts the FakeProvider fallback model is used when no real
+    # provider resolves a model. Provider resolution reads os.environ first
+    # (get_provider_env), so any ambient provider key (e.g. a dev OPENAI_API_KEY,
+    # which on this machine is an NVIDIA nvapi- key) would wire a real provider
+    # and defeat the fallback. Clear them for a deterministic no-provider slate.
+    for var in (
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "NVIDIA_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "VOYAGE_API_KEY",
+        "EMBEDDING_API_KEY",
+        "EMBEDDING_BASE_URL",
+        "OLLAMA_BASE_URL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    # get_provider_env falls back to the cached global Settings; rebuild it from
+    # the cleared env, and rebuild again on teardown so restored env is picked up.
+    get_settings.cache_clear()
+
+    try:
+        with patch.object(ModelRouter, "model_for", return_value=""):
+            app = create_app(settings=Settings(default_model="unrelated-model"))
+            resolver = app.state.retrieval_gateway.dependencies.llm_resolver
+            assert resolver is not None
+            resolved = resolver(TENANT, RAGStrategy.FUSION)
+            if inspect.isawaitable(resolved):
+                resolved = await resolved
+            assert isinstance(resolved, ResolvedLLM)
+            assert resolved.model == "fake-provider"
+    finally:
+        # Drop the cleared-env Settings so subsequent tests rebuild from the
+        # env monkeypatch restores at teardown.
+        get_settings.cache_clear()
 
 
 @pytest.mark.asyncio
