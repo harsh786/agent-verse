@@ -129,13 +129,19 @@ class PostgresOutboxRepository:
                     await db.execute(
                         select(table)
                         .where(
+                            # Defence-in-depth: scope to this repository's tenant
+                            # EXPLICITLY rather than relying solely on RLS. RLS is
+                            # bypassed by superuser/BYPASSRLS roles, so a claim on
+                            # such a connection would otherwise drain OTHER tenants'
+                            # pending events into this worker.
+                            table.c.tenant_id == self._tenant_id,
                             or_(
                                 and_(table.c.state == "pending", table.c.available_at <= now),
                                 and_(
                                     table.c.state == "claimed",
                                     table.c.claimed_at <= stale_before,
                                 ),
-                            )
+                            ),
                         )
                         .order_by(table.c.available_at, table.c.created_at)
                         .limit(limit)
