@@ -66,11 +66,11 @@ export function CreateMissionDrawer({ orgId, open, onClose }: CreateMissionDrawe
           `${objective}\n\nAttached files (use the extract_document tool to read them ` +
           `when the task needs their contents):\n${lines}`.trim();
       }
-      // Fire-and-forget: the backend forms the team + dispatches (30-90s), but
-      // the mission shows up in the list immediately via the mission.created SSE
-      // event, so we don't block the drawer on that slow response. Close now;
-      // the list and the Live Agent Network update live as the mission runs.
-      createMission.mutate({ ...data, objective });
+      // The backend now returns in ~0.2s (it persists the mission and hands
+      // team-formation to a Celery worker), so we can await it for proper error
+      // handling. The mission streams planned → active over SSE as the worker
+      // forms the team and dispatches.
+      await createMission.mutateAsync({ ...data, objective });
       reset();
       setFiles([]);
       onClose();

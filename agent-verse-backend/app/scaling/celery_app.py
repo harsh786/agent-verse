@@ -74,6 +74,8 @@ celery_app.conf.update(
         # Default goal queue — falls back to goals.free when no queue is specified.
         # At dispatch time CeleryGoalTaskQueue overrides this via apply_async(queue=).
         "app.scaling.tasks.run_goal": {"queue": "goals.free"},
+        # Org mission team-formation + dispatch — worker subscribes to "goals".
+        "app.scaling.tasks.execute_org_mission": {"queue": "goals"},
         "app.scaling.tasks.run_goal_dlq": {"queue": "goals_dlq"},
         "app.scaling.tasks.run_scheduled_goal": {"queue": "schedules"},
         "app.scaling.tasks.fire_due_schedules": {"queue": "schedules"},

@@ -3003,52 +3003,79 @@ async def org_create_mission_execute(
     org_id: str,
     body: _MissionExecuteRequest,
     request: Request,
-    service: OrgService = Depends(get_org_service),
 ) -> dict[str, Any]:
-    """Create an OrgMission, form the team (MetaOrchestrator), and dispatch the
-    goal to the AgentGraph.
+    """Create an OrgMission and return immediately; a Celery worker forms the
+    team (LLM, 30-90s) and dispatches the goal.
 
-    Team formation runs an LLM and can take 30-90s. The ``mission.created`` event
-    is emitted at the very start (before team formation), so the UI shows the
-    mission over SSE almost immediately and the New Mission drawer no longer
-    waits on this response — see the frontend's fire-and-forget submit.
+    The heavy work runs in the worker — a separate process with its own event
+    loop and DB connections — so the request returns in milliseconds and the
+    New Mission drawer never hangs. The mission appears over SSE right away
+    (mission.created) as ``planned`` and streams to ``active`` when the worker
+    dispatches it.
     """
+    log = structlog.get_logger(__name__)
     ctx = _require_tenant(request)
-    tenant_ctx = ctx if hasattr(ctx, "tenant_id") else None
+    tenant_id: str = getattr(ctx, "tenant_id", "") or getattr(ctx, "id", "")
 
-    mission, dispatch = await service.create_mission_and_execute(
-        org_id=org_id,
-        title=body.title,
-        objective=body.objective,
-        why=body.why,
-        expected_outcome=body.expected_outcome,
-        priority=body.priority,
-        dept_id=body.dept_id,
-        assigned_team_id=body.assigned_team_id,
-        autonomy_level=body.autonomy_level,
-        budget_usd=body.budget_usd,
-        tags=body.tags,
-        metadata=body.metadata,
-        source="api",
-        tenant_ctx=tenant_ctx,
-        app_state=request.app.state,
-    )
+    from app.db.rls import sqlalchemy_rls_context
+    from app.db.session import get_session_factory
+
+    db = get_session_factory()
+
+    # Persist + COMMIT the mission in its own session so the worker (a separate
+    # process) is guaranteed to see it when it picks up the task.
+    async with db() as sess, sess.begin(), sqlalchemy_rls_context(sess, tenant_id):
+        svc = OrgService(session=sess, tenant_id=tenant_id)
+        mission = await svc.create_mission(
+            org_id=org_id,
+            title=body.title,
+            objective=body.objective,
+            why=body.why,
+            expected_outcome=body.expected_outcome,
+            priority=body.priority,
+            dept_id=body.dept_id,
+            assigned_team_id=body.assigned_team_id,
+            autonomy_level=body.autonomy_level,
+            budget_usd=body.budget_usd,
+            tags=body.tags,
+            metadata=body.metadata,
+            source="api",
+        )
+        mission_id = str(mission.id)
+        mission_title = mission.title
+        await svc.update_mission_status(mission_id, "planned")
+
+    # Hand the slow team-formation + dispatch to the Celery worker.
+    queued = True
+    try:
+        from app.scaling.tasks import execute_org_mission
+
+        execute_org_mission.apply_async(
+            kwargs={
+                "mission_id": mission_id,
+                "tenant_id": tenant_id,
+                "org_id": org_id,
+                "objective": body.objective,
+                "title": body.title,
+                "expected_outcome": body.expected_outcome,
+                "dept_id": body.dept_id,
+                "assigned_team_id": body.assigned_team_id,
+                "autonomy_level": body.autonomy_level,
+                "priority": body.priority,
+            },
+        )
+    except Exception as exc:  # broker unavailable — mission stays 'planned'
+        queued = False
+        log.error("org.execute.enqueue_failed", mission_id=mission_id, error=str(exc)[:200])
 
     return {
-        "mission_id": str(mission.id),
-        "title": mission.title,
-        "status": mission.status,
-        "goal_id": dispatch.get("goal_id"),
-        "team_id": dispatch.get("team_id"),
-        "agent_ids": dispatch.get("agent_ids", []),
-        "topology": dispatch.get("topology"),
-        "departments": dispatch.get("departments", []),
-        "agent_count": dispatch.get("agent_count", 0),
-        "autonomy_level": dispatch.get("autonomy_level"),
-        "estimated_cost_usd": dispatch.get("estimated_cost_usd", 0.0),
-        "dispatched": dispatch.get("goal_id") is not None,
-        "warning": dispatch.get("warning"),
-        "error": dispatch.get("error"),
+        "mission_id": mission_id,
+        "title": mission_title,
+        "status": "planned",
+        "goal_id": None,
+        "dispatched": False,
+        "planning": True,
+        "warning": None if queued else "dispatch_queue_unavailable",
     }
 
 

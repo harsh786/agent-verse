@@ -511,6 +511,101 @@ class _WorkerMCPAgentRunner:
                 await redis_client.aclose()
 
 
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="app.scaling.tasks.execute_org_mission", bind=True, max_retries=0
+)
+def execute_org_mission(
+    self: Any,
+    mission_id: str,
+    tenant_id: str,
+    org_id: str,
+    objective: str = "",
+    title: str = "",
+    expected_outcome: str = "",
+    dept_id: str | None = None,
+    assigned_team_id: str | None = None,
+    autonomy_level: int | None = None,
+    priority: str = "medium",
+) -> dict[str, Any]:
+    """Form the team and dispatch an already-created mission, in the worker.
+
+    The mission row is created + committed by the API before this is enqueued;
+    here we (LLM) form the team and dispatch the goal. Running in the worker —
+    a separate process with its own event loop and DB connections — avoids the
+    request-scoped context/pool contention that made in-process background
+    execution hang.
+    """
+    import types
+
+    from app.db.rls import sqlalchemy_rls_context
+    from app.db.session import get_session_factory
+    from app.org.service import OrgService
+    from app.services.event_store import EventStore
+    from app.services.goal_service import GoalService
+    from app.tenancy.context import PlanTier, TenantContext
+
+    async def _execute() -> None:
+        db_factory = get_session_factory()
+        goal_bridge = GoalService(
+            db_session_factory=db_factory,
+            event_store=EventStore(db_factory),
+        )
+        provider: Any = None
+        try:
+            from app.providers.registry import resolve_provider
+
+            provider = resolve_provider()
+        except Exception as prov_exc:  # degrade to heuristic team formation
+            logger.warning("execute_org_mission.provider_unavailable", error=str(prov_exc)[:120])
+        app_state = types.SimpleNamespace(goal_service=goal_bridge, _app_provider=provider)
+        tenant_ctx = TenantContext(
+            tenant_id=tenant_id,
+            plan=PlanTier.PROFESSIONAL,
+            api_key_id="worker_mission_execute",
+        )
+        async with (
+            db_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            svc = OrgService(session, tenant_id)
+            mission = await svc.get_mission(mission_id)
+            if mission is None:
+                logger.warning("execute_org_mission.mission_missing", mission_id=mission_id)
+                return
+            await svc.form_team_and_dispatch(
+                mission=mission,
+                org_id=org_id,
+                objective=objective,
+                title=title,
+                expected_outcome=expected_outcome,
+                dept_id=dept_id,
+                assigned_team_id=assigned_team_id,
+                autonomy_level=autonomy_level,
+                priority=priority,
+                tenant_ctx=tenant_ctx,
+                app_state=app_state,
+            )
+
+    async def _mark_failed(err: str) -> None:
+        with contextlib.suppress(Exception):
+            db_factory = get_session_factory()
+            async with (
+                db_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                await OrgService(session, tenant_id).update_mission_status(mission_id, "failed")
+        logger.error("execute_org_mission.failed", mission_id=mission_id, error=err[:200])
+
+    try:
+        _run_async(_execute())
+        return {"status": "dispatched", "mission_id": mission_id}
+    except Exception as exc:
+        _run_async(_mark_failed(str(exc)))
+        return {"status": "failed", "mission_id": mission_id, "error": str(exc)[:200]}
+
+
 @celery_app.task(name="app.scaling.tasks.run_goal_dlq", bind=True, max_retries=0)
 def run_goal_dlq(
     self: Any,
