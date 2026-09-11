@@ -66,6 +66,43 @@ async def list_models(
     }
 
 
+def _prettify_model_id(model_id: str) -> str:
+    """Human-friendly label for a slug like ``moonshotai/kimi-k3`` → ``Kimi K3``."""
+    tail = model_id.rsplit("/", 1)[-1]
+    words = [w for w in tail.replace("_", "-").split("-") if w]
+    return " ".join(w.upper() if len(w) <= 2 else w.capitalize() for w in words) or model_id
+
+
+@router.get("/active")
+async def get_active_model(request: Request) -> dict[str, Any]:
+    """Return the model the platform will actually run goals with.
+
+    Reflects the *configured* default provider/model (env-driven, via the
+    provider registry) rather than the top of the static quality-ranked
+    catalogue — so the UI shows the real active model (e.g. the configured
+    NVIDIA model) instead of a hardcoded-looking default.
+    """
+    _require_tenant(request)
+    from app.core.config import get_settings
+    from app.providers.model_defaults import configured_default_model
+
+    settings = get_settings()
+    model_id = configured_default_model()
+    provider = (settings.default_llm_provider or "").strip()
+
+    display_name = ""
+    if model_id:
+        catalogued = model_registry.get_model(provider, model_id)
+        display_name = catalogued.display_name if catalogued else _prettify_model_id(model_id)
+
+    return {
+        "provider": provider,
+        "model_id": model_id,
+        "display_name": display_name or _prettify_model_id(model_id) or "Auto-routed",
+        "configured": bool(model_id),
+    }
+
+
 @router.get("/health")
 async def get_provider_health(request: Request) -> dict[str, Any]:
     """Get health status for all providers."""

@@ -84,8 +84,15 @@ class VoiceAlertManager:
         return q
 
     def unsubscribe(self, tenant_id: str, q: asyncio.Queue) -> None:
-        if tenant_id in self._subscribers:
-            self._subscribers[tenant_id].discard(q)
+        # _subscribers values are lists, so remove by value (not set.discard) and
+        # drop the tenant key once its last stream disconnects. A raw .discard()
+        # here raised AttributeError, killing the SSE teardown and churning the
+        # connection for every client on the page.
+        queues = self._subscribers.get(tenant_id)
+        if queues is not None and q in queues:
+            queues.remove(q)
+            if not queues:
+                self._subscribers.pop(tenant_id, None)
 
     async def _listen_loop(self) -> None:
         """Subscribe to Redis pub/sub and process alert events."""

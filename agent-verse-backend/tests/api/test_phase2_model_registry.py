@@ -26,6 +26,35 @@ def _make_app():
     return app
 
 
+# ── Active model tests (composer shows the REAL configured model) ─────────────
+
+
+def test_active_model_reflects_configured_default(monkeypatch):
+    # A configured NVIDIA model must surface as the active model — not the static
+    # top-of-catalogue Claude entry the composer used to display.
+    monkeypatch.setenv("NVIDIA_MODEL", "moonshotai/kimi-k3")
+    client = TestClient(_make_app())
+    resp = client.get("/models/active", headers=_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["model_id"] == "moonshotai/kimi-k3"
+    assert data["display_name"] == "Kimi K3"  # prettified slug tail
+    assert data["configured"] is True
+
+
+def test_active_model_prettifies_and_handles_unconfigured(monkeypatch):
+    for var in ("NVIDIA_MODEL", "DEFAULT_MODEL", "OPENAI_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    client = TestClient(_make_app())
+    resp = client.get("/models/active", headers=_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    # No configured model → honest fallback, never a fabricated vendor name.
+    assert data["configured"] is False
+    assert data["display_name"]  # non-empty label
+    assert "claude" not in data["display_name"].lower()
+
+
 # ── Model Registry tests ──────────────────────────────────────────────────────
 
 def test_list_all_models_returns_builtin_catalog():
